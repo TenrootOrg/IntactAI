@@ -1,0 +1,121 @@
+# TimeSketch - Timeline Analysis Platform
+# Port: 5000 (Web UI)
+
+services:
+  timesketch-postgres:
+    container_name: mssp_timesketch_postgres
+    image: postgres:${POSTGRES_VERSION:-15}
+    environment:
+      - POSTGRES_USER=timesketch
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-timesketch}
+      - POSTGRES_DB=timesketch
+    volumes:
+      - timesketch_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - mssp_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U timesketch"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  timesketch-opensearch:
+    container_name: mssp_timesketch_opensearch
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-2.11.0}
+    environment:
+      - discovery.type=single-node
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - DISABLE_SECURITY_PLUGIN=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms${OPENSEARCH_MEM:-2}g -Xmx${OPENSEARCH_MEM:-2}g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - timesketch_opensearch_data:/usr/share/opensearch/data
+    restart: unless-stopped
+    networks:
+      - mssp_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  timesketch-redis:
+    container_name: mssp_timesketch_redis
+    image: redis:${REDIS_VERSION:-7-alpine}
+    command: redis-server
+    restart: unless-stopped
+    networks:
+      - mssp_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  timesketch-web:
+    container_name: mssp_timesketch_web
+    image: us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:${TIMESKETCH_VERSION:-latest}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        mkdir -p /var/log/timesketch
+        ([ -d /tmp/packages ] && pip3 install --no-index --find-links=/tmp/packages google-generativeai || pip3 install google-generativeai)
+        exec /docker-entrypoint.sh timesketch-web
+    environment:
+      - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-4}
+    volumes:
+      - ./config:/etc/timesketch
+      - timesketch_upload:/usr/share/timesketch/upload
+      - timesketch_logs:/var/log/timesketch
+      - ./python-packages:/tmp/packages:ro
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    depends_on:
+      timesketch-postgres:
+        condition: service_healthy
+      timesketch-opensearch:
+        condition: service_healthy
+      timesketch-redis:
+        condition: service_healthy
+    networks:
+      - mssp_network
+
+  timesketch-worker:
+    container_name: mssp_timesketch_worker
+    image: us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:${TIMESKETCH_VERSION:-latest}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        mkdir -p /var/log/timesketch
+        ([ -d /tmp/packages ] && pip3 install --no-index --find-links=/tmp/packages google-generativeai || pip3 install google-generativeai)
+        exec /docker-entrypoint.sh timesketch-worker
+    environment:
+      - WORKER_LOG_LEVEL=${WORKER_LOG_LEVEL:-INFO}
+    volumes:
+      - ./config:/etc/timesketch
+      - timesketch_upload:/usr/share/timesketch/upload
+      - timesketch_logs:/var/log/timesketch
+      - ./python-packages:/tmp/packages:ro
+    restart: unless-stopped
+    depends_on:
+      - timesketch-web
+    networks:
+      - mssp_network
+
+volumes:
+  timesketch_postgres_data:
+  timesketch_opensearch_data:
+  timesketch_upload:
+  timesketch_logs:
+
+networks:
+  mssp_network:
+    external: true

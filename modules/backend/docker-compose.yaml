@@ -1,0 +1,48 @@
+# MSSP Backend API
+# Port: 5001
+
+services:
+  backend:
+    container_name: mssp_backend
+    image: mssp-backend:${BACKEND_VERSION:-1.0.0}
+    build:
+      context: ../..
+      dockerfile: modules/backend/Dockerfile
+    env_file:
+      - .env
+    environment:
+      # These override .env if needed, but .env provides defaults
+      - ELASTICSEARCH_HOST=${ELASTICSEARCH_HOST}
+      - ELASTICSEARCH_PORT=${ELASTICSEARCH_PORT}
+      - TIMESKETCH_HOST=${TIMESKETCH_HOST}
+      - TIMESKETCH_USER=${TIMESKETCH_USER}
+      - TIMESKETCH_PASS=${TIMESKETCH_PASS}
+      - VELO_CONFIG_PATH=${VELO_CONFIG_PATH}
+      - CONFIG_PATH=${CONFIG_PATH}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # Docker socket for container access
+      - /tmp/plaso:/tmp/plaso  # Plaso output directory for Timesketch import
+      - ../velociraptor/config:/app/config/velociraptor:ro  # Velociraptor API config
+      - ../timesketch/config:/app/config/timesketch:rw  # Timesketch config (writable for LLM settings)
+      - ../../config.yaml:/app/config.yaml:ro  # Main config file
+      - ../../client_installers:/app/client_installers:rw  # Client installers (writable for MSI generation)
+      - ../../data:/app/data  # SQLite database (mssp.db) for workflows, configs, and reports
+      - ../nginx/html/downloads:/app/downloads:ro  # Velociraptor binaries for offline collectors
+      - ./services:/app/services:ro  # Mount services for live code updates
+      - ./routes:/app/routes:ro  # Mount routes for live code updates
+      - /app/logs  # Logs directory
+    ports:
+      - "5001:5001"
+    restart: unless-stopped
+    networks:
+      - mssp_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  mssp_network:
+    external: true

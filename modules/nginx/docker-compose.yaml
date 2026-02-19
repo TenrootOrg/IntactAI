@@ -1,0 +1,29 @@
+# Nginx Reverse Proxy
+# Port: 80 (HTTP)
+
+services:
+  nginx:
+    container_name: mssp_nginx
+    image: nginx:${NGINX_VERSION:-alpine}
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./html:/usr/share/nginx/html:ro
+      - ./ssl/nginx-cert.crt:/etc/nginx/cert.crt:ro
+      - ./ssl/nginx-cert.key:/etc/nginx/cert.key:ro
+    ports:
+      - "80:80"
+      - "8080:8080"
+      - "443:443"
+    restart: unless-stopped
+    networks:
+      - mssp_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  mssp_network:
+    external: true

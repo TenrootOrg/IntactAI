@@ -1,0 +1,40 @@
+-- VQL Query to properly repack client binaries
+-- This uses the repack() function which actually works, unlike CLI
+
+LET client_config <= parse_yaml(data=read_file(filename="/velociraptor/client.config.yaml"))
+
+-- Repack Windows EXE
+LET WindowsEXE = SELECT repack(
+    exe="/opt/velociraptor/windows/velociraptor_client.exe",
+    config=serialize(format='yaml', item=client_config),
+    output="/velociraptor/clients/windows/velociraptor_client.exe"
+) AS Result FROM scope()
+
+-- Repack Windows MSI
+LET WindowsMSI = SELECT repack(
+    exe="/opt/velociraptor/windows/velociraptor_client.msi",
+    config=serialize(format='yaml', item=client_config),
+    output="/velociraptor/clients/windows/velociraptor_client.msi"
+) AS Result FROM scope()
+
+-- Repack Linux client
+LET LinuxClient = SELECT repack(
+    exe="/opt/velociraptor/linux/velociraptor",
+    config=serialize(format='yaml', item=client_config),
+    output="/velociraptor/clients/linux/velociraptor_client"
+) AS Result FROM scope()
+
+-- Repack Mac client
+LET MacClient = SELECT repack(
+    exe="/opt/velociraptor/mac/velociraptor_client",
+    config=serialize(format='yaml', item=client_config),
+    output="/velociraptor/clients/mac/velociraptor_client"
+) AS Result FROM scope()
+
+-- Execute all repacking operations
+SELECT * FROM chain(
+    a=WindowsEXE,
+    b=WindowsMSI,
+    c=LinuxClient,
+    d=MacClient
+)

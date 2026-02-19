@@ -1,0 +1,40 @@
+# Velociraptor - EDR/Forensics Platform
+# Ports: 8889 (GUI), 8000 (TLS Frontend/Clients), 8001 (gRPC API)
+
+services:
+  velociraptor:
+    container_name: mssp_velociraptor
+    image: velociraptor-server:${VELOCIRAPTOR_VERSION:-0.75}
+    build:
+      context: ./
+      dockerfile: Dockerfile
+      args:
+        - VELOCIRAPTOR_TAG=${VELOCIRAPTOR_TAG:-0.75}
+        - VELOCIRAPTOR_VERSION=${VELOCIRAPTOR_VERSION:-0.75.6}
+    env_file:
+      - .env
+    environment:
+      - VELOX_FRONTEND_HOSTNAME=${VELOX_FRONTEND_HOSTNAME:-localhost}
+      - VELOX_PUBLIC_IP=${VELOX_PUBLIC_IP:-localhost}
+      - VELOX_SERVER_URL=${VELOX_SERVER_URL:-https://localhost:8001/}
+    volumes:
+      - velociraptor_data:/velociraptor:rw
+      - velociraptor_datastore:/var.:rw
+      - velociraptor_tmp:/tmp:rw
+      - ${TOOLS_PATH:-../../data/tools}:/tools:ro  # Persistent tools directory
+    ports:
+      - "8889:8889"   # GUI (HTTP)
+      - "8000:8000"   # TLS Frontend (client connections)
+      - "8001:8001"   # gRPC API
+    restart: unless-stopped
+    networks:
+      - mssp_network
+
+volumes:
+  velociraptor_data:
+  velociraptor_datastore:
+  velociraptor_tmp:
+
+networks:
+  mssp_network:
+    external: true

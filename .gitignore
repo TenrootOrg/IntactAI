@@ -1,0 +1,49 @@
+
+# Generated client installers
+client_installers/
+
+# Backup files
+*.backup
+
+# Data directory - exclude actual data but keep directory structure
+data/*.json
+data/*.json.migrated
+data/mssp.db
+data/mssp.db-shm
+data/mssp.db-wal
+data/reports/
+data/scheduler_jobs.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Log files
+*.log
+scripts/prepare_offline_*.log
+scripts/repair_*.log
+install_*.log
+
+# IRIS secrets (generated on install)
+modules/iris/secrets/*
+!modules/iris/secrets/.gitkeep
+
+# Certificates (generated on install)
+modules/iris/config/certificates/rootCA/*
+modules/iris/config/certificates/web_certificates/*
+!modules/iris/config/certificates/rootCA/.gitkeep
+!modules/iris/config/certificates/web_certificates/.gitkeep
+
+# Nginx SSL (generated on install)
+modules/nginx/ssl/*
+!modules/nginx/ssl/.gitkeep
+
+# Downloaded tools (large binaries)
+data/tools/
+
+# Downloaded Velociraptor binaries (used for offline collectors)
+modules/nginx/html/downloads/
+
+# Frontend database
+data/frontend_data.db

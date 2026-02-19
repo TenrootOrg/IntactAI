@@ -1,0 +1,127 @@
+# IRIS - Incident Response Platform
+# Port: 8443 (Web UI - HTTPS)
+
+services:
+  iris-rabbitmq:
+    container_name: mssp_iris_rabbitmq
+    image: rabbitmq:${RABBITMQ_VERSION:-3-management-alpine}
+    restart: unless-stopped
+    networks:
+      - iris_internal
+
+  iris-db:
+    container_name: mssp_iris_db
+    image: ghcr.io/dfir-iris/iriswebapp_db:${IRIS_VERSION:-v2.4.25}
+    entrypoint: /bin/bash
+    command:
+      - /postgres_start_with_secrets.sh
+    env_file:
+      - .env
+    secrets:
+      - POSTGRES_PASSWORD
+      - POSTGRES_ADMIN_PASSWORD
+    volumes:
+      - ./scripts/postgres_start_with_secrets.sh:/postgres_start_with_secrets.sh:ro
+      - iris_db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - iris_internal
+
+  iris-app:
+    container_name: mssp_iris_app
+    image: ghcr.io/dfir-iris/iriswebapp_app:${IRIS_VERSION:-v2.4.25}
+    entrypoint: /bin/bash
+    command:
+      - /iriswebapp_start_with_secrets.sh
+    user: "65534"
+    env_file:
+      - .env
+    secrets:
+      - POSTGRES_PASSWORD
+      - POSTGRES_ADMIN_PASSWORD
+      - IRIS_SECRET_KEY
+      - IRIS_SECURITY_PASSWORD_SALT
+      - IRIS_ADM_PASSWORD
+    volumes:
+      - ./scripts/iriswebapp_start_with_secrets.sh:/iriswebapp_start_with_secrets.sh:ro
+      - ./config/certificates/rootCA:/etc/irisRootCA:ro
+      - ./config/certificates:/home/iris/certificates:ro
+      - iris_downloads:/home/iris/downloads
+      - iris_templates:/home/iris/user_templates
+      - iris_server_data:/home/iris/server_data
+    restart: unless-stopped
+    depends_on:
+      - iris-rabbitmq
+      - iris-db
+    networks:
+      - iris_internal
+      - mssp_network
+
+  iris-worker:
+    container_name: mssp_iris_worker
+    image: ghcr.io/dfir-iris/iriswebapp_app:${IRIS_VERSION:-v2.4.25}
+    entrypoint: /bin/bash
+    command:
+      - /worker_start_with_secrets.sh
+    user: "65534"
+    env_file:
+      - .env
+    secrets:
+      - POSTGRES_PASSWORD
+      - POSTGRES_ADMIN_PASSWORD
+      - IRIS_SECRET_KEY
+      - IRIS_SECURITY_PASSWORD_SALT
+    volumes:
+      - ./scripts/worker_start_with_secrets.sh:/worker_start_with_secrets.sh:ro
+      - ./config/certificates/rootCA:/etc/irisRootCA:ro
+      - ./config/certificates:/home/iris/certificates:ro
+      - iris_downloads:/home/iris/downloads
+      - iris_templates:/home/iris/user_templates
+      - iris_server_data:/home/iris/server_data
+    restart: unless-stopped
+    depends_on:
+      - iris-rabbitmq
+      - iris-db
+      - iris-app
+    networks:
+      - iris_internal
+
+  iris-nginx:
+    container_name: mssp_iris_nginx
+    image: ghcr.io/dfir-iris/iriswebapp_nginx:${IRIS_VERSION:-v2.4.25}
+    env_file:
+      - .env
+    volumes:
+      - ./config/certificates/web_certificates:/www/certs:ro
+    ports:
+      - "8443:8443"
+    restart: unless-stopped
+    depends_on:
+      - iris-app
+    networks:
+      - iris_internal
+      - mssp_network
+
+volumes:
+  iris_db_data:
+  iris_downloads:
+  iris_templates:
+  iris_server_data:
+
+secrets:
+  POSTGRES_PASSWORD:
+    file: secrets/POSTGRES_PASSWORD
+  POSTGRES_ADMIN_PASSWORD:
+    file: secrets/POSTGRES_ADMIN_PASSWORD
+  IRIS_SECRET_KEY:
+    file: secrets/IRIS_SECRET_KEY
+  IRIS_SECURITY_PASSWORD_SALT:
+    file: secrets/IRIS_SECURITY_PASSWORD_SALT
+  IRIS_ADM_PASSWORD:
+    file: secrets/IRIS_ADM_PASSWORD
+
+networks:
+  iris_internal:
+    name: iris_internal
+  mssp_network:
+    external: true
