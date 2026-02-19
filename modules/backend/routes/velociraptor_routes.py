@@ -32,6 +32,7 @@ from services.offline_collector import (
     import_results,
     init_offline_collector_index
 )
+from services.file_storage_service import get_agentic_blueprint, get_velociraptor_blueprint
 
 velociraptor_bp = Blueprint('velociraptor', __name__)
 
@@ -470,11 +471,15 @@ def generate_offline_collector():
         config = get_config(config_id)
         config_name = config.get('config_name', config_id) if config else config_id
 
+        # Look up blueprint display name from blueprints tables
+        blueprint = get_agentic_blueprint(config_id) or get_velociraptor_blueprint(config_id)
+        blueprint_display_name = blueprint.get('name', config_name) if blueprint else config_name
+
         # Create workflow run for tracking
         run_id = create_automation_run(
             automation_type="velociraptor_offline_collector",
-            name=f"Generate Collector: {config_name} ({os_type})",
-            details={"config_id": config_id, "os": os_type, "config_name": config_name, "blueprint": config_name, "blueprint_id": config_id}
+            name=f"Generate Collector: {blueprint_display_name} ({os_type})",
+            details={"config_id": config_id, "os": os_type, "config_name": config_name, "blueprint": blueprint_display_name, "blueprint_id": config_id}
         )
 
         add_log_to_run(run_id, f"Starting offline collector generation", "info")

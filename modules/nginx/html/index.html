@@ -348,6 +348,18 @@
                         <h2 class="text-3xl font-bold text-white">Workflow Runs</h2>
                         <p class="text-gray-400 mt-1">View all workflow executions with status, dates, and logs</p>
                     </div>
+                    <div class="flex items-center gap-3">
+                        <label class="text-sm text-gray-400">Filter:</label>
+                        <select x-model="$store.workflows.typeFilter" @change="$store.workflows.applyFilter()" class="bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                            <option value="">All Types</option>
+                            <option value="agentic">Agentic</option>
+                            <option value="timesketch">TimeSketch</option>
+                            <option value="velociraptor_hunt">Velociraptor Hunt</option>
+                            <option value="velociraptor_offline_collector">Offline Collector</option>
+                            <option value="velociraptor_offline_import">Offline Import</option>
+                            <option value="maintenance">Maintenance</option>
+                        </select>
+                    </div>
                 </div>
 
                 <!-- Workflows Table -->
@@ -368,8 +380,11 @@
                                 <template x-if="$store.workflows.loading">
                                     <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">Loading workflows...</td></tr>
                                 </template>
-                                <template x-if="!$store.workflows.loading && $store.workflows.runs.length === 0">
+                                <template x-if="!$store.workflows.loading && $store.workflows.runs.length === 0 && !$store.workflows.typeFilter">
                                     <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">No workflow runs yet. Start a Timesketch import or hunt to see them here.</td></tr>
+                                </template>
+                                <template x-if="!$store.workflows.loading && $store.workflows.runs.length === 0 && $store.workflows.typeFilter">
+                                    <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">No workflows match the selected filter.</td></tr>
                                 </template>
                                 <template x-for="run in $store.workflows.runs" :key="run.id">
                                     <tr class="hover:bg-gray-750 transition-colors">
@@ -378,10 +393,8 @@
                                         </td>
                                         <td class="px-6 py-4">
                                             <div class="font-medium text-white" x-text="run.name || 'Unnamed'"></div>
-                                            <div class="text-xs text-gray-400 mt-1">
-                                                <span x-text="'ID: ' + (run.id || 'N/A')"></span>
-                                                <span x-show="run.details?.blueprint || run.details?.blueprint_id" class="ml-2 text-purple-400" x-text="'| ' + (run.details?.blueprint || run.details?.blueprint_id || '')"></span>
-                                            </div>
+                                            <div class="text-xs text-gray-400 mt-1" x-text="'ID: ' + (run.id || 'N/A')"></div>
+                                            <div x-show="run.details?.blueprint || run.details?.blueprint_id" class="text-xs text-purple-400 mt-1" x-text="'Blueprint: ' + (run.details?.blueprint || run.details?.blueprint_id || '')"></div>
                                         </td>
                                         <td class="px-6 py-4">
                                             <span :class="$store.workflows.getStatusColor(run.status) + ' px-3 py-1 rounded-full text-xs font-semibold uppercase'" x-text="run.status || 'unknown'"></span>

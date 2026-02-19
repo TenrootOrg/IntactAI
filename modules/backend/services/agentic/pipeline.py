@@ -331,16 +331,31 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
 
             try:
                 from services.iris_service import import_to_iris as iris_import
-                timeline_events = extract_timeline_events(all_results)
+                from config import IRIS_CONFIG
+
+                timeline_events = extract_timeline_events(all_results, include_no_timestamp=True)
                 filtered_events = filter_high_severity_events(timeline_events)
+                add_log_to_run(run_id, f"[IRIS] Filtered {len(timeline_events)} -> {len(filtered_events)} high-severity events for IRIS", "info")
 
                 if not iris_case_name:
                     iris_case_name = f"Agentic Analysis - {collection_type.title()} {collection_id} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
+                # Get technical report for IOC extraction
+                technical_report = ""
+                if report_content:
+                    if isinstance(report_content, dict):
+                        technical_report = report_content.get('technical', '')
+                    elif isinstance(report_content, str):
+                        technical_report = report_content
+
+                add_log_to_run(run_id, f"[IRIS] Found {len(list(client_info.values()))} clients to add as assets", "info")
+
                 iris_result = iris_import(
+                    run_id=run_id,
                     case_name=iris_case_name,
                     timeline_events=filtered_events,
-                    artifact_summaries=artifact_summaries,
+                    technical_report=technical_report,
+                    iris_config=IRIS_CONFIG,
                     clients=list(client_info.values()),
                     blueprint_name=f"Existing {collection_type.title()}",
                     logger=lambda msg, level: add_log_to_run(run_id, msg, level)
@@ -348,6 +363,9 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
 
                 if iris_result.get('success'):
                     add_log_to_run(run_id, f"[IRIS] Case created: {iris_result.get('case_url')}", "success")
+                    add_log_to_run(run_id, f"[IRIS] Added {iris_result.get('assets_imported', 0)} assets", "info")
+                    add_log_to_run(run_id, f"[IRIS] Imported {iris_result.get('events_imported')} timeline events", "info")
+                    add_log_to_run(run_id, f"[IRIS] Imported {iris_result.get('iocs_imported')} IOCs", "info")
                     workflow = get_workflow(run_id)
                     if workflow:
                         if 'details' not in workflow:
