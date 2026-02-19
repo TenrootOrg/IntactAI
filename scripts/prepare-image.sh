@@ -206,8 +206,12 @@ clean_installers() {
         safe_remove_glob "$SCRIPT_DIR/client_installers/*" "Client installers"
     fi
 
+    # Only remove generated MSI installers, keep everything else (velociraptor binaries, tools, etc.)
     if [[ -d "$SCRIPT_DIR/modules/nginx/html/downloads" ]]; then
-        safe_remove_glob "$SCRIPT_DIR/modules/nginx/html/downloads/*" "Download binaries"
+        for f in "$SCRIPT_DIR/modules/nginx/html/downloads/"*.msi; do
+            [[ ! -e "$f" ]] && continue
+            safe_remove "$f" "MSI installer: $(basename "$f")"
+        done
     fi
 }
 

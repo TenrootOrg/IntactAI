@@ -13,8 +13,8 @@ VELOCIRAPTOR_CONTAINER = "mssp_velociraptor"
 # Velociraptor client binary paths (mounted from nginx/html/downloads)
 # NOTE: v0.74.x required for Generic Collector (v0.75+ broke the -- pseudo-flag)
 VELO_CLIENT_PATHS = {
-    "windows": "/app/downloads/velociraptor-v0.74.3-windows-amd64.exe",
-    "linux": "/app/downloads/velociraptor-v0.74.3-linux-amd64",
+    "windows": "/app/downloads/velociraptor-v0.74.1-windows-amd64.exe",
+    "linux": "/app/downloads/velociraptor-v0.74.1-linux-amd64",
     "darwin": "/app/downloads/velociraptor-client-darwin"
 }
 

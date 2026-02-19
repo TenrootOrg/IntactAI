@@ -50,6 +50,15 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         update_run_status(run_id, "running", progress=2)
         add_log_to_run(run_id, "[Pipeline] Starting Agentic Forensics pipeline", "info")
 
+        # Validate LLM configuration before starting
+        from services.agentic.analyzers import validate_llm_config
+        try:
+            validate_llm_config(llm_config)
+        except ValueError as e:
+            add_log_to_run(run_id, f"[Pipeline] Configuration error: {str(e)}", "error")
+            update_run_status(run_id, "failed", progress=0, error=str(e))
+            return
+
         # Store report_types in workflow details for UI
         workflow = get_workflow(run_id)
         if workflow:
@@ -250,6 +259,15 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         collection_type = "flow" if flow_id else "hunt"
         add_log_to_run(run_id, f"[Pipeline] Analyzing existing {collection_type}: {collection_id}", "info")
 
+        # Validate LLM configuration before starting
+        from services.agentic.analyzers import validate_llm_config
+        try:
+            validate_llm_config(llm_config)
+        except ValueError as e:
+            add_log_to_run(run_id, f"[Pipeline] Configuration error: {str(e)}", "error")
+            update_run_status(run_id, "failed", progress=0, error=str(e))
+            return
+
         _update_phase(run_id, "fetching_results", 5)
 
         # Fetch results from existing flow/hunt
@@ -314,7 +332,7 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
             try:
                 from services.iris_service import import_to_iris as iris_import
                 timeline_events = extract_timeline_events(all_results)
-                filtered_events = filter_high_severity_events(timeline_events, artifact_summaries)
+                filtered_events = filter_high_severity_events(timeline_events)
 
                 if not iris_case_name:
                     iris_case_name = f"Agentic Analysis - {collection_type.title()} {collection_id} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"

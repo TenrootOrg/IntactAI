@@ -63,7 +63,6 @@ BEST_PRACTICE_ARTIFACTS = [
 ]
 
 QUICK_WINS_ARTIFACTS = [
-    "DetectRaptor.Windows.Detection.Evtx",
     "DetectRaptor.Windows.Detection.Amcache",
     "DetectRaptor.Windows.Detection.NamedPipes",
     "DetectRaptor.Windows.Detection.BinaryRename",
@@ -174,11 +173,26 @@ DEFAULT_VELOCIRAPTOR_BLUEPRINTS = [
     },
 ]
 
-# Test (Quick) - minimal artifacts for fast testing
+# Test (Quick) - Quick Wins minus slow/heavy artifacts for faster testing
 TEST_QUICK_ARTIFACTS = [
-    "Windows.Detection.Amcache",
+    "DetectRaptor.Windows.Detection.Amcache",
+    "DetectRaptor.Windows.Detection.NamedPipes",
+    "DetectRaptor.Windows.Detection.Bootloaders",
+    "DetectRaptor.Windows.Detection.Applications",
+    "DetectRaptor.Windows.Detection.Powershell.PSReadline",
+    "DetectRaptor.Windows.Detection.Powershell.ISEAutoSave",
+    "DetectRaptor.Windows.Detection.LolDriversMalicious",
+    "DetectRaptor.Windows.Detection.LolDriversVulnerable",
+    "DetectRaptor.Windows.Detection.HijackLibsEnv",
+    "DetectRaptor.Windows.Detection.Webhistory",
+    "Windows.System.DNSCache",
     "Windows.EventLogs.RDPAuth",
+    "Windows.Registry.Sysinternals.Eulacheck",
+    "Windows.Attack.UnexpectedImagePath",
+    "Windows.Detection.Yara.Process",
     "Windows.Network.NetstatEnriched",
+    "Windows.System.UntrustedBinaries",
+    "Windows.Analysis.EvidenceOfDownload",
     "Windows.Forensics.Lnk",
 ]
 

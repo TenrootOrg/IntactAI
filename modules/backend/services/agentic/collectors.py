@@ -523,6 +523,10 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
             all_flows_completed = len(completed_flows) == len(active_flows)
             if all_flows_completed:
                 add_log_to_run(run_id, f"[Velociraptor] All {len(active_flows)} flows completed!", "success")
+                # Wait for any remaining LLM analyses before breaking
+                total_sources = sum(len(srcs) for srcs in discovered_sources.values())
+                if len(summaries) == len(analyzed_artifacts) and len(llm_futures) == 0:
+                    add_log_to_run(run_id, f"[Pipeline] All {total_sources} sources analyzed - finishing!", "success")
                 break
 
             # Calculate and display remaining time
