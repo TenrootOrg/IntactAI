@@ -151,6 +151,8 @@ document.addEventListener('alpine:init', () => {
     // Workflows store
     Alpine.store('workflows', {
         runs: [],
+        allRuns: [],
+        typeFilter: '',
         loading: true,
         selectedRun: null,
         modalOpen: false,
@@ -166,15 +168,25 @@ document.addEventListener('alpine:init', () => {
                 const newRuns = data.runs || [];
 
                 // Smart merge - only update if data changed (prevents flickering)
-                if (this.initialLoad || JSON.stringify(this.runs) !== JSON.stringify(newRuns)) {
-                    this.runs = newRuns;
+                if (this.initialLoad || JSON.stringify(this.allRuns) !== JSON.stringify(newRuns)) {
+                    this.allRuns = newRuns;
+                    this.applyFilter();
                 }
                 this.initialLoad = false;
             } catch (e) {
                 console.error('Failed to load workflows:', e);
-                if (this.initialLoad) this.runs = [];
+                if (this.initialLoad) this.allRuns = [];
+                this.runs = [];
             }
             this.loading = false;
+        },
+
+        applyFilter() {
+            if (!this.typeFilter) {
+                this.runs = this.allRuns;
+            } else {
+                this.runs = this.allRuns.filter(run => run.type === this.typeFilter);
+            }
         },
 
         async viewLogs(runId) {
