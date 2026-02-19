@@ -80,23 +80,57 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
 
         # Collect results as they complete
         completed = 0
+        error_count = 0
         for future in as_completed(futures):
             artifact, summary, error = future.result()
             summaries[artifact] = summary
             completed += 1
 
             if error:
+                error_count += 1
                 log(f"[LLM] Error for {artifact}: {error}", "warning")
             else:
                 log(f"[LLM] Analysis complete for {artifact} ({completed}/{len(artifacts_list)})")
 
+    # If ALL analyses failed, raise an exception so the pipeline knows
+    if error_count == len(artifacts_list) and len(artifacts_list) > 0:
+        raise RuntimeError(f"All {error_count} LLM analyses failed. Check your LLM configuration (API key or Ollama server).")
+
     return summaries
+
+
+def validate_llm_config(config):
+    """Validate LLM configuration before starting analysis.
+
+    Raises ValueError if configuration is invalid.
+    """
+    agentic_config = config.get('agentic', {})
+    mode = agentic_config.get('llm_mode', 'online')
+
+    if mode == 'online':
+        online_config = agentic_config.get('online_llm', {})
+        api_key = online_config.get('api_key', '')
+        if not api_key:
+            raise ValueError(
+                "LLM mode is set to 'online' but no API key is configured. "
+                "Please go to Settings > Agentic and either:\n"
+                "1. Enter your Claude/OpenAI API key, or\n"
+                "2. Switch to 'offline' mode and configure Ollama"
+            )
+    else:
+        offline_config = agentic_config.get('offline_llm', {})
+        url = offline_config.get('url', '')
+        if not url:
+            raise ValueError(
+                "LLM mode is set to 'offline' but no Ollama URL is configured. "
+                "Please go to Settings > Agentic and configure the Ollama server URL."
+            )
 
 
 def call_llm(prompt, system_prompt, config):
     """Call the configured LLM provider"""
     agentic_config = config.get('agentic', {})
-    mode = agentic_config.get('llm_mode', 'offline')
+    mode = agentic_config.get('llm_mode', 'online')
 
     if mode == 'online':
         return _call_llm_online(prompt, system_prompt, agentic_config.get('online_llm', {}))

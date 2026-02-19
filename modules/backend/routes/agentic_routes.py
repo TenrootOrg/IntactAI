@@ -7,7 +7,7 @@ import threading
 from flask import Blueprint, jsonify, request, Response
 
 from services.agentic import run_agentic_pipeline, run_agentic_on_existing, get_report_content, get_available_report_types
-from services.file_storage_service import load_frontend_config
+from services.file_storage_service import load_frontend_config, get_agentic_blueprint, get_velociraptor_blueprint
 from services.workflow_service import (
     create_automation_run,
     get_automation_run
@@ -18,7 +18,7 @@ agentic_bp = Blueprint('agentic', __name__)
 # Default LLM config
 DEFAULT_LLM_CONFIG = {
     "agentic": {
-        "llm_mode": "offline",
+        "llm_mode": "online",
         "max_concurrent_requests": 5,
         "offline_llm": {
             "provider": "ollama",
@@ -53,7 +53,11 @@ def start_agentic_run():
     try:
         data = request.get_json()
         blueprint_id = data.get('blueprint_id')
-        blueprint_name = data.get('blueprint', 'Unknown')
+        # Look up blueprint name from database if not provided (check both agentic and velociraptor tables)
+        blueprint_name = data.get('blueprint')
+        if not blueprint_name:
+            bp = get_agentic_blueprint(blueprint_id) or get_velociraptor_blueprint(blueprint_id)
+            blueprint_name = bp.get('name', 'Unknown') if bp else 'Unknown'
         client_ids = data.get('client_ids', [])
         collection_minutes = data.get('collection_minutes', 30)
         report_types = data.get('report_types', ['technical'])  # Default: both

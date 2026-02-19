@@ -20,7 +20,7 @@ system_bp = Blueprint('system', __name__)
 # Default configuration (agentic settings only - velociraptor uses container's api.config.yaml)
 DEFAULT_CONFIG = {
     "agentic": {
-        "llm_mode": "offline",
+        "llm_mode": "online",
         "offline_llm": {
             "provider": "ollama",
             "model": "llama3.3:70b",
