@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Velociraptor Client Downloads - TenRoot MSSP</title>
+    <!-- Google Fonts - Cyberpunk Typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="js/tailwind.js"></script>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body class="bg-gray-900 text-white">
+    <div class="min-h-screen">
+        <div class="container mx-auto px-6 py-8">
+            <!-- Header -->
+            <header class="mb-8">
+                <div class="flex justify-between items-center">
+                    <div class="flex items-center gap-4">
+                        <a href="/" class="block">
+                            <img src="img/tenroot-logo.png" alt="TenRoot" class="sidebar-logo" style="width: 140px;">
+                        </a>
+                        <div>
+                            <h1 class="text-2xl font-bold header-text">Velociraptor Client Downloads</h1>
+                            <p class="text-gray-400 text-sm mt-1">Download pre-configured Velociraptor client installers</p>
+                        </div>
+                    </div>
+                    <a href="/" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                        </svg>
+                        Back to Dashboard
+                    </a>
+                </div>
+            </header>
+
+            <!-- Download Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl mx-auto">
+                <!-- Windows MSI -->
+                <div class="service-card p-6">
+                    <div class="flex items-center gap-4 mb-4">
+                        <div class="w-14 h-14 rounded-xl flex items-center justify-center" style="background: linear-gradient(135deg, rgba(0, 85, 255, 0.2), rgba(0, 85, 255, 0.1)); border: 1px solid rgba(0, 85, 255, 0.3);">
+                            <svg class="w-7 h-7 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <h2 class="text-lg font-semibold header-text text-white">WINDOWS</h2>
+                            <p class="text-gray-400 text-sm">MSI Installer</p>
+                        </div>
+                        <div class="ml-auto w-2 h-2 rounded-full bg-blue-500"></div>
+                    </div>
+                    <a href="/api/clients/download/windows-msi" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg flex items-center justify-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                        </svg>
+                        Download MSI
+                    </a>
+                </div>
+
+                <!-- Linux -->
+                <div class="service-card p-6">
+                    <div class="flex items-center gap-4 mb-4">
+                        <div class="w-14 h-14 rounded-xl flex items-center justify-center" style="background: linear-gradient(135deg, rgba(249, 115, 22, 0.2), rgba(249, 115, 22, 0.1)); border: 1px solid rgba(249, 115, 22, 0.3);">
+                            <svg class="w-7 h-7 text-orange-400" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.84-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.406-.046.615.27.563.863.436 1.417.289.563-.158 1.163-.406 1.755-.516.11-.021.227-.045.348-.064.17-.558.406-1.142.983-1.485.177-.105.413-.159.619-.074.063.025.117.03.186.047a.795.795 0 01-.017-.11c-.078-.558-.13-1.605.21-2.053.786-.953 1.642-1.953 1.932-3.047.21-.787.233-1.391.233-2.159 0-.42-.012-.84-.03-1.258-.021-.42-.042-.84-.074-1.258-.105-1.5-.242-3.105.21-4.605.484-1.605 1.86-2.813 3.555-3.285.074-.02.148-.042.222-.06a5.57 5.57 0 011.05-.12z"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <h2 class="text-lg font-semibold header-text text-white">LINUX</h2>
+                            <p class="text-gray-400 text-sm">Binary</p>
+                        </div>
+                        <div class="ml-auto w-2 h-2 rounded-full bg-orange-500"></div>
+                    </div>
+                    <a href="/api/clients/download/linux" class="w-full bg-orange-600 hover:bg-orange-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg flex items-center justify-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                        </svg>
+                        Download Linux
+                    </a>
+                </div>
+            </div>
+
+            <!-- Installation Instructions -->
+            <div class="mt-10 service-card p-6 max-w-3xl mx-auto">
+                <h3 class="text-xl font-semibold mb-4 header-text text-white">Installation Instructions</h3>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Windows Installation -->
+                    <div>
+                        <h4 class="text-lg font-semibold mb-2 text-blue-400">Windows</h4>
+                        <div class="p-4 rounded-lg bg-black/50 border border-gray-800">
+                            <pre class="text-white text-sm overflow-x-auto"><code># Run MSI as Administrator
+msiexec /i velociraptor.msi
+
+# Or silent install
+msiexec /i velociraptor.msi /qn</code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Linux Installation -->
+                    <div>
+                        <h4 class="text-lg font-semibold mb-2 text-orange-400">Linux</h4>
+                        <div class="p-4 rounded-lg bg-black/50 border border-gray-800">
+                            <pre class="text-white text-sm overflow-x-auto"><code># Run as root
+chmod +x velociraptor
+sudo ./velociraptor service install
+sudo ./velociraptor service start</code></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <footer class="mt-12 text-center text-gray-500 text-sm">
+                <p class="header-text">MSSP Platform - Velociraptor v0.74</p>
+                <p class="mt-1">For support, contact your administrator</p>
+            </footer>
+        </div>
+    </div>
+</body>
+</html>

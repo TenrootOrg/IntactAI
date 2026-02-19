@@ -1,0 +1,1547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TenRoot MSSP | Security Operations Center</title>
+    <!-- Local scripts - no CDN dependencies -->
+    <script src="js/tailwind.js"></script>
+    <script defer src="js/alpine.min.js"></script>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body class="bg-gray-900 text-white" x-data x-cloak>
+    <div class="flex">
+        <!-- Left Sidebar -->
+        <aside class="sidebar bg-gray-800 fixed h-screen overflow-y-auto border-r border-gray-700">
+            <div class="p-4">
+                <img src="img/tenroot-logo.png" alt="TenRoot" class="sidebar-logo">
+                <p class="text-xs text-gray-400 mt-2">Security Operations Center</p>
+            </div>
+
+            <nav class="px-4 pb-4">
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'dashboard' }" @click="$store.app.switchTab('dashboard')">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path>
+                    </svg>
+                    <span>Dashboard</span>
+                </div>
+
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'workflows' }" @click="$store.app.switchTab('workflows')">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path>
+                    </svg>
+                    <span>Workflows</span>
+                </div>
+
+                <!-- On Premise Dropdown -->
+                <div class="nav-dropdown">
+                    <div class="nav-item flex items-center justify-between cursor-pointer" @click="$store.app.toggleModules()">
+                        <div class="flex items-center gap-3">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+                            </svg>
+                            <span>On Premise</span>
+                        </div>
+                        <svg class="w-4 h-4 transition-transform" :class="{ 'rotate': $store.app.modulesOpen }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                    </div>
+                    <div x-show="$store.app.modulesOpen" x-transition class="nav-dropdown-content ml-8 mt-2 space-y-2">
+                        <div class="nav-sub-item flex items-center gap-2 cursor-pointer" :class="{ 'active': $store.app.currentTab === 'modules-forensics' }" @click="$store.app.switchTab('modules-forensics')">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                            </svg>
+                            <span>Velociraptor</span>
+                        </div>
+                        <div class="nav-sub-item flex items-center gap-2 cursor-pointer" :class="{ 'active': $store.app.currentTab === 'modules-timesketch' }" @click="$store.app.switchTab('modules-timesketch')">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            <span>TimeSketch</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Cloud Dropdown -->
+                <div class="nav-dropdown" x-data="{ cloudOpen: false }">
+                    <div class="nav-item flex items-center justify-between cursor-pointer" @click="cloudOpen = !cloudOpen">
+                        <div class="flex items-center gap-3">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"></path>
+                            </svg>
+                            <span>Cloud</span>
+                        </div>
+                        <svg class="w-4 h-4 transition-transform" :class="{ 'rotate': cloudOpen }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                    </div>
+                    <div x-show="cloudOpen" x-transition class="nav-dropdown-content ml-8 mt-2 space-y-2">
+                        <div class="nav-sub-item flex items-center gap-2 cursor-pointer" :class="{ 'active': $store.app.currentTab === 'cloud-aws' }" @click="$store.app.switchTab('cloud-aws')">
+                            <svg class="w-4 h-4 text-orange-400" viewBox="0 0 24 24" fill="currentColor"><path d="M6.763 10.036c0 .296.032.535.088.71.064.176.144.368.256.576.04.063.056.127.056.183 0 .08-.048.16-.152.24l-.503.335a.383.383 0 0 1-.208.072c-.08 0-.16-.04-.239-.112a2.47 2.47 0 0 1-.287-.375 6.18 6.18 0 0 1-.248-.471c-.622.734-1.405 1.101-2.347 1.101-.67 0-1.205-.191-1.596-.574-.391-.384-.59-.894-.59-1.533 0-.678.239-1.23.726-1.644.487-.415 1.133-.623 1.955-.623.272 0 .551.024.846.064.296.04.6.104.918.176v-.583c0-.607-.127-1.03-.375-1.277-.255-.248-.686-.367-1.3-.367-.28 0-.568.031-.863.103-.295.072-.583.16-.862.272a2.287 2.287 0 0 1-.28.104.488.488 0 0 1-.127.023c-.112 0-.168-.08-.168-.247v-.391c0-.128.016-.224.056-.28a.597.597 0 0 1 .224-.167c.279-.144.614-.264 1.005-.36a4.84 4.84 0 0 1 1.246-.151c.95 0 1.644.216 2.091.647.439.43.662 1.085.662 1.963v2.586z"/></svg>
+                            <span>AWS</span>
+                            <span class="text-xs bg-gray-600 px-1 py-0.5 rounded text-[10px]">Soon</span>
+                        </div>
+                        <div class="nav-sub-item flex items-center gap-2 cursor-pointer" :class="{ 'active': $store.app.currentTab === 'cloud-azure' }" @click="$store.app.switchTab('cloud-azure')">
+                            <svg class="w-4 h-4 text-blue-400" viewBox="0 0 24 24" fill="currentColor"><path d="M5.483 21.3H24L14.025 4.013l-3.038 8.347 5.836 6.938L5.483 21.3zM13.23 2.7L6.105 8.677 0 19.253h5.505v.014L13.23 2.7z"/></svg>
+                            <span>Azure</span>
+                            <span class="text-xs bg-gray-600 px-1 py-0.5 rounded text-[10px]">Soon</span>
+                        </div>
+                        <div class="nav-sub-item flex items-center gap-2 cursor-pointer" :class="{ 'active': $store.app.currentTab === 'cloud-gcp' }" @click="$store.app.switchTab('cloud-gcp')">
+                            <svg class="w-4 h-4 text-red-400" viewBox="0 0 24 24" fill="currentColor"><path d="M12.19 2.38a9.344 9.344 0 0 0-9.234 6.893c.053-.02-.055.013 0 0-3.875 2.551-3.922 8.11-.247 10.941l.006-.007-.007.03a6.717 6.717 0 0 0 4.077 1.356h5.173l.03.03h5.192c6.687.053 9.376-8.605 3.835-12.35a9.365 9.365 0 0 0-8.825-6.893z"/></svg>
+                            <span>GCP</span>
+                            <span class="text-xs bg-gray-600 px-1 py-0.5 rounded text-[10px]">Soon</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'blueprints' }" @click="$store.app.switchTab('blueprints')">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                    </svg>
+                    <span>Blueprints</span>
+                </div>
+
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'scheduler' }" @click="$store.app.switchTab('scheduler')">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                    </svg>
+                    <span>Scheduler</span>
+                </div>
+
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'downloads' }" @click="$store.app.switchTab('downloads')">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                    </svg>
+                    <span>Downloads</span>
+                </div>
+
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'settings' }" @click="$store.app.switchTab('settings')">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                    </svg>
+                    <span>Settings</span>
+                </div>
+            </nav>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content flex-1 p-6 min-h-screen">
+            <!-- Dashboard Tab -->
+            <div x-show="$store.app.currentTab === 'dashboard'" x-transition class="tab-content">
+                <div class="mb-8">
+                    <h2 class="text-3xl font-bold text-white">Dashboard</h2>
+                    <p class="text-gray-400 mt-1 text-sm">Real-time system overview and security operations status</p>
+                </div>
+
+                <!-- Stats Overview -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                    <div class="stat-card rounded-lg p-6 text-white" style="border-color: var(--red);">
+                        <div class="flex justify-between items-start">
+                            <div>
+                                <p class="text-sm text-gray-400">Total Services</p>
+                                <p class="text-4xl font-bold mt-2 text-white">5</p>
+                            </div>
+                            <svg class="w-10 h-10 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path>
+                            </svg>
+                        </div>
+                    </div>
+
+                    <div class="stat-card rounded-lg p-6 text-white" style="border-color: var(--purple);">
+                        <div class="flex justify-between items-start">
+                            <div>
+                                <p class="text-sm text-gray-400">Online Services</p>
+                                <p class="text-4xl font-bold mt-2 text-white" x-text="$store.services.onlineCount || '-'"></p>
+                            </div>
+                            <svg class="w-10 h-10 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                        </div>
+                    </div>
+
+                    <div class="stat-card rounded-lg p-6 text-white client-count-container relative cursor-help" style="border-color: var(--blue);">
+                        <div class="flex justify-between items-start">
+                            <div>
+                                <p class="text-sm text-gray-400">Velociraptor Clients</p>
+                                <p class="text-4xl font-bold mt-2 text-white" x-text="$store.services.clientCount || '-'"></p>
+                                <p class="text-xs text-gray-500 mt-2" x-text="$store.services.onlineClients.length + ' online / ' + $store.services.clientCount + ' total'"></p>
+                            </div>
+                            <svg class="w-10 h-10 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+                            </svg>
+                        </div>
+                        <!-- Tooltip -->
+                        <div class="client-tooltip">
+                            <h4 class="font-semibold text-white mb-3">Connected Clients</h4>
+                            <div class="text-xs space-y-2">
+                                <template x-if="$store.services.clients.length === 0">
+                                    <p class="text-gray-400">No clients connected</p>
+                                </template>
+                                <template x-for="client in $store.services.clients" :key="client.client_id">
+                                    <div class="flex items-start gap-2 p-2 bg-gray-800 rounded">
+                                        <span class="inline-block w-2 h-2 rounded-full mt-1" :class="$store.services.isClientOnline(client) ? 'bg-green-400' : 'bg-gray-500'"></span>
+                                        <div class="flex-1 min-w-0">
+                                            <div class="font-semibold text-white truncate" x-text="client.hostname || 'Unknown'"></div>
+                                            <div class="text-gray-400 text-xs" x-text="client.os || 'Unknown'"></div>
+                                            <div class="text-gray-500 text-xs truncate" x-text="client.client_id"></div>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- Services Grid -->
+                <div class="mb-6">
+                    <h3 class="text-2xl font-bold text-white mb-2">Security Services</h3>
+                    <p class="text-gray-400 text-sm">Integrated security and incident response platform modules</p>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <!-- Velociraptor -->
+                    <div class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="flex items-center gap-3">
+                                <div class="bg-blue-600 p-3 rounded-lg">
+                                    <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M12 2L2 7v10c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-10-5z"/>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">Velociraptor</h3>
+                                    <p class="text-sm text-gray-400">EDR Platform</p>
+                                </div>
+                            </div>
+                            <div :class="$store.services.getStatusClass('velociraptor')"></div>
+                        </div>
+                        <div class="space-y-2 mb-4">
+                            <div class="flex justify-between text-sm">
+                                <span class="text-gray-400">Clients:</span>
+                                <span class="font-mono" x-text="$store.services.onlineClients.length + ' / ' + $store.services.clientCount"></span>
+                            </div>
+                            <div class="flex justify-between text-sm">
+                                <span class="text-gray-400">Port:</span>
+                                <span class="font-mono">8000 (TLS)</span>
+                            </div>
+                        </div>
+                        <button onclick="openService('velociraptor')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
+                            Open Console
+                        </button>
+                    </div>
+
+                    <!-- TimeSketch -->
+                    <div class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="flex items-center gap-3">
+                                <div class="bg-blue-600 p-3 rounded-lg">
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">TimeSketch</h3>
+                                    <p class="text-sm text-gray-400">Timeline Analysis</p>
+                                </div>
+                            </div>
+                            <div :class="$store.services.getStatusClass('timesketch')"></div>
+                        </div>
+                        <div class="space-y-2 mb-4">
+                            <div class="flex justify-between text-sm">
+                                <span class="text-gray-400">Port:</span>
+                                <span class="font-mono">5000</span>
+                            </div>
+                        </div>
+                        <button onclick="openService('timesketch')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
+                            Open Timeline
+                        </button>
+                    </div>
+
+                    <!-- Kibana -->
+                    <div class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="flex items-center gap-3">
+                                <div class="bg-blue-600 p-3 rounded-lg">
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">Kibana</h3>
+                                    <p class="text-sm text-gray-400">Log Analytics</p>
+                                </div>
+                            </div>
+                            <div :class="$store.services.getStatusClass('kibana')"></div>
+                        </div>
+                        <div class="space-y-2 mb-4">
+                            <div class="flex justify-between text-sm">
+                                <span class="text-gray-400">Port:</span>
+                                <span class="font-mono">5601</span>
+                            </div>
+                        </div>
+                        <button onclick="openService('kibana')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
+                            Open Kibana
+                        </button>
+                    </div>
+
+                    <!-- IRIS -->
+                    <div class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="flex items-center gap-3">
+                                <div class="bg-blue-600 p-3 rounded-lg">
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">IRIS</h3>
+                                    <p class="text-sm text-gray-400">Incident Response</p>
+                                </div>
+                            </div>
+                            <div :class="$store.services.getStatusClass('iris')"></div>
+                        </div>
+                        <div class="space-y-2 mb-4">
+                            <div class="flex justify-between text-sm">
+                                <span class="text-gray-400">Port:</span>
+                                <span class="font-mono">8443</span>
+                            </div>
+                        </div>
+                        <button onclick="openService('iris')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
+                            Open IRIS
+                        </button>
+                    </div>
+
+                    <!-- Portainer -->
+                    <div class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="flex items-center gap-3">
+                                <div class="bg-blue-600 p-3 rounded-lg">
+                                    <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M13.5 2c-5.621 0-10.211 4.443-10.475 10h-3.025l5 6.625 5-6.625h-2.975c.257-3.351 3.06-6 6.475-6 3.584 0 6.5 2.916 6.5 6.5s-2.916 6.5-6.5 6.5c-1.863 0-3.542-.793-4.728-2.053l-2.427 3.216c1.877 1.754 4.389 2.837 7.155 2.837 5.79 0 10.5-4.71 10.5-10.5s-4.71-10.5-10.5-10.5z"/>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">Portainer</h3>
+                                    <p class="text-sm text-gray-400">Container Mgmt</p>
+                                </div>
+                            </div>
+                            <div :class="$store.services.getStatusClass('portainer')"></div>
+                        </div>
+                        <div class="space-y-2 mb-4">
+                            <div class="flex justify-between text-sm">
+                                <span class="text-gray-400">Port:</span>
+                                <span class="font-mono">9443</span>
+                            </div>
+                        </div>
+                        <button onclick="openService('portainer')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
+                            Open Portainer
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Workflows Tab -->
+            <div x-show="$store.app.currentTab === 'workflows'" x-transition class="tab-content">
+                <div class="flex justify-between items-center mb-6">
+                    <div>
+                        <h2 class="text-3xl font-bold text-white">Workflow Runs</h2>
+                        <p class="text-gray-400 mt-1">View all workflow executions with status, dates, and logs</p>
+                    </div>
+                </div>
+
+                <!-- Workflows Table -->
+                <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead class="bg-gray-900">
+                                <tr class="text-left text-gray-400 text-sm">
+                                    <th class="px-6 py-4 font-medium">Type</th>
+                                    <th class="px-6 py-4 font-medium">Name</th>
+                                    <th class="px-6 py-4 font-medium">Status</th>
+                                    <th class="px-6 py-4 font-medium">Progress</th>
+                                    <th class="px-6 py-4 font-medium">Started</th>
+                                    <th class="px-6 py-4 font-medium">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-700 text-sm">
+                                <template x-if="$store.workflows.loading">
+                                    <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">Loading workflows...</td></tr>
+                                </template>
+                                <template x-if="!$store.workflows.loading && $store.workflows.runs.length === 0">
+                                    <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">No workflow runs yet. Start a Timesketch import or hunt to see them here.</td></tr>
+                                </template>
+                                <template x-for="run in $store.workflows.runs" :key="run.id">
+                                    <tr class="hover:bg-gray-750 transition-colors">
+                                        <td class="px-6 py-4">
+                                            <span :class="$store.workflows.getTypeColor(run.type) + ' px-3 py-1 rounded-full text-xs font-semibold uppercase'" x-text="run.type || 'system'"></span>
+                                        </td>
+                                        <td class="px-6 py-4">
+                                            <div class="font-medium text-white" x-text="run.name || 'Unnamed'"></div>
+                                            <div class="text-xs text-gray-400 mt-1">
+                                                <span x-text="'ID: ' + (run.id || 'N/A')"></span>
+                                                <span x-show="run.details?.blueprint || run.details?.blueprint_id" class="ml-2 text-purple-400" x-text="'| ' + (run.details?.blueprint || run.details?.blueprint_id || '')"></span>
+                                            </div>
+                                        </td>
+                                        <td class="px-6 py-4">
+                                            <span :class="$store.workflows.getStatusColor(run.status) + ' px-3 py-1 rounded-full text-xs font-semibold uppercase'" x-text="run.status || 'unknown'"></span>
+                                        </td>
+                                        <td class="px-6 py-4">
+                                            <div class="flex items-center gap-3">
+                                                <div class="flex-1 bg-gray-700 rounded-full h-2 overflow-hidden">
+                                                    <div class="bg-blue-500 h-full transition-all" :style="'width: ' + (run.progress || 0) + '%'"></div>
+                                                </div>
+                                                <span class="text-xs text-gray-400 w-12 text-right" x-text="(run.progress || 0) + '%'"></span>
+                                            </div>
+                                        </td>
+                                        <td class="px-6 py-4 text-gray-300 text-xs" x-text="$store.workflows.formatTime(run.started_at)"></td>
+                                        <td class="px-6 py-4 whitespace-nowrap">
+                                            <div class="flex items-center gap-2">
+                                                <template x-if="run.type === 'agentic' && run.status === 'completed'">
+                                                    <a :href="'/api/agentic/run/' + run.id + '/download?type=technical'" download class="bg-purple-600 hover:bg-purple-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Report">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                        Report
+                                                    </a>
+                                                </template>
+                                                <template x-if="(run.type === 'velociraptor_offline_collector' || run.type === 'offline_collector') && run.status === 'completed' && run.details?.file_id">
+                                                    <a :href="'/api/velociraptor/offline/download/' + run.details.file_id" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Offline Collector">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                        Download
+                                                    </a>
+                                                </template>
+                                                <button @click="$store.workflows.viewLogs(run.id)" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1">
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                                                    </svg>
+                                                    View Logs
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Log Viewer Modal -->
+                <div x-show="$store.workflows.modalOpen" x-transition class="fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center p-6">
+                    <div class="bg-gray-800 rounded-lg border border-gray-700 max-w-6xl w-full max-h-[90vh] flex flex-col" @click.away="$store.workflows.closeModal()">
+                        <!-- Modal Header -->
+                        <div class="flex justify-between items-center p-6 border-b border-gray-700">
+                            <div>
+                                <h3 class="text-2xl font-bold text-white" x-text="$store.workflows.selectedRun?.name || 'Workflow Logs'"></h3>
+                                <p class="text-gray-400 text-sm mt-1" x-text="($store.workflows.selectedRun?.type || 'unknown').toUpperCase() + ' | ' + ($store.workflows.selectedRun?.status || 'unknown').toUpperCase() + ' | ' + ($store.workflows.selectedRun?.progress || 0) + '% Complete'"></p>
+                            </div>
+                            <button @click="$store.workflows.closeModal()" class="text-gray-400 hover:text-white">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                                </svg>
+                            </button>
+                        </div>
+
+                        <!-- Modal Body (Logs) -->
+                        <div class="flex-1 overflow-y-auto p-6">
+                            <div class="font-mono text-sm space-y-2">
+                                <template x-if="!$store.workflows.selectedRun?.logs || $store.workflows.selectedRun?.logs.length === 0">
+                                    <p class="text-gray-400">No logs available yet.</p>
+                                </template>
+                                <template x-for="log in ($store.workflows.selectedRun?.logs || [])" :key="log.timestamp">
+                                    <div class="flex gap-4 py-1">
+                                        <span class="text-gray-500 text-xs w-24 flex-shrink-0" x-text="new Date(log.timestamp).toLocaleTimeString()"></span>
+                                        <span :class="$store.workflows.getLogColor(log.level) + ' flex-1'" x-html="$store.workflows.formatLogMessage(log.message)"></span>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <!-- Modal Footer -->
+                        <div class="p-6 border-t border-gray-700 flex justify-end">
+                            <button @click="$store.workflows.closeModal()" class="bg-gray-700 hover:bg-gray-600 px-6 py-2 rounded-lg">Close</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Downloads Tab -->
+            <div x-show="$store.app.currentTab === 'downloads'" x-transition class="tab-content">
+                <h2 class="text-3xl font-bold text-white mb-2">Client Downloads</h2>
+                <p class="text-gray-400 mb-6">Download Velociraptor client installers</p>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 max-w-3xl">
+                    <!-- Windows -->
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                        <div class="flex items-center gap-4 mb-4">
+                            <div class="bg-blue-600 p-3 rounded-lg">
+                                <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 class="text-xl font-semibold text-white">Windows</h3>
+                                <p class="text-gray-400 text-sm">MSI Installer</p>
+                            </div>
+                        </div>
+                        <a href="/api/clients/download/windows-msi" class="block w-full bg-blue-600 hover:bg-blue-700 text-center py-3 rounded-lg font-semibold">
+                            Download MSI
+                        </a>
+                    </div>
+
+                    <!-- Linux -->
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                        <div class="flex items-center gap-4 mb-4">
+                            <div class="bg-orange-600 p-3 rounded-lg">
+                                <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.84-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.406-.046.615.27.563.863.436 1.417.289.563-.158 1.163-.406 1.755-.516.11-.021.227-.045.348-.064.17-.558.406-1.142.983-1.485.177-.105.413-.159.619-.074.063.025.117.03.186.047a.795.795 0 01-.017-.11c-.078-.558-.13-1.605.21-2.053.786-.953 1.642-1.953 1.932-3.047.21-.787.233-1.391.233-2.159 0-.42-.012-.84-.03-1.258-.021-.42-.042-.84-.074-1.258-.105-1.5-.242-3.105.21-4.605.484-1.605 1.86-2.813 3.555-3.285.074-.02.148-.042.222-.06a5.57 5.57 0 011.05-.12z"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 class="text-xl font-semibold text-white">Linux</h3>
+                                <p class="text-gray-400 text-sm">Binary</p>
+                            </div>
+                        </div>
+                        <a href="/api/clients/download/linux" class="block w-full bg-orange-600 hover:bg-orange-700 text-center py-3 rounded-lg font-semibold">
+                            Download Linux
+                        </a>
+                    </div>
+                </div>
+
+                <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 max-w-3xl">
+                    <h3 class="text-xl font-semibold text-white mb-4">Installation</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <h4 class="text-lg font-semibold text-blue-400 mb-2">Windows</h4>
+                            <div class="bg-gray-900 p-4 rounded-lg">
+                                <pre class="text-white text-sm overflow-x-auto"><code># Run MSI as Administrator
+msiexec /i velociraptor.msi
+
+# Or silent install
+msiexec /i velociraptor.msi /qn</code></pre>
+                            </div>
+                        </div>
+                        <div>
+                            <h4 class="text-lg font-semibold text-orange-400 mb-2">Linux</h4>
+                            <div class="bg-gray-900 p-4 rounded-lg">
+                                <pre class="text-white text-sm overflow-x-auto"><code># Run as root
+chmod +x velociraptor
+sudo ./velociraptor service install
+sudo ./velociraptor service start</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Velociraptor Tab -->
+            <div x-show="$store.app.currentTab === 'modules-forensics'" x-transition class="tab-content" x-data="{ forensicsTab: 'collections', forensicsMode: 'ai' }" x-init="$watch('$store.app.currentTab', val => val === 'modules-forensics' && initForensicsTab('ai'))">
+                <div class="flex items-center justify-between mb-2">
+                    <h2 class="text-3xl font-bold text-white">Velociraptor</h2>
+                </div>
+
+                <!-- Internal Tabs: Collections | Offline Collectors -->
+                <div class="flex gap-1 border-b border-gray-700 mb-6">
+                    <button @click="forensicsTab = 'collections'"
+                        :class="forensicsTab === 'collections' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-gray-300'"
+                        class="px-4 py-2 text-sm font-medium -mb-px">
+                        Collections
+                    </button>
+                    <button @click="forensicsTab = 'offline'; loadOfflineCollectorBlueprints()"
+                        :class="forensicsTab === 'offline' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-gray-300'"
+                        class="px-4 py-2 text-sm font-medium -mb-px">
+                        Offline Collectors
+                    </button>
+                </div>
+
+                <!-- ==================== COLLECTIONS TAB ==================== -->
+                <div x-show="forensicsTab === 'collections'" class="max-w-3xl">
+                    <!-- Mode Toggle Buttons -->
+                    <div class="flex border-b border-gray-700 mb-4">
+                        <button id="forensics-mode-ai" @click="forensicsMode = 'ai'; setForensicsDefaultBlueprint('ai')"
+                            :class="forensicsMode === 'ai' ? 'border-b-2 border-purple-500 text-purple-400' : 'text-gray-400 hover:text-gray-200'"
+                            class="px-4 py-2 text-sm font-medium transition-colors">
+                            AI Analysis
+                        </button>
+                        <button id="forensics-mode-raw" @click="forensicsMode = 'raw'; setForensicsDefaultBlueprint('raw')"
+                            :class="forensicsMode === 'raw' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'"
+                            class="px-4 py-2 text-sm font-medium transition-colors">
+                            Raw Velociraptor
+                        </button>
+                    </div>
+                    <p class="text-gray-400 mb-6 text-sm" x-text="forensicsMode === 'raw' ? 'Run artifact hunts and collect raw data from clients' : 'Run artifact hunts with AI-powered analysis and report generation'"></p>
+                    <!-- Collection Section -->
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4" x-data="{ collectionSource: 'new' }">
+                        <!-- Collection Source Radio (AI mode only) -->
+                        <div x-show="forensicsMode === 'ai'" class="mb-4">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Collection Source</label>
+                            <div class="flex gap-4">
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" name="collection-source" value="new" x-model="collectionSource"
+                                        class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                    <span class="text-sm text-gray-300">New Collection</span>
+                                </label>
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" name="collection-source" value="existing" x-model="collectionSource"
+                                        class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                    <span class="text-sm text-gray-300">Existing Flow</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Raw mode title -->
+                        <h3 x-show="forensicsMode === 'raw'" class="text-lg font-semibold text-white mb-4">New Collection</h3>
+
+                        <div class="space-y-4">
+                            <!-- Blueprint (only for new collection) -->
+                            <div x-show="collectionSource === 'new' || forensicsMode === 'raw'">
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Blueprint</label>
+                                <div class="flex items-center gap-3">
+                                    <select id="forensics-blueprint-select" onchange="onForensicsBlueprintChange(this.value)"
+                                        class="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        <option value="">-- Select Blueprint --</option>
+                                    </select>
+                                    <span id="forensics-artifact-count" class="text-xs text-gray-500 whitespace-nowrap">0 artifacts</span>
+                                </div>
+                                <div id="forensics-blueprint-info" class="mt-2 bg-gray-900 rounded-lg p-3 border border-gray-700 hidden">
+                                    <p class="text-xs text-gray-400" id="forensics-bp-description"></p>
+                                    <div class="grid grid-cols-3 gap-3 mt-2 text-xs text-gray-400">
+                                        <div>Expiry: <span class="text-white" id="forensics-bp-expiry"></span></div>
+                                        <div>Timeout: <span class="text-white" id="forensics-bp-timeout"></span></div>
+                                        <div>CPU: <span class="text-white" id="forensics-bp-cpu"></span></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Clients (AI mode, new collection only) -->
+                            <div x-show="forensicsMode === 'ai' && collectionSource === 'new'">
+                                <div class="flex items-center justify-between mb-2">
+                                    <label class="block text-sm font-medium text-gray-300">Clients</label>
+                                    <div class="flex gap-2">
+                                        <button onclick="selectAllForensicsClients(true)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Select All</button>
+                                        <button onclick="selectAllForensicsClients(false)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">None</button>
+                                    </div>
+                                </div>
+                                <input type="text" id="forensics-client-search" placeholder="Filter clients by name..."
+                                    oninput="filterForensicsClients(this.value)"
+                                    class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-blue-500 focus:outline-none">
+                                <div id="forensics-client-list" class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
+                                    <p class="text-sm text-gray-500">Loading clients...</p>
+                                </div>
+                            </div>
+
+                            <!-- Existing Flow ID (AI mode, existing flow only) -->
+                            <div x-show="forensicsMode === 'ai' && collectionSource === 'existing'">
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Flow or Hunt ID</label>
+                                <input type="text" id="forensics-existing-id" placeholder="F.C1234567890 or H.ABC123..."
+                                    class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-purple-500 focus:outline-none">
+                                <p class="text-xs text-gray-500 mt-1">Enter the Flow ID (F.xxx) or Hunt ID (H.xxx) from a previous collection</p>
+                            </div>
+
+                            <!-- Hunt Info (Raw mode only) -->
+                            <div x-show="forensicsMode === 'raw'" class="bg-gray-900 border border-gray-700 rounded-lg p-4">
+                                <div class="flex items-center gap-2 text-gray-300">
+                                    <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    </svg>
+                                    <span class="text-sm">Hunt will run on <strong>all online clients</strong></span>
+                                </div>
+                            </div>
+
+                            <!-- AI Analysis Options (only shown when mode is 'ai') -->
+                            <template x-if="forensicsMode === 'ai'">
+                                <div class="space-y-4 border-t border-gray-700 pt-4">
+                                    <!-- Collection Time (only for new collection) -->
+                                    <div x-show="collectionSource === 'new'">
+                                        <label class="block text-sm font-medium text-gray-300 mb-1">Collection Time</label>
+                                        <div class="flex items-center gap-2">
+                                            <input type="number" id="forensics-collection-time" value="30" min="1" max="1440"
+                                                class="w-24 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none">
+                                            <span class="text-sm text-gray-400">minutes</span>
+                                            <span class="text-xs text-gray-500 ml-2">(how long to let hunts run before analyzing)</span>
+                                        </div>
+                                    </div>
+
+                                    <!-- Severity Filter -->
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1">Minimum Severity Level</label>
+                                        <div class="flex items-center gap-2">
+                                            <select id="forensics-severity-level"
+                                                class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none">
+                                                <option value="medium" selected>Medium (Recommended)</option>
+                                                <option value="high">High</option>
+                                                <option value="critical">Critical only</option>
+                                            </select>
+                                            <span class="text-xs text-gray-500">(filter out low-priority detections)</span>
+                                        </div>
+                                    </div>
+
+                                    <!-- Data Anonymization -->
+                                    <div class="border-t border-gray-700 pt-4 mt-2">
+                                        <label class="flex items-center gap-2 cursor-pointer mb-2">
+                                            <input type="checkbox" id="forensics-anonymize-toggle" onchange="toggleForensicsAnonymization()"
+                                                class="w-4 h-4 rounded border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                            <span class="text-sm font-medium text-gray-300">Anonymize sensitive data</span>
+                                        </label>
+                                        <div class="ml-6 mb-3 text-xs text-gray-500 space-y-1">
+                                            <p><strong class="text-gray-400">How it works:</strong> Sensitive data is replaced with fake values before sending to LLM, then restored in the final report.</p>
+                                        </div>
+                                        <div id="forensics-anonymize-details" class="hidden ml-6">
+                                            <label class="block text-xs text-gray-400 mb-1">Custom patterns to mask (one per line)</label>
+                                            <textarea id="forensics-custom-patterns" rows="2" placeholder="acme-corp.com"
+                                                class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white font-mono focus:border-purple-500 focus:outline-none"></textarea>
+                                        </div>
+                                    </div>
+
+                                    <!-- IRIS Import -->
+                                    <div class="border-t border-gray-700 pt-4 mt-2">
+                                        <label class="flex items-center gap-2 cursor-pointer mb-2">
+                                            <input type="checkbox" id="forensics-iris-toggle" onchange="toggleForensicsIris()"
+                                                class="w-4 h-4 rounded border-gray-700 bg-gray-900 text-blue-600 focus:ring-blue-500">
+                                            <span class="text-sm font-medium text-gray-300">Import to IRIS</span>
+                                            <span class="ml-2 px-2 py-0.5 bg-blue-900 text-blue-300 text-xs rounded">Case Management</span>
+                                        </label>
+                                        <div id="forensics-iris-details" class="hidden ml-6">
+                                            <label class="block text-xs text-gray-400 mb-1">Case Name (optional)</label>
+                                            <input type="text" id="forensics-iris-case-name" placeholder="Auto-generated if empty"
+                                                class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- Start Button -->
+                        <button id="forensics-start-btn" onclick="startForensicsCollection()"
+                            class="w-full mt-4 px-4 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors"
+                            :class="forensicsMode === 'raw' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-purple-600 hover:bg-purple-700'">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            <span x-text="forensicsMode === 'raw' ? 'Run Collection' : (collectionSource === 'existing' ? 'Run AI Analysis' : 'Start Analysis')"></span>
+                        </button>
+                        <div id="forensics-status" class="mt-3 text-sm text-gray-400 hidden"></div>
+                    </div>
+                </div>
+
+                <!-- ==================== OFFLINE COLLECTORS TAB ==================== -->
+                <div x-show="forensicsTab === 'offline'" class="max-w-3xl">
+                    <p class="text-gray-400 mb-6 text-sm">Generate standalone collectors for air-gapped or offline systems, then import results for analysis</p>
+
+                    <!-- Generate/Import Sub-tabs -->
+                    <div class="flex gap-1 mb-4">
+                        <button onclick="switchOfflineTab('generate')" id="offline-tab-btn-generate" class="px-4 py-2 text-sm font-medium text-blue-400 border-b-2 border-blue-400">
+                            Generate
+                        </button>
+                        <button onclick="switchOfflineTab('import')" id="offline-tab-btn-import" class="px-4 py-2 text-sm font-medium text-gray-400 hover:text-gray-300">
+                            Import Results
+                        </button>
+                    </div>
+
+                    <!-- Generate Tab -->
+                    <div id="offline-tab-generate" class="offline-tab-content">
+                        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                            <p class="text-sm text-gray-400 mb-4">Generate a standalone executable that collects forensic artifacts without requiring network connectivity.</p>
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-2">Select Blueprint</label>
+                                    <select id="offline-gen-config" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-blue-500 focus:outline-none">
+                                        <option value="">Loading blueprints...</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-2">Target Operating System</label>
+                                    <select id="offline-gen-os" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-blue-500 focus:outline-none">
+                                        <option value="windows">Windows (.exe)</option>
+                                        <option value="linux">Linux (binary)</option>
+                                        <option value="darwin">macOS (binary)</option>
+                                    </select>
+                                </div>
+                                <button onclick="generateOfflineCollector()" class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-3 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                                    </svg>
+                                    Generate Collector
+                                </button>
+                                <div id="offline-gen-status" class="text-sm text-gray-400 hidden"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Import Tab -->
+                    <div id="offline-tab-import" class="offline-tab-content hidden">
+                        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                            <p class="text-sm text-gray-400 mb-4">Upload the ZIP file generated by the offline collector. Results will be imported into Velociraptor.</p>
+                            <div class="space-y-4">
+                                <div class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-blue-500 transition-colors">
+                                    <input type="file" id="offline-import-file" accept=".zip" class="hidden" onchange="handleFileSelect(event)">
+                                    <label for="offline-import-file" class="cursor-pointer">
+                                        <div class="text-gray-400">
+                                            <svg class="mx-auto h-12 w-12 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                            </svg>
+                                            <p class="text-sm font-medium">Click to select ZIP file or drag & drop</p>
+                                            <p class="text-xs text-gray-500 mt-1">Maximum file size: 500MB</p>
+                                        </div>
+                                    </label>
+                                </div>
+                                <div id="offline-selected-file" class="text-sm text-gray-400 hidden"></div>
+                                <button onclick="importOfflineResults()" id="offline-import-btn" class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-3 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2" disabled>
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                    </svg>
+                                    Import Results
+                                </button>
+                                <div id="offline-import-status" class="text-sm text-gray-400 hidden"></div>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+
+            <!-- Offline Config Modal -->
+            <div id="offline-config-modal" class="fixed inset-0 bg-black/90 backdrop-blur-sm z-50 hidden flex items-center justify-center">
+                <div class="rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto border border-red-900/50" style="background: #0a0a0f;">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-xl font-semibold text-white" id="config-modal-title">New Configuration</h3>
+                        <button onclick="closeConfigModal()" class="text-gray-400 hover:text-white">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                            </svg>
+                        </button>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Configuration Name:</label>
+                            <input type="text" id="config-name" placeholder="My Collection" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none">
+                        </div>
+
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Description:</label>
+                            <textarea id="config-description" placeholder="Description of this configuration" rows="2" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none"></textarea>
+                        </div>
+
+                        <div>
+                            <div class="flex justify-between items-center mb-2">
+                                <label class="block text-sm font-medium text-gray-300">Artifacts:</label>
+                                <div class="flex gap-2">
+                                    <button onclick="toggleAllOfflineArtifacts(true)" class="text-xs bg-purple-700 hover:bg-purple-600 px-2 py-1 rounded">Check All</button>
+                                    <button onclick="toggleAllOfflineArtifacts(false)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Uncheck All</button>
+                                </div>
+                            </div>
+                            <div id="offline-artifact-list" class="max-h-48 overflow-y-auto bg-gray-900 rounded-lg p-3 border border-gray-700 grid grid-cols-2 gap-2">
+                                <!-- Populated by JS -->
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-3 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">CPU Limit (%):</label>
+                                <input type="number" id="config-cpu-limit" value="50" min="10" max="100" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">Timeout (sec):</label>
+                                <input type="number" id="config-max-time" value="3600" min="300" max="86400" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">Idle Timeout:</label>
+                                <input type="number" id="config-idle-time" value="600" min="60" max="3600" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none">
+                            </div>
+                        </div>
+
+                        <input type="hidden" id="config-edit-id" value="">
+
+                        <div class="flex gap-3 pt-4">
+                            <button onclick="saveOfflineConfig()" class="flex-1 bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                                Save Configuration
+                            </button>
+                            <button onclick="closeConfigModal()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TimeSketch Tab -->
+            <div x-show="$store.app.currentTab === 'modules-timesketch'" x-transition class="tab-content">
+                <h2 class="text-3xl font-bold text-white mb-2">TimeSketch Automation</h2>
+                <p class="text-gray-400 mb-6">Collect forensic artifacts and create investigation timelines</p>
+
+                <!-- Simplified KAPE + TimeSketch Workflow -->
+                <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
+                    <h3 class="text-2xl font-semibold text-white mb-4">KAPE Collection & Timeline Import</h3>
+                    <p class="text-sm text-gray-400 mb-6">Automated workflow: Collect KAPE artifacts → Process with PLASO → Import to TimeSketch</p>
+
+                    <!-- Blueprint Selection -->
+                    <div class="mb-6">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Collection Blueprint:</label>
+                        <select id="timesketch-blueprint-select" onchange="onTimesketchBlueprintChange()" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none">
+                            <option value="">Loading blueprints...</option>
+                        </select>
+                        <p class="text-xs text-gray-500 mt-1">Select a blueprint to configure KAPE target and Plaso processing settings</p>
+                        <div id="timesketch-blueprint-info" class="mt-2 text-xs text-gray-400 hidden">
+                            <span id="ts-blueprint-kape" class="inline-block bg-gray-700 px-2 py-1 rounded mr-2"></span>
+                            <span id="ts-blueprint-plaso" class="inline-block bg-gray-700 px-2 py-1 rounded"></span>
+                        </div>
+                    </div>
+
+                    <!-- Client Selection -->
+                    <div class="mb-6">
+                        <div class="flex items-center justify-between mb-2">
+                            <label class="block text-sm font-medium text-gray-300">Select Clients for Collection</label>
+                            <div class="flex gap-2">
+                                <button onclick="selectAllTimeSketchClients()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Select All</button>
+                                <button onclick="deselectAllTimeSketchClients()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">None</button>
+                            </div>
+                        </div>
+                        <input type="text" id="timesketch-client-search" placeholder="Filter clients by name..."
+                            oninput="filterTimesketchClients(this.value)"
+                            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-purple-500 focus:outline-none">
+                        <div id="timesketch-client-list" class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
+                            <p class="text-sm text-gray-500">Loading clients...</p>
+                        </div>
+                    </div>
+
+                    <!-- Sketch Name -->
+                    <div class="mb-6">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Sketch Name:</label>
+                        <input type="text" id="sketch-name" placeholder="Investigation-2025-12-14" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm">
+                        <p class="text-xs text-gray-500 mt-1">If a sketch with this name exists, timelines will be added to it. Otherwise a new sketch is created.</p>
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div class="flex gap-3">
+                        <button onclick="runTimeSketchWorkflow()" class="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 px-6 py-3 rounded-lg font-medium transition-colors">
+                            <span class="flex items-center justify-center gap-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                                </svg>
+                                Start Collection & Timeline Import
+                            </span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Blueprints Tab -->
+            <div x-show="$store.app.currentTab === 'blueprints'" x-transition class="tab-content">
+                <div class="flex items-center justify-between mb-6">
+                    <div>
+                        <h2 class="text-3xl font-bold text-white mb-2">Blueprints</h2>
+                        <p class="text-gray-400">Manage artifact collections used by Velociraptor and Timesketch</p>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <label class="text-sm text-gray-400">Filter:</label>
+                        <select id="blueprint-type-filter" onchange="filterBlueprints()" class="bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-red-500 focus:outline-none">
+                            <option value="all">All Types</option>
+                            <option value="velociraptor">Velociraptor</option>
+                            <option value="timesketch">Timesketch</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div id="blueprints-list" class="space-y-4">
+                    <p class="text-gray-500">Loading blueprints...</p>
+                </div>
+
+                <div class="mt-6">
+                    <button onclick="showNewBlueprintModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                        + New Blueprint
+                    </button>
+                </div>
+
+                <!-- New/Edit Blueprint Modal -->
+                <div id="blueprint-modal" class="hidden fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50">
+                    <div class="rounded-lg p-6 border border-red-900/50 w-full max-w-2xl max-h-[90vh] overflow-y-auto" style="background: #0a0a0f;">
+                        <h3 class="text-xl font-bold text-white mb-4" id="blueprint-modal-title">New Blueprint</h3>
+
+                        <div class="space-y-4">
+                            <!-- Type Selector (shown only for new blueprints) -->
+                            <div id="blueprint-type-selector">
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Type</label>
+                                <select id="blueprint-type" onchange="onBlueprintTypeChange()" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <option value="velociraptor">Velociraptor (Hunts & AI Analysis)</option>
+                                    <option value="timesketch">Timesketch (KAPE + Timeline)</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Name</label>
+                                <input type="text" id="blueprint-name" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" placeholder="My Blueprint">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Description</label>
+                                <input type="text" id="blueprint-description" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" placeholder="Optional description">
+                            </div>
+
+                            <!-- Hunt Settings (Velociraptor/Agentic) -->
+                            <div id="blueprint-hunt-settings" class="grid grid-cols-3 gap-3">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Hunt Expiry (min)</label>
+                                    <input type="number" id="blueprint-expiry" value="120" min="10" max="10080" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Timeout (sec)</label>
+                                    <input type="number" id="blueprint-timeout" value="3600" min="60" max="86400" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">CPU Limit (%)</label>
+                                    <input type="number" id="blueprint-cpu" value="50" min="10" max="100" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                </div>
+                            </div>
+
+                            <!-- Timesketch Settings -->
+                            <div id="blueprint-timesketch-settings" class="hidden grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">KAPE Target</label>
+                                    <select id="blueprint-ts-kape" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        <option value="_KapeTriage">_KapeTriage (Full triage)</option>
+                                        <option value="EventLogs">EventLogs (Event logs only)</option>
+                                        <option value="BasicCollection">BasicCollection (Basic artifacts)</option>
+                                        <option value="FileSystem">FileSystem (MFT, USN Journal)</option>
+                                        <option value="RegistryHives">RegistryHives (Registry hives)</option>
+                                        <option value="WebBrowsers">WebBrowsers (Browser data)</option>
+                                        <option value="CloudStorage">CloudStorage (Cloud sync data)</option>
+                                        <option value="Antivirus">Antivirus (AV logs)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Plaso Parser</label>
+                                    <select id="blueprint-ts-plaso" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        <option value="win7">win7 (Full Windows)</option>
+                                        <option value="winevtx">winevtx (Event logs only)</option>
+                                        <option value="webhist">webhist (Browser history)</option>
+                                        <option value="winreg">winreg (Registry only)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Plaso Workers</label>
+                                    <input type="number" id="blueprint-ts-workers" value="2" min="1" max="8" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Collection Timeout (sec)</label>
+                                    <input type="number" id="blueprint-ts-timeout" value="10000" min="60" max="86400" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">File Hasher</label>
+                                    <select id="blueprint-ts-hasher" onchange="toggleHasherSize()" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        <option value="none">None (Fastest)</option>
+                                        <option value="md5">MD5</option>
+                                        <option value="sha256">SHA256</option>
+                                    </select>
+                                </div>
+                                <div id="blueprint-ts-maxsize-container" class="hidden">
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Max File Size (MB)</label>
+                                    <input type="number" id="blueprint-ts-maxsize" value="100" min="1" max="10000" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                </div>
+                            </div>
+
+                            <!-- Artifacts Section (hidden for Timesketch) -->
+                            <div id="blueprint-artifacts-section">
+                                <div class="flex items-center justify-between mb-2">
+                                    <label class="block text-sm font-medium text-gray-300">Artifacts (<span id="blueprint-artifact-count">0</span> selected / <span id="blueprint-artifact-total">0</span> total)</label>
+                                    <div class="flex gap-2">
+                                        <button onclick="toggleAllBlueprintArtifacts(true)" class="text-xs bg-blue-700 hover:bg-blue-600 px-2 py-1 rounded">Check All</button>
+                                        <button onclick="toggleAllBlueprintArtifacts(false)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Uncheck All</button>
+                                    </div>
+                                </div>
+                                <!-- Search box -->
+                                <div class="mb-2">
+                                    <input type="text" id="blueprint-artifact-search"
+                                        placeholder="Search artifacts... (e.g., Windows.EventLogs, DetectRaptor)"
+                                        oninput="filterBlueprintArtifacts()"
+                                        class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg text-sm text-white placeholder-gray-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
+                                </div>
+                                <div id="blueprint-artifacts-list" class="h-64 overflow-y-auto bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 space-y-1">
+                                </div>
+                            </div>
+                        </div>
+
+                        <input type="hidden" id="blueprint-edit-id" value="">
+
+                        <div class="flex gap-3 mt-6">
+                            <button onclick="saveBlueprintFromModal()" class="flex-1 bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium">Save Blueprint</button>
+                            <button onclick="closeBlueprintModal()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- Scheduler Tab -->
+            <div x-show="$store.app.currentTab === 'scheduler'" x-transition class="tab-content" x-init="$watch('$store.app.currentTab', val => val === 'scheduler' && initScheduler())">
+                <div class="flex items-center justify-between mb-2">
+                    <div>
+                        <h2 class="text-3xl font-bold text-white">Scheduler</h2>
+                        <p class="text-gray-400 text-sm mt-1">Schedule automated artifact collections and recurring analysis jobs.</p>
+                    </div>
+                    <button onclick="showNewScheduleModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                        </svg>
+                        New Schedule
+                    </button>
+                </div>
+
+                <!-- Scheduled Jobs List -->
+                <div id="scheduler-jobs-list" class="mt-6 space-y-3">
+                    <div class="text-gray-500 text-sm">Loading scheduled jobs...</div>
+                </div>
+
+                <!-- Empty State -->
+                <div id="scheduler-empty-state" class="hidden bg-gray-800 rounded-xl p-12 border border-gray-700 text-center mt-6">
+                    <svg class="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                    </svg>
+                    <h3 class="text-xl font-semibold text-gray-400 mb-2">No Scheduled Jobs</h3>
+                    <p class="text-gray-500 text-sm mb-4">Create a schedule to automatically run blueprints at set intervals.</p>
+                    <button onclick="showNewScheduleModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium">
+                        Create First Schedule
+                    </button>
+                </div>
+            </div>
+
+            <!-- New/Edit Schedule Modal -->
+            <div id="schedule-modal" class="hidden fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50">
+                <div class="rounded-xl border border-red-900/50 w-full max-w-2xl max-h-[90vh] overflow-y-auto" style="background: #0a0a0f;">
+                    <div class="p-6 border-b border-gray-700 flex items-center justify-between">
+                        <h3 id="schedule-modal-title" class="text-xl font-semibold text-white">New Scheduled Job</h3>
+                        <button onclick="closeScheduleModal()" class="text-gray-400 hover:text-white">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="p-6 space-y-5">
+                        <input type="hidden" id="schedule-edit-id" value="">
+
+                        <!-- Job Name -->
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Job Name</label>
+                            <input type="text" id="schedule-name" placeholder="e.g., Weekly Security Scan" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
+                        </div>
+
+                        <!-- Description -->
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Description (optional)</label>
+                            <input type="text" id="schedule-description" placeholder="Brief description of this scheduled job" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
+                        </div>
+
+                        <!-- Blueprint Selection -->
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">Blueprint Type</label>
+                                <select id="schedule-blueprint-type" onchange="onScheduleBlueprintTypeChange()" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
+                                    <option value="velociraptor">Velociraptor</option>
+                                    <option value="agentic">Agentic (LLM Analysis)</option>
+                                    <option value="timesketch">Timesketch (KAPE + Timeline)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">Blueprint</label>
+                                <select id="schedule-blueprint-select" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
+                                    <option value="">-- Select Blueprint --</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Interval Settings -->
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">Run Every</label>
+                                <div class="flex items-center gap-2">
+                                    <input type="number" id="schedule-interval-value" min="1" value="1" class="w-20 bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
+                                    <span class="text-gray-400">day(s)</span>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">Run At (daily time)</label>
+                                <input type="time" id="schedule-run-time" value="02:00" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
+                            </div>
+                        </div>
+
+                        <!-- UTC Time Notice -->
+                        <div class="bg-blue-900/30 border border-blue-700/50 rounded-lg p-3">
+                            <div class="flex items-center gap-2 text-blue-300 text-sm">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                                <span class="font-medium">All times are in UTC (Coordinated Universal Time)</span>
+                            </div>
+                            <div class="mt-2 text-xs text-blue-400/80">
+                                Current UTC: <span id="schedule-utc-clock" class="font-mono">--:--:--</span>
+                            </div>
+                        </div>
+
+                        <!-- Client Selection -->
+                        <div>
+                            <div class="flex items-center justify-between mb-2">
+                                <label class="block text-sm font-medium text-gray-300">Target Clients</label>
+                                <div class="flex gap-2">
+                                    <button onclick="selectAllScheduleClients(true)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Select All</button>
+                                    <button onclick="selectAllScheduleClients(false)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">None</button>
+                                </div>
+                            </div>
+                            <input type="text" id="schedule-client-search" placeholder="Filter clients by name..."
+                                oninput="filterScheduleClients(this.value)"
+                                class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-blue-500 focus:outline-none">
+                            <div id="schedule-client-list" class="bg-gray-800 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
+                                <p class="text-sm text-gray-500">Loading clients...</p>
+                            </div>
+                        </div>
+
+                        <!-- Agentic-specific options (shown when agentic is selected) -->
+                        <div id="schedule-agentic-options" class="hidden space-y-4 border-t border-gray-700 pt-4">
+                            <div class="text-sm text-gray-400">Agentic Analysis Options</div>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" id="schedule-anonymize" class="rounded bg-gray-700 border-gray-600">
+                                <span class="text-sm text-gray-300">Anonymize data before LLM analysis</span>
+                            </label>
+                        </div>
+
+                        <!-- Timesketch-specific options (shown when timesketch is selected) -->
+                        <div id="schedule-timesketch-options" class="hidden space-y-4 border-t border-gray-700 pt-4">
+                            <div class="text-sm text-gray-400">Timesketch Options</div>
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">KAPE Target</label>
+                                <select id="schedule-kape-target" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
+                                    <option value="KapeTriage">KapeTriage (Recommended)</option>
+                                    <option value="_SANS_Triage">SANS Triage</option>
+                                    <option value="BasicCollection">Basic Collection</option>
+                                    <option value="!BasicCollection">Basic Collection (All)</option>
+                                    <option value="EventLogs">Event Logs Only</option>
+                                    <option value="RegistryHives">Registry Hives</option>
+                                    <option value="WebBrowsers">Web Browsers</option>
+                                    <option value="Antivirus">Antivirus Logs</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">Sketch Name (for Timesketch)</label>
+                                <input type="text" id="schedule-sketch-name" placeholder="Investigation_YYYYMMDD (auto-generated if empty)" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
+                                <p class="text-xs text-gray-500 mt-1">Leave empty to auto-generate based on date</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="p-6 border-t border-gray-700 flex justify-end gap-3">
+                        <button onclick="closeScheduleModal()" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm">Cancel</button>
+                        <button onclick="saveScheduleFromModal()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium">Save Schedule</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cloud AWS Tab -->
+            <div x-show="$store.app.currentTab === 'cloud-aws'" x-transition class="tab-content">
+                <div class="flex items-center justify-center h-64">
+                    <h3 class="text-3xl font-semibold text-gray-500">Coming Soon</h3>
+                </div>
+            </div>
+
+            <!-- Cloud Azure Tab -->
+            <div x-show="$store.app.currentTab === 'cloud-azure'" x-transition class="tab-content">
+                <div class="flex items-center justify-center h-64">
+                    <h3 class="text-3xl font-semibold text-gray-500">Coming Soon</h3>
+                </div>
+            </div>
+
+            <!-- Cloud GCP Tab -->
+            <div x-show="$store.app.currentTab === 'cloud-gcp'" x-transition class="tab-content">
+                <div class="flex items-center justify-center h-64">
+                    <h3 class="text-3xl font-semibold text-gray-500">Coming Soon</h3>
+                </div>
+            </div>
+
+            <!-- Settings Tab -->
+            <div x-show="$store.app.currentTab === 'settings'" x-transition class="tab-content">
+                <div class="flex justify-between items-center mb-6">
+                    <div>
+                        <h2 class="text-3xl font-bold text-white mb-1">Settings</h2>
+                        <p class="text-gray-400">Configure system settings</p>
+                    </div>
+                    <div class="flex gap-2">
+                        <button @click="$store.settings.runMaintenance()" class="bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded text-sm flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                            </svg>
+                            <span x-text="$store.settings.saving ? 'Running...' : 'Maintenance'"></span>
+                        </button>
+                        <button @click="$store.settings.save()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-1.5 rounded text-sm font-medium">
+                            <span x-text="$store.settings.saving ? 'Saving...' : 'Save Settings'"></span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Status Message -->
+                <div x-show="$store.settings.message" x-transition class="text-sm mb-4 p-3 rounded"
+                     :class="$store.settings.messageType === 'success' ? 'bg-green-900 text-green-300' : $store.settings.messageType === 'error' ? 'bg-red-900 text-red-300' : 'bg-blue-900 text-blue-300'"
+                     x-text="$store.settings.message">
+                </div>
+
+                <!-- Settings Tabs -->
+                <div x-data="{ settingsTab: 'general' }" class="space-y-4">
+                    <!-- Tab Navigation -->
+                    <div class="flex border-b border-gray-700">
+                        <button @click="settingsTab = 'general'" :class="settingsTab === 'general' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
+                            General
+                        </button>
+                        <button @click="settingsTab = 'agentic'" :class="settingsTab === 'agentic' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
+                            Agentic
+                        </button>
+                        <button @click="settingsTab = 'timesketch'" :class="settingsTab === 'timesketch' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
+                            Timesketch
+                        </button>
+                        <button @click="settingsTab = 'cloud'" :class="settingsTab === 'cloud' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
+                            Cloud
+                        </button>
+                    </div>
+
+                    <!-- General Tab -->
+                    <div x-show="settingsTab === 'general'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <h3 class="text-lg font-semibold text-white mb-4">General Settings</h3>
+                        <p class="text-gray-400 text-sm">General settings will be added here.</p>
+                    </div>
+
+                    <!-- Agentic Tab -->
+                    <div x-show="settingsTab === 'agentic'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <h3 class="text-lg font-semibold text-white mb-4">Agentic LLM Configuration</h3>
+
+                        <div class="mb-4">
+                            <label class="block text-sm text-gray-400 mb-1">Mode</label>
+                            <select x-model="$store.settings.config.agentic.llm_mode" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm">
+                                <option value="offline">Offline (Ollama)</option>
+                                <option value="online">Online (Cloud API)</option>
+                            </select>
+                        </div>
+
+                        <!-- Offline LLM -->
+                        <div x-show="$store.settings.config.agentic.llm_mode === 'offline'" x-transition>
+                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">Ollama Configuration</div>
+                            <div class="grid grid-cols-3 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                    <select x-model="$store.settings.config.agentic.offline_llm.model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                        <option value="llama3.3:70b">llama3.3:70b</option>
+                                        <option value="llama3.1:8b">llama3.1:8b</option>
+                                        <option value="deepseek-r1:14b">deepseek-r1:14b</option>
+                                        <option value="mistral:7b">mistral:7b</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Ollama URL</label>
+                                    <input type="text" x-model="$store.settings.config.agentic.offline_llm.url" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Batch Size</label>
+                                    <input type="number" x-model.number="$store.settings.config.agentic.offline_llm.batch_size" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Online LLM -->
+                        <div x-show="$store.settings.config.agentic.llm_mode === 'online'" x-transition>
+                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">Cloud API Configuration</div>
+                            <div class="grid grid-cols-4 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Provider</label>
+                                    <select x-model="$store.settings.config.agentic.online_llm.provider" @change="$store.settings.onProviderChange()" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                        <option value="openai">OpenAI</option>
+                                        <option value="claude">Claude</option>
+                                        <option value="gemini">Gemini</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                    <input type="text" x-model="$store.settings.config.agentic.online_llm.model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">API Key</label>
+                                    <input type="password" x-model="$store.settings.config.agentic.online_llm.api_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="sk-...">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Batch Size</label>
+                                    <input type="number" x-model.number="$store.settings.config.agentic.online_llm.batch_size" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Concurrent Requests -->
+                        <div class="mt-3 pt-3 border-t border-gray-700">
+                            <div class="grid grid-cols-4 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Max Concurrent Requests</label>
+                                    <input type="number" x-model.number="$store.settings.config.agentic.max_concurrent_requests" min="1" max="20" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Timesketch Tab -->
+                    <div x-show="settingsTab === 'timesketch'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <h3 class="text-lg font-semibold text-white mb-4">Timesketch LLM Configuration</h3>
+                        <p class="text-gray-400 text-sm mb-4">Configure LLM providers for Timesketch AI features (NL2Q, Summarization, etc.)</p>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <!-- Google AI Studio -->
+                            <div class="bg-gray-900 rounded-lg p-4 border border-gray-700">
+                                <div class="flex items-center gap-2 mb-3">
+                                    <svg class="w-5 h-5 text-blue-400" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                                    <h4 class="text-sm font-semibold text-white">Google AI Studio</h4>
+                                </div>
+                                <div class="space-y-2">
+                                    <div>
+                                        <label class="block text-xs text-gray-400 mb-1">API Key</label>
+                                        <input type="password" x-model="$store.settings.config.timesketch.google_ai_key" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm" placeholder="AIza...">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                        <select x-model="$store.settings.config.timesketch.google_ai_model" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm">
+                                            <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                                            <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                                            <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Ollama (Local) -->
+                            <div class="bg-gray-900 rounded-lg p-4 border border-gray-700">
+                                <div class="flex items-center gap-2 mb-3">
+                                    <svg class="w-5 h-5 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"/></svg>
+                                    <h4 class="text-sm font-semibold text-white">Ollama (Local)</h4>
+                                </div>
+                                <div class="space-y-2">
+                                    <div>
+                                        <label class="block text-xs text-gray-400 mb-1">Server URL</label>
+                                        <input type="text" x-model="$store.settings.config.timesketch.ollama_url" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm" placeholder="http://localhost:11434">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                        <input type="text" x-model="$store.settings.config.timesketch.ollama_model" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm" placeholder="llama3.1:8b">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <p class="text-xs text-gray-500 mt-4">Note: These settings require Timesketch container restart to take effect.</p>
+                    </div>
+
+                    <!-- Cloud Tab -->
+                    <div x-show="settingsTab === 'cloud'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <h3 class="text-lg font-semibold text-white mb-2">Cloud Provider Configuration</h3>
+                        <p class="text-gray-400 text-sm mb-4">Configure cloud provider credentials for threat hunting and incident response (Security Hub, Sentinel, Chronicle, etc.)</p>
+
+                        <!-- Provider Selection -->
+                        <div class="mb-4">
+                            <label class="block text-sm text-gray-400 mb-1">Cloud Provider</label>
+                            <select x-model="$store.settings.config.cloud.provider" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm">
+                                <option value="aws">Amazon Web Services (AWS)</option>
+                                <option value="azure">Microsoft Azure</option>
+                                <option value="gcp">Google Cloud Platform (GCP)</option>
+                            </select>
+                        </div>
+
+                        <!-- AWS Configuration -->
+                        <div x-show="$store.settings.config.cloud.provider === 'aws'" x-transition class="bg-gray-900 rounded-lg p-4 border border-gray-700">
+                            <div class="flex items-center gap-2 mb-3">
+                                <svg class="w-5 h-5 text-orange-400" viewBox="0 0 24 24" fill="currentColor"><path d="M6.763 10.036c0 .296.032.535.088.71.064.176.144.368.256.576.04.063.056.127.056.183 0 .08-.048.16-.152.24l-.503.335a.383.383 0 0 1-.208.072c-.08 0-.16-.04-.239-.112a2.47 2.47 0 0 1-.287-.375 6.18 6.18 0 0 1-.248-.471c-.622.734-1.405 1.101-2.347 1.101-.67 0-1.205-.191-1.596-.574-.391-.384-.59-.894-.59-1.533 0-.678.239-1.23.726-1.644.487-.415 1.133-.623 1.955-.623.272 0 .551.024.846.064.296.04.6.104.918.176v-.583c0-.607-.127-1.03-.375-1.277-.255-.248-.686-.367-1.3-.367-.28 0-.568.031-.863.103-.295.072-.583.16-.862.272a2.287 2.287 0 0 1-.28.104.488.488 0 0 1-.127.023c-.112 0-.168-.08-.168-.247v-.391c0-.128.016-.224.056-.28a.597.597 0 0 1 .224-.167c.279-.144.614-.264 1.005-.36a4.84 4.84 0 0 1 1.246-.151c.95 0 1.644.216 2.091.647.439.43.662 1.085.662 1.963v2.586zm-3.24 1.214c.263 0 .534-.048.822-.144.287-.096.543-.271.758-.51.128-.152.224-.32.272-.512.047-.191.08-.423.08-.694v-.335a6.66 6.66 0 0 0-.735-.136 6.02 6.02 0 0 0-.75-.048c-.535 0-.926.104-1.19.32-.263.215-.39.518-.39.917 0 .375.095.655.295.846.191.2.47.296.838.296zm6.41.862c-.144 0-.24-.024-.304-.08-.064-.048-.12-.16-.168-.311L7.586 5.55a1.398 1.398 0 0 1-.072-.32c0-.128.064-.2.191-.2h.783c.151 0 .255.025.31.08.065.048.113.16.16.312l1.342 5.284 1.245-5.284c.04-.16.088-.264.151-.312a.549.549 0 0 1 .32-.08h.638c.152 0 .256.025.32.08.063.048.12.16.151.312l1.261 5.348 1.381-5.348c.048-.16.104-.264.16-.312a.52.52 0 0 1 .311-.08h.743c.127 0 .2.065.2.2 0 .04-.009.08-.017.128a1.137 1.137 0 0 1-.056.2l-1.923 6.17c-.048.16-.104.263-.168.311a.51.51 0 0 1-.303.08h-.687c-.151 0-.255-.024-.32-.08-.063-.056-.119-.16-.15-.32l-1.238-5.148-1.23 5.14c-.04.16-.087.264-.15.32-.065.056-.177.08-.32.08zm10.256.215c-.415 0-.83-.048-1.229-.143-.399-.096-.71-.2-.918-.32-.128-.071-.215-.151-.247-.223a.563.563 0 0 1-.048-.224v-.407c0-.167.064-.247.183-.247.048 0 .096.008.144.024.048.016.12.048.2.08.271.12.566.215.878.279.319.064.63.096.95.096.502 0 .894-.088 1.165-.264a.86.86 0 0 0 .415-.758.777.777 0 0 0-.215-.559c-.144-.151-.415-.287-.807-.414l-1.157-.36c-.583-.183-1.014-.454-1.277-.813a1.902 1.902 0 0 1-.4-1.158c0-.335.073-.63.216-.886.144-.255.335-.479.575-.654.24-.184.51-.32.83-.415.32-.096.655-.136 1.006-.136.175 0 .359.008.535.032.183.024.35.056.518.088.16.04.312.08.455.127.144.048.256.096.336.144a.69.69 0 0 1 .24.2.43.43 0 0 1 .071.263v.375c0 .168-.064.256-.184.256a.83.83 0 0 1-.303-.096 3.652 3.652 0 0 0-1.532-.311c-.455 0-.815.071-1.062.223-.248.152-.375.383-.375.71 0 .224.08.416.24.567.159.152.454.304.877.44l1.134.358c.574.184.99.44 1.237.767.247.327.367.702.367 1.117 0 .343-.072.655-.207.926-.144.272-.336.511-.583.703-.248.2-.543.343-.886.447-.36.111-.734.167-1.142.167z"/></svg>
+                                <h4 class="text-sm font-semibold text-white">AWS Configuration</h4>
+                            </div>
+                            <p class="text-xs text-gray-500 mb-3">For Security Hub, GuardDuty, CloudTrail, and CloudWatch Logs</p>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Access Key ID</label>
+                                    <input type="text" x-model="$store.settings.config.cloud.aws.access_key_id" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="AKIAIOSFODNN7EXAMPLE">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Secret Access Key</label>
+                                    <input type="password" x-model="$store.settings.config.cloud.aws.secret_access_key" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Region</label>
+                                    <select x-model="$store.settings.config.cloud.aws.region" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm">
+                                        <option value="us-east-1">US East (N. Virginia)</option>
+                                        <option value="us-east-2">US East (Ohio)</option>
+                                        <option value="us-west-1">US West (N. California)</option>
+                                        <option value="us-west-2">US West (Oregon)</option>
+                                        <option value="eu-west-1">EU (Ireland)</option>
+                                        <option value="eu-west-2">EU (London)</option>
+                                        <option value="eu-central-1">EU (Frankfurt)</option>
+                                        <option value="ap-southeast-1">Asia Pacific (Singapore)</option>
+                                        <option value="ap-southeast-2">Asia Pacific (Sydney)</option>
+                                        <option value="ap-northeast-1">Asia Pacific (Tokyo)</option>
+                                        <option value="il-central-1">Israel (Tel Aviv)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Session Token <span class="text-gray-600">(optional)</span></label>
+                                    <input type="password" x-model="$store.settings.config.cloud.aws.session_token" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="For temporary credentials">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Azure Configuration -->
+                        <div x-show="$store.settings.config.cloud.provider === 'azure'" x-transition class="bg-gray-900 rounded-lg p-4 border border-gray-700">
+                            <div class="flex items-center gap-2 mb-3">
+                                <svg class="w-5 h-5 text-blue-400" viewBox="0 0 24 24" fill="currentColor"><path d="M5.483 21.3H24L14.025 4.013l-3.038 8.347 5.836 6.938L5.483 21.3zM13.23 2.7L6.105 8.677 0 19.253h5.505v.014L13.23 2.7z"/></svg>
+                                <h4 class="text-sm font-semibold text-white">Azure Configuration</h4>
+                            </div>
+                            <p class="text-xs text-gray-500 mb-3">For Microsoft Sentinel, Defender for Cloud, and Log Analytics</p>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Tenant ID</label>
+                                    <input type="text" x-model="$store.settings.config.cloud.azure.tenant_id" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Client ID (App ID)</label>
+                                    <input type="text" x-model="$store.settings.config.cloud.azure.client_id" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Client Secret</label>
+                                    <input type="password" x-model="$store.settings.config.cloud.azure.client_secret" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="Your client secret">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Subscription ID</label>
+                                    <input type="text" x-model="$store.settings.config.cloud.azure.subscription_id" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- GCP Configuration -->
+                        <div x-show="$store.settings.config.cloud.provider === 'gcp'" x-transition class="bg-gray-900 rounded-lg p-4 border border-gray-700">
+                            <div class="flex items-center gap-2 mb-3">
+                                <svg class="w-5 h-5 text-red-400" viewBox="0 0 24 24" fill="currentColor"><path d="M12.19 2.38a9.344 9.344 0 0 0-9.234 6.893c.053-.02-.055.013 0 0-3.875 2.551-3.922 8.11-.247 10.941l.006-.007-.007.03a6.717 6.717 0 0 0 4.077 1.356h5.173l.03.03h5.192c6.687.053 9.376-8.605 3.835-12.35a9.365 9.365 0 0 0-8.825-6.893zM8.073 19.39a4.387 4.387 0 0 1-2.445-.766l-.007.007a4.462 4.462 0 0 1-1.932-2.864h-.03a4.46 4.46 0 0 1 .737-3.415 4.3 4.3 0 0 1 2.876-1.74h.006l.036.03a4.39 4.39 0 0 1 3.122 1.313 4.463 4.463 0 0 1 1.313 3.122 4.463 4.463 0 0 1-1.313 3.122 4.395 4.395 0 0 1-2.363 1.19zm7.95-5.493a7.157 7.157 0 0 0-.383-1.634 7.333 7.333 0 0 0-1.07-1.9l.006.006a7.3 7.3 0 0 0-1.634-1.478 7.287 7.287 0 0 0-3.835-1.313h-.043l-.006-.03-.03-.007a7.07 7.07 0 0 0-1.2-.089 7.217 7.217 0 0 0-3.122.754 7.287 7.287 0 0 0-2.485 1.955 9.152 9.152 0 0 1 7.882-4.536c3.947-.066 7.425 2.485 8.768 6.206a7.33 7.33 0 0 0-2.848 2.066z"/></svg>
+                                <h4 class="text-sm font-semibold text-white">GCP Configuration</h4>
+                            </div>
+                            <p class="text-xs text-gray-500 mb-3">For Chronicle SIEM, Security Command Center, and Cloud Logging</p>
+                            <div class="space-y-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Project ID</label>
+                                    <input type="text" x-model="$store.settings.config.cloud.gcp.project_id" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="my-project-123456">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Service Account JSON</label>
+                                    <textarea x-model="$store.settings.config.cloud.gcp.service_account_json" rows="4" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder='{"type": "service_account", "project_id": "...", ...}'></textarea>
+                                    <p class="text-xs text-gray-600 mt-1">Paste the entire JSON key file content</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <p class="text-xs text-gray-500 mt-4">
+                            <svg class="w-3.5 h-3.5 inline mr-1 text-yellow-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+                            Credentials are stored locally and used for cloud-based threat hunting integrations.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- JavaScript - Alpine app + module-specific scripts -->
+    <script src="js/api-client.js"></script>
+    <script src="js/app.js?v=2"></script>
+    <script src="js/velociraptor.js?v=2"></script>
+    <script src="js/blueprints.js?v=3"></script>
+    <script src="js/timesketch.js"></script>
+    <script src="js/agentic.js"></script>
+    <script src="js/scheduler.js"></script>
+</body>
+</html>

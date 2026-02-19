@@ -1,0 +1,525 @@
+/**
+ * Scheduler Module - Manages recurring blueprint execution schedules
+ */
+
+// Initialize when tab opens
+async function initScheduler() {
+    await loadSchedulerJobs();
+    await loadSchedulerClients();
+    onScheduleBlueprintTypeChange(); // Load initial blueprints
+}
+
+// Load and render all scheduled jobs
+async function loadSchedulerJobs() {
+    const listContainer = document.getElementById('scheduler-jobs-list');
+    const emptyState = document.getElementById('scheduler-empty-state');
+
+    try {
+        const response = await fetch('/api/scheduler/jobs');
+        if (!response.ok) {
+            listContainer.innerHTML = '<p class="text-red-400 text-sm">Failed to load scheduled jobs</p>';
+            return;
+        }
+
+        const data = await response.json();
+        const jobs = data.jobs || [];
+
+        if (jobs.length === 0) {
+            listContainer.innerHTML = '';
+            emptyState.classList.remove('hidden');
+            return;
+        }
+
+        emptyState.classList.add('hidden');
+        listContainer.innerHTML = jobs.map(job => renderScheduleCard(job)).join('');
+
+    } catch (error) {
+        listContainer.innerHTML = `<p class="text-red-400 text-sm">Error: ${error.message}</p>`;
+    }
+}
+
+// Render a single schedule card
+function renderScheduleCard(job) {
+    const isEnabled = job.enabled == 1;
+    let typeLabel, typeBadgeColor;
+    if (job.blueprint_type === 'agentic') {
+        typeLabel = 'Agentic';
+        typeBadgeColor = 'bg-purple-900 text-purple-300';
+    } else if (job.blueprint_type === 'timesketch') {
+        typeLabel = 'Timesketch';
+        typeBadgeColor = 'bg-cyan-900 text-cyan-300';
+    } else {
+        typeLabel = 'Velociraptor';
+        typeBadgeColor = 'bg-blue-900 text-blue-300';
+    }
+    const statusDot = isEnabled ? 'bg-green-400' : 'bg-gray-500';
+    const statusText = isEnabled ? 'Active' : 'Paused';
+
+    // Format interval - always days now
+    const intervalText = job.interval_value == 1 ? 'Daily' : `Every ${job.interval_value} days`;
+
+    // Format run time (already in UTC)
+    let runTimeText = '';
+    if (job.run_time) {
+        runTimeText = ` at ${job.run_time} UTC`;
+    }
+
+    // Helper to format date in UTC
+    function formatUtcDate(date) {
+        const d = new Date(date);
+        const year = d.getUTCFullYear();
+        const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        const hours = String(d.getUTCHours()).padStart(2, '0');
+        const mins = String(d.getUTCMinutes()).padStart(2, '0');
+        return `${year}-${month}-${day} ${hours}:${mins} UTC`;
+    }
+
+    // Format next run (display in UTC)
+    let nextRunText = 'Not scheduled';
+    if (job.next_run_at) {
+        nextRunText = formatUtcDate(job.next_run_at);
+    }
+
+    // Format last run (display in UTC)
+    let lastRunText = 'Never';
+    if (job.last_run_at) {
+        lastRunText = formatUtcDate(job.last_run_at);
+    }
+
+    // Parse client count
+    let clientCount = 0;
+    try {
+        const clients = JSON.parse(job.client_ids || '[]');
+        clientCount = clients.length;
+    } catch (e) {}
+
+    return `
+    <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+        <div class="flex items-start justify-between">
+            <div class="flex-1">
+                <div class="flex items-center gap-2 mb-1">
+                    <span class="inline-block w-2 h-2 ${statusDot} rounded-full"></span>
+                    <h4 class="text-lg font-semibold text-white">${job.name}</h4>
+                    <span class="text-xs ${typeBadgeColor} px-2 py-0.5 rounded">${typeLabel}</span>
+                    <span class="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded">${statusText}</span>
+                </div>
+                ${job.description ? `<p class="text-sm text-gray-400 mb-2">${job.description}</p>` : ''}
+                <div class="flex flex-wrap gap-4 text-xs text-gray-500">
+                    <span title="Interval">${intervalText}${runTimeText}</span>
+                    <span title="Next Run">Next: ${nextRunText}</span>
+                    <span title="Last Run">Last: ${lastRunText}</span>
+                    <span title="Run Count">Runs: ${job.run_count || 0}</span>
+                    <span title="Clients">${clientCount} client(s)</span>
+                </div>
+            </div>
+            <div class="flex gap-2 ml-4">
+                <button onclick="runScheduleNow('${job.id}')" title="Run Now" class="text-xs bg-green-700 hover:bg-green-600 px-3 py-1.5 rounded flex items-center gap-1">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path>
+                    </svg>
+                    Run
+                </button>
+                <button onclick="toggleSchedule('${job.id}', ${isEnabled ? 'false' : 'true'})" class="text-xs ${isEnabled ? 'bg-yellow-700 hover:bg-yellow-600' : 'bg-blue-700 hover:bg-blue-600'} px-3 py-1.5 rounded">
+                    ${isEnabled ? 'Pause' : 'Resume'}
+                </button>
+                <button onclick="editSchedule('${job.id}')" class="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded">Edit</button>
+                <button onclick="deleteSchedule('${job.id}')" class="text-xs bg-red-700 hover:bg-red-600 px-3 py-1.5 rounded">Delete</button>
+            </div>
+        </div>
+    </div>`;
+}
+
+// Store clients for filtering
+let schedulerClientsCache = [];
+
+// Load clients for the modal
+async function loadSchedulerClients() {
+    const container = document.getElementById('schedule-client-list');
+
+    try {
+        const response = await fetch('/api/clients');
+        if (!response.ok) {
+            container.innerHTML = '<p class="text-sm text-red-400">Failed to load clients</p>';
+            return;
+        }
+
+        const data = await response.json();
+        const clients = data.items || [];
+
+        if (clients.length === 0) {
+            container.innerHTML = '<p class="text-sm text-gray-500">No clients found</p>';
+            return;
+        }
+
+        const now = Date.now() / 1000;
+        schedulerClientsCache = clients.sort((a, b) => {
+            const aOnline = (now - (a.last_seen_at ? a.last_seen_at / 1000000 : 0)) < 600;
+            const bOnline = (now - (b.last_seen_at ? b.last_seen_at / 1000000 : 0)) < 600;
+            if (aOnline && !bOnline) return -1;
+            if (!aOnline && bOnline) return 1;
+            return (a.hostname || '').localeCompare(b.hostname || '');
+        });
+
+        renderSchedulerClients(schedulerClientsCache);
+
+    } catch (error) {
+        container.innerHTML = `<p class="text-sm text-red-400">Error: ${error.message}</p>`;
+    }
+}
+
+// Render clients to container
+function renderSchedulerClients(clients, filter = '') {
+    const container = document.getElementById('schedule-client-list');
+    const now = Date.now() / 1000;
+    const selectedIds = getSelectedScheduleClients();
+
+    // Filter by hostname if filter provided
+    const filtered = filter
+        ? clients.filter(c => (c.hostname || '').toLowerCase().includes(filter.toLowerCase()))
+        : clients;
+
+    if (filtered.length === 0) {
+        container.innerHTML = '<p class="text-sm text-gray-500">No clients match filter</p>';
+        return;
+    }
+
+    container.innerHTML = filtered.map(client => {
+        const lastSeen = client.last_seen_at ? client.last_seen_at / 1000000 : 0;
+        const isOnline = (now - lastSeen) < 600;
+        const wasSelected = selectedIds.includes(client.client_id);
+        const dot = isOnline
+            ? '<span class="inline-block w-2 h-2 bg-green-400 rounded-full"></span>'
+            : '<span class="inline-block w-2 h-2 bg-gray-500 rounded-full"></span>';
+
+        return `
+            <label class="flex items-center gap-3 p-2 rounded hover:bg-gray-700 cursor-pointer">
+                <input type="checkbox" class="schedule-client-cb" value="${client.client_id}" ${wasSelected || (isOnline && !filter) ? 'checked' : ''}>
+                ${dot}
+                <div class="flex-1 min-w-0">
+                    <span class="text-sm text-white">${client.hostname || 'Unknown'}</span>
+                    <span class="text-xs text-gray-500 ml-2">${client.os || ''}</span>
+                </div>
+                <span class="text-xs text-gray-600 font-mono truncate">${client.client_id.substring(0, 12)}...</span>
+            </label>
+        `;
+    }).join('');
+}
+
+// Filter clients by search term
+function filterScheduleClients(searchTerm) {
+    renderSchedulerClients(schedulerClientsCache, searchTerm);
+}
+
+// Select/deselect all visible clients
+function selectAllScheduleClients(checked) {
+    document.querySelectorAll('.schedule-client-cb').forEach(cb => cb.checked = checked);
+}
+
+// Get selected client IDs
+function getSelectedScheduleClients() {
+    return Array.from(document.querySelectorAll('.schedule-client-cb:checked')).map(cb => cb.value);
+}
+
+// Handle blueprint type change
+async function onScheduleBlueprintTypeChange() {
+    const type = document.getElementById('schedule-blueprint-type').value;
+    const select = document.getElementById('schedule-blueprint-select');
+    const blueprintSelectContainer = select.parentElement;
+    const agenticOptions = document.getElementById('schedule-agentic-options');
+    const timesketchOptions = document.getElementById('schedule-timesketch-options');
+
+    // Show/hide type-specific options
+    agenticOptions.classList.add('hidden');
+    timesketchOptions.classList.add('hidden');
+
+    if (type === 'agentic') {
+        agenticOptions.classList.remove('hidden');
+        blueprintSelectContainer.classList.remove('hidden');
+    } else if (type === 'timesketch') {
+        timesketchOptions.classList.remove('hidden');
+        blueprintSelectContainer.classList.add('hidden');
+        // For timesketch, blueprint_id will be the KAPE target
+        return;
+    } else {
+        blueprintSelectContainer.classList.remove('hidden');
+    }
+
+    // Load blueprints for selected type (velociraptor or agentic)
+    try {
+        const response = await fetch(`/api/blueprints/${type}`);
+        if (!response.ok) {
+            select.innerHTML = '<option value="">Failed to load</option>';
+            return;
+        }
+
+        const data = await response.json();
+        const blueprints = data.blueprints || [];
+
+        select.innerHTML = '<option value="">-- Select Blueprint --</option>' +
+            blueprints.map(bp => {
+                const count = bp.artifacts ? bp.artifacts.length : 0;
+                return `<option value="${bp.id}">${bp.name} (${count} artifacts)</option>`;
+            }).join('');
+
+    } catch (error) {
+        select.innerHTML = '<option value="">Error loading blueprints</option>';
+    }
+}
+
+// UTC clock interval reference
+let utcClockInterval = null;
+
+// Update the UTC clock display
+function updateScheduleUtcClock() {
+    const clockEl = document.getElementById('schedule-utc-clock');
+    if (clockEl) {
+        const now = new Date();
+        const utcTime = now.toISOString().substring(11, 19); // HH:MM:SS
+        const utcDate = now.toISOString().substring(0, 10);  // YYYY-MM-DD
+        clockEl.textContent = `${utcDate} ${utcTime}`;
+    }
+}
+
+// Start updating UTC clock
+function startUtcClock() {
+    updateScheduleUtcClock();
+    if (utcClockInterval) clearInterval(utcClockInterval);
+    utcClockInterval = setInterval(updateScheduleUtcClock, 1000);
+}
+
+// Stop UTC clock updates
+function stopUtcClock() {
+    if (utcClockInterval) {
+        clearInterval(utcClockInterval);
+        utcClockInterval = null;
+    }
+}
+
+// Show modal for new schedule
+function showNewScheduleModal() {
+    document.getElementById('schedule-modal').classList.remove('hidden');
+    document.getElementById('schedule-modal-title').textContent = 'New Scheduled Job';
+    document.getElementById('schedule-edit-id').value = '';
+    document.getElementById('schedule-name').value = '';
+    document.getElementById('schedule-description').value = '';
+    document.getElementById('schedule-interval-value').value = 1;
+    document.getElementById('schedule-blueprint-type').value = 'velociraptor';
+
+    // Set default run time to 02:00 (2 AM)
+    document.getElementById('schedule-run-time').value = '02:00';
+
+    // Start UTC clock
+    startUtcClock();
+
+    // Reset checkboxes
+    document.querySelectorAll('.schedule-client-cb').forEach(cb => cb.checked = false);
+    document.getElementById('schedule-anonymize').checked = false;
+
+    // Reset Timesketch options
+    document.getElementById('schedule-kape-target').value = 'KapeTriage';
+    document.getElementById('schedule-sketch-name').value = '';
+
+    onScheduleBlueprintTypeChange();
+}
+
+// Close modal
+function closeScheduleModal() {
+    document.getElementById('schedule-modal').classList.add('hidden');
+    stopUtcClock();
+}
+
+// Edit existing schedule
+async function editSchedule(jobId) {
+    try {
+        const response = await fetch(`/api/scheduler/jobs/${jobId}`);
+        if (!response.ok) {
+            alert('Failed to load job details');
+            return;
+        }
+
+        const job = await response.json();
+
+        document.getElementById('schedule-modal').classList.remove('hidden');
+        document.getElementById('schedule-modal-title').textContent = 'Edit Scheduled Job';
+
+        // Start UTC clock
+        startUtcClock();
+        document.getElementById('schedule-edit-id').value = job.id;
+        document.getElementById('schedule-name').value = job.name || '';
+        document.getElementById('schedule-description').value = job.description || '';
+        document.getElementById('schedule-interval-value').value = job.interval_value || 1;
+        document.getElementById('schedule-blueprint-type').value = job.blueprint_type || 'velociraptor';
+
+        // Set run time
+        document.getElementById('schedule-run-time').value = job.run_time || '02:00';
+
+        // Load blueprints then set selected
+        await onScheduleBlueprintTypeChange();
+        document.getElementById('schedule-blueprint-select').value = job.blueprint_id || '';
+
+        // Set client checkboxes
+        try {
+            const clientIds = JSON.parse(job.client_ids || '[]');
+            document.querySelectorAll('.schedule-client-cb').forEach(cb => {
+                cb.checked = clientIds.includes(cb.value);
+            });
+        } catch (e) {}
+
+        // Set agentic options
+        document.getElementById('schedule-anonymize').checked = job.anonymize_data == 1;
+
+        // Set timesketch options
+        if (job.blueprint_type === 'timesketch') {
+            document.getElementById('schedule-kape-target').value = job.blueprint_id || 'KapeTriage';
+            document.getElementById('schedule-sketch-name').value = job.description || '';
+        }
+
+    } catch (error) {
+        alert('Error loading job: ' + error.message);
+    }
+}
+
+// Save schedule from modal
+async function saveScheduleFromModal() {
+    const editId = document.getElementById('schedule-edit-id').value;
+    const name = document.getElementById('schedule-name').value.trim();
+    let description = document.getElementById('schedule-description').value.trim();
+    const blueprintType = document.getElementById('schedule-blueprint-type').value;
+    const intervalValue = parseInt(document.getElementById('schedule-interval-value').value) || 1;
+    const runTime = document.getElementById('schedule-run-time').value || '02:00';
+    const clientIds = getSelectedScheduleClients();
+
+    // Get blueprint ID based on type
+    let blueprintId;
+    if (blueprintType === 'timesketch') {
+        blueprintId = document.getElementById('schedule-kape-target').value;
+        // For timesketch, use sketch name as description
+        const sketchName = document.getElementById('schedule-sketch-name').value.trim();
+        if (sketchName) {
+            description = sketchName;
+        }
+    } else {
+        blueprintId = document.getElementById('schedule-blueprint-select').value;
+    }
+
+    // Validation
+    if (!name) {
+        alert('Please enter a job name');
+        return;
+    }
+    if (!blueprintId) {
+        alert('Please select a blueprint' + (blueprintType === 'timesketch' ? ' (KAPE target)' : ''));
+        return;
+    }
+    if (clientIds.length === 0) {
+        alert('Please select at least one client');
+        return;
+    }
+
+    // Build payload
+    const payload = {
+        name,
+        description,
+        blueprint_id: blueprintId,
+        blueprint_type: blueprintType,
+        interval_value: intervalValue,
+        interval_type: 'days',  // Always days
+        run_time: runTime,
+        client_ids: clientIds
+    };
+
+    // Agentic-specific options
+    if (blueprintType === 'agentic') {
+        payload.report_types = ['technical'];
+        payload.anonymize_data = document.getElementById('schedule-anonymize').checked;
+    }
+
+    try {
+        const url = editId ? `/api/scheduler/jobs/${editId}` : '/api/scheduler/jobs';
+        const method = editId ? 'PUT' : 'POST';
+
+        const response = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+            closeScheduleModal();
+            await loadSchedulerJobs();
+        } else {
+            alert('Error: ' + (result.error || 'Failed to save'));
+        }
+
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+// Toggle schedule enabled/disabled
+async function toggleSchedule(jobId, enabled) {
+    try {
+        const response = await fetch(`/api/scheduler/jobs/${jobId}/toggle`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: enabled === 'true' || enabled === true })
+        });
+
+        if (response.ok) {
+            await loadSchedulerJobs();
+        } else {
+            const data = await response.json();
+            alert('Error: ' + (data.error || 'Failed to toggle'));
+        }
+
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+// Run schedule immediately
+async function runScheduleNow(jobId) {
+    if (!confirm('Run this scheduled job now?')) return;
+
+    try {
+        const response = await fetch(`/api/scheduler/jobs/${jobId}/run`, {
+            method: 'POST'
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            alert('Job triggered successfully');
+            await loadSchedulerJobs();
+        } else {
+            alert('Error: ' + (data.error || 'Failed to trigger'));
+        }
+
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+// Delete schedule
+async function deleteSchedule(jobId) {
+    if (!confirm('Are you sure you want to delete this scheduled job?')) return;
+
+    try {
+        const response = await fetch(`/api/scheduler/jobs/${jobId}`, {
+            method: 'DELETE'
+        });
+
+        if (response.ok) {
+            await loadSchedulerJobs();
+        } else {
+            const data = await response.json();
+            alert('Error: ' + (data.error || 'Failed to delete'));
+        }
+
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}

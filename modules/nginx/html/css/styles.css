@@ -1,0 +1,820 @@
+/**
+ * TenRoot MSSP - Cyberpunk Dark Mode
+ * Red / Blue / Purple Neon Aesthetic
+ */
+
+/* ============================================
+   CYBERPUNK COLOR PALETTE
+   ============================================ */
+:root {
+    /* Pure Black Background */
+    --black: #000000;
+    --black-soft: #0c0c14;
+    --surface: #14141e;
+    --surface-light: #1c1c28;
+    --surface-hover: #252535;
+
+    /* TenRoot Red - Primary */
+    --red: #ff0033;
+    --red-bright: #ff1a4d;
+    --red-dark: #cc0029;
+    --red-glow: rgba(255, 0, 51, 0.6);
+
+    /* Electric Blue - Secondary */
+    --blue: #0055ff;
+    --blue-bright: #3377ff;
+    --blue-dark: #0044cc;
+    --blue-glow: rgba(0, 85, 255, 0.6);
+
+    /* Neon Purple - Accent */
+    --purple: #aa00ff;
+    --purple-bright: #bb33ff;
+    --purple-dark: #8800cc;
+    --purple-glow: rgba(170, 0, 255, 0.6);
+
+    /* Cyber Green - Success */
+    --green: #00ff66;
+    --green-glow: rgba(0, 255, 102, 0.6);
+
+    /* Warning */
+    --yellow: #ffcc00;
+    --yellow-glow: rgba(255, 204, 0, 0.5);
+
+    /* Borders */
+    --border: rgba(255, 0, 51, 0.2);
+    --border-blue: rgba(0, 85, 255, 0.3);
+
+    /* Text */
+    --text: #ffffff;
+    --text-dim: #888899;
+    --text-muted: #555566;
+}
+
+/* ============================================
+   DARK BASE + CRT SCANLINES
+   ============================================ */
+body {
+    background: linear-gradient(180deg, #0a0a12 0%, #000000 100%);
+    min-height: 100vh;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+}
+
+/* Subtle scanlines - very light */
+body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: repeating-linear-gradient(
+        0deg,
+        rgba(0, 0, 0, 0.03) 0px,
+        rgba(0, 0, 0, 0.03) 1px,
+        transparent 1px,
+        transparent 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+}
+
+/* Very subtle vignette - corners only */
+body::after {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(ellipse at center, transparent 60%, rgba(0, 0, 0, 0.3) 100%);
+    pointer-events: none;
+    z-index: 9998;
+}
+
+/* ============================================
+   TYPOGRAPHY - Cyberpunk Style
+   ============================================ */
+h1, h2, h3, .header-text {
+    font-family: 'Orbitron', 'JetBrains Mono', monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+}
+
+/* ============================================
+   SIDEBAR - Dark Glass Panel
+   ============================================ */
+.sidebar {
+    width: 260px;
+    min-height: 100vh;
+    background: rgba(12, 12, 18, 0.98);
+    border-right: 1px solid var(--border);
+    position: relative;
+    z-index: 10;
+}
+
+.sidebar-logo {
+    width: 180px;
+    height: auto;
+    filter: drop-shadow(0 0 15px var(--red-glow)) drop-shadow(0 0 30px rgba(255, 0, 51, 0.3));
+    transition: filter 0.3s ease;
+}
+
+.sidebar-logo:hover {
+    filter: drop-shadow(0 0 20px var(--red-glow)) drop-shadow(0 0 40px rgba(255, 0, 51, 0.5));
+}
+
+.sidebar h1 {
+    color: var(--red);
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    text-shadow: 0 0 20px var(--red-glow), 0 0 40px var(--red-glow);
+}
+
+.sidebar p {
+    color: var(--blue-bright);
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    font-size: 0.6rem;
+    text-shadow: 0 0 10px var(--blue-glow);
+}
+
+/* ============================================
+   NAVIGATION - Neon Borders
+   ============================================ */
+.nav-item {
+    cursor: pointer;
+    padding: 0.75rem 1rem;
+    margin: 0.25rem 0.5rem;
+    transition: all 0.2s ease;
+    color: var(--text-dim);
+    border-left: 2px solid transparent;
+    background: transparent;
+    clip-path: polygon(0 0, 100% 0, 98% 100%, 0 100%);
+}
+
+.nav-item:hover {
+    background: rgba(255, 0, 51, 0.1);
+    color: var(--text);
+    border-left-color: var(--red);
+    text-shadow: 0 0 10px var(--red-glow);
+}
+
+.nav-item.active {
+    background: linear-gradient(90deg, rgba(255, 0, 51, 0.2) 0%, transparent 100%);
+    color: var(--red);
+    border-left-color: var(--red);
+    text-shadow: 0 0 15px var(--red-glow);
+    box-shadow: inset 0 0 20px rgba(255, 0, 51, 0.1);
+}
+
+.nav-item.active span,
+.nav-item.active svg {
+    color: var(--red);
+    filter: drop-shadow(0 0 5px var(--red-glow));
+}
+
+.nav-sub-item {
+    cursor: pointer;
+    padding: 0.5rem 0.75rem;
+    margin: 0.125rem 0;
+    transition: all 0.2s ease;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    border-left: 2px solid transparent;
+}
+
+.nav-sub-item:hover {
+    background: rgba(0, 85, 255, 0.1);
+    color: var(--text);
+    border-left-color: var(--blue);
+}
+
+.nav-sub-item.active {
+    background: rgba(0, 85, 255, 0.15);
+    color: var(--blue-bright);
+    border-left-color: var(--blue);
+    text-shadow: 0 0 10px var(--blue-glow);
+}
+
+.nav-dropdown-content {
+    transition: all 0.2s ease;
+}
+
+.rotate {
+    transform: rotate(180deg);
+}
+
+/* ============================================
+   MAIN CONTENT
+   ============================================ */
+.main-content {
+    margin-left: 260px;
+    background: transparent;
+    min-height: 100vh;
+    position: relative;
+    z-index: 1;
+}
+
+/* ============================================
+   CARDS - Cyber Glass Panels
+   ============================================ */
+.service-card,
+.glass-card {
+    background: rgba(20, 20, 30, 0.95);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.service-card::before,
+.glass-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255, 0, 51, 0.1), transparent);
+    transition: left 0.5s ease;
+}
+
+.service-card:hover::before,
+.glass-card:hover::before {
+    left: 100%;
+}
+
+.service-card:hover,
+.glass-card:hover {
+    border-color: var(--red);
+    box-shadow:
+        0 0 20px var(--red-glow),
+        inset 0 0 30px rgba(255, 0, 51, 0.05);
+    transform: translateY(-2px);
+}
+
+.stat-card {
+    background: linear-gradient(135deg, rgba(25, 20, 35, 0.98) 0%, rgba(15, 15, 22, 0.98) 100%);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+}
+
+.stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--red) 0%, var(--purple) 50%, var(--blue) 100%);
+    box-shadow: 0 0 15px var(--red-glow);
+}
+
+.stat-card:hover {
+    border-color: var(--purple);
+    box-shadow: 0 0 30px var(--purple-glow);
+}
+
+.stat-card.client-count-container {
+    overflow: visible;
+}
+
+/* ============================================
+   BUTTONS - Chamfered Cyber Style
+   ============================================ */
+button, .btn, [type="submit"] {
+    font-family: 'Orbitron', 'JetBrains Mono', monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+    font-size: 0.8rem;
+    transition: all 0.2s ease;
+}
+
+/* Red Button - Primary Action */
+.bg-red-600 {
+    background: linear-gradient(180deg, var(--red) 0%, var(--red-dark) 100%) !important;
+    border: none !important;
+    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+    box-shadow: 0 0 20px var(--red-glow);
+}
+
+.bg-red-600:hover {
+    box-shadow: 0 0 40px var(--red-glow), 0 0 60px rgba(255, 0, 51, 0.3);
+    transform: translateY(-2px);
+}
+
+/* Blue Button - Secondary */
+.bg-blue-600 {
+    background: linear-gradient(180deg, var(--blue-bright) 0%, var(--blue-dark) 100%) !important;
+    border: none !important;
+    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+    box-shadow: 0 0 20px var(--blue-glow);
+}
+
+.bg-blue-600:hover {
+    box-shadow: 0 0 40px var(--blue-glow), 0 0 60px rgba(0, 85, 255, 0.3);
+    transform: translateY(-2px);
+}
+
+/* Purple Button - Accent */
+.bg-purple-600 {
+    background: linear-gradient(180deg, var(--purple-bright) 0%, var(--purple-dark) 100%) !important;
+    border: none !important;
+    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+    box-shadow: 0 0 20px var(--purple-glow);
+}
+
+.bg-purple-600:hover {
+    box-shadow: 0 0 40px var(--purple-glow), 0 0 60px rgba(170, 0, 255, 0.3);
+    transform: translateY(-2px);
+}
+
+/* Green Button - Success */
+.bg-green-600 {
+    background: linear-gradient(180deg, var(--green) 0%, #00cc55 100%) !important;
+    border: none !important;
+    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+    box-shadow: 0 0 20px var(--green-glow);
+    color: #000 !important;
+}
+
+.bg-green-600:hover {
+    box-shadow: 0 0 40px var(--green-glow);
+    transform: translateY(-2px);
+}
+
+/* Gray Button - Ghost */
+.bg-gray-600, .bg-gray-700 {
+    background: rgba(20, 20, 30, 0.9) !important;
+    border: 1px solid var(--border) !important;
+    clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+}
+
+.bg-gray-600:hover, .bg-gray-700:hover {
+    border-color: var(--blue) !important;
+    box-shadow: 0 0 20px var(--blue-glow);
+}
+
+/* Cyan maps to blue */
+.bg-cyan-600 {
+    background: linear-gradient(180deg, var(--blue-bright) 0%, var(--blue-dark) 100%) !important;
+    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+    box-shadow: 0 0 20px var(--blue-glow);
+}
+
+/* ============================================
+   INPUTS - Terminal Style
+   ============================================ */
+input, select, textarea {
+    background: rgba(0, 0, 0, 0.8) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    transition: all 0.2s ease;
+}
+
+input:focus, select:focus, textarea:focus {
+    border-color: var(--red) !important;
+    box-shadow: 0 0 15px var(--red-glow), inset 0 0 10px rgba(255, 0, 51, 0.1) !important;
+    outline: none !important;
+}
+
+input::placeholder {
+    color: var(--text-muted);
+}
+
+select option {
+    background: #1a1a2e !important;
+    color: #ffffff !important;
+    padding: 8px;
+}
+
+/* ============================================
+   STATUS - Neon Indicators
+   ============================================ */
+.status-online {
+    background: var(--green);
+    box-shadow: 0 0 15px var(--green-glow);
+}
+
+.status-offline {
+    background: var(--red);
+    box-shadow: 0 0 15px var(--red-glow);
+}
+
+.status-checking {
+    background: var(--yellow);
+    box-shadow: 0 0 15px var(--yellow-glow);
+    animation: neon-pulse 1.5s infinite;
+}
+
+@keyframes neon-pulse {
+    0%, 100% {
+        opacity: 1;
+        box-shadow: 0 0 15px var(--yellow-glow);
+    }
+    50% {
+        opacity: 0.7;
+        box-shadow: 0 0 25px var(--yellow-glow);
+    }
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* ============================================
+   TABLES - Data Grid
+   ============================================ */
+table {
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+thead {
+    background: rgba(255, 0, 51, 0.1);
+}
+
+th {
+    font-family: 'Orbitron', monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 0.7rem;
+    color: var(--red);
+    border-bottom: 1px solid var(--red) !important;
+    padding: 1rem;
+    text-shadow: 0 0 10px var(--red-glow);
+}
+
+tr {
+    transition: all 0.15s ease;
+}
+
+tbody tr:hover {
+    background: rgba(255, 0, 51, 0.05);
+}
+
+td {
+    border-bottom: 1px solid var(--border);
+}
+
+/* ============================================
+   LOG CONTAINER - Terminal
+   ============================================ */
+.log-container {
+    max-height: 400px;
+    overflow-y: auto;
+    background: rgba(0, 0, 0, 0.9);
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+}
+
+.log-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.log-container::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.5);
+}
+
+.log-container::-webkit-scrollbar-thumb {
+    background: var(--red);
+    box-shadow: 0 0 10px var(--red-glow);
+}
+
+.log-tab {
+    cursor: pointer;
+    transition: all 0.15s ease;
+    color: var(--text-dim);
+}
+
+.log-tab:hover {
+    color: var(--text);
+}
+
+.log-tab.active {
+    color: var(--red);
+    border-color: var(--red) !important;
+    text-shadow: 0 0 10px var(--red-glow);
+}
+
+/* ============================================
+   TOOLTIPS
+   ============================================ */
+.client-tooltip {
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 10px;
+    background: rgba(10, 10, 15, 0.98);
+    border: 1px solid var(--blue);
+    border-radius: 8px;
+    padding: 1rem;
+    z-index: 9999;
+    min-width: 300px;
+    max-height: 400px;
+    overflow-y: auto;
+    box-shadow: 0 0 30px var(--blue-glow);
+    backdrop-filter: blur(10px);
+}
+
+.client-count-container:hover .client-tooltip {
+    display: block;
+}
+
+/* ============================================
+   BADGES - Neon Tags
+   ============================================ */
+.bg-purple-600.text-\[10px\],
+.badge {
+    background: var(--purple) !important;
+    color: #fff;
+    font-family: 'Orbitron', monospace;
+    font-size: 0.55rem;
+    letter-spacing: 0.05em;
+    box-shadow: 0 0 15px var(--purple-glow);
+}
+
+/* ============================================
+   PROGRESS BARS - Neon
+   ============================================ */
+.bg-blue-500 {
+    background: linear-gradient(90deg, var(--blue-dark) 0%, var(--blue-bright) 100%) !important;
+    box-shadow: 0 0 15px var(--blue-glow);
+}
+
+.bg-purple-500 {
+    background: linear-gradient(90deg, var(--purple-dark) 0%, var(--purple-bright) 100%) !important;
+    box-shadow: 0 0 15px var(--purple-glow);
+}
+
+.bg-green-500 {
+    background: linear-gradient(90deg, #00aa44 0%, var(--green) 100%) !important;
+    box-shadow: 0 0 15px var(--green-glow);
+}
+
+.bg-red-500 {
+    background: linear-gradient(90deg, var(--red-dark) 0%, var(--red-bright) 100%) !important;
+    box-shadow: 0 0 15px var(--red-glow);
+}
+
+/* ============================================
+   MODALS
+   ============================================ */
+.modal-overlay {
+    background: rgba(0, 0, 0, 0.95);
+    backdrop-filter: blur(5px);
+}
+
+.modal-content {
+    background: rgba(10, 10, 15, 0.98);
+    border: 1px solid var(--red);
+    box-shadow: 0 0 50px var(--red-glow), inset 0 0 50px rgba(255, 0, 51, 0.02);
+}
+
+/* ============================================
+   SCROLLBARS - Neon
+   ============================================ */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--black);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--red-dark);
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--red);
+    box-shadow: 0 0 10px var(--red-glow);
+}
+
+/* ============================================
+   LINKS
+   ============================================ */
+a {
+    color: var(--blue-bright);
+    transition: all 0.2s ease;
+}
+
+a:hover {
+    color: var(--purple-bright);
+    text-shadow: 0 0 10px var(--purple-glow);
+}
+
+/* ============================================
+   TEXT COLORS - Neon
+   ============================================ */
+.text-blue-400, .text-blue-500 {
+    color: var(--blue-bright) !important;
+    text-shadow: 0 0 10px var(--blue-glow);
+}
+
+.text-purple-400, .text-purple-500 {
+    color: var(--purple-bright) !important;
+    text-shadow: 0 0 10px var(--purple-glow);
+}
+
+.text-green-400, .text-green-500 {
+    color: var(--green) !important;
+    text-shadow: 0 0 10px var(--green-glow);
+}
+
+.text-yellow-400, .text-yellow-500 {
+    color: var(--yellow) !important;
+    text-shadow: 0 0 10px var(--yellow-glow);
+}
+
+.text-red-400, .text-red-500 {
+    color: var(--red) !important;
+    text-shadow: 0 0 10px var(--red-glow);
+}
+
+.text-cyan-400, .text-cyan-500 {
+    color: var(--blue-bright) !important;
+    text-shadow: 0 0 10px var(--blue-glow);
+}
+
+.text-gray-400 {
+    color: var(--text-dim) !important;
+}
+
+/* Border colors */
+.border-blue-500, .border-blue-400 {
+    border-color: var(--blue) !important;
+}
+
+.border-purple-500, .border-purple-400 {
+    border-color: var(--purple) !important;
+}
+
+.border-gray-700, .border-gray-600 {
+    border-color: var(--border) !important;
+}
+
+/* Background overrides */
+.bg-gray-800 {
+    background: var(--surface) !important;
+}
+
+.bg-gray-900 {
+    background: transparent !important;
+}
+
+/* ============================================
+   RESPONSIVE
+   ============================================ */
+@media (max-width: 768px) {
+    .sidebar {
+        width: 100%;
+        min-height: auto;
+    }
+    .main-content {
+        margin-left: 0;
+    }
+}
+
+/* ============================================
+   UTILITIES
+   ============================================ */
+[x-cloak] {
+    display: none !important;
+}
+
+.spinner {
+    border: 2px solid var(--border);
+    border-top-color: var(--red);
+    border-radius: 50%;
+    width: 16px;
+    height: 16px;
+    animation: spin 0.8s linear infinite;
+    box-shadow: 0 0 10px var(--red-glow);
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.flex {
+    position: relative;
+    z-index: 1;
+}
+
+/* ============================================
+   UTILITY CLASSES - Color & Effects
+   ============================================ */
+
+/* CSS Variable Aliases for Tailwind-style usage */
+:root {
+    --tenroot-red: #ff0033;
+    --electric-blue: #0055ff;
+    --neon-purple: #aa00ff;
+}
+
+/* Text Colors */
+.text-electric-blue { color: var(--electric-blue) !important; }
+.text-neon-purple { color: var(--neon-purple) !important; }
+.text-tenroot-red { color: var(--tenroot-red) !important; }
+
+/* Background Colors */
+.bg-electric-blue { background-color: var(--electric-blue) !important; }
+.bg-neon-purple { background-color: var(--neon-purple) !important; }
+.bg-tenroot-red { background-color: var(--tenroot-red) !important; }
+
+/* Border Colors */
+.border-electric-blue { border-color: var(--electric-blue) !important; }
+.border-neon-purple { border-color: var(--neon-purple) !important; }
+.border-tenroot-red { border-color: var(--tenroot-red) !important; }
+
+/* Glow Text Effects */
+.text-glow-red {
+    color: var(--tenroot-red);
+    text-shadow: 0 0 10px rgba(255, 0, 51, 0.5), 0 0 20px rgba(255, 0, 51, 0.3);
+}
+.text-glow-blue {
+    color: var(--electric-blue);
+    text-shadow: 0 0 10px rgba(0, 85, 255, 0.5), 0 0 20px rgba(0, 85, 255, 0.3);
+}
+.text-glow-purple {
+    color: var(--neon-purple);
+    text-shadow: 0 0 10px rgba(170, 0, 255, 0.5), 0 0 20px rgba(170, 0, 255, 0.3);
+}
+
+/* Font Classes */
+.font-orbitron { font-family: 'Orbitron', 'JetBrains Mono', monospace !important; }
+.font-mono { font-family: 'JetBrains Mono', 'Fira Code', monospace !important; }
+
+/* Cyberpunk Background for standalone pages */
+.cyberpunk-bg {
+    background: linear-gradient(180deg, #0a0a12 0%, #000000 100%);
+    min-height: 100vh;
+}
+
+/* CRT Overlay for standalone pages */
+.crt-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 9999;
+}
+
+.crt-overlay::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: repeating-linear-gradient(
+        0deg,
+        rgba(0, 0, 0, 0.03) 0px,
+        rgba(0, 0, 0, 0.03) 1px,
+        transparent 1px,
+        transparent 4px
+    );
+}
+
+.crt-overlay::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(ellipse at center, transparent 60%, rgba(0, 0, 0, 0.3) 100%);
+}
+
+/* ============================================
+   BUTTONS - Ensure White Text
+   ============================================ */
+button,
+a[class*="bg-red-"],
+a[class*="bg-blue-"],
+a[class*="bg-purple-"],
+a[class*="bg-gray-"] {
+    color: #ffffff !important;
+}
+
+/* Small/muted text */
+.text-muted,
+.text-sm.text-gray-400,
+.text-xs.text-gray-500 {
+    color: var(--text-dim);
+}

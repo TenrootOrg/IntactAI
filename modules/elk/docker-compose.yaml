@@ -1,0 +1,83 @@
+# ELK Stack - Elasticsearch, Logstash, Kibana
+# Ports: 9200 (Elasticsearch), 5601 (Kibana), 5044 (Logstash Beats)
+
+services:
+  elasticsearch:
+    container_name: mssp_elasticsearch
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.17.0}
+    environment:
+      - node.name=elasticsearch
+      - cluster.name=mssp-cluster
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.license.self_generated.type=basic
+      - "ES_JAVA_OPTS=-Xms${ES_HEAP_SIZE:-512m} -Xmx${ES_HEAP_SIZE:-512m}"
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    restart: unless-stopped
+    networks:
+      - mssp_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  logstash:
+    container_name: mssp_logstash
+    image: docker.elastic.co/logstash/logstash:${ELASTIC_VERSION:-8.17.0}
+    environment:
+      - "LS_JAVA_OPTS=-Xms${LS_HEAP_SIZE:-256m} -Xmx${LS_HEAP_SIZE:-256m}"
+      - ELASTIC_HOST=elasticsearch:9200
+    volumes:
+      - ./config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./config/pipeline:/usr/share/logstash/pipeline:ro
+    ports:
+      - "5044:5044"      # Beats input
+      - "50000:50000"    # TCP input
+      - "9600:9600"      # API
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - mssp_network
+
+  kibana:
+    container_name: mssp_kibana
+    image: docker.elastic.co/kibana/kibana:${KIBANA_VERSION:-8.17.0}
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - xpack.security.enabled=false
+      - xpack.spaces.enabled=false
+      - SERVER_NAME=kibana
+      - SERVER_SHOWINSECURECLUSTERWARNING=false
+      - TELEMETRY_ENABLED=false
+      # - SERVER_BASEPATH=/kibana
+      # - SERVER_REWRITEBASEPATH=true
+    ports:
+      - "5601:5601"
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - mssp_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5601/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  elasticsearch_data:
+
+networks:
+  mssp_network:
+    external: true

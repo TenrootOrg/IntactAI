@@ -1,0 +1,761 @@
+# Velociraptor Tools Inventory
+# This file controls which tools are downloaded during installation and maintenance
+# Set enabled: false to disable a tool (keeps it in config but skips download)
+#
+# Tool types:
+#   github_release: Download from GitHub releases API
+#   direct_url: Direct download URL
+#   page_scrape: Scrape URL from a webpage
+#
+# Author: Based on 10Root download script
+
+settings:
+  # Path inside Velociraptor container where tools are stored
+  # Mount your VelociraptorPlus folder to this path in docker-compose
+  tools_directory: "/tools"
+  timeout: 300
+  retry_count: 3
+
+# ============================================================================
+# VELOCIRAPTOR CORE
+# ============================================================================
+velociraptor_core:
+  - name: "Velociraptor Windows x64"
+    enabled: true
+    type: github_release
+    repo: "Velocidex/velociraptor"
+    pattern: ".*windows-amd64\\.exe$"
+    category: core
+
+  - name: "Velociraptor Windows MSI"
+    enabled: true
+    type: github_release
+    repo: "Velocidex/velociraptor"
+    pattern: ".*windows-amd64\\.msi$"
+    category: core
+
+  - name: "Velociraptor Collector"
+    enabled: true
+    type: github_release
+    repo: "Velocidex/velociraptor"
+    pattern: "velociraptor-collector"
+    category: core
+
+  - name: "Velociraptor Linux x64"
+    enabled: true
+    type: github_release
+    repo: "Velocidex/velociraptor"
+    pattern: ".*linux-amd64$"
+    category: core
+
+# ============================================================================
+# EVENT LOG ANALYSIS
+# ============================================================================
+event_log_tools:
+  - name: "Hayabusa"
+    enabled: true
+    type: github_release
+    repo: "Yamato-Security/hayabusa"
+    pattern: "hayabusa-.*-win-x64\\.zip$"
+    category: detection
+    description: "SIGMA-based Windows event log analyzer"
+
+  - name: "Hayabusa Live Response"
+    enabled: true
+    type: github_release
+    repo: "Yamato-Security/hayabusa"
+    pattern: "hayabusa-.*-win-x64-live-response\\.zip$"
+    category: detection
+
+  - name: "EVTXHussar"
+    enabled: true
+    type: github_release
+    repo: "yarox24/EvtxHussar"
+    pattern: ".*windows_amd64\\.zip$"
+    category: detection
+    description: "EVTX parsing and analysis"
+
+  - name: "Chainsaw"
+    enabled: true
+    type: github_release
+    repo: "WithSecureLabs/chainsaw"
+    pattern: "chainsaw_all_platforms\\+rules.*\\.zip$"
+    category: detection
+    description: "Fast Windows event log analysis with SIGMA"
+
+  - name: "Takajo"
+    enabled: true
+    type: github_release
+    repo: "Yamato-Security/takajo"
+    pattern: "takajo.*-win-x64\\.zip$"
+    category: detection
+    description: "Hayabusa timeline analysis"
+
+  - name: "Zircolite"
+    enabled: true
+    type: direct_url
+    url: "https://github.com/wagga40/Zircolite/releases/download/2.40.0/zircolite_win_x64_2.40.0.7z"
+    filename: "zircolite_win_x64.7z"
+    category: detection
+    description: "SIGMA-based EVTX analyzer"
+
+# ============================================================================
+# PERSISTENCE DETECTION
+# ============================================================================
+persistence_tools:
+  - name: "PersistenceSniper"
+    enabled: true
+    type: github_release
+    repo: "last-byte/PersistenceSniper"
+    pattern: "PersistenceSniper\\.zip$"
+    category: detection
+    description: "PowerShell persistence scanner"
+
+  - name: "PersistenceSniper False Positives"
+    enabled: true
+    type: direct_url
+    url: "https://raw.githubusercontent.com/ablescia/Windows.PersistenceSniper/main/false_positives.csv"
+    category: detection
+
+  - name: "Trawler"
+    enabled: false
+    type: github_release
+    repo: "joeavanzato/Trawler"
+    pattern: ".*\\.zip$"
+    category: detection
+    description: "Persistence hunting tool"
+
+# ============================================================================
+# YARA & DETECTION RULES
+# ============================================================================
+yara_tools:
+  - name: "Yara Win64"
+    enabled: true
+    type: github_release
+    repo: "VirusTotal/yara"
+    pattern: "yara.*-win64\\.zip$"
+    category: detection
+
+  - name: "Yara Win32"
+    enabled: true
+    type: github_release
+    repo: "VirusTotal/yara"
+    pattern: "yara.*-win32\\.zip$"
+    category: detection
+
+  - name: "YaraForge Core"
+    enabled: true
+    type: github_release
+    repo: "YARAHQ/yara-forge"
+    pattern: ".*core\\.zip$"
+    category: rules
+
+  - name: "YaraForge Extended"
+    enabled: true
+    type: github_release
+    repo: "YARAHQ/yara-forge"
+    pattern: ".*extended\\.zip$"
+    category: rules
+
+  - name: "YaraForge Full"
+    enabled: true
+    type: github_release
+    repo: "YARAHQ/yara-forge"
+    pattern: ".*full\\.zip$"
+    category: rules
+
+  - name: "DetectRaptor YARA Windows"
+    enabled: true
+    type: direct_url
+    url: "https://github.com/mgreen27/DetectRaptor/raw/master/yara/full_windows_file.yar.gz"
+    category: rules
+
+  - name: "DetectRaptor YARA Linux"
+    enabled: true
+    type: direct_url
+    url: "https://github.com/mgreen27/DetectRaptor/raw/master/yara/full_linux_file.yar.gz"
+    category: rules
+
+  - name: "DetectRaptor YARA Full"
+    enabled: true
+    type: direct_url
+    url: "https://github.com/mgreen27/DetectRaptor/raw/master/yara/yara-rules-full.yar"
+    category: rules
+
+  - name: "Loki-RS"
+    enabled: true
+    type: github_release
+    repo: "Neo23x0/Loki-RS"
+    pattern: "loki-linux-x86_64.*\\.tar\\.gz$"
+    category: detection
+    description: "IOC and YARA scanner"
+
+# ============================================================================
+# VELOCIRAPTOR ARTIFACTS & VQL
+# ============================================================================
+velociraptor_artifacts:
+  - name: "DetectRaptor VQL"
+    enabled: true
+    type: github_release
+    repo: "mgreen27/DetectRaptor"
+    pattern: "DetectRaptorVQL\\.zip$"
+    category: artifacts
+
+  - name: "Artifact Exchange"
+    enabled: true
+    type: direct_url
+    url: "https://github.com/Velocidex/velociraptor-docs/raw/gh-pages/exchange/artifact_exchange_v2.zip"
+    category: artifacts
+
+  - name: "Velociraptor Sigma Artifacts"
+    enabled: true
+    type: direct_url
+    url: "https://sigma.velocidex.com/Velociraptor.Sigma.Artifacts.zip"
+    category: artifacts
+
+  - name: "Sigma Profiles"
+    enabled: true
+    type: direct_url
+    url: "https://sigma.velocidex.com/profiles.json"
+    category: artifacts
+
+  - name: "Rapid7Labs VQL"
+    enabled: true
+    type: direct_url
+    url: "https://github.com/rapid7/Rapid7-Labs/raw/main/Vql/release/Rapid7LabsVQL.zip"
+    category: artifacts
+
+  - name: "Registry Hunter"
+    enabled: true
+    type: direct_url
+    url: "https://registry-hunter.velocidex.com/Windows.Registry.Hunter.zip"
+    category: artifacts
+
+  - name: "SQLiteHunter"
+    enabled: true
+    type: direct_url
+    url: "https://sqlitehunter.velocidex.com/SQLiteHunter.zip"
+    category: artifacts
+
+  - name: "Triage Artifacts"
+    enabled: true
+    type: direct_url
+    url: "https://triage.velocidex.com/artifacts/Velociraptor_Triage_v0.1.zip"
+    category: artifacts
+
+  - name: "10Root Artifacts"
+    enabled: true
+    type: direct_url
+    url: "https://github.com/TenRootOrg/Velociraptor-Artifacts/archive/refs/heads/main.zip"
+    category: artifacts
+
+  - name: "DetectRaptor LOLRMM CSV"
+    enabled: true
+    type: direct_url
+    url: "https://github.com/mgreen27/DetectRaptor/raw/master/csv/lolrmm.csv"
+    category: artifacts
+
+# ============================================================================
+# MEMORY FORENSICS
+# ============================================================================
+memory_tools:
+  - name: "WinPmem"
+    enabled: true
+    type: github_release
+    repo: "Velocidex/WinPmem"
+    pattern: "winpmem_mini_x64.*\\.exe$"
+    category: memory
+
+  - name: "Volatility"
+    enabled: true
+    type: direct_url
+    url: "https://github.com/volatilityfoundation/volatility/archive/master.zip"
+    filename: "volatility.zip"
+    category: memory
+
+# ============================================================================
+# NIRSOFT TOOLS
+# ============================================================================
+nirsoft_tools:
+  - name: "LastActivityView"
+    enabled: true
+    type: direct_url
+    url: "https://www.nirsoft.net/utils/lastactivityview.zip"
+    category: forensics
+
+  - name: "BrowsingHistoryView"
+    enabled: true
+    type: direct_url
+    url: "https://www.nirsoft.net/utils/browsinghistoryview-x64.zip"
+    category: forensics
+
+# ============================================================================
+# ERIC ZIMMERMAN TOOLS
+# ============================================================================
+zimmerman_tools:
+  - name: "AmcacheParser"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/AmcacheParser.zip"
+    category: forensics
+
+  - name: "AppCompatCacheParser"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/AppCompatCacheParser.zip"
+    category: forensics
+
+  - name: "bstrings"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/bstrings.zip"
+    category: forensics
+
+  - name: "EvtxECmd"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/EvtxECmd.zip"
+    category: forensics
+
+  - name: "hasher"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/hasher.zip"
+    category: forensics
+
+  - name: "JLECmd"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/JLECmd.zip"
+    category: forensics
+    description: "Jump List parser"
+
+  - name: "LECmd"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/LECmd.zip"
+    category: forensics
+    description: "LNK file parser"
+
+  - name: "MFTECmd"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/MFTECmd.zip"
+    category: forensics
+    description: "MFT parser"
+
+  - name: "PECmd"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/PECmd.zip"
+    category: forensics
+    description: "Prefetch parser"
+
+  - name: "RBCmd"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/RBCmd.zip"
+    category: forensics
+    description: "Recycle Bin parser"
+
+  - name: "RecentFileCacheParser"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/RecentFileCacheParser.zip"
+    category: forensics
+
+  - name: "RECmd"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/RECmd.zip"
+    category: forensics
+    description: "Registry explorer CLI"
+
+  - name: "rla"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/rla.zip"
+    category: forensics
+
+  - name: "SBECmd"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/SBECmd.zip"
+    category: forensics
+    description: "ShellBags explorer CLI"
+
+  - name: "SrumECmd"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/SrumECmd.zip"
+    category: forensics
+
+  - name: "SumECmd"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/SumECmd.zip"
+    category: forensics
+
+  - name: "iisGeolocate"
+    enabled: true
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/iisGeolocate.zip"
+    category: forensics
+
+  - name: "TimelineExplorer"
+    enabled: false  # URL returns 404 - file no longer available
+    type: direct_url
+    url: "https://download.ericzimmermanstools.com/net6/TimelineExplorer.zip"
+    category: forensics
+
+# ============================================================================
+# SYSINTERNALS TOOLS
+# ============================================================================
+sysinternals_tools:
+  - name: "Autoruns"
+    enabled: true
+    type: direct_url
+    url: "https://live.sysinternals.com/tools/autorunsc64.exe"
+    category: sysinternals
+
+  - name: "Disk2VHD"
+    enabled: true
+    type: direct_url
+    url: "https://live.sysinternals.com/tools/disk2vhd64.exe"
+    category: sysinternals
+
+  - name: "Process Explorer"
+    enabled: true
+    type: direct_url
+    url: "https://live.sysinternals.com/tools/procexp64.exe"
+    category: sysinternals
+
+  - name: "Sigcheck"
+    enabled: true
+    type: direct_url
+    url: "https://live.sysinternals.com/tools/sigcheck64.exe"
+    category: sysinternals
+
+  - name: "Strings"
+    enabled: true
+    type: direct_url
+    url: "https://live.sysinternals.com/tools/strings64.exe"
+    category: sysinternals
+
+  - name: "Sysmon"
+    enabled: true
+    type: direct_url
+    url: "https://live.sysinternals.com/tools/Sysmon64.exe"
+    category: sysinternals
+
+# ============================================================================
+# DISK IMAGING & COLLECTION
+# ============================================================================
+imaging_tools:
+  - name: "FTK Imager CLI"
+    enabled: true
+    type: direct_url
+    url: "https://www.dropbox.com/scl/fi/juz70umd0clt2np4hf0d6/FTKImager-commandline.zip?rlkey=0320go01k20eyh3qutwb0pwg0&dl=1"
+    filename: "FTKImager-commandline.zip"
+    category: imaging
+
+# ============================================================================
+# SECURITY AUDIT & HARDENING
+# ============================================================================
+audit_tools:
+  - name: "PingCastle"
+    enabled: true
+    type: github_release
+    repo: "netwrix/pingcastle"
+    pattern: "ping.*\\.zip$"
+    category: audit
+    description: "Active Directory security audit"
+
+  - name: "HardeningKitty"
+    enabled: true
+    type: direct_url
+    url: "https://github.com/0x6d69636b/windows_hardening/archive/refs/heads/master.zip"
+    filename: "HardeningKitty.zip"
+    category: audit
+    description: "Windows hardening checker"
+
+  - name: "Microsoft MRT"
+    enabled: true
+    type: direct_url
+    url: "https://go.microsoft.com/fwlink/?LinkId=212732"
+    filename: "Windows-KB890830-x64-MRT.exe"
+    category: audit
+    description: "Microsoft Malicious Software Removal Tool"
+
+# ============================================================================
+# THREAT INTELLIGENCE / SCANNERS
+# ============================================================================
+threat_intel:
+  - name: "Thor Lite"
+    enabled: true
+    type: direct_url
+    url: "https://update1.nextron-systems.com/getupdate.php?product=thor10lite-win"
+    filename: "thor.zip"
+    category: scanner
+    description: "YARA/IOC scanner (requires license)"
+
+# ============================================================================
+# LINUX TOOLS
+# ============================================================================
+linux_tools:
+  - name: "Linforce"
+    enabled: true
+    type: direct_url
+    url: "https://raw.githubusercontent.com/RCarras/linforce/main/linforce.sh"
+    category: linux
+    description: "Linux brute force detection"
+
+# ============================================================================
+# OPTIONAL LARGE DOWNLOADS (disabled by default)
+# ============================================================================
+optional_large:
+  - name: "Bento Toolkit"
+    enabled: false
+    type: page_scrape
+    page_url: "https://tsurugi-linux.org/mirrors/mirror1.php"
+    pattern: "bento_.*\\.7z"
+    category: toolkit
+    description: "Large forensics toolkit (~2GB)"
+
+  - name: "ForensicTools Kit"
+    enabled: false
+    type: github_release
+    repo: "cristianzsh/forensictools"
+    pattern: "forensictools.*setup\\.exe$"
+    category: toolkit
+
+# ============================================================================
+# VELOCIRAPTOR SERVER INVENTORY TOOLS
+# These tools are served locally from the Velociraptor server to clients.
+# file_pattern: Regex to match the downloaded file
+# tool_name: Velociraptor tool name for inventory_add
+# ============================================================================
+velociraptor_inventory:
+  # Persistence Detection
+  - tool_name: "PSniper"
+    file_pattern: "(?i)^PersistenceSniper.zip$"
+    enabled: true
+
+  - tool_name: "DiffCSVUrl"
+    file_pattern: "(?i)^false_positives.csv$"
+    enabled: true
+
+  - tool_name: "Autorun_amd64"
+    file_pattern: "(?i)^autorunsc64.exe$"
+    enabled: true
+
+  # Event Log Analysis
+  - tool_name: "Hayabusa-2.14.0"
+    file_pattern: "(?i)^hayabusa-.*-win-x64.zip$"
+    enabled: true
+
+  - tool_name: "Hayabusa-3.8.0"
+    file_pattern: "(?i)^hayabusa-.*-win-x64-live-response.zip$"
+    enabled: true
+
+  - tool_name: "Chainsaw"
+    file_pattern: "(?i)^chainsaw_all_platforms.*.zip$"
+    enabled: true
+
+  - tool_name: "EvtxHussar17"
+    file_pattern: "(?i)^EvtxHussar.*windows_amd64.zip$"
+    enabled: true
+
+  - tool_name: "Takajo-2.5.0"
+    file_pattern: "(?i)^takajo-.*-win-x64.zip$"
+    enabled: true
+
+  - tool_name: "Zircolite"
+    file_pattern: "(?i)^zircolite_win.*\\.7z$"
+    enabled: true
+
+  - tool_name: "Zircolite"
+    file_pattern: "(?i)^zircolite_win10.exe$"
+    enabled: true
+
+  # YARA & Detection
+  - tool_name: "FileYaraLinux"
+    file_pattern: "(?i)^full_linux_file.yar.gz$"
+    enabled: true
+
+  - tool_name: "FileYaraWindows"
+    file_pattern: "(?i)^full_windows_file.yar.gz$"
+    enabled: true
+
+  - tool_name: "YaraRulesFull"
+    file_pattern: "(?i)^yara-rules-full.yar$"
+    enabled: true
+
+  - tool_name: "yaraexecutable"
+    file_pattern: "(?i)^yara-.*-win64.zip$"
+    enabled: true
+
+  - tool_name: "YaraForgeCore"
+    file_pattern: "(?i)^yara-forge-rules-core.zip$"
+    enabled: true
+
+  - tool_name: "YaraForgeExtended"
+    file_pattern: "(?i)^yara-forge-rules-extended.zip$"
+    enabled: true
+
+  - tool_name: "YaraForgeFull"
+    file_pattern: "(?i)^yara-forge-rules-full.zip$"
+    enabled: true
+
+  - tool_name: "DetectRaptorLolRMM"
+    file_pattern: "(?i)^lolrmm.csv$"
+    enabled: true
+
+  # Forensic Tools - Eric Zimmerman
+  - tool_name: "JLECmd"
+    file_pattern: "(?i)^JLECmd.zip$"
+    enabled: true
+
+  - tool_name: "LECmd"
+    file_pattern: "(?i)^LECmd.zip$"
+    enabled: true
+
+  - tool_name: "SBECmd"
+    file_pattern: "(?i)^SBECmd.zip$"
+    enabled: true
+
+  - tool_name: "AmcacheParser"
+    file_pattern: "(?i)^AmcacheParser.zip$"
+    enabled: true
+
+  - tool_name: "AppCompatCacheParser"
+    file_pattern: "(?i)^AppCompatCacheParser.zip$"
+    enabled: true
+
+  - tool_name: "EvtxECmd"
+    file_pattern: "(?i)^EvtxECmd.zip$"
+    enabled: true
+
+  - tool_name: "MFTECmd"
+    file_pattern: "(?i)^MFTECmd.zip$"
+    enabled: true
+
+  - tool_name: "PECmd"
+    file_pattern: "(?i)^PECmd.zip$"
+    enabled: true
+
+  - tool_name: "RBCmd"
+    file_pattern: "(?i)^RBCmd.zip$"
+    enabled: true
+
+  - tool_name: "RECmd"
+    file_pattern: "(?i)^RECmd.zip$"
+    enabled: true
+
+  - tool_name: "SrumECmd"
+    file_pattern: "(?i)^SrumECmd.zip$"
+    enabled: true
+
+  - tool_name: "SumECmd"
+    file_pattern: "(?i)^SumECmd.zip$"
+    enabled: true
+
+  - tool_name: "RecentFileCacheParser"
+    file_pattern: "(?i)^RecentFileCacheParser.zip$"
+    enabled: true
+
+  - tool_name: "BStrings"
+    file_pattern: "(?i)^bstrings.zip$"
+    enabled: true
+
+  - tool_name: "Hasher"
+    file_pattern: "(?i)^hasher.zip$"
+    enabled: true
+
+  - tool_name: "IISGeolocate"
+    file_pattern: "(?i)^iisGeolocate.zip$"
+    enabled: true
+
+  - tool_name: "RLA"
+    file_pattern: "(?i)^rla.zip$"
+    enabled: true
+
+  - tool_name: "TimelineExplorer"
+    file_pattern: "(?i)^TimelineExplorer.zip$"
+    enabled: false  # Download URL returns 404
+
+  # Nirsoft
+  - tool_name: "lastactivityview"
+    file_pattern: "(?i)^lastactivityview.zip$"
+    enabled: true
+
+  - tool_name: "NirsoftBrowsingHistoryView64"
+    file_pattern: "(?i)^browsinghistoryview-x64.zip$"
+    enabled: true
+
+  # Sysinternals
+  - tool_name: "SysmonBinary"
+    file_pattern: "(?i)^Sysmon64.exe$"
+    enabled: true
+
+  - tool_name: "disk2vhd"
+    file_pattern: "(?i)^disk2vhd64.exe$"
+    enabled: true
+
+  - tool_name: "sigcheck_amd64"
+    file_pattern: "(?i)^sigcheck64.exe$"
+    enabled: true
+
+  - tool_name: "Strings"
+    file_pattern: "(?i)^strings64.exe$"
+    enabled: true
+
+  - tool_name: "ProcessExplorer"
+    file_pattern: "(?i)^procexp64.exe$"
+    enabled: true
+
+  # Other Tools
+  - tool_name: "SigmaProfiles"
+    file_pattern: "(?i)^profiles.json$"
+    enabled: true
+
+  - tool_name: "HardeningKitty"
+    file_pattern: "(?i)^windows_hardening.*\\.zip$"
+    enabled: true
+
+  - tool_name: "ThorZIP"
+    file_pattern: "(?i)^thor.*\\.zip$"
+    enabled: true
+
+  - tool_name: "MSRT"
+    file_pattern: "(?i)^Windows-KB890830.*exe$"
+    enabled: true
+
+  - tool_name: "FTKImager"
+    file_pattern: "(?i)^FTKImager-commandline.zip$"
+    enabled: true
+
+  - tool_name: "linforce"
+    file_pattern: "(?i)^linforce.sh$"
+    enabled: true
+
+  - tool_name: "WinPmem"
+    file_pattern: "(?i)^winpmem.*\\.exe$"
+    enabled: true
+
+  - tool_name: "Volatility"
+    file_pattern: "(?i)^volatility.*\\.zip$"
+    enabled: true
+
+  # Velociraptor binaries
+  - tool_name: "VelociraptorLinux"
+    file_pattern: "(?i)^velociraptor-v.*-linux-amd64"
+    enabled: true
+
+  - tool_name: "VelociraptorWindows"
+    file_pattern: "(?i)^velociraptor-v.*-windows-amd64.exe$"
+    enabled: true
+
+  - tool_name: "VelociraptorWindowsMSI"
+    file_pattern: "(?i)^velociraptor-v.*-windows-amd64.msi$"
+    enabled: true
