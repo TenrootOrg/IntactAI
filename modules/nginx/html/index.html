@@ -1390,46 +1390,46 @@ sudo ./velociraptor service start</code></pre>
                     <!-- Timesketch Tab -->
                     <div x-show="settingsTab === 'timesketch'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
                         <h3 class="text-lg font-semibold text-white mb-4">Timesketch LLM Configuration</h3>
-                        <p class="text-gray-400 text-sm mb-4">Configure LLM providers for Timesketch AI features (NL2Q, Summarization, etc.)</p>
+                        <p class="text-gray-400 text-sm mb-4">Configure LLM provider for Timesketch AI features (NL2Q, Summarization, etc.)</p>
 
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <!-- Google AI Studio -->
-                            <div class="bg-gray-900 rounded-lg p-4 border border-gray-700">
-                                <div class="flex items-center gap-2 mb-3">
-                                    <svg class="w-5 h-5 text-blue-400" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-                                    <h4 class="text-sm font-semibold text-white">Google AI Studio</h4>
+                        <div class="mb-4">
+                            <label class="block text-sm text-gray-400 mb-1">LLM Provider</label>
+                            <select x-model="$store.settings.config.timesketch.llm_mode" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm">
+                                <option value="google">Google AI Studio</option>
+                                <option value="ollama">Ollama (Local)</option>
+                            </select>
+                        </div>
+
+                        <!-- Google AI Studio -->
+                        <div x-show="$store.settings.config.timesketch.llm_mode === 'google'" x-transition>
+                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">Google AI Studio Configuration</div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">API Key</label>
+                                    <input type="password" x-model="$store.settings.config.timesketch.google_ai_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="AIza...">
                                 </div>
-                                <div class="space-y-2">
-                                    <div>
-                                        <label class="block text-xs text-gray-400 mb-1">API Key</label>
-                                        <input type="password" x-model="$store.settings.config.timesketch.google_ai_key" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm" placeholder="AIza...">
-                                    </div>
-                                    <div>
-                                        <label class="block text-xs text-gray-400 mb-1">Model</label>
-                                        <select x-model="$store.settings.config.timesketch.google_ai_model" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm">
-                                            <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-                                            <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-                                            <option value="gemini-1.5-pro">gemini-1.5-pro</option>
-                                        </select>
-                                    </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                    <select x-model="$store.settings.config.timesketch.google_ai_model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                        <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                                        <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                                        <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+                                    </select>
                                 </div>
                             </div>
+                        </div>
 
-                            <!-- Ollama (Local) -->
-                            <div class="bg-gray-900 rounded-lg p-4 border border-gray-700">
-                                <div class="flex items-center gap-2 mb-3">
-                                    <svg class="w-5 h-5 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"/></svg>
-                                    <h4 class="text-sm font-semibold text-white">Ollama (Local)</h4>
+                        <!-- Ollama (Local) -->
+                        <div x-show="$store.settings.config.timesketch.llm_mode === 'ollama'" x-transition>
+                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">Ollama Configuration</div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Server URL</label>
+                                    <input type="text" x-model="$store.settings.config.timesketch.ollama_url" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="http://localhost:11434">
                                 </div>
-                                <div class="space-y-2">
-                                    <div>
-                                        <label class="block text-xs text-gray-400 mb-1">Server URL</label>
-                                        <input type="text" x-model="$store.settings.config.timesketch.ollama_url" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm" placeholder="http://localhost:11434">
-                                    </div>
-                                    <div>
-                                        <label class="block text-xs text-gray-400 mb-1">Model</label>
-                                        <input type="text" x-model="$store.settings.config.timesketch.ollama_model" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm" placeholder="llama3.1:8b">
-                                    </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                    <input type="text" x-model="$store.settings.config.timesketch.ollama_model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="llama3.1:8b">
                                 </div>
                             </div>
                         </div>
