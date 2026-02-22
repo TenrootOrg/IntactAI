@@ -120,10 +120,6 @@ DEFAULT_CLOUD_CONFIG = {
         "client_id": "",
         "client_secret": "",
         "subscription_id": ""
-    },
-    "gcp": {
-        "project_id": "",
-        "service_account_json": ""
     }
 }
 
@@ -161,8 +157,6 @@ def get_cloud_config():
             masked['aws']['session_token'] = '••••••••'
         if masked.get('azure', {}).get('client_secret'):
             masked['azure']['client_secret'] = '••••••••'
-        if masked.get('gcp', {}).get('service_account_json'):
-            masked['gcp']['service_account_json'] = '(configured)' if masked['gcp']['service_account_json'] else ''
         return jsonify(masked)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -186,8 +180,6 @@ def save_cloud_config_endpoint():
             config['aws']['session_token'] = existing.get('aws', {}).get('session_token', '')
         if config.get('azure', {}).get('client_secret') == '••••••••':
             config['azure']['client_secret'] = existing.get('azure', {}).get('client_secret', '')
-        if config.get('gcp', {}).get('service_account_json') == '(configured)':
-            config['gcp']['service_account_json'] = existing.get('gcp', {}).get('service_account_json', '')
 
         _save_cloud_config(config)
         print(f"[CLOUD] Saved cloud config for provider: {config.get('provider', 'unknown')}", flush=True)

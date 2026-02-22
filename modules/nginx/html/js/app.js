@@ -268,10 +268,6 @@ document.addEventListener('alpine:init', () => {
                     client_id: '',
                     client_secret: '',
                     subscription_id: ''
-                },
-                gcp: {
-                    project_id: '',
-                    service_account_json: ''
                 }
             }
         },
@@ -313,8 +309,7 @@ document.addEventListener('alpine:init', () => {
                     this.config.cloud = {
                         provider: cloudData.provider || 'aws',
                         aws: { ...this.config.cloud.aws, ...cloudData.aws },
-                        azure: { ...this.config.cloud.azure, ...cloudData.azure },
-                        gcp: { ...this.config.cloud.gcp, ...cloudData.gcp }
+                        azure: { ...this.config.cloud.azure, ...cloudData.azure }
                     };
                 }
 
