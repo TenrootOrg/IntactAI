@@ -1277,9 +1277,6 @@ sudo ./velociraptor service start</code></pre>
                             </svg>
                             <span x-text="$store.settings.saving ? 'Running...' : 'Maintenance'"></span>
                         </button>
-                        <button @click="$store.settings.save()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-1.5 rounded text-sm font-medium">
-                            <span x-text="$store.settings.saving ? 'Saving...' : 'Save Settings'"></span>
-                        </button>
                     </div>
                 </div>
 
@@ -1385,6 +1382,13 @@ sudo ./velociraptor service start</code></pre>
                                 </div>
                             </div>
                         </div>
+
+                        <!-- Save Button -->
+                        <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
+                            <button @click="$store.settings.saveAgentic()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
+                                <span x-text="$store.settings.saving ? 'Saving...' : 'Save Agentic Settings'"></span>
+                            </button>
+                        </div>
                     </div>
 
                     <!-- Timesketch Tab -->
@@ -1435,6 +1439,13 @@ sudo ./velociraptor service start</code></pre>
                         </div>
 
                         <p class="text-xs text-gray-500 mt-4">Note: These settings require Timesketch container restart to take effect.</p>
+
+                        <!-- Save Button -->
+                        <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
+                            <button @click="$store.settings.saveTimesketch()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
+                                <span x-text="$store.settings.saving ? 'Saving...' : 'Save Timesketch Settings'"></span>
+                            </button>
+                        </div>
                     </div>
 
                     <!-- Cloud Tab -->
@@ -1542,6 +1553,13 @@ sudo ./velociraptor service start</code></pre>
                             <svg class="w-3.5 h-3.5 inline mr-1 text-yellow-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
                             Credentials are stored locally and used for cloud-based threat hunting integrations.
                         </p>
+
+                        <!-- Save Button -->
+                        <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
+                            <button @click="$store.settings.saveCloud()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
+                                <span x-text="$store.settings.saving ? 'Saving...' : 'Save Cloud Settings'"></span>
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
