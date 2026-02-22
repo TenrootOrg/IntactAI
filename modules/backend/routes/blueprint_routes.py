@@ -174,6 +174,7 @@ DEFAULT_VELOCIRAPTOR_BLUEPRINTS = [
 ]
 
 # Test (Quick) - Quick Wins minus slow/heavy artifacts for faster testing
+# Excludes: Evtx, BinaryRename, YaraWebshell, Yara.Process, ZoneIdentifier
 TEST_QUICK_ARTIFACTS = [
     "DetectRaptor.Windows.Detection.Amcache",
     "DetectRaptor.Windows.Detection.NamedPipes",
@@ -185,11 +186,11 @@ TEST_QUICK_ARTIFACTS = [
     "DetectRaptor.Windows.Detection.LolDriversVulnerable",
     "DetectRaptor.Windows.Detection.HijackLibsEnv",
     "DetectRaptor.Windows.Detection.Webhistory",
+    "DetectRaptor.Windows.Detection.YaraProcessWin",
     "Windows.System.DNSCache",
     "Windows.EventLogs.RDPAuth",
     "Windows.Registry.Sysinternals.Eulacheck",
     "Windows.Attack.UnexpectedImagePath",
-    "Windows.Detection.Yara.Process",
     "Windows.Network.NetstatEnriched",
     "Windows.System.UntrustedBinaries",
     "Windows.Analysis.EvidenceOfDownload",
