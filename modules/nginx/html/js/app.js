@@ -324,50 +324,62 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        async save() {
+        async saveAgentic() {
             this.saving = true;
-            let errors = [];
-
             try {
-                // Save agentic config
-                const agenticResponse = await fetch('/api/config', {
+                const response = await fetch('/api/config', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ agentic: this.config.agentic })
                 });
-                if (!agenticResponse.ok) {
-                    errors.push('Agentic config');
+                if (response.ok) {
+                    window.currentConfig = this.config;
+                    this.showMessage('Agentic settings saved', 'success');
+                } else {
+                    this.showMessage('Failed to save Agentic config', 'error');
                 }
+            } catch (e) {
+                this.showMessage('Error: ' + e.message, 'error');
+            }
+            this.saving = false;
+        },
 
-                // Save Timesketch LLM config (this also restarts containers)
-                const tsResponse = await fetch('/api/timesketch/config/llm', {
+        async saveTimesketch() {
+            this.saving = true;
+            try {
+                const response = await fetch('/api/timesketch/config/llm', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(this.config.timesketch)
                 });
-                if (!tsResponse.ok) {
-                    errors.push('Timesketch config');
-                }
-
-                // Save Cloud config
-                const cloudResponse = await fetch('/api/config/cloud', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.config.cloud)
-                });
-                if (!cloudResponse.ok) {
-                    errors.push('Cloud config');
-                }
-
-                if (errors.length === 0) {
+                if (response.ok) {
                     window.currentConfig = this.config;
-                    this.showMessage('Settings saved - redirecting to Workflows...', 'success');
-                    // Redirect to workflows to monitor progress
+                    this.showMessage('Timesketch settings saved - containers restarting...', 'success');
                     setTimeout(() => {
                         Alpine.store('app').switchTab('workflows');
                     }, 1000);
                 } else {
-                    this.showMessage('Failed to save: ' + errors.join(', '), 'error');
+                    this.showMessage('Failed to save Timesketch config', 'error');
+                }
+            } catch (e) {
+                this.showMessage('Error: ' + e.message, 'error');
+            }
+            this.saving = false;
+        },
+
+        async saveCloud() {
+            this.saving = true;
+            try {
+                const response = await fetch('/api/config/cloud', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.config.cloud)
+                });
+                if (response.ok) {
+                    window.currentConfig = this.config;
+                    this.showMessage('Cloud settings saved', 'success');
+                } else {
+                    this.showMessage('Failed to save Cloud config', 'error');
                 }
             } catch (e) {
                 this.showMessage('Error: ' + e.message, 'error');
@@ -482,10 +494,6 @@ function closeLogModal() {
 
 function loadSettings() {
     Alpine.store('settings').load();
-}
-
-function saveSettings() {
-    Alpine.store('settings').save();
 }
 
 function runSystemMaintenance() {
