@@ -249,6 +249,7 @@ document.addEventListener('alpine:init', () => {
                 max_concurrent_requests: 5
             },
             timesketch: {
+                llm_mode: 'google',
                 google_ai_key: '',
                 google_ai_model: 'gemini-2.5-flash',
                 ollama_url: 'http://localhost:11434',
