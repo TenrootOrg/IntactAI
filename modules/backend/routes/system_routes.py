@@ -208,7 +208,7 @@ def run_system_maintenance():
             details={"trigger": "manual", "tasks": ["artifact_import", "tool_download", "health_check"]}
         )
         add_log_to_run(run_id, "Starting system maintenance", "info")
-        add_log_to_run(run_id, "Tasks: Artifact Import → Tool Download → Health Check", "info")
+        add_log_to_run(run_id, "Tasks: Artifact Import (Exchange + DetectRaptor + TenRoot) → Tool Download → Health Check", "info")
         update_run_status(run_id, "running", progress=5)
 
         # Run maintenance in background
@@ -222,7 +222,7 @@ def run_system_maintenance():
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
                 update_run_status(run_id, "running", progress=10)
 
-                add_log_to_run(run_id, "Importing artifacts from Velociraptor Exchange...", "info")
+                add_log_to_run(run_id, "Importing artifacts (Exchange, DetectRaptor, TenRoot custom)...", "info")
                 import_results = initialize_velociraptor_artifacts()
 
                 if import_results:

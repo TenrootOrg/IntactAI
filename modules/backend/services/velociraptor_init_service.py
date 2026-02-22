@@ -4,13 +4,19 @@ Velociraptor Initialization Service - Import artifacts and libraries on startup
 """
 
 import json
+import os
 import time
 import traceback
 import sys
+import zipfile
+import tempfile
 from pyvelociraptor import api_pb2
 from pyvelociraptor import api_pb2_grpc
 
 from services.velociraptor_service import setup_velociraptor_connection
+
+# TenRoot custom artifacts zip (downloaded by tools_download_service)
+TENROOT_ARTIFACTS_ZIP = "/app/data/tools/Velociraptor-Artifacts-main.zip"
 
 # Server artifacts to run on startup (two-step import process)
 # Step 1: Import ArtifactExchange - makes the DetectRaptor import artifact available
@@ -174,6 +180,14 @@ def initialize_velociraptor_artifacts(logger_func=None):
             log("Waiting 10s before next artifact...")
             time.sleep(10)
 
+    # Import TenRoot custom artifacts (if zip exists)
+    log("")
+    log("Importing TenRoot custom artifacts...")
+    tenroot_results = import_tenroot_artifacts(logger_func)
+    results["success"].extend(tenroot_results.get("success", []))
+    results["failed"].extend(tenroot_results.get("failed", []))
+    results["skipped"].extend(tenroot_results.get("skipped", []))
+
     log("=" * 60)
     log("Velociraptor initialization complete")
     log(f"Successful: {len(results['success'])}")
@@ -228,3 +242,151 @@ def check_artifact_exists(artifact_name, logger_func=None):
     except Exception as e:
         log(f"Error checking artifact {artifact_name}: {e}", "error")
         return False
+
+
+def import_custom_artifact(yaml_content, logger_func=None):
+    """Import a single custom artifact YAML into Velociraptor
+
+    Args:
+        yaml_content: The YAML content of the artifact
+        logger_func: Optional logging function
+
+    Returns:
+        artifact_name if successful, None otherwise
+    """
+    def log(message, level="info"):
+        print(f"[VELO-INIT] {message}", flush=True)
+        if logger_func:
+            try:
+                logger_func(f"[VELO-INIT] {message}", level)
+            except:
+                pass
+
+    try:
+        channel = setup_velociraptor_connection()
+        if not channel:
+            return None
+
+        stub = api_pb2_grpc.APIStub(channel)
+
+        # JSON encode the YAML content - this properly escapes all special chars
+        # Then use unhex(base64decode()) to pass it safely to VQL
+        import base64
+        encoded_yaml = base64.b64encode(yaml_content.encode('utf-8')).decode('ascii')
+
+        # Use artifact_set with base64 decoded content
+        query = f"SELECT artifact_set(definition=base64decode(string='{encoded_yaml}')) AS Result FROM scope()"
+
+        request = api_pb2.VQLCollectorArgs(
+            max_wait=10,
+            Query=[api_pb2.VQLRequest(VQL=query)]
+        )
+
+        artifact_name = None
+        for response in stub.Query(request, timeout=30):
+            if response.Response:
+                try:
+                    data = json.loads(response.Response)
+                    if isinstance(data, list) and len(data) > 0:
+                        result = data[0].get("Result", {})
+                        if isinstance(result, dict):
+                            artifact_name = result.get("name")
+                except (json.JSONDecodeError, KeyError) as e:
+                    pass
+
+        channel.close()
+        return artifact_name
+
+    except Exception as e:
+        log(f"Error importing artifact: {e}", "error")
+        return None
+
+
+def import_tenroot_artifacts(logger_func=None):
+    """Import TenRoot custom artifacts from the downloaded zip file
+
+    Extracts Velociraptor-Artifacts-main.zip and imports all .yaml files
+    into Velociraptor using artifact_set().
+
+    Args:
+        logger_func: Optional logging function
+
+    Returns:
+        dict with success/failed lists
+    """
+    def log(message, level="info"):
+        print(f"[VELO-INIT] {message}", flush=True)
+        if logger_func:
+            try:
+                logger_func(f"[VELO-INIT] {message}", level)
+            except:
+                pass
+
+    results = {
+        "success": [],
+        "failed": [],
+        "skipped": []
+    }
+
+    # Check if zip exists
+    if not os.path.exists(TENROOT_ARTIFACTS_ZIP):
+        log(f"TenRoot artifacts zip not found: {TENROOT_ARTIFACTS_ZIP}", "warning")
+        log("Run maintenance to download tools first", "warning")
+        return results
+
+    log("=" * 60)
+    log("Importing TenRoot custom artifacts")
+    log("=" * 60)
+
+    try:
+        # Extract to temp directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log(f"Extracting {TENROOT_ARTIFACTS_ZIP}...")
+
+            with zipfile.ZipFile(TENROOT_ARTIFACTS_ZIP, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+
+            # Find all .yaml files
+            yaml_files = []
+            for root, dirs, files in os.walk(temp_dir):
+                for f in files:
+                    if f.endswith('.yaml'):
+                        yaml_files.append(os.path.join(root, f))
+
+            log(f"Found {len(yaml_files)} artifact YAML files")
+
+            # Import each artifact
+            for idx, yaml_path in enumerate(yaml_files):
+                filename = os.path.basename(yaml_path)
+
+                try:
+                    with open(yaml_path, 'r', encoding='utf-8') as f:
+                        yaml_content = f.read()
+
+                    # Skip empty or very small files
+                    if len(yaml_content.strip()) < 50:
+                        results["skipped"].append(filename)
+                        continue
+
+                    artifact_name = import_custom_artifact(yaml_content, logger_func)
+
+                    if artifact_name:
+                        results["success"].append(artifact_name)
+                        log(f"  ✓ Imported: {artifact_name}")
+                    else:
+                        results["failed"].append(filename)
+                        log(f"  ✗ Failed: {filename}", "warning")
+
+                except Exception as e:
+                    results["failed"].append(filename)
+                    log(f"  ✗ Error with {filename}: {e}", "warning")
+
+            log("=" * 60)
+            log(f"TenRoot import complete: {len(results['success'])} succeeded, {len(results['failed'])} failed")
+            log("=" * 60)
+
+    except Exception as e:
+        log(f"Error importing TenRoot artifacts: {e}", "error")
+        traceback.print_exc()
+
+    return results
