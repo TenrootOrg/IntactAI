@@ -298,6 +298,7 @@ document.addEventListener('alpine:init', () => {
                 if (tsResponse.ok) {
                     const tsData = await tsResponse.json();
                     this.config.timesketch = {
+                        llm_mode: tsData.llm_mode || 'google',
                         google_ai_key: tsData.google_ai_key || '',
                         google_ai_model: tsData.google_ai_model || 'gemini-2.5-flash',
                         ollama_url: tsData.ollama_url || '',
