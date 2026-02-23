@@ -61,12 +61,16 @@ def seed_default_blueprints():
             if not existing:
                 save_velociraptor_blueprint(default_bp)
                 print(f"[BLUEPRINTS] Re-seeded missing velociraptor default: {default_bp['id']}", flush=True)
-            elif existing.get('is_default') and not existing.get('name', '').startswith('[Velociraptor]'):
+            elif existing.get('is_default'):
+                # Always sync default blueprints from YAML (artifacts, name, description)
                 existing['name'] = default_bp['name']
+                existing['description'] = default_bp.get('description', '')
+                existing['artifacts'] = default_bp['artifacts']
+                existing['settings'] = default_bp.get('settings', existing.get('settings', {}))
                 save_velociraptor_blueprint(existing)
-                print(f"[BLUEPRINTS] Updated velociraptor blueprint name: {default_bp['id']}", flush=True)
+                print(f"[BLUEPRINTS] Synced velociraptor default from YAML: {default_bp['id']} ({len(default_bp['artifacts'])} artifacts)", flush=True)
 
-    # Agentic blueprints
+    # Agentic blueprints - always sync defaults from YAML
     agentic_defaults = blueprints.get('agentic', [])
     existing_agentic = load_agentic_blueprints()
 
@@ -81,10 +85,14 @@ def seed_default_blueprints():
             if not existing:
                 save_agentic_blueprint(default_bp)
                 print(f"[BLUEPRINTS] Re-seeded missing agentic default: {default_bp['id']}", flush=True)
-            elif existing.get('is_default') and not existing.get('name', '').startswith('[Agentic]'):
+            elif existing.get('is_default'):
+                # Always sync default blueprints from YAML (artifacts, name, description)
                 existing['name'] = default_bp['name']
+                existing['description'] = default_bp.get('description', '')
+                existing['artifacts'] = default_bp['artifacts']
+                existing['settings'] = default_bp.get('settings', existing.get('settings', {}))
                 save_agentic_blueprint(existing)
-                print(f"[BLUEPRINTS] Updated agentic blueprint name: {default_bp['id']}", flush=True)
+                print(f"[BLUEPRINTS] Synced agentic default from YAML: {default_bp['id']} ({len(default_bp['artifacts'])} artifacts)", flush=True)
 
     # Timesketch blueprints
     ts_defaults = blueprints.get('timesketch', [])
