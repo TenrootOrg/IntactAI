@@ -30,6 +30,7 @@ services:
       - ../nginx/html/downloads:/app/downloads:ro  # Velociraptor binaries for offline collectors
       - ./services:/app/services:ro  # Mount services for live code updates
       - ./routes:/app/routes:ro  # Mount routes for live code updates
+      - ./config/default_blueprints.yaml:/app/config/default_blueprints.yaml:ro  # Live blueprint updates
       - /app/logs  # Logs directory
     ports:
       - "5001:5001"
