@@ -264,9 +264,12 @@ start_services() {
         if [[ -f "$module_dir/docker-compose.yaml" ]]; then
             log_info "  [$current/$total] Starting $module..."
 
-            # Build if it's the backend (has custom Dockerfile)
+            # Build backend only if image doesn't exist (saves 60+ seconds on re-init)
             if [[ "$module" == "backend" ]]; then
-                (cd "$module_dir" && docker compose build >> "$LOG_FILE" 2>&1) || true
+                if ! docker image inspect mssp-backend:1.0.0 &>/dev/null; then
+                    log_info "    Building backend image (first time)..."
+                    (cd "$module_dir" && docker compose build >> "$LOG_FILE" 2>&1) || true
+                fi
             fi
 
             # Start
