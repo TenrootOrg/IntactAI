@@ -62,6 +62,9 @@ main() {
     # Pull required images
     pull_plaso_image
 
+    # Download Offline Collector binaries (v0.74.1)
+    download_offline_collector_binaries
+
     # Configure
     update_env_files
 
