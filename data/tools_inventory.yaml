@@ -465,9 +465,9 @@ imaging_tools:
 audit_tools:
   - name: "PingCastle"
     enabled: true
-    type: github_release
-    repo: "netwrix/pingcastle"
-    pattern: "ping.*\\.zip$"
+    type: direct_url
+    url: "https://github.com/netwrix/pingcastle/releases/download/3.3.0.1/PingCastle_3.3.0.1.zip"
+    filename: "PingCastle_3.3.0.1.zip"
     category: audit
     description: "Active Directory security audit"
 

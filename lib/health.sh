@@ -3,6 +3,44 @@
 # Verification, summary, and reporting
 
 # ============================================================================
+# Post-Install Initialization
+# ============================================================================
+
+run_post_install_init() {
+    log_info "Running post-install initialization..."
+
+    # Wait for backend to be healthy (up to 60 seconds)
+    local max_wait=60
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        if curl -sf --max-time 5 http://localhost:5001/health > /dev/null 2>&1; then
+            log_success "Backend API is ready"
+            break
+        fi
+        sleep 5
+        waited=$((waited + 5))
+        log_info "Waiting for backend... (${waited}s)"
+    done
+
+    if [[ $waited -ge $max_wait ]]; then
+        log_warn "Backend not ready after ${max_wait}s, skipping artifact import"
+        log_warn "You can run artifact import later via Dashboard > Settings > Maintenance"
+        return
+    fi
+
+    # Trigger maintenance to import artifacts (Exchange, DetectRaptor, TenRoot)
+    log_info "Importing Velociraptor artifacts (Exchange, DetectRaptor, TenRoot)..."
+    log_info "This runs in background - check Dashboard > Settings for progress"
+
+    local response=$(curl -sf --max-time 10 -X POST http://localhost:5001/api/maintenance/run 2>/dev/null)
+    if [[ $? -eq 0 ]]; then
+        log_success "Artifact import started in background"
+    else
+        log_warn "Could not start artifact import - run manually via Dashboard > Settings > Maintenance"
+    fi
+}
+
+# ============================================================================
 # Installation Verification
 # ============================================================================
 
@@ -11,6 +49,9 @@ verify_installation() {
 
     # Give services a moment to stabilize
     sleep 3
+
+    # Run post-install initialization (artifact import, tool download)
+    run_post_install_init
 
     echo ""
     echo "Container Status:"
