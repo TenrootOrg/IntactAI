@@ -43,8 +43,9 @@ artifact_lists:
     - DetectRaptor.Windows.Detection.YaraProcessWin
     - DetectRaptor.Windows.Detection.ZoneIdentifier
 
-  # Agentic Test - fast testing artifacts (12 artifacts)
+  # Agentic Test - detection-focused artifacts (18 artifacts)
   agentic_test:
+    # DetectRaptor detections
     - DetectRaptor.Windows.Detection.Amcache
     - DetectRaptor.Windows.Detection.NamedPipes
     - DetectRaptor.Windows.Detection.Bootloaders
@@ -54,6 +55,16 @@ artifact_lists:
     - DetectRaptor.Windows.Detection.LolDriversMalicious
     - DetectRaptor.Windows.Detection.LolDriversVulnerable
     - DetectRaptor.Windows.Detection.HijackLibsEnv
+    - DetectRaptor.Windows.Detection.BinaryRename
+    # Event log detections (Sigma rules - low volume)
+    - Windows.EventLogs.Hayabusa
+    # Persistence detection
+    - Windows.System.TaskScheduler
+    - Windows.Forensics.PersistenceSniper
+    # Network/C2 detection
+    - Windows.Network.NetstatEnriched
+    - Windows.System.DNSCache
+    # Process/binary analysis
     - Windows.Registry.Sysinternals.Eulacheck
     - Windows.Attack.UnexpectedImagePath
     - Generic.System.Pstree
