@@ -2,6 +2,10 @@
 """
 Blueprint Routes - Manage artifact blueprints for hunt configurations
 Separated into Velociraptor and Agentic blueprint stores.
+
+Blueprint definitions are loaded from YAML files:
+- /app/config/default_blueprints.yaml - Bundled defaults (in container)
+- /app/data/blueprints/*.yaml - User overrides (optional, persists)
 """
 
 import time
@@ -21,317 +25,87 @@ from services.file_storage_service import (
     get_timesketch_blueprint,
     delete_timesketch_blueprint,
 )
+from services.blueprint_loader_service import get_all_blueprints, get_artifact_lists
 
 blueprint_bp = Blueprint('blueprints', __name__)
 
-# ============================================================================
-# Artifact Lists
-# ============================================================================
-
-BEST_PRACTICE_ARTIFACTS = [
-    "Generic.Forensic.SQLiteHunter",
-    "Windows.Analysis.EvidenceOfDownload",
-    "Windows.NTFS.MFT",
-    "Windows.Forensics.Usn",
-    "Windows.Network.NetstatEnriched",
-    "Windows.Nirsoft.LastActivityView",
-    "Windows.Forensics.Lnk",
-    "Generic.System.Pstree",
-    "Windows.System.UntrustedBinaries",
-    "Windows.Detection.Yara.Process",
-    "Windows.EventLogs.RDPAuth",
-    "Windows.Attack.UnexpectedImagePath",
-    "Windows.Sys.AllUsers",
-    "Windows.Registry.Sysinternals.Eulacheck",
-    "DetectRaptor.Generic.Detection.YaraWebshell",
-    "DetectRaptor.Windows.Detection.Amcache",
-    "DetectRaptor.Windows.Detection.Applications",
-    "DetectRaptor.Windows.Detection.BinaryRename",
-    "DetectRaptor.Windows.Detection.Bootloaders",
-    "DetectRaptor.Windows.Detection.Evtx",
-    "DetectRaptor.Windows.Detection.HijackLibsEnv",
-    "DetectRaptor.Windows.Detection.HijackLibsMFT",
-    "DetectRaptor.Windows.Detection.LolDriversMalicious",
-    "DetectRaptor.Windows.Detection.LolDriversVulnerable",
-    "DetectRaptor.Windows.Detection.MFT",
-    "DetectRaptor.Windows.Detection.NamedPipes",
-    "DetectRaptor.Windows.Detection.Powershell.ISEAutoSave",
-    "DetectRaptor.Windows.Detection.Powershell.PSReadline",
-    "DetectRaptor.Windows.Detection.Webhistory",
-    "DetectRaptor.Windows.Detection.YaraProcessWin",
-    "DetectRaptor.Windows.Detection.ZoneIdentifier",
-]
-
-QUICK_WINS_ARTIFACTS = [
-    "DetectRaptor.Windows.Detection.Amcache",
-    "DetectRaptor.Windows.Detection.NamedPipes",
-    "DetectRaptor.Windows.Detection.BinaryRename",
-    "DetectRaptor.Windows.Detection.Bootloaders",
-    "DetectRaptor.Windows.Detection.Applications",
-    "DetectRaptor.Windows.Detection.Powershell.PSReadline",
-    "DetectRaptor.Windows.Detection.Powershell.ISEAutoSave",
-    "DetectRaptor.Windows.Detection.ZoneIdentifier",
-    "DetectRaptor.Windows.Detection.LolDriversMalicious",
-    "DetectRaptor.Windows.Detection.LolDriversVulnerable",
-    "DetectRaptor.Windows.Detection.HijackLibsEnv",
-    "DetectRaptor.Windows.Detection.Webhistory",
-    "DetectRaptor.Windows.Detection.YaraProcessWin",
-    "DetectRaptor.Generic.Detection.YaraWebshell",
-    "Windows.System.DNSCache",
-    "Windows.EventLogs.RDPAuth",
-    "Windows.Registry.Sysinternals.Eulacheck",
-    "Windows.Attack.UnexpectedImagePath",
-    "Windows.Detection.Yara.Process",
-    "Windows.Network.NetstatEnriched",
-    "Windows.System.UntrustedBinaries",
-    "Windows.Analysis.EvidenceOfDownload",
-    "Windows.Forensics.Lnk",
-]
-
-ALL_ARTIFACTS = [
-    # DetectRaptor detections
-    "DetectRaptor.Windows.Detection.Amcache",
-    "DetectRaptor.Windows.Detection.Applications",
-    "DetectRaptor.Windows.Detection.BinaryRename",
-    "DetectRaptor.Windows.Detection.Bootloaders",
-    "DetectRaptor.Windows.Detection.Evtx",
-    "DetectRaptor.Windows.Detection.HijackLibsEnv",
-    "DetectRaptor.Windows.Detection.HijackLibsMFT",
-    "DetectRaptor.Windows.Detection.LolDriversMalicious",
-    "DetectRaptor.Windows.Detection.LolDriversVulnerable",
-    "DetectRaptor.Windows.Detection.MFT",
-    "DetectRaptor.Windows.Detection.NamedPipes",
-    "DetectRaptor.Windows.Detection.Powershell.PSReadline",
-    "DetectRaptor.Windows.Detection.Powershell.ISEAutoSave",
-    "DetectRaptor.Windows.Detection.Webhistory",
-    "DetectRaptor.Windows.Detection.YaraProcessWin",
-    "DetectRaptor.Windows.Detection.ZoneIdentifier",
-    "DetectRaptor.Generic.Detection.YaraWebshell",
-    # Windows artifacts
-    "Windows.System.DNSCache",
-    "Windows.EventLogs.RDPAuth",
-    "Windows.Registry.Sysinternals.Eulacheck",
-    "Windows.Attack.UnexpectedImagePath",
-    "Windows.Detection.Yara.Process",
-    "Windows.Network.NetstatEnriched",
-    "Windows.System.UntrustedBinaries",
-    "Windows.Analysis.EvidenceOfDownload",
-    "Windows.Forensics.Lnk",
-    # Heavy / resource-intensive
-    "Windows.NTFS.MFT",
-    "Windows.Sys.AllUsers",
-    "Generic.System.Pstree",
-    "Windows.Forensics.Usn",
-    "Generic.Forensic.SQLiteHunter",
-    "Windows.Nirsoft.LastActivityView",
-]
-
-# Agentic Full Triage - curated for offline collectors, excludes heavy artifacts that overwhelm LLM
-AGENTIC_FULL_TRIAGE_ARTIFACTS = [
-    # DetectRaptor detections (optimized output)
-    "DetectRaptor.Windows.Detection.Amcache",
-    "DetectRaptor.Windows.Detection.NamedPipes",
-    "DetectRaptor.Windows.Detection.BinaryRename",
-    "DetectRaptor.Windows.Detection.Bootloaders",
-    "DetectRaptor.Windows.Detection.Applications",
-    "DetectRaptor.Windows.Detection.Powershell.PSReadline",
-    "DetectRaptor.Windows.Detection.Powershell.ISEAutoSave",
-    "DetectRaptor.Windows.Detection.ZoneIdentifier",
-    "DetectRaptor.Windows.Detection.LolDriversMalicious",
-    "DetectRaptor.Windows.Detection.LolDriversVulnerable",
-    "DetectRaptor.Windows.Detection.HijackLibsEnv",
-    "DetectRaptor.Windows.Detection.Webhistory",
-    "DetectRaptor.Generic.Detection.YaraWebshell",
-    # Key forensic artifacts (low-medium output)
-    "Windows.System.DNSCache",
-    "Windows.EventLogs.RDPAuth",
-    "Windows.Registry.Sysinternals.Eulacheck",
-    "Windows.Attack.UnexpectedImagePath",
-    "Windows.Network.NetstatEnriched",
-    "Windows.System.UntrustedBinaries",
-    "Windows.Analysis.EvidenceOfDownload",
-    "Windows.Forensics.Lnk",
-    "Generic.System.Pstree",
-]
 
 # ============================================================================
-# Default Blueprints
-# ============================================================================
-
-DEFAULT_VELOCIRAPTOR_BLUEPRINTS = [
-    {
-        "id": "best_practice",
-        "name": "[Velociraptor] BestPractice",
-        "description": "Curated best-practice artifact collection for thorough IR triage",
-        "is_default": True,
-        "artifacts": BEST_PRACTICE_ARTIFACTS,
-        "settings": {
-            "hunt_expiry": 120,
-            "timeout": 3600,
-            "cpu_limit": 50
-        }
-    },
-]
-
-# Test (Quick) - Quick Wins minus slow/heavy artifacts for faster testing
-# Excludes: Evtx, BinaryRename, YaraWebshell, Yara.Process, ZoneIdentifier
-TEST_QUICK_ARTIFACTS = [
-    "DetectRaptor.Windows.Detection.Amcache",
-    "DetectRaptor.Windows.Detection.NamedPipes",
-    "DetectRaptor.Windows.Detection.Bootloaders",
-    "DetectRaptor.Windows.Detection.Applications",
-    "DetectRaptor.Windows.Detection.Powershell.PSReadline",
-    "DetectRaptor.Windows.Detection.Powershell.ISEAutoSave",
-    "DetectRaptor.Windows.Detection.LolDriversMalicious",
-    "DetectRaptor.Windows.Detection.LolDriversVulnerable",
-    "DetectRaptor.Windows.Detection.HijackLibsEnv",
-    "DetectRaptor.Windows.Detection.Webhistory",
-    "DetectRaptor.Windows.Detection.YaraProcessWin",
-    "Windows.System.DNSCache",
-    "Windows.EventLogs.RDPAuth",
-    "Windows.Registry.Sysinternals.Eulacheck",
-    "Windows.Attack.UnexpectedImagePath",
-    "Windows.Network.NetstatEnriched",
-    "Windows.System.UntrustedBinaries",
-    "Windows.Analysis.EvidenceOfDownload",
-    "Windows.Forensics.Lnk",
-]
-
-DEFAULT_AGENTIC_BLUEPRINTS = [
-    {
-        "id": "test",
-        "name": "[Agentic] Test (Quick)",
-        "description": "Fast test - forensically interesting artifacts that run in seconds",
-        "is_default": True,
-        "artifacts": TEST_QUICK_ARTIFACTS,
-        "settings": {
-            "hunt_expiry": 120,
-            "timeout": 120,
-            "cpu_limit": 50
-        }
-    },
-    {
-        "id": "quick_wins",
-        "name": "[Agentic] Quick Wins",
-        "description": "Low output, fast detections with AI-powered analysis",
-        "is_default": True,
-        "artifacts": QUICK_WINS_ARTIFACTS,
-        "settings": {
-            "hunt_expiry": 120,
-            "timeout": 3600,
-            "cpu_limit": 50
-        }
-    },
-    {
-        "id": "full_triage",
-        "name": "[Agentic] Full Triage",
-        "description": "Comprehensive triage for offline collectors - optimized for AI analysis",
-        "is_default": True,
-        "artifacts": AGENTIC_FULL_TRIAGE_ARTIFACTS,
-        "settings": {
-            "hunt_expiry": 120,
-            "timeout": 3600,
-            "cpu_limit": 50
-        }
-    },
-]
-
-# Timesketch blueprints - KAPE targets and Plaso parsers
-DEFAULT_TIMESKETCH_BLUEPRINTS = [
-    {
-        "id": "full_triage",
-        "name": "Full Triage",
-        "description": "Comprehensive KAPE triage collection with full Windows parsing",
-        "is_default": True,
-        "settings": {
-            "kape_target": "_KapeTriage",
-            "plaso_parser": "win7",
-            "plaso_workers": 2,
-            "plaso_hasher": "none",
-            "plaso_hasher_size": 100,
-            "collection_timeout": 10000
-        }
-    },
-    {
-        "id": "event_logs",
-        "name": "Event Logs Only",
-        "description": "Windows Event Logs collection with fast winevtx parsing",
-        "is_default": True,
-        "settings": {
-            "kape_target": "EventLogs",
-            "plaso_parser": "winevtx",
-            "plaso_workers": 2,
-            "plaso_hasher": "none",
-            "plaso_hasher_size": 100,
-            "collection_timeout": 10000
-        }
-    },
-]
-
-
-# ============================================================================
-# Seeding
+# Seeding - Load from YAML files
 # ============================================================================
 
 def seed_default_blueprints():
-    """Seed default blueprints if none exist, and update names with prefixes"""
+    """Seed default blueprints from YAML configuration files.
+
+    Loads blueprints from:
+    - /app/config/default_blueprints.yaml (bundled defaults)
+    - /app/data/blueprints/*.yaml (user overrides, optional)
+
+    Seeds to SQLite if not already present.
+    """
+    # Load all blueprints from YAML files
+    blueprints = get_all_blueprints()
+
     # Velociraptor blueprints
+    velo_defaults = blueprints.get('velociraptor', [])
     existing_velo = load_velociraptor_blueprints()
+
     if not existing_velo:
-        for bp in DEFAULT_VELOCIRAPTOR_BLUEPRINTS:
+        for bp in velo_defaults:
             save_velociraptor_blueprint(bp)
-        print(f"[BLUEPRINTS] Seeded {len(DEFAULT_VELOCIRAPTOR_BLUEPRINTS)} velociraptor blueprints", flush=True)
+        print(f"[BLUEPRINTS] Seeded {len(velo_defaults)} velociraptor blueprints from YAML", flush=True)
     else:
         existing_map = {bp.get('id'): bp for bp in existing_velo}
-        for default_bp in DEFAULT_VELOCIRAPTOR_BLUEPRINTS:
+        for default_bp in velo_defaults:
             existing = existing_map.get(default_bp['id'])
             if not existing:
                 save_velociraptor_blueprint(default_bp)
                 print(f"[BLUEPRINTS] Re-seeded missing velociraptor default: {default_bp['id']}", flush=True)
             elif existing.get('is_default') and not existing.get('name', '').startswith('[Velociraptor]'):
-                # Update existing default blueprints with [Velociraptor] prefix
                 existing['name'] = default_bp['name']
                 save_velociraptor_blueprint(existing)
-                print(f"[BLUEPRINTS] Updated velociraptor blueprint name with prefix: {default_bp['id']}", flush=True)
+                print(f"[BLUEPRINTS] Updated velociraptor blueprint name: {default_bp['id']}", flush=True)
 
     # Agentic blueprints
+    agentic_defaults = blueprints.get('agentic', [])
     existing_agentic = load_agentic_blueprints()
+
     if not existing_agentic:
-        for bp in DEFAULT_AGENTIC_BLUEPRINTS:
+        for bp in agentic_defaults:
             save_agentic_blueprint(bp)
-        print(f"[BLUEPRINTS] Seeded {len(DEFAULT_AGENTIC_BLUEPRINTS)} agentic blueprints", flush=True)
+        print(f"[BLUEPRINTS] Seeded {len(agentic_defaults)} agentic blueprints from YAML", flush=True)
     else:
         existing_map = {bp.get('id'): bp for bp in existing_agentic}
-        for default_bp in DEFAULT_AGENTIC_BLUEPRINTS:
+        for default_bp in agentic_defaults:
             existing = existing_map.get(default_bp['id'])
             if not existing:
                 save_agentic_blueprint(default_bp)
                 print(f"[BLUEPRINTS] Re-seeded missing agentic default: {default_bp['id']}", flush=True)
             elif existing.get('is_default') and not existing.get('name', '').startswith('[Agentic]'):
-                # Update existing default blueprints with [Agentic] prefix
                 existing['name'] = default_bp['name']
                 save_agentic_blueprint(existing)
-                print(f"[BLUEPRINTS] Updated agentic blueprint name with prefix: {default_bp['id']}", flush=True)
+                print(f"[BLUEPRINTS] Updated agentic blueprint name: {default_bp['id']}", flush=True)
 
     # Timesketch blueprints
+    ts_defaults = blueprints.get('timesketch', [])
     existing_ts = load_timesketch_blueprints()
+
     if not existing_ts:
-        for bp in DEFAULT_TIMESKETCH_BLUEPRINTS:
+        for bp in ts_defaults:
             save_timesketch_blueprint(bp)
-        print(f"[BLUEPRINTS] Seeded {len(DEFAULT_TIMESKETCH_BLUEPRINTS)} timesketch blueprints", flush=True)
+        print(f"[BLUEPRINTS] Seeded {len(ts_defaults)} timesketch blueprints from YAML", flush=True)
     else:
         existing_map = {bp.get('id'): bp for bp in existing_ts}
-        for bp in DEFAULT_TIMESKETCH_BLUEPRINTS:
+        for bp in ts_defaults:
             existing = existing_map.get(bp['id'])
             if not existing:
                 save_timesketch_blueprint(bp)
                 print(f"[BLUEPRINTS] Re-seeded missing timesketch default: {bp['id']}", flush=True)
             elif existing.get('is_default') and not existing.get('settings', {}).get('collection_timeout'):
-                # Update existing default blueprints to add collection_timeout
                 existing['settings'] = existing.get('settings', {})
                 existing['settings']['collection_timeout'] = 10000
                 save_timesketch_blueprint(existing)
-                print(f"[BLUEPRINTS] Updated timesketch default with collection_timeout: {bp['id']}", flush=True)
+                print(f"[BLUEPRINTS] Updated timesketch default: {bp['id']}", flush=True)
 
 
 # Seed on module load
