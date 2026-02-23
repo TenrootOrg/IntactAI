@@ -24,6 +24,7 @@
 #   - data/tools/ (forensic tools for air-gapped)
 #   - All source code
 #   - Default blueprints in modules/backend/config/default_blueprints.yaml
+#   - Velociraptor datastore (imported artifacts: DetectRaptor, Exchange, TenRoot)
 
 # Don't use set -e, we handle errors ourselves
 
@@ -137,8 +138,11 @@ clean_containers() {
 clean_volumes() {
     log_info "Removing Docker volumes..."
 
+    # NOTE: velociraptor_datastore is PRESERVED - it contains imported artifacts
+    # (DetectRaptor, Exchange artifacts, TenRoot artifacts) that take time to import.
+    # Only velociraptor_data (client data) and velociraptor_tmp are cleaned.
     local volumes=(
-        "velociraptor_data" "velociraptor_datastore" "velociraptor_tmp"
+        "velociraptor_data" "velociraptor_tmp"
         "timesketch_postgres_data" "timesketch_opensearch_data" "timesketch_upload" "timesketch_logs"
         "iris_db_data" "iris_downloads" "iris_templates" "iris_server_data"
         "portainer_data" "elasticsearch_data"
