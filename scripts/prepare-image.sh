@@ -12,6 +12,7 @@
 # What gets cleaned:
 #   - Docker containers and volumes (client/case data)
 #   - SQLite databases and reports
+#   - User blueprint customizations (data/blueprints/)
 #   - Log files
 #   - SSL certificates (regenerated on first-init)
 #   - Client installers (regenerated on first-init)
@@ -21,8 +22,8 @@
 # What stays:
 #   - config.yaml (client edits this)
 #   - data/tools/ (forensic tools for air-gapped)
-#   - data/blueprints/ (user blueprint customizations)
 #   - All source code
+#   - Default blueprints in modules/backend/config/default_blueprints.yaml
 
 # Don't use set -e, we handle errors ourselves
 
@@ -170,6 +171,7 @@ clean_databases() {
     safe_remove "$SCRIPT_DIR/data/scheduler_jobs.db" "Scheduler database"
     safe_remove "$SCRIPT_DIR/data/frontend_data.db" "Frontend database"
     safe_remove "$SCRIPT_DIR/data/reports" "Reports directory"
+    safe_remove "$SCRIPT_DIR/data/blueprints" "User blueprint customizations"
     safe_remove_glob "$SCRIPT_DIR/data/*.json.migrated" "Migration artifacts"
     safe_remove_glob "$SCRIPT_DIR/data/*.json" "Legacy JSON data"
 }
@@ -361,8 +363,8 @@ main() {
         echo "What remains:"
         echo "  - config.yaml (client edits this)"
         echo "  - data/tools/ (forensic tools)"
-        echo "  - data/blueprints/ (user customizations)"
         echo "  - All source code"
+        echo "  - Default blueprints (in backend code)"
         [[ "$KEEP_GIT" == true ]] && echo "  - .git (can push changes)"
         [[ "$KEEP_CLAUDE" == true ]] && echo "  - Claude Code files"
         echo ""
