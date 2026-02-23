@@ -10,12 +10,12 @@ import time
 COLLECTOR_OUTPUT_DIR = "/tmp/offline_collectors"
 VELOCIRAPTOR_CONTAINER = "mssp_velociraptor"
 
-# Velociraptor client binary paths (mounted from nginx/html/downloads)
+# Velociraptor client binary paths (static in nginx/html/downloads)
 # NOTE: v0.74.x required for Generic Collector (v0.75+ broke the -- pseudo-flag)
 VELO_CLIENT_PATHS = {
     "windows": "/app/downloads/velociraptor-v0.74.1-windows-amd64.exe",
     "linux": "/app/downloads/velociraptor-v0.74.1-linux-amd64",
-    "darwin": "/app/downloads/velociraptor-client-darwin"
+    "darwin": "/app/downloads/velociraptor-v0.74.1-darwin-amd64"
 }
 
 # Default artifacts (same as BestPractice)
