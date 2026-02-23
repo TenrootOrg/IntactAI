@@ -1006,12 +1006,13 @@ sudo ./velociraptor service start</code></pre>
                                     <label class="block text-sm font-medium text-gray-300 mb-1">KAPE Target</label>
                                     <select id="blueprint-ts-kape" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
                                         <option value="_KapeTriage">_KapeTriage (Full triage)</option>
+                                        <option value="_SANS_Triage">_SANS_Triage (SANS triage)</option>
+                                        <option value="_BasicCollection">_BasicCollection (Basic artifacts)</option>
                                         <option value="EventLogs">EventLogs (Event logs only)</option>
-                                        <option value="BasicCollection">BasicCollection (Basic artifacts)</option>
                                         <option value="FileSystem">FileSystem (MFT, USN Journal)</option>
                                         <option value="RegistryHives">RegistryHives (Registry hives)</option>
                                         <option value="WebBrowsers">WebBrowsers (Browser data)</option>
-                                        <option value="CloudStorage">CloudStorage (Cloud sync data)</option>
+                                        <option value="CloudStorage_All">CloudStorage_All (Cloud sync data)</option>
                                         <option value="Antivirus">Antivirus (AV logs)</option>
                                     </select>
                                 </div>
@@ -1019,6 +1020,7 @@ sudo ./velociraptor service start</code></pre>
                                     <label class="block text-sm font-medium text-gray-300 mb-1">Plaso Parser</label>
                                     <select id="blueprint-ts-plaso" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
                                         <option value="win7">win7 (Full Windows)</option>
+                                        <option value="win7_slow">win7_slow (Thorough parsing)</option>
                                         <option value="winevtx">winevtx (Event logs only)</option>
                                         <option value="webhist">webhist (Browser history)</option>
                                         <option value="winreg">winreg (Registry only)</option>
@@ -1213,14 +1215,15 @@ sudo ./velociraptor service start</code></pre>
                             <div>
                                 <label class="block text-sm text-gray-400 mb-1">KAPE Target</label>
                                 <select id="schedule-kape-target" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
-                                    <option value="KapeTriage">KapeTriage (Recommended)</option>
-                                    <option value="_SANS_Triage">SANS Triage</option>
-                                    <option value="BasicCollection">Basic Collection</option>
-                                    <option value="!BasicCollection">Basic Collection (All)</option>
-                                    <option value="EventLogs">Event Logs Only</option>
-                                    <option value="RegistryHives">Registry Hives</option>
-                                    <option value="WebBrowsers">Web Browsers</option>
-                                    <option value="Antivirus">Antivirus Logs</option>
+                                    <option value="_KapeTriage">_KapeTriage (Full triage)</option>
+                                    <option value="_SANS_Triage">_SANS_Triage (SANS triage)</option>
+                                    <option value="_BasicCollection">_BasicCollection (Basic artifacts)</option>
+                                    <option value="EventLogs">EventLogs (Event logs only)</option>
+                                    <option value="FileSystem">FileSystem (MFT, USN Journal)</option>
+                                    <option value="RegistryHives">RegistryHives (Registry hives)</option>
+                                    <option value="WebBrowsers">WebBrowsers (Browser data)</option>
+                                    <option value="CloudStorage_All">CloudStorage_All (Cloud sync data)</option>
+                                    <option value="Antivirus">Antivirus (AV logs)</option>
                                 </select>
                             </div>
                             <div>
