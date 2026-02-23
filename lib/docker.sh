@@ -181,3 +181,49 @@ pull_plaso_image() {
         log_warn "Failed to pull Plaso image - it will be downloaded on first use"
     fi
 }
+
+download_offline_collector_binaries() {
+    # Velociraptor v0.74.1 binaries for Offline Collector
+    # NOTE: v0.74.x required because v0.75+ broke the -- pseudo-flag in Generic Collector
+    # GitHub tag is "v0.74" but files contain "v0.74.1" in the filename
+
+    local downloads_dir="${SCRIPT_DIR}/modules/nginx/html/downloads"
+    local base_url="https://github.com/Velocidex/velociraptor/releases/download/v0.74"
+
+    log_info "Checking Velociraptor v0.74.1 binaries for Offline Collector..."
+
+    mkdir -p "$downloads_dir"
+
+    local binaries=(
+        "velociraptor-v0.74.1-windows-amd64.exe"
+        "velociraptor-v0.74.1-linux-amd64"
+        "velociraptor-v0.74.1-darwin-amd64"
+    )
+
+    local downloaded=0
+    local skipped=0
+
+    for binary in "${binaries[@]}"; do
+        local dest_path="${downloads_dir}/${binary}"
+
+        if [[ -f "$dest_path" ]] && [[ -s "$dest_path" ]]; then
+            log_info "  Already exists: $binary"
+            ((skipped++))
+        else
+            log_info "  Downloading: $binary"
+            if curl -fsSL "${base_url}/${binary}" -o "$dest_path" 2>> "$LOG_FILE"; then
+                chmod +x "$dest_path" 2>/dev/null || true
+                log_success "  Downloaded: $binary"
+                ((downloaded++))
+            else
+                log_warn "  Failed to download: $binary"
+            fi
+        fi
+    done
+
+    if [[ $downloaded -gt 0 ]]; then
+        log_success "Offline Collector binaries: $downloaded downloaded, $skipped already existed"
+    else
+        log_info "Offline Collector binaries: all $skipped binaries already exist"
+    fi
+}

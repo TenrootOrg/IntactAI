@@ -479,6 +479,61 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None) -
     }
 
 
+def ensure_offline_collector_binaries(downloads_dir: str, logger: Callable = None) -> Dict:
+    """Ensure Velociraptor v0.74.1 binaries exist for Offline Collector.
+
+    v0.74.x is required because v0.75+ broke the -- pseudo-flag in Generic Collector.
+    GitHub tag is "v0.74" but files contain "v0.74.1" in the filename.
+    """
+    def log(msg, level="info"):
+        if logger:
+            logger(msg, level)
+        print(f"[TOOLS-074] {msg}", flush=True)
+
+    results = {"downloaded": [], "already_exists": [], "failed": []}
+
+    base_url = "https://github.com/Velocidex/velociraptor/releases/download/v0.74"
+    binaries = [
+        "velociraptor-v0.74.1-windows-amd64.exe",
+        "velociraptor-v0.74.1-linux-amd64",
+        "velociraptor-v0.74.1-darwin-amd64"
+    ]
+
+    os.makedirs(downloads_dir, exist_ok=True)
+
+    for binary in binaries:
+        dest_path = os.path.join(downloads_dir, binary)
+
+        # Check if file exists and has content
+        if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
+            results["already_exists"].append(binary)
+            continue
+
+        # Download if missing
+        log(f"  Downloading: {binary}")
+        try:
+            url = f"{base_url}/{binary}"
+            response = requests.get(url, stream=True, timeout=120,
+                                    headers={'User-Agent': 'MSSP-Tools-Downloader/1.0'})
+            response.raise_for_status()
+
+            with open(dest_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+
+            # Make executable
+            os.chmod(dest_path, 0o755)
+            log(f"  ✓ Downloaded: {binary}", "success")
+            results["downloaded"].append(binary)
+
+        except Exception as e:
+            log(f"  ✗ Failed: {binary} - {str(e)[:40]}", "warning")
+            results["failed"].append(binary)
+
+    return results
+
+
 def download_and_configure_tools(logger: Callable = None) -> Dict:
     """Main function: Download tools and configure Velociraptor inventory.
 
@@ -490,6 +545,23 @@ def download_and_configure_tools(logger: Callable = None) -> Dict:
         print(f"[TOOLS] {msg}", flush=True)
 
     log("Starting tool download and configuration...")
+
+    # Ensure Offline Collector v0.74.1 binaries exist
+    # These go to /app/downloads which maps to modules/nginx/html/downloads/
+    downloads_dir = "/app/downloads"
+    log("Checking Velociraptor v0.74.1 binaries for Offline Collector...")
+    offline_results = ensure_offline_collector_binaries(downloads_dir, log)
+
+    dl_count = len(offline_results.get('downloaded', []))
+    exist_count = len(offline_results.get('already_exists', []))
+    fail_count = len(offline_results.get('failed', []))
+
+    if dl_count > 0:
+        log(f"Offline Collector binaries: {dl_count} downloaded, {exist_count} existed", "success")
+    elif exist_count > 0:
+        log(f"Offline Collector binaries: all {exist_count} already exist")
+    if fail_count > 0:
+        log(f"Offline Collector binaries: {fail_count} failed", "warning")
 
     # Load config
     config = load_tools_config()
