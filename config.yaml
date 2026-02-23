@@ -1,6 +1,6 @@
-domain: 192.168.1.23
+domain: 192.168.120.10
 
-# Istallation options
+# Installation options
 options:
   # Download forensic tools (Hayabusa, Eric Zimmerman tools, Sysinternals, etc.)
   # Set to false for faster installation, tools can be downloaded later via Maintenance button

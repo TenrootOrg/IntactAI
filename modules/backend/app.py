@@ -85,11 +85,12 @@ def run_startup_initialization():
 
     while waited < max_wait:
         try:
-            from services.velociraptor_service import get_grpc_channel
-            channel = get_grpc_channel()
+            from services.velociraptor_service import setup_velociraptor_connection
+            channel = setup_velociraptor_connection()
             if channel:
                 print(f"[STARTUP] Velociraptor ready after {waited}s", flush=True)
                 velo_ready = True
+                channel.close()
                 break
         except Exception:
             pass
@@ -100,47 +101,16 @@ def run_startup_initialization():
     if not velo_ready:
         print("[STARTUP] Velociraptor not responding after 60s, continuing anyway...", flush=True)
 
-    # Download tools FIRST (needed for TenRoot artifact import)
-    try:
-        from config import get_installation_options
-        options = get_installation_options()
-        download_tools_enabled = options.get('download_forensic_tools', True)
-
-        if download_tools_enabled:
-            print("[STARTUP] Downloading tools (includes TenRoot artifacts zip)...", flush=True)
-            from services.tools_download_service import download_and_configure_tools
-            tool_results = download_and_configure_tools()
-            if tool_results.get('success'):
-                dl = tool_results.get('download_results', {})
-                print(f"[STARTUP] ✓ Tools: {len(dl.get('downloaded', []))} new, {len(dl.get('already_exists', []))} cached", flush=True)
-                initialization_status["tools_download"] = True
-            else:
-                print(f"[STARTUP] Tool download had issues: {tool_results.get('error', 'unknown')}", flush=True)
-                initialization_status["tools_download"] = False
-        else:
-            print("[STARTUP] Tool download SKIPPED (download_forensic_tools: false in config.yaml)", flush=True)
-            print("[STARTUP] Tools can be downloaded later via Dashboard > Settings > Maintenance", flush=True)
-            initialization_status["tools_download"] = "skipped"
-    except Exception as e:
-        print(f"[STARTUP] Tool download failed: {e}", flush=True)
-        initialization_status["tools_download"] = False
-
-    # Initialize Velociraptor artifacts (Exchange + DetectRaptor + TenRoot custom)
-    # Runs AFTER tool download so TenRoot zip exists
-    try:
-        print("[STARTUP] Initializing Velociraptor artifacts...", flush=True)
-        results = initialize_velociraptor_artifacts()
-        initialization_status["velociraptor_artifacts"] = len(results.get("success", [])) > 0
-        print(f"[STARTUP] Velociraptor artifacts: {len(results.get('success', []))} imported", flush=True)
-    except Exception as e:
-        print(f"[STARTUP] Velociraptor artifact initialization failed: {e}", flush=True)
+    # NOTE: Tool download is NOT done on startup - it runs via:
+    # 1) install.sh/first-init.sh (calls /api/maintenance/run)
+    # 2) Maintenance button in Settings UI
+    # This keeps container restarts fast
+    initialization_status["tools_download"] = "skipped"
+    initialization_status["velociraptor_artifacts"] = "skipped"
 
     # Generate client installers for all platforms (Windows EXE/MSI, Linux, Mac)
-    # This runs AFTER artifact import to ensure Server.Utils artifacts are available
     try:
-        print("[STARTUP] Generating properly configured client installers for all platforms...", flush=True)
-        print("[STARTUP] (This fixes the known CLI repacking bug in Velociraptor 0.75.x)", flush=True)
-        time.sleep(5)  # Brief pause to ensure artifacts are fully loaded
+        print("[STARTUP] Generating client installers (fixes Velociraptor 0.75.x CLI bug)...", flush=True)
         client_result = generate_all_client_installers()
         if client_result.get("success"):
             print("[STARTUP] ✓ Client generation successful", flush=True)

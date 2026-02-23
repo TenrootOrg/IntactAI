@@ -105,7 +105,7 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
         # Check if already exists
         if os.path.exists(full_path):
             log(f"  Already exists: {filename}")
-            return filename
+            return (filename, True)  # Return tuple: (filename, was_cached)
 
         log(f"  Downloading: {filename}")
 
@@ -130,7 +130,7 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
                     f.write(chunk)
 
         log(f"  ✓ Downloaded: {filename}")
-        return filename
+        return (filename, False)  # Return tuple: (filename, was_cached)
 
     except requests.exceptions.Timeout:
         log(f"  ✗ Timeout downloading {url[:50]}...")
@@ -176,6 +176,11 @@ def download_tools_from_config(tools_dir: str, config: Dict,
 
     log(f"Found {total_tools} enabled tools to download")
 
+    # Build set of existing files ONCE to avoid repeated GitHub API calls
+    existing_files = set()
+    if os.path.exists(tools_dir):
+        existing_files = set(os.listdir(tools_dir))
+
     for section in download_sections:
         tools = config.get(section, [])
         if not tools:
@@ -194,6 +199,23 @@ def download_tools_from_config(tools_dir: str, config: Dict,
             try:
                 download_url = None
                 filename = tool.get('filename')  # Optional explicit filename
+
+                # CHECK IF FILE EXISTS LOCALLY FIRST - skip GitHub API if cached
+                if filename and filename in existing_files:
+                    log(f"  Cached: {tool_name}")
+                    results["already_exists"].append(tool_name)
+                    continue
+
+                # For github_release, check if any file matches the pattern locally
+                if tool_type == 'github_release':
+                    pattern = tool.get('pattern', '')
+                    if pattern and existing_files:
+                        regex = re.compile(pattern)
+                        matching = [f for f in existing_files if regex.search(f)]
+                        if matching:
+                            log(f"  Cached: {tool_name} ({matching[0]})")
+                            results["already_exists"].append(tool_name)
+                            continue
 
                 if tool_type == 'github_release':
                     repo = tool.get('repo', '')
@@ -214,12 +236,13 @@ def download_tools_from_config(tools_dir: str, config: Dict,
                     continue
 
                 # Download the file
-                downloaded_filename = download_file(
+                result = download_file(
                     download_url, tools_dir, filename, log
                 )
 
-                if downloaded_filename:
-                    if f"Already exists: {downloaded_filename}" in str(log):
+                if result:
+                    downloaded_filename, was_cached = result
+                    if was_cached:
                         results["already_exists"].append(tool_name)
                     else:
                         results["downloaded"].append(tool_name)
