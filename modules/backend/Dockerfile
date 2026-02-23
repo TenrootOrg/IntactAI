@@ -20,6 +20,10 @@ COPY modules/backend/app.py /app/
 COPY modules/backend/services/ /app/services/
 COPY modules/backend/routes/ /app/routes/
 
+# Copy bundled config files (default blueprints, etc.)
+# These are NOT volume-mounted, so they persist in the container image
+COPY modules/backend/config/ /app/config/
+
 # Copy config.yaml to /app/
 COPY config.yaml /app/config.yaml
 

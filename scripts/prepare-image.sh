@@ -21,6 +21,7 @@
 # What stays:
 #   - config.yaml (client edits this)
 #   - data/tools/ (forensic tools for air-gapped)
+#   - data/blueprints/ (user blueprint customizations)
 #   - All source code
 
 # Don't use set -e, we handle errors ourselves
@@ -360,6 +361,7 @@ main() {
         echo "What remains:"
         echo "  - config.yaml (client edits this)"
         echo "  - data/tools/ (forensic tools)"
+        echo "  - data/blueprints/ (user customizations)"
         echo "  - All source code"
         [[ "$KEEP_GIT" == true ]] && echo "  - .git (can push changes)"
         [[ "$KEEP_CLAUDE" == true ]] && echo "  - Claude Code files"

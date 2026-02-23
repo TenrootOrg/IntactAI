@@ -1,0 +1,201 @@
+# Default Blueprints Configuration
+# These blueprints are shipped with the platform and seeded on first startup.
+# To customize defaults, create override files in /data/blueprints/
+#
+# Schema version for future migrations
+version: 1
+
+# ============================================================================
+# Reusable Artifact Lists (referenced with $name in blueprints)
+# ============================================================================
+artifact_lists:
+  # Best Practice - comprehensive IR triage (33 artifacts)
+  best_practice:
+    - Generic.Forensic.SQLiteHunter
+    - Windows.Analysis.EvidenceOfDownload
+    - Windows.NTFS.MFT
+    - Windows.Forensics.Usn
+    - Windows.Network.NetstatEnriched
+    - Windows.Nirsoft.LastActivityView
+    - Windows.Forensics.Lnk
+    - Generic.System.Pstree
+    - Windows.System.UntrustedBinaries
+    - Windows.Detection.Yara.Process
+    - Windows.EventLogs.RDPAuth
+    - Windows.Attack.UnexpectedImagePath
+    - Windows.Sys.AllUsers
+    - Windows.Registry.Sysinternals.Eulacheck
+    - DetectRaptor.Generic.Detection.YaraWebshell
+    - DetectRaptor.Windows.Detection.Amcache
+    - DetectRaptor.Windows.Detection.Applications
+    - DetectRaptor.Windows.Detection.BinaryRename
+    - DetectRaptor.Windows.Detection.Bootloaders
+    - DetectRaptor.Windows.Detection.Evtx
+    - DetectRaptor.Windows.Detection.HijackLibsEnv
+    - DetectRaptor.Windows.Detection.HijackLibsMFT
+    - DetectRaptor.Windows.Detection.LolDriversMalicious
+    - DetectRaptor.Windows.Detection.LolDriversVulnerable
+    - DetectRaptor.Windows.Detection.MFT
+    - DetectRaptor.Windows.Detection.NamedPipes
+    - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
+    - DetectRaptor.Windows.Detection.Powershell.PSReadline
+    - DetectRaptor.Windows.Detection.Webhistory
+    - DetectRaptor.Windows.Detection.YaraProcessWin
+    - DetectRaptor.Windows.Detection.ZoneIdentifier
+
+  # Quick Wins - fast detections (23 artifacts)
+  quick_wins:
+    - DetectRaptor.Windows.Detection.Amcache
+    - DetectRaptor.Windows.Detection.NamedPipes
+    - DetectRaptor.Windows.Detection.BinaryRename
+    - DetectRaptor.Windows.Detection.Bootloaders
+    - DetectRaptor.Windows.Detection.Applications
+    - DetectRaptor.Windows.Detection.Powershell.PSReadline
+    - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
+    - DetectRaptor.Windows.Detection.ZoneIdentifier
+    - DetectRaptor.Windows.Detection.LolDriversMalicious
+    - DetectRaptor.Windows.Detection.LolDriversVulnerable
+    - DetectRaptor.Windows.Detection.HijackLibsEnv
+    - DetectRaptor.Windows.Detection.Webhistory
+    - DetectRaptor.Windows.Detection.YaraProcessWin
+    - DetectRaptor.Generic.Detection.YaraWebshell
+    - Windows.System.DNSCache
+    - Windows.EventLogs.RDPAuth
+    - Windows.Registry.Sysinternals.Eulacheck
+    - Windows.Attack.UnexpectedImagePath
+    - Windows.Detection.Yara.Process
+    - Windows.Network.NetstatEnriched
+    - Windows.System.UntrustedBinaries
+    - Windows.Analysis.EvidenceOfDownload
+    - Windows.Forensics.Lnk
+
+  # Test Quick - fast testing, excludes heavy artifacts (18 artifacts)
+  test_quick:
+    - DetectRaptor.Windows.Detection.Amcache
+    - DetectRaptor.Windows.Detection.NamedPipes
+    - DetectRaptor.Windows.Detection.Bootloaders
+    - DetectRaptor.Windows.Detection.Applications
+    - DetectRaptor.Windows.Detection.Powershell.PSReadline
+    - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
+    - DetectRaptor.Windows.Detection.LolDriversMalicious
+    - DetectRaptor.Windows.Detection.LolDriversVulnerable
+    - DetectRaptor.Windows.Detection.HijackLibsEnv
+    - DetectRaptor.Windows.Detection.Webhistory
+    - DetectRaptor.Windows.Detection.YaraProcessWin
+    - Windows.System.DNSCache
+    - Windows.EventLogs.RDPAuth
+    - Windows.Registry.Sysinternals.Eulacheck
+    - Windows.Attack.UnexpectedImagePath
+    - Windows.Network.NetstatEnriched
+    - Windows.System.UntrustedBinaries
+    - Windows.Analysis.EvidenceOfDownload
+    - Windows.Forensics.Lnk
+
+  # Agentic Full Triage - optimized for AI analysis (19 artifacts)
+  agentic_full_triage:
+    - DetectRaptor.Windows.Detection.Amcache
+    - DetectRaptor.Windows.Detection.NamedPipes
+    - DetectRaptor.Windows.Detection.BinaryRename
+    - DetectRaptor.Windows.Detection.Bootloaders
+    - DetectRaptor.Windows.Detection.Applications
+    - DetectRaptor.Windows.Detection.Powershell.PSReadline
+    - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
+    - DetectRaptor.Windows.Detection.ZoneIdentifier
+    - DetectRaptor.Windows.Detection.LolDriversMalicious
+    - DetectRaptor.Windows.Detection.LolDriversVulnerable
+    - DetectRaptor.Windows.Detection.HijackLibsEnv
+    - DetectRaptor.Windows.Detection.Webhistory
+    - DetectRaptor.Generic.Detection.YaraWebshell
+    - Windows.System.DNSCache
+    - Windows.EventLogs.RDPAuth
+    - Windows.Registry.Sysinternals.Eulacheck
+    - Windows.Attack.UnexpectedImagePath
+    - Windows.Network.NetstatEnriched
+    - Windows.System.UntrustedBinaries
+    - Windows.Analysis.EvidenceOfDownload
+    - Windows.Forensics.Lnk
+    - Generic.System.Pstree
+
+# ============================================================================
+# Reusable Settings Templates
+# ============================================================================
+default_settings:
+  standard:
+    hunt_expiry: 120
+    timeout: 3600
+    cpu_limit: 50
+
+  quick:
+    hunt_expiry: 120
+    timeout: 120
+    cpu_limit: 50
+
+  timesketch_default:
+    plaso_workers: 2
+    plaso_hasher: "none"
+    plaso_hasher_size: 100
+    collection_timeout: 10000
+
+# ============================================================================
+# Velociraptor Blueprints
+# ============================================================================
+velociraptor:
+  - id: best_practice
+    name: "[Velociraptor] BestPractice"
+    description: "Curated best-practice artifact collection for thorough IR triage"
+    is_default: true
+    artifacts: $best_practice
+    settings: $standard
+
+# ============================================================================
+# Agentic Blueprints
+# ============================================================================
+agentic:
+  - id: test
+    name: "[Agentic] Test (Quick)"
+    description: "Fast test - forensically interesting artifacts that run in seconds"
+    is_default: true
+    artifacts: $test_quick
+    settings: $quick
+
+  - id: quick_wins
+    name: "[Agentic] Quick Wins"
+    description: "Low output, fast detections with AI-powered analysis"
+    is_default: true
+    artifacts: $quick_wins
+    settings: $standard
+
+  - id: full_triage
+    name: "[Agentic] Full Triage"
+    description: "Comprehensive triage for offline collectors - optimized for AI analysis"
+    is_default: true
+    artifacts: $agentic_full_triage
+    settings: $standard
+
+# ============================================================================
+# Timesketch Blueprints
+# ============================================================================
+timesketch:
+  - id: full_triage
+    name: "Full Triage"
+    description: "Comprehensive KAPE triage collection with full Windows parsing"
+    is_default: true
+    settings:
+      kape_target: "_KapeTriage"
+      plaso_parser: "win7"
+      plaso_workers: 2
+      plaso_hasher: "none"
+      plaso_hasher_size: 100
+      collection_timeout: 10000
+
+  - id: event_logs
+    name: "Event Logs Only"
+    description: "Windows Event Logs collection with fast winevtx parsing"
+    is_default: true
+    settings:
+      kape_target: "EventLogs"
+      plaso_parser: "winevtx"
+      plaso_workers: 2
+      plaso_hasher: "none"
+      plaso_hasher_size: 100
+      collection_timeout: 10000
