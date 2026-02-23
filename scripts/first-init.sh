@@ -265,9 +265,8 @@ start_services() {
             log_info "  [$current/$total] Starting $module..."
 
             # Build if it's the backend (has custom Dockerfile)
-            # Use --no-cache to ensure latest code is used (blueprints, etc.)
             if [[ "$module" == "backend" ]]; then
-                (cd "$module_dir" && docker compose build --no-cache >> "$LOG_FILE" 2>&1) || true
+                (cd "$module_dir" && docker compose build >> "$LOG_FILE" 2>&1) || true
             fi
 
             # Start

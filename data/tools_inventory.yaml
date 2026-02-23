@@ -48,6 +48,9 @@ velociraptor_core:
     pattern: ".*linux-amd64$"
     category: core
 
+  # NOTE: v0.74.1 binaries for Offline Collector are static in modules/nginx/html/downloads/
+  # They are NOT downloaded via maintenance (v0.75+ has CLI bug with Generic Collector)
+
 # ============================================================================
 # EVENT LOG ANALYSIS
 # ============================================================================
