@@ -271,6 +271,44 @@ clean_dev() {
 # Pre-build for Air-Gap Deployment
 # ============================================================================
 
+backup_velociraptor_data() {
+    log_info "Backing up Velociraptor artifacts and tools..."
+
+    local backup_dir="$SCRIPT_DIR/data/velociraptor_backup"
+    local container="mssp_velociraptor"
+
+    # Check if container exists and is running
+    if ! docker ps -q -f name="$container" | grep -q .; then
+        log_warn "  Velociraptor container not running, skipping backup"
+        return 0
+    fi
+
+    mkdir -p "$backup_dir"
+
+    # Backup artifact definitions (custom artifacts like DetectRaptor, KAPE, TenRoot)
+    log_info "  Backing up artifact definitions..."
+    docker cp "${container}:/var./artifact_definitions" "$backup_dir/" 2>/dev/null && \
+        log_success "  Artifact definitions backed up" || \
+        log_warn "  No artifact definitions to backup"
+
+    # Backup tools inventory (KAPE, etc.)
+    log_info "  Backing up tools inventory..."
+    mkdir -p "$backup_dir/config"
+    docker cp "${container}:/var./config/inventory.json.db" "$backup_dir/config/" 2>/dev/null && \
+        log_success "  Tools inventory backed up" || \
+        log_warn "  No tools inventory to backup"
+
+    # Backup public tools (served_locally binaries)
+    log_info "  Backing up public tools..."
+    docker cp "${container}:/var./public" "$backup_dir/" 2>/dev/null && \
+        log_success "  Public tools backed up" || \
+        log_warn "  No public tools to backup"
+
+    # Mark backup timestamp
+    echo "$(date -Iseconds)" > "$backup_dir/.backup_timestamp"
+    log_success "Velociraptor backup complete"
+}
+
 prebuild_for_airgap() {
     log_info "Pre-building images for air-gap deployment..."
 
@@ -381,6 +419,10 @@ main() {
         fi
         echo ""
     fi
+
+    # Backup Velociraptor artifacts and tools (before cleanup)
+    backup_velociraptor_data
+    echo ""
 
     # Pre-build images for air-gap deployment (before cleanup)
     prebuild_for_airgap

@@ -397,6 +397,61 @@ wait_for_services() {
 }
 
 # ============================================================================
+# Restore Velociraptor Artifacts and Tools
+# ============================================================================
+
+restore_velociraptor_data() {
+    local backup_dir="$SCRIPT_DIR/data/velociraptor_backup"
+    local container="mssp_velociraptor"
+
+    # Check if backup exists
+    if [[ ! -d "$backup_dir" ]] || [[ ! -f "$backup_dir/.backup_timestamp" ]]; then
+        log_info "No Velociraptor backup found, skipping restore"
+        return 0
+    fi
+
+    log_info "Restoring Velociraptor artifacts and tools..."
+
+    # Wait for Velociraptor to be ready
+    local wait=0
+    while [[ $wait -lt 30 ]]; do
+        if docker exec "$container" test -d /var. 2>/dev/null; then
+            break
+        fi
+        sleep 2
+        ((wait+=2))
+    done
+
+    # Restore artifact definitions
+    if [[ -d "$backup_dir/artifact_definitions" ]]; then
+        log_info "  Restoring artifact definitions..."
+        docker cp "$backup_dir/artifact_definitions" "${container}:/var./" 2>/dev/null && \
+            log_success "  Artifact definitions restored" || \
+            log_warn "  Failed to restore artifact definitions"
+    fi
+
+    # Restore tools inventory
+    if [[ -f "$backup_dir/config/inventory.json.db" ]]; then
+        log_info "  Restoring tools inventory..."
+        docker exec "$container" mkdir -p /var./config 2>/dev/null
+        docker cp "$backup_dir/config/inventory.json.db" "${container}:/var./config/" 2>/dev/null && \
+            log_success "  Tools inventory restored" || \
+            log_warn "  Failed to restore tools inventory"
+    fi
+
+    # Restore public tools
+    if [[ -d "$backup_dir/public" ]]; then
+        log_info "  Restoring public tools..."
+        docker cp "$backup_dir/public" "${container}:/var./" 2>/dev/null && \
+            log_success "  Public tools restored" || \
+            log_warn "  Failed to restore public tools"
+    fi
+
+    local backup_time=$(cat "$backup_dir/.backup_timestamp" 2>/dev/null)
+    log_success "Velociraptor restore complete (backup from: $backup_time)"
+}
+
+# ============================================================================
 # Generate Client Installers
 # ============================================================================
 
@@ -489,6 +544,8 @@ main() {
     start_services
     echo ""
     wait_for_services
+    echo ""
+    restore_velociraptor_data
     echo ""
     generate_client_installers
     echo ""
