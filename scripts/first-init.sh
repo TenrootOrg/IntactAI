@@ -264,10 +264,14 @@ start_services() {
         if [[ -f "$module_dir/docker-compose.yaml" ]]; then
             log_info "  [$current/$total] Starting $module..."
 
-            # Build if it's the backend (has custom Dockerfile)
-            # Use --no-cache to ensure latest code is used (blueprints, etc.)
+            # Build backend only if image doesn't exist (air-gap friendly)
             if [[ "$module" == "backend" ]]; then
-                (cd "$module_dir" && docker compose build --no-cache >> "$LOG_FILE" 2>&1) || true
+                if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "mssp-backend"; then
+                    log_info "  Backend image not found, building..."
+                    (cd "$module_dir" && docker compose build >> "$LOG_FILE" 2>&1) || true
+                else
+                    log_info "  Using pre-built backend image"
+                fi
             fi
 
             # Start
