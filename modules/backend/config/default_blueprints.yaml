@@ -54,6 +54,7 @@ artifact_lists:
     - Windows.System.UntrustedBinaries
     - Windows.Registry.Sysinternals.Eulacheck
     - Windows.EventLogs.Hayabusa
+    - Windows.EventLogs.RDPAuth
     - Windows.Forensics.PersistenceSniper
 
   # Agentic Quick Wins - fast detection scan (22 artifacts)
