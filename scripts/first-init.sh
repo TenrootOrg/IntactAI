@@ -138,6 +138,57 @@ sync_velociraptor_env() {
 }
 
 # ============================================================================
+# Restore Velociraptor Artifacts and Tools
+# ============================================================================
+
+restore_velociraptor_artifacts() {
+    log_info "Checking for Velociraptor artifact backup..."
+
+    local backup_dir="$SCRIPT_DIR/data/velociraptor_backup"
+    local container="mssp_velociraptor"
+
+    # Check if backup exists
+    if [[ ! -d "$backup_dir" ]] || [[ ! -f "$backup_dir/.backup_timestamp" ]]; then
+        log_info "  No artifact backup found - fresh install"
+        return 0
+    fi
+
+    # Check if container is running
+    if ! docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
+        log_warn "Velociraptor container not running - cannot restore"
+        return 1
+    fi
+
+    log_info "  Found backup from: $(cat "$backup_dir/.backup_timestamp")"
+
+    # Restore artifact_definitions
+    if [[ -d "$backup_dir/artifact_definitions" ]]; then
+        log_info "  Restoring artifact definitions..."
+        docker cp "$backup_dir/artifact_definitions" "${container}:/var./" 2>/dev/null || true
+    fi
+
+    # Restore public (tools)
+    if [[ -d "$backup_dir/public" ]]; then
+        log_info "  Restoring tools (public/)..."
+        docker cp "$backup_dir/public" "${container}:/var./" 2>/dev/null || true
+    fi
+
+    # Restore inventory
+    if [[ -f "$backup_dir/config/inventory.json.db" ]]; then
+        log_info "  Restoring tool inventory..."
+        docker cp "$backup_dir/config/inventory.json.db" "${container}:/var./config/" 2>/dev/null || true
+    fi
+
+    # Fix permissions
+    docker exec "$container" sh -c "chmod -R 755 /var./public/ 2>/dev/null; chmod 644 /var./config/inventory.json.db 2>/dev/null" || true
+
+    log_success "Velociraptor artifacts and tools restored"
+
+    # Optionally clean up backup after successful restore
+    # rm -rf "$backup_dir"
+}
+
+# ============================================================================
 # Generate Certificates (from lib/modules.sh)
 # ============================================================================
 
@@ -317,6 +368,9 @@ wait_for_services() {
         sleep 5
         ((velo_wait+=5))
     done
+
+    # Restore artifacts and tools from backup (if exists)
+    restore_velociraptor_artifacts
 
     # Backend
     log_info "  Waiting for Backend API..."

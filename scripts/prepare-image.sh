@@ -24,7 +24,7 @@
 #   - data/tools/ (forensic tools for air-gapped)
 #   - All source code
 #   - Default blueprints in modules/backend/config/default_blueprints.yaml
-#   - Velociraptor datastore (imported artifacts: DetectRaptor, Exchange, TenRoot)
+#   - data/velociraptor_backup/ (artifacts + tools backed up, restored on first-init)
 
 # Don't use set -e, we handle errors ourselves
 
@@ -135,14 +135,64 @@ clean_containers() {
     fi
 }
 
+backup_velociraptor_artifacts() {
+    log_info "Backing up Velociraptor artifacts and tools..."
+
+    local backup_dir="$SCRIPT_DIR/data/velociraptor_backup"
+    local container="mssp_velociraptor"
+
+    # Check if container is running
+    if ! docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
+        log_warn "Velociraptor container not running - starting it for backup..."
+        (cd "$SCRIPT_DIR/modules/velociraptor" && docker compose up -d) || true
+        sleep 5
+    fi
+
+    # Check if container is running now
+    if ! docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
+        log_warn "Could not start Velociraptor - no artifacts to backup"
+        return 0
+    fi
+
+    # Create backup directory
+    mkdir -p "$backup_dir"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        log_dry "Would backup Velociraptor artifacts to $backup_dir"
+        return 0
+    fi
+
+    # Backup artifact_definitions (custom artifacts)
+    if docker exec "$container" test -d /var./artifact_definitions 2>/dev/null; then
+        log_info "  Backing up artifact definitions..."
+        docker cp "${container}:/var./artifact_definitions" "$backup_dir/" 2>/dev/null || true
+    fi
+
+    # Backup public (tools served locally)
+    if docker exec "$container" test -d /var./public 2>/dev/null; then
+        log_info "  Backing up tools (public/)..."
+        docker cp "${container}:/var./public" "$backup_dir/" 2>/dev/null || true
+    fi
+
+    # Backup inventory
+    if docker exec "$container" test -f /var./config/inventory.json.db 2>/dev/null; then
+        log_info "  Backing up tool inventory..."
+        mkdir -p "$backup_dir/config"
+        docker cp "${container}:/var./config/inventory.json.db" "$backup_dir/config/" 2>/dev/null || true
+    fi
+
+    # Create a marker file to indicate backup exists
+    echo "$(date -Iseconds)" > "$backup_dir/.backup_timestamp"
+
+    log_success "Velociraptor backup completed: $backup_dir"
+}
+
 clean_volumes() {
     log_info "Removing Docker volumes..."
 
-    # NOTE: velociraptor_datastore is PRESERVED - it contains imported artifacts
-    # (DetectRaptor, Exchange artifacts, TenRoot artifacts) that take time to import.
-    # Only velociraptor_data (client data) and velociraptor_tmp are cleaned.
+    # All velociraptor volumes are now cleaned (artifacts backed up separately)
     local volumes=(
-        "velociraptor_data" "velociraptor_tmp"
+        "velociraptor_data" "velociraptor_datastore" "velociraptor_tmp"
         "timesketch_postgres_data" "timesketch_opensearch_data" "timesketch_upload" "timesketch_logs"
         "iris_db_data" "iris_downloads" "iris_templates" "iris_server_data"
         "portainer_data" "elasticsearch_data"
@@ -334,6 +384,10 @@ main() {
         fi
         echo ""
     fi
+
+    # Backup Velociraptor artifacts before cleanup (needs container running)
+    backup_velociraptor_artifacts
+    echo ""
 
     # Run all cleanup
     clean_containers
