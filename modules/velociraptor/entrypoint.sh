@@ -14,7 +14,6 @@ mkdir -p $CLIENT_DIR/windows && cp /opt/velociraptor/windows/velociraptor_client
 
 # Generate server config if not exists
 if [ ! -f server.config.yaml ]; then
-    echo "Fresh deployment detected..."
     echo "Generating server configuration..."
     ./velociraptor config generate --merge '{
         "Frontend": {
