@@ -268,6 +268,57 @@ clean_dev() {
 }
 
 # ============================================================================
+# Pre-build for Air-Gap Deployment
+# ============================================================================
+
+prebuild_for_airgap() {
+    log_info "Pre-building images for air-gap deployment..."
+
+    # 1. Build backend image (includes all pip packages)
+    log_info "  Building backend image..."
+    if (cd "$SCRIPT_DIR/modules/backend" && docker compose build >> /dev/null 2>&1); then
+        log_success "  Backend image built"
+    else
+        log_warn "  Backend build failed (may already exist)"
+    fi
+
+    # 2. Pull all external docker images needed by services
+    log_info "  Pulling external docker images..."
+    local images=(
+        "nginx:alpine"
+        "python:3.11-slim"
+        "portainer/agent:2.27.0"
+        "portainer/portainer-ce:2.27.0"
+        "postgres:15"
+        "opensearchproject/opensearch:2.11.0"
+        "redis:7-alpine"
+        "us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:latest"
+        "rabbitmq:3-management-alpine"
+        "ghcr.io/dfir-iris/iriswebapp_db:v2.4.25"
+        "ghcr.io/dfir-iris/iriswebapp_app:v2.4.25"
+        "ghcr.io/dfir-iris/iriswebapp_nginx:v2.4.25"
+        "docker.elastic.co/elasticsearch/elasticsearch:8.17.0"
+        "docker.elastic.co/logstash/logstash:8.17.0"
+        "docker.elastic.co/kibana/kibana:8.17.0"
+    )
+
+    local pulled=0
+    for img in "${images[@]}"; do
+        if docker image inspect "$img" > /dev/null 2>&1; then
+            log_info "    ✓ $img (cached)"
+            ((pulled++))
+        elif docker pull "$img" > /dev/null 2>&1; then
+            log_success "    ✓ $img (pulled)"
+            ((pulled++))
+        else
+            log_warn "    ✗ $img (failed)"
+        fi
+    done
+
+    log_success "Pre-build complete: $pulled/${#images[@]} images ready"
+}
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -330,6 +381,10 @@ main() {
         fi
         echo ""
     fi
+
+    # Pre-build images for air-gap deployment (before cleanup)
+    prebuild_for_airgap
+    echo ""
 
     # Run all cleanup
     clean_containers
