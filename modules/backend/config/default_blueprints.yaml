@@ -43,34 +43,22 @@ artifact_lists:
     - DetectRaptor.Windows.Detection.YaraProcessWin
     - DetectRaptor.Windows.Detection.ZoneIdentifier
 
-  # Agentic Test - detection-focused artifacts (18 artifacts)
+  # Agentic Test - minimal detection artifacts (11 artifacts)
   agentic_test:
-    # DetectRaptor detections
-    - DetectRaptor.Windows.Detection.Amcache
-    - DetectRaptor.Windows.Detection.NamedPipes
-    - DetectRaptor.Windows.Detection.Bootloaders
-    - DetectRaptor.Windows.Detection.Applications
-    - DetectRaptor.Windows.Detection.Powershell.PSReadline
-    - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
-    - DetectRaptor.Windows.Detection.LolDriversMalicious
-    - DetectRaptor.Windows.Detection.LolDriversVulnerable
-    - DetectRaptor.Windows.Detection.HijackLibsEnv
-    - DetectRaptor.Windows.Detection.BinaryRename
-    # Event log detections (Sigma rules - low volume)
-    - Windows.EventLogs.Hayabusa
-    # Persistence detection
-    - Windows.System.TaskScheduler
-    - Windows.Forensics.PersistenceSniper
-    # Network/C2 detection
-    - Windows.Network.NetstatEnriched
-    - Windows.System.DNSCache
-    # Process/binary analysis
-    - Windows.Registry.Sysinternals.Eulacheck
-    - Windows.Attack.UnexpectedImagePath
     - Generic.System.Pstree
+    - DetectRaptor.Windows.Detection.Applications
+    - DetectRaptor.Windows.Detection.BinaryRename
+    - DetectRaptor.Windows.Detection.Powershell.PSReadline
+    - Windows.Detection.Malfind
+    - Windows.Detection.PipeHunter
+    - Windows.System.UntrustedBinaries
+    - Windows.Registry.Sysinternals.Eulacheck
+    - Windows.EventLogs.Hayabusa
+    - Windows.Forensics.PersistenceSniper
 
-  # Agentic Quick Wins - fast detection scan (15 artifacts)
+  # Agentic Quick Wins - fast detection scan (22 artifacts)
   agentic_quick_wins:
+    # DetectRaptor detections
     - DetectRaptor.Windows.Detection.Amcache
     - DetectRaptor.Windows.Detection.NamedPipes
     - DetectRaptor.Windows.Detection.BinaryRename
@@ -78,16 +66,25 @@ artifact_lists:
     - DetectRaptor.Windows.Detection.LolDriversVulnerable
     - DetectRaptor.Windows.Detection.HijackLibsEnv
     - DetectRaptor.Windows.Detection.YaraProcessWin
+    - DetectRaptor.Windows.Detection.Powershell.PSReadline
+    - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
+    - DetectRaptor.Windows.Detection.ZoneIdentifier
+    - DetectRaptor.Windows.Detection.Applications
     - DetectRaptor.Generic.Detection.YaraWebshell
+    # Windows detections
     - Windows.Detection.ISOMount
     - Windows.Detection.Malfind
     - Windows.Detection.PipeHunter
     - Windows.Attack.UnexpectedImagePath
     - Windows.System.UntrustedBinaries
     - Windows.Registry.Sysinternals.Eulacheck
+    # Event log and persistence
+    - Windows.EventLogs.Hayabusa
+    - Windows.Forensics.PersistenceSniper
+    # System context
     - Generic.System.Pstree
 
-  # Agentic Standard - full detection suite for LLM analysis (27 artifacts)
+  # Agentic Standard - full detection suite for LLM analysis (28 artifacts)
   agentic_standard:
     - DetectRaptor.Windows.Detection.Amcache
     - DetectRaptor.Windows.Detection.NamedPipes
@@ -110,6 +107,7 @@ artifact_lists:
     - Windows.Detection.PipeHunter
     - Windows.Detection.Keylogger
     - Windows.Detection.WonkaVision
+    - Windows.EventLogs.Hayabusa
     - Windows.Forensics.PersistenceSniper
     - Windows.EventLogs.RDPAuth
     - Windows.Attack.UnexpectedImagePath
@@ -205,12 +203,12 @@ default_settings:
   standard:
     hunt_expiry: 120
     timeout: 3600
-    cpu_limit: 50
+    cpu_limit: 90
 
   quick:
     hunt_expiry: 120
     timeout: 120
-    cpu_limit: 50
+    cpu_limit: 90
 
   timesketch_default:
     plaso_workers: 2
@@ -244,7 +242,7 @@ velociraptor:
     settings:
       hunt_expiry: 180
       timeout: 7200
-      cpu_limit: 50
+      cpu_limit: 90
 
 # ============================================================================
 # Agentic Blueprints
