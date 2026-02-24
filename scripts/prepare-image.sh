@@ -283,26 +283,100 @@ backup_velociraptor_data() {
         return 0
     fi
 
+    # Remove old backup to ensure fresh data
+    rm -rf "$backup_dir"
     mkdir -p "$backup_dir"
 
     # Backup artifact definitions (custom artifacts like DetectRaptor, KAPE, TenRoot)
     log_info "  Backing up artifact definitions..."
-    docker cp "${container}:/var./artifact_definitions" "$backup_dir/" 2>/dev/null && \
-        log_success "  Artifact definitions backed up" || \
+    if docker cp "${container}:/var./artifact_definitions" "$backup_dir/" 2>&1; then
+        local artifact_count=$(find "$backup_dir/artifact_definitions" -name "*.yaml" 2>/dev/null | wc -l)
+        log_success "  Artifact definitions backed up ($artifact_count artifacts)"
+    else
         log_warn "  No artifact definitions to backup"
+    fi
 
     # Backup tools inventory (KAPE, etc.)
     log_info "  Backing up tools inventory..."
     mkdir -p "$backup_dir/config"
-    docker cp "${container}:/var./config/inventory.json.db" "$backup_dir/config/" 2>/dev/null && \
-        log_success "  Tools inventory backed up" || \
+    if docker cp "${container}:/var./config/inventory.json.db" "$backup_dir/config/" 2>&1; then
+        # Deduplicate inventory and ensure serveLocally=True for all tools with files
+        log_info "    Deduplicating and fixing tool inventory..."
+        python3 - "$backup_dir/config/inventory.json.db" << 'PYEOF'
+import json
+import sys
+
+inventory_path = sys.argv[1]
+
+try:
+    with open(inventory_path, 'r') as f:
+        data = json.load(f)
+
+    seen = {}
+    new_tools = []
+    fixed = 0
+
+    for tool in data.get('tools', []):
+        name = tool.get('name', '')
+        serve_locally = tool.get('serveLocally', False)
+        has_filestore = bool(tool.get('filestorePath'))
+
+        # If tool has a filestore path, it should be served locally
+        if has_filestore and not serve_locally:
+            tool['serveLocally'] = True
+            tool['adminOverride'] = True
+            fixed += 1
+
+        if name in seen:
+            # Keep the one with serveLocally=True
+            if tool.get('serveLocally') and not seen[name].get('serveLocally'):
+                new_tools = [t for t in new_tools if t.get('name') != name]
+                new_tools.append(tool)
+                seen[name] = tool
+        else:
+            seen[name] = tool
+            new_tools.append(tool)
+
+    data['tools'] = new_tools
+
+    with open(inventory_path, 'w') as f:
+        json.dump(data, f)
+
+    print(f"Tools: {len(new_tools)}, Fixed serveLocally: {fixed}")
+except Exception as e:
+    print(f"Warning: Could not process inventory: {e}")
+PYEOF
+        log_success "  Tools inventory backed up"
+    else
         log_warn "  No tools inventory to backup"
+    fi
+
+    # Ensure velociraptor-collector exists for Generic Collector (air-gap critical)
+    log_info "  Checking velociraptor-collector for air-gap..."
+    local collector_hash="62617845f8a271026bc2cf730ee1ed0a9b25dfe19fada67831363904c0e83d8b"
+    local collector_size=$(docker exec "$container" stat -c%s "/var./public/$collector_hash" 2>/dev/null || echo "0")
+    if [[ "$collector_size" -lt 1000 ]]; then
+        log_info "    Downloading velociraptor-collector..."
+        curl -fsSL "https://github.com/Velocidex/velociraptor/releases/download/v0.75/velociraptor-collector" -o /tmp/velociraptor-collector 2>/dev/null
+        if [[ -s /tmp/velociraptor-collector ]]; then
+            docker cp /tmp/velociraptor-collector "${container}:/var./public/$collector_hash"
+            rm -f /tmp/velociraptor-collector
+            log_success "    velociraptor-collector downloaded"
+        else
+            log_warn "    Failed to download velociraptor-collector"
+        fi
+    else
+        log_success "    velociraptor-collector already present ($collector_size bytes)"
+    fi
 
     # Backup public tools (served_locally binaries)
     log_info "  Backing up public tools..."
-    docker cp "${container}:/var./public" "$backup_dir/" 2>/dev/null && \
-        log_success "  Public tools backed up" || \
+    if docker cp "${container}:/var./public" "$backup_dir/" 2>&1; then
+        local tool_count=$(find "$backup_dir/public" -type f 2>/dev/null | wc -l)
+        log_success "  Public tools backed up ($tool_count files)"
+    else
         log_warn "  No public tools to backup"
+    fi
 
     # Mark backup timestamp
     echo "$(date -Iseconds)" > "$backup_dir/.backup_timestamp"
