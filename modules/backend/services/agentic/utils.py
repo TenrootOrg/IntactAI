@@ -373,69 +373,83 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
 
 
 def filter_high_severity_events(events):
-    """Filter events to only include high-severity/important findings for IRIS import.
+    """Filter events for IRIS import - keeps most forensically relevant events.
 
     Keeps:
-    - Hayabusa detections with level high/critical/medium
-    - Detection/Persistence artifacts (always important)
-    - External RDP connections (potential lateral movement)
-    - Suspicious process network activity (shells, scripting engines)
-    - Events explicitly marked with high/critical severity
+    - All Detection/Persistence/Malfind/BinaryRename artifacts (always important)
+    - All Hayabusa detections (any level - Sigma rules are pre-filtered)
+    - All RDP events (lateral movement tracking)
+    - All PSReadline/PowerShell events (command history)
+    - Network from suspicious processes OR with external connections
+    - Amcache/Execution in suspicious paths OR renamed binaries
+    - Events without timestamps (detections that found something)
 
     Drops:
-    - Routine LNK file access
-    - Generic Amcache entries (unless in suspicious paths)
-    - Low/informational Hayabusa events
-    - Generic network connections from normal processes
+    - Routine LNK file access (unless suspicious target)
+    - UntrustedBinaries with Status=trusted (baseline noise)
+    - Pstree entries (process snapshots - too verbose)
     """
     filtered = []
 
-    # Always-important artifact types
-    important_artifacts = ['Detection', 'Persistence', 'PersistenceSniper', 'Autoruns']
+    # Always-important artifact types - include everything from these
+    important_artifacts = [
+        'Detection', 'Persistence', 'PersistenceSniper', 'Autoruns',
+        'Malfind', 'BinaryRename', 'Hayabusa', 'PSReadline', 'ISEAutoSave',
+        'Applications', 'PipeHunter', 'Eulacheck'
+    ]
 
     # Suspicious processes that warrant attention
-    suspicious_procs = ['powershell', 'cmd.exe', 'wscript', 'cscript', 'mshta', 'certutil', 'regsvr32', 'rundll32']
+    suspicious_procs = ['powershell', 'cmd.exe', 'wscript', 'cscript', 'mshta', 'certutil',
+                        'regsvr32', 'rundll32', 'procdump', 'mimikatz', 'psexec']
 
     # Suspicious paths indicating dropped malware
-    suspicious_paths = ['temp', 'tmp', 'download', 'appdata\\local\\temp', 'public', 'programdata']
+    suspicious_paths = ['temp', 'tmp', 'download', 'appdata\\local\\temp', 'public',
+                        'programdata', 'users\\public', 'recycle']
 
     for event in events:
         source = event.get('source', '')
         raw = event.get('raw', {})
         title = event.get('title', '').lower()
         description = event.get('description', '').lower()
+        no_timestamp = event.get('no_timestamp', False)
 
-        # Always include Detection/Persistence artifacts
+        # Always include important artifact types
         if any(imp in source for imp in important_artifacts):
             filtered.append(event)
             continue
 
-        # Hayabusa - only high/critical/medium
-        if 'Hayabusa' in source:
-            level = str(raw.get('Level') or raw.get('RuleLevel') or '').lower()
-            if level in ['high', 'critical', 'medium', 'crit', 'med']:
-                filtered.append(event)
+        # Always include events without timestamps (detections that found something)
+        if no_timestamp:
+            filtered.append(event)
             continue
 
-        # RDP - only external IPs
+        # RDP - include ALL events (internal lateral movement is important too)
         if 'RDP' in source:
-            source_ip = str(raw.get('SourceIP') or raw.get('IpAddress') or '')
-            # Include if external IP (not 10.x, 192.168.x, 172.16-31.x, or empty)
-            if source_ip and not source_ip.startswith(('10.', '192.168.', '172.16.', '172.17.', '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', '172.31.', '127.', '0.0.0.0', '::')):
-                filtered.append(event)
+            filtered.append(event)
             continue
 
-        # Network - only suspicious processes
+        # Network - suspicious processes OR external connections
         if 'Netstat' in source or 'Network' in source:
             proc = str(raw.get('Name') or raw.get('Process') or '').lower()
+            remote = str(raw.get('Raddr') or raw.get('RemoteAddress') or '')
+            # Include if suspicious process
             if any(susp in proc for susp in suspicious_procs):
+                filtered.append(event)
+                continue
+            # Include if external IP connection
+            if remote and not remote.startswith(('10.', '192.168.', '172.16.', '172.17.',
+                    '172.18.', '172.19.', '127.', '0.0.0.0', '::', '0:0:0:0')):
                 filtered.append(event)
             continue
 
-        # Amcache/Execution - only suspicious paths
+        # Amcache/Execution - suspicious paths OR named binaries
         if 'Amcache' in source or 'Prefetch' in source or 'Execution' in source:
             path = str(raw.get('FullPath') or raw.get('Path') or '').lower()
+            name = str(raw.get('Name') or '').lower()
             if any(susp in path for susp in suspicious_paths):
+                filtered.append(event)
+                continue
+            if any(susp in name for susp in suspicious_procs):
                 filtered.append(event)
             continue
 
@@ -446,11 +460,22 @@ def filter_high_severity_events(events):
                 filtered.append(event)
             continue
 
-        # Generic severity check - include if marked high/critical
-        for field in ['Level', 'Severity', 'RuleLevel', 'Priority']:
+        # UntrustedBinaries - skip trusted ones (too much noise)
+        if 'UntrustedBinaries' in source:
+            is_trusted = raw.get('IsTrusted') or raw.get('Trusted')
+            if not is_trusted:
+                filtered.append(event)
+            continue
+
+        # Pstree - skip (too verbose for IRIS timeline)
+        if 'Pstree' in source:
+            continue
+
+        # Generic severity check - include if marked as finding
+        for field in ['Level', 'Severity', 'RuleLevel', 'Priority', 'Detection', 'Alert', 'Hit']:
             if field in raw:
                 val = str(raw[field]).lower()
-                if val in ['high', 'critical', 'crit', 'severe', 'emergency']:
+                if val and val not in ('none', 'null', '0', 'false', 'informational', 'info', 'low'):
                     filtered.append(event)
                     break
 
