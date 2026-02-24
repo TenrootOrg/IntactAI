@@ -320,14 +320,18 @@ prebuild_for_airgap() {
         log_warn "  Backend build failed (may already exist)"
     fi
 
-    # 2. Pre-download Timesketch Python packages for air-gap
-    log_info "  Downloading Timesketch Python packages..."
+    # 2. Check Timesketch Python packages (already committed to repo)
     local ts_packages_dir="$SCRIPT_DIR/modules/timesketch/python-packages"
-    mkdir -p "$ts_packages_dir"
-    if pip download google-generativeai -d "$ts_packages_dir" > /dev/null 2>&1; then
-        log_success "  Timesketch packages downloaded ($(ls "$ts_packages_dir" | wc -l) files)"
+    if ls "$ts_packages_dir"/*.whl >/dev/null 2>&1; then
+        log_info "  Timesketch packages already present ($(ls "$ts_packages_dir"/*.whl 2>/dev/null | wc -l) files)"
     else
-        log_warn "  Failed to download Timesketch packages"
+        log_info "  Downloading Timesketch Python packages..."
+        mkdir -p "$ts_packages_dir"
+        if pip download google-generativeai -d "$ts_packages_dir" > /dev/null 2>&1; then
+            log_success "  Timesketch packages downloaded ($(ls "$ts_packages_dir" | wc -l) files)"
+        else
+            log_warn "  Failed to download Timesketch packages"
+        fi
     fi
 
     # 3. Pull all external docker images needed by services
