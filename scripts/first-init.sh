@@ -410,45 +410,108 @@ restore_velociraptor_data() {
         return 0
     fi
 
-    log_info "Restoring Velociraptor artifacts and tools..."
+    local backup_time=$(cat "$backup_dir/.backup_timestamp" 2>/dev/null)
+    log_info "Restoring Velociraptor data (backup from: $backup_time)..."
 
-    # Wait for Velociraptor to be ready
+    # Wait for Velociraptor container to be running
     local wait=0
     while [[ $wait -lt 30 ]]; do
-        if docker exec "$container" test -d /var. 2>/dev/null; then
+        if docker exec "$container" test -f /velociraptor/server.config.yaml 2>/dev/null; then
             break
         fi
         sleep 2
         ((wait+=2))
     done
 
+    # Create artifact_definitions directory if it doesn't exist
+    docker exec "$container" mkdir -p /var./artifact_definitions 2>/dev/null || true
+
+    # Count artifacts in backup
+    local backup_count=$(find "$backup_dir/artifact_definitions" -name "*.yaml" 2>/dev/null | wc -l)
+    log_info "  Backup contains $backup_count artifacts"
+
+    # Clear existing artifacts first (to ensure clean restore)
+    docker exec "$container" sh -c "rm -rf /var./artifact_definitions/*" 2>/dev/null || true
+
     # Restore artifact definitions
     if [[ -d "$backup_dir/artifact_definitions" ]]; then
         log_info "  Restoring artifact definitions..."
-        docker cp "$backup_dir/artifact_definitions" "${container}:/var./" 2>/dev/null && \
-            log_success "  Artifact definitions restored" || \
+        if docker cp "$backup_dir/artifact_definitions/." "${container}:/var./artifact_definitions/" 2>&1; then
+            # Verify restore
+            local restored_count=$(docker exec "$container" find /var./artifact_definitions -name "*.yaml" 2>/dev/null | wc -l)
+            log_success "  Artifact definitions restored ($restored_count artifacts)"
+        else
             log_warn "  Failed to restore artifact definitions"
+        fi
     fi
 
     # Restore tools inventory
     if [[ -f "$backup_dir/config/inventory.json.db" ]]; then
         log_info "  Restoring tools inventory..."
         docker exec "$container" mkdir -p /var./config 2>/dev/null
-        docker cp "$backup_dir/config/inventory.json.db" "${container}:/var./config/" 2>/dev/null && \
-            log_success "  Tools inventory restored" || \
+        if docker cp "$backup_dir/config/inventory.json.db" "${container}:/var./config/" 2>&1; then
+            # Ensure serveLocally=True for all tools with files (handles any edge cases)
+            docker cp "${container}:/var./config/inventory.json.db" /tmp/inventory_fix.json.db 2>/dev/null
+            python3 - /tmp/inventory_fix.json.db << 'PYEOF' 2>/dev/null
+import json
+import sys
+try:
+    with open(sys.argv[1], 'r') as f:
+        data = json.load(f)
+    seen = {}
+    new_tools = []
+    for tool in data.get('tools', []):
+        name = tool.get('name', '')
+        if tool.get('filestorePath') and not tool.get('serveLocally'):
+            tool['serveLocally'] = True
+            tool['adminOverride'] = True
+        if name not in seen:
+            seen[name] = tool
+            new_tools.append(tool)
+        elif tool.get('serveLocally') and not seen[name].get('serveLocally'):
+            new_tools = [t for t in new_tools if t.get('name') != name]
+            new_tools.append(tool)
+            seen[name] = tool
+    data['tools'] = new_tools
+    with open(sys.argv[1], 'w') as f:
+        json.dump(data, f)
+except: pass
+PYEOF
+            docker cp /tmp/inventory_fix.json.db "${container}:/var./config/inventory.json.db" 2>/dev/null
+            rm -f /tmp/inventory_fix.json.db
+            log_success "  Tools inventory restored"
+        else
             log_warn "  Failed to restore tools inventory"
+        fi
     fi
 
     # Restore public tools
     if [[ -d "$backup_dir/public" ]]; then
         log_info "  Restoring public tools..."
-        docker cp "$backup_dir/public" "${container}:/var./" 2>/dev/null && \
-            log_success "  Public tools restored" || \
+        if docker cp "$backup_dir/public/." "${container}:/var./public/" 2>&1; then
+            local tool_count=$(docker exec "$container" find /var./public -type f 2>/dev/null | wc -l)
+            log_success "  Public tools restored ($tool_count files)"
+        else
             log_warn "  Failed to restore public tools"
+        fi
     fi
 
-    local backup_time=$(cat "$backup_dir/.backup_timestamp" 2>/dev/null)
-    log_success "Velociraptor restore complete (backup from: $backup_time)"
+    # Restart Velociraptor to reload artifact definitions
+    log_info "  Restarting Velociraptor to load restored artifacts..."
+    docker restart "$container" > /dev/null 2>&1
+
+    # Wait for Velociraptor to come back up
+    local restart_wait=0
+    while [[ $restart_wait -lt 30 ]]; do
+        if docker exec "$container" test -f /var./server.config.yaml 2>/dev/null; then
+            break
+        fi
+        sleep 2
+        ((restart_wait+=2))
+    done
+    log_success "  Velociraptor restarted"
+
+    log_success "Velociraptor restore complete"
 }
 
 # ============================================================================
