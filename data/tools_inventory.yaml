@@ -98,7 +98,7 @@ event_log_tools:
     enabled: true
     type: direct_url
     url: "https://github.com/wagga40/Zircolite/releases/download/2.40.0/zircolite_win_x64_2.40.0.7z"
-    filename: "zircolite_win_x64.7z"
+    filename: "zircolite_win_x64_2.40.0.7z"
     category: detection
     description: "SIGMA-based EVTX analyzer"
 
@@ -250,6 +250,7 @@ velociraptor_artifacts:
     enabled: true
     type: direct_url
     url: "https://github.com/TenRootOrg/Velociraptor-Artifacts/archive/refs/heads/main.zip"
+    filename: "Velociraptor-Artifacts-main.zip"
     category: artifacts
 
   - name: "DetectRaptor LOLRMM CSV"
@@ -273,7 +274,7 @@ memory_tools:
     enabled: true
     type: direct_url
     url: "https://github.com/volatilityfoundation/volatility/archive/master.zip"
-    filename: "volatility.zip"
+    filename: "volatility-master.zip"
     category: memory
 
 # ============================================================================
@@ -478,7 +479,7 @@ audit_tools:
     enabled: true
     type: direct_url
     url: "https://github.com/0x6d69636b/windows_hardening/archive/refs/heads/master.zip"
-    filename: "HardeningKitty.zip"
+    filename: "windows_hardening-master.zip"
     category: audit
     description: "Windows hardening checker"
 
@@ -498,9 +499,10 @@ threat_intel:
     enabled: true
     type: direct_url
     url: "https://update1.nextron-systems.com/getupdate.php?product=thor10lite-win"
-    filename: "thor.zip"
+    filename: "thor-lite-windows.zip"
+    cache_pattern: "thor-lite-windows.*\\.zip"
     category: scanner
-    description: "YARA/IOC scanner (requires license)"
+    description: "YARA/IOC scanner (version changes with updates)"
 
 # ============================================================================
 # LINUX TOOLS

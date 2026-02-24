@@ -206,6 +206,16 @@ def download_tools_from_config(tools_dir: str, config: Dict,
                     results["already_exists"].append(tool_name)
                     continue
 
+                # For direct_url with cache_pattern, check if any file matches pattern locally
+                cache_pattern = tool.get('cache_pattern', '')
+                if cache_pattern and existing_files:
+                    regex = re.compile(cache_pattern)
+                    matching = [f for f in existing_files if regex.search(f)]
+                    if matching:
+                        log(f"  Cached: {tool_name} ({matching[0]})")
+                        results["already_exists"].append(tool_name)
+                        continue
+
                 # For github_release, check if any file matches the pattern locally
                 if tool_type == 'github_release':
                     pattern = tool.get('pattern', '')
