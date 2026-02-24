@@ -14,6 +14,32 @@ mkdir -p $CLIENT_DIR/windows && cp /opt/velociraptor/windows/velociraptor_client
 
 # Generate server config if not exists
 if [ ! -f server.config.yaml ]; then
+    echo "Fresh deployment detected - cleaning runtime data..."
+
+    # PRESERVED (not touched):
+    #   /var./artifact_definitions/ - Custom artifacts (DetectRaptor, Exchange, TenRoot)
+    #   /var./public/              - Tools (served_locally binaries)
+    #   /var./config/inventory.json.db - Tool inventory (preserve this!)
+
+    # CLEANED (runtime + old config that has stale cert references):
+    rm -rf /var./clients/* 2>/dev/null || true
+    rm -rf /var./client_info/* 2>/dev/null || true
+    rm -rf /var./server_artifacts/* 2>/dev/null || true
+    rm -rf /var./server_artifact_logs/* 2>/dev/null || true
+    rm -rf /var./notebooks/* 2>/dev/null || true
+    rm -f /var./flows_journal.json* 2>/dev/null || true
+    # Clean old config files (keep inventory for tools)
+    rm -f /var./config/client_monitoring.json.db 2>/dev/null || true
+    rm -f /var./config/server_monitoring.json.db 2>/dev/null || true
+    rm -f /var./config/server_state.json.db 2>/dev/null || true
+    rm -f /var./config/install_time.json.db 2>/dev/null || true
+    rm -f /var./config/repository_metadata.json.db 2>/dev/null || true
+    # Clean ACL and users (will be recreated with new certs)
+    rm -rf /var./acl/* 2>/dev/null || true
+    rm -rf /var./users/* 2>/dev/null || true
+
+    echo "Runtime data cleaned. Preserved: artifacts, tools, tool inventory"
+
     echo "Generating server configuration..."
     ./velociraptor config generate --merge '{
         "Frontend": {
