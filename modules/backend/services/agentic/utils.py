@@ -372,111 +372,92 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
     return events
 
 
-def filter_high_severity_events(events):
-    """Filter events for IRIS import - keeps most forensically relevant events.
+def filter_high_severity_events(events, max_events=500):
+    """Filter events for IRIS import - generic logic, not artifact-specific.
 
-    Keeps:
-    - All Detection/Persistence/Malfind/BinaryRename artifacts (always important)
-    - All Hayabusa detections (any level - Sigma rules are pre-filtered)
-    - All RDP events (lateral movement tracking)
-    - All PSReadline/PowerShell events (command history)
-    - Network from suspicious processes OR with external connections
-    - Amcache/Execution in suspicious paths OR renamed binaries
-    - Events without timestamps (detections that found something)
+    Includes events that have:
+    - Any severity/level/priority field (detection results)
+    - No timestamp (detection findings without time context)
+    - Suspicious keywords in title/description
+    - Any raw data fields indicating findings
 
-    Drops:
-    - Routine LNK file access (unless suspicious target)
-    - UntrustedBinaries with Status=trusted (baseline noise)
-    - Pstree entries (process snapshots - too verbose)
+    Excludes:
+    - Events marked as 'trusted', 'clean', 'benign'
+    - Events with only baseline/info severity
+    - Truncates to max_events to avoid IRIS overload
     """
     filtered = []
 
-    # Always-important artifact types - include everything from these
-    important_artifacts = [
-        'Detection', 'Persistence', 'PersistenceSniper', 'Autoruns',
-        'Malfind', 'BinaryRename', 'Hayabusa', 'PSReadline', 'ISEAutoSave',
-        'Applications', 'PipeHunter', 'Eulacheck'
-    ]
+    # Fields that indicate a detection/finding
+    detection_fields = ['Level', 'Severity', 'RuleLevel', 'Priority', 'Detection',
+                        'Alert', 'Hit', 'Match', 'Finding', 'Score', 'Risk',
+                        'RuleTitle', 'Technique', 'Status']
 
-    # Suspicious processes that warrant attention
-    suspicious_procs = ['powershell', 'cmd.exe', 'wscript', 'cscript', 'mshta', 'certutil',
-                        'regsvr32', 'rundll32', 'procdump', 'mimikatz', 'psexec']
+    # Values that indicate NOT a finding (skip these)
+    skip_values = ['trusted', 'clean', 'benign', 'normal', 'informational',
+                   'info', 'none', 'null', '0', 'false', 'n/a', 'baseline']
 
-    # Suspicious paths indicating dropped malware
-    suspicious_paths = ['temp', 'tmp', 'download', 'appdata\\local\\temp', 'public',
-                        'programdata', 'users\\public', 'recycle']
+    # Keywords that indicate interesting findings
+    interesting_keywords = ['suspicious', 'malicious', 'threat', 'attack', 'exploit',
+                           'injection', 'backdoor', 'persistence', 'credential',
+                           'lateral', 'exfil', 'c2', 'command', 'control',
+                           'shell', 'payload', 'encoded', 'obfuscated', 'critical',
+                           'high', 'medium', 'warning', 'alert', 'detection']
 
     for event in events:
-        source = event.get('source', '')
         raw = event.get('raw', {})
-        title = event.get('title', '').lower()
-        description = event.get('description', '').lower()
+        title = str(event.get('title', '')).lower()
+        description = str(event.get('description', '')).lower()
         no_timestamp = event.get('no_timestamp', False)
 
-        # Always include important artifact types
-        if any(imp in source for imp in important_artifacts):
-            filtered.append(event)
-            continue
-
-        # Always include events without timestamps (detections that found something)
+        # Always include events without timestamps (they represent findings)
         if no_timestamp:
             filtered.append(event)
             continue
 
-        # RDP - include ALL events (internal lateral movement is important too)
-        if 'RDP' in source:
+        # Check if event has any detection/finding fields
+        has_finding = False
+        is_clean = False
+
+        for field in detection_fields:
+            if field in raw:
+                val = str(raw[field]).lower().strip()
+                if val:
+                    # Check if it's a "clean" value to skip
+                    if val in skip_values:
+                        is_clean = True
+                    else:
+                        has_finding = True
+                    break
+
+        # Skip events explicitly marked as clean/trusted
+        if is_clean and not has_finding:
+            continue
+
+        # Include if has a detection field with value
+        if has_finding:
             filtered.append(event)
             continue
 
-        # Network - suspicious processes OR external connections
-        if 'Netstat' in source or 'Network' in source:
-            proc = str(raw.get('Name') or raw.get('Process') or '').lower()
-            remote = str(raw.get('Raddr') or raw.get('RemoteAddress') or '')
-            # Include if suspicious process
-            if any(susp in proc for susp in suspicious_procs):
-                filtered.append(event)
-                continue
-            # Include if external IP connection
-            if remote and not remote.startswith(('10.', '192.168.', '172.16.', '172.17.',
-                    '172.18.', '172.19.', '127.', '0.0.0.0', '::', '0:0:0:0')):
-                filtered.append(event)
+        # Check for interesting keywords in title/description
+        combined_text = f"{title} {description}"
+        if any(keyword in combined_text for keyword in interesting_keywords):
+            filtered.append(event)
             continue
 
-        # Amcache/Execution - suspicious paths OR named binaries
-        if 'Amcache' in source or 'Prefetch' in source or 'Execution' in source:
-            path = str(raw.get('FullPath') or raw.get('Path') or '').lower()
-            name = str(raw.get('Name') or '').lower()
-            if any(susp in path for susp in suspicious_paths):
-                filtered.append(event)
-                continue
-            if any(susp in name for susp in suspicious_procs):
-                filtered.append(event)
-            continue
-
-        # LNK files - only if pointing to scripts/suspicious
-        if 'Lnk' in source:
-            target = str(raw.get('LinkTarget') or raw.get('TargetPath') or '').lower()
-            if any(susp in target for susp in suspicious_procs + suspicious_paths):
-                filtered.append(event)
-            continue
-
-        # UntrustedBinaries - skip trusted ones (too much noise)
-        if 'UntrustedBinaries' in source:
-            is_trusted = raw.get('IsTrusted') or raw.get('Trusted')
-            if not is_trusted:
-                filtered.append(event)
-            continue
-
-        # Pstree - skip (too verbose for IRIS timeline)
-        if 'Pstree' in source:
-            continue
-
-        # Generic severity check - include if marked as finding
-        for field in ['Level', 'Severity', 'RuleLevel', 'Priority', 'Detection', 'Alert', 'Hit']:
-            if field in raw:
+        # Include if raw data has meaningful content (not just metadata)
+        meaningful_fields = ['Name', 'FullPath', 'CommandLine', 'Message', 'Description',
+                            'Target', 'Path', 'Hash', 'SHA256', 'MD5', 'Process']
+        for field in meaningful_fields:
+            if field in raw and raw[field]:
                 val = str(raw[field]).lower()
-                if val and val not in ('none', 'null', '0', 'false', 'informational', 'info', 'low'):
+                # Include if the value contains suspicious content
+                if any(keyword in val for keyword in interesting_keywords):
                     filtered.append(event)
                     break
+
+    # Limit total events to prevent IRIS overload
+    if len(filtered) > max_events:
+        filtered = filtered[:max_events]
 
     return filtered
