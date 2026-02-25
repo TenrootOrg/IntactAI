@@ -28,7 +28,7 @@ from services.agentic.utils import extract_timeline_events, filter_malicious_eve
 
 def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, llm_config,
                          report_types=None, anonymize_data=False, custom_patterns=None,
-                         import_to_iris=False, iris_case_name=None):
+                         import_to_iris=False, iris_case_name=None, time_filter=None):
     """Background thread: full agentic forensics pipeline
     Args:
         report_types: List of report types to generate: ['technical'], or None for both
@@ -36,6 +36,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         custom_patterns: List of custom regex patterns to mask (e.g., ['acme-corp.com', 'ACMECORP\\'])
         import_to_iris: If True, import timeline events and IOCs to IRIS after report generation
         iris_case_name: Optional custom name for the IRIS case (auto-generated if not provided)
+        time_filter: Optional time filter config: {enabled, mode, relative_range/start_datetime/end_datetime}
     """
     if report_types is None:
         report_types = ['technical']  # Default: both reports
@@ -74,7 +75,17 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
             return
 
         artifacts = blueprint.get('artifacts', [])
-        settings = blueprint.get('settings', {})
+        settings = blueprint.get('settings', {}).copy()  # Copy to avoid mutating blueprint
+
+        # Merge user-provided time filter into settings
+        if time_filter and time_filter.get('enabled'):
+            settings['time_filter'] = time_filter
+            mode = time_filter.get('mode', 'relative')
+            if mode == 'relative':
+                add_log_to_run(run_id, f"[Pipeline] Time filter: relative ({time_filter.get('relative_range', '7d')})", "info")
+            else:
+                add_log_to_run(run_id, f"[Pipeline] Time filter: between ({time_filter.get('start_datetime')} to {time_filter.get('end_datetime', 'now')})", "info")
+
         add_log_to_run(run_id, f"[Pipeline] Blueprint: {blueprint.get('name')} ({len(artifacts)} artifacts)", "info")
         add_log_to_run(run_id, f"[Pipeline] Clients: {len(client_ids)} selected", "info")
         add_log_to_run(run_id, f"[Pipeline] Collection time: {collection_minutes} minutes", "info")
@@ -228,7 +239,7 @@ def _update_phase(run_id, phase, progress):
 
 def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                              report_types=None, anonymize_data=False, custom_patterns=None,
-                             import_to_iris=False, iris_case_name=None):
+                             import_to_iris=False, iris_case_name=None, time_filter=None):
     """Run AI analysis on an existing Velociraptor flow or hunt (skip collection step)
 
     Args:
@@ -241,6 +252,7 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         custom_patterns: List of custom patterns to mask
         import_to_iris: If True, import to IRIS after analysis
         iris_case_name: Optional custom IRIS case name
+        time_filter: Optional time filter for post-collection filtering
     """
     if report_types is None:
         report_types = ['technical']
@@ -267,9 +279,11 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
 
         _update_phase(run_id, "fetching_results", 5)
 
-        # Fetch results from existing flow/hunt
+        # Fetch all results from existing flow/hunt
         from services.agentic.collectors import get_existing_collection_results
-        all_results, artifacts, client_info = get_existing_collection_results(run_id, flow_id, hunt_id)
+        all_results, artifacts, client_info = get_existing_collection_results(
+            run_id, flow_id, hunt_id, time_filter
+        )
 
         if not all_results:
             add_log_to_run(run_id, f"[Pipeline] No results found in {collection_type} {collection_id}", "error")
@@ -278,6 +292,15 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
 
         total_rows = sum(len(rows) for rows in all_results.values())
         add_log_to_run(run_id, f"[Pipeline] Retrieved {total_rows} rows across {len(all_results)} artifacts", "info")
+
+        # Apply Python time filtering (more reliable than VQL filtering)
+        if time_filter and time_filter.get('enabled'):
+            from services.agentic.utils import filter_results_by_time
+            before_filter = total_rows
+            all_results = filter_results_by_time(all_results, time_filter, run_id)
+            total_rows = sum(len(rows) for rows in all_results.values())
+            add_log_to_run(run_id, f"[Pipeline] Time filter: {before_filter} -> {total_rows} rows", "info")
+
         add_log_to_run(run_id, f"[Pipeline] Client info: {len(client_info)} clients", "info")
 
         if total_rows == 0:

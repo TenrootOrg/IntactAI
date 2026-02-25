@@ -133,10 +133,15 @@ def generate_collector(config_id, os_type="windows"):
             certificate_chain=api_config["client_cert"].encode("utf8"),
         )
 
+        max_message_size = 100 * 1024 * 1024  # 100MB
         channel = grpc.secure_channel(
             api_config["api_connection_string"],
             creds,
-            (("grpc.ssl_target_name_override", "VelociraptorServer"),)
+            (
+                ("grpc.ssl_target_name_override", "VelociraptorServer"),
+                ("grpc.max_receive_message_length", max_message_size),
+                ("grpc.max_send_message_length", max_message_size),
+            )
         )
         stub = api_pb2_grpc.APIStub(channel)
 

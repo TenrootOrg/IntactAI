@@ -767,6 +767,146 @@ function toggleForensicsIris() {
     }
 }
 
+function toggleForensicsTimeFilter() {
+    const toggle = document.getElementById('forensics-time-filter-toggle');
+    const details = document.getElementById('forensics-time-filter-details');
+    if (details) {
+        details.classList.toggle('hidden', !toggle?.checked);
+    }
+}
+
+function toggleTimeFilterMode() {
+    const mode = document.querySelector('input[name="time-filter-mode"]:checked')?.value || 'relative';
+    const relativeDiv = document.getElementById('time-filter-relative');
+    const betweenDiv = document.getElementById('time-filter-between');
+
+    if (mode === 'relative') {
+        relativeDiv?.classList.remove('hidden');
+        betweenDiv?.classList.add('hidden');
+    } else {
+        relativeDiv?.classList.add('hidden');
+        betweenDiv?.classList.remove('hidden');
+        // Initialize Flatpickr when switching to between mode
+        initDatePickers();
+    }
+}
+
+// Store Flatpickr instances
+let fpStart = null;
+let fpEnd = null;
+
+function initDatePickers() {
+    // Only initialize if Flatpickr is available
+    if (typeof flatpickr === 'undefined') {
+        console.warn('[DatePicker] Flatpickr not loaded');
+        return;
+    }
+
+    const startEl = document.getElementById('forensics-time-start');
+    const endEl = document.getElementById('forensics-time-end');
+
+    if (!startEl || !endEl) {
+        console.warn('[DatePicker] Elements not found');
+        return;
+    }
+
+    // Destroy existing instances if they exist (needed for hidden element re-init)
+    if (fpStart) {
+        fpStart.destroy();
+        fpStart = null;
+    }
+    if (fpEnd) {
+        fpEnd.destroy();
+        fpEnd = null;
+    }
+
+    const config = {
+        enableTime: true,
+        time_24hr: true,
+        dateFormat: "Y-m-d H:i",
+        minuteIncrement: 5,
+        disableMobile: true,
+        allowInput: false,
+        clickOpens: true,
+        animate: true,
+        appendTo: document.body,
+        defaultHour: 0,
+        defaultMinute: 0
+    };
+
+    // Small delay to ensure element is visible
+    setTimeout(() => {
+        fpStart = flatpickr(startEl, {
+            ...config,
+            onChange: function(selectedDates, dateStr) {
+                if (fpEnd && selectedDates[0]) {
+                    fpEnd.set('minDate', selectedDates[0]);
+                }
+            }
+        });
+
+        fpEnd = flatpickr(endEl, {
+            ...config,
+            onChange: function(selectedDates, dateStr) {
+                if (fpStart && selectedDates[0]) {
+                    fpStart.set('maxDate', selectedDates[0]);
+                }
+            }
+        });
+        console.log('[DatePicker] Initialized successfully');
+    }, 50);
+}
+
+function getForensicsTimeFilterSettings() {
+    const enabled = document.getElementById('forensics-time-filter-toggle')?.checked || false;
+    if (!enabled) return null;
+
+    const modeRadio = document.querySelector('input[name="time-filter-mode"]:checked');
+    const mode = modeRadio?.value || 'relative';
+
+    if (mode === 'relative') {
+        const relativeRange = document.getElementById('forensics-time-relative-range')?.value;
+        if (!relativeRange) {
+            console.warn('[TimeFilter] No relative range selected, defaulting to 7d');
+        }
+        return {
+            enabled: true,
+            mode: 'relative',
+            relative_range: relativeRange || '7d'
+        };
+    } else {
+        const startVal = document.getElementById('forensics-time-start')?.value;
+        const endVal = document.getElementById('forensics-time-end')?.value;
+
+        // Parse dates carefully
+        let startDatetime = null;
+        let endDatetime = null;
+
+        if (startVal) {
+            try {
+                startDatetime = new Date(startVal).toISOString();
+            } catch (e) {
+                console.error('[TimeFilter] Invalid start date:', startVal);
+            }
+        }
+
+        if (endVal) {
+            try {
+                endDatetime = new Date(endVal).toISOString();
+            } catch (e) {
+                console.error('[TimeFilter] Invalid end date:', endVal);
+            }
+        }
+
+        return {
+            enabled: true,
+            mode: 'between',
+            start_datetime: startDatetime,
+            end_datetime: endDatetime
+        };
+    }
+}
+
 async function startForensicsCollection() {
     // Get mode by checking which mode button has the active class (border-purple/blue-500)
     const aiButton = document.getElementById('forensics-mode-ai');
@@ -817,6 +957,19 @@ async function startForensicsCollection() {
             const customPatterns = document.getElementById('forensics-custom-patterns')?.value || '';
             const importToIris = document.getElementById('forensics-iris-toggle')?.checked || false;
             const irisCaseName = document.getElementById('forensics-iris-case-name')?.value || '';
+            const timeFilter = getForensicsTimeFilterSettings();
+
+            // Validate time filter settings
+            if (timeFilter && timeFilter.enabled) {
+                if (timeFilter.mode === 'between') {
+                    if (!timeFilter.start_datetime) {
+                        alert('Please select a start date for the time filter, or disable the time filter.');
+                        statusEl?.classList.add('hidden');
+                        return;
+                    }
+                    // end_datetime is optional - defaults to now on backend
+                }
+            }
 
             const response = await fetch('/api/agentic/run', {
                 method: 'POST',
@@ -829,7 +982,8 @@ async function startForensicsCollection() {
                     anonymize_data: anonymizeData,
                     custom_patterns: customPatterns,
                     import_to_iris: importToIris,
-                    iris_case_name: irisCaseName
+                    iris_case_name: irisCaseName,
+                    time_filter: timeFilter
                 })
             });
 
@@ -904,6 +1058,18 @@ async function analyzeExistingCollection() {
         const customPatterns = document.getElementById('forensics-custom-patterns')?.value || '';
         const importToIris = document.getElementById('forensics-iris-toggle')?.checked || false;
         const irisCaseName = document.getElementById('forensics-iris-case-name')?.value || '';
+        const timeFilter = getForensicsTimeFilterSettings();
+
+        // Validate time filter settings
+        if (timeFilter && timeFilter.enabled) {
+            if (timeFilter.mode === 'between') {
+                if (!timeFilter.start_datetime) {
+                    alert('Please select a start date for the time filter, or disable the time filter.');
+                    statusEl?.classList.add('hidden');
+                    return;
+                }
+            }
+        }
 
         const response = await fetch('/api/agentic/analyze-existing', {
             method: 'POST',
@@ -915,7 +1081,8 @@ async function analyzeExistingCollection() {
                 anonymize_data: anonymizeData,
                 custom_patterns: customPatterns,
                 import_to_iris: importToIris,
-                iris_case_name: irisCaseName
+                iris_case_name: irisCaseName,
+                time_filter: timeFilter
             })
         });
 

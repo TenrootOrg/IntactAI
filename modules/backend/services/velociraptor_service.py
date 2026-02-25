@@ -245,7 +245,14 @@ def setup_velociraptor_connection():
             certificate_chain=config["client_cert"].encode("utf8"),
         )
 
-        options = (("grpc.ssl_target_name_override", "VelociraptorServer"),)
+        # Set gRPC options - increase message size for large artifacts like Hayabusa
+        # Default is 4MB, but forensic artifacts can return 30MB+
+        max_message_size = 100 * 1024 * 1024  # 100MB
+        options = (
+            ("grpc.ssl_target_name_override", "VelociraptorServer"),
+            ("grpc.max_receive_message_length", max_message_size),
+            ("grpc.max_send_message_length", max_message_size),
+        )
 
         # Establish the secure channel
         channel = grpc.secure_channel(config["api_connection_string"], creds, options)

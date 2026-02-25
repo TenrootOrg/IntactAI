@@ -372,93 +372,201 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
     return events
 
 
-def filter_malicious_events(events, max_events=1000):
-    """Filter events for IRIS import - include all security-relevant findings.
+def filter_results_by_time(all_results, time_filter, run_id=None):
+    """Filter artifact results by timestamp for post-collection filtering.
 
-    Includes:
-    - ALL events from detection artifacts (Hayabusa, DetectRaptor, Malfind, Persistence, etc.)
-    - Events with any severity level (except explicitly trusted/clean)
-    - Known attack tools and suspicious binaries
-    - RDP/authentication events
-    - PowerShell/script execution
-    - Persistence mechanisms
+    Used when analyzing existing flows/hunts where collection already happened.
+    Filters each artifact's rows based on timestamp fields.
 
-    Excludes ONLY:
-    - Events explicitly marked as 'trusted', 'clean', 'benign'
-    - Generic Pstree entries (too verbose)
+    Args:
+        all_results: Dict of artifact_name -> [rows]
+        time_filter: Time filter config with enabled, mode, relative_range/start_datetime/end_datetime
+        run_id: Optional run_id for logging
+
+    Returns:
+        Filtered all_results dict
+    """
+    from datetime import timedelta
+    from services.workflow_service import add_log_to_run
+
+    def log(msg, level="info"):
+        if run_id:
+            add_log_to_run(run_id, msg, level)
+        print(f"[TIME-FILTER] {msg}", flush=True)
+
+    if not time_filter or not time_filter.get('enabled'):
+        return all_results
+
+    # Calculate time range
+    mode = time_filter.get('mode', 'relative')
+    now = datetime.utcnow()
+
+    if mode == 'between':
+        start_str = time_filter.get('start_datetime')
+        end_str = time_filter.get('end_datetime')
+        try:
+            start_time = datetime.fromisoformat(start_str.replace('Z', '+00:00').replace('+00:00', '')) if start_str else None
+            end_time = datetime.fromisoformat(end_str.replace('Z', '+00:00').replace('+00:00', '')) if end_str else now
+        except Exception as e:
+            log(f"Error parsing between dates: {e}", "warning")
+            return all_results
+    else:
+        # Relative mode
+        range_str = time_filter.get('relative_range', '7d')
+        end_time = now
+        if range_str.endswith('h'):
+            hours = int(range_str[:-1])
+            start_time = now - timedelta(hours=hours)
+        elif range_str.endswith('d'):
+            days = int(range_str[:-1])
+            start_time = now - timedelta(days=days)
+        else:
+            start_time = now - timedelta(days=7)
+
+    # Calculate total rows before filtering
+    total_before = sum(len(rows) for rows in all_results.values())
+
+    # Timestamp field names to check
+    timestamp_fields = [
+        'Timestamp', 'timestamp', 'Time', 'time', 'CreationTime', 'ModificationTime',
+        'LastAccessTime', 'EventTime', 'event_time', 'Created', 'Modified', 'Accessed',
+        '_time', 'StartTime', 'EndTime', 'LastWriteTime', 'SourceCreated', 'SourceModified',
+        'SourceAccessed', 'SI_LastModified0x10', 'SI_LastAccess0x10', 'FN_LastModified0x30',
+        'mtime', 'atime', 'ctime', 'btime', 'LastExecutionTime', 'LastRun'
+    ]
+
+    def parse_timestamp(ts_value):
+        """Try to parse various timestamp formats."""
+        if not ts_value:
+            return None
+        if isinstance(ts_value, (int, float)):
+            try:
+                if ts_value > 1e12:
+                    ts_value = ts_value / 1e6
+                return datetime.fromtimestamp(ts_value)
+            except:
+                return None
+        if isinstance(ts_value, str):
+            formats = [
+                '%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%dT%H:%M:%S',
+                '%Y-%m-%d %H:%M:%S', '%Y/%m/%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S.%f'
+            ]
+            for fmt in formats:
+                try:
+                    return datetime.strptime(ts_value[:26], fmt)
+                except:
+                    continue
+            try:
+                return datetime.fromisoformat(ts_value.replace('Z', '+00:00').replace('+00:00', ''))
+            except:
+                pass
+        return None
+
+    def is_in_range(row):
+        """Check if row's timestamp falls within the time range."""
+        for field in timestamp_fields:
+            if field in row:
+                ts = parse_timestamp(row[field])
+                if ts:
+                    # Make ts timezone-naive for comparison
+                    if hasattr(ts, 'tzinfo') and ts.tzinfo is not None:
+                        ts = ts.replace(tzinfo=None)
+                    if start_time and ts < start_time:
+                        return False
+                    if end_time and ts > end_time:
+                        return False
+                    return True  # Found a valid timestamp in range
+        # No timestamp found - include by default (better to include than exclude)
+        return True
+
+    # Filter each artifact's rows
+    filtered_results = {}
+    artifacts_filtered = []
+    for artifact, rows in all_results.items():
+        filtered_rows = [row for row in rows if is_in_range(row)]
+        filtered_results[artifact] = filtered_rows
+        if len(filtered_rows) != len(rows):
+            artifacts_filtered.append(f"{artifact}: {len(filtered_rows)}/{len(rows)}")
+
+    # Calculate total rows after filtering
+    total_after = sum(len(rows) for rows in filtered_results.values())
+
+    # Log summary to pipeline
+    mode_str = f"relative ({time_filter.get('relative_range', '7d')})" if mode == 'relative' else "between dates"
+    log(f"[Pipeline] Time filter ({mode_str}): {total_before} rows → {total_after} rows ({total_before - total_after} filtered out)")
+
+    if artifacts_filtered:
+        log(f"[Pipeline] Artifacts affected: {', '.join(artifacts_filtered[:5])}" + (f" (+{len(artifacts_filtered)-5} more)" if len(artifacts_filtered) > 5 else ""))
+
+    return filtered_results
+
+
+def _event_dedup_key(event, include_timestamp=True):
+    """Generate a deduplication key for an event.
+
+    For events WITH timestamps: include timestamp so different times = different events
+    For events WITHOUT timestamps: dedupe based on source, title, and key fields only
+    """
+    source = event.get('source', '')
+    title = event.get('title', '')
+    raw = event.get('raw', {})
+
+    # For timestamped events, include timestamp in key (different times = different events)
+    timestamp_part = ''
+    if include_timestamp and not event.get('no_timestamp', False):
+        ts = event.get('timestamp')
+        if ts:
+            timestamp_part = str(ts)
+
+    # Include key identifying fields from raw data
+    key_fields = []
+    for field in ['Name', 'Process', 'ProcessName', 'Exe', 'Path', 'FullPath',
+                  'Command', 'CommandLine', 'RuleTitle', 'Finding', 'Detection',
+                  'User', 'SourceAddress', 'LogonType', 'Description']:
+        if field in raw:
+            key_fields.append(str(raw[field]))
+
+    return f"{source}|{title}|{timestamp_part}|{'|'.join(key_fields)}"
+
+
+def filter_malicious_events(events, max_events=2000):
+    """Filter events for IRIS import - include ALL forensic data with deduplication.
+
+    This function is now permissive - includes everything except:
+    - Pstree (too verbose process trees)
+    - Netstat (too verbose network connections)
+    - Duplicates (same source + timestamp + key fields)
 
     Events without timestamps are placed at top as important findings.
     """
     included = []
     no_ts_included = []
+    seen_keys = set()  # Track seen events for deduplication
 
-    # Skip only these explicit "clean" markers
-    skip_values = ['trusted', 'clean', 'benign', 'whitelisted', 'legitimate']
-
-    # Detection/forensic artifact patterns - include ALL data from these
-    detection_sources = [
-        'detection', 'malfind', 'hayabusa', 'yara', 'sigma', 'persistence',
-        'persistencesniper', 'binaryrename', 'psreadline', 'iseautosave',
-        'applications', 'eulacheck', 'pipehunter', 'rdpauth', 'untrustedbinaries',
-        'amcache', 'namedpipes', 'hijacklibs', 'loldrivers', 'zoneidentifier'
-    ]
-
-    # Skip these sources (too verbose, not actionable)
+    # Skip only these verbose sources
     skip_sources = ['pstree', 'netstat']
 
     for event in events:
-        raw = event.get('raw', {})
         source = str(event.get('source', '')).lower()
-        title = str(event.get('title', '')).lower()
         no_timestamp = event.get('no_timestamp', False)
 
-        # Skip verbose sources
+        # Skip only verbose sources (pstree, netstat)
         if any(skip in source for skip in skip_sources):
             continue
 
-        # Check if explicitly marked as clean/trusted
-        is_clean = False
-        for field in ['Status', 'IsTrusted', 'Trusted', 'Verdict']:
-            if field in raw:
-                val = str(raw[field]).lower().strip()
-                if val in skip_values:
-                    is_clean = True
-                    break
+        # Generate dedup key (includes timestamp for timestamped events)
+        dedup_key = _event_dedup_key(event)
 
-        if is_clean:
+        # Skip duplicates
+        if dedup_key in seen_keys:
             continue
+        seen_keys.add(dedup_key)
 
-        # Check if from a detection/forensic artifact
-        is_detection_source = any(d in source for d in detection_sources)
-
-        # Include if from detection source
-        if is_detection_source:
-            if no_timestamp:
-                no_ts_included.append(event)
-            else:
-                included.append(event)
-            continue
-
-        # Include if has any severity/level/finding indicator
-        has_finding = False
-        for field in ['Level', 'RuleLevel', 'Severity', 'Priority', 'RuleTitle',
-                      'Technique', 'Detection', 'Alert', 'Hit', 'Match']:
-            if field in raw and raw[field]:
-                val = str(raw[field]).lower().strip()
-                if val and val not in skip_values and val not in ('none', 'null', '0', 'false', 'n/a'):
-                    has_finding = True
-                    break
-
-        if has_finding:
-            if no_timestamp:
-                no_ts_included.append(event)
-            else:
-                included.append(event)
-            continue
-
-        # Include events without timestamp (they represent findings)
+        # Add to appropriate list
         if no_timestamp:
             no_ts_included.append(event)
+        else:
+            included.append(event)
 
     # Sort timestamped events by timestamp
     included.sort(key=lambda x: x.get('timestamp') or datetime.min)

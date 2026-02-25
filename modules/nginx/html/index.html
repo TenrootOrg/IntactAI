@@ -8,6 +8,10 @@
     <script src="js/tailwind.js"></script>
     <script defer src="js/alpine.min.js"></script>
     <link rel="stylesheet" href="css/styles.css">
+    <!-- Flatpickr date picker (local) -->
+    <link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css">
+    <link rel="stylesheet" href="vendor/flatpickr/dark.css">
+    <script src="vendor/flatpickr/flatpickr.min.js"></script>
 </head>
 <body class="bg-gray-900 text-white" x-data x-cloak>
     <div class="flex">
@@ -668,6 +672,80 @@ sudo ./velociraptor service start</code></pre>
                                         </div>
                                     </div>
 
+                                    <!-- Time Filter (for both new and existing collections) -->
+                                    <div class="border-t border-gray-700 pt-4 mt-2">
+                                        <label class="flex items-center gap-2 cursor-pointer mb-3">
+                                            <input type="checkbox" id="forensics-time-filter-toggle" onchange="toggleForensicsTimeFilter()"
+                                                class="w-4 h-4 rounded border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                            <span class="text-sm font-medium text-gray-300">Filter by Time Range</span>
+                                            <span class="ml-2 px-2 py-0.5 bg-purple-900/50 text-purple-300 text-xs rounded">Optional</span>
+                                        </label>
+                                        <div class="ml-6 mb-3 text-xs text-gray-500">
+                                            <p>Limit artifact results to events within a specific time window (reduces noise for LLM analysis)</p>
+                                        </div>
+
+                                        <div id="forensics-time-filter-details" class="hidden ml-6 space-y-4">
+                                            <!-- Mode Selection (Radio) -->
+                                            <div class="flex gap-4">
+                                                <label class="flex items-center gap-2 cursor-pointer">
+                                                    <input type="radio" name="time-filter-mode" value="relative" checked
+                                                        onchange="toggleTimeFilterMode()"
+                                                        class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600">
+                                                    <span class="text-sm text-gray-300">Relative Time</span>
+                                                </label>
+                                                <label class="flex items-center gap-2 cursor-pointer">
+                                                    <input type="radio" name="time-filter-mode" value="between"
+                                                        onchange="toggleTimeFilterMode()"
+                                                        class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600">
+                                                    <span class="text-sm text-gray-300">Between Dates</span>
+                                                </label>
+                                            </div>
+
+                                            <!-- Relative Time Options -->
+                                            <div id="time-filter-relative" class="space-y-2">
+                                                <label class="block text-xs text-gray-400 mb-1">Time Range</label>
+                                                <select id="forensics-time-relative-range"
+                                                    class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none">
+                                                    <option value="24h">Last 24 Hours</option>
+                                                    <option value="7d" selected>Last 7 Days</option>
+                                                    <option value="30d">Last 30 Days</option>
+                                                    <option value="90d">Last 90 Days</option>
+                                                </select>
+                                                <p class="text-xs text-gray-500">For scheduled jobs, this recalculates on each run.</p>
+                                            </div>
+
+                                            <!-- Between Dates Options -->
+                                            <div id="time-filter-between" class="hidden space-y-3">
+                                                <!-- Date Range Inputs with Calendar Picker -->
+                                                <div class="flex items-center gap-3">
+                                                    <div class="flex-1">
+                                                        <label class="block text-xs text-gray-400 mb-1.5">From</label>
+                                                        <div class="relative">
+                                                            <input type="text" id="forensics-time-start" placeholder="Click to select..."
+                                                                class="flatpickr-input w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none" readonly>
+                                                            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-purple-400 pointer-events-none">
+                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                    <div class="text-purple-400 mt-6">
+                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+                                                    </div>
+                                                    <div class="flex-1">
+                                                        <label class="block text-xs text-gray-400 mb-1.5">To <span class="text-gray-500">(empty = now)</span></label>
+                                                        <div class="relative">
+                                                            <input type="text" id="forensics-time-end" placeholder="Click to select..."
+                                                                class="flatpickr-input w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none" readonly>
+                                                            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-purple-400 pointer-events-none">
+                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
                                     <!-- Data Anonymization -->
                                     <div class="border-t border-gray-700 pt-4 mt-2">
                                         <label class="flex items-center gap-2 cursor-pointer mb-2">
@@ -1193,6 +1271,77 @@ sudo ./velociraptor service start</code></pre>
                                 <input type="checkbox" id="schedule-anonymize" class="rounded bg-gray-700 border-gray-600">
                                 <span class="text-sm text-gray-300">Anonymize data before LLM analysis</span>
                             </label>
+
+                            <!-- Time Filter for Scheduled Jobs -->
+                            <div class="mt-4 pt-4 border-t border-gray-600">
+                                <label class="flex items-center gap-2 cursor-pointer mb-3">
+                                    <input type="checkbox" id="schedule-time-filter-toggle" onchange="toggleScheduleTimeFilter()"
+                                        class="rounded bg-gray-700 border-gray-600">
+                                    <span class="text-sm text-gray-300">Filter by Time Range</span>
+                                </label>
+
+                                <div id="schedule-time-filter-details" class="hidden space-y-3 ml-6">
+                                    <!-- Mode Selection -->
+                                    <div class="flex gap-4">
+                                        <label class="flex items-center gap-2 cursor-pointer">
+                                            <input type="radio" name="schedule-time-mode" value="relative" checked
+                                                onchange="toggleScheduleTimeMode()"
+                                                class="w-4 h-4 border-gray-600 bg-gray-700 text-blue-600">
+                                            <span class="text-sm text-gray-300">Relative Time</span>
+                                            <span class="text-xs text-green-400">(Recommended)</span>
+                                        </label>
+                                        <label class="flex items-center gap-2 cursor-pointer">
+                                            <input type="radio" name="schedule-time-mode" value="between"
+                                                onchange="toggleScheduleTimeMode()"
+                                                class="w-4 h-4 border-gray-600 bg-gray-700 text-blue-600">
+                                            <span class="text-sm text-gray-300">Fixed Dates</span>
+                                        </label>
+                                    </div>
+
+                                    <!-- Relative Range Dropdown -->
+                                    <div id="schedule-time-relative" class="space-y-2">
+                                        <label class="block text-xs text-gray-400">Time Range</label>
+                                        <select id="schedule-time-relative-range"
+                                            class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white">
+                                            <option value="24h">Last 24 Hours</option>
+                                            <option value="7d" selected>Last 7 Days (Weekly jobs)</option>
+                                            <option value="30d">Last 30 Days (Monthly jobs)</option>
+                                            <option value="90d">Last 90 Days</option>
+                                        </select>
+                                        <p class="text-xs text-gray-500">Recalculates at each scheduled run.</p>
+                                    </div>
+
+                                    <!-- Fixed Dates (hidden by default) -->
+                                    <div id="schedule-time-between" class="hidden space-y-3">
+                                        <div class="bg-yellow-900/30 border border-yellow-700/50 rounded-lg p-2 text-xs text-yellow-300">
+                                            Warning: Fixed dates are not recommended for recurring jobs.
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <div class="flex-1">
+                                                <div class="relative">
+                                                    <span class="absolute left-2 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none">
+                                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                                    </span>
+                                                    <input type="text" id="schedule-time-start" placeholder="Select..."
+                                                        class="schedule-flatpickr w-full bg-gray-700 border border-gray-600 rounded-lg pl-8 pr-2 py-1.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none" readonly>
+                                                </div>
+                                                <span class="text-xs text-gray-500">From</span>
+                                            </div>
+                                            <span class="text-blue-400">→</span>
+                                            <div class="flex-1">
+                                                <div class="relative">
+                                                    <span class="absolute left-2 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none">
+                                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                                    </span>
+                                                    <input type="text" id="schedule-time-end" placeholder="Select..."
+                                                        class="schedule-flatpickr w-full bg-gray-700 border border-gray-600 rounded-lg pl-8 pr-2 py-1.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none" readonly>
+                                                </div>
+                                                <span class="text-xs text-gray-500">To</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
 
                         <!-- Timesketch-specific options (shown when timesketch is selected) -->

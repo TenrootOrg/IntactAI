@@ -43,8 +43,8 @@ artifact_lists:
     - DetectRaptor.Windows.Detection.YaraProcessWin
     - DetectRaptor.Windows.Detection.ZoneIdentifier
 
-  # Agentic Test - APTSimulator detection artifacts (17 artifacts)
-  # Covers: Credential Access, Persistence, C2, Execution, Defense Evasion, Discovery
+  # Agentic Test - APTSimulator detection artifacts (16 artifacts)
+  # Optimized for APTSimulator detection with actionable results
   agentic_test:
     # Process/Memory Analysis
     - Generic.System.Pstree
@@ -55,7 +55,7 @@ artifact_lists:
     # PowerShell/Script Execution
     - DetectRaptor.Windows.Detection.Powershell.PSReadline
     - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
-    # Persistence (Registry, Tasks, WMI, Sticky Keys)
+    # Persistence (Registry, Tasks)
     - Windows.Forensics.PersistenceSniper
     - Windows.System.TaskScheduler
     # Program Execution History
@@ -64,8 +64,6 @@ artifact_lists:
     # C2 & Network
     - Windows.System.DNSCache
     - Windows.Detection.PipeHunter
-    # Web Shells
-    - DetectRaptor.Generic.Detection.YaraWebshell
     # Sysinternals Tool Usage (PsExec, etc.)
     - Windows.Registry.Sysinternals.Eulacheck
     # Event Log Detections (Sigma rules)

@@ -112,6 +112,21 @@ def init_scheduled_jobs_table():
         cursor.execute("ALTER TABLE scheduled_jobs ADD COLUMN run_time TEXT DEFAULT '02:00'")
     except Exception:
         pass  # Column already exists
+
+    # Add time filter columns (migration)
+    time_filter_columns = [
+        ("time_filter_enabled", "INTEGER DEFAULT 0"),
+        ("time_filter_mode", "TEXT DEFAULT 'relative'"),
+        ("time_filter_relative_range", "TEXT DEFAULT '7d'"),
+        ("time_filter_start", "TEXT"),
+        ("time_filter_end", "TEXT")
+    ]
+    for col_name, col_def in time_filter_columns:
+        try:
+            cursor.execute(f"ALTER TABLE scheduled_jobs ADD COLUMN {col_name} {col_def}")
+        except Exception:
+            pass  # Column already exists
+
     conn.commit()
     conn.close()
 
@@ -146,6 +161,17 @@ def _run_scheduled_blueprint(job_id: str):
     anonymize_data = bool(job_meta.get('anonymize_data', 0))
     custom_patterns = json.loads(job_meta.get('custom_patterns', '[]'))
 
+    # Reconstruct time_filter from job metadata
+    time_filter = None
+    if job_meta.get('time_filter_enabled'):
+        time_filter = {
+            'enabled': True,
+            'mode': job_meta.get('time_filter_mode', 'relative'),
+            'relative_range': job_meta.get('time_filter_relative_range', '7d'),
+            'start_datetime': job_meta.get('time_filter_start'),
+            'end_datetime': job_meta.get('time_filter_end')
+        }
+
     try:
         if blueprint_type == 'agentic':
             # Load LLM config
@@ -174,11 +200,18 @@ def _run_scheduled_blueprint(job_id: str):
             thread = threading.Thread(
                 target=run_agentic_pipeline,
                 args=(run_id, blueprint_id, client_ids, 30, llm_config, report_types,
-                      anonymize_data, custom_patterns),
+                      anonymize_data, custom_patterns, False, None, time_filter),
                 daemon=True
             )
             thread.start()
-            print(f"[SCHEDULER] Started agentic pipeline: run_id={run_id}", flush=True)
+            time_filter_info = ""
+            if time_filter:
+                mode = time_filter.get('mode', 'relative')
+                if mode == 'relative':
+                    time_filter_info = f", time_filter=relative({time_filter.get('relative_range', '7d')})"
+                else:
+                    time_filter_info = f", time_filter=between"
+            print(f"[SCHEDULER] Started agentic pipeline: run_id={run_id}{time_filter_info}", flush=True)
 
         elif blueprint_type == 'timesketch':
             # Timesketch automation - KAPE collection + Plaso + TimeSketch import
@@ -479,7 +512,12 @@ def create_scheduled_job(
     report_types: list = None,
     anonymize_data: bool = False,
     custom_patterns: list = None,
-    description: str = ""
+    description: str = "",
+    time_filter_enabled: bool = False,
+    time_filter_mode: str = "relative",
+    time_filter_relative_range: str = "7d",
+    time_filter_start: str = None,
+    time_filter_end: str = None
 ) -> dict:
     """
     Create a new scheduled job.
@@ -495,6 +533,11 @@ def create_scheduled_job(
         anonymize_data: For agentic: enable data anonymization
         custom_patterns: For agentic: custom masking patterns
         description: Optional description (for timesketch: sketch name)
+        time_filter_enabled: For agentic: enable time filtering
+        time_filter_mode: 'relative' or 'between'
+        time_filter_relative_range: '24h', '7d', '30d', '90d'
+        time_filter_start: ISO datetime for 'between' mode
+        time_filter_end: ISO datetime for 'between' mode
 
     Returns:
         Job metadata dict
@@ -547,8 +590,10 @@ def create_scheduled_job(
         INSERT INTO scheduled_jobs
         (id, name, description, blueprint_id, blueprint_type, client_ids,
          interval_type, interval_value, run_time, next_run_at, enabled,
-         report_types, anonymize_data, custom_patterns, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         report_types, anonymize_data, custom_patterns,
+         time_filter_enabled, time_filter_mode, time_filter_relative_range,
+         time_filter_start, time_filter_end, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         job_id,
         name,
@@ -564,6 +609,11 @@ def create_scheduled_job(
         json.dumps(report_types or ['technical']),
         1 if anonymize_data else 0,
         json.dumps(custom_patterns or []),
+        1 if time_filter_enabled else 0,
+        time_filter_mode,
+        time_filter_relative_range,
+        time_filter_start,
+        time_filter_end,
         now.isoformat(),
         now.isoformat()
     ))

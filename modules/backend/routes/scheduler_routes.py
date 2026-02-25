@@ -68,6 +68,13 @@ def create_job():
         custom_patterns = data.get('custom_patterns', [])
         run_time = data.get('run_time', '02:00')
 
+        # Time filter options (for agentic jobs)
+        time_filter_enabled = data.get('time_filter_enabled', False)
+        time_filter_mode = data.get('time_filter_mode', 'relative')
+        time_filter_relative_range = data.get('time_filter_relative_range', '7d')
+        time_filter_start = data.get('time_filter_start')
+        time_filter_end = data.get('time_filter_end')
+
         # Validate run_time format
         try:
             parts = run_time.split(':')
@@ -89,7 +96,12 @@ def create_job():
             report_types=report_types,
             anonymize_data=anonymize_data,
             custom_patterns=custom_patterns,
-            description=description
+            description=description,
+            time_filter_enabled=time_filter_enabled,
+            time_filter_mode=time_filter_mode,
+            time_filter_relative_range=time_filter_relative_range,
+            time_filter_start=time_filter_start,
+            time_filter_end=time_filter_end
         )
 
         return jsonify(job), 201

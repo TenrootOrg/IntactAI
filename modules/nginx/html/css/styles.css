@@ -818,3 +818,182 @@ a[class*="bg-gray-"] {
 .text-xs.text-gray-500 {
     color: var(--text-dim);
 }
+
+/* ============================================
+   FLATPICKR CUSTOM DARK THEME
+   ============================================ */
+.flatpickr-calendar {
+    background: #1a1a2e !important;
+    border: 1px solid rgba(139, 92, 246, 0.3) !important;
+    border-radius: 12px !important;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), 0 0 20px rgba(139, 92, 246, 0.1) !important;
+}
+
+.flatpickr-months {
+    background: linear-gradient(180deg, #252540 0%, #1a1a2e 100%) !important;
+    border-radius: 12px 12px 0 0 !important;
+    padding: 8px 0 !important;
+}
+
+.flatpickr-months .flatpickr-month {
+    color: #fff !important;
+}
+
+.flatpickr-current-month {
+    font-weight: 600 !important;
+    color: #fff !important;
+}
+
+.flatpickr-current-month .flatpickr-monthDropdown-months,
+.flatpickr-current-month input.cur-year {
+    background: transparent !important;
+    color: #fff !important;
+    font-weight: 600 !important;
+}
+
+.flatpickr-weekdays {
+    background: #252540 !important;
+}
+
+.flatpickr-weekday {
+    color: #8b5cf6 !important;
+    font-weight: 600 !important;
+}
+
+.flatpickr-day {
+    color: #e5e5e5 !important;
+    border-radius: 8px !important;
+}
+
+.flatpickr-day:hover {
+    background: #8b5cf6 !important;
+    border-color: #8b5cf6 !important;
+    color: #fff !important;
+}
+
+.flatpickr-day.selected,
+.flatpickr-day.startRange,
+.flatpickr-day.endRange {
+    background: #8b5cf6 !important;
+    border-color: #8b5cf6 !important;
+    color: #fff !important;
+}
+
+.flatpickr-day.today {
+    border-color: #8b5cf6 !important;
+}
+
+.flatpickr-day.today:hover {
+    background: #8b5cf6 !important;
+    color: #fff !important;
+}
+
+.flatpickr-day.inRange {
+    background: rgba(139, 92, 246, 0.2) !important;
+    border-color: rgba(139, 92, 246, 0.2) !important;
+}
+
+.flatpickr-day.disabled,
+.flatpickr-day.prevMonthDay,
+.flatpickr-day.nextMonthDay {
+    color: #555 !important;
+}
+
+.flatpickr-time {
+    background: #1a1a2e !important;
+    border-top: 1px solid #333 !important;
+    padding: 10px 0 !important;
+    max-height: none !important;
+    height: auto !important;
+}
+
+.flatpickr-time .numInputWrapper {
+    height: 50px !important;
+}
+
+.flatpickr-time input {
+    color: #fff !important;
+    background: #252540 !important;
+    border-radius: 6px !important;
+    font-size: 18px !important;
+    font-weight: 600 !important;
+    height: 50px !important;
+}
+
+.flatpickr-time input:hover,
+.flatpickr-time input:focus {
+    background: #333355 !important;
+}
+
+.flatpickr-time .flatpickr-am-pm {
+    color: #fff !important;
+    background: #252540 !important;
+    border-radius: 6px !important;
+}
+
+.flatpickr-time .flatpickr-time-separator {
+    color: #8b5cf6 !important;
+    font-size: 20px !important;
+    font-weight: bold !important;
+    line-height: 50px !important;
+}
+
+/* Time arrows - always visible */
+.flatpickr-time .numInputWrapper span {
+    opacity: 1 !important;
+    width: 20px !important;
+    height: 22px !important;
+    background: #8b5cf6 !important;
+    border: none !important;
+    border-radius: 4px !important;
+    right: 4px !important;
+}
+
+.flatpickr-time .numInputWrapper span:hover {
+    background: #a78bfa !important;
+}
+
+.flatpickr-time .numInputWrapper span.arrowUp {
+    top: 2px !important;
+}
+
+.flatpickr-time .numInputWrapper span.arrowDown {
+    bottom: 2px !important;
+}
+
+.flatpickr-time .numInputWrapper span::after {
+    border-color: #fff transparent transparent transparent !important;
+}
+
+.flatpickr-time .numInputWrapper span.arrowUp::after {
+    border-color: transparent transparent #fff transparent !important;
+}
+
+.numInputWrapper span {
+    border-color: #444 !important;
+}
+
+.numInputWrapper span:hover {
+    background: rgba(139, 92, 246, 0.3) !important;
+}
+
+.numInputWrapper span svg path {
+    fill: #fff !important;
+}
+
+/* Make time picker scrollable with mouse wheel */
+.flatpickr-time input::-webkit-inner-spin-button,
+.flatpickr-time input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.flatpickr-months .flatpickr-prev-month,
+.flatpickr-months .flatpickr-next-month {
+    fill: #8b5cf6 !important;
+}
+
+.flatpickr-months .flatpickr-prev-month:hover svg,
+.flatpickr-months .flatpickr-next-month:hover svg {
+    fill: #a78bfa !important;
+}
