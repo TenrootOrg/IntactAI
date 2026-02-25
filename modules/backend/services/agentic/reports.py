@@ -138,47 +138,118 @@ Generate the executive forensics report with all required sections. Be specific 
     # Generate Technical Report (Forensics team)
     if 'technical' in report_types:
         add_log_to_run(run_id, "[Report] Generating Technical Report (forensics detail)...", "info")
-        tech_system = """You are a senior incident response analyst creating a TECHNICAL FORENSICS REPORT.
-This report is for security analysts and forensic investigators who need FULL DETAILS.
+        tech_system = """You are a senior DFIR analyst creating a TECHNICAL FORENSICS REPORT.
 
-Structure:
-1. **Executive Summary** (2-3 sentences with risk assessment)
-2. **Investigation Timeline** (detailed chronological events with timestamps)
-3. **Key Findings by Severity**:
-   - CRITICAL: Active threats, malware, unauthorized access
-   - HIGH: Credential theft, lateral movement, persistence mechanisms
-   - MEDIUM: Suspicious behavior, policy violations, recon activity
-   - LOW/INFO: Baseline context, normal activity patterns
-4. **Indicators of Compromise (IOCs)**:
-   | Type | Value | Context | First Seen |
-   Include: IPs, domains, hashes, file paths, registry keys, user agents
-5. **MITRE ATT&CK Mapping**:
-   | Technique ID | Name | Evidence |
-6. **Affected Systems & Accounts** (hostnames, users, IPs with roles)
-7. **Attack Chain Reconstruction** (if applicable)
-8. **Detailed Artifact Analysis** (per-artifact breakdown)
-9. **Remediation Steps** (specific, technical, prioritized)
-10. **Appendix: Raw Artifact Summaries**
+YOUR MISSION: A DFIR team leader will read this report and must understand 80% of what happened, what's critical, and what to do next.
 
-Be THOROUGH. Include ALL technical details from the artifact summaries."""
+## ANALYSIS APPROACH
 
-        tech_prompt = f"""Create a DETAILED TECHNICAL FORENSICS REPORT:
+Think like an attacker to understand the attack chain:
+- How did they get in? (Initial Access)
+- How are they staying? (Persistence)
+- What are they doing? (Actions on Objectives)
+- What's their goal? (Impact/Exfiltration)
 
-**Investigation Details:**
+PRIORITIZE BY THREAT LEVEL:
+1. Detection rule hits (YARA, Sigma, any rule that fired) = ALWAYS report these
+2. Memory anomalies (injection, shellcode, suspicious regions) = CRITICAL
+3. Credential access (dumps, LSASS, SAM, browser creds) = CRITICAL
+4. Persistence mechanisms (registry, tasks, services, WMI) = HIGH
+5. Defense evasion (renamed binaries, encoded commands) = HIGH
+6. Suspicious network activity (C2 patterns, unusual DNS) = HIGH
+7. Normal system activity = LOW (mention briefly for context)
+
+NEVER skip or summarize away detection hits. If something was flagged by a rule, it MUST be in your report.
+
+## REPORT STRUCTURE
+
+### 1. Critical Findings (TOP OF REPORT)
+List the most dangerous findings FIRST, even if timestamps are unknown.
+Format:
+- **[Timestamp or "Time Unknown"]** What was found
+- **Why Critical**: One sentence on why this matters
+- **Evidence**: Source artifact/rule that detected it
+
+### 2. Executive Summary
+3-4 sentences: What happened, overall risk level (CRITICAL/HIGH/MEDIUM/LOW), threat status (Active/Contained/Unknown), confidence level.
+
+### 3. Attack Narrative Timeline
+Tell the STORY of the attack in chronological order:
+- What was the likely entry point?
+- What did the attacker do to persist?
+- What actions did they take?
+- What was their apparent objective?
+
+Connect related events. If event A at 10:00 leads to event B at 10:05, explain that relationship.
+For events without timestamps, group them logically in a "Time Unknown" section but still integrate them into the narrative.
+
+### 4. Indicators of Compromise
+| Type | Value | Context |
+Only include IOCs actually found in the data. Include: file paths, hashes, IPs, domains, commands, registry keys.
+
+### 5. MITRE ATT&CK Mapping
+| Tactic | Technique | Evidence |
+Map only techniques with clear evidence.
+
+### 6. Affected Assets
+- **Systems**: List with context (e.g., "DESKTOP-ABC - primary compromised host")
+- **Accounts**: List with privilege level (e.g., "admin_user - Domain Admin")
+- **Data at Risk**: What sensitive data may be affected
+
+### 7. DFIR Action Plan
+
+#### Immediate Actions (Execute Now)
+Numbered checklist of urgent actions:
+1. [ ] Isolate [specific system] from network
+2. [ ] Disable [specific account]
+3. [ ] Block [specific IOCs] at perimeter
+4. [ ] Preserve evidence from [specific locations]
+(Be specific based on findings - not generic advice)
+
+#### Investigation Priorities (In Order)
+1. **FIRST**: What to investigate and why (most urgent)
+2. **SECOND**: Next priority
+3. **THIRD**: Following priority
+Order by: Active threat containment > Scope determination > Root cause > Impact assessment
+
+#### Evidence to Collect
+Specific additional artifacts or logs needed for deeper analysis.
+
+#### Escalation Triggers
+When to escalate (e.g., "If lateral movement to domain controller confirmed, escalate to executive team")
+
+---
+
+CRITICAL RULES:
+- Detection hits are the most important findings - NEVER skip them
+- Tell the story, don't just list findings
+- Critical items go at the TOP regardless of timestamp
+- Be specific in the action plan - use actual hostnames, accounts, IOCs from the data
+- If data is ambiguous, say so - don't fabricate details"""
+
+        tech_prompt = f"""Create a TECHNICAL FORENSICS REPORT for a DFIR team leader.
+
+**Investigation Scope:**
 - Blueprint: {blueprint.get('name')}
-- Artifacts analyzed: {len(artifact_summaries)}
-- Clients analyzed: {len(client_ids)}
-- Collection duration: {collection_minutes} minutes
-- Total data rows: {total_rows}
+- Systems analyzed: {len(client_ids)}
+- Artifacts examined: {len(artifact_summaries)}
+- Data points processed: {total_rows:,}
 - Timeline events: {len(events)}
 
-**Detailed Timeline ({len(events)} events):**
+**Timeline Data ({len(events)} events):**
 {timeline_section if timeline_section else "No timeline events available."}
 
-**Per-Artifact Analysis:**
+**Artifact Analysis Results:**
 {summaries_text}
 
-Generate the comprehensive technical forensics report:"""
+IMPORTANT REMINDERS:
+- Start with CRITICAL FINDINGS at the top - do not bury them
+- Every detection rule hit (YARA, Sigma, etc.) MUST appear in the report
+- Tell the attack STORY - connect events into a narrative
+- DFIR Action Plan must use SPECIFIC hostnames, accounts, and IOCs from this data
+- If you see memory injection, credential access, or C2 indicators - these are CRITICAL
+
+Generate the report now:"""
 
         try:
             tech_body = call_llm(tech_prompt, tech_system, llm_config)
