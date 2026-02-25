@@ -23,7 +23,7 @@ from services.agentic.reports import (
     generate_empty_report,
     save_report_content
 )
-from services.agentic.utils import extract_timeline_events, filter_high_severity_events
+from services.agentic.utils import extract_timeline_events
 
 
 def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, llm_config,
@@ -156,10 +156,9 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                 if not iris_case_name:
                     iris_case_name = f"Agentic Analysis - {blueprint.get('name', 'Unknown')} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
-                # Extract timeline events and filter for high-severity only
-                all_timeline_events = extract_timeline_events(all_results, include_no_timestamp=True)
-                timeline_events = filter_high_severity_events(all_timeline_events)
-                add_log_to_run(run_id, f"[IRIS] Filtered {len(all_timeline_events)} -> {len(timeline_events)} high-severity events for IRIS", "info")
+                # Extract all timeline events (no filtering - send full picture to IRIS)
+                timeline_events = extract_timeline_events(all_results, include_no_timestamp=True)
+                add_log_to_run(run_id, f"[IRIS] Extracted {len(timeline_events)} timeline events for IRIS", "info")
 
                 # Get technical report for IOC extraction
                 technical_report = ""
@@ -334,8 +333,7 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                 from config import IRIS_CONFIG
 
                 timeline_events = extract_timeline_events(all_results, include_no_timestamp=True)
-                filtered_events = filter_high_severity_events(timeline_events)
-                add_log_to_run(run_id, f"[IRIS] Filtered {len(timeline_events)} -> {len(filtered_events)} high-severity events for IRIS", "info")
+                add_log_to_run(run_id, f"[IRIS] Extracted {len(timeline_events)} timeline events for IRIS", "info")
 
                 if not iris_case_name:
                     iris_case_name = f"Agentic Analysis - {collection_type.title()} {collection_id} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
@@ -353,7 +351,7 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                 iris_result = iris_import(
                     run_id=run_id,
                     case_name=iris_case_name,
-                    timeline_events=filtered_events,
+                    timeline_events=timeline_events,
                     technical_report=technical_report,
                     iris_config=IRIS_CONFIG,
                     clients=list(client_info.values()),
