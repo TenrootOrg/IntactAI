@@ -62,9 +62,6 @@ def start_agentic_run():
         collection_minutes = data.get('collection_minutes', 30)
         report_types = data.get('report_types', ['technical'])  # Default: both
 
-        # Severity level filter (informational, low, medium, high, critical)
-        severity_level = data.get('severity_level', 'medium')
-
         # Anonymization options
         anonymize_data = data.get('anonymize_data', False)
         custom_patterns = data.get('custom_patterns', [])
@@ -93,11 +90,6 @@ def start_agentic_run():
         # Load LLM config
         llm_config = _load_llm_config()
 
-        # Validate severity level
-        valid_severities = ['informational', 'low', 'medium', 'high', 'critical']
-        if severity_level not in valid_severities:
-            severity_level = 'medium'
-
         # Create workflow run
         run_id = create_automation_run(
             automation_type="agentic",
@@ -108,7 +100,6 @@ def start_agentic_run():
                 "client_ids": client_ids,
                 "collection_minutes": collection_minutes,
                 "report_types": report_types,
-                "severity_level": severity_level,
                 "anonymize_data": anonymize_data,
                 "custom_patterns": custom_patterns,
                 "import_to_iris": import_to_iris,
@@ -119,13 +110,13 @@ def start_agentic_run():
 
         anonymize_info = f", anonymize={anonymize_data}" if anonymize_data else ""
         iris_info = f", iris={import_to_iris}" if import_to_iris else ""
-        print(f"[AGENTIC] Starting pipeline: run_id={run_id}, severity={severity_level}, reports={report_types}{anonymize_info}{iris_info}", flush=True)
+        print(f"[AGENTIC] Starting pipeline: run_id={run_id}, reports={report_types}{anonymize_info}{iris_info}", flush=True)
 
         # Start pipeline in background thread
         thread = threading.Thread(
             target=run_agentic_pipeline,
             args=(run_id, blueprint_id, client_ids, collection_minutes, llm_config, report_types,
-                  severity_level, anonymize_data, custom_patterns, import_to_iris, iris_case_name),
+                  anonymize_data, custom_patterns, import_to_iris, iris_case_name),
             daemon=True
         )
         thread.start()
@@ -151,7 +142,6 @@ def analyze_existing_collection():
         flow_id = data.get('flow_id')
         hunt_id = data.get('hunt_id')
         report_types = data.get('report_types', ['technical'])
-        severity_level = data.get('severity_level', 'medium')
         anonymize_data = data.get('anonymize_data', False)
         custom_patterns = data.get('custom_patterns', [])
         import_to_iris = data.get('import_to_iris', False)
@@ -164,11 +154,6 @@ def analyze_existing_collection():
         # Validate report_types
         valid_types = ['technical']
         report_types = [t for t in report_types if t in valid_types]
-
-        # Validate severity level
-        valid_severities = ['informational', 'low', 'medium', 'high', 'critical']
-        if severity_level not in valid_severities:
-            severity_level = 'medium'
 
         # Parse custom patterns
         if isinstance(custom_patterns, str):
@@ -187,7 +172,6 @@ def analyze_existing_collection():
                 "flow_id": flow_id,
                 "hunt_id": hunt_id,
                 "report_types": report_types,
-                "severity_level": severity_level,
                 "anonymize_data": anonymize_data,
                 "custom_patterns": custom_patterns,
                 "import_to_iris": import_to_iris,
@@ -203,7 +187,7 @@ def analyze_existing_collection():
         thread = threading.Thread(
             target=run_agentic_on_existing,
             args=(run_id, flow_id, hunt_id, llm_config, report_types,
-                  severity_level, anonymize_data, custom_patterns, import_to_iris, iris_case_name),
+                  anonymize_data, custom_patterns, import_to_iris, iris_case_name),
             daemon=True
         )
         thread.start()

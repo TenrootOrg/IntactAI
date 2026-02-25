@@ -366,11 +366,10 @@ def filter_by_severity(rows, severity_level):
     return filtered
 
 
-def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes, llm_config, anonymizer=None, severity_level='medium', update_phase_func=None):
+def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes, llm_config, anonymizer=None, update_phase_func=None):
     """Monitor collection, poll artifact sources for data, analyze as data becomes available.
     Returns (all_results dict, summaries dict, timed_out bool).
     If anonymizer is provided, data is masked before LLM analysis.
-    severity_level filters out low-priority detections.
     timed_out is True if collection ended due to timeout, False if all flows completed naturally.
 
     STREAMING OPTIMIZATION: LLM analysis starts immediately when an artifact's flow completes,
@@ -480,17 +479,13 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                             retrieved_artifacts[artifact_key] = len(rows)
                             stable_artifacts[source_name] = 0  # Reset stability counter
 
-                            # Apply severity filter
-                            filtered_rows = filter_by_severity(rows, severity_level)
-
                             # Update all_results
                             if source_name not in all_results:
                                 all_results[source_name] = []
-                                filter_msg = f" (filtered from {len(rows)})" if len(filtered_rows) != len(rows) else ""
-                                add_log_to_run(run_id, f"[Velociraptor] Found: {source_name} ({len(filtered_rows)} rows{filter_msg})", "info")
+                                add_log_to_run(run_id, f"[Velociraptor] Found: {source_name} ({len(rows)} rows)", "info")
 
                             # Replace with latest data for this client
-                            all_results[source_name] = filtered_rows
+                            all_results[source_name] = rows
                         else:
                             # Data unchanged - increment stability counter
                             if source_name in all_results and source_name not in analyzed_artifacts:
@@ -569,14 +564,11 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
             for source_name in final_sources:
                 rows = query_artifact_results(stub, client_id, flow_id, source_name)
                 if rows:
-                    # Apply severity filter
-                    filtered_rows = filter_by_severity(rows, severity_level)
                     if source_name not in all_results:
-                        all_results[source_name] = filtered_rows
-                        filter_msg = f" (filtered from {len(rows)})" if len(filtered_rows) != len(rows) else ""
-                        add_log_to_run(run_id, f"[Velociraptor] Final: {source_name} ({len(filtered_rows)} rows{filter_msg})", "info")
-                    elif len(filtered_rows) > len(all_results.get(source_name, [])):
-                        all_results[source_name] = filtered_rows
+                        all_results[source_name] = rows
+                        add_log_to_run(run_id, f"[Velociraptor] Final: {source_name} ({len(rows)} rows)", "info")
+                    elif len(rows) > len(all_results.get(source_name, [])):
+                        all_results[source_name] = rows
 
         # Submit any remaining sources that haven't been analyzed yet
         for source_name in all_results.keys():

@@ -27,12 +27,11 @@ from services.agentic.utils import extract_timeline_events
 
 
 def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, llm_config,
-                         report_types=None, severity_level='medium', anonymize_data=False, custom_patterns=None,
+                         report_types=None, anonymize_data=False, custom_patterns=None,
                          import_to_iris=False, iris_case_name=None):
     """Background thread: full agentic forensics pipeline
     Args:
         report_types: List of report types to generate: ['technical'], or None for both
-        severity_level: Minimum severity level filter ('informational', 'low', 'medium', 'high', 'critical')
         anonymize_data: If True, mask sensitive data before LLM analysis
         custom_patterns: List of custom regex patterns to mask (e.g., ['acme-corp.com', 'ACMECORP\\'])
         import_to_iris: If True, import timeline events and IOCs to IRIS after report generation
@@ -82,7 +81,6 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         if anonymizer:
             pattern_count = len(custom_patterns) if custom_patterns else 0
             add_log_to_run(run_id, f"[Pipeline] Data anonymization: ENABLED ({pattern_count} custom patterns)", "info")
-        add_log_to_run(run_id, f"[Pipeline] Severity filter: {severity_level.upper()}", "info")
         if import_to_iris:
             add_log_to_run(run_id, f"[Pipeline] IRIS import: ENABLED", "info")
 
@@ -103,7 +101,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         add_log_to_run(run_id, f"[Velociraptor] Collecting data for up to {collection_minutes} minutes (streaming analysis)...", "info")
         _update_phase(run_id, "collecting", 10)
         all_results, artifact_summaries, timed_out = stream_collect_and_analyze(
-            run_id, success_collections, artifacts, collection_minutes, llm_config, anonymizer, severity_level, _update_phase
+            run_id, success_collections, artifacts, collection_minutes, llm_config, anonymizer, _update_phase
         )
 
         # 4. Cancel any remaining collections ONLY if we timed out
@@ -228,7 +226,7 @@ def _update_phase(run_id, phase, progress):
 
 
 def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
-                             report_types=None, severity_level='medium', anonymize_data=False, custom_patterns=None,
+                             report_types=None, anonymize_data=False, custom_patterns=None,
                              import_to_iris=False, iris_case_name=None):
     """Run AI analysis on an existing Velociraptor flow or hunt (skip collection step)
 
@@ -238,7 +236,6 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         hunt_id: Existing hunt ID (H.xxx) - for multi-client hunt
         llm_config: LLM configuration dictionary
         report_types: List of report types to generate
-        severity_level: Minimum severity level filter
         anonymize_data: If True, mask sensitive data before LLM analysis
         custom_patterns: List of custom patterns to mask
         import_to_iris: If True, import to IRIS after analysis

@@ -151,11 +151,6 @@ function getIrisSettings() {
     };
 }
 
-// Get severity level filter
-function getSeverityLevel() {
-    return document.getElementById('agentic-severity-level')?.value || 'medium';
-}
-
 // Start the full pipeline
 async function startAgenticPipeline() {
     const blueprintId = document.getElementById('agentic-blueprint-select').value;
@@ -164,7 +159,6 @@ async function startAgenticPipeline() {
     const reportTypes = getSelectedReportTypes();
     const anonymization = getAnonymizationSettings();
     const iris = getIrisSettings();
-    const severityLevel = getSeverityLevel();
 
     if (!blueprintId) {
         alert('Please select a blueprint');
@@ -179,7 +173,7 @@ async function startAgenticPipeline() {
     const bp = await getBlueprintById(blueprintId, 'agentic');
     const blueprintName = bp ? bp.name : blueprintId;
 
-    if (!confirm(`Start Agentic Analysis pipeline for ${clientIds.length} client(s)?\n\nBlueprint: ${blueprintName}\nArtifacts: ${bp?.artifacts?.length || 0}\nCollection Time: ${collectionMinutes} minutes\nSeverity Filter: ${severityLevel}\nReports: ${reportTypes.join(', ')}\n${anonymization.enabled ? '\nData Anonymization: Enabled' : ''}\n${iris.enabled ? '\nIRIS Import: Enabled' : ''}\n\nCheck the Workflows tab to monitor progress.`)) {
+    if (!confirm(`Start Agentic Analysis pipeline for ${clientIds.length} client(s)?\n\nBlueprint: ${blueprintName}\nArtifacts: ${bp?.artifacts?.length || 0}\nCollection Time: ${collectionMinutes} minutes\nReports: ${reportTypes.join(', ')}\n${anonymization.enabled ? '\nData Anonymization: Enabled' : ''}\n${iris.enabled ? '\nIRIS Import: Enabled' : ''}\n\nCheck the Workflows tab to monitor progress.`)) {
         return;
     }
 
@@ -193,7 +187,6 @@ async function startAgenticPipeline() {
                 client_ids: clientIds,
                 collection_minutes: collectionMinutes,
                 report_types: reportTypes,
-                severity_level: severityLevel,
                 anonymize_data: anonymization.enabled,
                 custom_patterns: anonymization.patterns,
                 import_to_iris: iris.enabled,
