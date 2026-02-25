@@ -43,7 +43,7 @@ artifact_lists:
     - DetectRaptor.Windows.Detection.YaraProcessWin
     - DetectRaptor.Windows.Detection.ZoneIdentifier
 
-  # Agentic Test - APTSimulator detection artifacts (16 artifacts)
+  # Agentic Test - APTSimulator detection artifacts (15 artifacts)
   # Optimized for APTSimulator detection with actionable results
   agentic_test:
     # Process/Memory Analysis
@@ -63,7 +63,6 @@ artifact_lists:
     - DetectRaptor.Windows.Detection.Applications
     # C2 & Network
     - Windows.System.DNSCache
-    - Windows.Detection.PipeHunter
     # Sysinternals Tool Usage (PsExec, etc.)
     - Windows.Registry.Sysinternals.Eulacheck
     # Event Log Detections (Sigma rules)
