@@ -69,7 +69,7 @@ artifact_lists:
     # Sysinternals Tool Usage (PsExec, etc.)
     - Windows.Registry.Sysinternals.Eulacheck
     # Event Log Detections (Sigma rules)
-    - Windows.EventLogs.Hayabusa
+    - Windows.Hayabusa.Rules
     # Authentication/Lateral Movement
     - Windows.EventLogs.RDPAuth
 
@@ -96,7 +96,7 @@ artifact_lists:
     - Windows.System.UntrustedBinaries
     - Windows.Registry.Sysinternals.Eulacheck
     # Event log and persistence
-    - Windows.EventLogs.Hayabusa
+    - Windows.Hayabusa.Rules
     - Windows.Forensics.PersistenceSniper
     # System context
     - Generic.System.Pstree
@@ -124,7 +124,7 @@ artifact_lists:
     - Windows.Detection.PipeHunter
     - Windows.Detection.Keylogger
     - Windows.Detection.WonkaVision
-    - Windows.EventLogs.Hayabusa
+    - Windows.Hayabusa.Rules
     - Windows.Forensics.PersistenceSniper
     - Windows.EventLogs.RDPAuth
     - Windows.Attack.UnexpectedImagePath
