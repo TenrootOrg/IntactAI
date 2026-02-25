@@ -70,8 +70,8 @@ def start_agentic_run():
         import_to_iris = data.get('import_to_iris', False)
         iris_case_name = data.get('iris_case_name', '')
 
-        # Time filter options
-        time_filter = data.get('time_filter', {})
+        # Time filter options (handle null from frontend)
+        time_filter = data.get('time_filter') or {}
 
         # Validate
         if not blueprint_id:
@@ -182,7 +182,7 @@ def analyze_existing_collection():
         custom_patterns = data.get('custom_patterns', [])
         import_to_iris = data.get('import_to_iris', False)
         iris_case_name = data.get('iris_case_name', '')
-        time_filter = data.get('time_filter', {})
+        time_filter = data.get('time_filter') or {}  # Handle null from frontend
 
         # Validate - need either flow_id or hunt_id
         if not flow_id and not hunt_id:
