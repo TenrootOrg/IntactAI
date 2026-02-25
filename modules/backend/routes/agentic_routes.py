@@ -70,6 +70,9 @@ def start_agentic_run():
         import_to_iris = data.get('import_to_iris', False)
         iris_case_name = data.get('iris_case_name', '')
 
+        # Time filter options
+        time_filter = data.get('time_filter', {})
+
         # Validate
         if not blueprint_id:
             return jsonify({"error": "blueprint_id is required"}), 400
@@ -86,6 +89,30 @@ def start_agentic_run():
         # Parse custom patterns (handle string input from textarea)
         if isinstance(custom_patterns, str):
             custom_patterns = [p.strip() for p in custom_patterns.split('\n') if p.strip()]
+
+        # Validate time filter if enabled
+        if time_filter.get('enabled'):
+            mode = time_filter.get('mode', 'relative')
+            if mode == 'between':
+                start_dt = time_filter.get('start_datetime')
+                if not start_dt:
+                    return jsonify({"error": "start_datetime required for time filter 'between' mode"}), 400
+                # Validate date format and order if both provided
+                end_dt = time_filter.get('end_datetime')
+                if start_dt and end_dt:
+                    try:
+                        from datetime import datetime
+                        s = datetime.fromisoformat(start_dt.replace('Z', '+00:00'))
+                        e = datetime.fromisoformat(end_dt.replace('Z', '+00:00'))
+                        if s >= e:
+                            return jsonify({"error": "start_datetime must be before end_datetime"}), 400
+                    except ValueError:
+                        return jsonify({"error": "Invalid datetime format. Use ISO 8601 (e.g., 2024-01-15T00:00:00Z)"}), 400
+            elif mode == 'relative':
+                valid_ranges = ['24h', '7d', '30d', '90d']
+                rel_range = time_filter.get('relative_range', '7d')
+                if rel_range not in valid_ranges:
+                    return jsonify({"error": f"relative_range must be one of: {valid_ranges}"}), 400
 
         # Load LLM config
         llm_config = _load_llm_config()
@@ -104,19 +131,28 @@ def start_agentic_run():
                 "custom_patterns": custom_patterns,
                 "import_to_iris": import_to_iris,
                 "iris_case_name": iris_case_name,
+                "time_filter": time_filter if time_filter.get('enabled') else None,
                 "phase": "starting"
             }
         )
 
         anonymize_info = f", anonymize={anonymize_data}" if anonymize_data else ""
         iris_info = f", iris={import_to_iris}" if import_to_iris else ""
-        print(f"[AGENTIC] Starting pipeline: run_id={run_id}, reports={report_types}{anonymize_info}{iris_info}", flush=True)
+        time_filter_info = ""
+        if time_filter.get('enabled'):
+            mode = time_filter.get('mode', 'relative')
+            if mode == 'relative':
+                time_filter_info = f", time_filter=relative({time_filter.get('relative_range', '7d')})"
+            else:
+                time_filter_info = f", time_filter=between"
+        print(f"[AGENTIC] Starting pipeline: run_id={run_id}, reports={report_types}{anonymize_info}{iris_info}{time_filter_info}", flush=True)
 
         # Start pipeline in background thread
+        time_filter_arg = time_filter if time_filter.get('enabled') else None
         thread = threading.Thread(
             target=run_agentic_pipeline,
             args=(run_id, blueprint_id, client_ids, collection_minutes, llm_config, report_types,
-                  anonymize_data, custom_patterns, import_to_iris, iris_case_name),
+                  anonymize_data, custom_patterns, import_to_iris, iris_case_name, time_filter_arg),
             daemon=True
         )
         thread.start()
@@ -146,6 +182,7 @@ def analyze_existing_collection():
         custom_patterns = data.get('custom_patterns', [])
         import_to_iris = data.get('import_to_iris', False)
         iris_case_name = data.get('iris_case_name', '')
+        time_filter = data.get('time_filter', {})
 
         # Validate - need either flow_id or hunt_id
         if not flow_id and not hunt_id:
@@ -176,18 +213,27 @@ def analyze_existing_collection():
                 "custom_patterns": custom_patterns,
                 "import_to_iris": import_to_iris,
                 "iris_case_name": iris_case_name,
+                "time_filter": time_filter if time_filter.get('enabled') else None,
                 "phase": "starting",
                 "analyze_existing": True
             }
         )
 
-        print(f"[AGENTIC] Starting analysis on existing {collection_type}: {collection_id}, run_id={run_id}", flush=True)
+        time_filter_info = ""
+        if time_filter.get('enabled'):
+            mode = time_filter.get('mode', 'relative')
+            if mode == 'relative':
+                time_filter_info = f", time_filter=relative({time_filter.get('relative_range', '7d')})"
+            else:
+                time_filter_info = f", time_filter=between"
+        print(f"[AGENTIC] Starting analysis on existing {collection_type}: {collection_id}, run_id={run_id}{time_filter_info}", flush=True)
 
         # Start pipeline in background thread
+        time_filter_arg = time_filter if time_filter.get('enabled') else None
         thread = threading.Thread(
             target=run_agentic_on_existing,
             args=(run_id, flow_id, hunt_id, llm_config, report_types,
-                  anonymize_data, custom_patterns, import_to_iris, iris_case_name),
+                  anonymize_data, custom_patterns, import_to_iris, iris_case_name, time_filter_arg),
             daemon=True
         )
         thread.start()

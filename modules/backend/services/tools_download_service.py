@@ -294,7 +294,12 @@ def setup_velociraptor_connection():
             certificate_chain=config["client_cert"].encode("utf8"),
         )
 
-        options = (("grpc.ssl_target_name_override", "VelociraptorServer"),)
+        max_message_size = 100 * 1024 * 1024  # 100MB
+        options = (
+            ("grpc.ssl_target_name_override", "VelociraptorServer"),
+            ("grpc.max_receive_message_length", max_message_size),
+            ("grpc.max_send_message_length", max_message_size),
+        )
         channel = grpc.secure_channel(config["api_connection_string"], creds, options)
         return channel
 

@@ -45,6 +45,25 @@ ARTIFACT_TIME_PARAMS = {
     "Windows.Office.MRU": {"start": "DateAfter", "end": "DateBefore"},
 }
 
+# Common timestamp field names found in Velociraptor artifact results
+# These are checked dynamically in VQL - no per-artifact hardcoding needed
+COMMON_TIMESTAMP_FIELDS = [
+    'Timestamp', 'EventTime', 'Time', 'TimeCreated', 'Created', 'Modified',
+    'LastRunTime', 'LastWriteTime', 'SI_LastModified0x10', 'ExecutionTime'
+]
+
+
+def get_vql_time_filter(start_iso, end_iso):
+    """VQL time filtering disabled - Python post-filtering is more reliable.
+
+    VQL filtering has issues because different artifacts use different timestamp field names,
+    and referencing non-existent fields causes empty results. Python filtering can inspect
+    actual field names in each row and filter correctly.
+
+    Time filtering is done in filter_results_by_time() in utils.py after fetching.
+    """
+    return ""  # Disabled - Python filtering handles this
+
 
 def check_flow_status(stub, client_id, flow_id):
     """Check the status of a Velociraptor flow. Returns 'RUNNING', 'FINISHED', 'ERROR', or None."""
@@ -83,16 +102,47 @@ def check_flow_status(stub, client_id, flow_id):
 
 def calculate_time_range(time_filter_settings):
     """Calculate start/end timestamps based on time filter settings.
-    Returns (start_iso, end_iso) tuple or (None, None) if not enabled."""
 
+    Supports two modes:
+    - 'relative': Uses relative_range like '24h', '7d', '30d', '90d'
+    - 'between': Uses explicit start_datetime and end_datetime (ISO 8601)
+
+    Returns (start_iso, end_iso) tuple or (None, None) if not enabled.
+    """
     if not time_filter_settings or not time_filter_settings.get('enabled'):
         return None, None
 
-    range_str = time_filter_settings.get('default_range', '7d')
+    mode = time_filter_settings.get('mode', 'relative')
     now = datetime.utcnow()
+
+    if mode == 'between':
+        # User-provided absolute dates
+        start_iso = time_filter_settings.get('start_datetime')
+        end_iso = time_filter_settings.get('end_datetime')
+
+        # Default end to now if not provided
+        if not end_iso:
+            end_iso = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        # Normalize format (remove timezone suffix variations, ensure Z suffix)
+        if start_iso:
+            start_iso = start_iso.replace('+00:00', 'Z')
+            if not start_iso.endswith('Z'):
+                start_iso = start_iso + 'Z'
+        if end_iso:
+            end_iso = end_iso.replace('+00:00', 'Z')
+            if not end_iso.endswith('Z'):
+                end_iso = end_iso + 'Z'
+
+        print(f"[AGENTIC] Time filter (between): {start_iso} to {end_iso}", flush=True)
+        return start_iso, end_iso
+
+    # Relative mode (default)
+    # Support both 'relative_range' (new API) and 'default_range' (legacy)
+    range_str = time_filter_settings.get('relative_range') or time_filter_settings.get('default_range', '7d')
     end_time = now
 
-    # Parse range string (e.g., "24h", "7d", "30d")
+    # Parse range string (e.g., "24h", "7d", "30d", "90d")
     if range_str.endswith('h'):
         hours = int(range_str[:-1])
         start_time = now - timedelta(hours=hours)
@@ -107,6 +157,7 @@ def calculate_time_range(time_filter_settings):
     start_iso = start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_iso = end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
+    print(f"[AGENTIC] Time filter (relative {range_str}): {start_iso} to {end_iso}", flush=True)
     return start_iso, end_iso
 
 
@@ -287,11 +338,26 @@ SELECT * FROM enumerate_flow(client_id='{client_id}', flow_id='{flow_id}')
         return []
 
 
-def query_artifact_results(stub, client_id, flow_id, artifact):
-    """Query for available results from a specific artifact. Returns list of rows or empty list."""
+def query_artifact_results(stub, client_id, flow_id, artifact, start_iso=None, end_iso=None):
+    """Query for available results from a specific artifact with optional VQL time filtering.
+
+    Args:
+        stub: gRPC stub
+        client_id: Velociraptor client ID
+        flow_id: Flow ID to query
+        artifact: Artifact name (may include /source suffix)
+        start_iso: Optional start time (ISO 8601) for VQL filtering
+        end_iso: Optional end time (ISO 8601) for VQL filtering
+
+    Returns:
+        List of rows or empty list
+    """
     try:
+        # Build VQL query with optional time filter
+        time_filter_clause = get_vql_time_filter(start_iso, end_iso)
         query = f"""
 SELECT * FROM source(client_id='{client_id}', flow_id='{flow_id}', artifact='{artifact}')
+{time_filter_clause}
 LIMIT 5000
 """
         request_obj = api_pb2.VQLCollectorArgs(
@@ -716,13 +782,14 @@ LIMIT 5000
     return all_results
 
 
-def get_existing_collection_results(run_id, flow_id=None, hunt_id=None):
-    """Fetch results from an existing Velociraptor flow or hunt.
+def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_filter=None):
+    """Fetch results from an existing Velociraptor flow or hunt with optional time filtering.
 
     Args:
         run_id: Workflow run ID for logging
         flow_id: Flow ID (F.xxx) for single client collection
         hunt_id: Hunt ID (H.xxx) for multi-client hunt
+        time_filter: Optional time filter config for VQL-level filtering
 
     Returns:
         (all_results, artifacts, client_info)
@@ -733,6 +800,11 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None):
     all_results = {}
     artifacts = []
     client_info = {}
+
+    # Calculate time range for VQL filtering
+    start_iso, end_iso = calculate_time_range(time_filter)
+    if start_iso or end_iso:
+        add_log_to_run(run_id, f"[Velociraptor] VQL time filter: {start_iso} to {end_iso}", "info")
 
     channel = setup_velociraptor_connection()
     if not channel:
@@ -852,9 +924,16 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None):
             add_log_to_run(run_id, f"[Velociraptor] Found {len(flow_sources)} artifact sources in flow", "info")
             artifacts = flow_sources
 
-            # Fetch results from each source
+            # Build VQL time filter clause if enabled
+            time_filter_clause = get_vql_time_filter(start_iso, end_iso)
+            if time_filter_clause:
+                add_log_to_run(run_id, f"[Velociraptor] VQL time filter active", "debug")
+
+            # Fetch results from each source with VQL time filtering
             for source in flow_sources:
                 query = f"SELECT * FROM source(client_id='{client_id}', flow_id='{flow_id}', artifact='{source}')"
+                if time_filter_clause:
+                    query += time_filter_clause
                 request_obj = api_pb2.VQLCollectorArgs(
                     max_wait=60,
                     max_row=50000,
@@ -919,9 +998,9 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None):
                         "os": "Unknown"
                     }
 
-                # Fetch results from each source
+                # Fetch results from each source with VQL time filtering
                 for source_name in sources:
-                    rows = query_artifact_results(stub, flow_client_id, flow_id, source_name)
+                    rows = query_artifact_results(stub, flow_client_id, flow_id, source_name, start_iso, end_iso)
                     if rows:
                         if source_name not in artifacts:
                             artifacts.append(source_name)

@@ -101,10 +101,15 @@ def import_results(zip_file_path, original_filename="import.zip"):
             certificate_chain=config["client_cert"].encode("utf8"),
         )
 
+        max_message_size = 100 * 1024 * 1024  # 100MB
         channel = grpc.secure_channel(
             config["api_connection_string"],
             creds,
-            (("grpc.ssl_target_name_override", "VelociraptorServer"),)
+            (
+                ("grpc.ssl_target_name_override", "VelociraptorServer"),
+                ("grpc.max_receive_message_length", max_message_size),
+                ("grpc.max_send_message_length", max_message_size),
+            )
         )
         stub = api_pb2_grpc.APIStub(channel)
 
@@ -207,7 +212,11 @@ def import_results(zip_file_path, original_filename="import.zip"):
                 channel2 = grpc.secure_channel(
                     config["api_connection_string"],
                     creds,
-                    (("grpc.ssl_target_name_override", "VelociraptorServer"),)
+                    (
+                        ("grpc.ssl_target_name_override", "VelociraptorServer"),
+                        ("grpc.max_receive_message_length", max_message_size),
+                        ("grpc.max_send_message_length", max_message_size),
+                    )
                 )
                 stub2 = api_pb2_grpc.APIStub(channel2)
 
