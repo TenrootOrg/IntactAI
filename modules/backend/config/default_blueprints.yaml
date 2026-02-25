@@ -43,19 +43,35 @@ artifact_lists:
     - DetectRaptor.Windows.Detection.YaraProcessWin
     - DetectRaptor.Windows.Detection.ZoneIdentifier
 
-  # Agentic Test - minimal detection artifacts (11 artifacts)
+  # Agentic Test - APTSimulator detection artifacts (17 artifacts)
+  # Covers: Credential Access, Persistence, C2, Execution, Defense Evasion, Discovery
   agentic_test:
+    # Process/Memory Analysis
     - Generic.System.Pstree
-    - DetectRaptor.Windows.Detection.Applications
-    - DetectRaptor.Windows.Detection.BinaryRename
-    - DetectRaptor.Windows.Detection.Powershell.PSReadline
     - Windows.Detection.Malfind
-    - Windows.Detection.PipeHunter
+    # Credential Access & Renamed Tools
+    - DetectRaptor.Windows.Detection.BinaryRename
     - Windows.System.UntrustedBinaries
-    - Windows.Registry.Sysinternals.Eulacheck
-    - Windows.EventLogs.Hayabusa
-    - Windows.EventLogs.RDPAuth
+    # PowerShell/Script Execution
+    - DetectRaptor.Windows.Detection.Powershell.PSReadline
+    - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
+    # Persistence (Registry, Tasks, WMI, Sticky Keys)
     - Windows.Forensics.PersistenceSniper
+    - Windows.System.TaskScheduler
+    # Program Execution History
+    - DetectRaptor.Windows.Detection.Amcache
+    - DetectRaptor.Windows.Detection.Applications
+    # C2 & Network
+    - Windows.System.DNSCache
+    - Windows.Detection.PipeHunter
+    # Web Shells
+    - DetectRaptor.Generic.Detection.YaraWebshell
+    # Sysinternals Tool Usage (PsExec, etc.)
+    - Windows.Registry.Sysinternals.Eulacheck
+    # Event Log Detections (Sigma rules)
+    - Windows.EventLogs.Hayabusa
+    # Authentication/Lateral Movement
+    - Windows.EventLogs.RDPAuth
 
   # Agentic Quick Wins - fast detection scan (22 artifacts)
   agentic_quick_wins:
