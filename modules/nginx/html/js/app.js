@@ -446,13 +446,17 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        // Periodic refresh (10 seconds with smart updates - only changed data)
+        // Fast refresh for workflows (1 second)
         setInterval(() => {
-            Alpine.store('services').checkAll();
-            Alpine.store('services').loadClients();
             if (Alpine.store('app').currentTab === 'workflows') {
                 Alpine.store('workflows').load();
             }
+        }, 1000);
+
+        // Slower refresh for services and clients (10 seconds)
+        setInterval(() => {
+            Alpine.store('services').checkAll();
+            Alpine.store('services').loadClients();
             if (Alpine.store('app').currentTab === 'modules-timesketch') {
                 populateTimeSketchClients();
             }
