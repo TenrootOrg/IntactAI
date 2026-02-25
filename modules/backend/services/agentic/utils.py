@@ -372,92 +372,123 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
     return events
 
 
-def filter_high_severity_events(events, max_events=500):
-    """Filter events for IRIS import - generic logic, not artifact-specific.
+def filter_malicious_events(events, max_events=500):
+    """Filter events for IRIS import - focus on MALICIOUS activity only.
 
-    Includes events that have:
-    - Any severity/level/priority field (detection results)
-    - No timestamp (detection findings without time context)
-    - Suspicious keywords in title/description
-    - Any raw data fields indicating findings
+    Includes ONLY:
+    - Events with HIGH/CRITICAL severity levels
+    - Detection hits (Hayabusa, DetectRaptor, Malfind, etc.)
+    - Persistence mechanisms
+    - Suspicious binaries (renamed, unsigned, temp paths)
+    - Known attack tools (mimikatz, procdump, psexec, etc.)
 
     Excludes:
-    - Events marked as 'trusted', 'clean', 'benign'
-    - Events with only baseline/info severity
-    - Truncates to max_events to avoid IRIS overload
+    - Informational/Low severity events
+    - Trusted/clean/baseline items
+    - Normal system activity
+    - Generic process listings
+
+    Events without timestamps are placed at top if they're malicious findings.
     """
-    filtered = []
+    malicious = []
+    no_ts_malicious = []
 
-    # Fields that indicate a detection/finding
-    detection_fields = ['Level', 'Severity', 'RuleLevel', 'Priority', 'Detection',
-                        'Alert', 'Hit', 'Match', 'Finding', 'Score', 'Risk',
-                        'RuleTitle', 'Technique', 'Status']
+    # Severity levels we care about (malicious indicators)
+    malicious_severities = ['critical', 'crit', 'high', 'severe', 'emergency', 'medium', 'med']
 
-    # Values that indicate NOT a finding (skip these)
-    skip_values = ['trusted', 'clean', 'benign', 'normal', 'informational',
-                   'info', 'none', 'null', '0', 'false', 'n/a', 'baseline']
+    # Skip these severity values entirely
+    benign_severities = ['low', 'informational', 'info', 'baseline', 'normal', 'trusted', 'clean']
 
-    # Keywords that indicate interesting findings
-    interesting_keywords = ['suspicious', 'malicious', 'threat', 'attack', 'exploit',
-                           'injection', 'backdoor', 'persistence', 'credential',
-                           'lateral', 'exfil', 'c2', 'command', 'control',
-                           'shell', 'payload', 'encoded', 'obfuscated', 'critical',
-                           'high', 'medium', 'warning', 'alert', 'detection']
+    # Known attack tools and suspicious binaries
+    attack_tools = [
+        'mimikatz', 'procdump', 'psexec', 'cobalt', 'beacon', 'meterpreter',
+        'lazagne', 'bloodhound', 'sharphound', 'rubeus', 'kerberoast',
+        'secretsdump', 'wce', 'pwdump', 'gsecdump', 'lsadump', 'ntds',
+        'invoke-', 'powersploit', 'empire', 'covenant', 'sliver',
+        'certutil', 'bitsadmin', 'mshta', 'regsvr32', 'rundll32',
+        'wmic', 'cscript', 'wscript', 'msbuild', 'installutil'
+    ]
+
+    # Malicious indicators in content
+    malicious_indicators = [
+        'shellcode', 'injection', 'injected', 'hollowing', 'hollow',
+        'credential', 'dump', 'lsass', 'sam', 'ntlm', 'kerberos',
+        'backdoor', 'rootkit', 'trojan', 'malware', 'ransomware',
+        'c2', 'beacon', 'callback', 'exfiltration', 'lateral',
+        'privilege', 'escalation', 'persistence', 'autorun',
+        'encoded', 'obfuscated', 'base64', 'powershell -e',
+        'downloadstring', 'downloadfile', 'invoke-expression',
+        'bypass', 'amsi', 'defender', 'disable', 'exclusion'
+    ]
+
+    # Detection artifact patterns (these are always interesting)
+    detection_sources = ['detection', 'malfind', 'hayabusa', 'yara', 'sigma', 'persistence']
 
     for event in events:
         raw = event.get('raw', {})
+        source = str(event.get('source', '')).lower()
         title = str(event.get('title', '')).lower()
         description = str(event.get('description', '')).lower()
         no_timestamp = event.get('no_timestamp', False)
 
-        # Always include events without timestamps (they represent findings)
-        if no_timestamp:
-            filtered.append(event)
-            continue
+        # Check if this is from a detection artifact
+        is_detection_source = any(d in source for d in detection_sources)
 
-        # Check if event has any detection/finding fields
-        has_finding = False
-        is_clean = False
-
-        for field in detection_fields:
+        # Get severity if present
+        severity = ''
+        for field in ['Level', 'RuleLevel', 'Severity', 'Priority']:
             if field in raw:
-                val = str(raw[field]).lower().strip()
-                if val:
-                    # Check if it's a "clean" value to skip
-                    if val in skip_values:
-                        is_clean = True
-                    else:
-                        has_finding = True
-                    break
+                severity = str(raw[field]).lower().strip()
+                break
 
-        # Skip events explicitly marked as clean/trusted
-        if is_clean and not has_finding:
+        # Skip benign severity levels unless from detection source
+        if severity in benign_severities and not is_detection_source:
             continue
 
-        # Include if has a detection field with value
-        if has_finding:
-            filtered.append(event)
-            continue
-
-        # Check for interesting keywords in title/description
+        # Check for malicious indicators
         combined_text = f"{title} {description}"
-        if any(keyword in combined_text for keyword in interesting_keywords):
-            filtered.append(event)
-            continue
-
-        # Include if raw data has meaningful content (not just metadata)
-        meaningful_fields = ['Name', 'FullPath', 'CommandLine', 'Message', 'Description',
-                            'Target', 'Path', 'Hash', 'SHA256', 'MD5', 'Process']
-        for field in meaningful_fields:
+        for field in ['Name', 'FullPath', 'CommandLine', 'Message', 'Details', 'RuleTitle']:
             if field in raw and raw[field]:
-                val = str(raw[field]).lower()
-                # Include if the value contains suspicious content
-                if any(keyword in val for keyword in interesting_keywords):
-                    filtered.append(event)
-                    break
+                combined_text += ' ' + str(raw[field]).lower()
 
-    # Limit total events to prevent IRIS overload
-    if len(filtered) > max_events:
-        filtered = filtered[:max_events]
+        # Is this a malicious finding?
+        is_malicious = False
 
-    return filtered
+        # 1. High/Critical severity from detection sources
+        if severity in malicious_severities and is_detection_source:
+            is_malicious = True
+
+        # 2. Known attack tools
+        if any(tool in combined_text for tool in attack_tools):
+            is_malicious = True
+
+        # 3. Malicious indicators
+        if any(indicator in combined_text for indicator in malicious_indicators):
+            is_malicious = True
+
+        # 4. Detection source with any finding (not just informational)
+        if is_detection_source and severity and severity not in benign_severities:
+            is_malicious = True
+
+        # 5. Persistence findings
+        if 'persistence' in source or 'persistence' in combined_text:
+            is_malicious = True
+
+        # Add to appropriate list
+        if is_malicious:
+            if no_timestamp:
+                no_ts_malicious.append(event)
+            else:
+                malicious.append(event)
+
+    # Sort timestamped events by timestamp
+    malicious.sort(key=lambda x: x.get('timestamp') or datetime.min)
+
+    # Put no-timestamp malicious findings at the TOP (most important)
+    result = no_ts_malicious + malicious
+
+    # Limit total events
+    if len(result) > max_events:
+        result = result[:max_events]
+
+    return result
