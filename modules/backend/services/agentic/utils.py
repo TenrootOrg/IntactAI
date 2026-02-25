@@ -372,120 +372,99 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
     return events
 
 
-def filter_malicious_events(events, max_events=500):
-    """Filter events for IRIS import - focus on MALICIOUS activity only.
+def filter_malicious_events(events, max_events=1000):
+    """Filter events for IRIS import - include all security-relevant findings.
 
-    Includes ONLY:
-    - Events with HIGH/CRITICAL severity levels
-    - Detection hits (Hayabusa, DetectRaptor, Malfind, etc.)
+    Includes:
+    - ALL events from detection artifacts (Hayabusa, DetectRaptor, Malfind, Persistence, etc.)
+    - Events with any severity level (except explicitly trusted/clean)
+    - Known attack tools and suspicious binaries
+    - RDP/authentication events
+    - PowerShell/script execution
     - Persistence mechanisms
-    - Suspicious binaries (renamed, unsigned, temp paths)
-    - Known attack tools (mimikatz, procdump, psexec, etc.)
 
-    Excludes:
-    - Informational/Low severity events
-    - Trusted/clean/baseline items
-    - Normal system activity
-    - Generic process listings
+    Excludes ONLY:
+    - Events explicitly marked as 'trusted', 'clean', 'benign'
+    - Generic Pstree entries (too verbose)
 
-    Events without timestamps are placed at top if they're malicious findings.
+    Events without timestamps are placed at top as important findings.
     """
-    malicious = []
-    no_ts_malicious = []
+    included = []
+    no_ts_included = []
 
-    # Severity levels we care about (malicious indicators)
-    malicious_severities = ['critical', 'crit', 'high', 'severe', 'emergency', 'medium', 'med']
+    # Skip only these explicit "clean" markers
+    skip_values = ['trusted', 'clean', 'benign', 'whitelisted', 'legitimate']
 
-    # Skip these severity values entirely
-    benign_severities = ['low', 'informational', 'info', 'baseline', 'normal', 'trusted', 'clean']
-
-    # Known attack tools and suspicious binaries
-    attack_tools = [
-        'mimikatz', 'procdump', 'psexec', 'cobalt', 'beacon', 'meterpreter',
-        'lazagne', 'bloodhound', 'sharphound', 'rubeus', 'kerberoast',
-        'secretsdump', 'wce', 'pwdump', 'gsecdump', 'lsadump', 'ntds',
-        'invoke-', 'powersploit', 'empire', 'covenant', 'sliver',
-        'certutil', 'bitsadmin', 'mshta', 'regsvr32', 'rundll32',
-        'wmic', 'cscript', 'wscript', 'msbuild', 'installutil'
+    # Detection/forensic artifact patterns - include ALL data from these
+    detection_sources = [
+        'detection', 'malfind', 'hayabusa', 'yara', 'sigma', 'persistence',
+        'persistencesniper', 'binaryrename', 'psreadline', 'iseautosave',
+        'applications', 'eulacheck', 'pipehunter', 'rdpauth', 'untrustedbinaries',
+        'amcache', 'namedpipes', 'hijacklibs', 'loldrivers', 'zoneidentifier'
     ]
 
-    # Malicious indicators in content
-    malicious_indicators = [
-        'shellcode', 'injection', 'injected', 'hollowing', 'hollow',
-        'credential', 'dump', 'lsass', 'sam', 'ntlm', 'kerberos',
-        'backdoor', 'rootkit', 'trojan', 'malware', 'ransomware',
-        'c2', 'beacon', 'callback', 'exfiltration', 'lateral',
-        'privilege', 'escalation', 'persistence', 'autorun',
-        'encoded', 'obfuscated', 'base64', 'powershell -e',
-        'downloadstring', 'downloadfile', 'invoke-expression',
-        'bypass', 'amsi', 'defender', 'disable', 'exclusion'
-    ]
-
-    # Detection artifact patterns (these are always interesting)
-    detection_sources = ['detection', 'malfind', 'hayabusa', 'yara', 'sigma', 'persistence']
+    # Skip these sources (too verbose, not actionable)
+    skip_sources = ['pstree', 'netstat']
 
     for event in events:
         raw = event.get('raw', {})
         source = str(event.get('source', '')).lower()
         title = str(event.get('title', '')).lower()
-        description = str(event.get('description', '')).lower()
         no_timestamp = event.get('no_timestamp', False)
 
-        # Check if this is from a detection artifact
-        is_detection_source = any(d in source for d in detection_sources)
-
-        # Get severity if present
-        severity = ''
-        for field in ['Level', 'RuleLevel', 'Severity', 'Priority']:
-            if field in raw:
-                severity = str(raw[field]).lower().strip()
-                break
-
-        # Skip benign severity levels unless from detection source
-        if severity in benign_severities and not is_detection_source:
+        # Skip verbose sources
+        if any(skip in source for skip in skip_sources):
             continue
 
-        # Check for malicious indicators
-        combined_text = f"{title} {description}"
-        for field in ['Name', 'FullPath', 'CommandLine', 'Message', 'Details', 'RuleTitle']:
-            if field in raw and raw[field]:
-                combined_text += ' ' + str(raw[field]).lower()
+        # Check if explicitly marked as clean/trusted
+        is_clean = False
+        for field in ['Status', 'IsTrusted', 'Trusted', 'Verdict']:
+            if field in raw:
+                val = str(raw[field]).lower().strip()
+                if val in skip_values:
+                    is_clean = True
+                    break
 
-        # Is this a malicious finding?
-        is_malicious = False
+        if is_clean:
+            continue
 
-        # 1. High/Critical severity from detection sources
-        if severity in malicious_severities and is_detection_source:
-            is_malicious = True
+        # Check if from a detection/forensic artifact
+        is_detection_source = any(d in source for d in detection_sources)
 
-        # 2. Known attack tools
-        if any(tool in combined_text for tool in attack_tools):
-            is_malicious = True
-
-        # 3. Malicious indicators
-        if any(indicator in combined_text for indicator in malicious_indicators):
-            is_malicious = True
-
-        # 4. Detection source with any finding (not just informational)
-        if is_detection_source and severity and severity not in benign_severities:
-            is_malicious = True
-
-        # 5. Persistence findings
-        if 'persistence' in source or 'persistence' in combined_text:
-            is_malicious = True
-
-        # Add to appropriate list
-        if is_malicious:
+        # Include if from detection source
+        if is_detection_source:
             if no_timestamp:
-                no_ts_malicious.append(event)
+                no_ts_included.append(event)
             else:
-                malicious.append(event)
+                included.append(event)
+            continue
+
+        # Include if has any severity/level/finding indicator
+        has_finding = False
+        for field in ['Level', 'RuleLevel', 'Severity', 'Priority', 'RuleTitle',
+                      'Technique', 'Detection', 'Alert', 'Hit', 'Match']:
+            if field in raw and raw[field]:
+                val = str(raw[field]).lower().strip()
+                if val and val not in skip_values and val not in ('none', 'null', '0', 'false', 'n/a'):
+                    has_finding = True
+                    break
+
+        if has_finding:
+            if no_timestamp:
+                no_ts_included.append(event)
+            else:
+                included.append(event)
+            continue
+
+        # Include events without timestamp (they represent findings)
+        if no_timestamp:
+            no_ts_included.append(event)
 
     # Sort timestamped events by timestamp
-    malicious.sort(key=lambda x: x.get('timestamp') or datetime.min)
+    included.sort(key=lambda x: x.get('timestamp') or datetime.min)
 
-    # Put no-timestamp malicious findings at the TOP (most important)
-    result = no_ts_malicious + malicious
+    # Put no-timestamp findings at the TOP (most important)
+    result = no_ts_included + included
 
     # Limit total events
     if len(result) > max_events:

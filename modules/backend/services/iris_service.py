@@ -693,6 +693,8 @@ def add_case_note(case_id: int, note_title: str, note_content: str,
                   iris_config: dict, api_key: str, logger: Callable = None) -> bool:
     """Add a note to an IRIS case.
 
+    IRIS requires notes to be in a group, so we first create a group then add the note.
+
     Args:
         case_id: IRIS case ID
         note_title: Title for the note
@@ -714,11 +716,48 @@ def add_case_note(case_id: int, note_title: str, note_content: str,
 
     log(f"Adding note to case {case_id}: {note_title}")
 
-    # IRIS v2.x note creation - notes are per-group, we'll use group_id=1 (default)
+    # Step 1: Create a notes group first
+    group_data = {
+        "group_title": "Forensic Analysis Reports"
+    }
+
+    group_response = _make_iris_request(
+        method="POST",
+        endpoint=f"/case/notes/groups/add?cid={case_id}",
+        iris_config=iris_config,
+        api_key=api_key,
+        data=group_data,
+        logger=None
+    )
+
+    group_id = None
+    if group_response and group_response.get('status') == 'success':
+        group_id = group_response.get('data', {}).get('group_id')
+        log(f"Created notes group with ID: {group_id}")
+    else:
+        # Try to get existing groups
+        list_response = _make_iris_request(
+            method="GET",
+            endpoint=f"/case/notes/groups/list?cid={case_id}",
+            iris_config=iris_config,
+            api_key=api_key,
+            logger=None
+        )
+        if list_response and list_response.get('status') == 'success':
+            groups = list_response.get('data', {}).get('groups', [])
+            if groups:
+                group_id = groups[0].get('group_id')
+                log(f"Using existing notes group: {group_id}")
+
+    if not group_id:
+        log("Failed to create or find notes group", "warning")
+        return False
+
+    # Step 2: Add the note to the group
     note_data = {
         "note_title": note_title,
         "note_content": note_content,
-        "group_id": 1  # Default notes group
+        "group_id": group_id
     }
 
     response = _make_iris_request(
