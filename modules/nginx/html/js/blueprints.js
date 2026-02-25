@@ -813,7 +813,6 @@ async function startForensicsCollection() {
             const selectedClients = Array.from(forensicsSelectedClients);
             const collectionTime = parseInt(document.getElementById('forensics-collection-time')?.value || '30');
             const reportTypes = ['technical'];
-            const severityLevel = document.getElementById('forensics-severity-level')?.value || 'medium';
             const anonymizeData = document.getElementById('forensics-anonymize-toggle')?.checked || false;
             const customPatterns = document.getElementById('forensics-custom-patterns')?.value || '';
             const importToIris = document.getElementById('forensics-iris-toggle')?.checked || false;
@@ -827,7 +826,6 @@ async function startForensicsCollection() {
                     client_ids: selectedClients,
                     collection_minutes: collectionTime,
                     report_types: reportTypes,
-                    severity_level: severityLevel,
                     anonymize_data: anonymizeData,
                     custom_patterns: customPatterns,
                     import_to_iris: importToIris,
@@ -902,7 +900,6 @@ async function analyzeExistingCollection() {
 
     try {
         const reportTypes = ['technical'];
-        const severityLevel = document.getElementById('forensics-severity-level')?.value || 'medium';
         const anonymizeData = document.getElementById('forensics-anonymize-toggle')?.checked || false;
         const customPatterns = document.getElementById('forensics-custom-patterns')?.value || '';
         const importToIris = document.getElementById('forensics-iris-toggle')?.checked || false;
@@ -915,7 +912,6 @@ async function analyzeExistingCollection() {
                 flow_id: isFlow ? existingId : null,
                 hunt_id: isHunt ? existingId : null,
                 report_types: reportTypes,
-                severity_level: severityLevel,
                 anonymize_data: anonymizeData,
                 custom_patterns: customPatterns,
                 import_to_iris: importToIris,
