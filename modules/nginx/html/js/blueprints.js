@@ -1114,8 +1114,9 @@ async function loadOfflineCollectorBlueprints() {
     if (select) {
         select.innerHTML = '<option value="">-- Select Blueprint --</option>';
 
-        // Find default blueprint: [Agentic] Full Triage
+        // Find default blueprint: [Agentic] Full Triage, or fall back to first
         let defaultBpId = null;
+        let firstBpId = null;
         blueprints.forEach(bp => {
             const opt = document.createElement('option');
             opt.value = bp.id;
@@ -1123,15 +1124,22 @@ async function loadOfflineCollectorBlueprints() {
             opt.dataset.type = bp.blueprint_type;
             select.appendChild(opt);
 
-            // Check for default
+            // Track first blueprint as fallback
+            if (!firstBpId) {
+                firstBpId = bp.id;
+            }
+
+            // Check for preferred default
             if (bp.name && bp.name.includes('[Agentic] Full Triage')) {
                 defaultBpId = bp.id;
             }
         });
 
-        // Set default selection
+        // Set default selection: prefer Full Triage, fallback to first blueprint
         if (defaultBpId) {
             select.value = defaultBpId;
+        } else if (firstBpId) {
+            select.value = firstBpId;
         }
     }
 }

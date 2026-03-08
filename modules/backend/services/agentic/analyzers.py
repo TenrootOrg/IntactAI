@@ -171,6 +171,23 @@ def _call_llm_online(prompt, system_prompt, provider_config):
             temperature=0.1
         )
         return response.choices[0].message.content
+    elif provider == 'openrouter':
+        import openai
+        client = openai.OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1"
+        )
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=4096,
+            temperature=0.1
+        )
+        return response.choices[0].message.content
     else:
         raise ValueError(f"Unsupported online provider: {provider}")
 
