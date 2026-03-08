@@ -411,7 +411,8 @@ document.addEventListener('alpine:init', () => {
             const modelDefaults = {
                 'openai': 'gpt-4o',
                 'claude': 'claude-sonnet-4-20250514',
-                'gemini': 'gemini-pro'
+                'gemini': 'gemini-pro',
+                'openrouter': 'anthropic/claude-opus-4-6'
             };
             const defaultModel = modelDefaults[this.config.agentic.online_llm.provider];
             if (defaultModel) {

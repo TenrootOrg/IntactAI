@@ -100,7 +100,7 @@ def generate_collector(config_id, os_type="windows"):
         os.makedirs(COLLECTOR_OUTPUT_DIR, exist_ok=True)
 
         config_name = config.get("config_name", "Collection")
-        safe_name = config_name.replace(" ", "_").replace("/", "-").replace("[", "").replace("]", "")
+        safe_name = config_name.replace(" ", "_").replace("/", "-").replace("[", "").replace("]", "").replace("(", "").replace(")", "")
 
         # Get artifacts and parameters
         artifacts = config.get("artifacts", DEFAULT_ARTIFACTS)
@@ -312,47 +312,40 @@ def generate_collector(config_id, os_type="windows"):
         # Create launch script
         if os_type == "windows":
             script_name = "Run_Collector.bat"
-            script_content = f'''@echo off
-:: ============================================
-:: {config_name}
-:: Generic Collector (embedded tools, no size limit)
-:: ============================================
-:: Right-click and "Run as administrator"
-
-cd /d "%~dp0"
-
-echo.
-echo ============================================
-echo   {config_name}
-echo   Velociraptor Generic Collector
-echo ============================================
-echo.
-
-if not exist "velociraptor.exe" (
-    echo ERROR: velociraptor.exe not found!
-    pause
-    exit /b 1
-)
-
-if not exist "collector_config" (
-    echo ERROR: collector_config not found!
-    pause
-    exit /b 1
-)
-
-echo [*] Starting collection with embedded tools...
-echo [*] Output will be created in this directory.
-echo.
-
-velociraptor.exe -- --embedded_config collector_config
-
-echo.
-echo ============================================
-echo Collection complete!
-echo Look for Collection-*.zip in this directory.
-echo ============================================
-pause
-'''
+            # Escape parentheses in config name for BAT compatibility
+            safe_bat_name = config_name.replace('(', '^(').replace(')', '^)')
+            # Full BAT with escaped config name
+            script_content = (
+                '@echo off\r\n'
+                'cd /d "%~dp0"\r\n'
+                'echo.\r\n'
+                'echo ============================================\r\n'
+                f'echo   {safe_bat_name}\r\n'
+                'echo   Velociraptor Collector\r\n'
+                'echo ============================================\r\n'
+                'echo   Directory: %CD%\r\n'
+                'echo ============================================\r\n'
+                'echo.\r\n'
+                'if not exist velociraptor.exe (\r\n'
+                '  echo ERROR: velociraptor.exe not found!\r\n'
+                '  goto done\r\n'
+                ')\r\n'
+                'if not exist collector_config (\r\n'
+                '  echo ERROR: collector_config not found!\r\n'
+                '  goto done\r\n'
+                ')\r\n'
+                'echo [+] Starting collection...\r\n'
+                'echo.\r\n'
+                'velociraptor.exe -- --embedded_config collector_config\r\n'
+                'echo.\r\n'
+                'echo ============================================\r\n'
+                'echo   Collection finished!\r\n'
+                'echo   Look for Collection-*.zip in this folder\r\n'
+                'echo ============================================\r\n'
+                ':done\r\n'
+                'echo.\r\n'
+                'pause\r\n'
+            )
         else:
             script_name = "run_collector.sh"
             script_content = f'''#!/bin/bash
@@ -390,10 +383,13 @@ echo "============================================"
 '''
 
         script_path = os.path.join(bundle_dir, script_name)
-        with open(script_path, 'w') as f:
-            f.write(script_content)
-
-        if os_type != "windows":
+        if os_type == "windows":
+            # Write BAT as binary - content already has CRLF
+            with open(script_path, 'wb') as f:
+                f.write(script_content.encode('ascii'))
+        else:
+            with open(script_path, 'w') as f:
+                f.write(script_content)
             os.chmod(script_path, 0o755)
 
         # Create final ZIP bundle
@@ -534,119 +530,58 @@ echo [!] NOTE: {len(skipped_artifacts)} artifacts skipped (require internet):
                     skipped_note += f'echo     - {sk}\n'
                 skipped_note += 'echo.\n'
 
-            # Build artifact collection commands with verbose output and error handling
+            # Build artifact collection commands - simplified for reliability
             total_artifacts = len(artifacts)
             artifact_commands = []
             for idx, artifact in enumerate(artifacts, 1):
                 artifact_commands.append(f'echo.')
-                artifact_commands.append(f'echo ========================================')
                 artifact_commands.append(f'echo [{idx}/{total_artifacts}] {artifact}')
-                artifact_commands.append(f'echo ========================================')
-                artifact_commands.append(f'echo %TIME% [{idx}/{total_artifacts}] {artifact} >> "%LOG_FILE%"')
-                # Run with verbose flag, continue on error
-                # Show output on console AND log to file (tee equivalent in batch)
-                artifact_commands.append(f'velociraptor_client.exe --nobanner -v artifacts collect "{artifact}" --output "%ZIP_FILE%" --format jsonl --cpu_limit {parameters.get("CpuLimit", 80)} --timeout {parameters.get("MaxExecutionTimeInSeconds", 300)}')
-                artifact_commands.append(f'if errorlevel 1 (')
-                artifact_commands.append(f'    echo [!] {artifact} failed - continuing...')
-                artifact_commands.append(f'    echo %TIME% [FAILED] {artifact} >> "%LOG_FILE%"')
-                artifact_commands.append(f') else (')
-                artifact_commands.append(f'    echo [+] {artifact} completed')
-                artifact_commands.append(f'    echo %TIME% [OK] {artifact} >> "%LOG_FILE%"')
-                artifact_commands.append(f')')
+                artifact_commands.append(f'velociraptor_client.exe --nobanner artifacts collect "{artifact}" --output "%ZIP_FILE%" --format jsonl --cpu_limit {parameters.get("CpuLimit", 80)} --timeout {parameters.get("MaxExecutionTimeInSeconds", 300)}')
 
             artifact_section = '\n'.join(artifact_commands)
 
             script_content = f'''@echo off
-setlocal enabledelayedexpansion
-:: ============================================
-:: {config_name}
-:: Velociraptor Offline Collector (FULLY OFFLINE)
-:: ============================================
-:: Right-click this file and select "Run as administrator"
-:: Generated: {datetime.now().isoformat()}
-:: Artifacts: {len(artifacts)} (offline-safe)
-:: Note: All tools are embedded - no internet required
-
+title {config_name} - Velociraptor Collector
 cd /d "%~dp0"
-
 echo.
 echo ============================================
 echo   {config_name}
 echo   Velociraptor Offline Collector
 echo ============================================
-echo   Mode: FULLY OFFLINE (no internet required)
+echo   Working directory: %CD%
 echo ============================================
 echo.
-
-:: Check for velociraptor binary
-if not exist "velociraptor_client.exe" (
-    echo [-] ERROR: velociraptor_client.exe not found!
-    echo     Make sure you extracted the entire ZIP archive.
-    pause
-    exit /b 1
+if not exist velociraptor_client.exe (
+    echo ERROR: velociraptor_client.exe not found!
+    echo Make sure you extracted ALL files from the ZIP.
+    echo.
+    dir
+    goto :end
 )
-
-echo [+] Found Velociraptor binary (embedded)
+echo [+] Found Velociraptor binary
 {skipped_note}
-:: Output files - simple naming with hostname and blueprint
-set ZIP_FILE=%~dp0Collection-%COMPUTERNAME%-{safe_blueprint}.zip
-set LOG_FILE=%~dp0Collection-%COMPUTERNAME%-{safe_blueprint}.log
-
-:: Initialize log file
-echo ============================================ > "%LOG_FILE%"
-echo {config_name} >> "%LOG_FILE%"
-echo Velociraptor Offline Collection Log >> "%LOG_FILE%"
-echo Host: %COMPUTERNAME% >> "%LOG_FILE%"
-echo Started: %DATE% %TIME% >> "%LOG_FILE%"
-echo Mode: FULLY OFFLINE >> "%LOG_FILE%"
-echo ============================================ >> "%LOG_FILE%"
-
+set "ZIP_FILE=%~dp0Collection-%COMPUTERNAME%-{safe_blueprint}.zip"
 echo.
-echo [*] Configuration:
-echo     Artifacts: {total_artifacts}
-echo     CPU Limit: {parameters.get('CpuLimit', 80)}%%
-echo     Timeout: {parameters.get('MaxExecutionTimeInSeconds', 300)} seconds
-echo     Output: %ZIP_FILE%
-echo     Log: %LOG_FILE%
+echo [*] Output: %ZIP_FILE%
+echo [*] Artifacts: {total_artifacts}
 echo.
-
-echo [*] Starting collection...
-echo.
-echo ============================================
-
 {artifact_section}
 
-echo ============================================
 echo.
-
-:: Log completion
-echo. >> "%LOG_FILE%"
-echo ============================================ >> "%LOG_FILE%"
-echo Completed: %DATE% %TIME% >> "%LOG_FILE%"
-echo ============================================ >> "%LOG_FILE%"
-
-:: Check if collection succeeded
+echo ============================================
 if exist "%ZIP_FILE%" (
-    for %%A in ("%ZIP_FILE%") do set ZIPSIZE=%%~zA
-    echo ============================================
     echo   COLLECTION COMPLETE
-    echo ============================================
-    echo.
-    echo Output: %ZIP_FILE%
-    echo Size: !ZIPSIZE! bytes
-    echo Log: %LOG_FILE%
-    echo.
-    echo Transfer the ZIP file back to your MSSP platform
-    echo and use 'Import Results' to analyze the data.
-    echo.
+    echo   Output: %ZIP_FILE%
 ) else (
-    echo [-] Collection may have failed. Check %LOG_FILE% for details.
+    echo   Collection may have failed.
 )
-
+echo ============================================
+:end
 echo.
 pause
 '''
-            with open(script_path, 'w') as f:
+            # Use CRLF line endings for Windows BAT files
+            with open(script_path, 'w', newline='\r\n') as f:
                 f.write(script_content)
 
         else:
@@ -745,7 +680,7 @@ fi
             os.chmod(script_path, 0o755)
 
         # Create ZIP bundle with binary and script (use consistent name to overwrite previous)
-        safe_name = config_name.replace(" ", "_").replace("/", "-").replace("[", "").replace("]", "")
+        safe_name = config_name.replace(" ", "_").replace("/", "-").replace("[", "").replace("]", "").replace("(", "").replace(")", "")
         zip_filename = f"OfflineCollector_{safe_name}_{os_type}.zip"
         zip_path = os.path.join(COLLECTOR_OUTPUT_DIR, zip_filename)
 
