@@ -224,8 +224,8 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
         elif 'Hayabusa' in artifact:
             level = row.get('Level') or row.get('RuleLevel', 'Unknown')
             title = row.get('RuleTitle') or row.get('Title') or row.get('Message', 'Detection')
-            details = row.get('Details') or ''
-            mitre = row.get('MitreAttack') or row.get('MITRE') or ''
+            details = safe_str(row.get('Details')) or ''
+            mitre = safe_str(row.get('MitreAttack')) or safe_str(row.get('MITRE')) or ''
             finding = f"{title}"
             if details:
                 finding += f" - {details[:100]}"
