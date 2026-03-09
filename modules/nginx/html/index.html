@@ -16,116 +16,103 @@
 <body class="bg-gray-900 text-white" x-data x-cloak>
     <div class="flex">
         <!-- Left Sidebar -->
-        <aside class="sidebar bg-gray-800 fixed h-screen overflow-y-auto border-r border-gray-700">
-            <div class="p-4">
-                <img src="img/tenroot-logo.png" alt="TenRoot" class="sidebar-logo">
-                <p class="text-xs text-gray-400 mt-2">Security Operations Center</p>
+        <aside class="sidebar bg-gray-800 fixed h-screen overflow-y-auto border-r border-gray-700 transition-all duration-300 flex flex-col"
+               :class="{ 'sidebar-collapsed': $store.app.sidebarCollapsed }">
+            <div class="p-4" :class="{ 'p-2 pt-4': $store.app.sidebarCollapsed }">
+                <!-- Header row with logo and toggle button -->
+                <div class="flex items-start justify-between" x-show="!$store.app.sidebarCollapsed">
+                    <div>
+                        <img src="img/tenroot-logo.png" alt="TenRoot" class="sidebar-logo">
+                        <p class="text-xs text-gray-400 mt-2">Security Operations Center</p>
+                    </div>
+                    <button @click="$store.app.toggleSidebar()"
+                            class="w-8 h-8 bg-gray-700 hover:bg-red-600 border border-gray-600 hover:border-red-500 rounded flex items-center justify-center transition-colors flex-shrink-0"
+                            title="Collapse sidebar">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7"></path>
+                        </svg>
+                    </button>
+                </div>
+                <!-- Collapsed state: icon + expand button -->
+                <div x-show="$store.app.sidebarCollapsed" class="flex flex-col items-center gap-2" x-cloak>
+                    <div class="w-10 h-10 bg-gradient-to-br from-red-600 to-red-800 rounded-lg flex items-center justify-center shadow-lg">
+                        <span class="text-white font-bold text-lg">T</span>
+                    </div>
+                    <button @click="$store.app.toggleSidebar()"
+                            class="w-10 h-8 bg-gray-700 hover:bg-red-600 border border-gray-600 hover:border-red-500 rounded flex items-center justify-center transition-colors"
+                            title="Expand sidebar">
+                        <svg class="w-4 h-4 rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7"></path>
+                        </svg>
+                    </button>
+                </div>
             </div>
 
-            <nav class="px-4 pb-4">
-                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'dashboard' }" @click="$store.app.switchTab('dashboard')">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <nav class="px-4 pb-4 flex-1" :class="{ 'px-1': $store.app.sidebarCollapsed }">
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'dashboard', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('dashboard')" :title="$store.app.sidebarCollapsed ? 'Dashboard' : ''">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path>
                     </svg>
-                    <span>Dashboard</span>
+                    <span x-show="!$store.app.sidebarCollapsed">Dashboard</span>
                 </div>
 
-                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'workflows' }" @click="$store.app.switchTab('workflows')">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'workflows', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('workflows')" :title="$store.app.sidebarCollapsed ? 'Workflows' : ''">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path>
                     </svg>
-                    <span>Workflows</span>
+                    <span x-show="!$store.app.sidebarCollapsed">Workflows</span>
                 </div>
 
-                <!-- On Premise Dropdown -->
-                <div class="nav-dropdown">
-                    <div class="nav-item flex items-center justify-between cursor-pointer" @click="$store.app.toggleModules()">
-                        <div class="flex items-center gap-3">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
-                            </svg>
-                            <span>On Premise</span>
-                        </div>
-                        <svg class="w-4 h-4 transition-transform" :class="{ 'rotate': $store.app.modulesOpen }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                        </svg>
-                    </div>
-                    <div x-show="$store.app.modulesOpen" x-transition class="nav-dropdown-content ml-8 mt-2 space-y-2">
-                        <div class="nav-sub-item flex items-center gap-2 cursor-pointer" :class="{ 'active': $store.app.currentTab === 'modules-forensics' }" @click="$store.app.switchTab('modules-forensics')">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                            </svg>
-                            <span>Velociraptor</span>
-                        </div>
-                        <div class="nav-sub-item flex items-center gap-2 cursor-pointer" :class="{ 'active': $store.app.currentTab === 'modules-timesketch' }" @click="$store.app.switchTab('modules-timesketch')">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                            </svg>
-                            <span>TimeSketch</span>
-                        </div>
-                    </div>
+                <!-- Velociraptor -->
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'modules-forensics', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('modules-forensics')" :title="$store.app.sidebarCollapsed ? 'Velociraptor' : ''">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </svg>
+                    <span x-show="!$store.app.sidebarCollapsed">Velociraptor</span>
                 </div>
 
-                <!-- Cloud Dropdown -->
-                <div class="nav-dropdown" x-data="{ cloudOpen: false }">
-                    <div class="nav-item flex items-center justify-between cursor-pointer" @click="cloudOpen = !cloudOpen">
-                        <div class="flex items-center gap-3">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"></path>
-                            </svg>
-                            <span>Cloud</span>
-                        </div>
-                        <svg class="w-4 h-4 transition-transform" :class="{ 'rotate': cloudOpen }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                        </svg>
-                    </div>
-                    <div x-show="cloudOpen" x-transition class="nav-dropdown-content ml-8 mt-2 space-y-2">
-                        <div class="nav-sub-item flex items-center gap-2 cursor-pointer" :class="{ 'active': $store.app.currentTab === 'cloud-aws' }" @click="$store.app.switchTab('cloud-aws')">
-                            <svg class="w-4 h-4 text-orange-400" viewBox="0 0 24 24" fill="currentColor"><path d="M6.763 10.036c0 .296.032.535.088.71.064.176.144.368.256.576.04.063.056.127.056.183 0 .08-.048.16-.152.24l-.503.335a.383.383 0 0 1-.208.072c-.08 0-.16-.04-.239-.112a2.47 2.47 0 0 1-.287-.375 6.18 6.18 0 0 1-.248-.471c-.622.734-1.405 1.101-2.347 1.101-.67 0-1.205-.191-1.596-.574-.391-.384-.59-.894-.59-1.533 0-.678.239-1.23.726-1.644.487-.415 1.133-.623 1.955-.623.272 0 .551.024.846.064.296.04.6.104.918.176v-.583c0-.607-.127-1.03-.375-1.277-.255-.248-.686-.367-1.3-.367-.28 0-.568.031-.863.103-.295.072-.583.16-.862.272a2.287 2.287 0 0 1-.28.104.488.488 0 0 1-.127.023c-.112 0-.168-.08-.168-.247v-.391c0-.128.016-.224.056-.28a.597.597 0 0 1 .224-.167c.279-.144.614-.264 1.005-.36a4.84 4.84 0 0 1 1.246-.151c.95 0 1.644.216 2.091.647.439.43.662 1.085.662 1.963v2.586z"/></svg>
-                            <span>AWS</span>
-                            <span class="text-xs bg-gray-600 px-1 py-0.5 rounded text-[10px]">TBD</span>
-                        </div>
-                        <div class="nav-sub-item flex items-center gap-2 cursor-pointer" :class="{ 'active': $store.app.currentTab === 'cloud-azure' }" @click="$store.app.switchTab('cloud-azure')">
-                            <svg class="w-4 h-4 text-blue-400" viewBox="0 0 24 24" fill="currentColor"><path d="M5.483 21.3H24L14.025 4.013l-3.038 8.347 5.836 6.938L5.483 21.3zM13.23 2.7L6.105 8.677 0 19.253h5.505v.014L13.23 2.7z"/></svg>
-                            <span>Azure</span>
-                            <span class="text-xs bg-gray-600 px-1 py-0.5 rounded text-[10px]">Soon</span>
-                        </div>
-                    </div>
+                <!-- TimeSketch -->
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'modules-timesketch', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('modules-timesketch')" :title="$store.app.sidebarCollapsed ? 'TimeSketch' : ''">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                    <span x-show="!$store.app.sidebarCollapsed">TimeSketch</span>
                 </div>
 
-                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'blueprints' }" @click="$store.app.switchTab('blueprints')">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'blueprints', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('blueprints')" :title="$store.app.sidebarCollapsed ? 'Blueprints' : ''">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
                     </svg>
-                    <span>Blueprints</span>
+                    <span x-show="!$store.app.sidebarCollapsed">Blueprints</span>
                 </div>
 
-                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'scheduler' }" @click="$store.app.switchTab('scheduler')">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'scheduler', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('scheduler')" :title="$store.app.sidebarCollapsed ? 'Scheduler' : ''">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
                     </svg>
-                    <span>Scheduler</span>
+                    <span x-show="!$store.app.sidebarCollapsed">Scheduler</span>
                 </div>
 
-                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'downloads' }" @click="$store.app.switchTab('downloads')">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'downloads', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('downloads')" :title="$store.app.sidebarCollapsed ? 'Downloads' : ''">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
                     </svg>
-                    <span>Downloads</span>
+                    <span x-show="!$store.app.sidebarCollapsed">Downloads</span>
                 </div>
 
-                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'settings' }" @click="$store.app.switchTab('settings')">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'settings', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('settings')" :title="$store.app.sidebarCollapsed ? 'Settings' : ''">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
                     </svg>
-                    <span>Settings</span>
+                    <span x-show="!$store.app.sidebarCollapsed">Settings</span>
                 </div>
             </nav>
         </aside>
 
         <!-- Main Content Area -->
-        <main class="main-content flex-1 p-6 min-h-screen">
+        <main class="main-content flex-1 p-6 min-h-screen transition-all duration-300"
+              :class="{ 'main-content-collapsed': $store.app.sidebarCollapsed }">
             <!-- Dashboard Tab -->
             <div x-show="$store.app.currentTab === 'dashboard'" x-transition class="tab-content">
                 <div class="mb-8">
@@ -844,19 +831,27 @@ sudo ./velociraptor service start</code></pre>
                         <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
                             <p class="text-sm text-gray-400 mb-4">Upload the ZIP file generated by the offline collector. Results will be imported into Velociraptor.</p>
                             <div class="space-y-4">
-                                <div class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-blue-500 transition-colors">
-                                    <input type="file" id="offline-import-file" accept=".zip" class="hidden" onchange="handleFileSelect(event)">
-                                    <label for="offline-import-file" class="cursor-pointer">
-                                        <div class="text-gray-400">
-                                            <svg class="mx-auto h-12 w-12 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
-                                            </svg>
-                                            <p class="text-sm font-medium">Click to select ZIP file or drag & drop</p>
-                                            <p class="text-xs text-gray-500 mt-1">Maximum file size: 500MB</p>
-                                        </div>
-                                    </label>
+                                <div id="offline-dropzone" class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-blue-500 transition-colors cursor-pointer">
+                                    <input type="file" id="offline-import-file" accept=".zip" class="hidden" onchange="handleOfflineFileSelect(event)">
+                                    <div class="text-gray-400">
+                                        <svg class="mx-auto h-12 w-12 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                        </svg>
+                                        <p id="offline-dropzone-text" class="text-sm font-medium">Click to select ZIP file or drag & drop</p>
+                                        <p class="text-xs text-gray-500 mt-1">Any file size supported (resumable upload)</p>
+                                    </div>
                                 </div>
-                                <div id="offline-selected-file" class="text-sm text-gray-400 hidden"></div>
+                                <!-- Upload Progress -->
+                                <div id="offline-upload-progress" class="hidden">
+                                    <div class="flex justify-between text-xs text-gray-400 mb-1">
+                                        <span id="offline-upload-filename"></span>
+                                        <span id="offline-upload-percent">0%</span>
+                                    </div>
+                                    <div class="bg-gray-700 rounded-full h-2.5">
+                                        <div id="offline-upload-bar" class="bg-gradient-to-r from-blue-500 to-blue-600 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                                    </div>
+                                    <p id="offline-upload-speed" class="text-xs text-gray-400 mt-1"></p>
+                                </div>
                                 <button onclick="importOfflineResults()" id="offline-import-btn" class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-3 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2" disabled>
                                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
@@ -941,14 +936,31 @@ sudo ./velociraptor service start</code></pre>
                 <h2 class="text-3xl font-bold text-white mb-2">TimeSketch Automation</h2>
                 <p class="text-gray-400 mb-6">Collect forensic artifacts and create investigation timelines</p>
 
-                <!-- Simplified KAPE + TimeSketch Workflow -->
+                <!-- Mode Selection -->
                 <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
                     <h3 class="text-2xl font-semibold text-white mb-4">KAPE Collection & Timeline Import</h3>
-                    <p class="text-sm text-gray-400 mb-6">Automated workflow: Collect KAPE artifacts → Process with PLASO → Import to TimeSketch</p>
 
-                    <!-- Blueprint Selection -->
+                    <!-- Mode Toggle -->
                     <div class="mb-6">
-                        <label class="block text-sm font-medium text-gray-300 mb-2">Collection Blueprint:</label>
+                        <label class="block text-sm font-medium text-gray-300 mb-3">Mode:</label>
+                        <div class="flex gap-6">
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" name="ts-mode" value="automation" checked onchange="toggleTimesketchMode()" class="w-4 h-4 text-purple-500 bg-gray-900 border-gray-600 focus:ring-purple-500">
+                                <span class="text-white">Full Automation</span>
+                                <span class="text-xs text-gray-500">(Live Velociraptor hunt)</span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" name="ts-mode" value="upload" onchange="toggleTimesketchMode()" class="w-4 h-4 text-purple-500 bg-gray-900 border-gray-600 focus:ring-purple-500">
+                                <span class="text-white">Upload KAPE</span>
+                                <span class="text-xs text-gray-500">(External collection)</span>
+                            </label>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-2">Full Automation: Run KAPE hunt on connected clients | Upload: Process an existing KAPE/Velociraptor collection</p>
+                    </div>
+
+                    <!-- Blueprint Selection (shared) -->
+                    <div class="mb-6">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Processing Blueprint:</label>
                         <select id="timesketch-blueprint-select" onchange="onTimesketchBlueprintChange()" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none">
                             <option value="">Loading blueprints...</option>
                         </select>
@@ -959,38 +971,84 @@ sudo ./velociraptor service start</code></pre>
                         </div>
                     </div>
 
-                    <!-- Client Selection -->
-                    <div class="mb-6">
-                        <div class="flex items-center justify-between mb-2">
-                            <label class="block text-sm font-medium text-gray-300">Select Clients for Collection</label>
-                            <div class="flex gap-2">
-                                <button onclick="selectAllTimeSketchClients()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Select All</button>
-                                <button onclick="deselectAllTimeSketchClients()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">None</button>
+                    <!-- ============ AUTOMATION MODE SECTION ============ -->
+                    <div id="ts-automation-section">
+                        <!-- Client Selection -->
+                        <div class="mb-6">
+                            <div class="flex items-center justify-between mb-2">
+                                <label class="block text-sm font-medium text-gray-300">Select Clients for Collection</label>
+                                <div class="flex gap-2">
+                                    <button onclick="selectAllTimeSketchClients()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Select All</button>
+                                    <button onclick="deselectAllTimeSketchClients()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">None</button>
+                                </div>
+                            </div>
+                            <input type="text" id="timesketch-client-search" placeholder="Filter clients by name..."
+                                oninput="filterTimesketchClients(this.value)"
+                                class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-purple-500 focus:outline-none">
+                            <div id="timesketch-client-list" class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
+                                <p class="text-sm text-gray-500">Loading clients...</p>
                             </div>
                         </div>
-                        <input type="text" id="timesketch-client-search" placeholder="Filter clients by name..."
-                            oninput="filterTimesketchClients(this.value)"
-                            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-purple-500 focus:outline-none">
-                        <div id="timesketch-client-list" class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
-                            <p class="text-sm text-gray-500">Loading clients...</p>
+
+                        <!-- Sketch Name -->
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Sketch Name:</label>
+                            <input type="text" id="sketch-name" placeholder="Investigation-2025-12-14" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm">
+                            <p class="text-xs text-gray-500 mt-1">If a sketch with this name exists, timelines will be added to it. Otherwise a new sketch is created.</p>
                         </div>
-                    </div>
 
-                    <!-- Sketch Name -->
-                    <div class="mb-6">
-                        <label class="block text-sm font-medium text-gray-300 mb-2">Sketch Name:</label>
-                        <input type="text" id="sketch-name" placeholder="Investigation-2025-12-14" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm">
-                        <p class="text-xs text-gray-500 mt-1">If a sketch with this name exists, timelines will be added to it. Otherwise a new sketch is created.</p>
-                    </div>
-
-                    <!-- Action Buttons -->
-                    <div class="flex gap-3">
-                        <button onclick="runTimeSketchWorkflow()" class="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 px-6 py-3 rounded-lg font-medium transition-colors">
+                        <!-- Action Button -->
+                        <button onclick="runTimeSketchWorkflow()" class="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 px-6 py-3 rounded-lg font-medium transition-colors">
                             <span class="flex items-center justify-center gap-2">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
                                 </svg>
                                 Start Collection & Timeline Import
+                            </span>
+                        </button>
+                    </div>
+
+                    <!-- ============ UPLOAD MODE SECTION ============ -->
+                    <div id="ts-upload-section" class="hidden">
+                        <!-- File Upload with Drag & Drop -->
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">KAPE Collection File:</label>
+                            <div id="ts-upload-dropzone" class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center cursor-pointer hover:border-purple-500 transition-colors">
+                                <input type="file" id="ts-kape-file" accept=".zip" class="hidden">
+                                <svg class="w-12 h-12 mx-auto mb-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                </svg>
+                                <p id="ts-dropzone-text" class="text-gray-400">Drag & drop ZIP file or click to browse</p>
+                                <p class="text-xs text-gray-500 mt-2">Supports: Velociraptor offline collection, KAPE output (any size, resumable)</p>
+                            </div>
+
+                            <!-- Upload Progress -->
+                            <div id="ts-upload-progress" class="hidden mt-4">
+                                <div class="flex justify-between text-xs text-gray-400 mb-1">
+                                    <span id="ts-upload-filename"></span>
+                                    <span id="ts-upload-percent">0%</span>
+                                </div>
+                                <div class="bg-gray-700 rounded-full h-2.5">
+                                    <div id="ts-upload-bar" class="bg-gradient-to-r from-purple-500 to-blue-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                                </div>
+                                <p id="ts-upload-status" class="text-xs text-gray-400 mt-1"></p>
+                            </div>
+                        </div>
+
+                        <!-- Sketch Name (Upload mode) -->
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Sketch Name:</label>
+                            <input type="text" id="ts-upload-sketch" placeholder="Investigation-2025-03-09" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm">
+                            <p class="text-xs text-gray-500 mt-1">Timeline will be named from the hostname in the collection.</p>
+                        </div>
+
+                        <!-- Upload Button -->
+                        <button id="ts-upload-btn" onclick="uploadKapeToTimesketch()" class="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 px-6 py-3 rounded-lg font-medium transition-colors">
+                            <span class="flex items-center justify-center gap-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+                                </svg>
+                                Upload & Import to Timesketch
                             </span>
                         </button>
                     </div>
@@ -1677,6 +1735,9 @@ sudo ./velociraptor service start</code></pre>
     <script src="js/app.js?v=2"></script>
     <script src="js/velociraptor.js?v=2"></script>
     <script src="js/blueprints.js?v=3"></script>
+    <!-- tus resumable upload protocol -->
+    <script src="https://cdn.jsdelivr.net/npm/tus-js-client@4.1.0/dist/tus.min.js"></script>
+    <script src="js/upload.js"></script>
     <script src="js/timesketch.js"></script>
     <script src="js/agentic.js"></script>
     <script src="js/scheduler.js"></script>

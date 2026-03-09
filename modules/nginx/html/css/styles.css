@@ -112,6 +112,33 @@ h1, h2, h3, .header-text {
     border-right: 1px solid var(--border);
     position: relative;
     z-index: 10;
+    transition: width 0.3s ease;
+    display: flex;
+    flex-direction: column;
+}
+
+.sidebar-collapsed {
+    width: 72px;
+    overflow-x: hidden;
+}
+
+.sidebar-collapsed .sidebar-logo {
+    display: none;
+}
+
+.sidebar-collapsed .nav-item {
+    padding: 0.75rem 0.5rem;
+    justify-content: center;
+}
+
+.sidebar-collapsed .nav-item svg {
+    margin: 0 auto;
+    width: 1.5rem;
+    height: 1.5rem;
+}
+
+.main-content-collapsed {
+    margin-left: 72px !important;
 }
 
 .sidebar-logo {
