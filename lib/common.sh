@@ -163,3 +163,29 @@ check_network_connectivity() {
 
     return 0
 }
+
+# ============================================================================
+# Installation Marker Functions
+# ============================================================================
+
+check_initialization_marker() {
+    local marker="/etc/mssp-initialized"
+    if [[ -f "$marker" ]]; then
+        log_warn "MSSP was previously initialized on this system"
+        cat "$marker"
+        echo ""
+        read -p "Re-initialize? This will reconfigure services. (y/N): " confirm
+        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+            log_info "Installation cancelled by user"
+            exit 0
+        fi
+    fi
+}
+
+create_initialization_marker() {
+    local marker="/etc/mssp-initialized"
+    local domain=$(read_config "['domain']")
+    echo "MSSP Platform initialized on $(date)" > "$marker"
+    echo "Domain: $domain" >> "$marker"
+    log_info "Created initialization marker: $marker"
+}
