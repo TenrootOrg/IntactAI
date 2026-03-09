@@ -295,7 +295,7 @@ deploy_timesketch() {
     # Try user creation with retries
     local ts_user_created=false
     local ts_retry=0
-    local ts_max_retry=3
+    local ts_max_retry=5
 
     while [[ $ts_retry -lt $ts_max_retry ]]; do
         local ts_error=$(docker exec mssp_timesketch_web tsctl create-user "${ts_user}" --password "${ts_pass}" 2>&1)
@@ -308,6 +308,8 @@ deploy_timesketch() {
 
         if echo "$ts_error" | grep -qi "already exists"; then
             log_info "  TimeSketch user '${ts_user}' already exists"
+            # Enable user in case it was disabled
+            docker exec mssp_timesketch_web tsctl enable-user "${ts_user}" >/dev/null 2>&1 || true
             ts_user_created=true
             break
         fi
@@ -320,6 +322,8 @@ deploy_timesketch() {
     done
 
     if [[ "$ts_user_created" == "true" ]]; then
+        # Ensure user is enabled
+        docker exec mssp_timesketch_web tsctl enable-user "${ts_user}" >/dev/null 2>&1 || true
         log_success "  TimeSketch user '${ts_user}' ready"
         track_module_success "TimeSketch"
     else
@@ -360,6 +364,21 @@ deploy_velociraptor() {
     log_info "  Waiting for Velociraptor container..."
     if ! wait_for_container "mssp_velociraptor" 60; then
         log_warn "  Velociraptor container may not be fully ready"
+    fi
+
+    # Wait for Velociraptor configuration to be generated
+    log_info "  Waiting for Velociraptor configuration..."
+    local velo_config_wait=0
+    while [[ $velo_config_wait -lt 90 ]]; do
+        if docker exec mssp_velociraptor test -f /velociraptor/client.config.yaml 2>/dev/null; then
+            log_success "  Velociraptor configuration ready (${velo_config_wait}s)"
+            break
+        fi
+        sleep 5
+        ((velo_config_wait+=5))
+    done
+    if [[ $velo_config_wait -ge 90 ]]; then
+        log_warn "  Velociraptor configuration not ready after 90s"
     fi
 
     # Generate client installers

@@ -43,6 +43,7 @@ main() {
 
     # Prerequisites
     check_root
+    check_initialization_marker
     check_ubuntu
     check_config
 
@@ -79,6 +80,7 @@ main() {
 
     # Reports
     print_installation_report
+    create_initialization_marker
     print_summary
 }
 
