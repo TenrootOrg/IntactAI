@@ -11,6 +11,7 @@ from routes.blueprint_routes import blueprint_bp
 from routes.agentic_routes import agentic_bp
 from routes.db_routes import db_bp
 from routes.scheduler_routes import scheduler_bp
+from routes.upload_routes import upload_bp
 
 __all__ = [
     'client_bp',
@@ -21,5 +22,6 @@ __all__ = [
     'blueprint_bp',
     'agentic_bp',
     'db_bp',
-    'scheduler_bp'
+    'scheduler_bp',
+    'upload_bp'
 ]

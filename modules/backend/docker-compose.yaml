@@ -32,6 +32,7 @@ services:
       - ./routes:/app/routes:ro  # Mount routes for live code updates
       - ./config/default_blueprints.yaml:/app/config/default_blueprints.yaml:ro  # Live blueprint updates
       - /app/logs  # Logs directory
+      - upload_data:/data/uploads  # Shared volume for tus uploads
     ports:
       - "5001:5001"
     restart: unless-stopped
@@ -43,6 +44,31 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  # tusd - Resumable upload server (tus protocol)
+  tusd:
+    container_name: mssp_tusd
+    image: tusproject/tusd:latest
+    restart: unless-stopped
+    user: root  # Run as root to write to shared volume
+    command:
+      - -upload-dir=/data/uploads
+      - -hooks-http=http://mssp_backend:5001/api/uploads/hook
+      - -hooks-enabled-events=pre-create,post-create,post-receive,post-finish
+      - -behind-proxy
+    volumes:
+      - upload_data:/data/uploads
+    networks:
+      - mssp_network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  upload_data:
+    driver: local
 
 networks:
   mssp_network:

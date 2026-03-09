@@ -42,6 +42,12 @@ document.addEventListener('alpine:init', () => {
     Alpine.store('app', {
         currentTab: 'dashboard',
         modulesOpen: false,
+        sidebarCollapsed: localStorage.getItem('sidebarCollapsed') === 'true',
+
+        toggleSidebar() {
+            this.sidebarCollapsed = !this.sidebarCollapsed;
+            localStorage.setItem('sidebarCollapsed', this.sidebarCollapsed);
+        },
 
         switchTab(tab) {
             this.currentTab = tab;

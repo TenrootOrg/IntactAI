@@ -371,52 +371,135 @@ async function generateOfflineCollector() {
     }
 }
 
-function handleFileSelect(event) {
+// Handle file selection for offline import
+function handleOfflineFileSelect(event) {
     const file = event.target.files[0];
     if (file) {
+        if (!file.name.toLowerCase().endsWith('.zip')) {
+            alert('Please select a ZIP file');
+            return;
+        }
         selectedImportFile = file;
-        const selectedFileDiv = document.getElementById('offline-selected-file');
-        selectedFileDiv.textContent = `Selected: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`;
-        selectedFileDiv.classList.remove('hidden');
+        const dropzoneText = document.getElementById('offline-dropzone-text');
+        const sizeStr = formatBytes(file.size);
+        dropzoneText.innerHTML = `<span class="text-blue-400 font-medium">${file.name}</span><br><span class="text-xs">${sizeStr}</span>`;
         document.getElementById('offline-import-btn').disabled = false;
     }
 }
 
-async function importOfflineResults() {
+// Legacy function for backward compatibility
+function handleFileSelect(event) {
+    handleOfflineFileSelect(event);
+}
+
+// Initialize offline import dropzone with drag & drop
+function initOfflineImportDropzone() {
+    const dropzone = document.getElementById('offline-dropzone');
+    const fileInput = document.getElementById('offline-import-file');
+
+    if (!dropzone || !fileInput) return;
+
+    // Only initialize once
+    if (dropzone.dataset.initialized) return;
+    dropzone.dataset.initialized = 'true';
+
+    // Click to browse
+    dropzone.addEventListener('click', () => fileInput.click());
+
+    // Drag events
+    dropzone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropzone.classList.add('border-blue-500', 'bg-blue-500/10');
+    });
+
+    dropzone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropzone.classList.remove('border-blue-500', 'bg-blue-500/10');
+    });
+
+    dropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropzone.classList.remove('border-blue-500', 'bg-blue-500/10');
+
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            // Set file input and trigger handler
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(files[0]);
+            fileInput.files = dataTransfer.files;
+            handleOfflineFileSelect({ target: { files: [files[0]] } });
+        }
+    });
+}
+
+// Import offline collector results using tus protocol
+function importOfflineResults() {
     if (!selectedImportFile) {
         alert('Please select a file to import');
         return;
     }
 
+    // Show progress UI
+    const progressDiv = document.getElementById('offline-upload-progress');
+    const progressBar = document.getElementById('offline-upload-bar');
+    const progressPercent = document.getElementById('offline-upload-percent');
+    const progressSpeed = document.getElementById('offline-upload-speed');
+    const filenameEl = document.getElementById('offline-upload-filename');
     const statusEl = document.getElementById('offline-import-status');
-    statusEl.classList.remove('hidden');
-    statusEl.innerHTML = '<span class="text-yellow-400">Importing results...</span>';
+    const importBtn = document.getElementById('offline-import-btn');
 
-    const formData = new FormData();
-    formData.append('file', selectedImportFile);
+    progressDiv.classList.remove('hidden');
+    statusEl.classList.add('hidden');
+    filenameEl.textContent = selectedImportFile.name;
+    importBtn.disabled = true;
 
-    try {
-        const response = await fetch('/api/velociraptor/offline/import', {
-            method: 'POST',
-            body: formData
-        });
-
-        const data = await response.json();
-        if (response.ok) {
-            statusEl.innerHTML = `<span class="text-green-400">✓ Import started! Check Workflows tab for progress.</span>`;
-            selectedImportFile = null;
-            document.getElementById('offline-selected-file').textContent = '';
-            document.getElementById('offline-selected-file').classList.add('hidden');
-            document.getElementById('offline-import-btn').disabled = true;
-            document.getElementById('offline-import-file').value = '';
-            // Redirect to workflows after short delay
-            setTimeout(() => {
-                Alpine.store('app').switchTab('workflows');
-            }, 1500);
-        } else {
-            statusEl.innerHTML = `<span class="text-red-400">Error: ${data.error || 'Import failed'}</span>`;
+    // Create uploader - progress is tracked in Workflows tab via tus hooks
+    const uploader = new TusUploader({
+        purpose: 'velociraptor',
+        metadata: {},
+        onProgress: (info) => {
+            // Progress is tracked in workflow logs, no need to update UI here
+        },
+        onSuccess: () => {
+            // Upload complete - workflow will continue in background
+            resetOfflineImport();
+        },
+        onError: (error) => {
+            // Error will be logged in workflow, but show alert for immediate feedback
+            alert(`Upload failed: ${error.message}`);
+            resetOfflineImport();
         }
-    } catch (error) {
-        statusEl.innerHTML = `<span class="text-red-400">Error: ${error.message}</span>`;
-    }
+    });
+
+    // Start upload
+    uploader.upload(selectedImportFile);
+
+    // Immediately switch to Workflows tab to watch progress there
+    resetOfflineImport();
+    Alpine.store('app').switchTab('workflows');
 }
+
+// Reset offline import UI
+function resetOfflineImport() {
+    selectedImportFile = null;
+    const progressDiv = document.getElementById('offline-progress-container');
+    const progressBar = document.getElementById('offline-progress-bar');
+    const importBtn = document.getElementById('offline-import-btn');
+    const dropzoneText = document.getElementById('offline-dropzone-text');
+    const fileInput = document.getElementById('offline-import-file');
+
+    if (progressDiv) progressDiv.classList.add('hidden');
+    if (progressBar) progressBar.style.width = '0%';
+    if (importBtn) importBtn.disabled = false;
+    if (dropzoneText) dropzoneText.textContent = 'Click to select ZIP file or drag & drop';
+    if (fileInput) fileInput.value = '';
+}
+
+// Initialize dropzone when the offline import tab is shown
+document.addEventListener('DOMContentLoaded', () => {
+    // Initialize after a short delay to ensure DOM is ready
+    setTimeout(initOfflineImportDropzone, 500);
+});

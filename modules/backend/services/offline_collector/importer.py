@@ -13,12 +13,13 @@ import zipfile
 from services.offline_collector.constants import VELOCIRAPTOR_CONTAINER
 
 
-def import_results(zip_file_path, original_filename="import.zip"):
+def import_results(zip_file_path, original_filename="import.zip", run_id=None):
     """Import offline collection results to Velociraptor using Server.Utils.ImportCollection
 
     Args:
         zip_file_path: Path to the uploaded ZIP file (must be from official Velociraptor collector)
         original_filename: Original filename of the upload
+        run_id: Optional workflow run_id (created in pre-create hook)
 
     Returns:
         dict with import status
@@ -28,18 +29,18 @@ def import_results(zip_file_path, original_filename="import.zip"):
     from pyvelociraptor import api_pb2, api_pb2_grpc
     from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
 
-    run_id = None
-
     try:
-        # Create workflow tracking entry (returns the run_id)
-        run_id = create_automation_run(
-            "velociraptor_offline_import",
-            f"Import: {original_filename}",
-            {"filename": original_filename, "path": zip_file_path}
-        )
-
-        add_log_to_run(run_id, f"Starting import of {original_filename}")
-        update_run_status(run_id, "running", progress=10)
+        # Use existing run_id or create new one
+        if not run_id:
+            run_id = create_automation_run(
+                "velociraptor_offline_import",
+                f"Import: {original_filename}",
+                {"filename": original_filename, "path": zip_file_path}
+            )
+            add_log_to_run(run_id, f"Starting import of {original_filename}")
+            update_run_status(run_id, "running", progress=10)
+        else:
+            add_log_to_run(run_id, "=== Starting Velociraptor Import ===")
 
         # Get file size
         file_size = os.path.getsize(zip_file_path)
@@ -54,15 +55,20 @@ def import_results(zip_file_path, original_filename="import.zip"):
         update_run_status(run_id, "running", progress=15)
 
         # Verify this is a valid Velociraptor collection ZIP
+        add_log_to_run(run_id, "Verifying ZIP contents...")
         try:
             with zipfile.ZipFile(zip_file_path, 'r') as zf:
                 file_list = zf.namelist()
                 has_context = any('collection_context.json' in f for f in file_list)
                 print(f"[OFFLINE] ZIP contents: {file_list[:10]}...", flush=True)
+                add_log_to_run(run_id, f"ZIP contains {len(file_list)} files")
                 if not has_context:
                     add_log_to_run(run_id, "Warning: ZIP missing collection_context.json - may not import correctly", "warning")
+                else:
+                    add_log_to_run(run_id, "Valid Velociraptor collection format detected")
         except Exception as e:
             print(f"[OFFLINE] Error checking ZIP: {e}", flush=True)
+            add_log_to_run(run_id, f"Warning: Could not verify ZIP: {str(e)}", "warning")
 
         add_log_to_run(run_id, "Importing to Velociraptor via Server.Utils.ImportCollection")
         update_run_status(run_id, "running", progress=20)
@@ -133,6 +139,7 @@ def import_results(zip_file_path, original_filename="import.zip"):
         ) AS Collection FROM scope()'''
 
         print(f"[OFFLINE] Running VQL: {vql_query[:200]}...", flush=True)
+        add_log_to_run(run_id, f"Executing Server.Utils.ImportCollection for hostname: {hostname}")
 
         request = api_pb2.VQLCollectorArgs(
             Query=[api_pb2.VQLRequest(VQL=vql_query)]
@@ -144,11 +151,12 @@ def import_results(zip_file_path, original_filename="import.zip"):
         artifacts = []
 
         # Execute import with timeout
+        add_log_to_run(run_id, "Sending import request to Velociraptor (this may take a while)...")
         import_response_raw = None
         for response in stub.Query(request, timeout=300):
             if response.log:
                 print(f"[OFFLINE] Server log: {response.log}", flush=True)
-                add_log_to_run(run_id, f"Velociraptor: {response.log[:100]}")
+                add_log_to_run(run_id, f"Velociraptor: {response.log[:150]}")
 
             if response.Response:
                 import_response_raw = response.Response
@@ -181,6 +189,8 @@ def import_results(zip_file_path, original_filename="import.zip"):
                                 client_id = client_id or req.get("client_id")
 
                             print(f"[OFFLINE] Extracted - client_id: {client_id}, flow_id: {flow_id}", flush=True)
+                            if flow_id:
+                                add_log_to_run(run_id, f"Import flow started: {flow_id}")
 
                 except json.JSONDecodeError as e:
                     print(f"[OFFLINE] JSON decode error: {e}", flush=True)
@@ -277,6 +287,7 @@ def import_results(zip_file_path, original_filename="import.zip"):
                     flow_id = imported_flow_id
 
                 # Also query the server flow metadata for state
+                add_log_to_run(run_id, "Checking import flow status...")
                 flow_query = f"SELECT * FROM flows(client_id='server', flow_id='{flow_id}')"
                 print(f"[OFFLINE] Querying server flow: {flow_query}", flush=True)
 
@@ -298,6 +309,7 @@ def import_results(zip_file_path, original_filename="import.zip"):
                             add_log_to_run(run_id, f"Server flow state: {flow_state}")
 
                 # Query for the imported client by hostname or client_id
+                add_log_to_run(run_id, "Verifying imported client...")
                 if imported_client_id:
                     client_query = f"SELECT client_id, os_info.hostname, os_info.system FROM clients(client_id='{imported_client_id}')"
                 else:
@@ -329,12 +341,14 @@ def import_results(zip_file_path, original_filename="import.zip"):
                 add_log_to_run(run_id, f"Warning: Could not get flow details: {str(e)}")
 
         # Step 5: Cleanup container file
+        add_log_to_run(run_id, "Cleaning up temporary files...")
         cleanup_cmd = f"docker exec {VELOCIRAPTOR_CONTAINER} rm -f {container_path}"
         subprocess.run(cleanup_cmd, shell=True, capture_output=True)
 
         # Cleanup uploaded file
         try:
             os.remove(zip_file_path)
+            add_log_to_run(run_id, "Upload file cleaned up")
         except:
             pass
 

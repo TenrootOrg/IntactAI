@@ -4,6 +4,7 @@ Timesketch Routes - Timesketch endpoints
 """
 
 from flask import Blueprint, jsonify, request
+import os
 import time
 import threading
 import traceback
@@ -129,6 +130,7 @@ def run_timesketch_import():
         def timesketch_workflow():
             """Complete Timesketch workflow: Monitor -> Plaso -> Import"""
             run_id = None
+            plaso_file = None  # Track for cleanup
             try:
                 # Get job info and check if run_id already exists
                 job_info = get_job(flow_id)
@@ -305,6 +307,15 @@ def run_timesketch_import():
                     workflow_logger("✓✓✓ PIPELINE COMPLETED SUCCESSFULLY ✓✓✓", "success")
                     workflow_logger(f"Sketch: {sketch_name} (ID: {result.get('sketch_id')})", "success")
                     workflow_logger(f"Timeline: {timeline_name} (ID: {result.get('timeline_id')})", "success")
+
+                    # Cleanup plaso file after successful import
+                    if plaso_file and os.path.exists(plaso_file):
+                        try:
+                            os.remove(plaso_file)
+                            workflow_logger("Plaso file cleaned up", "info")
+                        except Exception as cleanup_err:
+                            workflow_logger(f"Warning: Could not clean up plaso file: {cleanup_err}", "warning")
+
                     update_run_status(run_id, "completed", progress=100)
 
                     print(f"\n{'='*80}", flush=True)
@@ -336,6 +347,14 @@ def run_timesketch_import():
                     update_run_status(run_id, "failed", progress=0, error=str(e))
                 print(f"[WORKFLOW] ✗ Pipeline failed with exception: {e}", flush=True)
                 traceback.print_exc()
+
+                # Cleanup plaso file on failure too
+                if plaso_file and os.path.exists(plaso_file):
+                    try:
+                        os.remove(plaso_file)
+                        print(f"[WORKFLOW] Cleaned up plaso file: {plaso_file}", flush=True)
+                    except:
+                        pass
 
         # Start workflow in background thread
         workflow_thread = threading.Thread(target=timesketch_workflow, daemon=True)

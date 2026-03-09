@@ -296,3 +296,165 @@ async function runTimeSketchWorkflow() {
         alert(`Error starting workflow: ${error.message}`);
     }
 }
+
+// ============================================================================
+// Upload Mode Functions
+// ============================================================================
+
+// Selected file for upload
+let tsSelectedFile = null;
+
+// Toggle between automation and upload modes
+function toggleTimesketchMode() {
+    const mode = document.querySelector('input[name="ts-mode"]:checked').value;
+    const automationSection = document.getElementById('ts-automation-section');
+    const uploadSection = document.getElementById('ts-upload-section');
+
+    if (mode === 'automation') {
+        automationSection.classList.remove('hidden');
+        uploadSection.classList.add('hidden');
+    } else {
+        automationSection.classList.add('hidden');
+        uploadSection.classList.remove('hidden');
+        initTimesketchUploadDropzone();
+    }
+}
+
+// Initialize upload dropzone
+function initTimesketchUploadDropzone() {
+    const dropzone = document.getElementById('ts-upload-dropzone');
+    const fileInput = document.getElementById('ts-kape-file');
+    const dropzoneText = document.getElementById('ts-dropzone-text');
+
+    if (!dropzone || !fileInput) return;
+
+    // Only initialize once
+    if (dropzone.dataset.initialized) return;
+    dropzone.dataset.initialized = 'true';
+
+    // Click to browse
+    dropzone.addEventListener('click', () => fileInput.click());
+
+    // Drag events
+    dropzone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropzone.classList.add('border-purple-500', 'bg-purple-500/10');
+    });
+
+    dropzone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropzone.classList.remove('border-purple-500', 'bg-purple-500/10');
+    });
+
+    dropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropzone.classList.remove('border-purple-500', 'bg-purple-500/10');
+
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            handleTimesketchFileSelect(files[0]);
+        }
+    });
+
+    // File input change
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+            handleTimesketchFileSelect(e.target.files[0]);
+        }
+    });
+}
+
+// Handle file selection
+function handleTimesketchFileSelect(file) {
+    const dropzoneText = document.getElementById('ts-dropzone-text');
+
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+        alert('Please select a ZIP file');
+        return;
+    }
+
+    tsSelectedFile = file;
+
+    // Update dropzone text
+    const sizeStr = formatBytes(file.size);
+    dropzoneText.innerHTML = `<span class="text-purple-400 font-medium">${file.name}</span><br><span class="text-xs">${sizeStr}</span>`;
+}
+
+// Upload KAPE file using tus protocol
+function uploadKapeToTimesketch() {
+    if (!tsSelectedFile) {
+        alert('Please select a KAPE collection file');
+        return;
+    }
+
+    // Get blueprint settings
+    const blueprintSettings = getTimesketchBlueprintSettings();
+    if (!blueprintSettings) {
+        alert('Please select a blueprint');
+        return;
+    }
+
+    const sketchName = document.getElementById('ts-upload-sketch').value.trim()
+        || `Investigation-${new Date().toISOString().split('T')[0]}`;
+
+    // Show progress UI
+    const progressDiv = document.getElementById('ts-upload-progress');
+    const progressBar = document.getElementById('ts-upload-bar');
+    const progressPercent = document.getElementById('ts-upload-percent');
+    const progressStatus = document.getElementById('ts-upload-status');
+    const filenameEl = document.getElementById('ts-upload-filename');
+    const uploadBtn = document.getElementById('ts-upload-btn');
+
+    progressDiv.classList.remove('hidden');
+    filenameEl.textContent = tsSelectedFile.name;
+    uploadBtn.disabled = true;
+    uploadBtn.classList.add('opacity-50', 'cursor-not-allowed');
+
+    // Create uploader - progress is tracked in Workflows tab via tus hooks
+    const uploader = new TusUploader({
+        purpose: 'timesketch',
+        metadata: {
+            sketch_name: sketchName,
+            plaso_parser: blueprintSettings.plaso_parser || 'win7',
+            plaso_workers: String(blueprintSettings.plaso_workers || 2),
+            plaso_hasher: blueprintSettings.plaso_hasher === 'none' ? '' : (blueprintSettings.plaso_hasher || ''),
+            plaso_hasher_size: String(blueprintSettings.plaso_hasher_size || 100)
+        },
+        onProgress: (info) => {
+            // Progress is tracked in workflow logs, no need to update UI here
+        },
+        onSuccess: () => {
+            // Upload complete - workflow will continue in background
+            resetTimesketchUpload();
+        },
+        onError: (error) => {
+            // Error will be logged in workflow, but show alert for immediate feedback
+            alert(`Upload failed: ${error.message}`);
+            resetTimesketchUpload();
+        }
+    });
+
+    // Start upload
+    uploader.upload(tsSelectedFile);
+
+    // Immediately switch to Workflows tab to watch progress there
+    resetTimesketchUpload();
+    switchTab('workflows');
+}
+
+// Reset upload UI
+function resetTimesketchUpload() {
+    const progressDiv = document.getElementById('ts-upload-progress');
+    const progressBar = document.getElementById('ts-upload-bar');
+    const dropzoneText = document.getElementById('ts-dropzone-text');
+    const fileInput = document.getElementById('ts-kape-file');
+
+    tsSelectedFile = null;
+    progressDiv.classList.add('hidden');
+    progressBar.style.width = '0%';
+    dropzoneText.textContent = 'Drag & drop ZIP file or click to browse';
+    if (fileInput) fileInput.value = '';
+}
