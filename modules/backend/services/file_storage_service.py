@@ -465,227 +465,153 @@ def delete_offline_collector_config(config_id: str) -> bool:
 
 
 # ============================================================================
-# Velociraptor Blueprint Storage
+# Generic Blueprint Storage (shared implementation)
+# ============================================================================
+
+# Blueprint type configurations
+_BLUEPRINT_CONFIGS = {
+    'velociraptor': {'table': 'blueprints_velociraptor', 'has_artifacts': True, 'json_fields': ['artifacts', 'settings']},
+    'agentic': {'table': 'blueprints_agentic', 'has_artifacts': True, 'json_fields': ['artifacts', 'settings']},
+    'timesketch': {'table': 'blueprints_timesketch', 'has_artifacts': False, 'json_fields': ['settings']},
+}
+
+
+def _save_blueprint(blueprint_type: str, blueprint_data: Dict[str, Any]) -> bool:
+    """Generic save/update for any blueprint type"""
+    config = _BLUEPRINT_CONFIGS.get(blueprint_type)
+    if not config:
+        print(f"[STORAGE] Unknown blueprint type: {blueprint_type}", flush=True)
+        return False
+
+    try:
+        conn = _get_connection()
+        table = config['table']
+        now = datetime.now().isoformat()
+
+        existing = conn.execute(f"SELECT id FROM {table} WHERE id = ?", (blueprint_data.get('id'),)).fetchone()
+        created_at = blueprint_data.get('created_at', now) if not existing else \
+            conn.execute(f"SELECT created_at FROM {table} WHERE id = ?", (blueprint_data.get('id'),)).fetchone()['created_at']
+
+        if config['has_artifacts']:
+            conn.execute(
+                f"""INSERT OR REPLACE INTO {table}
+                   (id, name, description, is_default, artifacts, settings, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (blueprint_data.get('id'), blueprint_data.get('name'), blueprint_data.get('description'),
+                 1 if blueprint_data.get('is_default') else 0,
+                 json.dumps(blueprint_data.get('artifacts')) if blueprint_data.get('artifacts') is not None else '[]',
+                 json.dumps(blueprint_data.get('settings')) if blueprint_data.get('settings') is not None else '{}',
+                 created_at, now)
+            )
+        else:
+            conn.execute(
+                f"""INSERT OR REPLACE INTO {table}
+                   (id, name, description, is_default, settings, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (blueprint_data.get('id'), blueprint_data.get('name'), blueprint_data.get('description'),
+                 1 if blueprint_data.get('is_default') else 0,
+                 json.dumps(blueprint_data.get('settings')) if blueprint_data.get('settings') is not None else '{}',
+                 created_at, now)
+            )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"[STORAGE] Error saving {blueprint_type} blueprint: {e}", flush=True)
+        return False
+
+
+def _load_blueprints(blueprint_type: str) -> List[Dict[str, Any]]:
+    """Generic load all blueprints of a type"""
+    config = _BLUEPRINT_CONFIGS.get(blueprint_type)
+    if not config:
+        return []
+    try:
+        conn = _get_connection()
+        rows = conn.execute(f"SELECT * FROM {config['table']}").fetchall()
+        return [_row_to_dict(r, config['json_fields']) for r in rows]
+    except Exception as e:
+        print(f"[STORAGE] Error loading {blueprint_type} blueprints: {e}", flush=True)
+        return []
+
+
+def _get_blueprint(blueprint_type: str, blueprint_id: str) -> Optional[Dict[str, Any]]:
+    """Generic get single blueprint"""
+    config = _BLUEPRINT_CONFIGS.get(blueprint_type)
+    if not config:
+        return None
+    try:
+        conn = _get_connection()
+        row = conn.execute(f"SELECT * FROM {config['table']} WHERE id = ?", (blueprint_id,)).fetchone()
+        return _row_to_dict(row, config['json_fields']) if row else None
+    except Exception as e:
+        print(f"[STORAGE] Error getting {blueprint_type} blueprint: {e}", flush=True)
+        return None
+
+
+def _delete_blueprint(blueprint_type: str, blueprint_id: str) -> bool:
+    """Generic delete blueprint"""
+    config = _BLUEPRINT_CONFIGS.get(blueprint_type)
+    if not config:
+        return False
+    try:
+        conn = _get_connection()
+        conn.execute(f"DELETE FROM {config['table']} WHERE id = ?", (blueprint_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"[STORAGE] Error deleting {blueprint_type} blueprint: {e}", flush=True)
+        return False
+
+
+# ============================================================================
+# Velociraptor Blueprint Storage (wrappers for backwards compatibility)
 # ============================================================================
 
 def save_velociraptor_blueprint(blueprint_data: Dict[str, Any]) -> bool:
-    """Save or update a velociraptor blueprint"""
-    try:
-        conn = _get_connection()
-        now = datetime.now().isoformat()
-
-        existing = conn.execute(
-            "SELECT id FROM blueprints_velociraptor WHERE id = ?",
-            (blueprint_data.get('id'),)
-        ).fetchone()
-
-        created_at = blueprint_data.get('created_at', now) if not existing else \
-            conn.execute("SELECT created_at FROM blueprints_velociraptor WHERE id = ?",
-                         (blueprint_data.get('id'),)).fetchone()['created_at']
-
-        conn.execute(
-            """INSERT OR REPLACE INTO blueprints_velociraptor
-               (id, name, description, is_default, artifacts, settings, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (blueprint_data.get('id'),
-             blueprint_data.get('name'),
-             blueprint_data.get('description'),
-             1 if blueprint_data.get('is_default') else 0,
-             json.dumps(blueprint_data.get('artifacts')) if blueprint_data.get('artifacts') is not None else '[]',
-             json.dumps(blueprint_data.get('settings')) if blueprint_data.get('settings') is not None else '{}',
-             created_at,
-             now)
-        )
-        conn.commit()
-        return True
-    except Exception as e:
-        print(f"[STORAGE] Error saving velociraptor blueprint: {e}", flush=True)
-        return False
-
+    return _save_blueprint('velociraptor', blueprint_data)
 
 def load_velociraptor_blueprints() -> List[Dict[str, Any]]:
-    """Load all velociraptor blueprints"""
-    try:
-        conn = _get_connection()
-        rows = conn.execute("SELECT * FROM blueprints_velociraptor").fetchall()
-        return [_row_to_dict(r, ['artifacts', 'settings']) for r in rows]
-    except Exception as e:
-        print(f"[STORAGE] Error loading velociraptor blueprints: {e}", flush=True)
-        return []
-
+    return _load_blueprints('velociraptor')
 
 def get_velociraptor_blueprint(blueprint_id: str) -> Optional[Dict[str, Any]]:
-    """Get a specific velociraptor blueprint by id"""
-    try:
-        conn = _get_connection()
-        row = conn.execute("SELECT * FROM blueprints_velociraptor WHERE id = ?", (blueprint_id,)).fetchone()
-        if row:
-            return _row_to_dict(row, ['artifacts', 'settings'])
-        return None
-    except Exception as e:
-        print(f"[STORAGE] Error getting velociraptor blueprint: {e}", flush=True)
-        return None
-
+    return _get_blueprint('velociraptor', blueprint_id)
 
 def delete_velociraptor_blueprint(blueprint_id: str) -> bool:
-    """Delete a velociraptor blueprint"""
-    try:
-        conn = _get_connection()
-        conn.execute("DELETE FROM blueprints_velociraptor WHERE id = ?", (blueprint_id,))
-        conn.commit()
-        return True
-    except Exception as e:
-        print(f"[STORAGE] Error deleting velociraptor blueprint: {e}", flush=True)
-        return False
+    return _delete_blueprint('velociraptor', blueprint_id)
 
 
 # ============================================================================
-# Agentic Blueprint Storage
+# Agentic Blueprint Storage (wrappers for backwards compatibility)
 # ============================================================================
 
 def save_agentic_blueprint(blueprint_data: Dict[str, Any]) -> bool:
-    """Save or update an agentic blueprint"""
-    try:
-        conn = _get_connection()
-        now = datetime.now().isoformat()
-
-        existing = conn.execute(
-            "SELECT id FROM blueprints_agentic WHERE id = ?",
-            (blueprint_data.get('id'),)
-        ).fetchone()
-
-        created_at = blueprint_data.get('created_at', now) if not existing else \
-            conn.execute("SELECT created_at FROM blueprints_agentic WHERE id = ?",
-                         (blueprint_data.get('id'),)).fetchone()['created_at']
-
-        conn.execute(
-            """INSERT OR REPLACE INTO blueprints_agentic
-               (id, name, description, is_default, artifacts, settings, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (blueprint_data.get('id'),
-             blueprint_data.get('name'),
-             blueprint_data.get('description'),
-             1 if blueprint_data.get('is_default') else 0,
-             json.dumps(blueprint_data.get('artifacts')) if blueprint_data.get('artifacts') is not None else '[]',
-             json.dumps(blueprint_data.get('settings')) if blueprint_data.get('settings') is not None else '{}',
-             created_at,
-             now)
-        )
-        conn.commit()
-        return True
-    except Exception as e:
-        print(f"[STORAGE] Error saving agentic blueprint: {e}", flush=True)
-        return False
-
+    return _save_blueprint('agentic', blueprint_data)
 
 def load_agentic_blueprints() -> List[Dict[str, Any]]:
-    """Load all agentic blueprints"""
-    try:
-        conn = _get_connection()
-        rows = conn.execute("SELECT * FROM blueprints_agentic").fetchall()
-        return [_row_to_dict(r, ['artifacts', 'settings']) for r in rows]
-    except Exception as e:
-        print(f"[STORAGE] Error loading agentic blueprints: {e}", flush=True)
-        return []
-
+    return _load_blueprints('agentic')
 
 def get_agentic_blueprint(blueprint_id: str) -> Optional[Dict[str, Any]]:
-    """Get a specific agentic blueprint by id"""
-    try:
-        conn = _get_connection()
-        row = conn.execute("SELECT * FROM blueprints_agentic WHERE id = ?", (blueprint_id,)).fetchone()
-        if row:
-            return _row_to_dict(row, ['artifacts', 'settings'])
-        return None
-    except Exception as e:
-        print(f"[STORAGE] Error getting agentic blueprint: {e}", flush=True)
-        return None
-
+    return _get_blueprint('agentic', blueprint_id)
 
 def delete_agentic_blueprint(blueprint_id: str) -> bool:
-    """Delete an agentic blueprint"""
-    try:
-        conn = _get_connection()
-        conn.execute("DELETE FROM blueprints_agentic WHERE id = ?", (blueprint_id,))
-        conn.commit()
-        return True
-    except Exception as e:
-        print(f"[STORAGE] Error deleting agentic blueprint: {e}", flush=True)
-        return False
+    return _delete_blueprint('agentic', blueprint_id)
 
 
 # ============================================================================
-# Timesketch Blueprint Storage
+# Timesketch Blueprint Storage (wrappers for backwards compatibility)
 # ============================================================================
 
 def save_timesketch_blueprint(blueprint_data: Dict[str, Any]) -> bool:
-    """Save or update a timesketch blueprint"""
-    try:
-        conn = _get_connection()
-        now = datetime.now().isoformat()
-
-        existing = conn.execute(
-            "SELECT id FROM blueprints_timesketch WHERE id = ?",
-            (blueprint_data.get('id'),)
-        ).fetchone()
-
-        created_at = blueprint_data.get('created_at', now) if not existing else \
-            conn.execute("SELECT created_at FROM blueprints_timesketch WHERE id = ?",
-                         (blueprint_data.get('id'),)).fetchone()['created_at']
-
-        conn.execute(
-            """INSERT OR REPLACE INTO blueprints_timesketch
-               (id, name, description, is_default, settings, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (blueprint_data.get('id'),
-             blueprint_data.get('name'),
-             blueprint_data.get('description'),
-             1 if blueprint_data.get('is_default') else 0,
-             json.dumps(blueprint_data.get('settings')) if blueprint_data.get('settings') is not None else '{}',
-             created_at,
-             now)
-        )
-        conn.commit()
-        return True
-    except Exception as e:
-        print(f"[STORAGE] Error saving timesketch blueprint: {e}", flush=True)
-        return False
-
+    return _save_blueprint('timesketch', blueprint_data)
 
 def load_timesketch_blueprints() -> List[Dict[str, Any]]:
-    """Load all timesketch blueprints"""
-    try:
-        conn = _get_connection()
-        rows = conn.execute("SELECT * FROM blueprints_timesketch").fetchall()
-        return [_row_to_dict(r, ['settings']) for r in rows]
-    except Exception as e:
-        print(f"[STORAGE] Error loading timesketch blueprints: {e}", flush=True)
-        return []
-
+    return _load_blueprints('timesketch')
 
 def get_timesketch_blueprint(blueprint_id: str) -> Optional[Dict[str, Any]]:
-    """Get a specific timesketch blueprint by id"""
-    try:
-        conn = _get_connection()
-        row = conn.execute("SELECT * FROM blueprints_timesketch WHERE id = ?", (blueprint_id,)).fetchone()
-        if row:
-            return _row_to_dict(row, ['settings'])
-        return None
-    except Exception as e:
-        print(f"[STORAGE] Error getting timesketch blueprint: {e}", flush=True)
-        return None
-
+    return _get_blueprint('timesketch', blueprint_id)
 
 def delete_timesketch_blueprint(blueprint_id: str) -> bool:
-    """Delete a timesketch blueprint"""
-    try:
-        conn = _get_connection()
-        conn.execute("DELETE FROM blueprints_timesketch WHERE id = ?", (blueprint_id,))
-        conn.commit()
-        return True
-    except Exception as e:
-        print(f"[STORAGE] Error deleting timesketch blueprint: {e}", flush=True)
-        return False
+    return _delete_blueprint('timesketch', blueprint_id)
 
 
 # ============================================================================
