@@ -792,8 +792,27 @@ function toggleTimeFilterMode() {
 }
 
 // Store Flatpickr instances
-let fpStart = null;
-let fpEnd = null;
+let fpDateStart = null;
+let fpDateEnd = null;
+
+// Helper functions for time dropdowns - called from HTML onchange
+function updateCombinedStartDateTime() {
+    const dateEl = document.getElementById('forensics-date-start');
+    const hourEl = document.getElementById('forensics-time-start-hour');
+    const hiddenEl = document.getElementById('forensics-time-start');
+    if (dateEl && hourEl && hiddenEl && dateEl.value) {
+        hiddenEl.value = `${dateEl.value} ${hourEl.value}:00`;
+    }
+}
+
+function updateCombinedEndDateTime() {
+    const dateEl = document.getElementById('forensics-date-end');
+    const hourEl = document.getElementById('forensics-time-end-hour');
+    const hiddenEl = document.getElementById('forensics-time-end');
+    if (dateEl && hourEl && hiddenEl && dateEl.value) {
+        hiddenEl.value = `${dateEl.value} ${hourEl.value}:00`;
+    }
+}
 
 function initDatePickers() {
     // Only initialize if Flatpickr is available
@@ -802,58 +821,53 @@ function initDatePickers() {
         return;
     }
 
-    const startEl = document.getElementById('forensics-time-start');
-    const endEl = document.getElementById('forensics-time-end');
+    const dateStartEl = document.getElementById('forensics-date-start');
+    const dateEndEl = document.getElementById('forensics-date-end');
 
-    if (!startEl || !endEl) {
-        console.warn('[DatePicker] Elements not found');
+    if (!dateStartEl || !dateEndEl) {
+        console.warn('[DatePicker] Date elements not found');
         return;
     }
 
-    // Destroy existing instances if they exist (needed for hidden element re-init)
-    if (fpStart) {
-        fpStart.destroy();
-        fpStart = null;
-    }
-    if (fpEnd) {
-        fpEnd.destroy();
-        fpEnd = null;
-    }
+    // Destroy existing instances
+    if (fpDateStart) { fpDateStart.destroy(); fpDateStart = null; }
+    if (fpDateEnd) { fpDateEnd.destroy(); fpDateEnd = null; }
 
-    const config = {
-        enableTime: true,
-        time_24hr: true,
-        dateFormat: "Y-m-d H:i",
-        minuteIncrement: 5,
+    // Date picker config (date only, no time)
+    const dateConfig = {
+        dateFormat: "Y-m-d",
         disableMobile: true,
         allowInput: false,
         clickOpens: true,
         animate: true,
-        appendTo: document.body,
-        defaultHour: 0,
-        defaultMinute: 0
+        appendTo: document.body
     };
 
     // Small delay to ensure element is visible
     setTimeout(() => {
-        fpStart = flatpickr(startEl, {
-            ...config,
+        // Start date picker
+        fpDateStart = flatpickr(dateStartEl, {
+            ...dateConfig,
             onChange: function(selectedDates, dateStr) {
-                if (fpEnd && selectedDates[0]) {
-                    fpEnd.set('minDate', selectedDates[0]);
+                updateCombinedStartDateTime();
+                if (fpDateEnd && selectedDates[0]) {
+                    fpDateEnd.set('minDate', selectedDates[0]);
                 }
             }
         });
 
-        fpEnd = flatpickr(endEl, {
-            ...config,
+        // End date picker
+        fpDateEnd = flatpickr(dateEndEl, {
+            ...dateConfig,
             onChange: function(selectedDates, dateStr) {
-                if (fpStart && selectedDates[0]) {
-                    fpStart.set('maxDate', selectedDates[0]);
+                updateCombinedEndDateTime();
+                if (fpDateStart && selectedDates[0]) {
+                    fpDateStart.set('maxDate', selectedDates[0]);
                 }
             }
         });
-        console.log('[DatePicker] Initialized successfully');
+
+        console.log('[DatePicker] Initialized successfully with separate date/time pickers');
     }, 50);
 }
 
@@ -878,24 +892,18 @@ function getForensicsTimeFilterSettings() {
         const startVal = document.getElementById('forensics-time-start')?.value;
         const endVal = document.getElementById('forensics-time-end')?.value;
 
-        // Parse dates carefully
+        // Parse dates - input is already in UTC, don't convert again
         let startDatetime = null;
         let endDatetime = null;
 
         if (startVal) {
-            try {
-                startDatetime = new Date(startVal).toISOString();
-            } catch (e) {
-                console.error('[TimeFilter] Invalid start date:', startVal);
-            }
+            // Input format: "2026-03-10 06:00:00" -> "2026-03-10T06:00:00.000Z"
+            startDatetime = startVal.replace(' ', 'T') + '.000Z';
         }
 
         if (endVal) {
-            try {
-                endDatetime = new Date(endVal).toISOString();
-            } catch (e) {
-                console.error('[TimeFilter] Invalid end date:', endVal);
-            }
+            // Input format: "2026-03-10 10:00:00" -> "2026-03-10T10:00:00.000Z"
+            endDatetime = endVal.replace(' ', 'T') + '.000Z';
         }
 
         return {
@@ -957,6 +965,7 @@ async function startForensicsCollection() {
             const customPatterns = document.getElementById('forensics-custom-patterns')?.value || '';
             const importToIris = document.getElementById('forensics-iris-toggle')?.checked || false;
             const irisCaseName = document.getElementById('forensics-iris-case-name')?.value || '';
+            const minSeverity = document.getElementById('forensics-min-severity')?.value || 'informational';
             const timeFilter = getForensicsTimeFilterSettings();
 
             // Validate time filter settings
@@ -983,7 +992,8 @@ async function startForensicsCollection() {
                     custom_patterns: customPatterns,
                     import_to_iris: importToIris,
                     iris_case_name: irisCaseName,
-                    time_filter: timeFilter
+                    time_filter: timeFilter,
+                    min_severity: minSeverity
                 })
             });
 
@@ -1058,6 +1068,7 @@ async function analyzeExistingCollection() {
         const customPatterns = document.getElementById('forensics-custom-patterns')?.value || '';
         const importToIris = document.getElementById('forensics-iris-toggle')?.checked || false;
         const irisCaseName = document.getElementById('forensics-iris-case-name')?.value || '';
+        const minSeverity = document.getElementById('forensics-min-severity')?.value || 'informational';
         const timeFilter = getForensicsTimeFilterSettings();
 
         // Validate time filter settings
@@ -1082,7 +1093,8 @@ async function analyzeExistingCollection() {
                 custom_patterns: customPatterns,
                 import_to_iris: importToIris,
                 iris_case_name: irisCaseName,
-                time_filter: timeFilter
+                time_filter: timeFilter,
+                min_severity: minSeverity
             })
         });
 

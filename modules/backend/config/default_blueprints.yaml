@@ -98,6 +98,25 @@ artifact_lists:
     # System context
     - Generic.System.Pstree
 
+  # Agentic Purple Team - detection artifacts with timestamps (10 artifacts)
+  agentic_purple_team:
+    # Core Sigma detection (timestamps + severity)
+    - Windows.Hayabusa.Rules                              # Sigma alerts - covers services, tasks, PS, etc.
+    # Memory & injection (CRITICAL for T1003 LSASS)
+    - Windows.Detection.Malfind                           # Memory injection, LSASS dump
+    # Lateral movement (full RDP visibility)
+    - Windows.EventLogs.RDPAuth                           # All RDP logins for forensic context
+    # DetectRaptor behavioral detections
+    - DetectRaptor.Windows.Detection.BinaryRename         # T1036 renamed binaries
+    - DetectRaptor.Windows.Detection.Powershell.PSReadline # Suspicious PS history
+    - DetectRaptor.Windows.Detection.Applications         # Suspicious applications
+    # Persistence & context
+    - Windows.System.TaskScheduler                        # Current scheduled tasks
+    - Windows.System.UntrustedBinaries                    # Unsigned executables
+    - Generic.System.Pstree                               # Process tree context
+    # Execution history
+    - Windows.Timeline.Prefetch.Improved                  # Program execution with timestamps
+
   # Agentic Standard - full detection suite for LLM analysis (28 artifacts)
   agentic_standard:
     - DetectRaptor.Windows.Detection.Amcache
@@ -282,6 +301,13 @@ agentic:
     is_default: true
     artifacts: $agentic_standard
     settings: $standard
+
+  - id: agentic_purple_team
+    name: "[Agentic] Purple Team Detection"
+    description: "Low-volume detection artifacts - outputs only suspicious findings for LLM analysis"
+    is_default: true
+    artifacts: $agentic_purple_team
+    settings: $quick
 
 # ============================================================================
 # Timesketch Blueprints

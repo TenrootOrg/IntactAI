@@ -433,15 +433,27 @@
                                 <h3 class="text-2xl font-bold text-white" x-text="$store.workflows.selectedRun?.name || 'Workflow Logs'"></h3>
                                 <p class="text-gray-400 text-sm mt-1" x-text="($store.workflows.selectedRun?.type || 'unknown').toUpperCase() + ' | ' + ($store.workflows.selectedRun?.status || 'unknown').toUpperCase() + ' | ' + ($store.workflows.selectedRun?.progress || 0) + '% Complete'"></p>
                             </div>
-                            <button @click="$store.workflows.closeModal()" class="text-gray-400 hover:text-white">
-                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                                </svg>
-                            </button>
+                            <div class="flex items-center gap-4">
+                                <!-- Auto-scroll Toggle -->
+                                <button @click="$store.workflows.toggleAutoScroll()"
+                                    :class="$store.workflows.autoScroll ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-600 hover:bg-gray-500'"
+                                    class="px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path>
+                                    </svg>
+                                    <span x-text="$store.workflows.autoScroll ? 'Auto-scroll ON' : 'Auto-scroll OFF'"></span>
+                                </button>
+                                <!-- Close button -->
+                                <button @click="$store.workflows.closeModal()" class="text-gray-400 hover:text-white">
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                                    </svg>
+                                </button>
+                            </div>
                         </div>
 
                         <!-- Modal Body (Logs) -->
-                        <div class="flex-1 overflow-y-auto p-6">
+                        <div id="workflow-logs-container" class="flex-1 overflow-y-auto p-6">
                             <div class="font-mono text-sm space-y-2">
                                 <template x-if="!$store.workflows.selectedRun?.logs || $store.workflows.selectedRun?.logs.length === 0">
                                     <p class="text-gray-400">No logs available yet.</p>
@@ -669,6 +681,7 @@ sudo ./velociraptor service start</code></pre>
                                         </label>
                                         <div class="ml-6 mb-3 text-xs text-gray-500">
                                             <p>Limit artifact results to events within a specific time window (reduces noise for LLM analysis)</p>
+                                            <p class="mt-1 text-yellow-500/80">Times are in UTC+0. Israel is UTC+2 (winter) / UTC+3 (summer DST).</p>
                                         </div>
 
                                         <div id="forensics-time-filter-details" class="hidden ml-6 space-y-4">
@@ -702,35 +715,76 @@ sudo ./velociraptor service start</code></pre>
                                             </div>
 
                                             <!-- Between Dates Options -->
-                                            <div id="time-filter-between" class="hidden space-y-3">
-                                                <!-- Date Range Inputs with Calendar Picker -->
-                                                <div class="flex items-center gap-3">
-                                                    <div class="flex-1">
-                                                        <label class="block text-xs text-gray-400 mb-1.5">From</label>
-                                                        <div class="relative">
-                                                            <input type="text" id="forensics-time-start" placeholder="Click to select..."
-                                                                class="flatpickr-input w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none" readonly>
+                                            <div id="time-filter-between" class="hidden space-y-4">
+                                                <!-- From Date/Time -->
+                                                <div>
+                                                    <label class="block text-xs text-gray-400 mb-2">From (UTC)</label>
+                                                    <div class="flex items-center gap-2">
+                                                        <div class="flex-1 relative">
+                                                            <input type="text" id="forensics-date-start" placeholder="Select date..."
+                                                                class="flatpickr-date w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none" readonly>
                                                             <span class="absolute left-3 top-1/2 -translate-y-1/2 text-purple-400 pointer-events-none">
                                                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
                                                             </span>
                                                         </div>
-                                                    </div>
-                                                    <div class="text-purple-400 mt-6">
-                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
-                                                    </div>
-                                                    <div class="flex-1">
-                                                        <label class="block text-xs text-gray-400 mb-1.5">To <span class="text-gray-500">(empty = now)</span></label>
-                                                        <div class="relative">
-                                                            <input type="text" id="forensics-time-end" placeholder="Click to select..."
-                                                                class="flatpickr-input w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none" readonly>
-                                                            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-purple-400 pointer-events-none">
-                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                                            </span>
-                                                        </div>
+                                                        <select id="forensics-time-start-hour" onchange="updateCombinedStartDateTime()"
+                                                            class="w-20 bg-gray-900 border border-gray-700 rounded-lg px-2 py-2.5 text-sm text-white cursor-pointer focus:border-purple-500 focus:outline-none text-center">
+                                                            <option value="00">00:00</option><option value="01">01:00</option><option value="02">02:00</option><option value="03">03:00</option>
+                                                            <option value="04">04:00</option><option value="05">05:00</option><option value="06">06:00</option><option value="07">07:00</option>
+                                                            <option value="08">08:00</option><option value="09">09:00</option><option value="10">10:00</option><option value="11">11:00</option>
+                                                            <option value="12">12:00</option><option value="13">13:00</option><option value="14">14:00</option><option value="15">15:00</option>
+                                                            <option value="16">16:00</option><option value="17">17:00</option><option value="18">18:00</option><option value="19">19:00</option>
+                                                            <option value="20">20:00</option><option value="21">21:00</option><option value="22">22:00</option><option value="23">23:00</option>
+                                                        </select>
                                                     </div>
                                                 </div>
+                                                <!-- Arrow -->
+                                                <div class="flex justify-center text-purple-400">
+                                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
+                                                </div>
+                                                <!-- To Date/Time -->
+                                                <div>
+                                                    <label class="block text-xs text-gray-400 mb-2">To (UTC) <span class="text-gray-500">- empty = now</span></label>
+                                                    <div class="flex items-center gap-2">
+                                                        <div class="flex-1 relative">
+                                                            <input type="text" id="forensics-date-end" placeholder="Select date..."
+                                                                class="flatpickr-date w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none" readonly>
+                                                            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-purple-400 pointer-events-none">
+                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                                            </span>
+                                                        </div>
+                                                        <select id="forensics-time-end-hour" onchange="updateCombinedEndDateTime()"
+                                                            class="w-20 bg-gray-900 border border-gray-700 rounded-lg px-2 py-2.5 text-sm text-white cursor-pointer focus:border-purple-500 focus:outline-none text-center">
+                                                            <option value="00">00:00</option><option value="01">01:00</option><option value="02">02:00</option><option value="03">03:00</option>
+                                                            <option value="04">04:00</option><option value="05">05:00</option><option value="06">06:00</option><option value="07">07:00</option>
+                                                            <option value="08">08:00</option><option value="09">09:00</option><option value="10">10:00</option><option value="11">11:00</option>
+                                                            <option value="12">12:00</option><option value="13">13:00</option><option value="14">14:00</option><option value="15">15:00</option>
+                                                            <option value="16">16:00</option><option value="17">17:00</option><option value="18">18:00</option><option value="19">19:00</option>
+                                                            <option value="20">20:00</option><option value="21">21:00</option><option value="22">22:00</option><option value="23">23:00</option>
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                                <!-- Hidden combined fields for JS -->
+                                                <input type="hidden" id="forensics-time-start">
+                                                <input type="hidden" id="forensics-time-end">
                                             </div>
                                         </div>
+                                    </div>
+
+                                    <!-- Severity Filter -->
+                                    <div class="border-t border-gray-700 pt-4 mt-2">
+                                        <label class="block text-sm font-medium text-gray-300 mb-2">Minimum Severity Level</label>
+                                        <div class="ml-0 mb-2 text-xs text-gray-500">
+                                            <p>Filter artifact results by severity before sending to LLM (selected level and above)</p>
+                                        </div>
+                                        <select id="forensics-min-severity"
+                                            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none">
+                                            <option value="informational">All (No Filter)</option>
+                                            <option value="low">Low</option>
+                                            <option value="medium" selected>Medium</option>
+                                            <option value="high">High</option>
+                                            <option value="critical">Critical</option>
+                                        </select>
                                     </div>
 
                                     <!-- Data Anonymization -->
@@ -742,6 +796,7 @@ sudo ./velociraptor service start</code></pre>
                                         </label>
                                         <div class="ml-6 mb-3 text-xs text-gray-500 space-y-1">
                                             <p><strong class="text-gray-400">How it works:</strong> Sensitive data is replaced with fake values before sending to LLM, then restored in the final report.</p>
+                                            <p class="mt-1"><strong class="text-gray-400">Auto-detected:</strong> IPs, emails, usernames, hostnames, domains, user paths (C:\Users\xxx), credentials/API keys</p>
                                         </div>
                                         <div id="forensics-anonymize-details" class="hidden ml-6">
                                             <label class="block text-xs text-gray-400 mb-1">Custom patterns to mask (one per line)</label>
@@ -1735,8 +1790,8 @@ sudo ./velociraptor service start</code></pre>
     <script src="js/app.js?v=2"></script>
     <script src="js/velociraptor.js?v=2"></script>
     <script src="js/blueprints.js?v=3"></script>
-    <!-- tus resumable upload protocol -->
-    <script src="https://cdn.jsdelivr.net/npm/tus-js-client@4.1.0/dist/tus.min.js"></script>
+    <!-- tus resumable upload protocol (local) -->
+    <script src="vendor/tus/tus.min.js"></script>
     <script src="js/upload.js"></script>
     <script src="js/timesketch.js"></script>
     <script src="js/agentic.js"></script>

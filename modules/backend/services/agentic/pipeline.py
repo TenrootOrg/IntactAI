@@ -28,7 +28,8 @@ from services.agentic.utils import extract_timeline_events, filter_malicious_eve
 
 def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, llm_config,
                          report_types=None, anonymize_data=False, custom_patterns=None,
-                         import_to_iris=False, iris_case_name=None, time_filter=None):
+                         import_to_iris=False, iris_case_name=None, time_filter=None,
+                         min_severity='informational'):
     """Background thread: full agentic forensics pipeline
     Args:
         report_types: List of report types to generate: ['technical'], or None for both
@@ -37,6 +38,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         import_to_iris: If True, import timeline events and IOCs to IRIS after report generation
         iris_case_name: Optional custom name for the IRIS case (auto-generated if not provided)
         time_filter: Optional time filter config: {enabled, mode, relative_range/start_datetime/end_datetime}
+        min_severity: Minimum severity level to send to LLM (informational, low, medium, high, critical)
     """
     if report_types is None:
         report_types = ['technical']  # Default: both reports
@@ -110,9 +112,11 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
 
         # 3. Stream collect and analyze - monitors flows, retrieves results as available, runs LLM in parallel
         add_log_to_run(run_id, f"[Velociraptor] Collecting data for up to {collection_minutes} minutes (streaming analysis)...", "info")
+        if min_severity != 'informational':
+            add_log_to_run(run_id, f"[Pipeline] Severity filter active: {min_severity}+ only", "info")
         _update_phase(run_id, "collecting", 10)
         all_results, artifact_summaries, timed_out = stream_collect_and_analyze(
-            run_id, success_collections, artifacts, collection_minutes, llm_config, anonymizer, _update_phase
+            run_id, success_collections, artifacts, collection_minutes, llm_config, anonymizer, _update_phase, min_severity
         )
 
         # 4. Cancel any remaining collections ONLY if we timed out
@@ -165,10 +169,10 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                 if not iris_case_name:
                     iris_case_name = f"Agentic Analysis - {blueprint.get('name', 'Unknown')} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
-                # Extract timeline events and filter for malicious activity only
+                # Extract timeline events (already severity-filtered from collection)
                 all_events = extract_timeline_events(all_results, include_no_timestamp=True)
                 timeline_events = filter_malicious_events(all_events)
-                add_log_to_run(run_id, f"[IRIS] Filtered {len(all_events)} -> {len(timeline_events)} malicious events for IRIS", "info")
+                add_log_to_run(run_id, f"[IRIS] Extracted {len(timeline_events)} events for timeline", "info")
 
                 # Get technical report for IOC extraction
                 technical_report = ""
@@ -239,7 +243,8 @@ def _update_phase(run_id, phase, progress):
 
 def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                              report_types=None, anonymize_data=False, custom_patterns=None,
-                             import_to_iris=False, iris_case_name=None, time_filter=None):
+                             import_to_iris=False, iris_case_name=None, time_filter=None,
+                             min_severity='informational'):
     """Run AI analysis on an existing Velociraptor flow or hunt (skip collection step)
 
     Args:
@@ -253,6 +258,7 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         import_to_iris: If True, import to IRIS after analysis
         iris_case_name: Optional custom IRIS case name
         time_filter: Optional time filter for post-collection filtering
+        min_severity: Minimum severity level to send to LLM (informational, low, medium, high, critical)
     """
     if report_types is None:
         report_types = ['technical']
@@ -300,6 +306,22 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
             all_results = filter_results_by_time(all_results, time_filter, run_id)
             total_rows = sum(len(rows) for rows in all_results.values())
             add_log_to_run(run_id, f"[Pipeline] Time filter: {before_filter} -> {total_rows} rows", "info")
+
+        # Apply severity filtering before LLM analysis
+        if min_severity != 'informational':
+            from services.agentic.collectors import filter_by_severity
+            add_log_to_run(run_id, f"[Pipeline] Severity filter active: {min_severity}+ only", "info")
+            before_filter = total_rows
+            filtered_results = {}
+            for source_name, rows in all_results.items():
+                filtered_rows = filter_by_severity(rows, min_severity)
+                if filtered_rows:
+                    filtered_results[source_name] = filtered_rows
+                    if len(filtered_rows) < len(rows):
+                        add_log_to_run(run_id, f"[Filter] {source_name}: {len(rows)} -> {len(filtered_rows)} rows", "info")
+            all_results = filtered_results
+            total_rows = sum(len(rows) for rows in all_results.values())
+            add_log_to_run(run_id, f"[Pipeline] Severity filter: {before_filter} -> {total_rows} rows", "info")
 
         add_log_to_run(run_id, f"[Pipeline] Client info: {len(client_info)} clients", "info")
 
@@ -353,9 +375,10 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                 from services.iris_service import import_to_iris as iris_import
                 from config import IRIS_CONFIG
 
+                # Extract timeline events (already severity-filtered above)
                 all_events = extract_timeline_events(all_results, include_no_timestamp=True)
                 timeline_events = filter_malicious_events(all_events)
-                add_log_to_run(run_id, f"[IRIS] Filtered {len(all_events)} -> {len(timeline_events)} malicious events for IRIS", "info")
+                add_log_to_run(run_id, f"[IRIS] Extracted {len(timeline_events)} events for timeline", "info")
 
                 if not iris_case_name:
                     iris_case_name = f"Agentic Analysis - {collection_type.title()} {collection_id} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"

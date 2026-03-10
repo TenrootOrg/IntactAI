@@ -73,6 +73,12 @@ def start_agentic_run():
         # Time filter options (handle null from frontend)
         time_filter = data.get('time_filter') or {}
 
+        # Severity filter (post-collection, before LLM)
+        min_severity = data.get('min_severity', 'informational')
+        valid_severities = ['informational', 'low', 'medium', 'high', 'critical']
+        if min_severity not in valid_severities:
+            min_severity = 'informational'
+
         # Validate
         if not blueprint_id:
             return jsonify({"error": "blueprint_id is required"}), 400
@@ -132,10 +138,12 @@ def start_agentic_run():
                 "import_to_iris": import_to_iris,
                 "iris_case_name": iris_case_name,
                 "time_filter": time_filter if time_filter.get('enabled') else None,
+                "min_severity": min_severity,
                 "phase": "starting"
             }
         )
 
+        severity_info = f", min_severity={min_severity}" if min_severity != 'informational' else ""
         anonymize_info = f", anonymize={anonymize_data}" if anonymize_data else ""
         iris_info = f", iris={import_to_iris}" if import_to_iris else ""
         time_filter_info = ""
@@ -145,14 +153,14 @@ def start_agentic_run():
                 time_filter_info = f", time_filter=relative({time_filter.get('relative_range', '7d')})"
             else:
                 time_filter_info = f", time_filter=between"
-        print(f"[AGENTIC] Starting pipeline: run_id={run_id}, reports={report_types}{anonymize_info}{iris_info}{time_filter_info}", flush=True)
+        print(f"[AGENTIC] Starting pipeline: run_id={run_id}, reports={report_types}{severity_info}{anonymize_info}{iris_info}{time_filter_info}", flush=True)
 
         # Start pipeline in background thread
         time_filter_arg = time_filter if time_filter.get('enabled') else None
         thread = threading.Thread(
             target=run_agentic_pipeline,
             args=(run_id, blueprint_id, client_ids, collection_minutes, llm_config, report_types,
-                  anonymize_data, custom_patterns, import_to_iris, iris_case_name, time_filter_arg),
+                  anonymize_data, custom_patterns, import_to_iris, iris_case_name, time_filter_arg, min_severity),
             daemon=True
         )
         thread.start()
@@ -184,6 +192,12 @@ def analyze_existing_collection():
         iris_case_name = data.get('iris_case_name', '')
         time_filter = data.get('time_filter') or {}  # Handle null from frontend
 
+        # Severity filter (post-collection, before LLM)
+        min_severity = data.get('min_severity', 'informational')
+        valid_severities = ['informational', 'low', 'medium', 'high', 'critical']
+        if min_severity not in valid_severities:
+            min_severity = 'informational'
+
         # Validate - need either flow_id or hunt_id
         if not flow_id and not hunt_id:
             return jsonify({"error": "Either flow_id or hunt_id is required"}), 400
@@ -214,11 +228,13 @@ def analyze_existing_collection():
                 "import_to_iris": import_to_iris,
                 "iris_case_name": iris_case_name,
                 "time_filter": time_filter if time_filter.get('enabled') else None,
+                "min_severity": min_severity,
                 "phase": "starting",
                 "analyze_existing": True
             }
         )
 
+        severity_info = f", min_severity={min_severity}" if min_severity != 'informational' else ""
         time_filter_info = ""
         if time_filter.get('enabled'):
             mode = time_filter.get('mode', 'relative')
@@ -226,14 +242,14 @@ def analyze_existing_collection():
                 time_filter_info = f", time_filter=relative({time_filter.get('relative_range', '7d')})"
             else:
                 time_filter_info = f", time_filter=between"
-        print(f"[AGENTIC] Starting analysis on existing {collection_type}: {collection_id}, run_id={run_id}{time_filter_info}", flush=True)
+        print(f"[AGENTIC] Starting analysis on existing {collection_type}: {collection_id}, run_id={run_id}{severity_info}{time_filter_info}", flush=True)
 
         # Start pipeline in background thread
         time_filter_arg = time_filter if time_filter.get('enabled') else None
         thread = threading.Thread(
             target=run_agentic_on_existing,
             args=(run_id, flow_id, hunt_id, llm_config, report_types,
-                  anonymize_data, custom_patterns, import_to_iris, iris_case_name, time_filter_arg),
+                  anonymize_data, custom_patterns, import_to_iris, iris_case_name, time_filter_arg, min_severity),
             daemon=True
         )
         thread.start()

@@ -689,94 +689,6 @@ def add_assets(case_id: int, clients: List[dict], iris_config: dict,
     return imported_count, asset_cache
 
 
-def add_case_note(case_id: int, note_title: str, note_content: str,
-                  iris_config: dict, api_key: str, logger: Callable = None) -> bool:
-    """Add a note to an IRIS case.
-
-    IRIS requires notes to be in a group, so we first create a group then add the note.
-
-    Args:
-        case_id: IRIS case ID
-        note_title: Title for the note
-        note_content: Markdown content for the note
-        iris_config: Configuration dict
-        api_key: API key for authentication
-        logger: Optional callback function
-
-    Returns:
-        True if successful, False otherwise
-    """
-    def log(message, level="info"):
-        print(f"[IRIS] {message}", flush=True)
-        if logger:
-            try:
-                logger(f"[IRIS] {message}", level)
-            except:
-                pass
-
-    log(f"Adding note to case {case_id}: {note_title}")
-
-    # Step 1: Create a notes group first
-    group_data = {
-        "group_title": "Forensic Analysis Reports"
-    }
-
-    group_response = _make_iris_request(
-        method="POST",
-        endpoint=f"/case/notes/groups/add?cid={case_id}",
-        iris_config=iris_config,
-        api_key=api_key,
-        data=group_data,
-        logger=None
-    )
-
-    group_id = None
-    if group_response and group_response.get('status') == 'success':
-        group_id = group_response.get('data', {}).get('group_id')
-        log(f"Created notes group with ID: {group_id}")
-    else:
-        # Try to get existing groups
-        list_response = _make_iris_request(
-            method="GET",
-            endpoint=f"/case/notes/groups/list?cid={case_id}",
-            iris_config=iris_config,
-            api_key=api_key,
-            logger=None
-        )
-        if list_response and list_response.get('status') == 'success':
-            groups = list_response.get('data', {}).get('groups', [])
-            if groups:
-                group_id = groups[0].get('group_id')
-                log(f"Using existing notes group: {group_id}")
-
-    if not group_id:
-        log("Failed to create or find notes group", "warning")
-        return False
-
-    # Step 2: Add the note to the group
-    note_data = {
-        "note_title": note_title,
-        "note_content": note_content,
-        "group_id": group_id
-    }
-
-    response = _make_iris_request(
-        method="POST",
-        endpoint=f"/case/notes/add?cid={case_id}",
-        iris_config=iris_config,
-        api_key=api_key,
-        data=note_data,
-        logger=None
-    )
-
-    if response and response.get('status') == 'success':
-        log(f"Note added successfully: {note_title}", "success")
-        return True
-    else:
-        log(f"Failed to add note: {note_title}", "warning")
-        return False
-
-
 def import_to_iris(run_id: str, case_name: str, timeline_events: List[dict],
                    technical_report: str, iris_config: dict,
                    clients: List[dict] = None, blueprint_name: str = None,
@@ -889,12 +801,6 @@ This case was automatically created by the MSSP Agentic Analysis module using Ve
             if iocs:
                 log(f"Found {len(iocs)} IOCs in technical report")
                 result['iocs_imported'] = add_iocs(case_id, iocs, iris_config, api_key, logger)
-
-        # 6. Add technical report as case note
-        if technical_report:
-            note_title = f"Forensic Analysis Report - {blueprint_name or 'Agentic'}"
-            add_case_note(case_id, note_title, technical_report, iris_config, api_key, logger)
-            result['note_added'] = True
 
         result['success'] = True
         log(f"IRIS import complete! Case URL: {result['case_url']}", "success")
