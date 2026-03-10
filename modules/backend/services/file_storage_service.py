@@ -497,10 +497,8 @@ def delete_offline_collector_config(config_id: str) -> bool:
 # ============================================================================
 
 # Blueprint type configurations
-# Note: velociraptor and agentic now share the same table (both are Velociraptor artifact blueprints)
 _BLUEPRINT_CONFIGS = {
     'velociraptor': {'table': 'blueprints_velociraptor', 'has_artifacts': True, 'json_fields': ['artifacts', 'settings']},
-    'agentic': {'table': 'blueprints_velociraptor', 'has_artifacts': True, 'json_fields': ['artifacts', 'settings']},  # Same table
     'timesketch': {'table': 'blueprints_timesketch', 'has_artifacts': False, 'json_fields': ['settings']},
 }
 
@@ -610,20 +608,20 @@ def delete_velociraptor_blueprint(blueprint_id: str) -> bool:
 
 
 # ============================================================================
-# Agentic Blueprint Storage (wrappers for backwards compatibility)
+# Agentic Blueprint Storage (aliases to velociraptor - same blueprints)
 # ============================================================================
 
 def save_agentic_blueprint(blueprint_data: Dict[str, Any]) -> bool:
-    return _save_blueprint('agentic', blueprint_data)
+    return save_velociraptor_blueprint(blueprint_data)
 
 def load_agentic_blueprints() -> List[Dict[str, Any]]:
-    return _load_blueprints('agentic')
+    return load_velociraptor_blueprints()
 
 def get_agentic_blueprint(blueprint_id: str) -> Optional[Dict[str, Any]]:
-    return _get_blueprint('agentic', blueprint_id)
+    return get_velociraptor_blueprint(blueprint_id)
 
 def delete_agentic_blueprint(blueprint_id: str) -> bool:
-    return _delete_blueprint('agentic', blueprint_id)
+    return delete_velociraptor_blueprint(blueprint_id)
 
 
 # ============================================================================
