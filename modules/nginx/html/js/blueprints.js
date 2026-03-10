@@ -170,17 +170,18 @@ async function renderBlueprintsList() {
     const container = document.getElementById('blueprints-list');
     if (!container) return;
 
-    // Load all blueprint types (velociraptor, agentic, timesketch)
-    const veloBp = await loadBlueprints('velociraptor');
-    const agenticBp = await loadBlueprints('agentic');
+    // Load unified forensics blueprints (velociraptor + agentic combined) and timesketch
+    const forensicsBp = await loadBlueprints('forensics');
     const timesketchBp = await loadBlueprints('timesketch');
 
     // Combine all blueprints with type info and cache them
-    // Both velociraptor and agentic are under 'velociraptor' type for filtering
-    // The [Velociraptor] or [Agentic] prefix in the name distinguishes them
+    // Forensics blueprints have blueprint_type set by API (velociraptor or agentic based on name)
     allBlueprintsCache = [
-        ...veloBp.map(bp => ({ ...bp, _type: 'velociraptor', _actualType: 'velociraptor' })),
-        ...agenticBp.map(bp => ({ ...bp, _type: 'velociraptor', _actualType: 'agentic' })),
+        ...forensicsBp.map(bp => ({
+            ...bp,
+            _type: 'velociraptor',
+            _actualType: bp.blueprint_type || (bp.name?.includes('[Agentic]') ? 'agentic' : 'velociraptor')
+        })),
         ...timesketchBp.map(bp => ({ ...bp, _type: 'timesketch', _actualType: 'timesketch' }))
     ];
 
