@@ -303,6 +303,33 @@ def _migrate_from_json():
         print("[STORAGE] JSON to SQLite migration complete", flush=True)
 
 
+def _migrate_agentic_to_velociraptor():
+    """Merge blueprints_agentic into blueprints_velociraptor (they share same schema)"""
+    conn = _get_connection()
+    try:
+        # Check if agentic table exists and has data
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='blueprints_agentic'")
+        if not cursor.fetchone():
+            return  # Table doesn't exist, nothing to migrate
+
+        # Get count of agentic blueprints
+        count = conn.execute("SELECT COUNT(*) FROM blueprints_agentic").fetchone()[0]
+        if count == 0:
+            return  # No data to migrate
+
+        # Copy agentic blueprints to velociraptor table (INSERT OR IGNORE to skip duplicates)
+        conn.execute("""
+            INSERT OR IGNORE INTO blueprints_velociraptor
+            (id, name, description, is_default, artifacts, settings, created_at, updated_at)
+            SELECT id, name, description, is_default, artifacts, settings, created_at, updated_at
+            FROM blueprints_agentic
+        """)
+        conn.commit()
+        print(f"[STORAGE] Merged {count} agentic blueprints into velociraptor table", flush=True)
+    except Exception as e:
+        print(f"[STORAGE] Error merging agentic blueprints: {e}", flush=True)
+
+
 # ============================================================================
 # Init
 # ============================================================================
@@ -313,6 +340,7 @@ def init_storage():
         os.makedirs(STORAGE_BASE, exist_ok=True)
         _create_tables()
         _migrate_from_json()
+        _migrate_agentic_to_velociraptor()  # Merge agentic into velociraptor table
         return True
     except Exception as e:
         print(f"[STORAGE] Failed to initialize: {e}", flush=True)
@@ -469,9 +497,10 @@ def delete_offline_collector_config(config_id: str) -> bool:
 # ============================================================================
 
 # Blueprint type configurations
+# Note: velociraptor and agentic now share the same table (both are Velociraptor artifact blueprints)
 _BLUEPRINT_CONFIGS = {
     'velociraptor': {'table': 'blueprints_velociraptor', 'has_artifacts': True, 'json_fields': ['artifacts', 'settings']},
-    'agentic': {'table': 'blueprints_agentic', 'has_artifacts': True, 'json_fields': ['artifacts', 'settings']},
+    'agentic': {'table': 'blueprints_velociraptor', 'has_artifacts': True, 'json_fields': ['artifacts', 'settings']},  # Same table
     'timesketch': {'table': 'blueprints_timesketch', 'has_artifacts': False, 'json_fields': ['settings']},
 }
 
