@@ -2,8 +2,8 @@
  * Timesketch Module - Timesketch workflow management
  */
 
-// Store clients for filtering
-let timesketchClientsCache = [];
+// Client manager instance (uses shared utility)
+const timesketchClientManager = new ClientManager('timesketch-client-list', 'timesketch-client-checkbox');
 // Store blueprints cache
 let timesketchBlueprintsCache = [];
 
@@ -77,89 +77,11 @@ function getTimesketchBlueprintSettings() {
     };
 }
 
-// Populate TimeSketch client list
-async function populateTimeSketchClients() {
-    const container = document.getElementById('timesketch-client-list');
-
-    try {
-        const response = await fetch('/api/clients');
-        const data = await response.json();
-        const clients = data.items || [];
-
-        if (clients.length === 0) {
-            container.innerHTML = '<p class="text-sm text-gray-500">No clients available</p>';
-            return;
-        }
-
-        // Sort clients: online first, then by hostname
-        const now = Date.now() / 1000;
-        timesketchClientsCache = clients.sort((a, b) => {
-            const aLastSeen = a.last_seen_at ? a.last_seen_at / 1000000 : 0;
-            const bLastSeen = b.last_seen_at ? b.last_seen_at / 1000000 : 0;
-            const aOnline = (now - aLastSeen) < 600;
-            const bOnline = (now - bLastSeen) < 600;
-            if (aOnline && !bOnline) return -1;
-            if (!aOnline && bOnline) return 1;
-            return (a.hostname || '').localeCompare(b.hostname || '');
-        });
-
-        renderTimesketchClients(timesketchClientsCache);
-    } catch (error) {
-        container.innerHTML = `<p class="text-sm text-red-400">Error: ${error.message}</p>`;
-    }
-}
-
-// Render clients to container
-function renderTimesketchClients(clients, filter = '') {
-    const container = document.getElementById('timesketch-client-list');
-    const now = Date.now() / 1000;
-    const selectedIds = Array.from(document.querySelectorAll('.timesketch-client-checkbox:checked')).map(cb => cb.value);
-
-    // Filter by hostname if filter provided
-    const filtered = filter
-        ? clients.filter(c => (c.hostname || '').toLowerCase().includes(filter.toLowerCase()))
-        : clients;
-
-    if (filtered.length === 0) {
-        container.innerHTML = '<p class="text-sm text-gray-500">No clients match filter</p>';
-        return;
-    }
-
-    container.innerHTML = filtered.map(client => {
-        const lastSeen = client.last_seen_at ? client.last_seen_at / 1000000 : 0;
-        const isOnline = (now - lastSeen) < 600;
-        const wasSelected = selectedIds.includes(client.client_id);
-        const dot = isOnline
-            ? '<span class="inline-block w-2 h-2 bg-green-400 rounded-full"></span>'
-            : '<span class="inline-block w-2 h-2 bg-gray-500 rounded-full"></span>';
-
-        return `
-            <label class="flex items-center gap-3 p-2 rounded hover:bg-gray-800 cursor-pointer">
-                <input type="checkbox" class="timesketch-client-checkbox" value="${client.client_id}" data-hostname="${client.hostname || 'Unknown'}" ${wasSelected || (isOnline && !filter) ? 'checked' : ''}>
-                ${dot}
-                <div class="flex-1 min-w-0">
-                    <span class="text-sm text-white">${client.hostname || 'Unknown'}</span>
-                    <span class="text-xs text-gray-500 ml-2">${client.os || ''}</span>
-                </div>
-                <span class="text-xs text-gray-600 font-mono truncate">${client.client_id.substring(0, 12)}...</span>
-            </label>
-        `;
-    }).join('');
-}
-
-// Filter clients by search term
-function filterTimesketchClients(searchTerm) {
-    renderTimesketchClients(timesketchClientsCache, searchTerm);
-}
-
-// Select/deselect all visible clients
-function selectAllTimeSketchClients() {
-    document.querySelectorAll('.timesketch-client-checkbox').forEach(cb => cb.checked = true);
-}
-
-function deselectAllTimeSketchClients() {
-    document.querySelectorAll('.timesketch-client-checkbox').forEach(cb => cb.checked = false);
-}
+// Backwards-compatible wrapper functions for client management
+function populateTimeSketchClients() { timesketchClientManager.load(); }
+function filterTimesketchClients(searchTerm) { timesketchClientManager.filter(searchTerm); }
+function selectAllTimeSketchClients() { timesketchClientManager.selectAll(true); }
+function deselectAllTimeSketchClients() { timesketchClientManager.selectAll(false); }
 
 // Sketch mode toggle
 function toggleSketchMode() {

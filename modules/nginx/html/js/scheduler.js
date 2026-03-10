@@ -130,96 +130,14 @@ function renderScheduleCard(job) {
     </div>`;
 }
 
-// Store clients for filtering
-let schedulerClientsCache = [];
+// Client manager instance (uses shared utility)
+const schedulerClientManager = new ClientManager('schedule-client-list', 'schedule-client-cb');
 
-// Load clients for the modal
-async function loadSchedulerClients() {
-    const container = document.getElementById('schedule-client-list');
-
-    try {
-        const response = await fetch('/api/clients');
-        if (!response.ok) {
-            container.innerHTML = '<p class="text-sm text-red-400">Failed to load clients</p>';
-            return;
-        }
-
-        const data = await response.json();
-        const clients = data.items || [];
-
-        if (clients.length === 0) {
-            container.innerHTML = '<p class="text-sm text-gray-500">No clients found</p>';
-            return;
-        }
-
-        const now = Date.now() / 1000;
-        schedulerClientsCache = clients.sort((a, b) => {
-            const aOnline = (now - (a.last_seen_at ? a.last_seen_at / 1000000 : 0)) < 600;
-            const bOnline = (now - (b.last_seen_at ? b.last_seen_at / 1000000 : 0)) < 600;
-            if (aOnline && !bOnline) return -1;
-            if (!aOnline && bOnline) return 1;
-            return (a.hostname || '').localeCompare(b.hostname || '');
-        });
-
-        renderSchedulerClients(schedulerClientsCache);
-
-    } catch (error) {
-        container.innerHTML = `<p class="text-sm text-red-400">Error: ${error.message}</p>`;
-    }
-}
-
-// Render clients to container
-function renderSchedulerClients(clients, filter = '') {
-    const container = document.getElementById('schedule-client-list');
-    const now = Date.now() / 1000;
-    const selectedIds = getSelectedScheduleClients();
-
-    // Filter by hostname if filter provided
-    const filtered = filter
-        ? clients.filter(c => (c.hostname || '').toLowerCase().includes(filter.toLowerCase()))
-        : clients;
-
-    if (filtered.length === 0) {
-        container.innerHTML = '<p class="text-sm text-gray-500">No clients match filter</p>';
-        return;
-    }
-
-    container.innerHTML = filtered.map(client => {
-        const lastSeen = client.last_seen_at ? client.last_seen_at / 1000000 : 0;
-        const isOnline = (now - lastSeen) < 600;
-        const wasSelected = selectedIds.includes(client.client_id);
-        const dot = isOnline
-            ? '<span class="inline-block w-2 h-2 bg-green-400 rounded-full"></span>'
-            : '<span class="inline-block w-2 h-2 bg-gray-500 rounded-full"></span>';
-
-        return `
-            <label class="flex items-center gap-3 p-2 rounded hover:bg-gray-700 cursor-pointer">
-                <input type="checkbox" class="schedule-client-cb" value="${client.client_id}" ${wasSelected || (isOnline && !filter) ? 'checked' : ''}>
-                ${dot}
-                <div class="flex-1 min-w-0">
-                    <span class="text-sm text-white">${client.hostname || 'Unknown'}</span>
-                    <span class="text-xs text-gray-500 ml-2">${client.os || ''}</span>
-                </div>
-                <span class="text-xs text-gray-600 font-mono truncate">${client.client_id.substring(0, 12)}...</span>
-            </label>
-        `;
-    }).join('');
-}
-
-// Filter clients by search term
-function filterScheduleClients(searchTerm) {
-    renderSchedulerClients(schedulerClientsCache, searchTerm);
-}
-
-// Select/deselect all visible clients
-function selectAllScheduleClients(checked) {
-    document.querySelectorAll('.schedule-client-cb').forEach(cb => cb.checked = checked);
-}
-
-// Get selected client IDs
-function getSelectedScheduleClients() {
-    return Array.from(document.querySelectorAll('.schedule-client-cb:checked')).map(cb => cb.value);
-}
+// Backwards-compatible wrapper functions
+function loadSchedulerClients() { schedulerClientManager.load(); }
+function filterScheduleClients(searchTerm) { schedulerClientManager.filter(searchTerm); }
+function selectAllScheduleClients(checked) { schedulerClientManager.selectAll(checked); }
+function getSelectedScheduleClients() { return schedulerClientManager.getSelected(); }
 
 // Handle blueprint type change
 async function onScheduleBlueprintTypeChange() {
