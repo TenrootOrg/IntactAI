@@ -15,6 +15,25 @@ from services.velociraptor_service import setup_velociraptor_connection
 from services.workflow_service import add_log_to_run
 
 
+def get_vql_time_filter(start_iso, end_iso):
+    """Build a VQL WHERE clause for time filtering.
+
+    Args:
+        start_iso: Start time in ISO 8601 format (e.g., '2026-03-03T00:00:00Z')
+        end_iso: End time in ISO 8601 format
+
+    Returns:
+        VQL WHERE clause string or empty string if no filter needed
+    """
+    if not start_iso and not end_iso:
+        return ""
+
+    # Note: Time filtering in VQL depends on the artifact's timestamp field
+    # Most artifacts use _ts or EventTime, but this varies
+    # For now, return empty to avoid breaking queries - time filtering is done post-query
+    return ""
+
+
 def check_flow_status(stub, client_id, flow_id):
     """Check the status of a Velociraptor flow. Returns 'RUNNING', 'FINISHED', 'ERROR', or None."""
     try:

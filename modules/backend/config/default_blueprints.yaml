@@ -1,318 +1,273 @@
 # Default Blueprints Configuration
-# These blueprints are shipped with the platform and seeded on first startup.
-# To customize defaults, create override files in /data/blueprints/
+# Shipped with the platform and seeded on first startup.
+# To customize, create override files in /data/blueprints/
 #
-# Schema version for future migrations
 version: 1
 
 # ============================================================================
-# Reusable Artifact Lists (referenced with $name in blueprints)
-# ============================================================================
-artifact_lists:
-  # Velociraptor Best Practice - comprehensive IR triage (33 artifacts)
-  velociraptor_best_practice:
-    - Generic.Forensic.SQLiteHunter
-    - Windows.Analysis.EvidenceOfDownload
-    - Windows.NTFS.MFT
-    - Windows.Forensics.Usn
-    - Windows.Network.NetstatEnriched
-    - Windows.Nirsoft.LastActivityView
-    - Windows.Forensics.Lnk
-    - Generic.System.Pstree
-    - Windows.System.UntrustedBinaries
-    - Windows.Detection.Yara.Process
-    - Windows.EventLogs.RDPAuth
-    - Windows.Attack.UnexpectedImagePath
-    - Windows.Sys.AllUsers
-    - Windows.Registry.Sysinternals.Eulacheck
-    - DetectRaptor.Generic.Detection.YaraWebshell
-    - DetectRaptor.Windows.Detection.Amcache
-    - DetectRaptor.Windows.Detection.Applications
-    - DetectRaptor.Windows.Detection.BinaryRename
-    - DetectRaptor.Windows.Detection.Bootloaders
-    - DetectRaptor.Windows.Detection.Evtx
-    - DetectRaptor.Windows.Detection.HijackLibsEnv
-    - DetectRaptor.Windows.Detection.HijackLibsMFT
-    - DetectRaptor.Windows.Detection.LolDriversMalicious
-    - DetectRaptor.Windows.Detection.LolDriversVulnerable
-    - DetectRaptor.Windows.Detection.MFT
-    - DetectRaptor.Windows.Detection.NamedPipes
-    - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
-    - DetectRaptor.Windows.Detection.Powershell.PSReadline
-    - DetectRaptor.Windows.Detection.Webhistory
-    - DetectRaptor.Windows.Detection.YaraProcessWin
-    - DetectRaptor.Windows.Detection.ZoneIdentifier
-
-  # Agentic Test - APTSimulator detection artifacts (15 artifacts)
-  # Optimized for APTSimulator detection with actionable results
-  agentic_test:
-    # Process/Memory Analysis
-    - Generic.System.Pstree
-    - Windows.Detection.Malfind
-    # Credential Access & Renamed Tools
-    - DetectRaptor.Windows.Detection.BinaryRename
-    - Windows.System.UntrustedBinaries
-    # PowerShell/Script Execution
-    - DetectRaptor.Windows.Detection.Powershell.PSReadline
-    - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
-    # Persistence (Registry, Tasks)
-    - Windows.Forensics.PersistenceSniper
-    - Windows.System.TaskScheduler
-    # Program Execution History
-    - DetectRaptor.Windows.Detection.Amcache
-    - DetectRaptor.Windows.Detection.Applications
-    # C2 & Network
-    - Windows.System.DNSCache
-    # Sysinternals Tool Usage (PsExec, etc.)
-    - Windows.Registry.Sysinternals.Eulacheck
-    # Event Log Detections (Sigma rules)
-    - Windows.Hayabusa.Rules
-    # Authentication/Lateral Movement
-    - Windows.EventLogs.RDPAuth
-
-  # Agentic Quick Wins - fast detection scan (22 artifacts)
-  agentic_quick_wins:
-    # DetectRaptor detections
-    - DetectRaptor.Windows.Detection.Amcache
-    - DetectRaptor.Windows.Detection.NamedPipes
-    - DetectRaptor.Windows.Detection.BinaryRename
-    - DetectRaptor.Windows.Detection.LolDriversMalicious
-    - DetectRaptor.Windows.Detection.LolDriversVulnerable
-    - DetectRaptor.Windows.Detection.HijackLibsEnv
-    - DetectRaptor.Windows.Detection.YaraProcessWin
-    - DetectRaptor.Windows.Detection.Powershell.PSReadline
-    - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
-    - DetectRaptor.Windows.Detection.ZoneIdentifier
-    - DetectRaptor.Windows.Detection.Applications
-    - DetectRaptor.Generic.Detection.YaraWebshell
-    # Windows detections
-    - Windows.Detection.ISOMount
-    - Windows.Detection.Malfind
-    - Windows.Detection.PipeHunter
-    - Windows.Attack.UnexpectedImagePath
-    - Windows.System.UntrustedBinaries
-    - Windows.Registry.Sysinternals.Eulacheck
-    # Event log and persistence
-    - Windows.Hayabusa.Rules
-    - Windows.Forensics.PersistenceSniper
-    # System context
-    - Generic.System.Pstree
-
-  # Agentic Purple Team - detection artifacts with timestamps (10 artifacts)
-  agentic_purple_team:
-    # Core Sigma detection (timestamps + severity)
-    - Windows.Hayabusa.Rules                              # Sigma alerts - covers services, tasks, PS, etc.
-    # Memory & injection (CRITICAL for T1003 LSASS)
-    - Windows.Detection.Malfind                           # Memory injection, LSASS dump
-    # Lateral movement (full RDP visibility)
-    - Windows.EventLogs.RDPAuth                           # All RDP logins for forensic context
-    # DetectRaptor behavioral detections
-    - DetectRaptor.Windows.Detection.BinaryRename         # T1036 renamed binaries
-    - DetectRaptor.Windows.Detection.Powershell.PSReadline # Suspicious PS history
-    - DetectRaptor.Windows.Detection.Applications         # Suspicious applications
-    # Persistence & context
-    - Windows.System.TaskScheduler                        # Current scheduled tasks
-    - Windows.System.UntrustedBinaries                    # Unsigned executables
-    - Generic.System.Pstree                               # Process tree context
-    # Execution history
-    - Windows.Timeline.Prefetch.Improved                  # Program execution with timestamps
-
-  # Agentic Standard - full detection suite for LLM analysis (28 artifacts)
-  agentic_standard:
-    - DetectRaptor.Windows.Detection.Amcache
-    - DetectRaptor.Windows.Detection.NamedPipes
-    - DetectRaptor.Windows.Detection.BinaryRename
-    - DetectRaptor.Windows.Detection.Bootloaders
-    - DetectRaptor.Windows.Detection.Applications
-    - DetectRaptor.Windows.Detection.LolDriversMalicious
-    - DetectRaptor.Windows.Detection.LolDriversVulnerable
-    - DetectRaptor.Windows.Detection.HijackLibsEnv
-    - DetectRaptor.Windows.Detection.HijackLibsMFT
-    - DetectRaptor.Windows.Detection.Powershell.PSReadline
-    - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
-    - DetectRaptor.Windows.Detection.YaraProcessWin
-    - DetectRaptor.Windows.Detection.Webhistory
-    - DetectRaptor.Windows.Detection.ZoneIdentifier
-    - DetectRaptor.Generic.Detection.YaraWebshell
-    - Windows.Detection.Yara.Process
-    - Windows.Detection.ISOMount
-    - Windows.Detection.Malfind
-    - Windows.Detection.PipeHunter
-    - Windows.Detection.Keylogger
-    - Windows.Detection.WonkaVision
-    - Windows.Hayabusa.Rules
-    - Windows.Forensics.PersistenceSniper
-    - Windows.EventLogs.RDPAuth
-    - Windows.Attack.UnexpectedImagePath
-    - Windows.System.UntrustedBinaries
-    - Windows.Registry.Sysinternals.Eulacheck
-    - Generic.System.Pstree
-
-  # Velociraptor Quick Scan - fast detection-focused (12 artifacts)
-  velociraptor_quick_scan:
-    - DetectRaptor.Windows.Detection.Amcache
-    - DetectRaptor.Windows.Detection.NamedPipes
-    - DetectRaptor.Windows.Detection.BinaryRename
-    - DetectRaptor.Windows.Detection.Applications
-    - DetectRaptor.Windows.Detection.LolDriversMalicious
-    - DetectRaptor.Windows.Detection.YaraProcessWin
-    - Windows.System.DNSCache
-    - Windows.Network.NetstatEnriched
-    - Windows.System.UntrustedBinaries
-    - Windows.Attack.UnexpectedImagePath
-    - Windows.EventLogs.RDPAuth
-    - Generic.System.Pstree
-
-  # Velociraptor Full Collection - maximum forensic artifacts (50+ artifacts)
-  velociraptor_full_collection:
-    # Detection artifacts
-    - DetectRaptor.Windows.Detection.Amcache
-    - DetectRaptor.Windows.Detection.NamedPipes
-    - DetectRaptor.Windows.Detection.BinaryRename
-    - DetectRaptor.Windows.Detection.Bootloaders
-    - DetectRaptor.Windows.Detection.Applications
-    - DetectRaptor.Windows.Detection.Evtx
-    - DetectRaptor.Windows.Detection.HijackLibsEnv
-    - DetectRaptor.Windows.Detection.HijackLibsMFT
-    - DetectRaptor.Windows.Detection.LolDriversMalicious
-    - DetectRaptor.Windows.Detection.LolDriversVulnerable
-    - DetectRaptor.Windows.Detection.MFT
-    - DetectRaptor.Windows.Detection.NamedPipes
-    - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
-    - DetectRaptor.Windows.Detection.Powershell.PSReadline
-    - DetectRaptor.Windows.Detection.Webhistory
-    - DetectRaptor.Windows.Detection.YaraProcessWin
-    - DetectRaptor.Windows.Detection.ZoneIdentifier
-    - DetectRaptor.Generic.Detection.YaraWebshell
-    # Forensic artifacts
-    - Generic.Forensic.SQLiteHunter
-    - Generic.System.Pstree
-    - Windows.NTFS.MFT
-    - Windows.Forensics.Usn
-    - Windows.Forensics.Prefetch
-    - Windows.Forensics.SRUM
-    - Windows.Forensics.Shellbags
-    - Windows.Forensics.RecycleBin
-    - Windows.Forensics.JumpLists
-    - Windows.Forensics.RecentApps
-    - Windows.Forensics.Timeline
-    - Windows.Forensics.SAM
-    - Windows.Forensics.Lnk
-    - Windows.Forensics.Bam
-    # Registry artifacts
-    - Windows.Registry.AppCompatCache
-    - Windows.Registry.UserAssist
-    - Windows.Registry.Sysinternals.Eulacheck
-    - Windows.Registry.RecentDocs
-    # Event logs
-    - Windows.EventLogs.RDPAuth
-    - Windows.EventLogs.PowershellScriptblock
-    - Windows.EventLogs.ScheduledTasks
-    - Windows.EventLogs.Evtx
-    # System artifacts
-    - Windows.System.Amcache
-    - Windows.System.DNSCache
-    - Windows.System.UntrustedBinaries
-    - Windows.System.Services
-    - Windows.System.TaskScheduler
-    - Windows.Sysinternals.Autoruns
-    # Network
-    - Windows.Network.NetstatEnriched
-    - Windows.Network.ArpCache
-    # Applications
-    - Windows.Applications.Chrome.History
-    - Windows.Applications.Edge.History
-    - Windows.Analysis.EvidenceOfDownload
-    - Windows.Nirsoft.LastActivityView
-    # Attack detection
-    - Windows.Attack.UnexpectedImagePath
-    - Windows.Detection.Yara.Process
-    - Windows.Sys.AllUsers
-
-# ============================================================================
-# Reusable Settings Templates
-# ============================================================================
-default_settings:
-  standard:
-    hunt_expiry: 120
-    timeout: 3600
-    cpu_limit: 90
-
-  quick:
-    hunt_expiry: 120
-    timeout: 120
-    cpu_limit: 90
-
-  timesketch_default:
-    plaso_workers: 2
-    plaso_hasher: "none"
-    plaso_hasher_size: 100
-    collection_timeout: 10000
-
-# ============================================================================
-# Velociraptor Blueprints
+# Velociraptor Blueprints (includes Agentic)
 # ============================================================================
 velociraptor:
+
+  # --------------------------------------------------------------------------
+  # VELOCIRAPTOR BLUEPRINTS
+  # --------------------------------------------------------------------------
+
   - id: velociraptor_quick_scan
-    name: "[Velociraptor] Quick Scan"
-    description: "Fast detection-focused scan for rapid assessment"
+    name: "Quick Scan"
+    description: "Fast detection-focused scan for rapid assessment (12 artifacts)"
     is_default: true
-    artifacts: $velociraptor_quick_scan
-    settings: $quick
+    settings:
+      hunt_expiry: 120
+      timeout: 120
+      cpu_limit: 90
+    artifacts:
+      - DetectRaptor.Windows.Detection.Amcache
+      - DetectRaptor.Windows.Detection.NamedPipes
+      - DetectRaptor.Windows.Detection.BinaryRename
+      - DetectRaptor.Windows.Detection.Applications
+      - DetectRaptor.Windows.Detection.LolDriversMalicious
+      - DetectRaptor.Windows.Detection.YaraProcessWin
+      - Windows.System.DNSCache
+      - Windows.Network.NetstatEnriched
+      - Windows.System.UntrustedBinaries
+      - Windows.Attack.UnexpectedImagePath
+      - Windows.EventLogs.RDPAuth
+      - Generic.System.Pstree
 
   - id: velociraptor_best_practice
-    name: "[Velociraptor] BestPractice"
-    description: "Curated best-practice artifact collection for thorough IR triage"
+    name: "BestPractice"
+    description: "Curated best-practice artifact collection for thorough IR triage (31 artifacts)"
     is_default: true
-    artifacts: $velociraptor_best_practice
-    settings: $standard
+    settings:
+      hunt_expiry: 120
+      timeout: 3600
+      cpu_limit: 90
+    artifacts:
+      - Generic.Forensic.SQLiteHunter
+      - Windows.Analysis.EvidenceOfDownload
+      - Windows.NTFS.MFT
+      - Windows.Forensics.Usn
+      - Windows.Network.NetstatEnriched
+      - Windows.Nirsoft.LastActivityView
+      - Windows.Forensics.Lnk
+      - Generic.System.Pstree
+      - Windows.System.UntrustedBinaries
+      - Windows.Detection.Yara.Process
+      - Windows.EventLogs.RDPAuth
+      - Windows.Attack.UnexpectedImagePath
+      - Windows.Sys.AllUsers
+      - Windows.Registry.Sysinternals.Eulacheck
+      - DetectRaptor.Generic.Detection.YaraWebshell
+      - DetectRaptor.Windows.Detection.Amcache
+      - DetectRaptor.Windows.Detection.Applications
+      - DetectRaptor.Windows.Detection.BinaryRename
+      - DetectRaptor.Windows.Detection.Bootloaders
+      - DetectRaptor.Windows.Detection.Evtx
+      - DetectRaptor.Windows.Detection.HijackLibsEnv
+      - DetectRaptor.Windows.Detection.HijackLibsMFT
+      - DetectRaptor.Windows.Detection.LolDriversMalicious
+      - DetectRaptor.Windows.Detection.LolDriversVulnerable
+      - DetectRaptor.Windows.Detection.MFT
+      - DetectRaptor.Windows.Detection.NamedPipes
+      - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
+      - DetectRaptor.Windows.Detection.Powershell.PSReadline
+      - DetectRaptor.Windows.Detection.Webhistory
+      - DetectRaptor.Windows.Detection.YaraProcessWin
+      - DetectRaptor.Windows.Detection.ZoneIdentifier
 
   - id: velociraptor_full_collection
-    name: "[Velociraptor] Full Collection"
-    description: "Maximum artifact collection for deep forensic analysis"
+    name: "Full Collection"
+    description: "Maximum artifact collection for deep forensic analysis (55 artifacts)"
     is_default: true
-    artifacts: $velociraptor_full_collection
     settings:
       hunt_expiry: 180
       timeout: 7200
       cpu_limit: 90
+    artifacts:
+      # Detection
+      - DetectRaptor.Windows.Detection.Amcache
+      - DetectRaptor.Windows.Detection.NamedPipes
+      - DetectRaptor.Windows.Detection.BinaryRename
+      - DetectRaptor.Windows.Detection.Bootloaders
+      - DetectRaptor.Windows.Detection.Applications
+      - DetectRaptor.Windows.Detection.Evtx
+      - DetectRaptor.Windows.Detection.HijackLibsEnv
+      - DetectRaptor.Windows.Detection.HijackLibsMFT
+      - DetectRaptor.Windows.Detection.LolDriversMalicious
+      - DetectRaptor.Windows.Detection.LolDriversVulnerable
+      - DetectRaptor.Windows.Detection.MFT
+      - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
+      - DetectRaptor.Windows.Detection.Powershell.PSReadline
+      - DetectRaptor.Windows.Detection.Webhistory
+      - DetectRaptor.Windows.Detection.YaraProcessWin
+      - DetectRaptor.Windows.Detection.ZoneIdentifier
+      - DetectRaptor.Generic.Detection.YaraWebshell
+      # Forensic
+      - Generic.Forensic.SQLiteHunter
+      - Generic.System.Pstree
+      - Windows.NTFS.MFT
+      - Windows.Forensics.Usn
+      - Windows.Forensics.Prefetch
+      - Windows.Forensics.SRUM
+      - Windows.Forensics.Shellbags
+      - Windows.Forensics.RecycleBin
+      - Windows.Forensics.JumpLists
+      - Windows.Forensics.RecentApps
+      - Windows.Forensics.Timeline
+      - Windows.Forensics.SAM
+      - Windows.Forensics.Lnk
+      - Windows.Forensics.Bam
+      # Registry
+      - Windows.Registry.AppCompatCache
+      - Windows.Registry.UserAssist
+      - Windows.Registry.Sysinternals.Eulacheck
+      - Windows.Registry.RecentDocs
+      # Event logs
+      - Windows.EventLogs.RDPAuth
+      - Windows.EventLogs.ScheduledTasks
+      - Windows.EventLogs.Evtx
+      # System
+      - Windows.System.Amcache
+      - Windows.System.DNSCache
+      - Windows.System.UntrustedBinaries
+      - Windows.System.Services
+      - Windows.System.TaskScheduler
+      - Windows.Sysinternals.Autoruns
+      # Network
+      - Windows.Network.NetstatEnriched
+      - Windows.Network.ArpCache
+      # Applications
+      - Windows.Applications.Chrome.History
+      - Windows.Applications.Edge.History
+      - Windows.Analysis.EvidenceOfDownload
+      - Windows.Nirsoft.LastActivityView
+      # Attack detection
+      - Windows.Attack.UnexpectedImagePath
+      - Windows.Detection.Yara.Process
+      - Windows.Sys.AllUsers
 
-# ============================================================================
-# Agentic Blueprints
-# ============================================================================
-agentic:
+  # --------------------------------------------------------------------------
+  # AGENTIC BLUEPRINTS (LLM-optimized detection)
+  # --------------------------------------------------------------------------
+
   - id: agentic_test
     name: "[Agentic] Test (Quick)"
-    description: "Fast test - forensically interesting artifacts that run in seconds"
+    description: "Fast test - forensically interesting artifacts that run in seconds (14 artifacts)"
     is_default: true
-    artifacts: $agentic_test
-    settings: $quick
+    settings:
+      hunt_expiry: 120
+      timeout: 120
+      cpu_limit: 90
+    artifacts:
+      - Generic.System.Pstree
+      - Windows.Detection.Malfind
+      - DetectRaptor.Windows.Detection.BinaryRename
+      - Windows.System.UntrustedBinaries
+      - DetectRaptor.Windows.Detection.Powershell.PSReadline
+      - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
+      - Windows.Forensics.PersistenceSniper
+      - Windows.System.TaskScheduler
+      - DetectRaptor.Windows.Detection.Amcache
+      - DetectRaptor.Windows.Detection.Applications
+      - Windows.System.DNSCache
+      - Windows.Registry.Sysinternals.Eulacheck
+      - Windows.Hayabusa.Rules
+      - Windows.EventLogs.RDPAuth
 
   - id: agentic_quick_wins
     name: "[Agentic] Quick Wins"
-    description: "Fast detection-focused scan with low data output"
+    description: "Fast detection-focused scan with low data output (21 artifacts)"
     is_default: true
-    artifacts: $agentic_quick_wins
-    settings: $quick
+    settings:
+      hunt_expiry: 120
+      timeout: 120
+      cpu_limit: 90
+    artifacts:
+      - DetectRaptor.Windows.Detection.Amcache
+      - DetectRaptor.Windows.Detection.NamedPipes
+      - DetectRaptor.Windows.Detection.BinaryRename
+      - DetectRaptor.Windows.Detection.LolDriversMalicious
+      - DetectRaptor.Windows.Detection.LolDriversVulnerable
+      - DetectRaptor.Windows.Detection.HijackLibsEnv
+      - DetectRaptor.Windows.Detection.YaraProcessWin
+      - DetectRaptor.Windows.Detection.Powershell.PSReadline
+      - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
+      - DetectRaptor.Windows.Detection.ZoneIdentifier
+      - DetectRaptor.Windows.Detection.Applications
+      - DetectRaptor.Generic.Detection.YaraWebshell
+      - Windows.Detection.ISOMount
+      - Windows.Detection.Malfind
+      - Windows.Detection.PipeHunter
+      - Windows.Attack.UnexpectedImagePath
+      - Windows.System.UntrustedBinaries
+      - Windows.Registry.Sysinternals.Eulacheck
+      - Windows.Hayabusa.Rules
+      - Windows.Forensics.PersistenceSniper
+      - Generic.System.Pstree
 
   - id: agentic_standard
     name: "[Agentic] Standard"
-    description: "Full detection suite optimized for LLM analysis"
+    description: "Full detection suite optimized for LLM analysis (28 artifacts)"
     is_default: true
-    artifacts: $agentic_standard
-    settings: $standard
+    settings:
+      hunt_expiry: 120
+      timeout: 3600
+      cpu_limit: 90
+    artifacts:
+      - DetectRaptor.Windows.Detection.Amcache
+      - DetectRaptor.Windows.Detection.NamedPipes
+      - DetectRaptor.Windows.Detection.BinaryRename
+      - DetectRaptor.Windows.Detection.Bootloaders
+      - DetectRaptor.Windows.Detection.Applications
+      - DetectRaptor.Windows.Detection.LolDriversMalicious
+      - DetectRaptor.Windows.Detection.LolDriversVulnerable
+      - DetectRaptor.Windows.Detection.HijackLibsEnv
+      - DetectRaptor.Windows.Detection.HijackLibsMFT
+      - DetectRaptor.Windows.Detection.Powershell.PSReadline
+      - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
+      - DetectRaptor.Windows.Detection.YaraProcessWin
+      - DetectRaptor.Windows.Detection.Webhistory
+      - DetectRaptor.Windows.Detection.ZoneIdentifier
+      - DetectRaptor.Generic.Detection.YaraWebshell
+      - Windows.Detection.Yara.Process
+      - Windows.Detection.ISOMount
+      - Windows.Detection.Malfind
+      - Windows.Detection.PipeHunter
+      - Windows.Detection.Keylogger
+      - Windows.Detection.WonkaVision
+      - Windows.Hayabusa.Rules
+      - Windows.Forensics.PersistenceSniper
+      - Windows.EventLogs.RDPAuth
+      - Windows.Attack.UnexpectedImagePath
+      - Windows.System.UntrustedBinaries
+      - Windows.Registry.Sysinternals.Eulacheck
+      - Generic.System.Pstree
 
   - id: agentic_purple_team
     name: "[Agentic] Purple Team Detection"
-    description: "Low-volume detection artifacts - outputs only suspicious findings for LLM analysis"
+    description: "Low-volume detection artifacts for purple team testing (9 artifacts)"
     is_default: true
-    artifacts: $agentic_purple_team
-    settings: $quick
+    settings:
+      hunt_expiry: 120
+      timeout: 120
+      cpu_limit: 90
+    artifacts:
+      - Windows.Hayabusa.Rules
+      - Windows.Detection.Malfind
+      - Windows.EventLogs.RDPAuth
+      - DetectRaptor.Windows.Detection.BinaryRename
+      - DetectRaptor.Windows.Detection.Powershell.PSReadline
+      - DetectRaptor.Windows.Detection.Applications
+      - Windows.System.TaskScheduler
+      - Windows.System.UntrustedBinaries
+      - Generic.System.Pstree
 
 # ============================================================================
 # Timesketch Blueprints
 # ============================================================================
 timesketch:
+
   - id: timesketch_full_triage
     name: "Full Triage"
     description: "Comprehensive KAPE triage collection with full Windows parsing"
