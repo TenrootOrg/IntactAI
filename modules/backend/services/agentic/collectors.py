@@ -15,56 +15,6 @@ from services.velociraptor_service import setup_velociraptor_connection
 from services.workflow_service import add_log_to_run
 
 
-# Artifact time parameter mapping - which param name each artifact uses for filtering
-ARTIFACT_TIME_PARAMS = {
-    # === Filesystem Timeline ===
-    "Windows.Timeline.MFT": {"start": "DateAfter", "end": "DateBefore"},
-    "Windows.Forensics.Usn": {"start": "DateAfter", "end": "DateBefore"},
-    "Windows.NTFS.Timestomp": {"start": "DateAfter", "end": "DateBefore"},
-
-    # === Program Execution ===
-    "Windows.Timeline.Prefetch": {"start": "dateAfter", "end": "dateBefore"},
-    "Windows.Forensics.Prefetch": {"start": "dateAfter", "end": "dateBefore"},
-    "Windows.Detection.Amcache": {"start": "DateAfter", "end": "DateBefore"},
-    "Windows.Registry.AppCompatCache": {"start": "DateAfter", "end": "DateBefore"},
-    "Windows.Forensics.Bam": {"start": "DateAfter", "end": "DateBefore"},
-    "Windows.Forensics.RecentApps": {"start": "DateAfter", "end": "DateBefore"},
-
-    # === Event Logs ===
-    "Windows.EventLogs.Evtx": {"start": "StartDate", "end": "EndDate"},
-    "Windows.EventLogs.Hayabusa": {"start": "StartTimestamp", "end": "EndTimestamp"},
-    "Windows.EventLogs.RDPAuth": {"start": "StartDate", "end": "EndDate"},
-    "Windows.EventLogs.RDPClientActivity": {"start": "StartDate", "end": "EndDate"},
-
-    # === System Resources ===
-    "Windows.Forensics.SRUM": {"start": "DateAfter", "end": "DateBefore"},
-    "Windows.Forensics.UserAccessLogs": {"start": "DateAfter", "end": "DateBefore"},
-
-    # === User Activity ===
-    "Windows.Forensics.Lnk": {"start": "DateAfter", "end": "DateBefore"},
-    "Windows.Office.MRU": {"start": "DateAfter", "end": "DateBefore"},
-}
-
-# Common timestamp field names found in Velociraptor artifact results
-# These are checked dynamically in VQL - no per-artifact hardcoding needed
-COMMON_TIMESTAMP_FIELDS = [
-    'Timestamp', 'EventTime', 'Time', 'TimeCreated', 'Created', 'Modified',
-    'LastRunTime', 'LastWriteTime', 'SI_LastModified0x10', 'ExecutionTime'
-]
-
-
-def get_vql_time_filter(start_iso, end_iso):
-    """VQL time filtering disabled - Python post-filtering is more reliable.
-
-    VQL filtering has issues because different artifacts use different timestamp field names,
-    and referencing non-existent fields causes empty results. Python filtering can inspect
-    actual field names in each row and filter correctly.
-
-    Time filtering is done in filter_results_by_time() in utils.py after fetching.
-    """
-    return ""  # Disabled - Python filtering handles this
-
-
 def check_flow_status(stub, client_id, flow_id):
     """Check the status of a Velociraptor flow. Returns 'RUNNING', 'FINISHED', 'ERROR', or None."""
     try:
@@ -727,73 +677,6 @@ def cancel_collections(run_id, collection_results):
 
     channel.close()
     add_log_to_run(run_id, f"[Velociraptor] Cancelled {cancelled} collection(s)", "info")
-
-
-def collect_results(run_id, collection_results, artifacts):
-    """Retrieve collection results from each client using source()"""
-    channel = setup_velociraptor_connection()
-    if not channel:
-        add_log_to_run(run_id, "[Velociraptor] Failed to connect for result retrieval", "error")
-        return {}
-
-    stub = api_pb2_grpc.APIStub(channel)
-    all_results = {}
-
-    # Get hostname mapping for all clients
-    client_hostnames = {}
-    for col in collection_results:
-        client_id = col.get('client_id')
-        if client_id:
-            client_hostnames[client_id] = col.get('hostname', client_id)
-
-    for col in collection_results:
-        client_id = col.get('client_id')
-        flow_id = col.get('flow_id')
-        hostname = client_hostnames.get(client_id, client_id)
-        if not flow_id:
-            continue
-
-        for artifact in artifacts:
-            try:
-                query = f"""
-SELECT * FROM source(client_id='{client_id}', flow_id='{flow_id}', artifact='{artifact}')
-LIMIT 5000
-"""
-                request_obj = api_pb2.VQLCollectorArgs(
-                    max_wait=30,
-                    max_row=5000,
-                    Query=[api_pb2.VQLRequest(VQL=query)]
-                )
-
-                rows = []
-                for response in stub.Query(request_obj, timeout=60):
-                    if response.Response:
-                        try:
-                            resp_data = json.loads(response.Response)
-                            if isinstance(resp_data, list):
-                                # Inject client_id and hostname into each row for traceability
-                                for row in resp_data:
-                                    row['_client_id'] = client_id
-                                    row['_hostname'] = hostname
-                                rows.extend(resp_data)
-                        except Exception:
-                            pass
-
-                if rows:
-                    if artifact not in all_results:
-                        all_results[artifact] = []
-                    all_results[artifact].extend(rows)
-
-            except Exception as e:
-                add_log_to_run(run_id, f"[Velociraptor] Error retrieving {artifact} from {client_id}: {str(e)}", "warning")
-
-    channel.close()
-
-    # Log summary
-    for artifact, rows in all_results.items():
-        add_log_to_run(run_id, f"[Velociraptor] Retrieved {len(rows)} rows from {artifact}", "info")
-
-    return all_results
 
 
 def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_filter=None):

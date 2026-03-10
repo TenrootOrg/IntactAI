@@ -5,6 +5,50 @@ Agentic Utils - Timeline extraction and data formatting helpers
 
 from datetime import datetime
 
+# Common timestamp field names across Velociraptor artifacts
+TIMESTAMP_FIELDS = [
+    'Timestamp', 'timestamp', 'Time', 'time', 'CreationTime', 'ModificationTime',
+    'LastAccessTime', 'EventTime', 'event_time', 'Created', 'Modified', 'Accessed',
+    '_time', 'StartTime', 'EndTime', 'LastWriteTime', 'SourceCreated', 'SourceModified',
+    'SourceAccessed', 'SI_LastModified0x10', 'SI_LastAccess0x10', 'FN_LastModified0x30',
+    'mtime', 'atime', 'ctime', 'btime', 'LastExecutionTime', 'LastRun'
+]
+
+# Fields that indicate important/interesting findings
+IMPORTANT_FIELDS = [
+    'Level', 'Severity', 'Detection', 'Alert', 'Match', 'Hit', 'Finding',
+    'Suspicious', 'Malicious', 'Risk', 'Score', 'Status', 'RuleTitle', 'RuleLevel'
+]
+
+
+def parse_timestamp(ts_value):
+    """Try to parse various timestamp formats. Returns datetime or None."""
+    if not ts_value:
+        return None
+    if isinstance(ts_value, (int, float)):
+        try:
+            if ts_value > 1e12:
+                ts_value = ts_value / 1e6
+            return datetime.fromtimestamp(ts_value)
+        except:
+            return None
+    if isinstance(ts_value, str):
+        formats = [
+            '%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%dT%H:%M:%S',
+            '%Y-%m-%d %H:%M:%S', '%Y/%m/%d %H:%M:%S', '%d/%m/%Y %H:%M:%S',
+            '%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%d %H:%M:%S.%f'
+        ]
+        for fmt in formats:
+            try:
+                return datetime.strptime(ts_value[:26], fmt)
+            except:
+                continue
+        try:
+            return datetime.fromisoformat(ts_value.replace('Z', '+00:00'))
+        except:
+            pass
+    return None
+
 
 def extract_timeline_events(all_results, include_no_timestamp=True):
     """Extract events from artifact data for timeline generation.
@@ -15,48 +59,9 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
     events = []
     no_timestamp_events = []
 
-    # Common timestamp field names across Velociraptor artifacts
-    timestamp_fields = [
-        'Timestamp', 'timestamp', 'Time', 'time', 'CreationTime', 'ModificationTime',
-        'LastAccessTime', 'EventTime', 'event_time', 'Created', 'Modified', 'Accessed',
-        '_time', 'StartTime', 'EndTime', 'LastWriteTime', 'SourceCreated', 'SourceModified',
-        'SourceAccessed', 'SI_LastModified0x10', 'SI_LastAccess0x10', 'FN_LastModified0x30',
-        'mtime', 'atime', 'ctime', 'btime', 'LastExecutionTime', 'LastRun'
-    ]
-
-    # Fields that indicate important/interesting findings
-    important_fields = [
-        'Level', 'Severity', 'Detection', 'Alert', 'Match', 'Hit', 'Finding',
-        'Suspicious', 'Malicious', 'Risk', 'Score', 'Status', 'RuleTitle', 'RuleLevel'
-    ]
-
-    def parse_timestamp(ts_value):
-        """Try to parse various timestamp formats."""
-        if not ts_value:
-            return None
-        if isinstance(ts_value, (int, float)):
-            try:
-                if ts_value > 1e12:
-                    ts_value = ts_value / 1e6
-                return datetime.fromtimestamp(ts_value)
-            except:
-                return None
-        if isinstance(ts_value, str):
-            formats = [
-                '%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%dT%H:%M:%S',
-                '%Y-%m-%d %H:%M:%S', '%Y/%m/%d %H:%M:%S', '%d/%m/%Y %H:%M:%S',
-                '%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%d %H:%M:%S.%f'
-            ]
-            for fmt in formats:
-                try:
-                    return datetime.strptime(ts_value[:26], fmt)
-                except:
-                    continue
-            try:
-                return datetime.fromisoformat(ts_value.replace('Z', '+00:00'))
-            except:
-                pass
-        return None
+    # Use module-level constants
+    timestamp_fields = TIMESTAMP_FIELDS
+    important_fields = IMPORTANT_FIELDS
 
     def get_short_title(row, artifact):
         """Get a short, clean title for the event (max 60 chars)."""
@@ -426,45 +431,9 @@ def filter_results_by_time(all_results, time_filter, run_id=None):
     # Calculate total rows before filtering
     total_before = sum(len(rows) for rows in all_results.values())
 
-    # Timestamp field names to check
-    timestamp_fields = [
-        'Timestamp', 'timestamp', 'Time', 'time', 'CreationTime', 'ModificationTime',
-        'LastAccessTime', 'EventTime', 'event_time', 'Created', 'Modified', 'Accessed',
-        '_time', 'StartTime', 'EndTime', 'LastWriteTime', 'SourceCreated', 'SourceModified',
-        'SourceAccessed', 'SI_LastModified0x10', 'SI_LastAccess0x10', 'FN_LastModified0x30',
-        'mtime', 'atime', 'ctime', 'btime', 'LastExecutionTime', 'LastRun'
-    ]
-
-    def parse_timestamp(ts_value):
-        """Try to parse various timestamp formats."""
-        if not ts_value:
-            return None
-        if isinstance(ts_value, (int, float)):
-            try:
-                if ts_value > 1e12:
-                    ts_value = ts_value / 1e6
-                return datetime.fromtimestamp(ts_value)
-            except:
-                return None
-        if isinstance(ts_value, str):
-            formats = [
-                '%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%dT%H:%M:%S',
-                '%Y-%m-%d %H:%M:%S', '%Y/%m/%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S.%f'
-            ]
-            for fmt in formats:
-                try:
-                    return datetime.strptime(ts_value[:26], fmt)
-                except:
-                    continue
-            try:
-                return datetime.fromisoformat(ts_value.replace('Z', '+00:00').replace('+00:00', ''))
-            except:
-                pass
-        return None
-
     def is_in_range(row):
         """Check if row's timestamp falls within the time range."""
-        for field in timestamp_fields:
+        for field in TIMESTAMP_FIELDS:
             if field in row:
                 ts = parse_timestamp(row[field])
                 if ts:
