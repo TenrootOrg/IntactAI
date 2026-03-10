@@ -301,22 +301,6 @@ No data was collected from the selected clients during the {collection_minutes}-
 """
 
 
-def build_fallback_report(blueprint, client_ids, collection_minutes,
-                          artifact_summaries, total_rows):
-    """Build report without LLM (fallback)"""
-    sections = []
-    sections.append("## Executive Summary\n")
-    sections.append(f"Analyzed {len(artifact_summaries)} artifacts across {len(client_ids)} clients "
-                    f"over a {collection_minutes}-minute collection window. "
-                    f"Total of {total_rows} data rows processed.\n")
-
-    sections.append("## Findings by Artifact\n")
-    for artifact, summary in artifact_summaries.items():
-        sections.append(f"### {artifact}\n{summary}\n")
-
-    return "\n".join(sections)
-
-
 def _generate_timeline_section(events, llm_config, run_id):
     """Generate a human-readable timeline summary from events."""
     if not events:

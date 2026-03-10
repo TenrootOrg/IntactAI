@@ -7,6 +7,11 @@ import json
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from services.agentic.constants import (
+    TRUNCATE_TOKEN_LIMIT, MAX_LLM_TOKENS,
+    OLLAMA_CONTEXT_SIZE, OLLAMA_TIMEOUT_SECONDS
+)
+
 
 def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None):
     """Analyze a single artifact with LLM. Returns (artifact, summary, error) tuple.
@@ -17,8 +22,8 @@ def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None):
 
     # Truncate data to fit context window
     data_str = json.dumps(rows, indent=2, default=str)
-    if len(data_str) > 100000:  # ~25K tokens
-        data_str = data_str[:100000] + "\n... (truncated)"
+    if len(data_str) > TRUNCATE_TOKEN_LIMIT:
+        data_str = data_str[:TRUNCATE_TOKEN_LIMIT] + "\n... (truncated)"
 
     system_prompt = """You are a forensic security analyst performing incident response triage. Analyze the provided Velociraptor artifact data thoroughly.
 
@@ -152,7 +157,7 @@ def _call_llm_online(prompt, system_prompt, provider_config):
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=MAX_LLM_TOKENS,
             system=system_prompt,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -167,7 +172,7 @@ def _call_llm_online(prompt, system_prompt, provider_config):
         response = client.chat.completions.create(
             model=model,
             messages=messages,
-            max_tokens=4096,
+            max_tokens=MAX_LLM_TOKENS,
             temperature=0.1
         )
         return response.choices[0].message.content
@@ -184,7 +189,7 @@ def _call_llm_online(prompt, system_prompt, provider_config):
         response = client.chat.completions.create(
             model=model,
             messages=messages,
-            max_tokens=4096,
+            max_tokens=MAX_LLM_TOKENS,
             temperature=0.1
         )
         return response.choices[0].message.content
@@ -207,10 +212,10 @@ def _call_llm_offline(prompt, system_prompt, provider_config):
                 "prompt": full_prompt,
                 "stream": False,
                 "options": {
-                    "num_ctx": 32768
+                    "num_ctx": OLLAMA_CONTEXT_SIZE
                 }
             },
-            timeout=300
+            timeout=OLLAMA_TIMEOUT_SECONDS
         )
         response.raise_for_status()
         return response.json().get('response', '')
