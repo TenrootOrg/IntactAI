@@ -163,6 +163,9 @@ document.addEventListener('alpine:init', () => {
         selectedRun: null,
         modalOpen: false,
         initialLoad: true,
+        autoScroll: true,
+        refreshInterval: null,
+        currentRunId: null,
 
         async load() {
             // Only show loading spinner on initial load
@@ -200,14 +203,74 @@ document.addEventListener('alpine:init', () => {
                 const response = await fetch(`/api/dashboard/automation/${runId}`);
                 this.selectedRun = await response.json();
                 this.modalOpen = true;
+                this.currentRunId = runId;
+
+                // Start auto-refresh every 2 seconds
+                this.startAutoRefresh(runId);
+
+                // Scroll to bottom if autoScroll enabled
+                this.scrollToBottom();
             } catch (e) {
                 console.error('Failed to load logs:', e);
             }
         },
 
+        startAutoRefresh(runId) {
+            // Clear any existing interval
+            this.stopAutoRefresh();
+
+            // Refresh logs every 1 second
+            this.refreshInterval = setInterval(async () => {
+                if (!this.modalOpen) {
+                    this.stopAutoRefresh();
+                    return;
+                }
+                try {
+                    const response = await fetch(`/api/dashboard/automation/${runId}`);
+                    const newData = await response.json();
+
+                    // Only update if logs changed
+                    if (JSON.stringify(this.selectedRun?.logs) !== JSON.stringify(newData?.logs)) {
+                        this.selectedRun = newData;
+                        // Auto-scroll if enabled
+                        if (this.autoScroll) {
+                            this.scrollToBottom();
+                        }
+                    }
+                } catch (e) {
+                    console.error('Failed to refresh logs:', e);
+                }
+            }, 1000);
+        },
+
+        stopAutoRefresh() {
+            if (this.refreshInterval) {
+                clearInterval(this.refreshInterval);
+                this.refreshInterval = null;
+            }
+        },
+
+        scrollToBottom() {
+            setTimeout(() => {
+                const logsContainer = document.getElementById('workflow-logs-container');
+                if (logsContainer) {
+                    logsContainer.scrollTop = logsContainer.scrollHeight;
+                }
+            }, 50);
+        },
+
+        toggleAutoScroll() {
+            this.autoScroll = !this.autoScroll;
+            if (this.autoScroll) {
+                this.scrollToBottom();
+            }
+        },
+
         closeModal() {
+            this.stopAutoRefresh();
             this.modalOpen = false;
             this.selectedRun = null;
+            this.currentRunId = null;
         },
 
         getStatusColor(status) {

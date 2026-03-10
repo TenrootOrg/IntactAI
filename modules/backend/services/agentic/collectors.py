@@ -432,10 +432,11 @@ def filter_by_severity(rows, severity_level):
     return filtered
 
 
-def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes, llm_config, anonymizer=None, update_phase_func=None):
+def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes, llm_config, anonymizer=None, update_phase_func=None, min_severity='informational'):
     """Monitor collection, poll artifact sources for data, analyze as data becomes available.
     Returns (all_results dict, summaries dict, timed_out bool).
     If anonymizer is provided, data is masked before LLM analysis.
+    min_severity filters rows by severity level before LLM analysis (informational, low, medium, high, critical).
     timed_out is True if collection ended due to timeout, False if all flows completed naturally.
 
     STREAMING OPTIMIZATION: LLM analysis starts immediately when an artifact's flow completes,
@@ -545,13 +546,21 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                             retrieved_artifacts[artifact_key] = len(rows)
                             stable_artifacts[source_name] = 0  # Reset stability counter
 
-                            # Update all_results
+                            # Apply severity filter immediately after getting results
+                            filtered_rows = rows
+                            if min_severity != 'informational':
+                                filtered_rows = filter_by_severity(rows, min_severity)
+
+                            # Update all_results with filtered data
                             if source_name not in all_results:
                                 all_results[source_name] = []
-                                add_log_to_run(run_id, f"[Velociraptor] Found: {source_name} ({len(rows)} rows)", "info")
+                                if min_severity != 'informational' and len(filtered_rows) < len(rows):
+                                    add_log_to_run(run_id, f"[Velociraptor] Found: {source_name} ({len(rows)} rows, {len(filtered_rows)} after {min_severity}+ filter)", "info")
+                                else:
+                                    add_log_to_run(run_id, f"[Velociraptor] Found: {source_name} ({len(rows)} rows)", "info")
 
-                            # Replace with latest data for this client
-                            all_results[source_name] = rows
+                            # Replace with latest filtered data
+                            all_results[source_name] = filtered_rows
                         else:
                             # Data unchanged - increment stability counter
                             if source_name in all_results and source_name not in analyzed_artifacts:
@@ -559,8 +568,13 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
 
                                 # STREAMING: Start LLM when artifact data is stable (no new data for 1 poll)
                                 if stable_artifacts[source_name] >= 1 and all_results[source_name]:
-                                    add_log_to_run(run_id, f"[Pipeline] Artifact {source_name} stable - starting LLM analysis", "info")
-                                    submit_for_analysis(source_name, all_results[source_name])
+                                    rows_to_analyze = all_results[source_name]
+                                    if rows_to_analyze:
+                                        add_log_to_run(run_id, f"[Pipeline] Artifact {source_name} stable - starting LLM analysis ({len(rows_to_analyze)} rows)", "info")
+                                        submit_for_analysis(source_name, rows_to_analyze)
+                                    else:
+                                        add_log_to_run(run_id, f"[Filter] {source_name}: All rows filtered out - skipping LLM", "info")
+                                        analyzed_artifacts.add(source_name)  # Mark as done
 
             # Check flow status
             for col in active_flows:
