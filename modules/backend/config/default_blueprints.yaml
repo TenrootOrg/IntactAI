@@ -246,7 +246,7 @@ velociraptor:
 
   - id: agentic_purple_team
     name: "[Agentic] Purple Team Detection"
-    description: "Low-volume detection artifacts for purple team testing (9 artifacts)"
+    description: "Low-volume detection artifacts for purple team testing (11 artifacts)"
     is_default: true
     settings:
       hunt_expiry: 120
@@ -262,6 +262,8 @@ velociraptor:
       - Windows.System.TaskScheduler
       - Windows.System.UntrustedBinaries
       - Generic.System.Pstree
+      - Windows.Sys.StartupItems
+      - Windows.Forensics.SAM
 
 # ============================================================================
 # Timesketch Blueprints
