@@ -289,7 +289,7 @@ def create_velociraptor_hunt(artifact_name, description=""):
         timeout_seconds = 600   # 10 minutes
         max_rows = 1000000
         max_bytes = 1048576000  # ~1GB
-        cpu_limit = 50          # 50% CPU limit
+        cpu_limit = 80          # 80% CPU limit
 
         vql_query = f"""
 LET collection = hunt(

@@ -200,7 +200,7 @@ def create_collections(run_id, artifacts, settings, client_ids):
 
     stub = api_pb2_grpc.APIStub(channel)
     timeout_seconds = settings.get('timeout', 3600)
-    cpu_limit = settings.get('cpu_limit', 50)
+    cpu_limit = settings.get('cpu_limit', 80)
 
     # Get hostname mapping for all clients
     client_hostnames = get_client_hostnames(stub, client_ids)

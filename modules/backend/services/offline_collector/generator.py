@@ -40,7 +40,7 @@ def get_blueprint_as_config(blueprint_id):
                     'config_name': bp.get('name', blueprint_id),
                     'artifacts': bp.get('artifacts', []),
                     'parameters': {
-                        'CpuLimit': bp.get('settings', {}).get('cpu_limit', 50),
+                        'CpuLimit': bp.get('settings', {}).get('cpu_limit', 80),
                         'MaxExecutionTimeInSeconds': bp.get('settings', {}).get('timeout', 3600)
                     }
                 }
@@ -54,7 +54,7 @@ def get_blueprint_as_config(blueprint_id):
                     'config_name': bp.get('name', blueprint_id),
                     'artifacts': bp.get('artifacts', []),
                     'parameters': {
-                        'CpuLimit': bp.get('settings', {}).get('cpu_limit', 50),
+                        'CpuLimit': bp.get('settings', {}).get('cpu_limit', 80),
                         'MaxExecutionTimeInSeconds': bp.get('settings', {}).get('timeout', 3600)
                     }
                 }
@@ -163,7 +163,7 @@ def generate_collector(config_id, os_type="windows"):
                     opt_banner="N",
                     opt_prompt="N",
                     opt_admin="Y",
-                    opt_cpu_limit={parameters.get('CpuLimit', 50)},
+                    opt_cpu_limit={parameters.get('CpuLimit', 80)},
                     opt_timeout={parameters.get('MaxExecutionTimeInSeconds', 3600)}
                 )
             )
@@ -642,7 +642,7 @@ mkdir -p "$OUTPUT_DIR"
 echo ""
 echo "[*] Configuration:"
 echo "    Artifacts: {len(artifacts)}"
-echo "    CPU Limit: {parameters.get('CpuLimit', 50)}%"
+echo "    CPU Limit: {parameters.get('CpuLimit', 80)}%"
 echo "    Timeout: {parameters.get('MaxExecutionTimeInSeconds', 3600)} seconds"
 echo ""
 
@@ -665,7 +665,7 @@ echo "    Output: $ZIP_FILE"
 echo ""
 
 # Run collection
-"$VELO_PATH" artifacts collect "${{ARTIFACTS[@]}}" --output "$ZIP_FILE" --format jsonl --cpu_limit {parameters.get('CpuLimit', 50)} --timeout {parameters.get('MaxExecutionTimeInSeconds', 3600)} || true
+"$VELO_PATH" artifacts collect "${{ARTIFACTS[@]}}" --output "$ZIP_FILE" --format jsonl --cpu_limit {parameters.get('CpuLimit', 80)} --timeout {parameters.get('MaxExecutionTimeInSeconds', 3600)} || true
 
 # Check result
 echo ""

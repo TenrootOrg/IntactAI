@@ -20,7 +20,7 @@ velociraptor:
     settings:
       hunt_expiry: 120
       timeout: 120
-      cpu_limit: 80
+      cpu_limit: 90
     artifacts:
       - DetectRaptor.Windows.Detection.Amcache
       - DetectRaptor.Windows.Detection.NamedPipes
@@ -42,7 +42,7 @@ velociraptor:
     settings:
       hunt_expiry: 120
       timeout: 3600
-      cpu_limit: 80
+      cpu_limit: 90
     artifacts:
       - Generic.Forensic.SQLiteHunter
       - Windows.Analysis.EvidenceOfDownload
@@ -83,7 +83,7 @@ velociraptor:
     settings:
       hunt_expiry: 180
       timeout: 7200
-      cpu_limit: 80
+      cpu_limit: 90
     artifacts:
       # Detection
       - DetectRaptor.Windows.Detection.Amcache
@@ -158,7 +158,7 @@ velociraptor:
     settings:
       hunt_expiry: 120
       timeout: 120
-      cpu_limit: 80
+      cpu_limit: 90
     artifacts:
       - Generic.System.Pstree
       - Windows.Detection.Malfind
@@ -182,7 +182,7 @@ velociraptor:
     settings:
       hunt_expiry: 120
       timeout: 120
-      cpu_limit: 80
+      cpu_limit: 90
     artifacts:
       - DetectRaptor.Windows.Detection.Amcache
       - DetectRaptor.Windows.Detection.NamedPipes
@@ -213,7 +213,7 @@ velociraptor:
     settings:
       hunt_expiry: 120
       timeout: 3600
-      cpu_limit: 80
+      cpu_limit: 90
     artifacts:
       - DetectRaptor.Windows.Detection.Amcache
       - DetectRaptor.Windows.Detection.NamedPipes
@@ -251,7 +251,7 @@ velociraptor:
     settings:
       hunt_expiry: 120
       timeout: 120
-      cpu_limit: 80
+      cpu_limit: 90
     artifacts:
       - Windows.Hayabusa.Rules
       - Windows.Detection.Malfind
