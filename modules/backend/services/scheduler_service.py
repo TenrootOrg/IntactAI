@@ -363,7 +363,7 @@ def _run_timesketch_pipeline(job_meta: dict, client_ids: list):
 
     kape_target = settings.get('kape_target', '_KapeTriage')
     timeout_seconds = settings.get('collection_timeout', 10000)
-    cpu_limit = 80
+    cpu_limit = settings.get('cpu_limit', 80)
 
     for client_id in client_ids:
         try:
