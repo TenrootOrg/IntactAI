@@ -266,12 +266,19 @@ def setup_velociraptor_connection():
         sys.stderr.flush()
         return None
 
-def create_velociraptor_hunt(artifact_name, description=""):
-    """Create a real hunt in Velociraptor using gRPC API"""
+def create_velociraptor_hunt(artifact_name, description="", cpu_limit=90):
+    """Create a real hunt in Velociraptor using gRPC API
+
+    Args:
+        artifact_name: Name of the artifact to hunt
+        description: Hunt description
+        cpu_limit: CPU limit percentage (default 90%)
+    """
     sys.stdout.flush()
     print("=" * 80, flush=True)
     print(f"[HUNT] Creating hunt for artifact: {artifact_name}", flush=True)
     print(f"[HUNT] Description: {description}", flush=True)
+    print(f"[HUNT] CPU Limit: {cpu_limit}%", flush=True)
     print("=" * 80, flush=True)
 
     try:
@@ -289,7 +296,6 @@ def create_velociraptor_hunt(artifact_name, description=""):
         timeout_seconds = 600   # 10 minutes
         max_rows = 1000000
         max_bytes = 1048576000  # ~1GB
-        cpu_limit = 80          # 80% CPU limit
 
         vql_query = f"""
 LET collection = hunt(
