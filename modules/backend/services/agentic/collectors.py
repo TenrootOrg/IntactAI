@@ -15,6 +15,17 @@ from services.velociraptor_service import setup_velociraptor_connection
 from services.workflow_service import add_log_to_run
 
 
+# Mapping of artifacts to their time filter parameter names
+# Format: { 'ArtifactName': { 'start': 'ParamName', 'end': 'ParamName' } }
+ARTIFACT_TIME_PARAMS = {
+    'Windows.Hayabusa.Rules': {
+        'start': 'DateTimeAfter',
+        'end': 'DateTimeBefore'
+    },
+    # Add other artifacts with time parameters here as needed
+}
+
+
 def get_vql_time_filter(start_iso, end_iso):
     """Build a VQL WHERE clause for time filtering.
 
