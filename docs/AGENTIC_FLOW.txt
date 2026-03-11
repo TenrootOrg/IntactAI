@@ -1,0 +1,222 @@
+================================================================================
+                     AGENTIC FORENSICS - LOGICAL FLOW
+================================================================================
+
+
+                         START: VELOCIRAPTOR DATA
+================================================================================
+
+    Option A: NEW COLLECTION                Option B: EXISTING DATA
+    -------------------------               -------------------------
+    Select Blueprint                        Select Flow ID (F.xxx)
+         |                                       or
+         v                                  Select Hunt ID (H.xxx)
+    Select Clients                               |
+         |                                       |
+         v                                       v
+    Start Collections ----------------------> Get Artifact Data
+    on each client
+
+
+================================================================================
+                      STEP 1: COLLECT ARTIFACTS
+================================================================================
+
+    Blueprint contains list of artifacts to collect:
+
+    Example: [Agentic] Purple Team (11 artifacts)
+    +----------------------------------------------------------+
+    |  - Windows.Hayabusa.Rules                                |
+    |  - Windows.Detection.Malfind                             |
+    |  - DetectRaptor.Windows.Detection.Powershell.PSReadline  |
+    |  - Windows.System.TaskScheduler                          |
+    |  - Generic.System.Pstree                                 |
+    |  - ... (6 more)                                          |
+    +----------------------------------------------------------+
+                              |
+                              v
+
+    Velociraptor runs ALL artifacts on each client simultaneously
+
+         Client 1                    Client 2                    Client N
+    +----------------+          +----------------+          +----------------+
+    | Artifact 1     |          | Artifact 1     |          | Artifact 1     |
+    | Artifact 2     |          | Artifact 2     |          | Artifact 2     |
+    | Artifact 3     |          | Artifact 3     |          | Artifact 3     |
+    | ...            |          | ...            |          | ...            |
+    +----------------+          +----------------+          +----------------+
+           |                           |                           |
+           +---------------------------+---------------------------+
+                                       |
+                                       v
+                            [Wait for completion]
+                            (poll every 30 seconds)
+
+
+================================================================================
+                    STEP 2: STREAM DATA TO LLM (PARALLEL)
+================================================================================
+
+    As each artifact finishes, immediately send to LLM for analysis:
+
+
+    ARTIFACT RESULTS                           LLM ANALYSIS
+    (from Velociraptor)                        (parallel threads)
+
+    +----------------------+                   +----------------------+
+    | Hayabusa.Rules       |------------------>| Thread 1: Analyze    |
+    | (2,847 rows)         |                   | Hayabusa findings    |
+    +----------------------+                   +----------------------+
+                                                        |
+    +----------------------+                   +----------------------+
+    | Detection.Malfind    |------------------>| Thread 2: Analyze    |
+    | (12 rows)            |                   | memory injections    |
+    +----------------------+                   +----------------------+
+                                                        |
+    +----------------------+                   +----------------------+
+    | PSReadline           |------------------>| Thread 3: Analyze    |
+    | (156 rows)           |                   | PowerShell history   |
+    +----------------------+                   +----------------------+
+                                                        |
+    +----------------------+                   +----------------------+
+    | TaskScheduler        |------------------>| Thread 4: Analyze    |
+    | (23 rows)            |                   | scheduled tasks      |
+    +----------------------+                   +----------------------+
+                                                        |
+           ...                                         ...
+                                                        |
+                                                        v
+
+    Each thread produces a SUMMARY for its artifact:
+
+    +------------------------------------------------------------------+
+    | Hayabusa Summary:                                                |
+    | - 47 HIGH severity alerts detected                               |
+    | - Mimikatz execution at 14:32:15                                |
+    | - UAC bypass via fodhelper at 14:31:02                          |
+    | - ...                                                            |
+    +------------------------------------------------------------------+
+
+    +------------------------------------------------------------------+
+    | Malfind Summary:                                                 |
+    | - Process injection detected in notepad.exe (PID 4532)          |
+    | - Suspicious memory region: RWX permissions                      |
+    | - ...                                                            |
+    +------------------------------------------------------------------+
+
+           ... (one summary per artifact)
+
+
+================================================================================
+                    STEP 3: GENERATE FINAL REPORT
+================================================================================
+
+    All artifact summaries combined + Timeline events
+                              |
+                              v
+                    +-------------------+
+                    |    LLM Call       |
+                    | (Final Report)    |
+                    +-------------------+
+                              |
+                              v
+
+    +==================================================================+
+    |                   TECHNICAL FORENSICS REPORT                     |
+    +==================================================================+
+    |                                                                  |
+    |  1. CRITICAL FINDINGS                                           |
+    |     - Mimikatz credential dump detected                         |
+    |     - Memory injection in notepad.exe                           |
+    |     - ...                                                        |
+    |                                                                  |
+    |  2. ATTACK TIMELINE                                             |
+    |     14:30:00 - Initial access via RDP                           |
+    |     14:31:02 - UAC bypass (fodhelper)                           |
+    |     14:32:15 - Credential dump (Mimikatz)                       |
+    |     ...                                                          |
+    |                                                                  |
+    |  3. IOCs                                                         |
+    |     - C:\Windows\Temp\mimikatz.exe                              |
+    |     - 192.168.1.100 (C2 server)                                 |
+    |     ...                                                          |
+    |                                                                  |
+    |  4. MITRE ATT&CK MAPPING                                        |
+    |     T1003.001 - LSASS Memory                                    |
+    |     T1548.002 - UAC Bypass                                      |
+    |     ...                                                          |
+    |                                                                  |
+    |  5. RECOMMENDED ACTIONS                                         |
+    |     [ ] Isolate affected host                                   |
+    |     [ ] Reset compromised credentials                           |
+    |     ...                                                          |
+    |                                                                  |
+    +------------------------------------------------------------------+
+    |                                                                  |
+    |  ARTIFACT FINDINGS (detailed per-artifact analysis)             |
+    |                                                                  |
+    |  -----------------------------------------------------------    |
+    |  ## Windows.Hayabusa.Rules                                      |
+    |  [Full LLM summary for this artifact]                           |
+    |                                                                  |
+    |  -----------------------------------------------------------    |
+    |  ## Windows.Detection.Malfind                                   |
+    |  [Full LLM summary for this artifact]                           |
+    |                                                                  |
+    |  -----------------------------------------------------------    |
+    |  ## DetectRaptor.Windows.Detection.Powershell.PSReadline        |
+    |  [Full LLM summary for this artifact]                           |
+    |                                                                  |
+    |  ... (all artifacts)                                            |
+    |                                                                  |
+    +==================================================================+
+
+
+================================================================================
+                           SUMMARY: THE FLOW
+================================================================================
+
+
+    +-------------+     +------------------+     +------------------+
+    | Blueprint   |---->| Collect from     |---->| Artifact 1 data  |--+
+    | (artifacts) |     | Velociraptor     |     +------------------+  |
+    +-------------+     +------------------+     | Artifact 2 data  |--+
+                                                 +------------------+  |
+                                                 | Artifact N data  |--+
+                                                 +------------------+  |
+                                                                       |
+                        +----------------------------------------------+
+                        |
+                        v
+    +------------------+     +------------------+     +------------------+
+    | LLM Thread 1     |     | LLM Thread 2     |     | LLM Thread N     |
+    | (analyze art 1)  |     | (analyze art 2)  |     | (analyze art N)  |
+    +------------------+     +------------------+     +------------------+
+            |                        |                        |
+            v                        v                        v
+    +------------------+     +------------------+     +------------------+
+    | Summary 1        |     | Summary 2        |     | Summary N        |
+    +------------------+     +------------------+     +------------------+
+            |                        |                        |
+            +------------------------+------------------------+
+                                     |
+                                     v
+                        +------------------------+
+                        | Combine all summaries  |
+                        | + timeline events      |
+                        +------------------------+
+                                     |
+                                     v
+                        +------------------------+
+                        | Final LLM Call         |
+                        | (generate report)      |
+                        +------------------------+
+                                     |
+                                     v
+                        +------------------------+
+                        | FORENSICS REPORT       |
+                        | (download as PDF/MD)   |
+                        +------------------------+
+
+
+================================================================================

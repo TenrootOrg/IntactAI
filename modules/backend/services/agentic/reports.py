@@ -24,9 +24,9 @@ def generate_final_report(run_id, blueprint, client_ids, collection_minutes,
     events = extract_timeline_events(all_results)
     timeline_section = _generate_timeline_section(events, llm_config, run_id) if events else ""
 
-    # Build the combined analysis prompt
-    summaries_text = "\n\n".join([
-        f"### {artifact}\n{summary}"
+    # Build the combined analysis prompt with clear artifact headers
+    summaries_text = "\n\n---\n\n".join([
+        f"## {artifact}\n\n{summary}"
         for artifact, summary in artifact_summaries.items()
     ])
 
@@ -253,8 +253,19 @@ Generate the report now:"""
 
         try:
             tech_body = call_llm(tech_prompt, tech_system, llm_config)
-            # Append raw summaries as appendix
-            tech_full = tech_body + f"\n\n---\n\n## Appendix: Raw Artifact Summaries\n\n{summaries_text}"
+            # Append artifact findings as appendix with clear formatting
+            artifact_findings_section = f"""
+
+
+---
+
+# Artifact Findings
+
+*Detailed analysis results from each collected artifact.*
+
+{summaries_text}
+"""
+            tech_full = tech_body + artifact_findings_section
             reports['technical'] = get_header("Technical Forensics Report") + tech_full
             add_log_to_run(run_id, "[Report] Technical Report complete", "success")
         except Exception as e:

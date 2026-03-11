@@ -137,17 +137,22 @@ def call_llm(prompt, system_prompt, config):
     agentic_config = config.get('agentic', {})
     mode = agentic_config.get('llm_mode', 'online')
 
+    # Get configurable limits with fallbacks to constants
+    max_tokens = agentic_config.get('max_response_tokens', MAX_LLM_TOKENS)
+    context_size = agentic_config.get('ollama_context_size', OLLAMA_CONTEXT_SIZE)
+    timeout = agentic_config.get('ollama_timeout', OLLAMA_TIMEOUT_SECONDS)
+
     if mode == 'online':
-        return _call_llm_online(prompt, system_prompt, agentic_config.get('online_llm', {}))
+        return _call_llm_online(prompt, system_prompt, agentic_config.get('online_llm', {}), max_tokens)
     else:
-        return _call_llm_offline(prompt, system_prompt, agentic_config.get('offline_llm', {}))
+        return _call_llm_offline(prompt, system_prompt, agentic_config.get('offline_llm', {}), context_size, timeout)
 
 
-def _call_llm_online(prompt, system_prompt, provider_config):
+def _call_llm_online(prompt, system_prompt, provider_config, max_tokens):
     """Call Claude or other online LLM"""
     provider = provider_config.get('provider', 'claude')
     api_key = provider_config.get('api_key', '')
-    model = provider_config.get('model', 'claude-sonnet-4-20250514')
+    model = provider_config.get('model', 'claude-sonnet-4-6')
 
     if not api_key:
         raise ValueError("Online LLM API key not configured. Set it in Settings.")
@@ -157,7 +162,7 @@ def _call_llm_online(prompt, system_prompt, provider_config):
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model=model,
-            max_tokens=MAX_LLM_TOKENS,
+            max_tokens=max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -172,7 +177,7 @@ def _call_llm_online(prompt, system_prompt, provider_config):
         response = client.chat.completions.create(
             model=model,
             messages=messages,
-            max_tokens=MAX_LLM_TOKENS,
+            max_tokens=max_tokens,
             temperature=0.1
         )
         return response.choices[0].message.content
@@ -189,7 +194,7 @@ def _call_llm_online(prompt, system_prompt, provider_config):
         response = client.chat.completions.create(
             model=model,
             messages=messages,
-            max_tokens=MAX_LLM_TOKENS,
+            max_tokens=max_tokens,
             temperature=0.1
         )
         return response.choices[0].message.content
@@ -197,7 +202,7 @@ def _call_llm_online(prompt, system_prompt, provider_config):
         raise ValueError(f"Unsupported online provider: {provider}")
 
 
-def _call_llm_offline(prompt, system_prompt, provider_config):
+def _call_llm_offline(prompt, system_prompt, provider_config, context_size, timeout):
     """Call Ollama or other local LLM"""
     provider = provider_config.get('provider', 'ollama')
     model = provider_config.get('model', 'llama3.3:70b')
@@ -212,10 +217,10 @@ def _call_llm_offline(prompt, system_prompt, provider_config):
                 "prompt": full_prompt,
                 "stream": False,
                 "options": {
-                    "num_ctx": OLLAMA_CONTEXT_SIZE
+                    "num_ctx": context_size
                 }
             },
-            timeout=OLLAMA_TIMEOUT_SECONDS
+            timeout=timeout
         )
         response.raise_for_status()
         return response.json().get('response', '')
