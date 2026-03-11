@@ -73,7 +73,8 @@ function getTimesketchBlueprintSettings() {
         plaso_workers: blueprint.settings?.plaso_workers || 2,
         plaso_hasher: blueprint.settings?.plaso_hasher || 'none',
         plaso_hasher_size: blueprint.settings?.plaso_hasher_size || 100,
-        collection_timeout: blueprint.settings?.collection_timeout || 10000
+        collection_timeout: blueprint.settings?.collection_timeout || 10000,
+        cpu_limit: blueprint.settings?.cpu_limit || 80
     };
 }
 
@@ -140,7 +141,7 @@ async function runTimeSketchWorkflow() {
     const sketchName = document.getElementById('sketch-name').value.trim() || `Investigation-${new Date().toISOString().split('T')[0]}`;
     const kapeTarget = blueprintSettings.kape_target;
     const timeoutSeconds = blueprintSettings.collection_timeout || 10000;
-    const cpuLimit = 50; // Default CPU limit
+    const cpuLimit = blueprintSettings.cpu_limit || 80;
     const monitorTimeout = blueprintSettings.collection_timeout || 10000;
 
     // Plaso settings from blueprint
@@ -154,7 +155,7 @@ async function runTimeSketchWorkflow() {
 
     const blueprintName = document.getElementById('timesketch-blueprint-select').selectedOptions[0]?.text || 'Unknown';
 
-    if (!confirm(`Start KAPE collection and TimeSketch import for ${selectedClients.length} client(s)?\n\nBlueprint: ${blueprintName}\nClients: ${hostnames}\nKAPE Target: ${kapeTarget}\nPlaso Parser: ${plasoParser}\nCollection Timeout: ${timeoutSeconds}s\nSketch: ${sketchName}\n\nNote: If sketch already exists, timelines will be added to it.`)) {
+    if (!confirm(`Start KAPE collection and TimeSketch import for ${selectedClients.length} client(s)?\n\nBlueprint: ${blueprintName}\nClients: ${hostnames}\nKAPE Target: ${kapeTarget}\nPlaso Parser: ${plasoParser}\nCollection Timeout: ${timeoutSeconds}s\nCPU Limit: ${cpuLimit}%\nSketch: ${sketchName}\n\nNote: If sketch already exists, timelines will be added to it.`)) {
         return;
     }
 
@@ -195,7 +196,7 @@ async function runTimeSketchWorkflow() {
                     client_id: clientId,
                     client_name: hostname,
                     sketch_name: sketchName,
-                    timeline_name: hostname,
+                    timeline_name: `${hostname}_${new Date().toISOString().slice(0,10).replace(/-/g, '')}_${new Date().toISOString().slice(11,19).replace(/:/g, '')}`,
                     monitor_timeout: monitorTimeout,
                     // Plaso settings from blueprint
                     plaso_parser: plasoParser,

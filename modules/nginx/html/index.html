@@ -1212,6 +1212,10 @@ sudo ./velociraptor service start</code></pre>
                                     <input type="number" id="blueprint-ts-timeout" value="10000" min="60" max="86400" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
                                 </div>
                                 <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">CPU Limit (%)</label>
+                                    <input type="number" id="blueprint-ts-cpu" value="80" min="10" max="100" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                </div>
+                                <div>
                                     <label class="block text-sm font-medium text-gray-300 mb-1">File Hasher</label>
                                     <select id="blueprint-ts-hasher" onchange="toggleHasherSize()" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
                                         <option value="none">None (Fastest)</option>
