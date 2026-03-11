@@ -359,6 +359,7 @@ async function editBlueprint(blueprintId, type) {
         document.getElementById('blueprint-ts-plaso').value = bp.settings?.plaso_parser || 'win7';
         document.getElementById('blueprint-ts-workers').value = bp.settings?.plaso_workers || 2;
         document.getElementById('blueprint-ts-timeout').value = bp.settings?.collection_timeout || 10000;
+        document.getElementById('blueprint-ts-cpu').value = bp.settings?.cpu_limit || 80;
         document.getElementById('blueprint-ts-hasher').value = bp.settings?.plaso_hasher || 'none';
         document.getElementById('blueprint-ts-maxsize').value = bp.settings?.plaso_hasher_size || 100;
         toggleHasherSize();
@@ -469,6 +470,7 @@ async function saveBlueprintFromModal() {
             plaso_parser: document.getElementById('blueprint-ts-plaso').value || 'win7',
             plaso_workers: parseInt(document.getElementById('blueprint-ts-workers').value) || 2,
             collection_timeout: parseInt(document.getElementById('blueprint-ts-timeout').value) || 10000,
+            cpu_limit: parseInt(document.getElementById('blueprint-ts-cpu').value) || 80,
             plaso_hasher: hasher,
             plaso_hasher_size: hasher !== 'none' ? parseInt(document.getElementById('blueprint-ts-maxsize').value) || 100 : null
         };
