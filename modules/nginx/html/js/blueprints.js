@@ -239,7 +239,7 @@ function renderBlueprintCard(bp) {
     } else {
         const expiry = bp.settings?.hunt_expiry || 120;
         const timeout = bp.settings?.timeout || 3600;
-        const cpu = bp.settings?.cpu_limit || 50;
+        const cpu = bp.settings?.cpu_limit || 90;
         settingsHtml = `
             <span>${artifactCount} artifacts</span>
             <span>Expiry: ${expiry}m</span>
@@ -366,7 +366,7 @@ async function editBlueprint(blueprintId, type) {
     } else {
         document.getElementById('blueprint-expiry').value = bp.settings?.hunt_expiry || 120;
         document.getElementById('blueprint-timeout').value = bp.settings?.timeout || 3600;
-        document.getElementById('blueprint-cpu').value = bp.settings?.cpu_limit || 50;
+        document.getElementById('blueprint-cpu').value = bp.settings?.cpu_limit || 90;
     }
 
     populateModalArtifacts(bp.artifacts || []);
@@ -556,7 +556,7 @@ async function onVelociraptorBlueprintChange(blueprintId) {
     document.getElementById('bestpractice-bp-artifact-count').textContent = (bp.artifacts?.length || 0) + ' artifacts';
     document.getElementById('bestpractice-bp-expiry').textContent = (bp.settings?.hunt_expiry || 120) + ' min';
     document.getElementById('bestpractice-bp-timeout').textContent = (bp.settings?.timeout || 3600) + 's';
-    document.getElementById('bestpractice-bp-cpu').textContent = (bp.settings?.cpu_limit || 50) + '%';
+    document.getElementById('bestpractice-bp-cpu').textContent = (bp.settings?.cpu_limit || 90) + '%';
     if (infoDiv) infoDiv.classList.remove('hidden');
 }
 
@@ -750,7 +750,7 @@ async function onForensicsBlueprintChange(blueprintId) {
     const timeoutEl = document.getElementById('forensics-bp-timeout');
     if (timeoutEl) timeoutEl.textContent = (bp.settings?.timeout || 3600) + 's';
     const cpuEl = document.getElementById('forensics-bp-cpu');
-    if (cpuEl) cpuEl.textContent = (bp.settings?.cpu_limit || 50) + '%';
+    if (cpuEl) cpuEl.textContent = (bp.settings?.cpu_limit || 90) + '%';
     if (infoDiv) infoDiv.classList.remove('hidden');
 }
 
@@ -1022,7 +1022,7 @@ async function startForensicsCollection() {
                     blueprint_name: blueprint.name || 'Custom',
                     expire_minutes: blueprint.settings?.hunt_expiry || 120,
                     timeout_seconds: blueprint.settings?.timeout || 3600,
-                    cpu_limit: blueprint.settings?.cpu_limit || 50
+                    cpu_limit: blueprint.settings?.cpu_limit || 90
                 })
             });
 
