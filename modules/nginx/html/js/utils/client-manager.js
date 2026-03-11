@@ -86,7 +86,7 @@ class ClientManager {
 
             return `
                 <label class="flex items-center gap-3 p-2 rounded hover:bg-gray-800 cursor-pointer">
-                    <input type="checkbox" class="${this.checkboxClass}" value="${client.client_id}" ${shouldCheck ? 'checked' : ''}>
+                    <input type="checkbox" class="${this.checkboxClass}" value="${client.client_id}" data-hostname="${client.hostname || 'Unknown'}" ${shouldCheck ? 'checked' : ''}>
                     ${dot}
                     <div class="flex-1 min-w-0">
                         <span class="text-sm text-white">${client.hostname || 'Unknown'}</span>

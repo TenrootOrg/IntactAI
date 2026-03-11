@@ -5,9 +5,9 @@ Agentic Constants - Centralized configuration values
 
 # LLM Configuration
 TRUNCATE_TOKEN_LIMIT = 100000  # ~25K tokens, max data size before truncation
-MAX_LLM_TOKENS = 4096  # Max response tokens for online LLMs
-OLLAMA_CONTEXT_SIZE = 32768  # Context window for Ollama
-OLLAMA_TIMEOUT_SECONDS = 300  # Request timeout for Ollama
+MAX_LLM_TOKENS = 16384  # Max response tokens for online LLMs (increased for detailed reports)
+OLLAMA_CONTEXT_SIZE = 65536  # Context window for Ollama (increased for detailed reports)
+OLLAMA_TIMEOUT_SECONDS = 600  # Request timeout for Ollama (10 min for detailed reports)
 
 # Collection Configuration
 COLLECTION_POLL_INTERVAL = 30  # Seconds between polling for results

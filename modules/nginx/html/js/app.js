@@ -17,7 +17,7 @@ window.defaultConfig = {
     agentic: {
         llm_mode: "offline",
         offline_llm: { provider: "ollama", model: "llama3.3:70b", url: "http://localhost:11434", batch_size: 100 },
-        online_llm: { provider: "claude", api_key: "", model: "claude-sonnet-4-20250514", batch_size: 100 },
+        online_llm: { provider: "claude", api_key: "", model: "claude-sonnet-4-6", batch_size: 100 },
     }
 };
 
@@ -314,8 +314,11 @@ document.addEventListener('alpine:init', () => {
             agentic: {
                 llm_mode: 'offline',
                 offline_llm: { provider: 'ollama', model: 'llama3.3:70b', url: 'http://localhost:11434', batch_size: 100 },
-                online_llm: { provider: 'claude', api_key: '', model: 'claude-sonnet-4-20250514', batch_size: 100 },
-                max_concurrent_requests: 5
+                online_llm: { provider: 'claude', api_key: '', model: 'claude-sonnet-4-6', batch_size: 100 },
+                max_concurrent_requests: 5,
+                max_response_tokens: 16384,
+                ollama_context_size: 65536,
+                ollama_timeout: 600
             },
             timesketch: {
                 llm_mode: 'google',
@@ -354,7 +357,10 @@ document.addEventListener('alpine:init', () => {
                         llm_mode: data.agentic?.llm_mode || 'offline',
                         offline_llm: { ...this.config.agentic.offline_llm, ...data.agentic?.offline_llm },
                         online_llm: { ...this.config.agentic.online_llm, ...data.agentic?.online_llm },
-                        max_concurrent_requests: data.agentic?.max_concurrent_requests || 5
+                        max_concurrent_requests: data.agentic?.max_concurrent_requests || 5,
+                        max_response_tokens: data.agentic?.max_response_tokens || 16384,
+                        ollama_context_size: data.agentic?.ollama_context_size || 65536,
+                        ollama_timeout: data.agentic?.ollama_timeout || 600
                     };
                 }
 
@@ -479,7 +485,7 @@ document.addEventListener('alpine:init', () => {
         onProviderChange() {
             const modelDefaults = {
                 'openai': 'gpt-4o',
-                'claude': 'claude-sonnet-4-20250514',
+                'claude': 'claude-sonnet-4-6',
                 'gemini': 'gemini-pro',
                 'openrouter': 'anthropic/claude-opus-4-6'
             };

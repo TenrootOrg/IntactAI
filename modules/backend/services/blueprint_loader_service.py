@@ -5,12 +5,11 @@ Blueprint Loader Service - Loads blueprints from YAML files
 This service:
 1. Loads bundled default blueprints from /app/config/default_blueprints.yaml
 2. Optionally loads user overrides from /app/data/blueprints/*.yaml
-3. Merges and resolves references ($artifact_list_name -> actual list)
-4. Provides clean API for seeding
+3. Merges overrides with defaults
 
 Directory structure:
-- /app/config/default_blueprints.yaml - Bundled defaults (in container, NOT volume-mounted)
-- /app/data/blueprints/*.yaml - User overrides (volume-mounted, persists)
+- /app/config/default_blueprints.yaml - Bundled defaults (in container)
+- /app/data/blueprints/*.yaml - User overrides (volume-mounted)
 """
 
 import os
@@ -18,7 +17,7 @@ import yaml
 from typing import Dict, List, Any, Optional
 from copy import deepcopy
 
-# Paths - bundled defaults are in /app/config (NOT volume-mounted)
+# Paths
 BUNDLED_DEFAULTS_PATH = '/app/config/default_blueprints.yaml'
 USER_OVERRIDES_DIR = '/app/data/blueprints'
 
@@ -39,64 +38,8 @@ def _load_yaml_file(path: str) -> Optional[Dict]:
     return None
 
 
-def _resolve_reference(value: Any, artifact_lists: Dict, settings: Dict) -> Any:
-    """Resolve $reference strings to actual values.
-
-    Args:
-        value: The value to resolve (may be a $reference string)
-        artifact_lists: Dict of artifact list names to artifact arrays
-        settings: Dict of settings template names to settings objects
-
-    Returns:
-        Resolved value (deep copy of referenced list/settings, or original value)
-    """
-    if isinstance(value, str) and value.startswith('$'):
-        ref_name = value[1:]  # Remove $ prefix
-        # Check artifact_lists first
-        if ref_name in artifact_lists:
-            return deepcopy(artifact_lists[ref_name])
-        # Then check settings
-        if ref_name in settings:
-            return deepcopy(settings[ref_name])
-        print(f"[BLUEPRINT-LOADER] Warning: Unresolved reference: {value}", flush=True)
-    return value
-
-
-def _resolve_blueprint(bp: Dict, artifact_lists: Dict, settings: Dict) -> Dict:
-    """Resolve all references in a blueprint.
-
-    Args:
-        bp: Blueprint dict with potential $references
-        artifact_lists: Dict of artifact list names to artifact arrays
-        settings: Dict of settings template names to settings objects
-
-    Returns:
-        Blueprint dict with all references resolved to actual values
-    """
-    resolved = deepcopy(bp)
-
-    # Resolve artifacts reference
-    if 'artifacts' in resolved:
-        resolved['artifacts'] = _resolve_reference(
-            resolved['artifacts'], artifact_lists, settings
-        )
-
-    # Resolve settings reference
-    if 'settings' in resolved:
-        resolved['settings'] = _resolve_reference(
-            resolved['settings'], artifact_lists, settings
-        )
-
-    return resolved
-
-
 def load_bundled_defaults() -> Dict:
-    """Load bundled default blueprints from the shipped YAML file.
-
-    Returns:
-        Dict containing version, artifact_lists, default_settings, and blueprints
-    """
-    # Try container path first, then dev path
+    """Load bundled default blueprints from the shipped YAML file."""
     for path in [BUNDLED_DEFAULTS_PATH, DEV_DEFAULTS_PATH]:
         data = _load_yaml_file(path)
         if data:
@@ -108,26 +51,16 @@ def load_bundled_defaults() -> Dict:
 
 
 def load_user_overrides() -> Dict[str, List[Dict]]:
-    """Load user override blueprints from /data/blueprints/ directory.
-
-    User can create YAML files to override or add to default blueprints:
-    - velociraptor.yaml - Override/add velociraptor blueprints
-    - agentic.yaml - Override/add agentic blueprints
-    - timesketch.yaml - Override/add timesketch blueprints
-
-    Returns:
-        Dict with keys 'velociraptor', 'agentic', 'timesketch', each containing list of blueprints
-    """
+    """Load user override blueprints from /data/blueprints/ directory."""
     overrides = {
         'velociraptor': [],
-        'agentic': [],
         'timesketch': []
     }
 
     if not os.path.exists(USER_OVERRIDES_DIR):
         return overrides
 
-    for filename in ['velociraptor.yaml', 'agentic.yaml', 'timesketch.yaml']:
+    for filename in ['velociraptor.yaml', 'timesketch.yaml']:
         path = os.path.join(USER_OVERRIDES_DIR, filename)
         data = _load_yaml_file(path)
         if data and isinstance(data, list):
@@ -142,49 +75,30 @@ def load_user_overrides() -> Dict[str, List[Dict]]:
 def get_all_blueprints() -> Dict[str, List[Dict]]:
     """Load and merge all blueprints.
 
-    This is the main API function. It:
-    1. Loads bundled defaults from /app/config/default_blueprints.yaml
-    2. Resolves all $references to actual artifact lists and settings
-    3. Loads user overrides from /app/data/blueprints/*.yaml (if any)
-    4. Merges overrides with defaults (matching IDs replace, new IDs add)
-
     Returns:
         Dict with keys: 'velociraptor', 'agentic', 'timesketch'
-        Each value is a list of fully resolved blueprint dicts.
-
-    Example:
-        blueprints = get_all_blueprints()
-        for bp in blueprints['velociraptor']:
-            print(bp['name'], len(bp['artifacts']))
+        (agentic returns same as velociraptor for backwards compatibility)
     """
-    # Load bundled defaults
     defaults = load_bundled_defaults()
 
-    # Extract reference tables
-    artifact_lists = defaults.get('artifact_lists', {})
-    default_settings = defaults.get('default_settings', {})
-
-    # Build result from defaults, resolving references
+    # Build result directly from YAML (no more $references)
     result = {
         'velociraptor': [],
-        'agentic': [],
         'timesketch': []
     }
 
-    for bp_type in ['velociraptor', 'agentic', 'timesketch']:
+    for bp_type in ['velociraptor', 'timesketch']:
         for bp in defaults.get(bp_type, []):
-            resolved = _resolve_blueprint(bp, artifact_lists, default_settings)
-            result[bp_type].append(resolved)
+            result[bp_type].append(deepcopy(bp))
 
     # Load and merge user overrides
     overrides = load_user_overrides()
 
-    for bp_type in ['velociraptor', 'agentic', 'timesketch']:
+    for bp_type in ['velociraptor', 'timesketch']:
         override_list = overrides.get(bp_type, [])
         if not override_list:
             continue
 
-        # Build map of existing IDs
         existing_ids = {bp['id']: idx for idx, bp in enumerate(result[bp_type])}
 
         for override_bp in override_list:
@@ -192,17 +106,16 @@ def get_all_blueprints() -> Dict[str, List[Dict]]:
             if not bp_id:
                 continue
 
-            # Resolve any references in override (user can use $references too)
-            resolved = _resolve_blueprint(override_bp, artifact_lists, default_settings)
-
             if bp_id in existing_ids:
-                # Replace existing
-                result[bp_type][existing_ids[bp_id]] = resolved
+                result[bp_type][existing_ids[bp_id]] = deepcopy(override_bp)
                 print(f"[BLUEPRINT-LOADER] Override replaced: {bp_type}/{bp_id}", flush=True)
             else:
-                # Add new
-                result[bp_type].append(resolved)
+                result[bp_type].append(deepcopy(override_bp))
                 print(f"[BLUEPRINT-LOADER] Override added: {bp_type}/{bp_id}", flush=True)
+
+    # Backwards compatibility: agentic returns velociraptor blueprints
+    # (agentic blueprints are now part of velociraptor list with [Agentic] prefix)
+    result['agentic'] = [bp for bp in result['velociraptor'] if '[Agentic]' in bp.get('name', '')]
 
     # Log summary
     for bp_type in result:
@@ -212,13 +125,13 @@ def get_all_blueprints() -> Dict[str, List[Dict]]:
 
 
 def get_artifact_lists() -> Dict[str, List[str]]:
-    """Get all defined artifact lists for reference.
-
-    Returns:
-        Dict of artifact list names to artifact arrays
-    """
-    defaults = load_bundled_defaults()
-    return defaults.get('artifact_lists', {})
+    """Get unique artifacts from all blueprints (for reference/validation)."""
+    blueprints = get_all_blueprints()
+    artifacts = set()
+    for bp_list in blueprints.values():
+        for bp in bp_list:
+            artifacts.update(bp.get('artifacts', []))
+    return {'all_artifacts': sorted(list(artifacts))}
 
 
 # For testing

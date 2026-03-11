@@ -29,7 +29,7 @@ DEFAULT_LLM_CONFIG = {
         "online_llm": {
             "provider": "claude",
             "api_key": "",
-            "model": "claude-sonnet-4-20250514",
+            "model": "claude-sonnet-4-6",
             "batch_size": 100
         }
     }
