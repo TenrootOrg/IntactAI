@@ -13,14 +13,14 @@ from pyvelociraptor import api_pb2_grpc
 
 from services.velociraptor_service import setup_velociraptor_connection
 
-def run_kape_collection_grpc(client_id, kape_target="KapeTriage", timeout_seconds=10000, cpu_limit=50):
+def run_kape_collection_grpc(client_id, kape_target="KapeTriage", timeout_seconds=10000, cpu_limit=80):
     """Run KAPE collection on a client using gRPC API
 
     Args:
         client_id: Velociraptor client ID
         kape_target: KAPE target (e.g., '_KapeTriage', '_SANS_Triage', '_J')
         timeout_seconds: Collection timeout in seconds (default 10000 = ~2.8 hours)
-        cpu_limit: CPU limit percentage on endpoint (default 50%)
+        cpu_limit: CPU limit percentage on endpoint (default 80%)
     """
     sys.stdout.flush()
     print("=" * 80, flush=True)

@@ -249,7 +249,7 @@ def _run_velociraptor_hunt(job_name: str, blueprint_id: str, client_ids: list):
     settings = blueprint.get('settings', {})
     expire_minutes = settings.get('hunt_expiry', 120)
     timeout_seconds = settings.get('timeout', 3600)
-    cpu_limit = settings.get('cpu_limit', 50)
+    cpu_limit = settings.get('cpu_limit', 80)
 
     if not artifacts:
         print(f"[SCHEDULER] No artifacts in blueprint: {blueprint_id}", flush=True)
@@ -363,7 +363,7 @@ def _run_timesketch_pipeline(job_meta: dict, client_ids: list):
 
     kape_target = settings.get('kape_target', '_KapeTriage')
     timeout_seconds = settings.get('collection_timeout', 10000)
-    cpu_limit = 50
+    cpu_limit = 80
 
     for client_id in client_ids:
         try:

@@ -156,7 +156,7 @@ def run_timesketch_import():
                             "timeline_name": timeline_name,
                             "kape_target": job_info.get('kape_target', 'Unknown'),
                             "timeout_seconds": job_info.get('timeout_seconds', 10000),
-                            "cpu_limit": job_info.get('cpu_limit', 50),
+                            "cpu_limit": job_info.get('cpu_limit', 80),
                             "monitor_timeout": monitor_timeout,
                             "blueprint_id": job_info.get('blueprint_id'),
                             "blueprint": job_info.get('blueprint', 'Unknown')

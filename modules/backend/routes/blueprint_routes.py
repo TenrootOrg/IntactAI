@@ -126,33 +126,23 @@ seed_default_blueprints()
 
 @blueprint_bp.route('/api/blueprints/forensics', methods=['GET'])
 def list_forensics_blueprints():
-    """Get all forensics blueprints (velociraptor + agentic combined)
+    """Get all forensics blueprints (velociraptor table contains both types)
 
-    Returns blueprints from both tables with [Velociraptor] and [Agentic] prefixes.
-    All forensics modules should use this unified endpoint.
+    Velociraptor blueprints have [Velociraptor] prefix in name.
+    Agentic blueprints have [Agentic] prefix in name.
+    Both are stored in the same velociraptor table.
     """
     try:
-        all_blueprints = []
+        # All blueprints are now in velociraptor table
+        all_blueprints = load_velociraptor_blueprints()
 
-        # Load velociraptor blueprints with [Velociraptor] prefix
-        velo_blueprints = load_velociraptor_blueprints()
-        for bp in velo_blueprints:
+        # Set blueprint_type based on name prefix
+        for bp in all_blueprints:
             name = bp.get('name', '')
-            # Add prefix if not already present
-            if not name.startswith('[Velociraptor]'):
-                bp['name'] = f"[Velociraptor] {name}"
-            bp['blueprint_type'] = 'velociraptor'
-            all_blueprints.append(bp)
-
-        # Load agentic blueprints with [Agentic] prefix
-        agentic_blueprints = load_agentic_blueprints()
-        for bp in agentic_blueprints:
-            name = bp.get('name', '')
-            # Add prefix if not already present
-            if not name.startswith('[Agentic]'):
-                bp['name'] = f"[Agentic] {name}"
-            bp['blueprint_type'] = 'agentic'
-            all_blueprints.append(bp)
+            if '[Agentic]' in name:
+                bp['blueprint_type'] = 'agentic'
+            else:
+                bp['blueprint_type'] = 'velociraptor'
 
         # Sort: Velociraptor first, then Agentic, alphabetically within each group
         all_blueprints.sort(key=lambda x: (0 if x.get('blueprint_type') == 'velociraptor' else 1, x.get('name', '')))
@@ -195,7 +185,7 @@ def create_velociraptor_blueprint():
             "description": data.get('description', ''),
             "is_default": False,
             "artifacts": data['artifacts'],
-            "settings": data.get('settings', {"hunt_expiry": 120, "timeout": 3600, "cpu_limit": 50})
+            "settings": data.get('settings', {"hunt_expiry": 120, "timeout": 3600, "cpu_limit": 80})
         }
 
         result = save_velociraptor_blueprint(blueprint)
@@ -296,7 +286,7 @@ def create_agentic_blueprint():
             "description": data.get('description', ''),
             "is_default": False,
             "artifacts": data['artifacts'],
-            "settings": data.get('settings', {"hunt_expiry": 120, "timeout": 3600, "cpu_limit": 50})
+            "settings": data.get('settings', {"hunt_expiry": 120, "timeout": 3600, "cpu_limit": 80})
         }
 
         result = save_agentic_blueprint(blueprint)
