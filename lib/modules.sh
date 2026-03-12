@@ -133,7 +133,6 @@ generate_certificates() {
 run_docker_compose() {
     local action="$1"
     local module_name="$2"
-    local last_status=""
 
     log_info "  Running: docker compose $action"
 
@@ -147,16 +146,16 @@ run_docker_compose() {
         done
         return ${PIPESTATUS[0]}
     else
-        docker compose up -d 2>&1 | tee -a "$LOG_FILE" | while IFS= read -r line; do
-            # Filter out repetitive progress lines (Pulling, Extracting with timestamps)
-            if echo "$line" | grep -qE "[0-9a-f]{12} (Pulling|Extracting|Downloading|Waiting) [0-9]"; then
-                continue  # Skip noisy layer progress
-            fi
-            # Show container status changes and important messages
-            if [[ -n "$line" ]]; then
-                echo "    $line"
-            fi
-        done
+        # For 'up -d': Filter repetitive download/extract progress, show key events
+        # Keep: Image pulling, Container creating/starting, errors/warnings
+        # Filter: "abc123 Downloading 4.194MB", "abc123 Extracting", "Download complete", etc.
+        docker compose up -d 2>&1 | tee -a "$LOG_FILE" | \
+            grep -vE "^\s*[0-9a-f]{12} (Downloading|Extracting|Waiting|Download complete|Pull complete|Pulling fs layer) " | \
+            while IFS= read -r line; do
+                if [[ -n "$line" ]]; then
+                    echo "    $line"
+                fi
+            done
         return ${PIPESTATUS[0]}
     fi
 }
