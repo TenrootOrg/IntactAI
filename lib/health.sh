@@ -23,20 +23,23 @@ run_post_install_init() {
     done
 
     if [[ $waited -ge $max_wait ]]; then
-        log_warn "Backend not ready after ${max_wait}s, skipping artifact import"
-        log_warn "You can run artifact import later via Dashboard > Settings > Maintenance"
+        log_warn "Backend not ready after ${max_wait}s, skipping maintenance"
+        log_warn "You can run maintenance later via Dashboard > Settings > Maintenance"
         return
     fi
 
-    # Trigger maintenance to import artifacts (Exchange, DetectRaptor, TenRoot)
-    log_info "Importing Velociraptor artifacts (Exchange, DetectRaptor, TenRoot)..."
-    log_info "This runs in background - check Dashboard > Settings for progress"
+    # Run maintenance tasks directly (no workflow created in GUI)
+    log_info "Running maintenance tasks (artifact import, tool download)..."
+    log_info "This may take a few minutes..."
 
-    local response=$(curl -sf --max-time 10 -X POST http://localhost:5001/api/maintenance/run 2>/dev/null)
-    if [[ $? -eq 0 ]]; then
-        log_success "Artifact import started in background"
+    # Run the maintenance script inside the backend container
+    if docker exec mssp_backend python /app/scripts/run_maintenance.py 2>&1 | while IFS= read -r line; do
+        echo "  $line"
+        echo "  $line" >> "$LOG_FILE"
+    done; then
+        log_success "Maintenance tasks completed"
     else
-        log_warn "Could not start artifact import - run manually via Dashboard > Settings > Maintenance"
+        log_warn "Maintenance had issues - check logs above"
     fi
 }
 
@@ -170,6 +173,11 @@ print_summary() {
     echo ""
     echo "Note: IRIS may take 2-5 minutes on first startup for database initialization."
     echo ""
+
+    # Log completion message (appears in both terminal and log file)
+    log_success "=============================================="
+    log_success "MSSP Platform Installation Complete!"
+    log_success "=============================================="
 }
 
 # ============================================================================
