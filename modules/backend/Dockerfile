@@ -2,9 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install Docker CLI for docker exec commands
+# Install Docker CLI and compose plugin for upgrade operations
 RUN apt-get update && \
-    apt-get install -y docker.io curl && \
+    apt-get install -y docker.io curl ca-certificates && \
+    mkdir -p /usr/local/lib/docker/cli-plugins && \
+    curl -SL https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose && \
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose && \
     rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip and wheel first to fix security vulnerabilities (CVE-2025-8869, CVE-2026-1703, CVE-2026-24049)

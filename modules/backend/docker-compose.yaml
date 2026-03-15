@@ -19,8 +19,10 @@ services:
       - TIMESKETCH_PASS=${TIMESKETCH_PASS}
       - VELO_CONFIG_PATH=${VELO_CONFIG_PATH}
       - CONFIG_PATH=${CONFIG_PATH}
+      # Host path for upgrade operations (Docker needs host paths for volume mounts)
+      - MSSP_HOST_PATH=${MSSP_HOST_PATH:-/home/tenroot/new-mssp-main}
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro  # Docker socket for container access
+      - /var/run/docker.sock:/var/run/docker.sock:rw  # Docker socket for container access (rw for upgrades)
       - /tmp/plaso:/tmp/plaso  # Plaso output directory for Timesketch import
       - ../velociraptor/config:/app/config/velociraptor:ro  # Velociraptor API config
       - ../timesketch/config:/app/config/timesketch:rw  # Timesketch config (writable for LLM settings)
@@ -33,6 +35,9 @@ services:
       - ./config/default_blueprints.yaml:/app/config/default_blueprints.yaml:ro  # Live blueprint updates
       - /app/logs  # Logs directory
       - upload_data:/data/uploads  # Shared volume for tus uploads
+      - ../..:/app/workdir:rw  # MSSP root for upgrade operations
+      # Also mount at host path for docker compose --project-directory to work
+      - /home/tenroot/new-mssp-main:/home/tenroot/new-mssp-main:rw
     ports:
       - "5001:5001"
     restart: unless-stopped
