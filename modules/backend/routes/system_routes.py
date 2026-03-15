@@ -547,17 +547,25 @@ def start_upgrade():
             try:
                 from services.upgrade_service import run_upgrade_workflow
 
-                def logger(msg, level="info"):
-                    add_log_to_run(run_id, msg, level)
-
                 # Calculate progress per module
                 total_modules = len(modules)
                 progress_per_module = 90 // total_modules if total_modules > 0 else 90
+                completed_modules = [0]  # Use list to allow modification in nested function
 
-                current_progress = 5
-                for i, module in enumerate(modules.keys()):
-                    current_progress = 5 + (i * progress_per_module)
-                    update_run_status(run_id, "running", progress=current_progress)
+                def logger(msg, level="info"):
+                    add_log_to_run(run_id, msg, level)
+                    # Update progress when a module upgrade starts
+                    if msg.startswith("UPGRADING:"):
+                        progress = 5 + (completed_modules[0] * progress_per_module)
+                        update_run_status(run_id, "running", progress=progress)
+                    # Update progress when a module completes
+                    elif "upgrade completed" in msg.lower() or "is running" in msg.lower():
+                        completed_modules[0] += 1
+                        progress = 5 + (completed_modules[0] * progress_per_module)
+                        update_run_status(run_id, "running", progress=min(progress, 95))
+
+                add_log_to_run(run_id, f"Modules to upgrade: {', '.join(modules.keys())}", "info")
+                update_run_status(run_id, "running", progress=5)
 
                 result = run_upgrade_workflow(modules, mode=mode, logger=logger)
 

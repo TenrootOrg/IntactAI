@@ -486,7 +486,7 @@ document.addEventListener('alpine:init', () => {
         showUpgradeModal: false,
         upgradeLoading: false,
         upgradeModules: [
-            { id: 'elk', name: 'ELK Stack', current: '', targetVersion: '', enabled: false },
+            { id: 'elk', name: 'ELK Stack', current: '', targetVersion: '', enabled: false, note: 'Downgrades not supported' },
             { id: 'timesketch', name: 'Timesketch', current: '', targetVersion: '', enabled: false },
             { id: 'iris', name: 'IRIS', current: '', targetVersion: '', enabled: false },
             { id: 'velociraptor', name: 'Velociraptor', current: '', targetVersion: '', enabled: false },
@@ -528,10 +528,30 @@ document.addEventListener('alpine:init', () => {
             this.showUpgradeModal = false;
         },
 
+        // Helper to compare version strings
+        compareVersions(v1, v2) {
+            const parse = (v) => (v || '0').replace(/^v/, '').split('.').map(n => parseInt(n) || 0);
+            const p1 = parse(v1), p2 = parse(v2);
+            const len = Math.max(p1.length, p2.length);
+            for (let i = 0; i < len; i++) {
+                const a = p1[i] || 0, b = p2[i] || 0;
+                if (a < b) return -1;
+                if (a > b) return 1;
+            }
+            return 0;
+        },
+
         async startUpgrade() {
             const selected = this.upgradeModules.filter(m => m.enabled);
             if (selected.length === 0) {
                 this.showMessage('Select at least one module to upgrade', 'error');
+                return;
+            }
+
+            // Check for ELK downgrade attempt
+            const elk = selected.find(m => m.id === 'elk');
+            if (elk && this.compareVersions(elk.targetVersion, elk.current) < 0) {
+                this.showMessage('ELK downgrade not supported. Elasticsearch only allows forward upgrades.', 'error');
                 return;
             }
 
