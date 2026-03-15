@@ -47,3 +47,6 @@ modules/nginx/html/downloads/
 
 # Frontend database
 data/frontend_data.db
+
+# Upgrade packages (created by scripts/create-upgrade-package.sh)
+mssp-upgrade-*.tar.gz
