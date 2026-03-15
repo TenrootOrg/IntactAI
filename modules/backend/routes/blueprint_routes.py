@@ -16,10 +16,9 @@ from services.file_storage_service import (
     load_velociraptor_blueprints,
     get_velociraptor_blueprint,
     delete_velociraptor_blueprint,
+    # Agentic functions are aliases to velociraptor (same storage)
     save_agentic_blueprint,
     load_agentic_blueprints,
-    get_agentic_blueprint,
-    delete_agentic_blueprint,
     save_timesketch_blueprint,
     load_timesketch_blueprints,
     get_timesketch_blueprint,
@@ -254,104 +253,45 @@ def delete_velociraptor_blueprint_route(blueprint_id):
 
 
 # ============================================================================
-# Agentic Blueprint API Routes
+# Agentic Blueprint API Routes (delegates to velociraptor - same storage)
 # ============================================================================
+# Note: Agentic and Velociraptor blueprints share the same storage.
+# The only distinction is the [Agentic] prefix in the name.
+# These routes are kept for backwards compatibility.
 
 @blueprint_bp.route('/api/blueprints/agentic', methods=['GET'])
 def list_agentic_blueprints():
-    """Get all agentic blueprints"""
+    """Get agentic blueprints (filtered from velociraptor storage by [Agentic] prefix)"""
     try:
-        blueprints = load_agentic_blueprints()
-        return jsonify({"blueprints": blueprints})
+        all_bp = load_velociraptor_blueprints()
+        agentic = [bp for bp in all_bp if '[Agentic]' in bp.get('name', '')]
+        return jsonify({"blueprints": agentic})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @blueprint_bp.route('/api/blueprints/agentic', methods=['POST'])
 def create_agentic_blueprint():
-    """Create a new agentic blueprint"""
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "No data provided"}), 400
-        if not data.get('name'):
-            return jsonify({"error": "Blueprint name is required"}), 400
-        if not data.get('artifacts') or len(data['artifacts']) == 0:
-            return jsonify({"error": "At least one artifact is required"}), 400
-
-        blueprint_id = data.get('id') or f"custom_{int(time.time() * 1000)}"
-        blueprint = {
-            "id": blueprint_id,
-            "name": data['name'],
-            "description": data.get('description', ''),
-            "is_default": False,
-            "artifacts": data['artifacts'],
-            "settings": data.get('settings', {"hunt_expiry": 120, "timeout": 3600, "cpu_limit": 80})
-        }
-
-        result = save_agentic_blueprint(blueprint)
-        if result:
-            return jsonify({"success": True, "blueprint": blueprint}), 201
-        else:
-            return jsonify({"error": "Failed to save blueprint"}), 500
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    """Create agentic blueprint (stored in velociraptor table)"""
+    return create_velociraptor_blueprint()
 
 
 @blueprint_bp.route('/api/blueprints/agentic/<blueprint_id>', methods=['GET'])
 def get_agentic_blueprint_by_id(blueprint_id):
-    """Get a specific agentic blueprint"""
-    try:
-        bp = get_agentic_blueprint(blueprint_id)
-        if bp:
-            return jsonify(bp)
-        return jsonify({"error": "Blueprint not found"}), 404
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    """Get agentic blueprint by ID (from velociraptor storage)"""
+    return get_velociraptor_blueprint_by_id(blueprint_id)
 
 
 @blueprint_bp.route('/api/blueprints/agentic/<blueprint_id>', methods=['PUT'])
 def update_agentic_blueprint_route(blueprint_id):
-    """Update an agentic blueprint"""
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "No data provided"}), 400
-
-        existing = get_agentic_blueprint(blueprint_id)
-        if not existing:
-            return jsonify({"error": "Blueprint not found"}), 404
-
-        data['id'] = blueprint_id
-        data['is_default'] = existing.get('is_default', False)
-        data['created_at'] = existing.get('created_at')
-
-        result = save_agentic_blueprint(data)
-        if result:
-            return jsonify({"success": True, "blueprint": data})
-        else:
-            return jsonify({"error": "Failed to update blueprint"}), 500
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    """Update agentic blueprint (in velociraptor storage)"""
+    return update_velociraptor_blueprint_route(blueprint_id)
 
 
 @blueprint_bp.route('/api/blueprints/agentic/<blueprint_id>', methods=['DELETE'])
 def delete_agentic_blueprint_route(blueprint_id):
-    """Delete an agentic blueprint (defaults cannot be deleted)"""
-    try:
-        bp = get_agentic_blueprint(blueprint_id)
-        if not bp:
-            return jsonify({"error": "Blueprint not found"}), 404
-        if bp.get('is_default'):
-            return jsonify({"error": "Cannot delete default blueprints"}), 400
-
-        result = delete_agentic_blueprint(blueprint_id)
-        if result:
-            return jsonify({"success": True})
-        else:
-            return jsonify({"error": "Failed to delete blueprint"}), 500
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    """Delete agentic blueprint (from velociraptor storage)"""
+    return delete_velociraptor_blueprint_route(blueprint_id)
 
 
 # ============================================================================
