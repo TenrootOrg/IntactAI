@@ -66,6 +66,9 @@ main() {
     # Download Offline Collector binaries (v0.74.1)
     download_offline_collector_binaries
 
+    # Download Timesketch Python packages for offline/air-gap support
+    download_timesketch_packages
+
     # Configure
     update_env_files
 
