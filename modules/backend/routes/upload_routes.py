@@ -82,17 +82,28 @@ def handle_tus_hook():
             purpose = metadata.get('purpose', '')
             filename = metadata.get('filename', '')
 
-            if purpose not in ['velociraptor', 'timesketch']:
+            if purpose not in ['velociraptor', 'timesketch', 'upgrade_package']:
                 print(f"[TUS HOOK] Rejected: Invalid purpose '{purpose}'", flush=True)
                 return jsonify({
                     "RejectUpload": True,
                     "HTTPResponse": {
                         "StatusCode": 400,
-                        "Body": json.dumps({"error": "Invalid upload purpose. Must be 'velociraptor' or 'timesketch'"})
+                        "Body": json.dumps({"error": "Invalid upload purpose. Must be 'velociraptor', 'timesketch', or 'upgrade_package'"})
                     }
                 }), 200  # Return 200 but with RejectUpload flag
 
-            if not filename.lower().endswith('.zip'):
+            # Validate file extension based on purpose
+            if purpose == 'upgrade_package':
+                if not (filename.lower().endswith('.tar.gz') or filename.lower().endswith('.tgz')):
+                    print(f"[TUS HOOK] Rejected: Not a tar.gz file '{filename}'", flush=True)
+                    return jsonify({
+                        "RejectUpload": True,
+                        "HTTPResponse": {
+                            "StatusCode": 400,
+                            "Body": json.dumps({"error": "Upgrade packages must be .tar.gz or .tgz files"})
+                        }
+                    }), 200
+            elif not filename.lower().endswith('.zip'):
                 print(f"[TUS HOOK] Rejected: Not a ZIP file '{filename}'", flush=True)
                 return jsonify({
                     "RejectUpload": True,
@@ -256,6 +267,16 @@ def handle_tus_hook():
 
                 thread = threading.Thread(target=run_timesketch_processing, daemon=True)
                 thread.start()
+
+            elif purpose == 'upgrade_package':
+                # Upgrade package uploaded - just mark workflow as complete
+                # The actual upgrade is triggered separately via /api/upgrade/offline
+                print(f"[TUS HOOK] Upgrade package uploaded: {original_filename}", flush=True)
+                if run_id:
+                    add_log_to_run(run_id, f"Upgrade package uploaded: {original_filename}", "success")
+                    add_log_to_run(run_id, f"Package path: {file_path}", "info")
+                    add_log_to_run(run_id, "Ready for offline upgrade. Click 'Start Upgrade' to continue.", "info")
+                    update_run_status(run_id, "completed", progress=100)
 
             return jsonify({"ok": True})
 

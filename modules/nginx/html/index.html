@@ -1513,14 +1513,6 @@ sudo ./velociraptor service start</code></pre>
                         <h2 class="text-3xl font-bold text-white mb-1">Settings</h2>
                         <p class="text-gray-400">Configure system settings</p>
                     </div>
-                    <div class="flex gap-2">
-                        <button @click="$store.settings.runMaintenance()" class="bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded text-sm flex items-center gap-1.5">
-                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-                            </svg>
-                            <span x-text="$store.settings.saving ? 'Running...' : 'Maintenance'"></span>
-                        </button>
-                    </div>
                 </div>
 
                 <!-- Status Message -->
@@ -1550,7 +1542,51 @@ sudo ./velociraptor service start</code></pre>
                     <!-- General Tab -->
                     <div x-show="settingsTab === 'general'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
                         <h3 class="text-lg font-semibold text-white mb-4">General Settings</h3>
-                        <p class="text-gray-400 text-sm">General settings will be added here.</p>
+
+                        <!-- System Operations -->
+                        <div class="space-y-4">
+                            <!-- Maintenance -->
+                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div>
+                                    <h4 class="text-white font-medium">System Maintenance</h4>
+                                    <p class="text-gray-400 text-sm">Update tool inventory and sync configurations</p>
+                                </div>
+                                <button @click="$store.settings.runMaintenance()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                                    </svg>
+                                    <span x-text="$store.settings.saving ? 'Running...' : 'Maintenance'"></span>
+                                </button>
+                            </div>
+
+                            <!-- System Upgrade (Online) -->
+                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div>
+                                    <h4 class="text-white font-medium">System Upgrade (Online)</h4>
+                                    <p class="text-gray-400 text-sm">Upgrade modules to newer versions (requires internet)</p>
+                                </div>
+                                <button @click="$store.settings.openUpgradeModal()" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+                                    </svg>
+                                    <span>Upgrade (Online)</span>
+                                </button>
+                            </div>
+
+                            <!-- System Upgrade (Offline) -->
+                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div>
+                                    <h4 class="text-white font-medium">System Upgrade (Offline)</h4>
+                                    <p class="text-gray-400 text-sm">Upload upgrade package for air-gapped installation</p>
+                                </div>
+                                <button @click="$store.settings.openOfflineUpgradeModal()" class="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                    </svg>
+                                    <span>Upgrade (Offline)</span>
+                                </button>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Agentic Tab -->
@@ -1801,6 +1837,151 @@ sudo ./velociraptor service start</code></pre>
                         <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
                             <button @click="$store.settings.saveCloud()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
                                 <span x-text="$store.settings.saving ? 'Saving...' : 'Save Cloud Settings'"></span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Upgrade Modal -->
+                <div x-show="$store.settings.showUpgradeModal" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="$store.settings.closeUpgradeModal()">
+                    <div class="bg-gray-800 rounded-lg p-6 w-full max-w-lg border border-gray-700 shadow-xl" @click.stop>
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="text-xl font-bold text-white">System Upgrade (Online)</h3>
+                            <button @click="$store.settings.closeUpgradeModal()" class="text-gray-400 hover:text-white">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                                </svg>
+                            </button>
+                        </div>
+                        <p class="text-gray-400 text-sm mb-4">Select modules to upgrade and specify target versions:</p>
+
+                        <!-- Loading state -->
+                        <div x-show="$store.settings.upgradeLoading" class="flex items-center justify-center py-8">
+                            <svg class="animate-spin h-8 w-8 text-blue-500" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                        </div>
+
+                        <!-- Module list -->
+                        <div x-show="!$store.settings.upgradeLoading" class="space-y-3 max-h-80 overflow-y-auto">
+                            <template x-for="module in $store.settings.upgradeModules" :key="module.id">
+                                <div class="flex items-center gap-3 p-3 bg-gray-900 rounded border border-gray-700">
+                                    <input type="checkbox" x-model="module.enabled" class="rounded bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
+                                    <div class="flex-1 min-w-0">
+                                        <span class="text-white font-medium" x-text="module.name"></span>
+                                        <div class="text-gray-500 text-xs">
+                                            Current: <span x-text="module.current || 'unknown'" class="text-gray-400"></span>
+                                        </div>
+                                    </div>
+                                    <input type="text" x-model="module.targetVersion"
+                                           :disabled="!module.enabled"
+                                           class="w-28 bg-gray-700 text-white text-sm px-2 py-1.5 rounded border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                           placeholder="Version">
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- Actions -->
+                        <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-700">
+                            <button @click="$store.settings.closeUpgradeModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
+                                Cancel
+                            </button>
+                            <button @click="$store.settings.startUpgrade()" :disabled="$store.settings.upgradeLoading" class="bg-green-600 hover:bg-green-700 disabled:bg-green-800 px-4 py-2 rounded text-sm font-medium flex items-center gap-2">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+                                </svg>
+                                Start Upgrade
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Offline Upgrade Modal -->
+                <div x-show="$store.settings.showOfflineUpgradeModal" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="$store.settings.closeOfflineUpgradeModal()">
+                    <div class="bg-gray-800 rounded-lg p-6 w-full max-w-lg border border-gray-700 shadow-xl" @click.stop>
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="text-xl font-bold text-white">System Upgrade (Offline)</h3>
+                            <button @click="$store.settings.closeOfflineUpgradeModal()" class="text-gray-400 hover:text-white">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                                </svg>
+                            </button>
+                        </div>
+
+                        <!-- Step 1: Upload -->
+                        <div x-show="!$store.settings.offlinePackageInfo">
+                            <p class="text-gray-400 text-sm mb-4">Upload an upgrade package created on a machine with internet access.</p>
+
+                            <!-- Upload zone -->
+                            <div class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-purple-500 transition-colors"
+                                 :class="{ 'border-purple-500 bg-purple-900/20': $store.settings.offlineUploadDragging }"
+                                 @dragover.prevent="$store.settings.offlineUploadDragging = true"
+                                 @dragleave.prevent="$store.settings.offlineUploadDragging = false"
+                                 @drop.prevent="$store.settings.handleOfflineDrop($event)">
+                                <svg class="w-12 h-12 mx-auto text-gray-500 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                </svg>
+                                <p class="text-gray-400 mb-2">Drag upgrade package here or</p>
+                                <label class="cursor-pointer">
+                                    <span class="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded text-sm text-white">Browse Files</span>
+                                    <input type="file" class="hidden" accept=".tar.gz,.tgz" @change="$store.settings.selectOfflinePackage($event)">
+                                </label>
+                                <p class="text-gray-500 text-xs mt-2">Accepts .tar.gz or .tgz files</p>
+                            </div>
+
+                            <!-- Upload progress -->
+                            <div x-show="$store.settings.offlineUploadProgress > 0 && $store.settings.offlineUploadProgress < 100" class="mt-4">
+                                <div class="flex justify-between text-sm text-gray-400 mb-1">
+                                    <span>Uploading...</span>
+                                    <span x-text="$store.settings.offlineUploadProgress + '%'"></span>
+                                </div>
+                                <div class="w-full bg-gray-700 rounded-full h-2">
+                                    <div class="bg-purple-600 h-2 rounded-full transition-all" :style="'width: ' + $store.settings.offlineUploadProgress + '%'"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step 2: Package Info -->
+                        <div x-show="$store.settings.offlinePackageInfo">
+                            <p class="text-gray-400 text-sm mb-4">Package uploaded successfully. Review versions below:</p>
+
+                            <!-- Package info -->
+                            <div class="bg-gray-900 rounded-lg p-4 border border-gray-700 mb-4">
+                                <div class="text-xs text-gray-500 mb-2">
+                                    Created: <span x-text="$store.settings.offlinePackageInfo?.created || 'unknown'"></span>
+                                </div>
+                                <div class="space-y-2">
+                                    <template x-for="(version, module) in ($store.settings.offlinePackageInfo?.versions || {})" :key="module">
+                                        <div class="flex justify-between items-center py-1 border-b border-gray-700 last:border-0">
+                                            <span class="text-white capitalize" x-text="module"></span>
+                                            <span class="text-purple-400 font-mono text-sm" x-text="version"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <!-- Warning -->
+                            <div class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-3 mb-4">
+                                <p class="text-yellow-400 text-sm">
+                                    <strong>Warning:</strong> This will upgrade all modules in the package. Services will be briefly unavailable during the upgrade.
+                                </p>
+                            </div>
+                        </div>
+
+                        <!-- Actions -->
+                        <div class="flex justify-end gap-3 mt-4 pt-4 border-t border-gray-700">
+                            <button @click="$store.settings.closeOfflineUpgradeModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
+                                Cancel
+                            </button>
+                            <button x-show="$store.settings.offlinePackageInfo"
+                                    @click="$store.settings.startOfflineUpgrade()"
+                                    :disabled="$store.settings.offlineUpgradeStarting"
+                                    class="bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 px-4 py-2 rounded text-sm font-medium flex items-center gap-2">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+                                </svg>
+                                <span x-text="$store.settings.offlineUpgradeStarting ? 'Starting...' : 'Start Upgrade'"></span>
                             </button>
                         </div>
                     </div>
