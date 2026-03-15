@@ -48,6 +48,41 @@ velociraptor_core:
     pattern: ".*linux-amd64$"
     category: core
 
+  - name: "Velociraptor Windows x86"
+    enabled: true
+    type: github_release
+    repo: "Velocidex/velociraptor"
+    pattern: ".*windows-386\\.exe$"
+    category: core
+
+  - name: "Velociraptor Windows x86 MSI"
+    enabled: true
+    type: github_release
+    repo: "Velocidex/velociraptor"
+    pattern: ".*windows-386\\.msi$"
+    category: core
+
+  - name: "Velociraptor Debian"
+    enabled: true
+    type: github_release
+    repo: "Velocidex/velociraptor"
+    pattern: ".*_amd64\\.deb$"
+    category: core
+
+  - name: "Velociraptor RedHat"
+    enabled: true
+    type: github_release
+    repo: "Velocidex/velociraptor"
+    pattern: ".*\\.x86_64\\.rpm$"
+    category: core
+
+  - name: "Velociraptor macOS"
+    enabled: true
+    type: github_release
+    repo: "Velocidex/velociraptor"
+    pattern: ".*darwin-amd64$"
+    category: core
+
   # NOTE: v0.74.1 binaries for Offline Collector are static in modules/nginx/html/downloads/
   # They are NOT downloaded via maintenance (v0.75+ has CLI bug with Generic Collector)
 
@@ -452,6 +487,14 @@ sysinternals_tools:
     url: "https://live.sysinternals.com/tools/Sysmon64.exe"
     category: sysinternals
 
+  - name: "Sysmon Config"
+    enabled: true
+    type: direct_url
+    url: "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml"
+    filename: "sysmonconfig-export.xml"
+    category: sysinternals
+    description: "SwiftOnSecurity Sysmon config"
+
 # ============================================================================
 # DISK IMAGING & COLLECTION
 # ============================================================================
@@ -503,6 +546,46 @@ threat_intel:
     cache_pattern: "thor-lite-windows.*\\.zip"
     category: scanner
     description: "YARA/IOC scanner (version changes with updates)"
+
+# ============================================================================
+# OSQUERY
+# ============================================================================
+osquery_tools:
+  - name: "OSQuery Windows"
+    enabled: true
+    type: github_release
+    repo: "osquery/osquery"
+    pattern: "osquery-.*\\.windows\\.x86_64\\.msi$"
+    category: monitoring
+    description: "OS instrumentation framework for Windows"
+
+  - name: "OSQuery Linux"
+    enabled: true
+    type: github_release
+    repo: "osquery/osquery"
+    pattern: "osquery_.*_1\\.linux_amd64\\.deb$"
+    category: monitoring
+    description: "OS instrumentation framework for Linux"
+
+  - name: "OSQuery macOS"
+    enabled: true
+    type: github_release
+    repo: "osquery/osquery"
+    pattern: "osquery-.*\\.pkg$"
+    category: monitoring
+    description: "OS instrumentation framework for macOS"
+
+# ============================================================================
+# NETWORK TOOLS
+# ============================================================================
+network_tools:
+  - name: "etl2pcapng"
+    enabled: true
+    type: github_release
+    repo: "microsoft/etl2pcapng"
+    pattern: "etl2pcapng\\.exe$"
+    category: network
+    description: "Convert ETL packet captures to PCAP"
 
 # ============================================================================
 # LINUX TOOLS
@@ -703,6 +786,10 @@ velociraptor_inventory:
     file_pattern: "(?i)^Sysmon64.exe$"
     enabled: true
 
+  - tool_name: "SysmonConfig"
+    file_pattern: "(?i)^sysmonconfig.*\\.xml$"
+    enabled: true
+
   - tool_name: "disk2vhd"
     file_pattern: "(?i)^disk2vhd64.exe$"
     enabled: true
@@ -763,4 +850,42 @@ velociraptor_inventory:
 
   - tool_name: "VelociraptorWindowsMSI"
     file_pattern: "(?i)^velociraptor-v.*-windows-amd64.msi$"
+    enabled: true
+
+  - tool_name: "VelociraptorWindows_x86"
+    file_pattern: "(?i)^velociraptor-v.*-windows-386.exe$"
+    enabled: true
+
+  - tool_name: "VelociraptorWindows_x86MSI"
+    file_pattern: "(?i)^velociraptor-v.*-windows-386.msi$"
+    enabled: true
+
+  - tool_name: "VelociraptorDebian"
+    file_pattern: "(?i)^velociraptor.*_amd64.deb$"
+    enabled: true
+
+  - tool_name: "VelociraptorRedHat"
+    file_pattern: "(?i)^velociraptor.*.x86_64.rpm$"
+    enabled: true
+
+  - tool_name: "VelociraptorCollector"
+    file_pattern: "(?i)^velociraptor-collector$"
+    enabled: true
+
+  # OSQuery
+  - tool_name: "OSQueryWindows"
+    file_pattern: "(?i)^osquery-.*\\.windows\\.x86_64\\.msi$"
+    enabled: true
+
+  - tool_name: "OSQueryLinux"
+    file_pattern: "(?i)^osquery_.*\\.linux_amd64\\.deb$"
+    enabled: true
+
+  - tool_name: "OSQueryDarwin"
+    file_pattern: "(?i)^osquery-.*\\.pkg$"
+    enabled: true
+
+  # Network tools
+  - tool_name: "etl2pcapng"
+    file_pattern: "(?i)^etl2pcapng\\.exe$"
     enabled: true
