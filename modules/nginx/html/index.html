@@ -1872,6 +1872,7 @@ sudo ./velociraptor service start</code></pre>
                                         <span class="text-white font-medium" x-text="module.name"></span>
                                         <div class="text-gray-500 text-xs">
                                             Current: <span x-text="module.current || 'unknown'" class="text-gray-400"></span>
+                                            <span x-show="module.note" class="text-yellow-500 ml-2" x-text="'⚠ ' + module.note"></span>
                                         </div>
                                     </div>
                                     <input type="text" x-model="module.targetVersion"

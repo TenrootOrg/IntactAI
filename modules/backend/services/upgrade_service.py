@@ -13,14 +13,32 @@ import requests
 from typing import Dict, Callable, Optional
 
 # Base paths
+# WORKDIR is for container-local file access (reading .env files, etc.)
 WORKDIR = os.environ.get('MSSP_PATH', '/app/workdir')
+# HOST_PATH is for docker compose operations (Docker daemon needs host paths)
+HOST_PATH = os.environ.get('MSSP_HOST_PATH', WORKDIR)
 MODULES_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _run_command(cmd: str, cwd: str = None, timeout: int = 300, logger: Callable = None) -> Dict:
-    """Run a shell command and return result."""
+    """Run a shell command and return result.
+
+    For docker compose commands, cwd should be the WORKDIR (container) path.
+    The --project-directory flag with HOST_PATH is added automatically for compose commands.
+    """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     try:
+        # For docker compose commands, use --project-directory with host path.
+        # The host path is mounted inside container at the same path, so docker compose
+        # can read files and Docker daemon can resolve volume mounts correctly.
+        if cmd.startswith("docker compose") and cwd:
+            if cwd.startswith(WORKDIR):
+                host_cwd = cwd.replace(WORKDIR, HOST_PATH, 1)
+                # Use host path for everything - it's mounted at same path inside container
+                compose_file = os.path.join(host_cwd, 'docker-compose.yaml')
+                cmd = cmd.replace("docker compose", f"docker compose -f {compose_file} --project-directory {host_cwd}", 1)
+                cwd = None  # Don't need cwd since we specified paths explicitly
+
         log(f"  Running: {cmd[:80]}...", "info")
         result = subprocess.run(
             cmd,
@@ -86,7 +104,7 @@ def get_current_versions() -> Dict:
     versions = {}
 
     # ELK
-    elk_env = os.path.join(WORKDIR, 'elk', '.env')
+    elk_env = os.path.join(WORKDIR, 'modules', 'elk', '.env')
     elk_vars = _read_env_file(elk_env)
     versions['elk'] = {
         'current': elk_vars.get('ELASTIC_VERSION', 'unknown'),
@@ -94,7 +112,7 @@ def get_current_versions() -> Dict:
     }
 
     # Timesketch
-    ts_env = os.path.join(WORKDIR, 'timesketch', 'timesketch', '.env')
+    ts_env = os.path.join(WORKDIR, 'modules', 'timesketch', '.env')
     ts_vars = _read_env_file(ts_env)
     versions['timesketch'] = {
         'current': ts_vars.get('TIMESKETCH_VERSION', 'unknown'),
@@ -102,7 +120,7 @@ def get_current_versions() -> Dict:
     }
 
     # IRIS
-    iris_env = os.path.join(WORKDIR, 'iris-web', '.env')
+    iris_env = os.path.join(WORKDIR, 'modules', 'iris', '.env')
     iris_vars = _read_env_file(iris_env)
     versions['iris'] = {
         'current': iris_vars.get('IRIS_VERSION', 'unknown'),
@@ -110,7 +128,7 @@ def get_current_versions() -> Dict:
     }
 
     # Velociraptor
-    velo_env = os.path.join(WORKDIR, 'velociraptor', '.env')
+    velo_env = os.path.join(WORKDIR, 'modules', 'velociraptor', '.env')
     velo_vars = _read_env_file(velo_env)
     versions['velociraptor'] = {
         'current': velo_vars.get('VELOCIRAPTOR_VERSION', 'unknown'),
@@ -184,17 +202,66 @@ def get_latest_versions() -> Dict:
     return versions
 
 
+def _compare_versions(v1: str, v2: str) -> int:
+    """Compare two version strings. Returns -1 if v1 < v2, 0 if equal, 1 if v1 > v2."""
+    def parse_version(v):
+        # Remove 'v' prefix if present
+        v = v.lstrip('v')
+        # Split by . and convert to integers
+        parts = []
+        for p in v.split('.'):
+            try:
+                parts.append(int(p))
+            except ValueError:
+                parts.append(0)
+        return parts
+
+    p1, p2 = parse_version(v1), parse_version(v2)
+    # Pad shorter version with zeros
+    max_len = max(len(p1), len(p2))
+    p1.extend([0] * (max_len - len(p1)))
+    p2.extend([0] * (max_len - len(p2)))
+
+    for a, b in zip(p1, p2):
+        if a < b:
+            return -1
+        if a > b:
+            return 1
+    return 0
+
+
 def upgrade_elk(version: str, logger: Callable = None) -> Dict:
-    """Upgrade ELK stack to specified version."""
+    """Upgrade ELK stack to specified version.
+
+    NOTE: Elasticsearch does NOT support downgrades. Only upgrades to newer versions are allowed.
+    Attempting to downgrade will fail because Elasticsearch stores version metadata in the data directory.
+    """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    elk_dir = os.path.join(WORKDIR, 'elk')
-    env_file = os.path.join(elk_dir, '.env')
+    # Container path for file operations
+    work_dir = os.path.join(WORKDIR, 'modules', 'elk')
+    env_file = os.path.join(work_dir, '.env')
+    # Host path for docker compose operations
+    host_dir = os.path.join(HOST_PATH, 'modules', 'elk')
 
     log("Starting ELK upgrade...", "info")
 
+    # Check current version and prevent downgrades
+    current_vars = _read_env_file(env_file)
+    current_version = current_vars.get('ELASTIC_VERSION', '0.0.0')
+
+    if _compare_versions(version, current_version) < 0:
+        error_msg = f"ELK downgrade not supported: {current_version} → {version}. Elasticsearch only supports forward upgrades."
+        log(error_msg, "error")
+        log("To change to an older version, you must first remove ELK data volumes (docker compose down -v)", "warning")
+        return {"success": False, "error": error_msg}
+
+    if _compare_versions(version, current_version) == 0:
+        log(f"ELK is already at version {version}", "info")
+        return {"success": True, "version": version, "message": "Already at target version"}
+
     # Step 1: Stop containers
     log("Stopping ELK containers...", "info")
-    result = _run_command("docker compose down", cwd=elk_dir, logger=log)
+    result = _run_command("docker compose down", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to stop ELK: {result['error']}"}
 
@@ -205,17 +272,17 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
 
     # Step 3: Pull new images
     log("Pulling new images...", "info")
-    result = _run_command("docker compose pull", cwd=elk_dir, timeout=600, logger=log)
+    result = _run_command("docker compose pull", cwd=work_dir, timeout=600, logger=log)
     if not result['success']:
         log(f"Pull warning: {result.get('error', '')[:100]}", "warning")
 
     # Step 4: Build (for custom images)
     log("Building containers...", "info")
-    result = _run_command("docker compose build --no-cache", cwd=elk_dir, timeout=600, logger=log)
+    result = _run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
 
     # Step 5: Start containers
     log("Starting ELK containers...", "info")
-    result = _run_command("docker compose up -d", cwd=elk_dir, logger=log)
+    result = _run_command("docker compose up -d", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to start ELK: {result['error']}"}
 
@@ -240,14 +307,17 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
 def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str = None) -> Dict:
     """Upgrade Timesketch to specified version."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    ts_dir = os.path.join(WORKDIR, 'timesketch', 'timesketch')
-    env_file = os.path.join(ts_dir, '.env')
+    # Container path for file operations
+    work_dir = os.path.join(WORKDIR, 'modules', 'timesketch')
+    env_file = os.path.join(work_dir, '.env')
+    # Host path for docker compose operations
+    host_dir = os.path.join(HOST_PATH, 'modules', 'timesketch')
 
     log("Starting Timesketch upgrade...", "info")
 
     # Step 1: Stop containers
     log("Stopping Timesketch containers...", "info")
-    result = _run_command("docker compose down", cwd=ts_dir, logger=log)
+    result = _run_command("docker compose down", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to stop Timesketch: {result['error']}"}
 
@@ -257,7 +327,7 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
 
     # Step 3: Pull new images
     log("Pulling new images...", "info")
-    result = _run_command("docker compose pull", cwd=ts_dir, timeout=600, logger=log)
+    result = _run_command("docker compose pull", cwd=work_dir, timeout=600, logger=log)
 
     # Step 4: Pull Plaso image if specified
     if plaso_version:
@@ -266,7 +336,7 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
 
     # Step 5: Start containers
     log("Starting Timesketch containers...", "info")
-    result = _run_command("docker compose up -d", cwd=ts_dir, logger=log)
+    result = _run_command("docker compose up -d", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to start Timesketch: {result['error']}"}
 
@@ -289,14 +359,17 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
 def upgrade_iris(version: str, logger: Callable = None) -> Dict:
     """Upgrade IRIS to specified version."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    iris_dir = os.path.join(WORKDIR, 'iris-web')
-    env_file = os.path.join(iris_dir, '.env')
+    # Container path for file operations
+    work_dir = os.path.join(WORKDIR, 'modules', 'iris')
+    env_file = os.path.join(work_dir, '.env')
+    # Host path for docker compose operations
+    host_dir = os.path.join(HOST_PATH, 'modules', 'iris')
 
     log("Starting IRIS upgrade...", "info")
 
     # Step 1: Stop containers
     log("Stopping IRIS containers...", "info")
-    result = _run_command("docker compose down", cwd=iris_dir, logger=log)
+    result = _run_command("docker compose down", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to stop IRIS: {result['error']}"}
 
@@ -306,11 +379,11 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
 
     # Step 3: Pull new images
     log("Pulling new images...", "info")
-    result = _run_command("docker compose pull", cwd=iris_dir, timeout=600, logger=log)
+    result = _run_command("docker compose pull", cwd=work_dir, timeout=600, logger=log)
 
     # Step 4: Start containers
     log("Starting IRIS containers...", "info")
-    result = _run_command("docker compose up -d", cwd=iris_dir, logger=log)
+    result = _run_command("docker compose up -d", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to start IRIS: {result['error']}"}
 
@@ -333,10 +406,13 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
 def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
     """Upgrade Velociraptor to specified version (most complex - handles artifacts)."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    velo_dir = os.path.join(WORKDIR, 'velociraptor')
-    velo_data = os.path.join(velo_dir, 'velociraptor')
-    env_file = os.path.join(velo_dir, '.env')
-    container_name = 'velociraptor'
+    # Container path for file operations
+    work_dir = os.path.join(WORKDIR, 'modules', 'velociraptor')
+    velo_data = os.path.join(work_dir, 'velociraptor')
+    env_file = os.path.join(work_dir, '.env')
+    # Host path for docker compose operations
+    host_dir = os.path.join(HOST_PATH, 'modules', 'velociraptor')
+    container_name = 'mssp_velociraptor'
 
     log("Starting Velociraptor upgrade...", "info")
 
@@ -390,18 +466,29 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
 
     # Step 2: Stop container
     log("Stopping Velociraptor container...", "info")
-    result = _run_command("docker compose down", cwd=velo_dir, logger=log)
+    result = _run_command("docker compose down", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to stop Velociraptor: {result['error']}"}
 
     # Step 3: Update version in .env
     log(f"Updating version to {version}...", "info")
     _update_env_file(env_file, 'VELOCIRAPTOR_VERSION', version, logger=log)
+    # Also update VELOCIRAPTOR_TAG (major.minor for docker-compose)
+    version_parts = version.split('.')
+    if len(version_parts) >= 2:
+        velo_tag = f"{version_parts[0]}.{version_parts[1]}"
+        _update_env_file(env_file, 'VELOCIRAPTOR_TAG', velo_tag, logger=log)
 
     # Step 4: Download new binary
     log(f"Downloading Velociraptor {version}...", "info")
     velo_bin = os.path.join(velo_data, 'velociraptor')
-    download_url = f"https://github.com/Velocidex/velociraptor/releases/download/v{version}/velociraptor-v{version}-linux-amd64"
+    # Velociraptor uses major.minor for release tags (v0.75) but full version for assets (v0.75.6)
+    version_parts = version.split('.')
+    if len(version_parts) >= 2:
+        release_tag = f"v{version_parts[0]}.{version_parts[1]}"
+    else:
+        release_tag = f"v{version}"
+    download_url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}/velociraptor-v{version}-linux-amd64"
 
     # Backup old binary
     if os.path.exists(velo_bin):
@@ -418,7 +505,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
 
     # Step 5: Rebuild container
     log("Rebuilding container...", "info")
-    result = _run_command("docker compose build --no-cache", cwd=velo_dir, timeout=600, logger=log)
+    result = _run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
 
     # Step 6: Restore backups
     log("Restoring backups...", "info")
@@ -432,7 +519,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
 
     # Step 7: Start container
     log("Starting Velociraptor container...", "info")
-    result = _run_command("docker compose up -d", cwd=velo_dir, logger=log)
+    result = _run_command("docker compose up -d", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to start Velociraptor: {result['error']}"}
 
@@ -458,8 +545,9 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
 def upgrade_backend(logger: Callable = None) -> Dict:
     """Upgrade backend by pulling latest code and rebuilding."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    backend_dir = os.path.join(WORKDIR, 'risx-mssp', 'modules', 'backend')
-    repo_dir = os.path.join(WORKDIR, 'risx-mssp')
+    # Container paths for all operations
+    work_dir = os.path.join(WORKDIR, 'modules', 'backend')
+    repo_dir = WORKDIR  # Root of MSSP project
 
     log("Starting Backend upgrade...", "info")
 
@@ -472,15 +560,15 @@ def upgrade_backend(logger: Callable = None) -> Dict:
 
     # Step 2: Stop container
     log("Stopping backend container...", "info")
-    result = _run_command("docker compose down", cwd=backend_dir, logger=log)
+    result = _run_command("docker compose down", cwd=work_dir, logger=log)
 
     # Step 3: Rebuild
     log("Rebuilding backend container...", "info")
-    result = _run_command("docker compose build --no-cache", cwd=backend_dir, timeout=600, logger=log)
+    result = _run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
 
     # Step 4: Start container
     log("Starting backend container...", "info")
-    result = _run_command("docker compose up -d", cwd=backend_dir, logger=log)
+    result = _run_command("docker compose up -d", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to start backend: {result['error']}"}
 
@@ -503,8 +591,8 @@ def upgrade_backend(logger: Callable = None) -> Dict:
 def upgrade_frontend(logger: Callable = None) -> Dict:
     """Upgrade frontend by copying updated files and restarting nginx."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    repo_dir = os.path.join(WORKDIR, 'risx-mssp')
-    nginx_html = os.path.join(WORKDIR, 'nginx', 'html')
+    # Container path for git operations
+    repo_dir = WORKDIR  # Root of MSSP project
 
     log("Starting Frontend upgrade...", "info")
 
@@ -514,12 +602,8 @@ def upgrade_frontend(logger: Callable = None) -> Dict:
     if not result['success']:
         result = _run_command("git pull origin development", cwd=repo_dir, logger=log)
 
-    # Step 2: Copy updated HTML/JS/CSS files
-    log("Copying frontend files...", "info")
-    src_html = os.path.join(repo_dir, 'modules', 'nginx', 'html')
-    if os.path.exists(src_html):
-        _run_command(f"cp -a {src_html}/* {nginx_html}/", logger=log)
-        log("  Frontend files updated", "info")
+    # Step 2: Copy updated HTML/JS/CSS files (files are already updated by git pull)
+    log("Frontend files updated via git pull", "info")
 
     # Step 3: Restart nginx container
     log("Restarting nginx...", "info")
@@ -559,18 +643,30 @@ def run_upgrade_workflow(modules: Dict[str, str], mode: str = 'online', logger: 
     total = len(modules)
     completed = 0
 
-    log(f"Starting upgrade workflow for {total} module(s): {', '.join(modules.keys())}", "info")
+    # Get current versions for better logging
+    current_versions = get_current_versions()
+
+    log(f"Starting upgrade workflow for {total} module(s)", "info")
     log(f"Mode: {mode}", "info")
+    log("=" * 50, "info")
+
+    # Log version summary
+    for module_name, target_version in modules.items():
+        current = current_versions.get(module_name, {}).get('current', 'unknown')
+        log(f"  {module_name.upper()}: {current} → {target_version}", "info")
     log("=" * 50, "info")
 
     for module_name in upgrade_order:
         if module_name not in modules:
             continue
 
-        version = modules[module_name]
+        target_version = modules[module_name]
+        current = current_versions.get(module_name, {}).get('current', 'unknown')
         log("", "info")
         log(f"{'='*50}", "info")
-        log(f"UPGRADING: {module_name.upper()} -> {version}", "info")
+        log(f"UPGRADING: {module_name.upper()}", "info")
+        log(f"  Current version: {current}", "info")
+        log(f"  Target version:  {target_version}", "info")
         log(f"{'='*50}", "info")
 
         upgrade_fn = upgrade_functions.get(module_name)
@@ -583,13 +679,13 @@ def run_upgrade_workflow(modules: Dict[str, str], mode: str = 'online', logger: 
             if module_name in ['backend', 'frontend']:
                 result = upgrade_fn(logger=log)
             else:
-                result = upgrade_fn(version, logger=log)
+                result = upgrade_fn(target_version, logger=log)
 
             results[module_name] = result
             completed += 1
 
             if result.get('success'):
-                log(f"{module_name.upper()} upgrade completed", "success")
+                log(f"{module_name.upper()} upgrade completed: {current} → {target_version}", "success")
             else:
                 log(f"{module_name.upper()} upgrade failed: {result.get('error', 'unknown')}", "error")
         except Exception as e:
@@ -726,15 +822,18 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
 def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None) -> Dict:
     """Upgrade ELK from offline package (pre-saved docker images)."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    elk_dir = os.path.join(WORKDIR, 'elk')
-    env_file = os.path.join(elk_dir, '.env')
+    # Container path for file operations
+    work_dir = os.path.join(WORKDIR, 'modules', 'elk')
+    env_file = os.path.join(work_dir, '.env')
     images_dir = os.path.join(package_dir, 'images')
+    # Host path for docker compose operations
+    host_dir = os.path.join(HOST_PATH, 'modules', 'elk')
 
     log("Starting ELK offline upgrade...", "info")
 
     # Step 1: Stop containers
     log("Stopping ELK containers...", "info")
-    result = _run_command("docker compose down", cwd=elk_dir, logger=log)
+    result = _run_command("docker compose down", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to stop ELK: {result['error']}"}
 
@@ -756,7 +855,7 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None)
 
     # Step 4: Start containers (no pull needed)
     log("Starting ELK containers...", "info")
-    result = _run_command("docker compose up -d", cwd=elk_dir, logger=log)
+    result = _run_command("docker compose up -d", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to start ELK: {result['error']}"}
 
@@ -781,15 +880,18 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None)
 def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: str = None, logger: Callable = None) -> Dict:
     """Upgrade Timesketch from offline package."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    ts_dir = os.path.join(WORKDIR, 'timesketch', 'timesketch')
-    env_file = os.path.join(ts_dir, '.env')
+    # Container path for file operations
+    work_dir = os.path.join(WORKDIR, 'modules', 'timesketch')
+    env_file = os.path.join(work_dir, '.env')
     images_dir = os.path.join(package_dir, 'images')
+    # Host path for docker compose operations
+    host_dir = os.path.join(HOST_PATH, 'modules', 'timesketch')
 
     log("Starting Timesketch offline upgrade...", "info")
 
     # Step 1: Stop containers
     log("Stopping Timesketch containers...", "info")
-    result = _run_command("docker compose down", cwd=ts_dir, logger=log)
+    result = _run_command("docker compose down", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to stop Timesketch: {result['error']}"}
 
@@ -810,7 +912,7 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
 
     # Step 4: Start containers
     log("Starting Timesketch containers...", "info")
-    result = _run_command("docker compose up -d", cwd=ts_dir, logger=log)
+    result = _run_command("docker compose up -d", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to start Timesketch: {result['error']}"}
 
@@ -833,15 +935,18 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
 def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None) -> Dict:
     """Upgrade IRIS from offline package."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    iris_dir = os.path.join(WORKDIR, 'iris-web')
-    env_file = os.path.join(iris_dir, '.env')
+    # Container path for file operations
+    work_dir = os.path.join(WORKDIR, 'modules', 'iris')
+    env_file = os.path.join(work_dir, '.env')
     images_dir = os.path.join(package_dir, 'images')
+    # Host path for docker compose operations
+    host_dir = os.path.join(HOST_PATH, 'modules', 'iris')
 
     log("Starting IRIS offline upgrade...", "info")
 
     # Step 1: Stop containers
     log("Stopping IRIS containers...", "info")
-    result = _run_command("docker compose down", cwd=iris_dir, logger=log)
+    result = _run_command("docker compose down", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to stop IRIS: {result['error']}"}
 
@@ -858,7 +963,7 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
 
     # Step 4: Start containers
     log("Starting IRIS containers...", "info")
-    result = _run_command("docker compose up -d", cwd=iris_dir, logger=log)
+    result = _run_command("docker compose up -d", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to start IRIS: {result['error']}"}
 
@@ -881,10 +986,13 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
 def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callable = None) -> Dict:
     """Upgrade Velociraptor from offline package (uses local binary)."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    velo_dir = os.path.join(WORKDIR, 'velociraptor')
-    velo_data = os.path.join(velo_dir, 'velociraptor')
-    env_file = os.path.join(velo_dir, '.env')
-    container_name = 'velociraptor'
+    # Container path for file operations
+    work_dir = os.path.join(WORKDIR, 'modules', 'velociraptor')
+    velo_data = os.path.join(work_dir, 'velociraptor')
+    env_file = os.path.join(work_dir, '.env')
+    # Host path for docker compose operations
+    host_dir = os.path.join(HOST_PATH, 'modules', 'velociraptor')
+    container_name = 'mssp_velociraptor'
     binaries_dir = os.path.join(package_dir, 'binaries')
 
     log("Starting Velociraptor offline upgrade...", "info")
@@ -936,7 +1044,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
 
     # Step 2: Stop container
     log("Stopping Velociraptor container...", "info")
-    result = _run_command("docker compose down", cwd=velo_dir, logger=log)
+    result = _run_command("docker compose down", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to stop Velociraptor: {result['error']}"}
 
@@ -966,7 +1074,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
 
     # Step 5: Rebuild container
     log("Rebuilding container...", "info")
-    result = _run_command("docker compose build --no-cache", cwd=velo_dir, timeout=600, logger=log)
+    result = _run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
 
     # Step 6: Restore backups
     log("Restoring backups...", "info")
@@ -980,7 +1088,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
 
     # Step 7: Start container
     log("Starting Velociraptor container...", "info")
-    result = _run_command("docker compose up -d", cwd=velo_dir, logger=log)
+    result = _run_command("docker compose up -d", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to start Velociraptor: {result['error']}"}
 
@@ -1002,7 +1110,8 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
 def upgrade_backend_offline(package_dir: str, logger: Callable = None) -> Dict:
     """Upgrade backend from offline package source files."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    backend_dir = os.path.join(WORKDIR, 'risx-mssp', 'modules', 'backend')
+    # Container path for all operations
+    work_dir = os.path.join(WORKDIR, 'modules', 'backend')
     source_dir = os.path.join(package_dir, 'source', 'backend')
 
     log("Starting Backend offline upgrade...", "info")
@@ -1013,19 +1122,19 @@ def upgrade_backend_offline(package_dir: str, logger: Callable = None) -> Dict:
 
     # Step 1: Stop container
     log("Stopping backend container...", "info")
-    result = _run_command("docker compose down", cwd=backend_dir, logger=log)
+    result = _run_command("docker compose down", cwd=work_dir, logger=log)
 
     # Step 2: Copy source files
     log("Copying backend source files...", "info")
-    _run_command(f"cp -a {source_dir}/* {backend_dir}/", logger=log)
+    _run_command(f"cp -a {source_dir}/* {work_dir}/", logger=log)
 
     # Step 3: Rebuild
     log("Rebuilding backend container...", "info")
-    result = _run_command("docker compose build --no-cache", cwd=backend_dir, timeout=600, logger=log)
+    result = _run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
 
     # Step 4: Start container
     log("Starting backend container...", "info")
-    result = _run_command("docker compose up -d", cwd=backend_dir, logger=log)
+    result = _run_command("docker compose up -d", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to start backend: {result['error']}"}
 
@@ -1048,7 +1157,8 @@ def upgrade_backend_offline(package_dir: str, logger: Callable = None) -> Dict:
 def upgrade_frontend_offline(package_dir: str, logger: Callable = None) -> Dict:
     """Upgrade frontend from offline package source files."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    nginx_html = os.path.join(WORKDIR, 'nginx', 'html')
+    # Container path for file operations
+    nginx_html = os.path.join(WORKDIR, 'modules', 'nginx', 'html')
     source_dir = os.path.join(package_dir, 'source', 'frontend')
 
     log("Starting Frontend offline upgrade...", "info")
