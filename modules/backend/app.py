@@ -15,9 +15,14 @@ from flask_cors import CORS
 from routes import (
     client_bp,
     velociraptor_bp,
+    velociraptor_offline_bp,
     timesketch_bp,
+    timesketch_llm_bp,
     dashboard_bp,
     system_bp,
+    config_bp,
+    maintenance_bp,
+    upgrade_bp,
     blueprint_bp,
     agentic_bp,
     db_bp,
@@ -39,9 +44,14 @@ CORS(app)
 # Register blueprints
 app.register_blueprint(client_bp)
 app.register_blueprint(velociraptor_bp)
+app.register_blueprint(velociraptor_offline_bp)
 app.register_blueprint(timesketch_bp)
+app.register_blueprint(timesketch_llm_bp)
 app.register_blueprint(dashboard_bp)
 app.register_blueprint(system_bp)
+app.register_blueprint(config_bp)
+app.register_blueprint(maintenance_bp)
+app.register_blueprint(upgrade_bp)
 app.register_blueprint(blueprint_bp)
 app.register_blueprint(agentic_bp)
 app.register_blueprint(db_bp)

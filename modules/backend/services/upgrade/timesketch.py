@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Timesketch upgrade functions."""
+
+import os
+import time
+import requests
+from typing import Dict, Callable
+
+from .base import (
+    WORKDIR, HOST_PATH,
+    run_command, update_env_file, load_docker_image
+)
+
+
+def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str = None) -> Dict:
+    """Upgrade Timesketch to specified version."""
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    work_dir = os.path.join(WORKDIR, 'modules', 'timesketch')
+    env_file = os.path.join(work_dir, '.env')
+
+    log("Starting Timesketch upgrade...", "info")
+
+    # Stop containers
+    log("Stopping Timesketch containers...", "info")
+    result = run_command("docker compose down", cwd=work_dir, logger=log)
+    if not result['success']:
+        return {"success": False, "error": f"Failed to stop Timesketch: {result['error']}"}
+
+    # Update version in .env
+    log(f"Updating version to {version}...", "info")
+    update_env_file(env_file, 'TIMESKETCH_VERSION', version, logger=log)
+
+    # Pull new images
+    log("Pulling new images...", "info")
+    run_command("docker compose pull", cwd=work_dir, timeout=600, logger=log)
+
+    # Pull Plaso image if specified
+    if plaso_version:
+        log(f"Pulling Plaso {plaso_version}...", "info")
+        run_command(f"docker pull log2timeline/plaso:{plaso_version}", logger=log, timeout=600)
+
+    # Start containers
+    log("Starting Timesketch containers...", "info")
+    result = run_command("docker compose up -d", cwd=work_dir, logger=log)
+    if not result['success']:
+        return {"success": False, "error": f"Failed to start Timesketch: {result['error']}"}
+
+    # Health check
+    log("Waiting for Timesketch to be ready...", "info")
+    for i in range(30):
+        try:
+            response = requests.get("http://localhost:5666/login", timeout=5)
+            if response.status_code == 200:
+                log("Timesketch is ready", "success")
+                return {"success": True, "version": version}
+        except:
+            pass
+        time.sleep(5)
+
+    log("Health check timed out", "warning")
+    return {"success": True, "version": version, "health": "pending"}
+
+
+def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: str = None, logger: Callable = None) -> Dict:
+    """Upgrade Timesketch from offline package."""
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    work_dir = os.path.join(WORKDIR, 'modules', 'timesketch')
+    env_file = os.path.join(work_dir, '.env')
+    images_dir = os.path.join(package_dir, 'images')
+
+    log("Starting Timesketch offline upgrade...", "info")
+
+    # Stop containers
+    log("Stopping Timesketch containers...", "info")
+    result = run_command("docker compose down", cwd=work_dir, logger=log)
+    if not result['success']:
+        return {"success": False, "error": f"Failed to stop Timesketch: {result['error']}"}
+
+    # Load docker images
+    log("Loading docker images from package...", "info")
+    ts_tar = os.path.join(images_dir, f"timesketch-{version}.tar")
+    if os.path.exists(ts_tar):
+        load_docker_image(ts_tar, logger=log)
+
+    if plaso_version:
+        plaso_tar = os.path.join(images_dir, f"plaso-{plaso_version}.tar")
+        if os.path.exists(plaso_tar):
+            load_docker_image(plaso_tar, logger=log)
+
+    # Update version in .env
+    log(f"Updating version to {version}...", "info")
+    update_env_file(env_file, 'TIMESKETCH_VERSION', version, logger=log)
+
+    # Start containers
+    log("Starting Timesketch containers...", "info")
+    result = run_command("docker compose up -d", cwd=work_dir, logger=log)
+    if not result['success']:
+        return {"success": False, "error": f"Failed to start Timesketch: {result['error']}"}
+
+    # Health check
+    log("Waiting for Timesketch to be ready...", "info")
+    for i in range(30):
+        try:
+            response = requests.get("http://localhost:5666/login", timeout=5)
+            if response.status_code == 200:
+                log("Timesketch is ready", "success")
+                return {"success": True, "version": version}
+        except:
+            pass
+        time.sleep(5)
+
+    log("Health check timed out", "warning")
+    return {"success": True, "version": version, "health": "pending"}
