@@ -482,6 +482,219 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        // Upgrade modal state
+        showUpgradeModal: false,
+        upgradeLoading: false,
+        upgradeModules: [
+            { id: 'elk', name: 'ELK Stack', current: '', targetVersion: '', enabled: false },
+            { id: 'timesketch', name: 'Timesketch', current: '', targetVersion: '', enabled: false },
+            { id: 'iris', name: 'IRIS', current: '', targetVersion: '', enabled: false },
+            { id: 'velociraptor', name: 'Velociraptor', current: '', targetVersion: '', enabled: false },
+            { id: 'backend', name: 'Backend', current: '', targetVersion: '', enabled: false },
+            { id: 'frontend', name: 'Frontend', current: '', targetVersion: '', enabled: false },
+        ],
+
+        async openUpgradeModal() {
+            this.showUpgradeModal = true;
+            this.upgradeLoading = true;
+
+            // Reset modules
+            this.upgradeModules.forEach(m => {
+                m.enabled = false;
+                m.current = '';
+                m.targetVersion = '';
+            });
+
+            try {
+                const response = await fetch('/api/upgrade/status');
+                const data = await response.json();
+                if (data.success && data.versions) {
+                    this.upgradeModules.forEach(m => {
+                        const ver = data.versions[m.id];
+                        if (ver) {
+                            m.current = ver.current || 'unknown';
+                            m.targetVersion = ver.latest || ver.current || '';
+                        }
+                    });
+                }
+            } catch (e) {
+                console.error('Failed to fetch versions:', e);
+                this.showMessage('Failed to fetch module versions', 'error');
+            }
+            this.upgradeLoading = false;
+        },
+
+        closeUpgradeModal() {
+            this.showUpgradeModal = false;
+        },
+
+        async startUpgrade() {
+            const selected = this.upgradeModules.filter(m => m.enabled);
+            if (selected.length === 0) {
+                this.showMessage('Select at least one module to upgrade', 'error');
+                return;
+            }
+
+            const modules = {};
+            selected.forEach(m => {
+                modules[m.id] = m.targetVersion;
+            });
+
+            this.upgradeLoading = true;
+            try {
+                const response = await fetch('/api/upgrade/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ modules, mode: 'online' })
+                });
+
+                const result = await response.json();
+                if (response.ok && result.success) {
+                    this.closeUpgradeModal();
+                    this.showMessage('Upgrade started - redirecting to Workflows', 'success');
+                    setTimeout(() => {
+                        Alpine.store('app').switchTab('workflows');
+                    }, 500);
+                } else {
+                    this.showMessage('Failed to start upgrade: ' + (result.error || 'Unknown error'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Upgrade error: ' + e.message, 'error');
+            }
+            this.upgradeLoading = false;
+        },
+
+        // ===== OFFLINE UPGRADE =====
+        showOfflineUpgradeModal: false,
+        offlineUploadDragging: false,
+        offlineUploadProgress: 0,
+        offlinePackageInfo: null,
+        offlinePackagePath: null,
+        offlineUpgradeStarting: false,
+
+        openOfflineUpgradeModal() {
+            this.showOfflineUpgradeModal = true;
+            this.offlineUploadProgress = 0;
+            this.offlinePackageInfo = null;
+            this.offlinePackagePath = null;
+            this.offlineUpgradeStarting = false;
+        },
+
+        closeOfflineUpgradeModal() {
+            this.showOfflineUpgradeModal = false;
+            this.offlinePackageInfo = null;
+            this.offlinePackagePath = null;
+        },
+
+        handleOfflineDrop(event) {
+            this.offlineUploadDragging = false;
+            const files = event.dataTransfer.files;
+            if (files.length > 0) {
+                this.uploadOfflinePackage(files[0]);
+            }
+        },
+
+        selectOfflinePackage(event) {
+            const files = event.target.files;
+            if (files.length > 0) {
+                this.uploadOfflinePackage(files[0]);
+            }
+        },
+
+        async uploadOfflinePackage(file) {
+            // Validate file extension
+            if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.tgz')) {
+                this.showMessage('Please select a .tar.gz or .tgz file', 'error');
+                return;
+            }
+
+            this.offlineUploadProgress = 0;
+
+            // Use tus upload
+            const upload = new tus.Upload(file, {
+                endpoint: '/api/uploads/',
+                retryDelays: [0, 1000, 3000, 5000],
+                chunkSize: 5 * 1024 * 1024, // 5MB chunks
+                metadata: {
+                    filename: file.name,
+                    filetype: file.type || 'application/gzip',
+                    purpose: 'upgrade_package'
+                },
+                onError: (error) => {
+                    console.error('Upload error:', error);
+                    this.showMessage('Upload failed: ' + error.message, 'error');
+                    this.offlineUploadProgress = 0;
+                },
+                onProgress: (bytesUploaded, bytesTotal) => {
+                    this.offlineUploadProgress = Math.round((bytesUploaded / bytesTotal) * 100);
+                },
+                onSuccess: async () => {
+                    this.offlineUploadProgress = 100;
+
+                    // Extract upload ID from URL
+                    const uploadUrl = upload.url;
+                    const uploadId = uploadUrl.split('/').pop();
+                    this.offlinePackagePath = `/data/uploads/${uploadId}`;
+
+                    // Get package info
+                    try {
+                        const response = await fetch('/api/upgrade/package-info', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ package_path: this.offlinePackagePath })
+                        });
+                        const result = await response.json();
+                        if (result.success) {
+                            this.offlinePackageInfo = {
+                                versions: result.versions,
+                                created: result.created,
+                                contents: result.contents
+                            };
+                            this.showMessage('Package uploaded successfully', 'success');
+                        } else {
+                            this.showMessage('Failed to read package: ' + (result.error || 'Unknown error'), 'error');
+                        }
+                    } catch (e) {
+                        this.showMessage('Failed to read package info: ' + e.message, 'error');
+                    }
+                }
+            });
+
+            upload.start();
+        },
+
+        async startOfflineUpgrade() {
+            if (!this.offlinePackagePath) {
+                this.showMessage('No package uploaded', 'error');
+                return;
+            }
+
+            this.offlineUpgradeStarting = true;
+
+            try {
+                const response = await fetch('/api/upgrade/offline', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ package_path: this.offlinePackagePath })
+                });
+
+                const result = await response.json();
+                if (response.ok && result.success) {
+                    this.closeOfflineUpgradeModal();
+                    this.showMessage('Offline upgrade started - redirecting to Workflows', 'success');
+                    setTimeout(() => {
+                        Alpine.store('app').switchTab('workflows');
+                    }, 500);
+                } else {
+                    this.showMessage('Failed to start upgrade: ' + (result.error || 'Unknown error'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Upgrade error: ' + e.message, 'error');
+            }
+
+            this.offlineUpgradeStarting = false;
+        },
+
         onProviderChange() {
             const modelDefaults = {
                 'openai': 'gpt-4o',
