@@ -495,26 +495,24 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None) -
 
 
 def ensure_offline_collector_binaries(downloads_dir: str, logger: Callable = None) -> Dict:
-    """Ensure Velociraptor v0.74.1 binaries exist for Offline Collector.
+    """Check that Velociraptor v0.74.1 binaries exist for Offline Collector.
 
     v0.74.x is required because v0.75+ broke the -- pseudo-flag in Generic Collector.
-    GitHub tag is "v0.74" but files contain "v0.74.1" in the filename.
+    These binaries are downloaded by install.sh during installation (when internet is available).
+    This function only checks their presence - it does NOT download (supports air-gap environments).
     """
     def log(msg, level="info"):
         if logger:
             logger(msg, level)
         print(f"[TOOLS-074] {msg}", flush=True)
 
-    results = {"downloaded": [], "already_exists": [], "failed": []}
+    results = {"already_exists": [], "missing": []}
 
-    base_url = "https://github.com/Velocidex/velociraptor/releases/download/v0.74"
     binaries = [
         "velociraptor-v0.74.1-windows-amd64.exe",
         "velociraptor-v0.74.1-linux-amd64",
         "velociraptor-v0.74.1-darwin-amd64"
     ]
-
-    os.makedirs(downloads_dir, exist_ok=True)
 
     for binary in binaries:
         dest_path = os.path.join(downloads_dir, binary)
@@ -522,29 +520,17 @@ def ensure_offline_collector_binaries(downloads_dir: str, logger: Callable = Non
         # Check if file exists and has content
         if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
             results["already_exists"].append(binary)
-            continue
+        else:
+            log(f"  Missing: {binary} (should be downloaded by install.sh)", "warning")
+            results["missing"].append(binary)
 
-        # Download if missing
-        log(f"  Downloading: {binary}")
-        try:
-            url = f"{base_url}/{binary}"
-            response = requests.get(url, stream=True, timeout=120,
-                                    headers={'User-Agent': 'MSSP-Tools-Downloader/1.0'})
-            response.raise_for_status()
+    exist_count = len(results["already_exists"])
+    missing_count = len(results["missing"])
 
-            with open(dest_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-
-            # Make executable
-            os.chmod(dest_path, 0o755)
-            log(f"  ✓ Downloaded: {binary}", "success")
-            results["downloaded"].append(binary)
-
-        except Exception as e:
-            log(f"  ✗ Failed: {binary} - {str(e)[:40]}", "warning")
-            results["failed"].append(binary)
+    if missing_count > 0:
+        log(f"Offline Collector binaries: {exist_count} found, {missing_count} missing", "warning")
+    else:
+        log(f"Offline Collector binaries: all {exist_count} present")
 
     return results
 
@@ -567,16 +553,13 @@ def download_and_configure_tools(logger: Callable = None) -> Dict:
     log("Checking Velociraptor v0.74.1 binaries for Offline Collector...")
     offline_results = ensure_offline_collector_binaries(downloads_dir, log)
 
-    dl_count = len(offline_results.get('downloaded', []))
     exist_count = len(offline_results.get('already_exists', []))
-    fail_count = len(offline_results.get('failed', []))
+    missing_count = len(offline_results.get('missing', []))
 
-    if dl_count > 0:
-        log(f"Offline Collector binaries: {dl_count} downloaded, {exist_count} existed", "success")
-    elif exist_count > 0:
-        log(f"Offline Collector binaries: all {exist_count} already exist")
-    if fail_count > 0:
-        log(f"Offline Collector binaries: {fail_count} failed", "warning")
+    if missing_count > 0:
+        log(f"Offline Collector binaries: {exist_count} found, {missing_count} missing (run install.sh with internet)", "warning")
+    else:
+        log(f"Offline Collector binaries: all {exist_count} present")
 
     # Load config
     config = load_tools_config()
