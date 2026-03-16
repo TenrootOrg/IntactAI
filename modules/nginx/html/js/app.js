@@ -748,6 +748,10 @@ document.addEventListener('DOMContentLoaded', () => {
         loadBlueprints('velociraptor').then(() => {
             populateBlueprintDropdown('bestpractice-blueprint-select', 'best_practice', 'velociraptor');
         });
+        // Load timesketch blueprints
+        loadBlueprints('timesketch').then(() => {
+            loadTimesketchBlueprintsDropdown();
+        });
         // Load unified forensics blueprints for offline collector
         loadBlueprints('forensics').then(() => {
             if (typeof loadOfflineBlueprints === 'function') {
