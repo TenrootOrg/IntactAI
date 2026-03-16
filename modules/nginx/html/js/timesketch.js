@@ -4,30 +4,31 @@
 
 // Client manager instance (uses shared utility)
 const timesketchClientManager = new ClientManager('timesketch-client-list', 'timesketch-client-checkbox');
-// Store blueprints cache
-let timesketchBlueprintsCache = [];
 
 // Load timesketch blueprints into dropdown
 async function loadTimesketchBlueprintsDropdown() {
     const select = document.getElementById('timesketch-blueprint-select');
-    if (!select) return;
+    if (!select) {
+        console.error('timesketch-blueprint-select not found');
+        return;
+    }
 
     try {
-        const response = await fetch('/api/blueprints/timesketch');
-        const data = await response.json();
-        timesketchBlueprintsCache = data.blueprints || [];
+        // Use centralized blueprint loading
+        const blueprints = await loadBlueprints('timesketch');
+        window.timesketchBlueprintsCache = blueprints || [];
 
-        if (timesketchBlueprintsCache.length === 0) {
+        if (window.timesketchBlueprintsCache.length === 0) {
             select.innerHTML = '<option value="">No blueprints available</option>';
             return;
         }
 
-        select.innerHTML = timesketchBlueprintsCache.map(bp =>
+        select.innerHTML = window.timesketchBlueprintsCache.map(bp =>
             `<option value="${bp.id}">${bp.name}</option>`
         ).join('');
 
         // Select first blueprint and show its info
-        if (timesketchBlueprintsCache.length > 0) {
+        if (window.timesketchBlueprintsCache.length > 0) {
             onTimesketchBlueprintChange();
         }
     } catch (error) {
@@ -46,7 +47,7 @@ function onTimesketchBlueprintChange() {
     if (!select || !infoDiv) return;
 
     const blueprintId = select.value;
-    const blueprint = timesketchBlueprintsCache.find(bp => bp.id === blueprintId);
+    const blueprint = window.timesketchBlueprintsCache.find(bp => bp.id === blueprintId);
 
     if (blueprint && blueprint.settings) {
         kapeSpan.textContent = `KAPE: ${blueprint.settings.kape_target || 'N/A'}`;
@@ -63,7 +64,7 @@ function getTimesketchBlueprintSettings() {
     if (!select) return null;
 
     const blueprintId = select.value;
-    const blueprint = timesketchBlueprintsCache.find(bp => bp.id === blueprintId);
+    const blueprint = window.timesketchBlueprintsCache.find(bp => bp.id === blueprintId);
 
     if (!blueprint) return null;
 
