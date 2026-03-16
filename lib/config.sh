@@ -143,14 +143,16 @@ update_env_files() {
         fi
     fi
 
-    # Backend - update credentials
+    # Backend - update credentials and Plaso version
     local backend_env="${SCRIPT_DIR}/modules/backend/.env"
     if [[ -f "$backend_env" ]]; then
         local ts_user=$(read_config "['modules']['timesketch']['id']")
         local ts_pass=$(read_config "['modules']['timesketch']['password']")
+        local plaso_version=$(read_config "['versions']['plaso']")
 
         update_env_var "$backend_env" "TIMESKETCH_USER" "$ts_user"
         update_env_var "$backend_env" "TIMESKETCH_PASS" "$ts_pass"
+        update_env_var "$backend_env" "PLASO_VERSION" "$plaso_version"
         log_success "Updated Backend .env"
     else
         log_warn "Backend .env not found, skipping"
