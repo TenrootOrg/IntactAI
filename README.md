@@ -1,4 +1,4 @@
-# MSSP Security Platform
+# Risx Security Platform
 
 A comprehensive security platform integrating Velociraptor EDR, ELK Stack, TimeSketch, IRIS, and custom management tools.
 
@@ -20,7 +20,7 @@ sudo apt update && sudo apt install -y unzip
 unzip main.zip
 
 # 3. Enter directory
-cd new-mssp-main
+cd risx
 
 # 4. Edit configuration (set your IP/domain and passwords)
 nano config.yaml

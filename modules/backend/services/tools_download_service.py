@@ -570,7 +570,7 @@ def download_and_configure_tools(logger: Callable = None) -> Dict:
     settings = config.get('settings', {})
 
     # Tools directory - persistent storage in data folder
-    # Host path: /home/tenroot/new-mssp/data/tools (or /app/data/tools in container)
+    # Host path: /home/tenroot/risx/data/tools (or /app/data/tools in container)
     # Mapped to /tools in Velociraptor container
     host_tools_dir = os.environ.get('HOST_TOOLS_PATH', '/app/data/tools')
     container_tools_dir = settings.get('tools_directory', '/tools')

@@ -12,7 +12,7 @@ def load_main_config():
     config_paths = [
         '/app/config.yaml',  # Mounted in Docker
         os.path.join(os.path.dirname(__file__), '../../config.yaml'),  # Development
-        '/home/tenroot/new-mssp/config.yaml'  # Fallback
+        '/home/tenroot/risx/config.yaml'  # Fallback
     ]
 
     for path in config_paths:

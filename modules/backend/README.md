@@ -66,7 +66,7 @@ backend/
 ## Quick Deploy
 
 ```bash
-cd /home/tenroot/new_mssp/modules/backend
+cd /home/tenroot/risx/modules/backend
 docker stop mssp_backend && docker rm mssp_backend
 docker compose build
 docker compose up -d
@@ -89,7 +89,7 @@ curl http://localhost:5001/api/test
 ## Rollback (If Needed)
 
 ```bash
-cd /home/tenroot/new_mssp/modules/backend
+cd /home/tenroot/risx/modules/backend
 mv app.py app_new.py
 mv app_old.py app.py
 docker compose build && docker compose up -d
@@ -154,6 +154,6 @@ For questions or issues:
 
 ---
 
-**Location**: `/home/tenroot/new_mssp/modules/backend/`
+**Location**: `/home/tenroot/risx/modules/backend/`
 **Status**: ✅ Complete and ready for deployment
 **Version**: Refactored (December 2024)
