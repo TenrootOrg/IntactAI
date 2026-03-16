@@ -200,6 +200,11 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
     # Update version in .env
     log(f"Updating version to {version}...", "info")
     update_env_file(env_file, 'VELOCIRAPTOR_VERSION', version, logger=log)
+    # Extract major.minor tag (e.g., "0.75.6" -> "0.75")
+    version_parts = version.split('.')
+    if len(version_parts) >= 2:
+        velo_tag = f"{version_parts[0]}.{version_parts[1]}"
+        update_env_file(env_file, 'VELOCIRAPTOR_TAG', velo_tag, logger=log)
 
     # Copy binary from package
     log("Copying Velociraptor binary from package...", "info")
