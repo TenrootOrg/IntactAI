@@ -113,6 +113,12 @@ def run_upgrade_workflow(modules: Dict[str, str], mode: str = 'online', logger: 
     log("Restarting nginx proxy...", "info")
     run_command("docker restart mssp_nginx", logger=log)
 
+    # If RISX was upgraded, schedule backend restart with delay
+    # (delay allows this response to be sent before container restarts)
+    if 'risx' in modules:
+        log("Scheduling backend restart in 5 seconds...", "info")
+        run_command("nohup sh -c 'sleep 5 && docker restart mssp_backend mssp_tusd' > /dev/null 2>&1 &", logger=log)
+
     all_success = all(r.get('success', False) for r in results.values())
     return {
         "success": all_success,
@@ -218,6 +224,11 @@ def run_offline_upgrade_workflow(package_path: str, logger: Callable = None) -> 
     # Restart nginx
     log("Restarting nginx proxy...", "info")
     run_command("docker restart mssp_nginx", logger=log)
+
+    # If RISX was upgraded, schedule backend restart with delay
+    if 'risx' in versions:
+        log("Scheduling backend restart in 5 seconds...", "info")
+        run_command("nohup sh -c 'sleep 5 && docker restart mssp_backend mssp_tusd' > /dev/null 2>&1 &", logger=log)
 
     log("", "info")
     log("=" * 50, "info")
