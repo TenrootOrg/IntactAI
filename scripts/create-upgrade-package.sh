@@ -10,7 +10,7 @@
 #   TS_VERSION      - Timesketch version (default: 20260209)
 #   PLASO_VERSION   - Plaso version (default: 20260119)
 #   IRIS_VERSION    - IRIS version (default: v2.4.25)
-#   VELO_VERSION    - Velociraptor version (default: 0.75, auto-detects actual binary version)
+#   VELO_VERSION    - Velociraptor version - FULL version required (default: 0.75.6)
 #   INCLUDE_SOURCE  - Include backend/frontend source (default: true)
 #
 # Example:
@@ -24,7 +24,7 @@ ELK_VERSION="${ELK_VERSION:-9.2.3}"
 TS_VERSION="${TS_VERSION:-20260209}"
 PLASO_VERSION="${PLASO_VERSION:-20260119}"
 IRIS_VERSION="${IRIS_VERSION:-v2.4.25}"
-VELO_VERSION="${VELO_VERSION:-0.75}"
+VELO_VERSION="${VELO_VERSION:-0.75.6}"
 INCLUDE_SOURCE="${INCLUDE_SOURCE:-true}"
 
 # Package directory
@@ -103,38 +103,37 @@ save_docker_image "ghcr.io/dfir-iris/iriswebapp_nginx:${IRIS_VERSION}" "iris-ngi
 echo ""
 echo "=== Downloading Velociraptor Binary ==="
 
-# Query GitHub API to find the correct binary URL
-# Velociraptor releases have tag like v0.75 but binary named v0.75.1
+# Build URL directly from version (no GitHub API needed)
+# Requires full version like 0.75.6, not partial like 0.75
 VELO_CLEAN_VERSION="${VELO_VERSION#v}"  # Strip 'v' prefix if present
-VELO_MAJOR_MINOR=$(echo "$VELO_CLEAN_VERSION" | cut -d. -f1,2)
-VELO_RELEASE_TAG="v${VELO_MAJOR_MINOR}"
+VELO_PARTS=(${VELO_CLEAN_VERSION//./ })  # Split by dot
 
-echo "  Querying GitHub for release ${VELO_RELEASE_TAG}..."
-VELO_API_RESPONSE=$(curl -s "https://api.github.com/repos/Velocidex/velociraptor/releases/tags/${VELO_RELEASE_TAG}" 2>/dev/null)
-
-# Find the linux-amd64 binary (not musl)
-VELO_BINARY=$(echo "$VELO_API_RESPONSE" | grep -o '"name": "velociraptor-v[^"]*-linux-amd64"' | head -1 | sed 's/"name": "//;s/"//')
-VELO_URL=$(echo "$VELO_API_RESPONSE" | grep -o '"browser_download_url": "https://[^"]*velociraptor-v[^"]*-linux-amd64"' | head -1 | sed 's/"browser_download_url": "//;s/"//')
-
-if [ -z "$VELO_URL" ] || [ -z "$VELO_BINARY" ]; then
-    echo "ERROR: Could not find Velociraptor binary for version ${VELO_VERSION}"
+if [ ${#VELO_PARTS[@]} -lt 3 ]; then
+    echo "ERROR: Full version required (e.g., 0.75.6), got: ${VELO_VERSION}"
     echo "Check https://github.com/Velocidex/velociraptor/releases for available versions"
     exit 1
 fi
 
-echo "  Found binary: ${VELO_BINARY}"
+VELO_RELEASE_TAG="v${VELO_PARTS[0]}.${VELO_PARTS[1]}"
+VELO_BINARY="velociraptor-v${VELO_CLEAN_VERSION}-linux-amd64"
+VELO_URL="https://github.com/Velocidex/velociraptor/releases/download/${VELO_RELEASE_TAG}/${VELO_BINARY}"
+
+echo "  Version: ${VELO_CLEAN_VERSION}"
+echo "  Release tag: ${VELO_RELEASE_TAG}"
+echo "  Binary: ${VELO_BINARY}"
 echo "  Downloading from: ${VELO_URL}"
-curl -L -o "${PACKAGE_DIR}/binaries/${VELO_BINARY}" "${VELO_URL}" || {
+
+curl -L -f -o "${PACKAGE_DIR}/binaries/${VELO_BINARY}" "${VELO_URL}" || {
     echo "ERROR: Failed to download Velociraptor binary"
     echo "URL: ${VELO_URL}"
+    echo "Make sure version ${VELO_VERSION} exists at https://github.com/Velocidex/velociraptor/releases"
     exit 1
 }
 chmod +x "${PACKAGE_DIR}/binaries/${VELO_BINARY}"
 ls -lh "${PACKAGE_DIR}/binaries/${VELO_BINARY}"
 
-# Extract actual version for manifest
-VELO_ACTUAL_VERSION="${VELO_BINARY#velociraptor-v}"
-VELO_ACTUAL_VERSION="${VELO_ACTUAL_VERSION%-linux-amd64}"
+# Use clean version for manifest
+VELO_ACTUAL_VERSION="${VELO_CLEAN_VERSION}"
 echo "  Actual version: ${VELO_ACTUAL_VERSION}"
 
 # ===========================================
