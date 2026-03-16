@@ -5,6 +5,7 @@ Shared functions used across all module upgrade files.
 """
 
 import os
+import shutil
 import subprocess
 import time
 import json
@@ -92,6 +93,45 @@ def update_env_file(env_path: str, key: str, value: str, logger: Callable = None
     except Exception as e:
         log(f"  Failed to update {env_path}: {e}", "error")
         return False
+
+
+def backup_env_file(env_file: str, logger: Callable = None) -> Optional[str]:
+    """Create a backup of the .env file before upgrade. Returns backup path or None."""
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    backup_file = f"{env_file}.pre-upgrade-backup"
+    try:
+        if os.path.exists(env_file):
+            shutil.copy2(env_file, backup_file)
+            log(f"  Created backup: {backup_file}", "info")
+            return backup_file
+    except Exception as e:
+        log(f"  Warning: Could not create backup: {e}", "warning")
+    return None
+
+
+def restore_env_file(env_file: str, backup_file: str, logger: Callable = None) -> bool:
+    """Restore .env file from backup during rollback."""
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    try:
+        if backup_file and os.path.exists(backup_file):
+            shutil.copy2(backup_file, env_file)
+            os.remove(backup_file)
+            log(f"  Restored from backup: {backup_file}", "info")
+            return True
+    except Exception as e:
+        log(f"  Warning: Could not restore backup: {e}", "warning")
+    return False
+
+
+def cleanup_backup(backup_file: str, logger: Callable = None):
+    """Remove backup file after successful upgrade."""
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    try:
+        if backup_file and os.path.exists(backup_file):
+            os.remove(backup_file)
+            log(f"  Cleaned up backup: {backup_file}", "info")
+    except Exception as e:
+        log(f"  Warning: Could not remove backup: {e}", "warning")
 
 
 def compare_versions(v1: str, v2: str) -> int:
