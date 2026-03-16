@@ -65,17 +65,26 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
     _clear_timesketch_pip_cache(log)
 
     # Update version in .env
-    log(f"Updating version to {version}...", "info")
+    log(f"Updating Timesketch version to {version}...", "info")
     update_env_file(env_file, 'TIMESKETCH_VERSION', version, logger=log)
 
     # Pull new images
-    log("Pulling new images...", "info")
+    log("Pulling new Timesketch images...", "info")
     run_command("docker compose pull", cwd=work_dir, timeout=600, logger=log)
 
-    # Pull Plaso image if specified
+    # Pull and update Plaso image if specified
     if plaso_version:
         log(f"Pulling Plaso {plaso_version}...", "info")
         run_command(f"docker pull log2timeline/plaso:{plaso_version}", logger=log, timeout=600)
+
+        # Update Plaso version in backend .env so the backend uses the new version
+        backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
+        log(f"Updating Plaso version to {plaso_version}...", "info")
+        update_env_file(backend_env, 'PLASO_VERSION', plaso_version, logger=log)
+
+        # Restart backend to pick up new Plaso version
+        log("Restarting backend to apply Plaso version...", "info")
+        run_command("docker compose restart", cwd=os.path.join(WORKDIR, 'modules', 'backend'), logger=log)
 
     # Start containers
     log("Starting Timesketch containers...", "info")
@@ -90,13 +99,19 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
             response = requests.get("http://localhost:5666/login", timeout=5)
             if response.status_code == 200:
                 log("Timesketch is ready", "success")
-                return {"success": True, "version": version}
+                result = {"success": True, "version": version}
+                if plaso_version:
+                    result["plaso_version"] = plaso_version
+                return result
         except:
             pass
         time.sleep(5)
 
     log("Health check timed out", "warning")
-    return {"success": True, "version": version, "health": "pending"}
+    result = {"success": True, "version": version, "health": "pending"}
+    if plaso_version:
+        result["plaso_version"] = plaso_version
+    return result
 
 
 def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: str = None, logger: Callable = None) -> Dict:
@@ -129,8 +144,13 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
         if os.path.exists(plaso_tar):
             load_docker_image(plaso_tar, logger=log)
 
+        # Update Plaso version in backend .env so the backend uses the new version
+        backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
+        log(f"Updating Plaso version to {plaso_version}...", "info")
+        update_env_file(backend_env, 'PLASO_VERSION', plaso_version, logger=log)
+
     # Update version in .env
-    log(f"Updating version to {version}...", "info")
+    log(f"Updating Timesketch version to {version}...", "info")
     update_env_file(env_file, 'TIMESKETCH_VERSION', version, logger=log)
 
     # Start containers
@@ -139,6 +159,11 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
     if not result['success']:
         return {"success": False, "error": f"Failed to start Timesketch: {result['error']}"}
 
+    # Restart backend if Plaso was updated
+    if plaso_version:
+        log("Restarting backend to apply Plaso version...", "info")
+        run_command("docker compose restart", cwd=os.path.join(WORKDIR, 'modules', 'backend'), logger=log)
+
     # Health check
     log("Waiting for Timesketch to be ready...", "info")
     for i in range(30):
@@ -146,10 +171,16 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
             response = requests.get("http://localhost:5666/login", timeout=5)
             if response.status_code == 200:
                 log("Timesketch is ready", "success")
-                return {"success": True, "version": version}
+                result = {"success": True, "version": version}
+                if plaso_version:
+                    result["plaso_version"] = plaso_version
+                return result
         except:
             pass
         time.sleep(5)
 
     log("Health check timed out", "warning")
-    return {"success": True, "version": version, "health": "pending"}
+    result = {"success": True, "version": version, "health": "pending"}
+    if plaso_version:
+        result["plaso_version"] = plaso_version
+    return result
