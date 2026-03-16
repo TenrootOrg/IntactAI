@@ -488,6 +488,7 @@ document.addEventListener('alpine:init', () => {
         upgradeModules: [
             { id: 'elk', name: 'ELK Stack', current: '', targetVersion: '', enabled: false, note: 'Downgrades not supported' },
             { id: 'timesketch', name: 'Timesketch', current: '', targetVersion: '', enabled: false },
+            { id: 'plaso', name: 'Plaso (Timeline)', current: '', targetVersion: '', enabled: false, note: 'Used by Timesketch' },
             { id: 'iris', name: 'IRIS', current: '', targetVersion: '', enabled: false },
             { id: 'velociraptor', name: 'Velociraptor', current: '', targetVersion: '', enabled: false },
             { id: 'backend', name: 'Backend', current: '', targetVersion: '', enabled: false },
