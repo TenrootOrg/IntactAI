@@ -20,7 +20,7 @@ services:
       - VELO_CONFIG_PATH=${VELO_CONFIG_PATH}
       - CONFIG_PATH=${CONFIG_PATH}
       # Host path for upgrade operations (Docker needs host paths for volume mounts)
-      - MSSP_HOST_PATH=${MSSP_HOST_PATH:-/home/tenroot/new-mssp-main}
+      - MSSP_HOST_PATH=${MSSP_HOST_PATH:-/home/tenroot/risx}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:rw  # Docker socket for container access (rw for upgrades)
       - /tmp/plaso:/tmp/plaso  # Plaso output directory for Timesketch import
@@ -38,7 +38,7 @@ services:
       - upload_data:/data/uploads  # Shared volume for tus uploads
       - ../..:/app/workdir:rw  # MSSP root for upgrade operations
       # Also mount at host path for docker compose --project-directory to work
-      - /home/tenroot/new-mssp-main:/home/tenroot/new-mssp-main:rw
+      - /home/tenroot/risx:/home/tenroot/risx:rw
     ports:
       - "5001:5001"
     restart: unless-stopped
