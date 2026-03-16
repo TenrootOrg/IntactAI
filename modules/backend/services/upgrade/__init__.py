@@ -29,6 +29,7 @@ from .iris import upgrade_iris, upgrade_iris_offline
 from .velociraptor import upgrade_velociraptor, upgrade_velociraptor_offline
 from .backend import upgrade_backend, upgrade_backend_offline
 from .frontend import upgrade_frontend, upgrade_frontend_offline
+from .plaso import upgrade_plaso, upgrade_plaso_offline
 
 
 def run_upgrade_workflow(modules: Dict[str, str], mode: str = 'online', logger: Callable = None) -> Dict:
@@ -44,10 +45,11 @@ def run_upgrade_workflow(modules: Dict[str, str], mode: str = 'online', logger: 
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
-    upgrade_order = ['elk', 'timesketch', 'iris', 'velociraptor', 'backend', 'frontend']
+    upgrade_order = ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'backend', 'frontend']
     upgrade_functions = {
         'elk': upgrade_elk,
         'timesketch': upgrade_timesketch,
+        'plaso': upgrade_plaso,
         'iris': upgrade_iris,
         'velociraptor': upgrade_velociraptor,
         'backend': upgrade_backend,
@@ -152,13 +154,14 @@ def run_offline_upgrade_workflow(package_path: str, logger: Callable = None) -> 
     offline_upgrade_functions = {
         'elk': upgrade_elk_offline,
         'timesketch': upgrade_timesketch_offline,
+        'plaso': upgrade_plaso_offline,
         'iris': upgrade_iris_offline,
         'velociraptor': upgrade_velociraptor_offline,
         'backend': upgrade_backend_offline,
         'frontend': upgrade_frontend_offline,
     }
 
-    upgrade_order = ['elk', 'timesketch', 'iris', 'velociraptor', 'backend', 'frontend']
+    upgrade_order = ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'backend', 'frontend']
 
     results = {}
     total = 0
@@ -256,6 +259,7 @@ __all__ = [
     # Online upgrade functions
     'upgrade_elk',
     'upgrade_timesketch',
+    'upgrade_plaso',
     'upgrade_iris',
     'upgrade_velociraptor',
     'upgrade_backend',
@@ -263,6 +267,7 @@ __all__ = [
     # Offline upgrade functions
     'upgrade_elk_offline',
     'upgrade_timesketch_offline',
+    'upgrade_plaso_offline',
     'upgrade_iris_offline',
     'upgrade_velociraptor_offline',
     'upgrade_backend_offline',

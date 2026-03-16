@@ -139,6 +139,14 @@ def get_current_versions() -> Dict:
         'env_file': ts_env
     }
 
+    # Plaso - read from backend .env
+    backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
+    backend_vars = read_env_file(backend_env)
+    versions['plaso'] = {
+        'current': backend_vars.get('PLASO_VERSION', 'unknown'),
+        'env_file': backend_env
+    }
+
     # IRIS
     iris_env = os.path.join(WORKDIR, 'modules', 'iris', '.env')
     iris_vars = read_env_file(iris_env)
@@ -179,6 +187,7 @@ def get_latest_versions() -> Dict:
     repos = {
         'elk': 'elastic/elasticsearch',
         'timesketch': 'google/timesketch',
+        'plaso': 'log2timeline/plaso',
         'iris': 'dfir-iris/iris-web',
         'velociraptor': 'Velocidex/velociraptor',
     }
