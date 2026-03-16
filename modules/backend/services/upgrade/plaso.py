@@ -38,11 +38,8 @@ def upgrade_plaso(version: str, logger: Callable = None) -> Dict:
         log(f"Updating Plaso version to {version}...", "info")
         update_env_file(backend_env, 'PLASO_VERSION', version, logger=log)
 
-        # Restart backend to pick up new Plaso version
-        log("Restarting backend...", "info")
-        result = run_command("docker compose restart", cwd=backend_dir, logger=log)
-        if not result['success']:
-            raise Exception(f"Failed to restart backend: {result['error']}")
+        # NOTE: No backend restart needed - Plaso runs as a separate Docker container
+        # The new image will be used when a Plaso job is triggered
 
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
@@ -56,7 +53,6 @@ def upgrade_plaso(version: str, logger: Callable = None) -> Dict:
         log(f"Rolling back to version {current_version}...", "warning")
 
         if restore_env_file(backend_env, backup_file, logger=log):
-            run_command("docker compose restart", cwd=backend_dir, logger=log)
             log(f"ROLLED BACK Plaso to version {current_version}", "warning")
 
         return {
@@ -99,11 +95,8 @@ def upgrade_plaso_offline(package_dir: str, version: str, logger: Callable = Non
         log(f"Updating Plaso version to {version}...", "info")
         update_env_file(backend_env, 'PLASO_VERSION', version, logger=log)
 
-        # Restart backend
-        log("Restarting backend...", "info")
-        result = run_command("docker compose restart", cwd=backend_dir, logger=log)
-        if not result['success']:
-            raise Exception(f"Failed to restart backend: {result['error']}")
+        # NOTE: No backend restart needed - Plaso runs as a separate Docker container
+        # The new image will be used when a Plaso job is triggered
 
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
@@ -117,7 +110,6 @@ def upgrade_plaso_offline(package_dir: str, version: str, logger: Callable = Non
         log(f"Rolling back to version {current_version}...", "warning")
 
         if restore_env_file(backend_env, backup_file, logger=log):
-            run_command("docker compose restart", cwd=backend_dir, logger=log)
             log(f"ROLLED BACK Plaso to version {current_version}", "warning")
 
         return {

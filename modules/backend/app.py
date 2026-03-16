@@ -75,6 +75,34 @@ def run_startup_initialization():
 
     print("[STARTUP] Starting background initialization...", flush=True)
 
+    # CHECK FOR PENDING UPGRADES FIRST (Two-Phase Upgrade Support)
+    try:
+        from services.storage.base import get_pending_upgrade
+        from services.upgrade import resume_upgrade_workflow
+
+        pending = get_pending_upgrade()
+        if pending:
+            print(f"[STARTUP] Found pending upgrade: {pending['run_id']}", flush=True)
+            print(f"[STARTUP] Phase: {pending['phase']}", flush=True)
+            print("[STARTUP] Resuming Phase 2 in background...", flush=True)
+
+            def resume_in_background():
+                try:
+                    # Small delay to let the backend fully start
+                    time.sleep(5)
+                    result = resume_upgrade_workflow(pending['run_id'])
+                    if result.get('success'):
+                        print(f"[STARTUP] Upgrade Phase 2 completed successfully", flush=True)
+                    else:
+                        print(f"[STARTUP] Upgrade Phase 2 failed: {result.get('error')}", flush=True)
+                except Exception as e:
+                    print(f"[STARTUP] Upgrade resume error: {e}", flush=True)
+
+            resume_thread = threading.Thread(target=resume_in_background, daemon=True)
+            resume_thread.start()
+    except Exception as e:
+        print(f"[STARTUP] Could not check for pending upgrades: {e}", flush=True)
+
     # Initialize Elasticsearch
     try:
         print("[STARTUP] Initializing Elasticsearch...", flush=True)

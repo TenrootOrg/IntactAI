@@ -146,6 +146,18 @@ def create_tables():
             value TEXT,
             updated_at TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS upgrade_state (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT UNIQUE,
+            phase TEXT,
+            target_modules TEXT,
+            completed_modules TEXT,
+            mode TEXT,
+            package_dir TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        );
     """)
     conn.commit()
 
@@ -336,4 +348,111 @@ def init_storage() -> bool:
         return True
     except Exception as e:
         print(f"[STORAGE] Failed to initialize: {e}", flush=True)
+        return False
+
+
+# =============================================================================
+# Upgrade State Management (Two-Phase Upgrade Support)
+# =============================================================================
+
+def save_upgrade_state(run_id: str, phase: str, target_modules: Dict,
+                       completed_modules: List[str], mode: str,
+                       package_dir: str = None) -> bool:
+    """Save or update upgrade state for two-phase upgrades.
+
+    Args:
+        run_id: The workflow run ID
+        phase: Current phase (phase1, awaiting_restart, phase2, completed)
+        target_modules: Dict of module -> version to upgrade
+        completed_modules: List of completed module names
+        mode: 'online' or 'offline'
+        package_dir: Path to offline package (for offline mode)
+    """
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    try:
+        conn.execute("""
+            INSERT INTO upgrade_state
+            (run_id, phase, target_modules, completed_modules, mode, package_dir, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id) DO UPDATE SET
+                phase = excluded.phase,
+                target_modules = excluded.target_modules,
+                completed_modules = excluded.completed_modules,
+                mode = excluded.mode,
+                package_dir = excluded.package_dir,
+                updated_at = excluded.updated_at
+        """, (run_id, phase, json.dumps(target_modules), json.dumps(completed_modules),
+              mode, package_dir, now, now))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"[STORAGE] Error saving upgrade state: {e}", flush=True)
+        return False
+
+
+def get_pending_upgrade() -> Optional[Dict]:
+    """Get pending upgrade that needs to be resumed after restart.
+
+    Returns the upgrade state if phase is 'awaiting_restart', None otherwise.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM upgrade_state WHERE phase = 'awaiting_restart' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            return row_to_dict(row, ['target_modules', 'completed_modules'])
+        return None
+    except Exception as e:
+        print(f"[STORAGE] Error getting pending upgrade: {e}", flush=True)
+        return None
+
+
+def get_upgrade_state(run_id: str) -> Optional[Dict]:
+    """Get upgrade state for a specific run_id."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM upgrade_state WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row:
+            return row_to_dict(row, ['target_modules', 'completed_modules'])
+        return None
+    except Exception as e:
+        print(f"[STORAGE] Error getting upgrade state: {e}", flush=True)
+        return None
+
+
+def update_upgrade_phase(run_id: str, phase: str, completed_modules: List[str] = None) -> bool:
+    """Update the phase and optionally completed modules for an upgrade."""
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    try:
+        if completed_modules is not None:
+            conn.execute(
+                "UPDATE upgrade_state SET phase = ?, completed_modules = ?, updated_at = ? WHERE run_id = ?",
+                (phase, json.dumps(completed_modules), now, run_id)
+            )
+        else:
+            conn.execute(
+                "UPDATE upgrade_state SET phase = ?, updated_at = ? WHERE run_id = ?",
+                (phase, now, run_id)
+            )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"[STORAGE] Error updating upgrade phase: {e}", flush=True)
+        return False
+
+
+def clear_upgrade_state(run_id: str) -> bool:
+    """Remove upgrade state after successful completion."""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM upgrade_state WHERE run_id = ?", (run_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"[STORAGE] Error clearing upgrade state: {e}", flush=True)
         return False
