@@ -491,8 +491,7 @@ document.addEventListener('alpine:init', () => {
             { id: 'plaso', name: 'Plaso (Timeline)', current: '', targetVersion: '', enabled: false, note: 'Used by Timesketch' },
             { id: 'iris', name: 'IRIS', current: '', targetVersion: '', enabled: false },
             { id: 'velociraptor', name: 'Velociraptor', current: '', targetVersion: '', enabled: false },
-            { id: 'backend', name: 'Backend', current: '', targetVersion: '', enabled: false },
-            { id: 'frontend', name: 'Frontend', current: '', targetVersion: '', enabled: false },
+            { id: 'risx', name: 'RISX Platform', current: '', targetVersion: '', enabled: false, note: 'Backend + Frontend' },
         ],
 
         async openUpgradeModal() {

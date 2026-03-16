@@ -163,7 +163,7 @@ def get_current_versions() -> Dict:
         'env_file': velo_env
     }
 
-    # Backend - use git describe or fallback
+    # RISX Platform - use git describe or fallback
     try:
         result = subprocess.run(
             ['git', 'describe', '--tags', '--always'],
@@ -171,11 +171,10 @@ def get_current_versions() -> Dict:
             capture_output=True,
             text=True
         )
-        backend_version = result.stdout.strip() if result.returncode == 0 else 'unknown'
+        risx_version = result.stdout.strip() if result.returncode == 0 else 'unknown'
     except:
-        backend_version = 'unknown'
-    versions['backend'] = {'current': backend_version}
-    versions['frontend'] = {'current': backend_version}
+        risx_version = 'unknown'
+    versions['risx'] = {'current': risx_version}
 
     return versions
 
@@ -207,7 +206,7 @@ def get_latest_versions() -> Dict:
         except Exception:
             versions[module] = 'unknown'
 
-    # Backend/Frontend
+    # RISX Platform
     try:
         response = requests.get(
             'https://api.github.com/repos/NofLevi10root/new-mssp/releases/latest',
@@ -216,14 +215,11 @@ def get_latest_versions() -> Dict:
         )
         if response.status_code == 200:
             data = response.json()
-            versions['backend'] = data.get('tag_name', 'main')
-            versions['frontend'] = data.get('tag_name', 'main')
+            versions['risx'] = data.get('tag_name', 'main')
         else:
-            versions['backend'] = 'main'
-            versions['frontend'] = 'main'
+            versions['risx'] = 'main'
     except:
-        versions['backend'] = 'main'
-        versions['frontend'] = 'main'
+        versions['risx'] = 'main'
 
     return versions
 

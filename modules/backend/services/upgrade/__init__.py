@@ -27,8 +27,7 @@ from .elk import upgrade_elk, upgrade_elk_offline
 from .timesketch import upgrade_timesketch, upgrade_timesketch_offline
 from .iris import upgrade_iris, upgrade_iris_offline
 from .velociraptor import upgrade_velociraptor, upgrade_velociraptor_offline
-from .backend import upgrade_backend, upgrade_backend_offline
-from .frontend import upgrade_frontend, upgrade_frontend_offline
+from .risx import upgrade_risx, upgrade_risx_offline
 from .plaso import upgrade_plaso, upgrade_plaso_offline
 
 
@@ -45,15 +44,14 @@ def run_upgrade_workflow(modules: Dict[str, str], mode: str = 'online', logger: 
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
-    upgrade_order = ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'backend', 'frontend']
+    upgrade_order = ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'risx']
     upgrade_functions = {
         'elk': upgrade_elk,
         'timesketch': upgrade_timesketch,
         'plaso': upgrade_plaso,
         'iris': upgrade_iris,
         'velociraptor': upgrade_velociraptor,
-        'backend': upgrade_backend,
-        'frontend': upgrade_frontend,
+        'risx': upgrade_risx,
     }
 
     results = {}
@@ -91,7 +89,7 @@ def run_upgrade_workflow(modules: Dict[str, str], mode: str = 'online', logger: 
             continue
 
         try:
-            if module_name in ['backend', 'frontend']:
+            if module_name == 'risx':
                 result = upgrade_fn(logger=log)
             else:
                 result = upgrade_fn(target_version, logger=log)
@@ -157,24 +155,23 @@ def run_offline_upgrade_workflow(package_path: str, logger: Callable = None) -> 
         'plaso': upgrade_plaso_offline,
         'iris': upgrade_iris_offline,
         'velociraptor': upgrade_velociraptor_offline,
-        'backend': upgrade_backend_offline,
-        'frontend': upgrade_frontend_offline,
+        'risx': upgrade_risx_offline,
     }
 
-    upgrade_order = ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'backend', 'frontend']
+    upgrade_order = ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'risx']
 
     results = {}
     total = 0
     completed = 0
 
     for module in upgrade_order:
-        if module in versions or module in ['backend', 'frontend']:
+        if module in versions or module == 'risx':
             total += 1
 
     for module_name in upgrade_order:
         version = versions.get(module_name)
 
-        if not version and module_name not in ['backend', 'frontend']:
+        if not version and module_name != 'risx':
             continue
 
         log("", "info")
@@ -189,7 +186,7 @@ def run_offline_upgrade_workflow(package_path: str, logger: Callable = None) -> 
             continue
 
         try:
-            if module_name in ['backend', 'frontend']:
+            if module_name == 'risx':
                 result = upgrade_fn(package_dir, logger=log)
             elif module_name == 'timesketch':
                 plaso_version = versions.get('plaso')
@@ -262,16 +259,14 @@ __all__ = [
     'upgrade_plaso',
     'upgrade_iris',
     'upgrade_velociraptor',
-    'upgrade_backend',
-    'upgrade_frontend',
+    'upgrade_risx',
     # Offline upgrade functions
     'upgrade_elk_offline',
     'upgrade_timesketch_offline',
     'upgrade_plaso_offline',
     'upgrade_iris_offline',
     'upgrade_velociraptor_offline',
-    'upgrade_backend_offline',
-    'upgrade_frontend_offline',
+    'upgrade_risx_offline',
     # Workflow functions
     'run_upgrade_workflow',
     'run_offline_upgrade_workflow',

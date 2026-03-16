@@ -26,7 +26,7 @@ def get_upgrade_status():
         latest = get_latest_versions()
 
         versions = {}
-        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'backend', 'frontend']:
+        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'risx']:
             versions[module] = {
                 'current': current.get(module, {}).get('current', 'unknown'),
                 'latest': latest.get(module, 'unknown')
