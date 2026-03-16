@@ -67,6 +67,9 @@ update_env_files() {
             local velo_api_user=$(read_config "['modules']['velociraptor']['api_id']")
             local velo_api_pass=$(read_config "['modules']['velociraptor']['api_password']")
 
+            # Extract major.minor tag from version (e.g., "0.75.6" -> "0.75")
+            local velo_tag=$(echo "$velo_version" | sed 's/^\([0-9]*\.[0-9]*\).*/\1/')
+            update_env_var "$velo_env" "VELOCIRAPTOR_TAG" "$velo_tag"
             update_env_var "$velo_env" "VELOCIRAPTOR_VERSION" "$velo_version"
             update_env_var "$velo_env" "VELOX_USER" "$velo_user"
             update_env_var "$velo_env" "VELOX_PASSWORD" "$velo_pass"
