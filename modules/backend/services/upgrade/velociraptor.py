@@ -4,7 +4,6 @@
 import os
 import time
 import json
-import requests
 from typing import Dict, Callable, Optional, Tuple
 
 from .base import (
@@ -15,17 +14,18 @@ from .base import (
 
 
 def get_velociraptor_download_url(version: str, logger: Callable = None) -> Tuple[Optional[str], Optional[str]]:
-    """Query GitHub API to find the correct Velociraptor binary download URL.
+    """Build Velociraptor binary download URL from version string.
 
-    Velociraptor has unique release naming:
-    - Release tag: v0.75
-    - Multiple binaries: v0.75.1, v0.75.2, ..., v0.75.6
+    No GitHub API calls - constructs URL directly from version.
+
+    Velociraptor URL pattern:
+    https://github.com/Velocidex/velociraptor/releases/download/v{major}.{minor}/velociraptor-v{version}-linux-amd64
 
     Args:
-        version: Version string like "0.75", "v0.75", "0.75.6", or "v0.75.6"
+        version: Version string like "0.75.6" or "v0.75.6" (full version required)
 
     Returns:
-        Tuple of (download_url, actual_version) or (None, None) if not found
+        Tuple of (download_url, clean_version) or (None, None) if invalid
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
@@ -33,80 +33,24 @@ def get_velociraptor_download_url(version: str, logger: Callable = None) -> Tupl
     clean_version = version.lstrip('v')
     parts = clean_version.split('.')
 
-    # Build release tag (major.minor format)
-    if len(parts) >= 2:
-        release_tag = f"v{parts[0]}.{parts[1]}"
-    else:
-        release_tag = f"v{clean_version}"
-
-    log(f"  Checking GitHub release: {release_tag}", "info")
-
-    try:
-        # Query GitHub API for this release
-        response = requests.get(
-            f"https://api.github.com/repos/Velocidex/velociraptor/releases/tags/{release_tag}",
-            timeout=30,
-            headers={'Accept': 'application/vnd.github.v3+json'}
-        )
-
-        if response.status_code == 404:
-            # Try with full version as tag (e.g., v0.75.1)
-            full_tag = f"v{clean_version}"
-            log(f"  Release {release_tag} not found, trying {full_tag}", "info")
-            response = requests.get(
-                f"https://api.github.com/repos/Velocidex/velociraptor/releases/tags/{full_tag}",
-                timeout=30,
-                headers={'Accept': 'application/vnd.github.v3+json'}
-            )
-
-        if response.status_code != 200:
-            log(f"  GitHub API error: {response.status_code}", "warning")
-            return None, None
-
-        release_data = response.json()
-        assets = release_data.get('assets', [])
-
-        # Collect all linux-amd64 binaries (not musl, not .sig)
-        binaries = []
-        for asset in assets:
-            name = asset.get('name', '')
-            if 'linux-amd64' in name and 'musl' not in name and name.endswith('-linux-amd64'):
-                # Extract version from filename: velociraptor-v0.75.1-linux-amd64 -> 0.75.1
-                asset_version = name.replace('velociraptor-v', '').replace('-linux-amd64', '')
-                binaries.append({
-                    'name': name,
-                    'version': asset_version,
-                    'url': asset.get('browser_download_url')
-                })
-
-        if not binaries:
-            log(f"  No linux-amd64 binaries found in release {release_tag}", "warning")
-            return None, None
-
-        # Strategy 1: Find exact version match if user specified patch version (e.g., 0.75.6)
-        if len(parts) >= 3:
-            for b in binaries:
-                if b['version'] == clean_version:
-                    log(f"  Found exact match: {b['name']}", "info")
-                    return b['url'], b['version']
-            log(f"  Exact version {clean_version} not found, using latest", "info")
-
-        # Strategy 2: Find the latest patch version (sort by version number)
-        def version_key(b):
-            try:
-                v_parts = b['version'].split('.')
-                return tuple(int(p) for p in v_parts)
-            except:
-                return (0, 0, 0)
-
-        binaries.sort(key=version_key, reverse=True)
-        latest = binaries[0]
-        log(f"  Using latest: {latest['name']}", "info")
-        return latest['url'], latest['version']
-
-    except Exception as e:
-        log(f"  GitHub API error: {str(e)}", "warning")
+    # Require full version (major.minor.patch)
+    if len(parts) < 3:
+        log(f"  Full version required (e.g., 0.75.6), got: {version}", "warning")
+        log(f"  Check https://github.com/Velocidex/velociraptor/releases for available versions", "info")
         return None, None
+
+    # Build release tag (major.minor)
+    release_tag = f"v{parts[0]}.{parts[1]}"
+
+    # Build download URL
+    binary_name = f"velociraptor-v{clean_version}-linux-amd64"
+    download_url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}/{binary_name}"
+
+    log(f"  Version: {clean_version}", "info")
+    log(f"  Release tag: {release_tag}", "info")
+    log(f"  Binary: {binary_name}", "info")
+
+    return download_url, clean_version
 
 
 def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
