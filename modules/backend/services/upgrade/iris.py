@@ -8,56 +8,96 @@ from typing import Dict, Callable
 
 from .base import (
     WORKDIR, HOST_PATH,
-    run_command, update_env_file, load_docker_image
+    run_command, read_env_file, update_env_file, load_docker_image,
+    backup_env_file, restore_env_file, cleanup_backup
 )
 
 
 def upgrade_iris(version: str, logger: Callable = None) -> Dict:
-    """Upgrade IRIS to specified version."""
+    """Upgrade IRIS to specified version with automatic rollback on failure."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     work_dir = os.path.join(WORKDIR, 'modules', 'iris')
     env_file = os.path.join(work_dir, '.env')
 
     log("Starting IRIS upgrade...", "info")
 
-    # Stop containers
-    log("Stopping IRIS containers...", "info")
-    result = run_command("docker compose down", cwd=work_dir, logger=log)
-    if not result['success']:
-        return {"success": False, "error": f"Failed to stop IRIS: {result['error']}"}
+    # Get current version for rollback
+    current_vars = read_env_file(env_file)
+    current_version = current_vars.get('IRIS_VERSION', 'unknown')
 
-    # Update version in .env
-    log(f"Updating version to {version}...", "info")
-    update_env_file(env_file, 'IRIS_VERSION', version, logger=log)
+    # Create backup before making any changes
+    log(f"Backing up current config (version {current_version})...", "info")
+    backup_file = backup_env_file(env_file, logger=log)
 
-    # Pull new images
-    log("Pulling new images...", "info")
-    run_command("docker compose pull", cwd=work_dir, timeout=600, logger=log)
+    try:
+        # Stop containers
+        log("Stopping IRIS containers...", "info")
+        result = run_command("docker compose down", cwd=work_dir, logger=log)
+        if not result['success']:
+            raise Exception(f"Failed to stop IRIS: {result['error']}")
 
-    # Start containers
-    log("Starting IRIS containers...", "info")
-    result = run_command("docker compose up -d", cwd=work_dir, logger=log)
-    if not result['success']:
-        return {"success": False, "error": f"Failed to start IRIS: {result['error']}"}
+        # Update version in .env
+        log(f"Updating version to {version}...", "info")
+        update_env_file(env_file, 'IRIS_VERSION', version, logger=log)
 
-    # Health check
-    log("Waiting for IRIS to be ready...", "info")
-    for i in range(30):
-        try:
-            response = requests.get("https://localhost:8443/api/ping", timeout=5, verify=False)
-            if response.status_code in [200, 401]:
-                log("IRIS is ready", "success")
-                return {"success": True, "version": version}
-        except:
-            pass
-        time.sleep(5)
+        # Pull new images
+        log("Pulling new images...", "info")
+        run_command("docker compose pull", cwd=work_dir, timeout=600, logger=log)
 
-    log("Health check timed out", "warning")
-    return {"success": True, "version": version, "health": "pending"}
+        # Start containers
+        log("Starting IRIS containers...", "info")
+        result = run_command("docker compose up -d", cwd=work_dir, logger=log)
+        if not result['success']:
+            raise Exception(f"Failed to start IRIS: {result['error']}")
+
+        # Health check
+        log("Waiting for IRIS to be ready (timeout: 150s)...", "info")
+        healthy = False
+        for i in range(30):
+            try:
+                response = requests.get("https://localhost:8443/api/ping", timeout=5, verify=False)
+                if response.status_code in [200, 401]:
+                    log("IRIS is ready", "success")
+                    healthy = True
+                    break
+            except:
+                pass
+            time.sleep(5)
+
+        if not healthy:
+            # Check if containers are crash-looping
+            check_result = run_command("docker ps -a --filter name=mssp_iris --format '{{.Status}}'", logger=log)
+            container_status = check_result.get('stdout', '').strip()
+            if 'Restarting' in container_status or 'Exited' in container_status:
+                raise Exception(f"IRIS failed to start - container status: {container_status}")
+            log("Health check timed out, but containers may still be starting", "warning")
+
+        # Success - cleanup backup
+        cleanup_backup(backup_file, logger=log)
+        log(f"IRIS upgrade completed: {current_version} -> {version}", "success")
+        return {"success": True, "version": version, "health": "green" if healthy else "pending"}
+
+    except Exception as e:
+        # ROLLBACK: Restore previous version
+        error_msg = str(e)
+        log(f"IRIS upgrade FAILED: {error_msg}", "error")
+        log(f"Rolling back to version {current_version}...", "warning")
+
+        if restore_env_file(env_file, backup_file, logger=log):
+            run_command("docker compose down", cwd=work_dir, logger=log)
+            run_command("docker compose up -d", cwd=work_dir, logger=log)
+            log(f"ROLLED BACK IRIS to version {current_version}", "warning")
+
+        return {
+            "success": False,
+            "error": error_msg,
+            "rolled_back": True,
+            "restored_version": current_version
+        }
 
 
 def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None) -> Dict:
-    """Upgrade IRIS from offline package."""
+    """Upgrade IRIS from offline package with automatic rollback."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     work_dir = os.path.join(WORKDIR, 'modules', 'iris')
     env_file = os.path.join(work_dir, '.env')
@@ -65,40 +105,78 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
 
     log("Starting IRIS offline upgrade...", "info")
 
-    # Stop containers
-    log("Stopping IRIS containers...", "info")
-    result = run_command("docker compose down", cwd=work_dir, logger=log)
-    if not result['success']:
-        return {"success": False, "error": f"Failed to stop IRIS: {result['error']}"}
+    # Get current version for rollback
+    current_vars = read_env_file(env_file)
+    current_version = current_vars.get('IRIS_VERSION', 'unknown')
 
-    # Load docker images
-    log("Loading docker images from package...", "info")
-    for img_name in ['iris-app', 'iris-worker', 'iris-nginx']:
-        tar_path = os.path.join(images_dir, f"{img_name}-{version}.tar")
-        if os.path.exists(tar_path):
-            load_docker_image(tar_path, logger=log)
+    # Create backup before making any changes
+    log(f"Backing up current config (version {current_version})...", "info")
+    backup_file = backup_env_file(env_file, logger=log)
 
-    # Update version in .env
-    log(f"Updating version to {version}...", "info")
-    update_env_file(env_file, 'IRIS_VERSION', version, logger=log)
+    try:
+        # Stop containers
+        log("Stopping IRIS containers...", "info")
+        result = run_command("docker compose down", cwd=work_dir, logger=log)
+        if not result['success']:
+            raise Exception(f"Failed to stop IRIS: {result['error']}")
 
-    # Start containers
-    log("Starting IRIS containers...", "info")
-    result = run_command("docker compose up -d", cwd=work_dir, logger=log)
-    if not result['success']:
-        return {"success": False, "error": f"Failed to start IRIS: {result['error']}"}
+        # Load docker images
+        log("Loading docker images from package...", "info")
+        for img_name in ['iris-app', 'iris-worker', 'iris-nginx']:
+            tar_path = os.path.join(images_dir, f"{img_name}-{version}.tar")
+            if os.path.exists(tar_path):
+                load_docker_image(tar_path, logger=log)
 
-    # Health check
-    log("Waiting for IRIS to be ready...", "info")
-    for i in range(30):
-        try:
-            response = requests.get("https://localhost:8443/api/ping", timeout=5, verify=False)
-            if response.status_code in [200, 401]:
-                log("IRIS is ready", "success")
-                return {"success": True, "version": version}
-        except:
-            pass
-        time.sleep(5)
+        # Update version in .env
+        log(f"Updating version to {version}...", "info")
+        update_env_file(env_file, 'IRIS_VERSION', version, logger=log)
 
-    log("Health check timed out", "warning")
-    return {"success": True, "version": version, "health": "pending"}
+        # Start containers
+        log("Starting IRIS containers...", "info")
+        result = run_command("docker compose up -d", cwd=work_dir, logger=log)
+        if not result['success']:
+            raise Exception(f"Failed to start IRIS: {result['error']}")
+
+        # Health check
+        log("Waiting for IRIS to be ready (timeout: 150s)...", "info")
+        healthy = False
+        for i in range(30):
+            try:
+                response = requests.get("https://localhost:8443/api/ping", timeout=5, verify=False)
+                if response.status_code in [200, 401]:
+                    log("IRIS is ready", "success")
+                    healthy = True
+                    break
+            except:
+                pass
+            time.sleep(5)
+
+        if not healthy:
+            check_result = run_command("docker ps -a --filter name=mssp_iris --format '{{.Status}}'", logger=log)
+            container_status = check_result.get('stdout', '').strip()
+            if 'Restarting' in container_status or 'Exited' in container_status:
+                raise Exception(f"IRIS failed to start - container status: {container_status}")
+            log("Health check timed out, but containers may still be starting", "warning")
+
+        # Success - cleanup backup
+        cleanup_backup(backup_file, logger=log)
+        log(f"IRIS offline upgrade completed: {current_version} -> {version}", "success")
+        return {"success": True, "version": version, "health": "green" if healthy else "pending"}
+
+    except Exception as e:
+        # ROLLBACK: Restore previous version
+        error_msg = str(e)
+        log(f"IRIS offline upgrade FAILED: {error_msg}", "error")
+        log(f"Rolling back to version {current_version}...", "warning")
+
+        if restore_env_file(env_file, backup_file, logger=log):
+            run_command("docker compose down", cwd=work_dir, logger=log)
+            run_command("docker compose up -d", cwd=work_dir, logger=log)
+            log(f"ROLLED BACK IRIS to version {current_version}", "warning")
+
+        return {
+            "success": False,
+            "error": error_msg,
+            "rolled_back": True,
+            "restored_version": current_version
+        }

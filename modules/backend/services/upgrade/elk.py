@@ -8,12 +8,13 @@ from typing import Dict, Callable
 
 from .base import (
     WORKDIR, HOST_PATH,
-    run_command, read_env_file, update_env_file, compare_versions, load_docker_image
+    run_command, read_env_file, update_env_file, compare_versions, load_docker_image,
+    backup_env_file, restore_env_file, cleanup_backup
 )
 
 
 def upgrade_elk(version: str, logger: Callable = None) -> Dict:
-    """Upgrade ELK stack to specified version.
+    """Upgrade ELK stack to specified version with automatic rollback on failure.
 
     NOTE: Elasticsearch does NOT support downgrades. Only upgrades to newer versions are allowed.
     """
@@ -40,53 +41,91 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
         log(f"ELK is already at version {version}", "info")
         return {"success": True, "version": version, "message": "Already at target version"}
 
-    # Stop containers
-    log("Stopping ELK containers...", "info")
-    result = run_command("docker compose down", cwd=work_dir, logger=log)
-    if not result['success']:
-        return {"success": False, "error": f"Failed to stop ELK: {result['error']}"}
+    # Create backup before making any changes
+    log(f"Backing up current config (version {current_version})...", "info")
+    backup_file = backup_env_file(env_file, logger=log)
 
-    # Update version in .env
-    log(f"Updating version to {version}...", "info")
-    update_env_file(env_file, 'ELASTIC_VERSION', version, logger=log)
-    update_env_file(env_file, 'KIBANA_VERSION', version, logger=log)
+    try:
+        # Stop containers
+        log("Stopping ELK containers...", "info")
+        result = run_command("docker compose down", cwd=work_dir, logger=log)
+        if not result['success']:
+            raise Exception(f"Failed to stop ELK: {result['error']}")
 
-    # Pull new images
-    log("Pulling new images...", "info")
-    result = run_command("docker compose pull", cwd=work_dir, timeout=600, logger=log)
-    if not result['success']:
-        log(f"Pull warning: {result.get('error', '')[:100]}", "warning")
+        # Update version in .env
+        log(f"Updating version to {version}...", "info")
+        update_env_file(env_file, 'ELASTIC_VERSION', version, logger=log)
+        update_env_file(env_file, 'KIBANA_VERSION', version, logger=log)
 
-    # Build
-    log("Building containers...", "info")
-    run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
+        # Pull new images
+        log("Pulling new images...", "info")
+        result = run_command("docker compose pull", cwd=work_dir, timeout=600, logger=log)
+        if not result['success']:
+            log(f"Pull warning: {result.get('error', '')[:100]}", "warning")
 
-    # Start containers
-    log("Starting ELK containers...", "info")
-    result = run_command("docker compose up -d", cwd=work_dir, logger=log)
-    if not result['success']:
-        return {"success": False, "error": f"Failed to start ELK: {result['error']}"}
+        # Build
+        log("Building containers...", "info")
+        run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
 
-    # Health check
-    log("Waiting for Elasticsearch to be ready...", "info")
-    for i in range(40):
-        try:
-            response = requests.get("http://localhost:9200/_cluster/health", timeout=5)
-            if response.status_code == 200:
-                health = response.json()
-                status = health.get('status', 'unknown')
-                log(f"Elasticsearch health: {status}", "success")
-                return {"success": True, "version": version, "health": status}
-        except:
-            pass
-        time.sleep(5)
+        # Start containers
+        log("Starting ELK containers...", "info")
+        result = run_command("docker compose up -d", cwd=work_dir, logger=log)
+        if not result['success']:
+            raise Exception(f"Failed to start ELK: {result['error']}")
 
-    log("Health check timed out, but containers may still be starting", "warning")
-    return {"success": True, "version": version, "health": "pending"}
+        # Health check - wait for Elasticsearch to be ready
+        log("Waiting for Elasticsearch to be ready (timeout: 120s)...", "info")
+        healthy = False
+        for i in range(24):  # 24 * 5s = 120s
+            try:
+                response = requests.get("http://localhost:9200/_cluster/health", timeout=5)
+                if response.status_code == 200:
+                    health = response.json()
+                    status = health.get('status', 'unknown')
+                    if status in ['green', 'yellow']:
+                        log(f"Elasticsearch health: {status}", "success")
+                        healthy = True
+                        break
+            except:
+                pass
+            time.sleep(5)
+
+        if not healthy:
+            # Check if containers are crash-looping
+            check_result = run_command("docker ps -a --filter name=mssp_elasticsearch --format '{{.Status}}'", logger=log)
+            container_status = check_result.get('stdout', '').strip()
+            if 'Restarting' in container_status or 'Exited' in container_status:
+                raise Exception(f"Elasticsearch failed to start - container status: {container_status}")
+            log("Health check timed out, but containers may still be starting", "warning")
+
+        # Success - cleanup backup
+        cleanup_backup(backup_file, logger=log)
+        log(f"ELK upgrade completed: {current_version} -> {version}", "success")
+        return {"success": True, "version": version, "health": "green" if healthy else "pending"}
+
+    except Exception as e:
+        # ROLLBACK: Restore previous version
+        error_msg = str(e)
+        log(f"ELK upgrade FAILED: {error_msg}", "error")
+        log(f"Rolling back to version {current_version}...", "warning")
+
+        # Restore the backup .env file
+        if restore_env_file(env_file, backup_file, logger=log):
+            # Stop failed containers and restart with old version
+            run_command("docker compose down", cwd=work_dir, logger=log)
+            run_command("docker compose up -d", cwd=work_dir, logger=log)
+            log(f"ROLLED BACK to version {current_version}", "warning")
+
+        return {
+            "success": False,
+            "error": error_msg,
+            "rolled_back": True,
+            "restored_version": current_version
+        }
 
 
 def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None) -> Dict:
-    """Upgrade ELK from offline package (pre-saved docker images)."""
+    """Upgrade ELK from offline package (pre-saved docker images) with automatic rollback."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     work_dir = os.path.join(WORKDIR, 'modules', 'elk')
     env_file = os.path.join(work_dir, '.env')
@@ -94,47 +133,89 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None)
 
     log("Starting ELK offline upgrade...", "info")
 
-    # Stop containers
-    log("Stopping ELK containers...", "info")
-    result = run_command("docker compose down", cwd=work_dir, logger=log)
-    if not result['success']:
-        return {"success": False, "error": f"Failed to stop ELK: {result['error']}"}
+    # Get current version for rollback
+    current_vars = read_env_file(env_file)
+    current_version = current_vars.get('ELASTIC_VERSION', '0.0.0')
 
-    # Load docker images
-    log("Loading docker images from package...", "info")
-    for img_name in ['elasticsearch', 'kibana', 'logstash']:
-        tar_path = os.path.join(images_dir, f"{img_name}-{version}.tar")
-        if os.path.exists(tar_path):
-            result = load_docker_image(tar_path, logger=log)
-            if not result['success']:
-                log(f"  Warning: Failed to load {img_name}", "warning")
-        else:
-            log(f"  Image not found: {tar_path}", "warning")
+    # Create backup before making any changes
+    log(f"Backing up current config (version {current_version})...", "info")
+    backup_file = backup_env_file(env_file, logger=log)
 
-    # Update version in .env
-    log(f"Updating version to {version}...", "info")
-    update_env_file(env_file, 'ELASTIC_VERSION', version, logger=log)
-    update_env_file(env_file, 'KIBANA_VERSION', version, logger=log)
+    try:
+        # Stop containers
+        log("Stopping ELK containers...", "info")
+        result = run_command("docker compose down", cwd=work_dir, logger=log)
+        if not result['success']:
+            raise Exception(f"Failed to stop ELK: {result['error']}")
 
-    # Start containers
-    log("Starting ELK containers...", "info")
-    result = run_command("docker compose up -d", cwd=work_dir, logger=log)
-    if not result['success']:
-        return {"success": False, "error": f"Failed to start ELK: {result['error']}"}
+        # Load docker images
+        log("Loading docker images from package...", "info")
+        for img_name in ['elasticsearch', 'kibana', 'logstash']:
+            tar_path = os.path.join(images_dir, f"{img_name}-{version}.tar")
+            if os.path.exists(tar_path):
+                result = load_docker_image(tar_path, logger=log)
+                if not result['success']:
+                    log(f"  Warning: Failed to load {img_name}", "warning")
+            else:
+                log(f"  Image not found: {tar_path}", "warning")
 
-    # Health check
-    log("Waiting for Elasticsearch to be ready...", "info")
-    for i in range(40):
-        try:
-            response = requests.get("http://localhost:9200/_cluster/health", timeout=5)
-            if response.status_code == 200:
-                health = response.json()
-                status = health.get('status', 'unknown')
-                log(f"Elasticsearch health: {status}", "success")
-                return {"success": True, "version": version, "health": status}
-        except:
-            pass
-        time.sleep(5)
+        # Update version in .env
+        log(f"Updating version to {version}...", "info")
+        update_env_file(env_file, 'ELASTIC_VERSION', version, logger=log)
+        update_env_file(env_file, 'KIBANA_VERSION', version, logger=log)
 
-    log("Health check timed out", "warning")
-    return {"success": True, "version": version, "health": "pending"}
+        # Start containers
+        log("Starting ELK containers...", "info")
+        result = run_command("docker compose up -d", cwd=work_dir, logger=log)
+        if not result['success']:
+            raise Exception(f"Failed to start ELK: {result['error']}")
+
+        # Health check - wait for Elasticsearch to be ready
+        log("Waiting for Elasticsearch to be ready (timeout: 120s)...", "info")
+        healthy = False
+        for i in range(24):  # 24 * 5s = 120s
+            try:
+                response = requests.get("http://localhost:9200/_cluster/health", timeout=5)
+                if response.status_code == 200:
+                    health = response.json()
+                    status = health.get('status', 'unknown')
+                    if status in ['green', 'yellow']:
+                        log(f"Elasticsearch health: {status}", "success")
+                        healthy = True
+                        break
+            except:
+                pass
+            time.sleep(5)
+
+        if not healthy:
+            # Check if containers are crash-looping
+            check_result = run_command("docker ps -a --filter name=mssp_elasticsearch --format '{{.Status}}'", logger=log)
+            container_status = check_result.get('stdout', '').strip()
+            if 'Restarting' in container_status or 'Exited' in container_status:
+                raise Exception(f"Elasticsearch failed to start - container status: {container_status}")
+            log("Health check timed out, but containers may still be starting", "warning")
+
+        # Success - cleanup backup
+        cleanup_backup(backup_file, logger=log)
+        log(f"ELK offline upgrade completed: {current_version} -> {version}", "success")
+        return {"success": True, "version": version, "health": "green" if healthy else "pending"}
+
+    except Exception as e:
+        # ROLLBACK: Restore previous version
+        error_msg = str(e)
+        log(f"ELK offline upgrade FAILED: {error_msg}", "error")
+        log(f"Rolling back to version {current_version}...", "warning")
+
+        # Restore the backup .env file
+        if restore_env_file(env_file, backup_file, logger=log):
+            # Stop failed containers and restart with old version
+            run_command("docker compose down", cwd=work_dir, logger=log)
+            run_command("docker compose up -d", cwd=work_dir, logger=log)
+            log(f"ROLLED BACK to version {current_version}", "warning")
+
+        return {
+            "success": False,
+            "error": error_msg,
+            "rolled_back": True,
+            "restored_version": current_version
+        }

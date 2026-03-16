@@ -6,60 +6,123 @@ from typing import Dict, Callable
 
 from .base import (
     WORKDIR, HOST_PATH,
-    run_command, update_env_file, load_docker_image
+    run_command, read_env_file, update_env_file, load_docker_image,
+    backup_env_file, restore_env_file, cleanup_backup
 )
 
 
 def upgrade_plaso(version: str, logger: Callable = None) -> Dict:
-    """Upgrade Plaso to specified version (online)."""
+    """Upgrade Plaso to specified version with automatic rollback on failure."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
+    backend_dir = os.path.join(WORKDIR, 'modules', 'backend')
 
     log("Starting Plaso upgrade...", "info")
 
-    # Pull new Plaso image
-    log(f"Pulling Plaso {version}...", "info")
-    result = run_command(f"docker pull log2timeline/plaso:{version}", logger=log, timeout=600)
-    if not result['success']:
-        return {"success": False, "error": f"Failed to pull Plaso image: {result['error']}"}
+    # Get current version for rollback
+    current_vars = read_env_file(backend_env)
+    current_version = current_vars.get('PLASO_VERSION', 'unknown')
 
-    # Update version in backend .env
-    log(f"Updating Plaso version to {version}...", "info")
-    update_env_file(backend_env, 'PLASO_VERSION', version, logger=log)
+    # Create backup before making any changes
+    log(f"Backing up current config (version {current_version})...", "info")
+    backup_file = backup_env_file(backend_env, logger=log)
 
-    # Restart backend to pick up new Plaso version
-    log("Restarting backend...", "info")
-    backend_dir = os.path.join(WORKDIR, 'modules', 'backend')
-    run_command("docker compose restart", cwd=backend_dir, logger=log)
+    try:
+        # Pull new Plaso image
+        log(f"Pulling Plaso {version}...", "info")
+        result = run_command(f"docker pull log2timeline/plaso:{version}", logger=log, timeout=600)
+        if not result['success']:
+            raise Exception(f"Failed to pull Plaso image: {result['error']}")
 
-    log(f"Plaso upgrade completed: {version}", "success")
-    return {"success": True, "version": version}
+        # Update version in backend .env
+        log(f"Updating Plaso version to {version}...", "info")
+        update_env_file(backend_env, 'PLASO_VERSION', version, logger=log)
+
+        # Restart backend to pick up new Plaso version
+        log("Restarting backend...", "info")
+        result = run_command("docker compose restart", cwd=backend_dir, logger=log)
+        if not result['success']:
+            raise Exception(f"Failed to restart backend: {result['error']}")
+
+        # Success - cleanup backup
+        cleanup_backup(backup_file, logger=log)
+        log(f"Plaso upgrade completed: {current_version} -> {version}", "success")
+        return {"success": True, "version": version}
+
+    except Exception as e:
+        # ROLLBACK: Restore previous version
+        error_msg = str(e)
+        log(f"Plaso upgrade FAILED: {error_msg}", "error")
+        log(f"Rolling back to version {current_version}...", "warning")
+
+        if restore_env_file(backend_env, backup_file, logger=log):
+            run_command("docker compose restart", cwd=backend_dir, logger=log)
+            log(f"ROLLED BACK Plaso to version {current_version}", "warning")
+
+        return {
+            "success": False,
+            "error": error_msg,
+            "rolled_back": True,
+            "restored_version": current_version
+        }
 
 
 def upgrade_plaso_offline(package_dir: str, version: str, logger: Callable = None) -> Dict:
-    """Upgrade Plaso from offline package."""
+    """Upgrade Plaso from offline package with automatic rollback."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
+    backend_dir = os.path.join(WORKDIR, 'modules', 'backend')
     images_dir = os.path.join(package_dir, 'images')
 
     log("Starting Plaso offline upgrade...", "info")
 
-    # Load Plaso image from package
-    plaso_tar = os.path.join(images_dir, f"plaso-{version}.tar")
-    if os.path.exists(plaso_tar):
-        log(f"Loading Plaso image from package...", "info")
-        load_docker_image(plaso_tar, logger=log)
-    else:
-        log(f"Plaso image not found in package: {plaso_tar}", "warning")
+    # Get current version for rollback
+    current_vars = read_env_file(backend_env)
+    current_version = current_vars.get('PLASO_VERSION', 'unknown')
 
-    # Update version in backend .env
-    log(f"Updating Plaso version to {version}...", "info")
-    update_env_file(backend_env, 'PLASO_VERSION', version, logger=log)
+    # Create backup before making any changes
+    log(f"Backing up current config (version {current_version})...", "info")
+    backup_file = backup_env_file(backend_env, logger=log)
 
-    # Restart backend
-    log("Restarting backend...", "info")
-    backend_dir = os.path.join(WORKDIR, 'modules', 'backend')
-    run_command("docker compose restart", cwd=backend_dir, logger=log)
+    try:
+        # Load Plaso image from package
+        plaso_tar = os.path.join(images_dir, f"plaso-{version}.tar")
+        if os.path.exists(plaso_tar):
+            log(f"Loading Plaso image from package...", "info")
+            result = load_docker_image(plaso_tar, logger=log)
+            if not result['success']:
+                raise Exception(f"Failed to load Plaso image: {result.get('error', 'unknown')}")
+        else:
+            log(f"Plaso image not found in package: {plaso_tar}", "warning")
 
-    log(f"Plaso offline upgrade completed: {version}", "success")
-    return {"success": True, "version": version}
+        # Update version in backend .env
+        log(f"Updating Plaso version to {version}...", "info")
+        update_env_file(backend_env, 'PLASO_VERSION', version, logger=log)
+
+        # Restart backend
+        log("Restarting backend...", "info")
+        result = run_command("docker compose restart", cwd=backend_dir, logger=log)
+        if not result['success']:
+            raise Exception(f"Failed to restart backend: {result['error']}")
+
+        # Success - cleanup backup
+        cleanup_backup(backup_file, logger=log)
+        log(f"Plaso offline upgrade completed: {current_version} -> {version}", "success")
+        return {"success": True, "version": version}
+
+    except Exception as e:
+        # ROLLBACK: Restore previous version
+        error_msg = str(e)
+        log(f"Plaso offline upgrade FAILED: {error_msg}", "error")
+        log(f"Rolling back to version {current_version}...", "warning")
+
+        if restore_env_file(backend_env, backup_file, logger=log):
+            run_command("docker compose restart", cwd=backend_dir, logger=log)
+            log(f"ROLLED BACK Plaso to version {current_version}", "warning")
+
+        return {
+            "success": False,
+            "error": error_msg,
+            "rolled_back": True,
+            "restored_version": current_version
+        }
