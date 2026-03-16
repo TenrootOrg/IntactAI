@@ -66,7 +66,8 @@ TIMESKETCH_CONFIG = {
 
 # Plaso configuration
 PLASO_OUTPUT_DIR = "/tmp/plaso"
-PLASO_IMAGE = "log2timeline/plaso:20260119"
+PLASO_VERSION = os.environ.get('PLASO_VERSION', '20260119')
+PLASO_IMAGE = f"log2timeline/plaso:{PLASO_VERSION}"
 PLASO_CPUS = "2"
 PLASO_MEMORY = "4g"
 
