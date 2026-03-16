@@ -11,7 +11,6 @@ import time
 import json
 import hashlib
 import tarfile
-import requests
 from typing import Dict, Callable, Optional
 
 # Base paths
@@ -220,48 +219,18 @@ def get_current_versions() -> Dict:
 
 
 def get_latest_versions() -> Dict:
-    """Query GitHub API for latest versions of each module."""
-    versions = {}
+    """Return hardcoded latest versions for each module.
 
-    repos = {
-        'elk': 'elastic/elasticsearch',
-        'timesketch': 'google/timesketch',
-        'plaso': 'log2timeline/plaso',
-        'iris': 'dfir-iris/iris-web',
-        'velociraptor': 'Velocidex/velociraptor',
+    Update these values when new versions are released.
+    """
+    return {
+        'elk': '9.3.1',
+        'timesketch': '20260311',
+        'plaso': '20260119',
+        'iris': 'v2.4.27',
+        'velociraptor': '0.75.6',
+        'risx': '1.0.0',
     }
-
-    for module, repo in repos.items():
-        try:
-            response = requests.get(
-                f'https://api.github.com/repos/{repo}/releases/latest',
-                timeout=10,
-                headers={'Accept': 'application/vnd.github.v3+json'}
-            )
-            if response.status_code == 200:
-                data = response.json()
-                versions[module] = data.get('tag_name', 'unknown')
-            else:
-                versions[module] = 'unknown'
-        except Exception:
-            versions[module] = 'unknown'
-
-    # RISX Platform
-    try:
-        response = requests.get(
-            'https://api.github.com/repos/NofLevi10root/new-mssp/releases/latest',
-            timeout=10,
-            headers={'Accept': 'application/vnd.github.v3+json'}
-        )
-        if response.status_code == 200:
-            data = response.json()
-            versions['risx'] = data.get('tag_name', 'main')
-        else:
-            versions['risx'] = 'main'
-    except:
-        versions['risx'] = 'main'
-
-    return versions
 
 
 def load_docker_image(image_tar: str, logger: Callable = None) -> Dict:
