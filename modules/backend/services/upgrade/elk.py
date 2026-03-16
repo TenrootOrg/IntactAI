@@ -21,6 +21,9 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
     work_dir = os.path.join(WORKDIR, 'modules', 'elk')
     env_file = os.path.join(work_dir, '.env')
 
+    # Strip 'v' prefix - Docker images use '9.3.0' not 'v9.3.0'
+    version = version.lstrip('v')
+
     log("Starting ELK upgrade...", "info")
 
     # Check current version and prevent downgrades
