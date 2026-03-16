@@ -102,9 +102,14 @@ def start_upgrade():
                 add_log_to_run(run_id, f"Modules to upgrade: {', '.join(modules.keys())}", "info")
                 update_run_status(run_id, "running", progress=5)
 
-                result = run_upgrade_workflow(modules, mode=mode, logger=logger)
+                result = run_upgrade_workflow(modules, run_id=run_id, mode=mode, logger=logger)
 
-                if result.get('success'):
+                # Handle two-phase upgrade (backend restart pending)
+                if result.get('phase') == 'awaiting_restart':
+                    add_log_to_run(run_id, "Phase 1 complete. Backend restarting. Phase 2 will resume automatically.", "info")
+                    update_run_status(run_id, "running", progress=50)
+                    # Don't mark complete - Phase 2 will continue after restart
+                elif result.get('success'):
                     add_log_to_run(run_id, f"Upgrade completed: {result['completed']}/{result['total']} modules", "success")
                     update_run_status(run_id, "completed", progress=100)
                 else:

@@ -10,10 +10,9 @@ from .base import WORKDIR, run_command
 def upgrade_risx(version: str = None, logger: Callable = None) -> Dict:
     """Upgrade RISX Platform (backend + frontend) by pulling latest code.
 
-    NOTE: This runs INSIDE the backend container, so we cannot restart the backend
-    during the upgrade - it would kill this process. The upgrade workflow will
-    restart nginx at the end, and the backend should be manually restarted after
-    the workflow completes if code changes require it.
+    NOTE: This runs INSIDE the backend container. The upgrade orchestrator
+    handles nginx restart and backend restart scheduling. This function
+    just updates the code files.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     repo_dir = WORKDIR
@@ -28,23 +27,20 @@ def upgrade_risx(version: str = None, logger: Callable = None) -> Dict:
         if not result['success']:
             log("Warning: Could not pull latest code", "warning")
 
-    # Frontend files are updated by git pull - just restart nginx
-    log("Restarting nginx for frontend updates...", "info")
-    run_command("docker restart mssp_nginx", logger=log)
+    # NOTE: Nginx and backend restarts are handled by the upgrade orchestrator
+    # to support two-phase upgrades
 
     log("RISX Platform code updated", "success")
-    log("NOTE: Restart the backend container manually if backend code changed", "warning")
-    log("  Run: docker compose restart (in modules/backend/)", "info")
 
-    return {"success": True, "message": "Code updated - restart backend if needed"}
+    return {"success": True, "message": "Code updated"}
 
 
 def upgrade_risx_offline(package_dir: str, version: str = None, logger: Callable = None) -> Dict:
     """Upgrade RISX Platform from offline package source files.
 
-    NOTE: This runs INSIDE the backend container, so we cannot restart the backend
-    during the upgrade. We copy the source files, but the backend restart must be
-    done manually after the workflow completes.
+    NOTE: This runs INSIDE the backend container. The upgrade orchestrator
+    handles nginx restart and backend restart scheduling. This function
+    just updates the code files.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     backend_dir = os.path.join(WORKDIR, 'modules', 'backend')
@@ -61,24 +57,19 @@ def upgrade_risx_offline(package_dir: str, version: str = None, logger: Callable
         log("RISX source not included in package, skipping...", "warning")
         return {"success": True, "skipped": True}
 
-    # Copy backend source files (don't restart - we're running inside it)
+    # Copy backend source files
     if has_backend:
         log("Copying backend source files...", "info")
         run_command(f"cp -a {backend_source}/* {backend_dir}/", logger=log)
-        log("Backend files updated - restart required after upgrade completes", "warning")
 
     # Copy frontend files
     if has_frontend:
         log("Copying frontend files...", "info")
         run_command(f"cp -a {frontend_source}/* {nginx_html}/", logger=log)
 
-    # Restart nginx for frontend changes
-    log("Restarting nginx...", "info")
-    run_command("docker restart mssp_nginx", logger=log)
+    # NOTE: Nginx and backend restarts are handled by the upgrade orchestrator
+    # to support two-phase upgrades
 
     log("RISX Platform files updated", "success")
-    if has_backend:
-        log("NOTE: Restart the backend container after upgrade completes", "warning")
-        log("  Run: docker compose restart (in modules/backend/)", "info")
 
-    return {"success": True, "message": "Files updated - restart backend if needed"}
+    return {"success": True, "message": "Files updated"}
