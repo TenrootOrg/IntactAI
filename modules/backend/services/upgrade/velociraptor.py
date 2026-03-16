@@ -19,10 +19,10 @@ def get_velociraptor_download_url(version: str, logger: Callable = None) -> Tupl
 
     Velociraptor has unique release naming:
     - Release tag: v0.75
-    - Binary name: velociraptor-v0.75.1-linux-amd64
+    - Multiple binaries: v0.75.1, v0.75.2, ..., v0.75.6
 
     Args:
-        version: Version string like "0.75", "v0.75", "0.75.1", or "v0.75.1"
+        version: Version string like "0.75", "v0.75", "0.75.6", or "v0.75.6"
 
     Returns:
         Tuple of (download_url, actual_version) or (None, None) if not found
@@ -33,7 +33,7 @@ def get_velociraptor_download_url(version: str, logger: Callable = None) -> Tupl
     clean_version = version.lstrip('v')
     parts = clean_version.split('.')
 
-    # Build possible release tags to try (major.minor format)
+    # Build release tag (major.minor format)
     if len(parts) >= 2:
         release_tag = f"v{parts[0]}.{parts[1]}"
     else:
@@ -66,18 +66,43 @@ def get_velociraptor_download_url(version: str, logger: Callable = None) -> Tupl
         release_data = response.json()
         assets = release_data.get('assets', [])
 
-        # Find the linux-amd64 binary (not musl)
+        # Collect all linux-amd64 binaries (not musl, not .sig)
+        binaries = []
         for asset in assets:
             name = asset.get('name', '')
             if 'linux-amd64' in name and 'musl' not in name and name.endswith('-linux-amd64'):
-                download_url = asset.get('browser_download_url')
-                # Extract actual version from filename: velociraptor-v0.75.1-linux-amd64
-                actual_version = name.replace('velociraptor-v', '').replace('-linux-amd64', '')
-                log(f"  Found binary: {name}", "info")
-                return download_url, actual_version
+                # Extract version from filename: velociraptor-v0.75.1-linux-amd64 -> 0.75.1
+                asset_version = name.replace('velociraptor-v', '').replace('-linux-amd64', '')
+                binaries.append({
+                    'name': name,
+                    'version': asset_version,
+                    'url': asset.get('browser_download_url')
+                })
 
-        log(f"  No linux-amd64 binary found in release {release_tag}", "warning")
-        return None, None
+        if not binaries:
+            log(f"  No linux-amd64 binaries found in release {release_tag}", "warning")
+            return None, None
+
+        # Strategy 1: Find exact version match if user specified patch version (e.g., 0.75.6)
+        if len(parts) >= 3:
+            for b in binaries:
+                if b['version'] == clean_version:
+                    log(f"  Found exact match: {b['name']}", "info")
+                    return b['url'], b['version']
+            log(f"  Exact version {clean_version} not found, using latest", "info")
+
+        # Strategy 2: Find the latest patch version (sort by version number)
+        def version_key(b):
+            try:
+                v_parts = b['version'].split('.')
+                return tuple(int(p) for p in v_parts)
+            except:
+                return (0, 0, 0)
+
+        binaries.sort(key=version_key, reverse=True)
+        latest = binaries[0]
+        log(f"  Using latest: {latest['name']}", "info")
+        return latest['url'], latest['version']
 
     except Exception as e:
         log(f"  GitHub API error: {str(e)}", "warning")
