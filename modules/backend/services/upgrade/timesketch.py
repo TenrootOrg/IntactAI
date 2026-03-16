@@ -12,6 +12,39 @@ from .base import (
 )
 
 
+def _clear_timesketch_pip_cache(logger: Callable = None):
+    """Clear stale pip packages from Timesketch volume to prevent version conflicts.
+
+    LLM packages (google-generativeai, anthropic, etc.) installed by Timesketch
+    persist in the volume and can conflict when Timesketch is upgraded.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+
+    # List of LLM-related packages that can cause conflicts
+    conflicting_packages = [
+        'google-generativeai',
+        'google-ai-generativelanguage',
+        'google-api-core',
+        'google-api-python-client',
+        'googleapis-common-protos',
+        'grpcio',
+        'grpcio-status',
+        'proto-plus',
+        'protobuf',
+    ]
+
+    # Run pip uninstall in a temporary container with the volume mounted
+    for package in conflicting_packages:
+        result = run_command(
+            f"docker run --rm -v mssp_timesketch_venv:/opt/venv "
+            f"us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:latest "
+            f"pip uninstall -y {package} 2>/dev/null || true",
+            logger=lambda msg, level="info": None  # Silent
+        )
+
+    log("Cleared potentially conflicting pip packages", "info")
+
+
 def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str = None) -> Dict:
     """Upgrade Timesketch to specified version."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
@@ -25,6 +58,11 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
     result = run_command("docker compose down", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to stop Timesketch: {result['error']}"}
+
+    # Clear stale pip packages from persistent volume to prevent version conflicts
+    # LLM packages (google-generativeai, etc.) can conflict between Timesketch versions
+    log("Clearing stale pip packages from volume...", "info")
+    _clear_timesketch_pip_cache(log)
 
     # Update version in .env
     log(f"Updating version to {version}...", "info")
@@ -75,6 +113,10 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
     result = run_command("docker compose down", cwd=work_dir, logger=log)
     if not result['success']:
         return {"success": False, "error": f"Failed to stop Timesketch: {result['error']}"}
+
+    # Clear stale pip packages from persistent volume to prevent version conflicts
+    log("Clearing stale pip packages from volume...", "info")
+    _clear_timesketch_pip_cache(log)
 
     # Load docker images
     log("Loading docker images from package...", "info")
