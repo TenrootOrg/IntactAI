@@ -165,7 +165,8 @@ create_network() {
 # ============================================================================
 
 pull_plaso_image() {
-    local plaso_image="log2timeline/plaso:20260119"
+    local plaso_version=$(read_config "['versions']['plaso']")
+    local plaso_image="log2timeline/plaso:${plaso_version:-20260119}"
 
     log_info "Pulling Plaso image for timeline processing..."
 

@@ -33,6 +33,7 @@ project_name: mssp
 versions:
   elk: 9.2.3
   iris: v2.4.25
+  plaso: '20260119'
   portainer: 2.33.6
   timesketch: '20260209'
   velociraptor: '0.75.6'
