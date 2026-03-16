@@ -46,8 +46,8 @@ update_env_var() {
     if grep -q "^${var_name}=" "$env_file"; then
         sed -i "s|^${var_name}=.*|${var_name}=${var_value}|" "$env_file"
     else
-        log_warn "Variable ${var_name} not found in ${env_file}"
-        return 1
+        # Variable doesn't exist, add it
+        echo "${var_name}=${var_value}" >> "$env_file"
     fi
 }
 
