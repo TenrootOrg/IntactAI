@@ -2,17 +2,20 @@
 """RISX Platform upgrade functions - combines backend and frontend."""
 
 import os
-import time
-import requests
 from typing import Dict, Callable
 
 from .base import WORKDIR, run_command
 
 
 def upgrade_risx(version: str = None, logger: Callable = None) -> Dict:
-    """Upgrade RISX Platform (backend + frontend) by pulling latest code."""
+    """Upgrade RISX Platform (backend + frontend) by pulling latest code.
+
+    NOTE: This runs INSIDE the backend container, so we cannot restart the backend
+    during the upgrade - it would kill this process. The upgrade workflow will
+    restart nginx at the end, and the backend should be manually restarted after
+    the workflow completes if code changes require it.
+    """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    backend_dir = os.path.join(WORKDIR, 'modules', 'backend')
     repo_dir = WORKDIR
 
     log("Starting RISX Platform upgrade...", "info")
@@ -22,43 +25,27 @@ def upgrade_risx(version: str = None, logger: Callable = None) -> Dict:
     result = run_command("git pull origin main", cwd=repo_dir, logger=log)
     if not result['success']:
         result = run_command("git pull origin development", cwd=repo_dir, logger=log)
+        if not result['success']:
+            log("Warning: Could not pull latest code", "warning")
 
-    # Stop backend container
-    log("Stopping backend container...", "info")
-    run_command("docker compose down", cwd=backend_dir, logger=log)
-
-    # Rebuild backend
-    log("Rebuilding backend container...", "info")
-    run_command("docker compose build --no-cache", cwd=backend_dir, timeout=600, logger=log)
-
-    # Start backend container
-    log("Starting backend container...", "info")
-    result = run_command("docker compose up -d", cwd=backend_dir, logger=log)
-    if not result['success']:
-        return {"success": False, "error": f"Failed to start backend: {result['error']}"}
-
-    # Restart nginx for frontend changes
+    # Frontend files are updated by git pull - just restart nginx
     log("Restarting nginx for frontend updates...", "info")
     run_command("docker restart mssp_nginx", logger=log)
 
-    # Health check
-    log("Waiting for platform to be ready...", "info")
-    for i in range(20):
-        try:
-            response = requests.get("http://localhost:5001/api/health", timeout=5)
-            if response.status_code == 200:
-                log("RISX Platform is ready", "success")
-                return {"success": True}
-        except:
-            pass
-        time.sleep(3)
+    log("RISX Platform code updated", "success")
+    log("NOTE: Restart the backend container manually if backend code changed", "warning")
+    log("  Run: docker compose restart (in modules/backend/)", "info")
 
-    log("Health check timed out", "warning")
-    return {"success": True, "health": "pending"}
+    return {"success": True, "message": "Code updated - restart backend if needed"}
 
 
 def upgrade_risx_offline(package_dir: str, version: str = None, logger: Callable = None) -> Dict:
-    """Upgrade RISX Platform from offline package source files."""
+    """Upgrade RISX Platform from offline package source files.
+
+    NOTE: This runs INSIDE the backend container, so we cannot restart the backend
+    during the upgrade. We copy the source files, but the backend restart must be
+    done manually after the workflow completes.
+    """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     backend_dir = os.path.join(WORKDIR, 'modules', 'backend')
     nginx_html = os.path.join(WORKDIR, 'modules', 'nginx', 'html')
@@ -74,45 +61,24 @@ def upgrade_risx_offline(package_dir: str, version: str = None, logger: Callable
         log("RISX source not included in package, skipping...", "warning")
         return {"success": True, "skipped": True}
 
-    # Stop backend container
+    # Copy backend source files (don't restart - we're running inside it)
     if has_backend:
-        log("Stopping backend container...", "info")
-        run_command("docker compose down", cwd=backend_dir, logger=log)
-
-        # Copy backend source files
         log("Copying backend source files...", "info")
         run_command(f"cp -a {backend_source}/* {backend_dir}/", logger=log)
-
-        # Rebuild backend
-        log("Rebuilding backend container...", "info")
-        run_command("docker compose build --no-cache", cwd=backend_dir, timeout=600, logger=log)
-
-        # Start backend container
-        log("Starting backend container...", "info")
-        result = run_command("docker compose up -d", cwd=backend_dir, logger=log)
-        if not result['success']:
-            return {"success": False, "error": f"Failed to start backend: {result['error']}"}
+        log("Backend files updated - restart required after upgrade completes", "warning")
 
     # Copy frontend files
     if has_frontend:
         log("Copying frontend files...", "info")
         run_command(f"cp -a {frontend_source}/* {nginx_html}/", logger=log)
 
-    # Restart nginx
+    # Restart nginx for frontend changes
     log("Restarting nginx...", "info")
     run_command("docker restart mssp_nginx", logger=log)
 
-    # Health check
-    log("Waiting for platform to be ready...", "info")
-    for i in range(20):
-        try:
-            response = requests.get("http://localhost:5001/api/health", timeout=5)
-            if response.status_code == 200:
-                log("RISX Platform is ready", "success")
-                return {"success": True}
-        except:
-            pass
-        time.sleep(3)
+    log("RISX Platform files updated", "success")
+    if has_backend:
+        log("NOTE: Restart the backend container after upgrade completes", "warning")
+        log("  Run: docker compose restart (in modules/backend/)", "info")
 
-    log("Health check timed out", "warning")
-    return {"success": True, "health": "pending"}
+    return {"success": True, "message": "Files updated - restart backend if needed"}
