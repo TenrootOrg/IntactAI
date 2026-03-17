@@ -98,14 +98,15 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
         if not result['success']:
             raise Exception(f"Failed to start Timesketch: {result['error']}")
 
-        # Health check
-        log("Waiting for Timesketch to be ready (timeout: 150s)...", "info")
+        # Health check - wait for Timesketch to respond (like install.sh)
+        log("Waiting for Timesketch to be ready...", "info")
         healthy = False
-        for i in range(30):
+        for i in range(30):  # 30 * 5s = 150s max
             try:
-                response = requests.get("http://localhost:5666/login", timeout=5)
-                if response.status_code == 200:
-                    log("Timesketch is ready", "success")
+                response = requests.get("http://localhost:5000/login", timeout=5)
+                # Accept 200 or redirects (like install.sh)
+                if response.status_code in [200, 301, 302, 303, 307, 308]:
+                    log(f"Timesketch is responding ({i*5}s)", "success")
                     healthy = True
                     break
             except:
@@ -214,14 +215,15 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
         if not result['success']:
             raise Exception(f"Failed to start Timesketch: {result['error']}")
 
-        # Health check
-        log("Waiting for Timesketch to be ready (timeout: 150s)...", "info")
+        # Health check - wait for Timesketch to respond (like install.sh)
+        log("Waiting for Timesketch to be ready...", "info")
         healthy = False
-        for i in range(30):
+        for i in range(30):  # 30 * 5s = 150s max
             try:
-                response = requests.get("http://localhost:5666/login", timeout=5)
-                if response.status_code == 200:
-                    log("Timesketch is ready", "success")
+                response = requests.get("http://localhost:5000/login", timeout=5)
+                # Accept 200 or redirects (like install.sh)
+                if response.status_code in [200, 301, 302, 303, 307, 308]:
+                    log(f"Timesketch is responding ({i*5}s)", "success")
                     healthy = True
                     break
             except:
