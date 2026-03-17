@@ -73,19 +73,17 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
         if not result['success']:
             raise Exception(f"Failed to start ELK: {result['error']}")
 
-        # Health check - wait for Elasticsearch to be ready
-        log("Waiting for Elasticsearch to be ready (timeout: 120s)...", "info")
+        # Health check - wait for Elasticsearch to respond (like install.sh)
+        log("Waiting for Elasticsearch to be ready...", "info")
         healthy = False
-        for i in range(24):  # 24 * 5s = 120s
+        for i in range(24):  # 24 * 5s = 120s max
             try:
                 response = requests.get("http://localhost:9200/_cluster/health", timeout=5)
                 if response.status_code == 200:
-                    health = response.json()
-                    status = health.get('status', 'unknown')
-                    if status in ['green', 'yellow']:
-                        log(f"Elasticsearch health: {status}", "success")
-                        healthy = True
-                        break
+                    # Just check if it responds - don't require green/yellow status
+                    log(f"Elasticsearch is responding ({i*5}s)", "success")
+                    healthy = True
+                    break
             except:
                 pass
             time.sleep(5)
@@ -170,19 +168,17 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None)
         if not result['success']:
             raise Exception(f"Failed to start ELK: {result['error']}")
 
-        # Health check - wait for Elasticsearch to be ready
-        log("Waiting for Elasticsearch to be ready (timeout: 120s)...", "info")
+        # Health check - wait for Elasticsearch to respond (like install.sh)
+        log("Waiting for Elasticsearch to be ready...", "info")
         healthy = False
-        for i in range(24):  # 24 * 5s = 120s
+        for i in range(24):  # 24 * 5s = 120s max
             try:
                 response = requests.get("http://localhost:9200/_cluster/health", timeout=5)
                 if response.status_code == 200:
-                    health = response.json()
-                    status = health.get('status', 'unknown')
-                    if status in ['green', 'yellow']:
-                        log(f"Elasticsearch health: {status}", "success")
-                        healthy = True
-                        break
+                    # Just check if it responds - don't require green/yellow status
+                    log(f"Elasticsearch is responding ({i*5}s)", "success")
+                    healthy = True
+                    break
             except:
                 pass
             time.sleep(5)

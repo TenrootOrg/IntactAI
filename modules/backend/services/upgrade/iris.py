@@ -50,14 +50,15 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
         if not result['success']:
             raise Exception(f"Failed to start IRIS: {result['error']}")
 
-        # Health check
-        log("Waiting for IRIS to be ready (timeout: 150s)...", "info")
+        # Health check - wait for IRIS to respond (like install.sh)
+        log("Waiting for IRIS to be ready...", "info")
         healthy = False
-        for i in range(30):
+        for i in range(30):  # 30 * 5s = 150s max
             try:
-                response = requests.get("https://localhost:8443/api/ping", timeout=5, verify=False)
-                if response.status_code in [200, 401]:
-                    log("IRIS is ready", "success")
+                response = requests.get("https://localhost:8443/", timeout=5, verify=False)
+                # Accept 200, redirects, or 401 (auth required = service is up)
+                if response.status_code in [200, 301, 302, 303, 307, 308, 401]:
+                    log(f"IRIS is responding ({i*5}s)", "success")
                     healthy = True
                     break
             except:
@@ -137,14 +138,15 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
         if not result['success']:
             raise Exception(f"Failed to start IRIS: {result['error']}")
 
-        # Health check
-        log("Waiting for IRIS to be ready (timeout: 150s)...", "info")
+        # Health check - wait for IRIS to respond (like install.sh)
+        log("Waiting for IRIS to be ready...", "info")
         healthy = False
-        for i in range(30):
+        for i in range(30):  # 30 * 5s = 150s max
             try:
-                response = requests.get("https://localhost:8443/api/ping", timeout=5, verify=False)
-                if response.status_code in [200, 401]:
-                    log("IRIS is ready", "success")
+                response = requests.get("https://localhost:8443/", timeout=5, verify=False)
+                # Accept 200, redirects, or 401 (auth required = service is up)
+                if response.status_code in [200, 301, 302, 303, 307, 308, 401]:
+                    log(f"IRIS is responding ({i*5}s)", "success")
                     healthy = True
                     break
             except:
