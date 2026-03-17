@@ -584,6 +584,112 @@ document.addEventListener('alpine:init', () => {
             this.upgradeLoading = false;
         },
 
+        // ===== PREPARE UPGRADE PACKAGE =====
+        showPreparePackageModal: false,
+        prepareLoading: false,
+        prepareRunId: null,
+        preparePackageReady: false,
+        preparePackageSize: '',
+        prepareModules: [
+            { id: 'elk', name: 'ELK Stack', latest: '', targetVersion: '', enabled: false },
+            { id: 'timesketch', name: 'Timesketch', latest: '', targetVersion: '', enabled: false },
+            { id: 'plaso', name: 'Plaso (Timeline)', latest: '', targetVersion: '', enabled: false },
+            { id: 'iris', name: 'IRIS', latest: '', targetVersion: '', enabled: false },
+            { id: 'velociraptor', name: 'Velociraptor', latest: '', targetVersion: '', enabled: false },
+            { id: 'risx', name: 'RISX Source Code', latest: '1.0.0', targetVersion: '1.0.0', enabled: false },
+        ],
+
+        async openPreparePackageModal() {
+            this.showPreparePackageModal = true;
+            this.prepareLoading = true;
+            this.prepareRunId = null;
+            this.preparePackageReady = false;
+            this.preparePackageSize = '';
+
+            // Reset modules
+            this.prepareModules.forEach(m => {
+                m.enabled = false;
+                m.targetVersion = '';
+            });
+
+            try {
+                const response = await fetch('/api/upgrade/status');
+                const data = await response.json();
+                if (data.success && data.versions) {
+                    this.prepareModules.forEach(m => {
+                        const ver = data.versions[m.id];
+                        if (ver) {
+                            m.latest = ver.latest || 'unknown';
+                            m.targetVersion = ver.latest || '';
+                        }
+                    });
+                }
+            } catch (e) {
+                console.error('Failed to fetch versions:', e);
+                this.showMessage('Failed to fetch module versions', 'error');
+            }
+            this.prepareLoading = false;
+        },
+
+        closePreparePackageModal() {
+            this.showPreparePackageModal = false;
+            this.preparePackageReady = false;
+            this.prepareRunId = null;
+        },
+
+        async startPackagePreparation() {
+            const selected = this.prepareModules.filter(m => m.enabled);
+            if (selected.length === 0) {
+                this.showMessage('Select at least one module to include', 'error');
+                return;
+            }
+
+            const modules = {};
+            selected.forEach(m => {
+                modules[m.id] = m.targetVersion || m.latest || '1.0.0';
+            });
+
+            this.prepareLoading = true;
+            try {
+                const response = await fetch('/api/upgrade/prepare', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ modules })
+                });
+
+                const result = await response.json();
+                if (response.ok && result.success) {
+                    this.prepareRunId = result.run_id;
+                    this.closePreparePackageModal();
+                    this.showMessage('Package preparation started - check Workflows for progress', 'success');
+                    setTimeout(() => {
+                        Alpine.store('app').switchTab('workflows');
+                    }, 500);
+                } else {
+                    this.showMessage('Failed to start preparation: ' + (result.error || 'Unknown error'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Preparation error: ' + e.message, 'error');
+            }
+            this.prepareLoading = false;
+        },
+
+        async downloadPreparedPackage() {
+            if (!this.prepareRunId) {
+                this.showMessage('No package ready for download', 'error');
+                return;
+            }
+
+            // Trigger download via new window/tab
+            window.open(`/api/upgrade/prepare/${this.prepareRunId}/download`, '_blank');
+
+            // Close modal after download initiated
+            setTimeout(() => {
+                this.closePreparePackageModal();
+                this.showMessage('Package download started', 'success');
+            }, 1000);
+        },
+
         // ===== OFFLINE UPGRADE =====
         showOfflineUpgradeModal: false,
         offlineUploadDragging: false,

@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""Upgrade package preparation service.
+
+Creates offline upgrade packages that can be transferred to air-gapped systems.
+"""
+
+import os
+import json
+import shutil
+from datetime import datetime
+from typing import Dict, Callable, List
+
+from .base import run_command, WORKDIR
+
+
+# Docker image mappings for each module
+DOCKER_IMAGES = {
+    'elk': [
+        ('docker.elastic.co/elasticsearch/elasticsearch:{version}', 'elasticsearch-{version}.tar'),
+        ('docker.elastic.co/kibana/kibana:{version}', 'kibana-{version}.tar'),
+        ('docker.elastic.co/logstash/logstash:{version}', 'logstash-{version}.tar'),
+    ],
+    'timesketch': [
+        ('us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:{version}', 'timesketch-{version}.tar'),
+    ],
+    'plaso': [
+        ('log2timeline/plaso:{version}', 'plaso-{version}.tar'),
+    ],
+    'iris': [
+        # Note: iris-worker uses the same iriswebapp_app image
+        # Note: iris-db is NOT upgraded to preserve data (app handles migrations)
+        ('ghcr.io/dfir-iris/iriswebapp_app:{version}', 'iris-app-{version}.tar'),
+        ('ghcr.io/dfir-iris/iriswebapp_nginx:{version}', 'iris-nginx-{version}.tar'),
+    ],
+}
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format bytes to human-readable size."""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} TB"
+
+
+def _pull_and_save_image(image: str, output_path: str, logger: Callable) -> bool:
+    """Pull a Docker image and save it to a tar file."""
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+
+    # Pull the image
+    log(f"  Pulling {image}...", "info")
+    result = run_command(f"docker pull {image}", timeout=600, logger=None)
+    if not result['success']:
+        log(f"  Failed to pull {image}: {result.get('error', '')[:100]}", "error")
+        return False
+
+    # Save the image
+    log(f"  Saving to {os.path.basename(output_path)}...", "info")
+    result = run_command(f"docker save -o {output_path} {image}", timeout=600, logger=None)
+    if not result['success']:
+        log(f"  Failed to save {image}: {result.get('error', '')[:100]}", "error")
+        return False
+
+    # Report size
+    size = os.path.getsize(output_path)
+    log(f"  Done ({_format_size(size)})", "success")
+    return True
+
+
+def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None) -> Dict:
+    """Download and package upgrade components.
+
+    Args:
+        modules: Dict of module versions, e.g. {"elk": "9.3.1", "velociraptor": "0.75.6"}
+        run_id: Workflow run ID for tracking
+        logger: Logging function
+
+    Returns:
+        Dict with success status, package_path, and metadata
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_name = f"mssp-upgrade-{timestamp}"
+    package_dir = f"/tmp/{package_name}"
+    output_file = f"/tmp/{package_name}.tar.gz"
+
+    log("=" * 50, "info")
+    log("PREPARING UPGRADE PACKAGE", "info")
+    log("=" * 50, "info")
+    log("", "info")
+    log("Selected modules:", "info")
+    for module, version in modules.items():
+        log(f"  {module.upper()}: {version}", "info")
+    log("", "info")
+
+    try:
+        # Create directory structure
+        log("Creating package directory structure...", "info")
+        os.makedirs(f"{package_dir}/images", exist_ok=True)
+        os.makedirs(f"{package_dir}/binaries", exist_ok=True)
+        os.makedirs(f"{package_dir}/source/backend", exist_ok=True)
+        os.makedirs(f"{package_dir}/source/frontend", exist_ok=True)
+
+        manifest = {
+            "package_version": "1.0",
+            "created": datetime.now().isoformat(),
+            "created_by": "risx-prepare-package",
+            "run_id": run_id,
+            "versions": {},
+            "contents": {
+                "images": [],
+                "binaries": [],
+                "include_source": False
+            }
+        }
+
+        total_modules = len(modules)
+        completed = 0
+
+        # Process each module
+        for module, version in modules.items():
+            log("", "info")
+            log(f"=== {module.upper()} ({version}) ===", "info")
+
+            if module == 'risx':
+                # Copy source files
+                log("Copying RISX source files...", "info")
+
+                backend_src = os.path.join(WORKDIR, 'modules', 'backend')
+                frontend_src = os.path.join(WORKDIR, 'modules', 'nginx', 'html')
+
+                if os.path.isdir(backend_src):
+                    log("  Copying backend source...", "info")
+                    shutil.copytree(
+                        backend_src,
+                        f"{package_dir}/source/backend",
+                        dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.env*', '*.db*')
+                    )
+                    log("  Backend source copied", "success")
+                else:
+                    log(f"  Backend source not found at {backend_src}", "warning")
+
+                if os.path.isdir(frontend_src):
+                    log("  Copying frontend source...", "info")
+                    shutil.copytree(
+                        frontend_src,
+                        f"{package_dir}/source/frontend",
+                        dirs_exist_ok=True
+                    )
+                    log("  Frontend source copied", "success")
+                else:
+                    log(f"  Frontend source not found at {frontend_src}", "warning")
+
+                manifest["versions"]["risx"] = version
+                manifest["contents"]["include_source"] = True
+
+            elif module == 'velociraptor':
+                # Download Velociraptor binary
+                log("Downloading Velociraptor binary...", "info")
+
+                # Parse version
+                clean_version = version.lstrip('v')
+                parts = clean_version.split('.')
+
+                if len(parts) < 3:
+                    log(f"  Full version required (e.g., 0.75.6), got: {version}", "error")
+                    continue
+
+                release_tag = f"v{parts[0]}.{parts[1]}"
+                binary_name = f"velociraptor-v{clean_version}-linux-amd64"
+                url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}/{binary_name}"
+
+                log(f"  Version: {clean_version}", "info")
+                log(f"  Release tag: {release_tag}", "info")
+                log(f"  URL: {url}", "info")
+
+                binary_path = f"{package_dir}/binaries/{binary_name}"
+                result = run_command(
+                    f"curl -L -f -o {binary_path} {url}",
+                    timeout=300,
+                    logger=None
+                )
+
+                if result['success']:
+                    os.chmod(binary_path, 0o755)
+                    size = os.path.getsize(binary_path)
+                    log(f"  Downloaded ({_format_size(size)})", "success")
+                    manifest["versions"]["velociraptor"] = clean_version
+                    manifest["contents"]["binaries"].append(binary_name)
+                else:
+                    log(f"  Failed to download: {result.get('error', '')[:100]}", "error")
+
+            elif module in DOCKER_IMAGES:
+                # Pull and save Docker images
+                for image_template, output_template in DOCKER_IMAGES[module]:
+                    image = image_template.format(version=version)
+                    output_name = output_template.format(version=version)
+                    output_path = f"{package_dir}/images/{output_name}"
+
+                    if _pull_and_save_image(image, output_path, log):
+                        manifest["contents"]["images"].append(output_name)
+
+                manifest["versions"][module] = version
+            else:
+                log(f"  Unknown module: {module}", "warning")
+
+            completed += 1
+
+        # Write manifest
+        log("", "info")
+        log("=== Creating Manifest ===", "info")
+        with open(f"{package_dir}/manifest.json", 'w') as f:
+            json.dump(manifest, f, indent=2)
+        log("  Created manifest.json", "success")
+
+        # Create tar.gz archive
+        log("", "info")
+        log("=== Creating Package Archive ===", "info")
+        log("  Compressing package (this may take a few minutes)...", "info")
+
+        result = run_command(
+            f"tar -czvf {output_file} -C /tmp {package_name}",
+            timeout=1800,  # 30 minutes max for large packages
+            logger=None
+        )
+
+        if not result['success']:
+            raise Exception(f"Failed to create archive: {result.get('error', '')[:200]}")
+
+        package_size = os.path.getsize(output_file)
+        log(f"  Package created: {_format_size(package_size)}", "success")
+
+        # Cleanup temp directory
+        log("", "info")
+        log("=== Cleanup ===", "info")
+        shutil.rmtree(package_dir)
+        log("  Removed temporary directory", "info")
+
+        # Summary
+        log("", "info")
+        log("=" * 50, "info")
+        log("PACKAGE READY", "success")
+        log("=" * 50, "info")
+        log(f"  Size: {_format_size(package_size)}", "info")
+        log(f"  Modules: {', '.join(modules.keys())}", "info")
+        log("", "info")
+        log("Click 'Download Package' to save the file.", "info")
+
+        return {
+            "success": True,
+            "package_path": output_file,
+            "package_name": f"{package_name}.tar.gz",
+            "package_size": package_size,
+            "manifest": manifest
+        }
+
+    except Exception as e:
+        log(f"Package preparation failed: {str(e)}", "error")
+
+        # Cleanup on failure
+        if os.path.exists(package_dir):
+            shutil.rmtree(package_dir)
+        if os.path.exists(output_file):
+            os.remove(output_file)
+
+        return {
+            "success": False,
+            "error": str(e)
+        }

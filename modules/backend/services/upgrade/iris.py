@@ -50,28 +50,39 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
         if not result['success']:
             raise Exception(f"Failed to start IRIS: {result['error']}")
 
-        # Health check - wait for IRIS to respond (like install.sh)
-        log("Waiting for IRIS to be ready...", "info")
+        # Health check - wait for IRIS to respond
+        # Use docker exec since we're inside a container and can't reach localhost:8443
+        log("Waiting for IRIS container to be up...", "info")
         healthy = False
         for i in range(30):  # 30 * 5s = 150s max
-            try:
-                response = requests.get("https://localhost:8443/", timeout=5, verify=False)
+            log(f"  Checking IRIS container... ({i*5}s)", "info")
+            # Check IRIS nginx container - it proxies to the app
+            check_result = run_command(
+                "docker exec mssp_iris_nginx curl -sk --max-time 5 https://localhost:8443/ -o /dev/null -w '%{http_code}'",
+                logger=None
+            )
+            if check_result['success']:
+                http_code = check_result.get('stdout', '').strip()
                 # Accept 200, redirects, or 401 (auth required = service is up)
-                if response.status_code in [200, 301, 302, 303, 307, 308, 401]:
-                    log(f"IRIS is responding ({i*5}s)", "success")
+                if http_code in ['200', '301', '302', '303', '307', '308', '401']:
+                    log(f"  Container healthy - HTTP {http_code}", "success")
                     healthy = True
                     break
-            except:
-                pass
+                else:
+                    log(f"  Container not ready yet (HTTP {http_code})...", "info")
+            else:
+                log(f"  Container not ready yet...", "info")
             time.sleep(5)
 
-        if not healthy:
+        if healthy:
+            log("IRIS health check: PASSED", "success")
+        else:
             # Check if containers are crash-looping
             check_result = run_command("docker ps -a --filter name=mssp_iris --format '{{.Status}}'", logger=log)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"IRIS failed to start - container status: {container_status}")
-            log("Health check timed out, but containers may still be starting", "warning")
+            log("IRIS health check: TIMEOUT (containers may still be starting)", "warning")
 
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
@@ -121,12 +132,14 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
         if not result['success']:
             raise Exception(f"Failed to stop IRIS: {result['error']}")
 
-        # Load docker images
+        # Load docker images (iris-db is NOT upgraded to preserve data)
         log("Loading docker images from package...", "info")
-        for img_name in ['iris-app', 'iris-worker', 'iris-nginx']:
+        for img_name in ['iris-app', 'iris-nginx']:
             tar_path = os.path.join(images_dir, f"{img_name}-{version}.tar")
             if os.path.exists(tar_path):
                 load_docker_image(tar_path, logger=log)
+            else:
+                log(f"  Image not found: {tar_path}", "warning")
 
         # Update version in .env
         log(f"Updating version to {version}...", "info")
@@ -138,27 +151,38 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
         if not result['success']:
             raise Exception(f"Failed to start IRIS: {result['error']}")
 
-        # Health check - wait for IRIS to respond (like install.sh)
-        log("Waiting for IRIS to be ready...", "info")
+        # Health check - wait for IRIS to respond
+        # Use docker exec since we're inside a container and can't reach localhost:8443
+        log("Waiting for IRIS container to be up...", "info")
         healthy = False
         for i in range(30):  # 30 * 5s = 150s max
-            try:
-                response = requests.get("https://localhost:8443/", timeout=5, verify=False)
+            log(f"  Checking IRIS container... ({i*5}s)", "info")
+            # Check IRIS nginx container - it proxies to the app
+            check_result = run_command(
+                "docker exec mssp_iris_nginx curl -sk --max-time 5 https://localhost:8443/ -o /dev/null -w '%{http_code}'",
+                logger=None
+            )
+            if check_result['success']:
+                http_code = check_result.get('stdout', '').strip()
                 # Accept 200, redirects, or 401 (auth required = service is up)
-                if response.status_code in [200, 301, 302, 303, 307, 308, 401]:
-                    log(f"IRIS is responding ({i*5}s)", "success")
+                if http_code in ['200', '301', '302', '303', '307', '308', '401']:
+                    log(f"  Container healthy - HTTP {http_code}", "success")
                     healthy = True
                     break
-            except:
-                pass
+                else:
+                    log(f"  Container not ready yet (HTTP {http_code})...", "info")
+            else:
+                log(f"  Container not ready yet...", "info")
             time.sleep(5)
 
-        if not healthy:
+        if healthy:
+            log("IRIS health check: PASSED", "success")
+        else:
             check_result = run_command("docker ps -a --filter name=mssp_iris --format '{{.Status}}'", logger=log)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"IRIS failed to start - container status: {container_status}")
-            log("Health check timed out, but containers may still be starting", "warning")
+            log("IRIS health check: TIMEOUT (containers may still be starting)", "warning")
 
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)

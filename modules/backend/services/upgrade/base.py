@@ -9,7 +9,6 @@ import shutil
 import subprocess
 import time
 import json
-import hashlib
 import tarfile
 from typing import Dict, Callable, Optional
 
@@ -290,34 +289,6 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
 
         log(f"  Package created: {manifest.get('created', 'unknown')}", "info")
         log(f"  Versions: {json.dumps(manifest.get('versions', {}))}", "info")
-
-        # Verify checksums if present
-        checksums_path = os.path.join(package_dir, 'checksums.sha256')
-        if os.path.exists(checksums_path):
-            log("Verifying checksums...", "info")
-            failed_checksums = []
-
-            with open(checksums_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith('#'):
-                        continue
-                    parts = line.split('  ', 1)
-                    if len(parts) == 2:
-                        expected_hash, rel_path = parts
-                        rel_path = rel_path.lstrip('./')
-                        file_path = os.path.join(package_dir, rel_path)
-
-                        if os.path.exists(file_path):
-                            with open(file_path, 'rb') as check_file:
-                                actual_hash = hashlib.sha256(check_file.read()).hexdigest()
-                            if actual_hash != expected_hash:
-                                failed_checksums.append(rel_path)
-
-            if failed_checksums:
-                log(f"  WARNING: {len(failed_checksums)} files failed checksum verification", "warning")
-            else:
-                log("  All checksums verified", "success")
 
         return {
             "success": True,

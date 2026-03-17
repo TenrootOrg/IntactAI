@@ -1573,17 +1573,31 @@ sudo ./velociraptor service start</code></pre>
                                 </button>
                             </div>
 
-                            <!-- System Upgrade (Offline) -->
+                            <!-- Prepare Upgrade Package -->
                             <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
                                 <div>
-                                    <h4 class="text-white font-medium">System Upgrade (Offline)</h4>
+                                    <h4 class="text-white font-medium">Prepare Upgrade Package</h4>
+                                    <p class="text-gray-400 text-sm">Download and package modules for air-gapped transfer</p>
+                                </div>
+                                <button @click="$store.settings.openPreparePackageModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path>
+                                    </svg>
+                                    <span>Prepare Package</span>
+                                </button>
+                            </div>
+
+                            <!-- Import Upgrade Package -->
+                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div>
+                                    <h4 class="text-white font-medium">Import Upgrade Package</h4>
                                     <p class="text-gray-400 text-sm">Upload upgrade package for air-gapped installation</p>
                                 </div>
                                 <button @click="$store.settings.openOfflineUpgradeModal()" class="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
                                     </svg>
-                                    <span>Upgrade (Offline)</span>
+                                    <span>Import Package</span>
                                 </button>
                             </div>
                         </div>
@@ -1898,11 +1912,100 @@ sudo ./velociraptor service start</code></pre>
                     </div>
                 </div>
 
-                <!-- Offline Upgrade Modal -->
+                <!-- Prepare Package Modal -->
+                <div x-show="$store.settings.showPreparePackageModal" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="$store.settings.closePreparePackageModal()">
+                    <div class="bg-gray-800 rounded-lg p-6 w-full max-w-lg border border-gray-700 shadow-xl" @click.stop>
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="text-xl font-bold text-white">Prepare Upgrade Package</h3>
+                            <button @click="$store.settings.closePreparePackageModal()" class="text-gray-400 hover:text-white">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                                </svg>
+                            </button>
+                        </div>
+                        <p class="text-gray-400 text-sm mb-4">Select modules to include in the offline upgrade package:</p>
+
+                        <!-- Loading state -->
+                        <div x-show="$store.settings.prepareLoading" class="flex items-center justify-center py-8">
+                            <svg class="animate-spin h-8 w-8 text-blue-500" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                        </div>
+
+                        <!-- Module list -->
+                        <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="space-y-3 max-h-80 overflow-y-auto">
+                            <template x-for="module in $store.settings.prepareModules" :key="module.id">
+                                <div class="flex items-center gap-3 p-3 bg-gray-900 rounded border border-gray-700">
+                                    <input type="checkbox" x-model="module.enabled" class="rounded bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
+                                    <div class="flex-1 min-w-0">
+                                        <span class="text-white font-medium" x-text="module.name"></span>
+                                        <div class="text-gray-500 text-xs">
+                                            <span x-show="module.id !== 'risx'">Latest: <span x-text="module.latest || 'unknown'" class="text-gray-400"></span></span>
+                                            <span x-show="module.id === 'risx'" class="text-blue-400">Includes backend + frontend source code</span>
+                                        </div>
+                                    </div>
+                                    <input type="text" x-model="module.targetVersion"
+                                           :disabled="!module.enabled"
+                                           x-show="module.id !== 'risx'"
+                                           class="w-28 bg-gray-700 text-white text-sm px-2 py-1.5 rounded border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                           placeholder="Version">
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- Package Ready -->
+                        <div x-show="$store.settings.preparePackageReady" class="text-center py-6">
+                            <svg class="w-16 h-16 text-green-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            <h4 class="text-white font-medium mb-2">Package Ready!</h4>
+                            <p class="text-gray-400 text-sm mb-2" x-text="'Size: ' + $store.settings.preparePackageSize"></p>
+                            <p class="text-gray-500 text-xs mb-4">Available for 24 hours</p>
+                            <a :href="'/api/upgrade/prepare/' + $store.settings.prepareRunId + '/download'"
+                               download
+                               class="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded text-sm font-medium inline-flex items-center gap-2">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                                </svg>
+                                Download Package
+                            </a>
+                        </div>
+
+                        <!-- Warning -->
+                        <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="bg-yellow-900/30 border border-yellow-700/50 rounded p-3 mt-4">
+                            <p class="text-yellow-400 text-xs">
+                                <strong>Note:</strong> This will download Docker images and binaries for selected modules. This may take several minutes and require significant disk space.
+                            </p>
+                        </div>
+
+                        <!-- Actions -->
+                        <div x-show="!$store.settings.preparePackageReady" class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-700">
+                            <button @click="$store.settings.closePreparePackageModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
+                                Cancel
+                            </button>
+                            <button @click="$store.settings.startPackagePreparation()" :disabled="$store.settings.prepareLoading" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium flex items-center gap-2">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path>
+                                </svg>
+                                Start Preparation
+                            </button>
+                        </div>
+
+                        <!-- Close when done -->
+                        <div x-show="$store.settings.preparePackageReady" class="flex justify-end mt-6 pt-4 border-t border-gray-700">
+                            <button @click="$store.settings.closePreparePackageModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Import Upgrade Package Modal -->
                 <div x-show="$store.settings.showOfflineUpgradeModal" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="$store.settings.closeOfflineUpgradeModal()">
                     <div class="bg-gray-800 rounded-lg p-6 w-full max-w-lg border border-gray-700 shadow-xl" @click.stop>
                         <div class="flex items-center justify-between mb-4">
-                            <h3 class="text-xl font-bold text-white">System Upgrade (Offline)</h3>
+                            <h3 class="text-xl font-bold text-white">Import Upgrade Package</h3>
                             <button @click="$store.settings.closeOfflineUpgradeModal()" class="text-gray-400 hover:text-white">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
@@ -1912,7 +2015,7 @@ sudo ./velociraptor service start</code></pre>
 
                         <!-- Step 1: Upload -->
                         <div x-show="!$store.settings.offlinePackageInfo">
-                            <p class="text-gray-400 text-sm mb-4">Upload an upgrade package created on a machine with internet access.</p>
+                            <p class="text-gray-400 text-sm mb-4">Upload an upgrade package from the online system. No internet required.</p>
 
                             <!-- Upload zone -->
                             <div class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-purple-500 transition-colors"
