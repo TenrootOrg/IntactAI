@@ -3,9 +3,10 @@
 Upgrade Routes - System upgrade endpoints (online and offline)
 """
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 import threading
 import os
+import time
 
 from services import (
     create_automation_run,
@@ -14,6 +15,30 @@ from services import (
 )
 
 upgrade_bp = Blueprint('upgrade', __name__)
+
+# Store prepared package paths by run_id (for download)
+# Format: {run_id: {'path': str, 'name': str, 'size': int, 'created_at': float}}
+_prepared_packages = {}
+
+# Package expiration time (24 hours in seconds)
+PACKAGE_EXPIRATION_SECONDS = 24 * 60 * 60
+
+
+def _cleanup_expired_packages():
+    """Remove packages older than 24 hours."""
+    now = time.time()
+    expired = []
+    for run_id, pkg in _prepared_packages.items():
+        if now - pkg.get('created_at', 0) > PACKAGE_EXPIRATION_SECONDS:
+            expired.append(run_id)
+
+    for run_id in expired:
+        pkg = _prepared_packages.pop(run_id, None)
+        if pkg and os.path.exists(pkg.get('path', '')):
+            try:
+                os.remove(pkg['path'])
+            except Exception:
+                pass
 
 
 @upgrade_bp.route('/api/upgrade/status', methods=['GET'])
@@ -232,6 +257,151 @@ def start_offline_upgrade():
             "run_id": run_id,
             "message": "Offline upgrade started"
         })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@upgrade_bp.route('/api/upgrade/prepare', methods=['POST'])
+def prepare_upgrade_package():
+    """Prepare an upgrade package for offline/air-gapped transfer.
+
+    Body: {
+        "modules": {"elk": "9.3.1", "velociraptor": "0.75.6", ...}
+    }
+    """
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        modules = data.get('modules', {})
+        if not modules:
+            return jsonify({"error": "No modules selected for package"}), 400
+
+        # Create workflow run
+        run_id = create_automation_run(
+            automation_type="prepare_package",
+            name="Prepare Upgrade Package",
+            details={
+                "trigger": "manual",
+                "modules": modules
+            }
+        )
+        add_log_to_run(run_id, "Starting package preparation", "info")
+        add_log_to_run(run_id, f"Modules: {', '.join(modules.keys())}", "info")
+        update_run_status(run_id, "running", progress=5)
+
+        # Run package preparation in background
+        def run_prepare():
+            try:
+                from services.upgrade.package import prepare_upgrade_package as do_prepare
+
+                def logger(msg, level="info"):
+                    add_log_to_run(run_id, msg, level)
+
+                result = do_prepare(modules, run_id, logger)
+
+                if result.get('success'):
+                    # Store package path for download (with timestamp for 24h expiration)
+                    _prepared_packages[run_id] = {
+                        'path': result['package_path'],
+                        'name': result['package_name'],
+                        'size': result['package_size'],
+                        'created_at': time.time()
+                    }
+                    add_log_to_run(run_id, f"Package ready for download: {result['package_name']}", "success")
+                    add_log_to_run(run_id, "Package will be available for 24 hours", "info")
+                    update_run_status(run_id, "completed", progress=100)
+                else:
+                    add_log_to_run(run_id, f"Package preparation failed: {result.get('error', 'Unknown error')}", "error")
+                    update_run_status(run_id, "failed", progress=0, error=result.get('error'))
+
+            except Exception as e:
+                add_log_to_run(run_id, f"Package preparation failed: {str(e)}", "error")
+                update_run_status(run_id, "failed", progress=0, error=str(e))
+                import traceback
+                traceback.print_exc()
+
+        # Start background thread
+        thread = threading.Thread(target=run_prepare, daemon=True)
+        thread.start()
+
+        return jsonify({
+            "success": True,
+            "run_id": run_id,
+            "message": f"Package preparation started for {len(modules)} module(s)"
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@upgrade_bp.route('/api/upgrade/prepare/<run_id>/status', methods=['GET'])
+def get_prepare_status(run_id):
+    """Check if a prepared package is ready for download."""
+    try:
+        # Cleanup expired packages first
+        _cleanup_expired_packages()
+
+        if run_id in _prepared_packages:
+            pkg = _prepared_packages[run_id]
+            # Calculate remaining time
+            elapsed = time.time() - pkg.get('created_at', 0)
+            remaining_hours = max(0, (PACKAGE_EXPIRATION_SECONDS - elapsed) / 3600)
+
+            return jsonify({
+                "success": True,
+                "ready": True,
+                "package_name": pkg['name'],
+                "package_size": pkg['size'],
+                "expires_in_hours": round(remaining_hours, 1)
+            })
+        else:
+            return jsonify({
+                "success": True,
+                "ready": False
+            })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@upgrade_bp.route('/api/upgrade/prepare/<run_id>/download', methods=['GET'])
+def download_prepared_package(run_id):
+    """Download a prepared upgrade package.
+
+    Package is available for 24 hours after creation.
+    """
+    try:
+        # Cleanup expired packages first
+        _cleanup_expired_packages()
+
+        if run_id not in _prepared_packages:
+            return jsonify({"error": "Package not found or expired (24 hour limit)"}), 404
+
+        pkg = _prepared_packages[run_id]
+        package_path = pkg['path']
+        package_name = pkg['name']
+
+        # Check if expired
+        if time.time() - pkg.get('created_at', 0) > PACKAGE_EXPIRATION_SECONDS:
+            # Remove expired package
+            if os.path.exists(package_path):
+                os.remove(package_path)
+            del _prepared_packages[run_id]
+            return jsonify({"error": "Package expired (24 hour limit). Please prepare a new package."}), 410
+
+        if not os.path.exists(package_path):
+            del _prepared_packages[run_id]
+            return jsonify({"error": "Package file not found on server"}), 404
+
+        # Send file (don't delete - let 24h cleanup handle it)
+        return send_file(
+            package_path,
+            as_attachment=True,
+            download_name=package_name,
+            mimetype='application/gzip'
+        )
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

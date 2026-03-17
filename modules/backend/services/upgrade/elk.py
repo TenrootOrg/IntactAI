@@ -73,28 +73,34 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
         if not result['success']:
             raise Exception(f"Failed to start ELK: {result['error']}")
 
-        # Health check - wait for Elasticsearch to respond (like install.sh)
-        log("Waiting for Elasticsearch to be ready...", "info")
+        # Health check - wait for Elasticsearch to respond
+        # Use docker exec since we're inside a container and can't reach localhost:9200
+        log("Waiting for Elasticsearch container to be up...", "info")
         healthy = False
         for i in range(24):  # 24 * 5s = 120s max
-            try:
-                response = requests.get("http://localhost:9200/_cluster/health", timeout=5)
-                if response.status_code == 200:
-                    # Just check if it responds - don't require green/yellow status
-                    log(f"Elasticsearch is responding ({i*5}s)", "success")
-                    healthy = True
-                    break
-            except:
-                pass
+            log(f"  Checking Elasticsearch container... ({i*5}s)", "info")
+            check_result = run_command(
+                "docker exec mssp_elasticsearch curl -sf --max-time 5 http://localhost:9200/_cluster/health",
+                logger=None
+            )
+            if check_result['success']:
+                health_info = check_result.get('stdout', '').strip()[:100]
+                log(f"  Container healthy - API responding: {health_info}", "success")
+                healthy = True
+                break
+            else:
+                log(f"  Container not ready yet...", "info")
             time.sleep(5)
 
-        if not healthy:
+        if healthy:
+            log("Elasticsearch health check: PASSED", "success")
+        else:
             # Check if containers are crash-looping
             check_result = run_command("docker ps -a --filter name=mssp_elasticsearch --format '{{.Status}}'", logger=log)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"Elasticsearch failed to start - container status: {container_status}")
-            log("Health check timed out, but containers may still be starting", "warning")
+            log("Elasticsearch health check: TIMEOUT (containers may still be starting)", "warning")
 
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
@@ -168,28 +174,34 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None)
         if not result['success']:
             raise Exception(f"Failed to start ELK: {result['error']}")
 
-        # Health check - wait for Elasticsearch to respond (like install.sh)
-        log("Waiting for Elasticsearch to be ready...", "info")
+        # Health check - wait for Elasticsearch to respond
+        # Use docker exec since we're inside a container and can't reach localhost:9200
+        log("Waiting for Elasticsearch container to be up...", "info")
         healthy = False
         for i in range(24):  # 24 * 5s = 120s max
-            try:
-                response = requests.get("http://localhost:9200/_cluster/health", timeout=5)
-                if response.status_code == 200:
-                    # Just check if it responds - don't require green/yellow status
-                    log(f"Elasticsearch is responding ({i*5}s)", "success")
-                    healthy = True
-                    break
-            except:
-                pass
+            log(f"  Checking Elasticsearch container... ({i*5}s)", "info")
+            check_result = run_command(
+                "docker exec mssp_elasticsearch curl -sf --max-time 5 http://localhost:9200/_cluster/health",
+                logger=None
+            )
+            if check_result['success']:
+                health_info = check_result.get('stdout', '').strip()[:100]
+                log(f"  Container healthy - API responding: {health_info}", "success")
+                healthy = True
+                break
+            else:
+                log(f"  Container not ready yet...", "info")
             time.sleep(5)
 
-        if not healthy:
+        if healthy:
+            log("Elasticsearch health check: PASSED", "success")
+        else:
             # Check if containers are crash-looping
             check_result = run_command("docker ps -a --filter name=mssp_elasticsearch --format '{{.Status}}'", logger=log)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"Elasticsearch failed to start - container status: {container_status}")
-            log("Health check timed out, but containers may still be starting", "warning")
+            log("Elasticsearch health check: TIMEOUT (containers may still be starting)", "warning")
 
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
