@@ -171,22 +171,27 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
             raise Exception(f"Failed to start Velociraptor: {result['error']}")
 
         # Health check
-        log("Waiting for Velociraptor to be ready (timeout: 60s)...", "info")
+        log("Waiting for Velociraptor container to be up...", "info")
         healthy = False
-        for i in range(30):
-            result = run_command(f"docker exec {container_name} pgrep -f velociraptor", logger=log, timeout=10)
+        for i in range(30):  # 30 * 2s = 60s max
+            log(f"  Checking Velociraptor container... ({i*2}s)", "info")
+            result = run_command(f"docker exec {container_name} pgrep -f velociraptor", logger=None, timeout=10)
             if result['success']:
-                log("Velociraptor is running", "success")
+                pids = result.get('stdout', '').strip().replace('\n', ', ')
+                log(f"  Container healthy - velociraptor running (PIDs: {pids})", "success")
+                log("Velociraptor health check: PASSED", "success")
                 healthy = True
                 break
+            else:
+                log("  Container not ready yet...", "info")
             time.sleep(2)
 
         if not healthy:
-            check_result = run_command("docker ps -a --filter name=mssp_velociraptor --format '{{.Status}}'", logger=log)
+            check_result = run_command("docker ps -a --filter name=mssp_velociraptor --format '{{.Status}}'", logger=None)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"Velociraptor failed to start - container status: {container_status}")
-            log("Health check timed out, but container may still be starting", "warning")
+            log("Velociraptor health check: TIMEOUT (container may still be starting)", "warning")
 
         # Success - cleanup backups
         time.sleep(15)  # Wait for full startup

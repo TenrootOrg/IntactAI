@@ -93,11 +93,16 @@ def start_upgrade():
                     if msg.startswith("UPGRADING:"):
                         progress = 5 + (completed_modules[0] * progress_per_module)
                         update_run_status(run_id, "running", progress=progress)
-                    # Update progress when a module completes
-                    elif "upgrade completed" in msg.lower() or "is running" in msg.lower():
-                        completed_modules[0] += 1
-                        progress = 5 + (completed_modules[0] * progress_per_module)
-                        update_run_status(run_id, "running", progress=min(progress, 95))
+                    # Update progress only on wrapper completion message (from __init__.py)
+                    # Format: "MODULE_NAME upgrade completed: X -> Y" where MODULE_NAME is uppercase
+                    # Avoid double-counting from module-level messages or health checks
+                    elif level == "success" and " upgrade completed:" in msg:
+                        # Only count if message starts with uppercase module name (wrapper message)
+                        first_word = msg.split()[0] if msg else ""
+                        if first_word.isupper() and first_word in ["ELK", "TIMESKETCH", "PLASO", "IRIS", "VELOCIRAPTOR", "RISX"]:
+                            completed_modules[0] += 1
+                            progress = 5 + (completed_modules[0] * progress_per_module)
+                            update_run_status(run_id, "running", progress=min(progress, 95))
 
                 add_log_to_run(run_id, f"Modules to upgrade: {', '.join(modules.keys())}", "info")
                 update_run_status(run_id, "running", progress=5)
