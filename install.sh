@@ -41,47 +41,53 @@ main() {
 
     log_info "Starting MSSP installation..."
 
+    # -------------------------------------------------------------------------
     # Prerequisites
+    # -------------------------------------------------------------------------
     check_root
     check_initialization_marker
     check_ubuntu
     check_config
-
-    # Check network connectivity (for online installs)
     if ! check_network_connectivity; then
         log_error "Network connectivity check failed - aborting installation"
         exit 1
     fi
 
-    # Install dependencies
+    # -------------------------------------------------------------------------
+    # Core Dependencies
+    # -------------------------------------------------------------------------
     install_dependencies
     install_docker
-
-    # Setup
     create_network
 
-    # Pull required images
+    # -------------------------------------------------------------------------
+    # Timeline Processing (Plaso/Timesketch) - Air-gap Support
+    # -------------------------------------------------------------------------
     pull_plaso_image
-
-    # Download Offline Collector binaries (v0.74.1)
-    download_offline_collector_binaries
-
-    # Download Timesketch Python packages for offline/air-gap support
+    pull_python_alpine_image
     download_timesketch_packages
 
-    # Configure
-    update_env_files
+    # -------------------------------------------------------------------------
+    # Forensic Collection (Velociraptor/Offline Collector) - Air-gap Support
+    # -------------------------------------------------------------------------
+    download_offline_collector_binaries
+    create_velociraptor_collector
 
-    # Create data directory for SQLite database
+    # -------------------------------------------------------------------------
+    # Configuration
+    # -------------------------------------------------------------------------
+    update_env_files
     create_data_directory
 
-    # Install services
+    # -------------------------------------------------------------------------
+    # Services
+    # -------------------------------------------------------------------------
     start_services
 
-    # Verify
+    # -------------------------------------------------------------------------
+    # Verification & Reports
+    # -------------------------------------------------------------------------
     verify_installation
-
-    # Reports
     print_installation_report
     create_initialization_marker
     print_summary

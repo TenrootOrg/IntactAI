@@ -336,10 +336,11 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None) -
 
     log(f"Configuring {len(enabled_tools)} tools in Velociraptor inventory")
 
-    # Check what's already served
+    # Check what's already served (must have serve_locally=true AND no external URL)
+    # Tools with external URLs need to be reconfigured with local files
     served_tools = set()
     try:
-        vql = "SELECT name, serve_locally FROM inventory() WHERE serve_locally = true"
+        vql = "SELECT name, serve_locally, url FROM inventory() WHERE serve_locally = true"
         request = api_pb2.VQLCollectorArgs(
             max_wait=30, max_row=200,
             Query=[api_pb2.VQLRequest(VQL=vql)]
@@ -348,7 +349,14 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None) -
             if response.Response:
                 data = json.loads(response.Response)
                 for item in data:
-                    served_tools.add(item.get('name', ''))
+                    # Only consider "served" if no external URL (file is actually local)
+                    # Tools with external URLs need to be reconfigured with local files
+                    tool_name = item.get('name', '')
+                    url = item.get('url', '')
+                    if not url or not url.startswith('http'):
+                        served_tools.add(tool_name)
+                    else:
+                        log(f"  {tool_name} has external URL, will reconfigure")
         log(f"Currently {len(served_tools)} tools served locally")
     except Exception as e:
         log(f"Could not query inventory: {str(e)[:50]}", "warning")
@@ -408,6 +416,7 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None) -
             continue
 
         # Configure with inventory_add (it's a FUNCTION, not a plugin)
+        # Then copy file to filestore (inventory_add doesn't always do this)
         try:
             file_path = f"{tools_dir}/{matched_file}"
             vql = f'''
@@ -424,15 +433,38 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None) -
                 Query=[api_pb2.VQLRequest(VQL=vql)]
             )
             success = False
+            file_hash = None
             for response in stub.Query(request, timeout=65):
                 if response.Response:
                     data = json.loads(response.Response)
                     if data and len(data) > 0 and data[0].get('Result'):
                         success = True
+                        # Get the hash for copying to filestore
+                        file_hash = data[0]['Result'].get('hash', '')
 
             if success:
                 log(f"  ✓ {tool_name} -> {matched_file}", "success")
                 results["configured"].append(tool_name)
+
+                # Copy file to filestore (inventory_add doesn't always do this)
+                if file_hash:
+                    copy_vql = f'''
+                    SELECT copy(
+                        filename="{file_path}",
+                        accessor="file",
+                        dest="/var./public/{file_hash}",
+                        permissions="0600"
+                    ) FROM scope()
+                    '''
+                    try:
+                        copy_request = api_pb2.VQLCollectorArgs(
+                            max_wait=30, max_row=1,
+                            Query=[api_pb2.VQLRequest(VQL=copy_vql)]
+                        )
+                        for _ in stub.Query(copy_request, timeout=35):
+                            pass
+                    except Exception:
+                        pass  # Best effort copy
             else:
                 log(f"  ? {tool_name} - no result returned", "warning")
                 results["failed"].append(tool_name)

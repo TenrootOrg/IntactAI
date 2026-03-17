@@ -229,6 +229,13 @@ def generate_collector(config_id, os_type="windows"):
 
                     if flow_state == "ERROR":
                         print(f"[OFFLINE] Flow ERROR: {flow_status}", flush=True)
+                        # Fallback to script-based collector for "config too large" errors
+                        if "too large" in flow_status.lower():
+                            print(f"[OFFLINE] Config too large for official collector, falling back to script-based collector...", flush=True)
+                            channel.close()
+                            file_id = f"{safe_name}_{os_type}"
+                            output_path = os.path.join(COLLECTOR_OUTPUT_DIR, f"OfflineCollector_{file_id}.zip")
+                            return create_collection_script(config, file_id, os_type, output_path)
                         return {"success": False, "error": f"Collector creation failed: {flow_status}"}
                     elif flow_state == "FINISHED":
                         print(f"[OFFLINE] Flow completed successfully", flush=True)

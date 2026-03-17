@@ -183,6 +183,27 @@ pull_plaso_image() {
     fi
 }
 
+pull_python_alpine_image() {
+    # Python Alpine image is used by Plaso decompression (plaso_service.py)
+    # Pre-pull to avoid network access at runtime in air-gap environments
+
+    local image="python:3-alpine"
+
+    log_info "Pulling Python Alpine image for Plaso decompression..."
+
+    if docker image inspect "$image" &> /dev/null; then
+        log_info "  Python Alpine image already exists"
+        return 0
+    fi
+
+    log_info "  Downloading $image..."
+    if docker pull "$image" 2>> "$LOG_FILE"; then
+        log_success "  Python Alpine image pulled successfully"
+    else
+        log_warn "  Failed to pull $image - Plaso decompression may fail offline"
+    fi
+}
+
 download_timesketch_packages() {
     # Download Python packages for Timesketch AI features (google-generativeai)
     # These are installed offline from local wheels in air-gap environments
@@ -300,5 +321,52 @@ download_offline_collector_binaries() {
         log_success "Offline Collector binaries: $downloaded downloaded, $skipped already existed"
     else
         log_info "Offline Collector binaries: all $skipped binaries already exist"
+    fi
+}
+
+create_velociraptor_collector() {
+    # Download the special velociraptor-collector binary from GitHub
+    # This is a small (~80KB) template binary designed for config embedding
+    # NOT the same as the regular velociraptor binary (70+ MB)
+    # The file is placed in /data/tools/ where maintenance will configure it
+    # in Velociraptor's inventory with serve_locally=true
+
+    local collector_url="https://github.com/Velocidex/velociraptor/releases/download/v0.75/velociraptor-collector"
+    local tools_dir="${SCRIPT_DIR}/data/tools"
+    local dest_path="${tools_dir}/velociraptor-collector"
+    local min_size=50000  # ~80KB expected
+
+    log_info "Downloading Velociraptor collector template..."
+
+    mkdir -p "$tools_dir"
+
+    # Check if already exists with valid size
+    if [[ -f "$dest_path" ]]; then
+        local current_size=$(stat -c%s "$dest_path" 2>/dev/null || echo "0")
+        if [[ "$current_size" -gt "$min_size" ]]; then
+            log_info "  Already exists: velociraptor-collector ($(numfmt --to=iec $current_size))"
+            return 0
+        else
+            log_info "  Existing file invalid, re-downloading..."
+            rm -f "$dest_path"
+        fi
+    fi
+
+    # Download the collector template from GitHub
+    log_info "  Downloading from: $collector_url"
+    if curl -fsSL "$collector_url" -o "$dest_path" 2>> "$LOG_FILE"; then
+        chmod +x "$dest_path"
+        local size=$(stat -c%s "$dest_path" 2>/dev/null || echo "0")
+        if [[ "$size" -gt "$min_size" ]]; then
+            log_success "  Downloaded: velociraptor-collector ($(numfmt --to=iec $size))"
+            return 0
+        else
+            log_warn "  Downloaded file too small: $size bytes"
+            rm -f "$dest_path"
+            return 1
+        fi
+    else
+        log_warn "  Failed to download velociraptor-collector"
+        return 1
     fi
 }
