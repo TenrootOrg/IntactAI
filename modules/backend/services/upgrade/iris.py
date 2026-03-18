@@ -132,9 +132,9 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
         if not result['success']:
             raise Exception(f"Failed to stop IRIS: {result['error']}")
 
-        # Load docker images (iris-db is NOT upgraded to preserve data)
+        # Load docker images (including DB for air-gap support - data is in volumes)
         log("Loading docker images from package...", "info")
-        for img_name in ['iris-app', 'iris-nginx']:
+        for img_name in ['iris-app', 'iris-nginx', 'iris-db']:
             tar_path = os.path.join(images_dir, f"{img_name}-{version}.tar")
             if os.path.exists(tar_path):
                 load_docker_image(tar_path, logger=log)

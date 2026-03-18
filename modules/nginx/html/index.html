@@ -464,6 +464,14 @@
                                     </svg>
                                     <span x-text="$store.workflows.autoScroll ? 'Auto-scroll ON' : 'Auto-scroll OFF'"></span>
                                 </button>
+                                <!-- Download Logs -->
+                                <button @click="$store.workflows.downloadLogs()"
+                                    class="bg-gray-600 hover:bg-gray-500 px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                                    </svg>
+                                    Download Log
+                                </button>
                                 <!-- Close button -->
                                 <button @click="$store.workflows.closeModal()" class="text-gray-400 hover:text-white">
                                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">

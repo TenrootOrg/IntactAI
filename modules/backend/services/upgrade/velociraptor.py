@@ -9,7 +9,8 @@ from typing import Dict, Callable, Optional, Tuple
 from .base import (
     WORKDIR, HOST_PATH,
     run_command, read_env_file, update_env_file,
-    backup_env_file, restore_env_file, cleanup_backup
+    backup_env_file, restore_env_file, cleanup_backup,
+    load_docker_image
 )
 
 
@@ -353,9 +354,22 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         run_command(f"chmod +x {velo_bin}", logger=log)
         log("  Binary copied successfully", "info")
 
-        # Rebuild container
-        log("Rebuilding container...", "info")
-        run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
+        # Load pre-built image from package (for air-gap support)
+        images_dir = os.path.join(package_dir, 'images')
+        image_path = os.path.join(images_dir, f"velociraptor-{actual_version}.tar")
+
+        if os.path.exists(image_path):
+            log("Loading pre-built Velociraptor image...", "info")
+            result = load_docker_image(image_path, logger=log)
+            if not result['success']:
+                log(f"  Warning: Failed to load image, will try build: {result.get('error', '')[:50]}", "warning")
+                # Fallback to build if image load fails
+                log("Rebuilding container (fallback)...", "info")
+                run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
+        else:
+            # No pre-built image, must build (requires network)
+            log("No pre-built image found, rebuilding container...", "info")
+            run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
 
         # Restore config/artifact backups
         log("Restoring config and artifacts...", "info")
