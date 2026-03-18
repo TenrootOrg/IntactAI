@@ -28,9 +28,10 @@ DOCKER_IMAGES = {
     ],
     'iris': [
         # Note: iris-worker uses the same iriswebapp_app image
-        # Note: iris-db is NOT upgraded to preserve data (app handles migrations)
+        # Note: DB image included for air-gap support (data is in volumes, safe to upgrade)
         ('ghcr.io/dfir-iris/iriswebapp_app:{version}', 'iris-app-{version}.tar'),
         ('ghcr.io/dfir-iris/iriswebapp_nginx:{version}', 'iris-nginx-{version}.tar'),
+        ('ghcr.io/dfir-iris/iriswebapp_db:{version}', 'iris-db-{version}.tar'),
     ],
 }
 
@@ -162,7 +163,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                 manifest["contents"]["include_source"] = True
 
             elif module == 'velociraptor':
-                # Download Velociraptor binary
+                # Download Velociraptor binary and build image for air-gap support
                 log("Downloading Velociraptor binary...", "info")
 
                 # Parse version
@@ -194,6 +195,36 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                     log(f"  Downloaded ({_format_size(size)})", "success")
                     manifest["versions"]["velociraptor"] = clean_version
                     manifest["contents"]["binaries"].append(binary_name)
+
+                    # Build and export image for air-gap support
+                    log("Building Velociraptor image for air-gap...", "info")
+                    velo_dir = "/app/workdir/modules/velociraptor"
+                    velo_bin_dest = os.path.join(velo_dir, "velociraptor", "velociraptor")
+
+                    # Copy binary to velociraptor directory for build
+                    run_command(f"cp {binary_path} {velo_bin_dest}", logger=None)
+                    run_command(f"chmod +x {velo_bin_dest}", logger=None)
+
+                    # Build image with specific tag
+                    image_tag = f"velociraptor-server:{clean_version}"
+                    build_result = run_command(
+                        f"docker compose build --build-arg VELOCIRAPTOR_VERSION={clean_version} --build-arg VELOCIRAPTOR_TAG={parts[0]}.{parts[1]}",
+                        cwd=velo_dir, timeout=600, logger=None
+                    )
+
+                    if build_result['success']:
+                        # Export the built image
+                        output_path = f"{package_dir}/images/velociraptor-{clean_version}.tar"
+                        save_result = run_command(f"docker save -o {output_path} {image_tag}", timeout=300, logger=None)
+                        if save_result['success']:
+                            img_size = os.path.getsize(output_path)
+                            log(f"  Image exported ({_format_size(img_size)})", "success")
+                            manifest["contents"]["images"].append(f"velociraptor-{clean_version}.tar")
+                        else:
+                            log(f"  Failed to export image: {save_result.get('error', '')[:100]}", "warning")
+                    else:
+                        log(f"  Failed to build image: {build_result.get('error', '')[:100]}", "warning")
+                        log("  Binary included but image not built - offline upgrade will require network", "warning")
                 else:
                     log(f"  Failed to download: {result.get('error', '')[:100]}", "error")
 

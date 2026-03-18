@@ -266,6 +266,23 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        downloadLogs() {
+            const run = this.selectedRun;
+            if (!run?.logs?.length) return;
+
+            const content = run.logs.map(log =>
+                `[${new Date(log.timestamp).toISOString()}] [${log.level.toUpperCase()}] ${log.message}`
+            ).join('\n');
+
+            const blob = new Blob([content], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${run.name || run.id}-logs.txt`;
+            a.click();
+            URL.revokeObjectURL(url);
+        },
+
         closeModal() {
             this.stopAutoRefresh();
             this.modalOpen = false;
