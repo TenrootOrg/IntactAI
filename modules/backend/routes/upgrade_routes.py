@@ -292,6 +292,26 @@ def prepare_upgrade_package():
         add_log_to_run(run_id, f"Modules: {', '.join(modules.keys())}", "info")
         update_run_status(run_id, "running", progress=5)
 
+        # Calculate total steps for progress tracking
+        # Each module has different number of operations:
+        # - ELK: 3 images (elasticsearch, kibana, logstash)
+        # - Timesketch: 1 image
+        # - Plaso: 1 image
+        # - IRIS: 2 images (app, nginx)
+        # - Velociraptor: 1 binary download
+        # - RISX: 2 source copies (backend, frontend)
+        # Plus: manifest (1) + archive (1)
+        steps_per_module = {
+            'elk': 3,
+            'timesketch': 1,
+            'plaso': 1,
+            'iris': 2,
+            'velociraptor': 1,
+            'risx': 2
+        }
+        total_steps = sum(steps_per_module.get(m, 1) for m in modules.keys()) + 2  # +2 for manifest and archive
+        completed_steps = [0]
+
         # Run package preparation in background
         def run_prepare():
             try:
@@ -299,6 +319,25 @@ def prepare_upgrade_package():
 
                 def logger(msg, level="info"):
                     add_log_to_run(run_id, msg, level)
+
+                    # Track progress based on completion messages
+                    if level == "success":
+                        # Image saved or binary downloaded
+                        if msg.strip().startswith("Done (") or msg.strip().startswith("Downloaded ("):
+                            completed_steps[0] += 1
+                        # RISX source copies
+                        elif "source copied" in msg:
+                            completed_steps[0] += 1
+                        # Manifest created
+                        elif "Created manifest.json" in msg:
+                            completed_steps[0] += 1
+                        # Package archive created
+                        elif "Package created:" in msg:
+                            completed_steps[0] += 1
+
+                        # Calculate progress (5% start, 95% for work, 100% at end)
+                        progress = 5 + int((completed_steps[0] / total_steps) * 90)
+                        update_run_status(run_id, "running", progress=min(progress, 95))
 
                 result = do_prepare(modules, run_id, logger)
 
