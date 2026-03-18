@@ -166,7 +166,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
 
         # Start container
         log("Starting Velociraptor container...", "info")
-        result = run_command("docker compose up -d", cwd=work_dir, logger=log)
+        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
         if not result['success']:
             raise Exception(f"Failed to start Velociraptor: {result['error']}")
 
@@ -217,7 +217,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
         # Rebuild and restart with old version
         run_command("docker compose down", cwd=work_dir, logger=log)
         run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
-        run_command("docker compose up -d", cwd=work_dir, logger=log)
+        run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
 
         # Cleanup backup dir
         run_command(f"rm -rf {backup_dir}", logger=log)
@@ -369,27 +369,32 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
 
         # Start container
         log("Starting Velociraptor container...", "info")
-        result = run_command("docker compose up -d", cwd=work_dir, logger=log)
+        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
         if not result['success']:
             raise Exception(f"Failed to start Velociraptor: {result['error']}")
 
         # Health check
-        log("Waiting for Velociraptor to be ready (timeout: 60s)...", "info")
+        log("Waiting for Velociraptor container to be up...", "info")
         healthy = False
-        for i in range(30):
-            result = run_command(f"docker exec {container_name} pgrep -f velociraptor", logger=log, timeout=10)
+        for i in range(30):  # 30 * 2s = 60s max
+            log(f"  Checking Velociraptor container... ({i*2}s)", "info")
+            result = run_command(f"docker exec {container_name} pgrep -f velociraptor", logger=None, timeout=10)
             if result['success']:
-                log("Velociraptor is running", "success")
+                pids = result.get('stdout', '').strip().replace('\n', ', ')
+                log(f"  Container healthy - velociraptor running (PIDs: {pids})", "success")
+                log("Velociraptor health check: PASSED", "success")
                 healthy = True
                 break
+            else:
+                log("  Container not ready yet...", "info")
             time.sleep(2)
 
         if not healthy:
-            check_result = run_command("docker ps -a --filter name=mssp_velociraptor --format '{{.Status}}'", logger=log)
+            check_result = run_command("docker ps -a --filter name=mssp_velociraptor --format '{{.Status}}'", logger=None)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"Velociraptor failed to start - container status: {container_status}")
-            log("Health check timed out, but container may still be starting", "warning")
+            log("Velociraptor health check: TIMEOUT (container may still be starting)", "warning")
 
         # Success - cleanup backups
         time.sleep(15)
@@ -415,7 +420,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         # Rebuild and restart with old version
         run_command("docker compose down", cwd=work_dir, logger=log)
         run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
-        run_command("docker compose up -d", cwd=work_dir, logger=log)
+        run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
 
         run_command(f"rm -rf {backup_dir}", logger=log)
 

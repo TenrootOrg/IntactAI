@@ -14,6 +14,21 @@
     <script src="vendor/flatpickr/flatpickr.min.js"></script>
 </head>
 <body class="bg-gray-900 text-white" x-data x-cloak>
+    <!-- Toast Notifications -->
+    <div x-data="{ toasts: [] }" x-on:show-toast.window="toasts.push($event.detail); setTimeout(() => toasts.shift(), 5000)" class="fixed top-4 right-4 z-[100] space-y-2">
+        <template x-for="(toast, index) in toasts" :key="index">
+            <div class="bg-gray-800 border border-gray-600 rounded-lg shadow-lg p-4 max-w-sm" :class="{ 'border-red-500': toast.type === 'error', 'border-yellow-500': toast.type === 'warning', 'border-green-500': toast.type === 'success' }">
+                <div class="flex items-start gap-3">
+                    <div class="flex-1">
+                        <p class="font-medium" :class="{ 'text-red-400': toast.type === 'error', 'text-yellow-400': toast.type === 'warning', 'text-green-400': toast.type === 'success' }" x-text="toast.title"></p>
+                        <p class="text-sm text-gray-400 mt-1" x-text="toast.message"></p>
+                    </div>
+                    <button @click="toasts.splice(index, 1)" class="text-gray-500 hover:text-gray-300">&times;</button>
+                </div>
+            </div>
+        </template>
+    </div>
+
     <div class="flex">
         <!-- Left Sidebar -->
         <aside class="sidebar bg-gray-800 fixed h-screen overflow-y-auto border-r border-gray-700 transition-all duration-300 flex flex-col"
@@ -409,10 +424,10 @@
                                                     </a>
                                                 </template>
                                                 <template x-if="run.type === 'prepare_package' && run.status === 'completed'">
-                                                    <a :href="'/api/upgrade/prepare/' + run.id + '/download'" download class="bg-green-600 hover:bg-green-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Upgrade Package (expires after 24h)">
+                                                    <button @click="$store.workflows.downloadPackage(run.id)" class="bg-green-600 hover:bg-green-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Upgrade Package (expires after 24h)">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                         Package
-                                                    </a>
+                                                    </button>
                                                 </template>
                                                 <button @click="$store.workflows.viewLogs(run.id)" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1">
                                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

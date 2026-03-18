@@ -50,8 +50,9 @@ def upgrade_risx_offline(package_dir: str, version: str = None, logger: Callable
 
     log("Starting RISX Platform offline upgrade...", "info")
 
-    has_backend = os.path.exists(backend_source)
-    has_frontend = os.path.exists(frontend_source)
+    # Check if directories exist AND have files (empty dirs are created even when RISX not selected)
+    has_backend = os.path.exists(backend_source) and os.listdir(backend_source)
+    has_frontend = os.path.exists(frontend_source) and os.listdir(frontend_source)
 
     if not has_backend and not has_frontend:
         log("RISX source not included in package, skipping...", "warning")

@@ -305,6 +305,37 @@ document.addEventListener('alpine:init', () => {
 
         formatTime(timestamp) {
             return timestamp ? new Date(timestamp).toLocaleString() : 'Unknown';
+        },
+
+        async downloadPackage(runId) {
+            try {
+                // Check if package is available
+                const response = await fetch(`/api/upgrade/prepare/${runId}/status`);
+                const data = await response.json();
+
+                if (data.ready) {
+                    // Package available - trigger download
+                    window.location.href = `/api/upgrade/prepare/${runId}/download`;
+                } else {
+                    // Package expired or not found
+                    window.dispatchEvent(new CustomEvent('show-toast', {
+                        detail: {
+                            type: 'warning',
+                            title: 'Package Expired',
+                            message: 'Packages are deleted after 24 hours. Please prepare a new package.'
+                        }
+                    }));
+                }
+            } catch (e) {
+                console.error('Failed to check package status:', e);
+                window.dispatchEvent(new CustomEvent('show-toast', {
+                    detail: {
+                        type: 'error',
+                        title: 'Error',
+                        message: 'Failed to check package availability.'
+                    }
+                }));
+            }
         }
     });
 
@@ -762,7 +793,7 @@ document.addEventListener('alpine:init', () => {
                     const uploadId = uploadUrl.split('/').pop();
                     this.offlinePackagePath = `/data/uploads/${uploadId}`;
 
-                    // Get package info
+                    // Get package info and auto-start upgrade
                     try {
                         const response = await fetch('/api/upgrade/package-info', {
                             method: 'POST',
@@ -776,7 +807,10 @@ document.addEventListener('alpine:init', () => {
                                 created: result.created,
                                 contents: result.contents
                             };
-                            this.showMessage('Package uploaded successfully', 'success');
+                            this.showMessage('Upload complete - starting upgrade...', 'success');
+
+                            // Auto-start upgrade after successful upload
+                            await this.startOfflineUpgrade();
                         } else {
                             this.showMessage('Failed to read package: ' + (result.error || 'Unknown error'), 'error');
                         }
