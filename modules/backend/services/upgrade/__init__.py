@@ -429,8 +429,18 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
     manifest = verify_result['manifest']
     versions = manifest.get('versions', {})
 
+    # Get current versions for comparison
+    current_versions = get_current_versions()
+
+    # Log current vs target versions
     log("", "info")
-    log(f"Package versions: {json.dumps(versions)}", "info")
+    log("VERSION SUMMARY:", "info")
+    log("-" * 40, "info")
+    for module, target_ver in versions.items():
+        current_ver = current_versions.get(module, {}).get('current', 'unknown')
+        log(f"  {module.upper()}: {current_ver} -> {target_ver}", "info")
+    log("-" * 40, "info")
+    log("", "info")
 
     offline_upgrade_functions = {
         'elk': upgrade_elk_offline,
@@ -449,6 +459,7 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
     completed = 0
     completed_modules = []
     overall_status = "success"
+    awaiting_restart = False  # Flag to prevent cleanup when Phase 2 pending
     extract_dir = verify_result.get('extract_dir')
 
     # Build modules dict for state tracking
@@ -498,10 +509,8 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
             try:
                 if module_name == 'risx':
                     result = upgrade_fn(package_dir, logger=log)
-                elif module_name == 'timesketch':
-                    plaso_version = versions.get('plaso')
-                    result = upgrade_fn(package_dir, version, plaso_version=plaso_version, logger=log)
                 else:
+                    # Note: Plaso is handled as its own module, not bundled with Timesketch
                     result = upgrade_fn(package_dir, version, logger=log)
 
                 results[module_name] = result
@@ -531,6 +540,9 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
                             # Schedule backend restart
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
                             schedule_backend_restart()
+
+                            # Set flag to prevent cleanup in finally block
+                            awaiting_restart = True
 
                             return {
                                 "success": True,
@@ -565,40 +577,51 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
         # ==============================================================
         # THIS BLOCK RUNS NO MATTER WHAT - SUCCESS, FAILURE, OR EXCEPTION
         # ==============================================================
-        log("", "info")
-        log(f"{'='*50}", "info")
-        log("FINALIZING OFFLINE UPGRADE WORKFLOW", "info")
-        log(f"{'='*50}", "info")
 
-        # Cleanup extracted package
-        log("Cleaning up...", "info")
-        if extract_dir:
-            import os
-            if os.path.exists(extract_dir):
-                run_command(f"rm -rf {extract_dir}", logger=log)
+        # Skip cleanup if awaiting restart (Phase 2 needs the extracted files)
+        if not awaiting_restart:
+            log("", "info")
+            log(f"{'='*50}", "info")
+            log("FINALIZING OFFLINE UPGRADE WORKFLOW", "info")
+            log(f"{'='*50}", "info")
 
-        # Restart nginx
-        restart_nginx(log)
+            # Cleanup extracted package
+            log("Cleaning up...", "info")
+            if extract_dir:
+                import os
+                if os.path.exists(extract_dir):
+                    run_command(f"rm -rf {extract_dir}", logger=log)
 
-        # Clear upgrade state on completion
-        if run_id:
-            clear_upgrade_state(run_id)
+            # Cleanup uploaded package file to free disk space
+            if package_path and os.path.exists(package_path):
+                try:
+                    os.remove(package_path)
+                    log(f"Removed uploaded package: {os.path.basename(package_path)}", "info")
+                except Exception as e:
+                    log(f"Warning: Could not remove package file: {e}", "warning")
 
-        # Print summary
-        log("", "info")
-        log(f"{'='*50}", "info")
-        log(f"OFFLINE UPGRADE COMPLETE - Status: {overall_status}", "info")
-        log(f"{'='*50}", "info")
+            # Restart nginx
+            restart_nginx(log)
 
-        for module_name, result in results.items():
-            if module_name.startswith("_"):
-                continue
-            icon = "OK" if result.get('success') else "FAILED"
-            log(f"  [{icon}] {module_name}: {'success' if result.get('success') else 'failed'}", "info")
-            if result.get('rolled_back'):
-                log(f"       -> Rolled back to {result.get('restored_version')}", "warning")
+            # Clear upgrade state on completion
+            if run_id:
+                clear_upgrade_state(run_id)
 
-        log(f"{'='*50}", "info")
+            # Print summary
+            log("", "info")
+            log(f"{'='*50}", "info")
+            log(f"OFFLINE UPGRADE COMPLETE - Status: {overall_status}", "info")
+            log(f"{'='*50}", "info")
+
+            for module_name, result in results.items():
+                if module_name.startswith("_"):
+                    continue
+                icon = "OK" if result.get('success') else "FAILED"
+                log(f"  [{icon}] {module_name}: {'success' if result.get('success') else 'failed'}", "info")
+                if result.get('rolled_back'):
+                    log(f"       -> Rolled back to {result.get('restored_version')}", "warning")
+
+            log(f"{'='*50}", "info")
 
     all_success = all(r.get('success', False) for r in results.values() if not isinstance(r, str))
     return {

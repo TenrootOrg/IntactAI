@@ -46,7 +46,7 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
 
         # Start containers
         log("Starting IRIS containers...", "info")
-        result = run_command("docker compose up -d", cwd=work_dir, logger=log)
+        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
         if not result['success']:
             raise Exception(f"Failed to start IRIS: {result['error']}")
 
@@ -97,7 +97,7 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
 
         if restore_env_file(env_file, backup_file, logger=log):
             run_command("docker compose down", cwd=work_dir, logger=log)
-            run_command("docker compose up -d", cwd=work_dir, logger=log)
+            run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
             log(f"ROLLED BACK IRIS to version {current_version}", "warning")
 
         return {
@@ -147,7 +147,7 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
 
         # Start containers
         log("Starting IRIS containers...", "info")
-        result = run_command("docker compose up -d", cwd=work_dir, logger=log)
+        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
         if not result['success']:
             raise Exception(f"Failed to start IRIS: {result['error']}")
 
@@ -197,7 +197,7 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
 
         if restore_env_file(env_file, backup_file, logger=log):
             run_command("docker compose down", cwd=work_dir, logger=log)
-            run_command("docker compose up -d", cwd=work_dir, logger=log)
+            run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
             log(f"ROLLED BACK IRIS to version {current_version}", "warning")
 
         return {

@@ -94,7 +94,7 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
 
         # Start containers
         log("Starting Timesketch containers...", "info")
-        result = run_command("docker compose up -d", cwd=work_dir, logger=log)
+        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
         if not result['success']:
             raise Exception(f"Failed to start Timesketch: {result['error']}")
 
@@ -133,10 +133,8 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
         if plaso_backup:
             cleanup_backup(plaso_backup, logger=log)
 
-        # Restart backend if Plaso was updated
-        if plaso_version:
-            log("Restarting backend to apply Plaso version...", "info")
-            run_command("docker compose restart", cwd=os.path.join(WORKDIR, 'modules', 'backend'), logger=log)
+        # NOTE: Backend restart NOT needed - Plaso runs as a separate Docker container
+        # The new Plaso image will be used when a Plaso job is triggered
 
         log(f"Timesketch upgrade completed: {current_version} -> {version}", "success")
         result = {"success": True, "version": version, "health": "green" if healthy else "pending"}
@@ -153,7 +151,7 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
         # Restore backup files
         if restore_env_file(env_file, ts_backup, logger=log):
             run_command("docker compose down", cwd=work_dir, logger=log)
-            run_command("docker compose up -d", cwd=work_dir, logger=log)
+            run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
             log(f"ROLLED BACK Timesketch to version {current_version}", "warning")
 
         if plaso_backup and restore_env_file(backend_env, plaso_backup, logger=log):
@@ -218,44 +216,47 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
 
         # Start containers
         log("Starting Timesketch containers...", "info")
-        result = run_command("docker compose up -d", cwd=work_dir, logger=log)
+        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
         if not result['success']:
             raise Exception(f"Failed to start Timesketch: {result['error']}")
 
-        # Health check - wait for Timesketch container to be ready (like install.sh)
-        # Use docker exec since we're inside a container and can't reach localhost:5000
-        log("Waiting for Timesketch to be ready...", "info")
+        # Health check - wait for Timesketch container to be ready
+        # Use pgrep to check if gunicorn is running (like online version)
+        log("Waiting for Timesketch container to be up...", "info")
         healthy = False
         for i in range(30):  # 30 * 5s = 150s max
-            # Check if container is running and web process is up
+            log(f"  Checking Timesketch container... ({i*5}s)", "info")
+            # Check if gunicorn process is running in the container
             check_result = run_command(
-                "docker exec mssp_timesketch_web curl -sf --max-time 5 http://localhost:5000/ -o /dev/null -w '%{http_code}'",
-                logger=None  # Don't spam logs
+                "docker exec mssp_timesketch_web pgrep -f gunicorn",
+                logger=None
             )
             if check_result['success']:
-                http_code = check_result.get('stdout', '').strip()
-                if http_code in ['200', '301', '302', '303', '307', '308']:
-                    log(f"Timesketch is responding (HTTP {http_code}, {i*5}s)", "success")
-                    healthy = True
-                    break
+                pids = check_result.get('stdout', '').strip()
+                log(f"  Container healthy - gunicorn running (PIDs: {pids.replace(chr(10), ', ')})", "success")
+                healthy = True
+                break
+            else:
+                log(f"  Container not ready yet...", "info")
             time.sleep(5)
 
-        if not healthy:
+        if healthy:
+            log("Timesketch health check: PASSED", "success")
+        else:
+            # Check if containers are crash-looping
             check_result = run_command("docker ps -a --filter name=mssp_timesketch --format '{{.Status}}'", logger=log)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"Timesketch failed to start - container status: {container_status}")
-            log("Health check timed out, but containers may still be starting", "warning")
+            log("Timesketch health check: TIMEOUT (containers may still be starting)", "warning")
 
         # Success - cleanup backups
         cleanup_backup(ts_backup, logger=log)
         if plaso_backup:
             cleanup_backup(plaso_backup, logger=log)
 
-        # Restart backend if Plaso was updated
-        if plaso_version:
-            log("Restarting backend to apply Plaso version...", "info")
-            run_command("docker compose restart", cwd=os.path.join(WORKDIR, 'modules', 'backend'), logger=log)
+        # NOTE: Backend restart NOT needed - Plaso runs as a separate Docker container
+        # The new Plaso image will be used when a Plaso job is triggered
 
         log(f"Timesketch offline upgrade completed: {current_version} -> {version}", "success")
         result = {"success": True, "version": version, "health": "green" if healthy else "pending"}
@@ -271,7 +272,7 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
 
         if restore_env_file(env_file, ts_backup, logger=log):
             run_command("docker compose down", cwd=work_dir, logger=log)
-            run_command("docker compose up -d", cwd=work_dir, logger=log)
+            run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
             log(f"ROLLED BACK Timesketch to version {current_version}", "warning")
 
         if plaso_backup and restore_env_file(backend_env, plaso_backup, logger=log):

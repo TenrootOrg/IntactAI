@@ -83,8 +83,12 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     package_name = f"mssp-upgrade-{timestamp}"
-    package_dir = f"/tmp/{package_name}"
-    output_file = f"/tmp/{package_name}.tar.gz"
+    package_dir = f"/tmp/{package_name}"  # Temp work directory
+
+    # Store final package in persistent location
+    packages_dir = "/data/upgrade_packages"
+    os.makedirs(packages_dir, exist_ok=True)
+    output_file = f"{packages_dir}/{package_name}.tar.gz"
 
     log("=" * 50, "info")
     log("PREPARING UPGRADE PACKAGE", "info")
