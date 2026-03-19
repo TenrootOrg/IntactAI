@@ -468,6 +468,13 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
     # Verify and extract package
     verify_result = verify_upgrade_package(package_path, logger=log)
     if not verify_result['success']:
+        # Cleanup uploaded package on failure
+        if package_path and os.path.exists(package_path):
+            try:
+                os.remove(package_path)
+                log(f"Removed uploaded package: {os.path.basename(package_path)}", "info")
+            except Exception:
+                pass
         return {"success": False, "error": verify_result.get('error', 'Package verification failed')}
 
     package_dir = verify_result['package_dir']
