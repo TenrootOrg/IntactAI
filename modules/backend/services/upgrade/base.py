@@ -266,7 +266,9 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
 
     log("Extracting upgrade package...", "info")
 
-    extract_dir = f"/tmp/mssp-upgrade-{int(time.time())}"
+    # Use /data/tmp/ for persistence across container restarts (Phase 2 needs files after restart)
+    os.makedirs("/data/tmp", exist_ok=True)
+    extract_dir = f"/data/tmp/mssp-upgrade-{int(time.time())}"
     os.makedirs(extract_dir, exist_ok=True)
 
     try:

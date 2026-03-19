@@ -90,7 +90,28 @@ main() {
     verify_installation
     print_installation_report
     create_initialization_marker
+
+    # -------------------------------------------------------------------------
+    # Fix Permissions (for development/upgrades)
+    # -------------------------------------------------------------------------
+    fix_source_permissions
+
     print_summary
+}
+
+# ============================================================================
+# Fix Source File Permissions
+# ============================================================================
+# After upgrades, source files may be owned by root. Fix them so they remain
+# editable for development and future upgrades.
+
+fix_source_permissions() {
+    log_info "Fixing source file permissions..."
+    local uid=$(stat -c '%u' "${SCRIPT_DIR}")
+    local gid=$(stat -c '%g' "${SCRIPT_DIR}")
+    chown -R "${uid}:${gid}" "${SCRIPT_DIR}/modules/backend/" 2>/dev/null || true
+    chown -R "${uid}:${gid}" "${SCRIPT_DIR}/modules/nginx/html/" 2>/dev/null || true
+    log_info "Source file permissions fixed"
 }
 
 # ============================================================================

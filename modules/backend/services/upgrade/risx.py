@@ -27,6 +27,11 @@ def upgrade_risx(version: str = None, logger: Callable = None) -> Dict:
         if not result['success']:
             log("Warning: Could not pull latest code", "warning")
 
+    # Fix file permissions (files pulled by root need correct ownership for future upgrades)
+    log("Fixing file permissions...", "info")
+    run_command("chown -R 1000:1000 /app/workdir/modules/backend/", logger=None)
+    run_command("chown -R 1000:1000 /app/workdir/modules/nginx/html/", logger=None)
+
     # NOTE: Nginx and backend restarts are handled by the upgrade orchestrator
     # to support two-phase upgrades
 
@@ -67,6 +72,11 @@ def upgrade_risx_offline(package_dir: str, version: str = None, logger: Callable
     if has_frontend:
         log("Copying frontend files...", "info")
         run_command(f"cp -a {frontend_source}/* {nginx_html}/", logger=log)
+
+    # Fix file permissions (files copied by root need correct ownership for future upgrades)
+    log("Fixing file permissions...", "info")
+    run_command("chown -R 1000:1000 /app/workdir/modules/backend/", logger=None)
+    run_command("chown -R 1000:1000 /app/workdir/modules/nginx/html/", logger=None)
 
     # NOTE: Nginx and backend restarts are handled by the upgrade orchestrator
     # to support two-phase upgrades

@@ -86,10 +86,17 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
     package_name = f"mssp-upgrade-{timestamp}"
     package_dir = f"/tmp/{package_name}"  # Temp work directory
 
-    # Store final package in persistent location
+    # Store final package in persistent location (always use same filename - overwrite previous)
     packages_dir = "/data/upgrade_packages"
     os.makedirs(packages_dir, exist_ok=True)
-    output_file = f"{packages_dir}/{package_name}.tar.gz"
+
+    # Remove any existing packages (keep only latest)
+    for old_file in os.listdir(packages_dir):
+        old_path = os.path.join(packages_dir, old_file)
+        if os.path.isfile(old_path):
+            os.remove(old_path)
+
+    output_file = f"{packages_dir}/mssp-upgrade-latest.tar.gz"
 
     log("=" * 50, "info")
     log("PREPARING UPGRADE PACKAGE", "info")
