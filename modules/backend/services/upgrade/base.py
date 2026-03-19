@@ -284,7 +284,9 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
 
         manifest_path = os.path.join(package_dir, 'manifest.json')
         if not os.path.exists(manifest_path):
-            return {"success": False, "error": "manifest.json not found in package", "extract_dir": extract_dir}
+            # Cleanup on failure
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            return {"success": False, "error": "manifest.json not found in package"}
 
         with open(manifest_path, 'r') as f:
             manifest = json.load(f)
@@ -301,7 +303,9 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
 
     except Exception as e:
         log(f"Failed to extract/verify package: {str(e)}", "error")
-        return {"success": False, "error": str(e), "extract_dir": extract_dir}
+        # Cleanup on failure
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        return {"success": False, "error": str(e)}
 
 
 def get_package_info(package_path: str) -> Dict:
