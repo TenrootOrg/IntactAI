@@ -79,10 +79,12 @@ def run_startup_initialization():
     try:
         from services.storage.base import get_pending_upgrade
         from services.upgrade import resume_upgrade_workflow
+        from services.workflow_logger import WorkflowLogger
 
         pending = get_pending_upgrade()
         if pending:
-            print(f"[STARTUP] Found pending upgrade: {pending['run_id']}", flush=True)
+            run_id = pending['run_id']
+            print(f"[STARTUP] Found pending upgrade: {run_id}", flush=True)
             print(f"[STARTUP] Phase: {pending['phase']}", flush=True)
             print("[STARTUP] Resuming Phase 2 in background...", flush=True)
 
@@ -90,13 +92,38 @@ def run_startup_initialization():
                 try:
                     # Small delay to let the backend fully start
                     time.sleep(5)
-                    result = resume_upgrade_workflow(pending['run_id'])
+
+                    # Create workflow logger to update the workflow record
+                    wf_logger = WorkflowLogger(run_id, "UPGRADE-RESUME")
+                    wf_logger.info("=== PHASE 2 - RESUMING UPGRADE AFTER RESTART ===")
+
+                    # Create a logger function compatible with upgrade functions
+                    def upgrade_logger(msg, level="info"):
+                        if level == "success":
+                            wf_logger.success(msg)
+                        elif level == "error":
+                            wf_logger.error(msg)
+                        elif level == "warning":
+                            wf_logger.warning(msg)
+                        else:
+                            wf_logger.info(msg)
+
+                    result = resume_upgrade_workflow(run_id, logger=upgrade_logger)
                     if result.get('success'):
+                        wf_logger.complete("Upgrade completed successfully")
                         print(f"[STARTUP] Upgrade Phase 2 completed successfully", flush=True)
                     else:
+                        wf_logger.fail(f"Upgrade failed: {result.get('error', 'unknown')}")
                         print(f"[STARTUP] Upgrade Phase 2 failed: {result.get('error')}", flush=True)
                 except Exception as e:
                     print(f"[STARTUP] Upgrade resume error: {e}", flush=True)
+                    # Try to mark workflow as failed
+                    try:
+                        from services.workflow_service import update_run_status, add_log_to_run
+                        add_log_to_run(run_id, f"Phase 2 error: {str(e)}", "error")
+                        update_run_status(run_id, "failed")
+                    except Exception:
+                        pass
 
             resume_thread = threading.Thread(target=resume_in_background, daemon=True)
             resume_thread.start()
