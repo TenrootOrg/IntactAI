@@ -739,56 +739,28 @@ document.addEventListener('alpine:init', () => {
         },
 
         // ===== OFFLINE UPGRADE =====
-        showOfflineUpgradeModal: false,
-        offlineUploadDragging: false,
-        offlineUploadProgress: 0,
-        offlinePackageInfo: null,
-        offlinePackagePath: null,
-        offlineUpgradeStarting: false,
-
-        openOfflineUpgradeModal() {
-            this.showOfflineUpgradeModal = true;
-            this.offlineUploadProgress = 0;
-            this.offlinePackageInfo = null;
-            this.offlinePackagePath = null;
-            this.offlineUpgradeStarting = false;
-        },
-
-        closeOfflineUpgradeModal() {
-            this.showOfflineUpgradeModal = false;
-            this.offlinePackageInfo = null;
-            this.offlinePackagePath = null;
-        },
-
-        handleOfflineDrop(event) {
-            this.offlineUploadDragging = false;
-            const files = event.dataTransfer.files;
-            if (files.length > 0) {
-                this.uploadOfflinePackage(files[0]);
-            }
-        },
-
-        selectOfflinePackage(event) {
+        importUpgradePackage(event) {
             const files = event.target.files;
-            if (files.length > 0) {
-                this.uploadOfflinePackage(files[0]);
-            }
-        },
+            if (!files || files.length === 0) return;
 
-        async uploadOfflinePackage(file) {
+            const file = files[0];
+
             // Validate file extension
             if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.tgz')) {
                 this.showMessage('Please select a .tar.gz or .tgz file', 'error');
+                event.target.value = ''; // Reset input
                 return;
             }
 
-            this.offlineUploadProgress = 0;
+            // Show message and redirect to workflows immediately
+            this.showMessage(`Uploading ${file.name}...`, 'info');
+            Alpine.store('app').switchTab('workflows');
 
-            // Use tus upload
+            // Start upload in background - backend will create workflow and auto-start upgrade
             const upload = new tus.Upload(file, {
                 endpoint: '/api/uploads/',
                 retryDelays: [0, 1000, 3000, 5000],
-                chunkSize: 5 * 1024 * 1024, // 5MB chunks
+                chunkSize: 5 * 1024 * 1024,
                 metadata: {
                     filename: file.name,
                     filetype: file.type || 'application/gzip',
@@ -797,57 +769,15 @@ document.addEventListener('alpine:init', () => {
                 onError: (error) => {
                     console.error('Upload error:', error);
                     this.showMessage('Upload failed: ' + error.message, 'error');
-                    this.offlineUploadProgress = 0;
                 },
-                onProgress: (bytesUploaded, bytesTotal) => {
-                    this.offlineUploadProgress = Math.round((bytesUploaded / bytesTotal) * 100);
-                },
-                onSuccess: async () => {
-                    this.offlineUploadProgress = 100;
-
-                    // Upload complete - backend auto-starts upgrade via tus hook
-                    // Just close modal and switch to workflows to see progress
-                    this.showMessage('Upload complete - upgrade starting automatically', 'success');
-                    this.closeOfflineUpgradeModal();
-                    setTimeout(() => {
-                        Alpine.store('app').switchTab('workflows');
-                    }, 500);
+                onSuccess: () => {
+                    // Backend handles everything - just refresh workflows
+                    Alpine.store('workflows').load();
                 }
             });
 
             upload.start();
-        },
-
-        async startOfflineUpgrade() {
-            if (!this.offlinePackagePath) {
-                this.showMessage('No package uploaded', 'error');
-                return;
-            }
-
-            this.offlineUpgradeStarting = true;
-
-            try {
-                const response = await fetch('/api/upgrade/offline', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ package_path: this.offlinePackagePath })
-                });
-
-                const result = await response.json();
-                if (response.ok && result.success) {
-                    this.closeOfflineUpgradeModal();
-                    this.showMessage('Offline upgrade started - redirecting to Workflows', 'success');
-                    setTimeout(() => {
-                        Alpine.store('app').switchTab('workflows');
-                    }, 500);
-                } else {
-                    this.showMessage('Failed to start upgrade: ' + (result.error || 'Unknown error'), 'error');
-                }
-            } catch (e) {
-                this.showMessage('Upgrade error: ' + e.message, 'error');
-            }
-
-            this.offlineUpgradeStarting = false;
+            event.target.value = ''; // Reset input for next upload
         },
 
         onProviderChange() {
