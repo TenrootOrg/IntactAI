@@ -137,7 +137,9 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
             log(f"=== {module.upper()} ({version}) ===", "info")
 
             if module == 'risx':
-                # Copy source files
+                # Copy source files from local machine
+                # TODO: Future - pull from GitHub like other modules (currently private repo)
+                # Should work like: download specific version/tag from repo
                 log("Copying RISX source files...", "info")
 
                 backend_src = os.path.join(WORKDIR, 'modules', 'backend')
