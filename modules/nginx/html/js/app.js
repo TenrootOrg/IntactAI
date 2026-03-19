@@ -338,8 +338,8 @@ document.addEventListener('alpine:init', () => {
                     window.dispatchEvent(new CustomEvent('show-toast', {
                         detail: {
                             type: 'warning',
-                            title: 'Package Expired',
-                            message: 'Packages are deleted after 24 hours. Please prepare a new package.'
+                            title: 'Package Not Found',
+                            message: 'Only 1 upgrade package is kept to save storage. Please prepare a new package.'
                         }
                     }));
                 }
