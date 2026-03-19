@@ -17,54 +17,30 @@ from services import (
 
 upgrade_bp = Blueprint('upgrade', __name__)
 
-# Package expiration time (24 hours in seconds)
-PACKAGE_EXPIRATION_SECONDS = 24 * 60 * 60
-
-# Persistent storage for package metadata
-PACKAGES_REGISTRY_FILE = "/data/db/prepared_packages.json"
+# Fixed package path (only keep one package, overwrite each time)
+PACKAGE_PATH = "/data/upgrade_packages/mssp-upgrade-latest.tar.gz"
+PACKAGE_INFO_FILE = "/data/db/prepared_package.json"
 
 
-def _load_packages_registry():
-    """Load package registry from disk."""
-    if os.path.exists(PACKAGES_REGISTRY_FILE):
+def _get_package_info():
+    """Get current prepared package info."""
+    if os.path.exists(PACKAGE_INFO_FILE):
         try:
-            with open(PACKAGES_REGISTRY_FILE, 'r') as f:
+            with open(PACKAGE_INFO_FILE, 'r') as f:
                 return json.load(f)
         except Exception:
             pass
-    return {}
+    return None
 
 
-def _save_packages_registry(packages):
-    """Save package registry to disk."""
+def _save_package_info(info):
+    """Save prepared package info."""
     try:
-        os.makedirs(os.path.dirname(PACKAGES_REGISTRY_FILE), exist_ok=True)
-        with open(PACKAGES_REGISTRY_FILE, 'w') as f:
-            json.dump(packages, f, indent=2)
+        os.makedirs(os.path.dirname(PACKAGE_INFO_FILE), exist_ok=True)
+        with open(PACKAGE_INFO_FILE, 'w') as f:
+            json.dump(info, f, indent=2)
     except Exception as e:
-        print(f"[WARN] Failed to save packages registry: {e}")
-
-
-def _cleanup_expired_packages():
-    """Remove packages older than 24 hours."""
-    packages = _load_packages_registry()
-    now = time.time()
-    expired = []
-
-    for run_id, pkg in packages.items():
-        if now - pkg.get('created_at', 0) > PACKAGE_EXPIRATION_SECONDS:
-            expired.append(run_id)
-
-    for run_id in expired:
-        pkg = packages.pop(run_id, None)
-        if pkg and os.path.exists(pkg.get('path', '')):
-            try:
-                os.remove(pkg['path'])
-            except Exception:
-                pass
-
-    if expired:
-        _save_packages_registry(packages)
+        print(f"[WARN] Failed to save package info: {e}")
 
 
 @upgrade_bp.route('/api/upgrade/status', methods=['GET'])
@@ -385,17 +361,16 @@ def prepare_upgrade_package():
                 result = do_prepare(modules, run_id, logger)
 
                 if result.get('success'):
-                    # Store package path for download (with timestamp for 24h expiration)
-                    packages = _load_packages_registry()
-                    packages[run_id] = {
+                    # Store package info (only one package at a time, overwrites previous)
+                    _save_package_info({
+                        'run_id': run_id,
                         'path': result['package_path'],
                         'name': result['package_name'],
                         'size': result['package_size'],
                         'created_at': time.time()
-                    }
-                    _save_packages_registry(packages)
+                    })
                     add_log_to_run(run_id, f"Package ready for download: {result['package_name']}", "success")
-                    add_log_to_run(run_id, "Package will be available for 24 hours", "info")
+                    add_log_to_run(run_id, "Note: Preparing a new package will replace this one", "info")
                     update_run_status(run_id, "completed", progress=100)
                 else:
                     add_log_to_run(run_id, f"Package preparation failed: {result.get('error', 'Unknown error')}", "error")
@@ -425,27 +400,21 @@ def prepare_upgrade_package():
 def get_prepare_status(run_id):
     """Check if a prepared package is ready for download."""
     try:
-        # Cleanup expired packages first
-        _cleanup_expired_packages()
+        pkg = _get_package_info()
 
-        packages = _load_packages_registry()
-        if run_id in packages:
-            pkg = packages[run_id]
-            # Calculate remaining time
-            elapsed = time.time() - pkg.get('created_at', 0)
-            remaining_hours = max(0, (PACKAGE_EXPIRATION_SECONDS - elapsed) / 3600)
-
+        # Check if package exists and matches this run_id
+        if pkg and pkg.get('run_id') == run_id and os.path.exists(pkg.get('path', '')):
             return jsonify({
                 "success": True,
                 "ready": True,
                 "package_name": pkg['name'],
-                "package_size": pkg['size'],
-                "expires_in_hours": round(remaining_hours, 1)
+                "package_size": pkg['size']
             })
         else:
             return jsonify({
                 "success": True,
-                "ready": False
+                "ready": False,
+                "message": "Package was replaced by a newer preparation"
             })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -453,37 +422,20 @@ def get_prepare_status(run_id):
 
 @upgrade_bp.route('/api/upgrade/prepare/<run_id>/download', methods=['GET'])
 def download_prepared_package(run_id):
-    """Download a prepared upgrade package.
-
-    Package is available for 24 hours after creation.
-    """
+    """Download a prepared upgrade package."""
     try:
-        # Cleanup expired packages first
-        _cleanup_expired_packages()
+        pkg = _get_package_info()
 
-        packages = _load_packages_registry()
-        if run_id not in packages:
-            return jsonify({"error": "Package not found or expired (24 hour limit)"}), 404
+        # Check if package exists and matches this run_id
+        if not pkg or pkg.get('run_id') != run_id:
+            return jsonify({"error": "Package was replaced by a newer preparation. Please prepare again."}), 410
 
-        pkg = packages[run_id]
         package_path = pkg['path']
         package_name = pkg['name']
 
-        # Check if expired
-        if time.time() - pkg.get('created_at', 0) > PACKAGE_EXPIRATION_SECONDS:
-            # Remove expired package
-            if os.path.exists(package_path):
-                os.remove(package_path)
-            del packages[run_id]
-            _save_packages_registry(packages)
-            return jsonify({"error": "Package expired (24 hour limit). Please prepare a new package."}), 410
-
         if not os.path.exists(package_path):
-            del packages[run_id]
-            _save_packages_registry(packages)
             return jsonify({"error": "Package file not found on server"}), 404
 
-        # Send file (don't delete - let 24h cleanup handle it)
         return send_file(
             package_path,
             as_attachment=True,

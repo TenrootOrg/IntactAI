@@ -9,6 +9,7 @@ Two-Phase Upgrade Support:
 """
 
 import json
+import os
 import subprocess
 from typing import Dict, Callable, Optional
 
@@ -170,10 +171,7 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                             # Save state for Phase 2 resume
                             save_upgrade_state(run_id, 'awaiting_restart', modules, completed_modules, mode)
 
-                            # Restart nginx first (for new UI)
-                            restart_nginx(log)
-
-                            # Schedule backend restart
+                            # Schedule backend restart (nginx will restart at Phase 2 start)
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
                             schedule_backend_restart()
 
@@ -275,13 +273,38 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     log(f"Run ID: {run_id}", "info")
     log(f"{'='*50}", "info")
 
+    # Restart nginx first (for new UI code)
+    restart_nginx(log)
+
     # Mark as phase 2 in progress
     update_upgrade_phase(run_id, 'phase2')
 
     modules = state['target_modules']
     completed_modules = set(state['completed_modules'])
     mode = state.get('mode', 'online')
-    package_dir = state.get('package_dir')
+
+    # Parse package paths from state (stored as JSON with extract_dir and package_path)
+    package_dir_raw = state.get('package_dir')
+    extract_dir = None
+    package_path = None
+    package_dir = None
+
+    if package_dir_raw:
+        try:
+            paths = json.loads(package_dir_raw)
+            extract_dir = paths.get('extract_dir')
+            package_path = paths.get('package_path')
+            # Find the actual package subdir inside extract_dir
+            if extract_dir and os.path.exists(extract_dir):
+                subdirs = [d for d in os.listdir(extract_dir) if os.path.isdir(os.path.join(extract_dir, d))]
+                if subdirs:
+                    package_dir = os.path.join(extract_dir, subdirs[0])
+                else:
+                    package_dir = extract_dir
+        except (json.JSONDecodeError, TypeError):
+            # Backwards compatibility: old format was just a path string
+            package_dir = package_dir_raw
+            extract_dir = package_dir_raw
 
     upgrade_order = ['risx', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor']
 
@@ -368,6 +391,19 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
         log("FINALIZING PHASE 2", "info")
         log(f"{'='*50}", "info")
 
+        # Cleanup extracted package directory
+        if extract_dir and os.path.exists(extract_dir):
+            log("Cleaning up extracted package...", "info")
+            run_command(f"rm -rf {extract_dir}", logger=log)
+
+        # Cleanup uploaded package file
+        if package_path and os.path.exists(package_path):
+            try:
+                os.remove(package_path)
+                log(f"Removed uploaded package: {os.path.basename(package_path)}", "info")
+            except Exception as e:
+                log(f"Warning: Could not remove package file: {e}", "warning")
+
         # Final nginx restart
         restart_nginx(log)
 
@@ -419,6 +455,15 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
     log("=" * 50, "info")
     log("OFFLINE UPGRADE WORKFLOW", "info")
     log("=" * 50, "info")
+
+    # Cleanup any previous installation remnants
+    import glob
+    old_dirs = glob.glob('/data/tmp/mssp-upgrade-*') + glob.glob('/tmp/mssp-upgrade-*')
+    if old_dirs:
+        log("Cleaning up previous installation remnants...", "info")
+        for old_dir in old_dirs:
+            log(f"  Removing: {old_dir}", "info")
+            run_command(f"rm -rf {old_dir}", logger=log)
 
     # Verify and extract package
     verify_result = verify_upgrade_package(package_path, logger=log)
@@ -476,9 +521,10 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
         if module in modules_dict:
             total += 1
 
-    # Save initial state if we have a run_id
+    # Save initial state if we have a run_id (include package_path for cleanup after Phase 2)
+    extract_dir = verify_result.get('extract_dir')
     if run_id:
-        save_upgrade_state(run_id, 'phase1', modules_dict, [], 'offline', package_dir)
+        save_upgrade_state(run_id, 'phase1', modules_dict, [], 'offline', extract_dir, package_path)
 
     try:
         for module_name in upgrade_order:
@@ -531,13 +577,10 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
                             log(f"Remaining modules for Phase 2: {', '.join(remaining)}", "info")
                             log(f"{'='*50}", "info")
 
-                            # Save state for Phase 2 resume
-                            save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline', package_dir)
+                            # Save state for Phase 2 resume (include package_path for cleanup)
+                            save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline', extract_dir, package_path)
 
-                            # Restart nginx first (for new UI)
-                            restart_nginx(log)
-
-                            # Schedule backend restart
+                            # Schedule backend restart (nginx will restart at Phase 2 start)
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
                             schedule_backend_restart()
 

@@ -269,14 +269,57 @@ def handle_tus_hook():
                 thread.start()
 
             elif purpose == 'upgrade_package':
-                # Upgrade package uploaded - just mark workflow as complete
-                # The actual upgrade is triggered separately via /api/upgrade/offline
+                # Upgrade package uploaded - keep workflow running for upgrade to continue
+                # The actual upgrade will use this same run_id
                 print(f"[TUS HOOK] Upgrade package uploaded: {original_filename}", flush=True)
                 if run_id:
-                    add_log_to_run(run_id, f"Upgrade package uploaded: {original_filename}", "success")
+                    add_log_to_run(run_id, f"Upload complete: {original_filename}", "success")
                     add_log_to_run(run_id, f"Package path: {file_path}", "info")
-                    add_log_to_run(run_id, "Ready for offline upgrade. Click 'Start Upgrade' to continue.", "info")
-                    update_run_status(run_id, "completed", progress=100)
+                    add_log_to_run(run_id, "Starting offline upgrade...", "info")
+                    update_run_status(run_id, "running", progress=15)
+
+                    # Auto-start the offline upgrade using the same workflow
+                    def run_offline_upgrade():
+                        try:
+                            from services.upgrade import run_offline_upgrade_workflow
+
+                            # Track progress based on module completion
+                            completed_modules = [0]
+
+                            def logger(msg, level="info"):
+                                add_log_to_run(run_id, msg, level)
+                                # Track progress based on module completion messages
+                                if level == "success" and " upgrade completed" in msg:
+                                    first_word = msg.split()[0] if msg else ""
+                                    if first_word.isupper() and first_word in ["ELK", "TIMESKETCH", "PLASO", "IRIS", "VELOCIRAPTOR", "RISX"]:
+                                        completed_modules[0] += 1
+                                        # Progress from 15% (upload done) to 95%
+                                        progress = 15 + min(completed_modules[0] * 13, 80)
+                                        update_run_status(run_id, "running", progress=progress)
+
+                            result = run_offline_upgrade_workflow(file_path, run_id=run_id, logger=logger)
+
+                            # Handle result
+                            if result.get('phase') == 'awaiting_restart':
+                                add_log_to_run(run_id, "Phase 1 complete. Backend restarting. Phase 2 will resume automatically.", "info")
+                                update_run_status(run_id, "running", progress=50)
+                            elif result.get('success'):
+                                add_log_to_run(run_id, f"Offline upgrade completed: {result.get('completed', 0)}/{result.get('total', 0)} modules", "success")
+                                update_run_status(run_id, "completed", progress=100)
+                            else:
+                                failed = [m for m, r in result.get('results', {}).items() if not r.get('success')]
+                                if failed:
+                                    add_log_to_run(run_id, f"Offline upgrade completed with failures: {', '.join(failed)}", "warning")
+                                update_run_status(run_id, "completed", progress=100)
+
+                        except Exception as e:
+                            print(f"[TUS HOOK] Offline upgrade error: {e}", flush=True)
+                            traceback.print_exc()
+                            add_log_to_run(run_id, f"Upgrade error: {str(e)}", "error")
+                            update_run_status(run_id, "failed", error=str(e))
+
+                    thread = threading.Thread(target=run_offline_upgrade, daemon=True)
+                    thread.start()
 
             return jsonify({"ok": True})
 

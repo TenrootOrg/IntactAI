@@ -805,35 +805,13 @@ document.addEventListener('alpine:init', () => {
                 onSuccess: async () => {
                     this.offlineUploadProgress = 100;
 
-                    // Extract upload ID from URL
-                    const uploadUrl = upload.url;
-                    const uploadId = uploadUrl.split('/').pop();
-                    this.offlinePackagePath = `/data/uploads/${uploadId}`;
-
-                    // Get package info and auto-start upgrade
-                    try {
-                        const response = await fetch('/api/upgrade/package-info', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ package_path: this.offlinePackagePath })
-                        });
-                        const result = await response.json();
-                        if (result.success) {
-                            this.offlinePackageInfo = {
-                                versions: result.versions,
-                                created: result.created,
-                                contents: result.contents
-                            };
-                            this.showMessage('Upload complete - starting upgrade...', 'success');
-
-                            // Auto-start upgrade after successful upload
-                            await this.startOfflineUpgrade();
-                        } else {
-                            this.showMessage('Failed to read package: ' + (result.error || 'Unknown error'), 'error');
-                        }
-                    } catch (e) {
-                        this.showMessage('Failed to read package info: ' + e.message, 'error');
-                    }
+                    // Upload complete - backend auto-starts upgrade via tus hook
+                    // Just close modal and switch to workflows to see progress
+                    this.showMessage('Upload complete - upgrade starting automatically', 'success');
+                    this.closeOfflineUpgradeModal();
+                    setTimeout(() => {
+                        Alpine.store('app').switchTab('workflows');
+                    }, 500);
                 }
             });
 

@@ -357,7 +357,7 @@ def init_storage() -> bool:
 
 def save_upgrade_state(run_id: str, phase: str, target_modules: Dict,
                        completed_modules: List[str], mode: str,
-                       package_dir: str = None) -> bool:
+                       package_dir: str = None, package_path: str = None) -> bool:
     """Save or update upgrade state for two-phase upgrades.
 
     Args:
@@ -366,8 +366,12 @@ def save_upgrade_state(run_id: str, phase: str, target_modules: Dict,
         target_modules: Dict of module -> version to upgrade
         completed_modules: List of completed module names
         mode: 'online' or 'offline'
-        package_dir: Path to offline package (for offline mode)
+        package_dir: Path to extracted package directory (for offline mode)
+        package_path: Path to uploaded package file (for cleanup after Phase 2)
     """
+    # Store both paths as JSON in package_dir field for cleanup
+    if package_path:
+        package_dir = json.dumps({'extract_dir': package_dir, 'package_path': package_path})
     conn = get_connection()
     now = datetime.now().isoformat()
     try:
