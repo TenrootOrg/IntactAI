@@ -229,10 +229,10 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                 if not iris_case_name:
                     iris_case_name = f"Agentic Analysis - {blueprint.get('name', 'Unknown')} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
-                # Extract timeline events (already severity-filtered from collection)
+                # Extract timeline events with severity filter applied
                 all_events = extract_timeline_events(all_results, include_no_timestamp=True)
-                timeline_events = filter_malicious_events(all_events)
-                add_log_to_run(run_id, f"[IRIS] Extracted {len(timeline_events)} events for timeline", "info")
+                timeline_events = filter_malicious_events(all_events, min_severity=min_severity)
+                add_log_to_run(run_id, f"[IRIS] Extracted {len(timeline_events)} events for timeline (severity: {min_severity}+)", "info")
 
                 # Get technical report for IOC extraction
                 technical_report = ""
@@ -459,10 +459,10 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                 from services.iris_service import import_to_iris as iris_import
                 from config import IRIS_CONFIG
 
-                # Extract timeline events (already severity-filtered above)
+                # Extract timeline events with severity filter applied
                 all_events = extract_timeline_events(all_results, include_no_timestamp=True)
-                timeline_events = filter_malicious_events(all_events)
-                add_log_to_run(run_id, f"[IRIS] Extracted {len(timeline_events)} events for timeline", "info")
+                timeline_events = filter_malicious_events(all_events, min_severity=min_severity)
+                add_log_to_run(run_id, f"[IRIS] Extracted {len(timeline_events)} events for timeline (severity: {min_severity}+)", "info")
 
                 if not iris_case_name:
                     iris_case_name = f"Agentic Analysis - {collection_type.title()} {collection_id} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
