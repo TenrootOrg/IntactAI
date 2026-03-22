@@ -9,6 +9,7 @@
 
 let forensicsSelectedClients = new Set();
 let forensicsClientsCache = [];
+let forensicsExternalFiles = [];  // [{upload_id, filename, status}, ...]
 
 async function initForensicsTab(mode = 'ai') {
     // Load unified blueprints (velociraptor + agentic combined)
@@ -171,6 +172,130 @@ function toggleForensicsIris() {
     if (details) {
         details.classList.toggle('hidden', !toggle?.checked);
     }
+}
+
+function toggleForensicsExternal() {
+    const toggle = document.getElementById('forensics-external-toggle');
+    const details = document.getElementById('forensics-external-details');
+    if (details) {
+        details.classList.toggle('hidden', !toggle?.checked);
+    }
+}
+
+async function uploadExternalFiles(event) {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+
+    for (const file of files) {
+        // Check file extension
+        const ext = file.name.toLowerCase().split('.').pop();
+        const allowedExts = ['csv', 'json', 'jsonl', 'log', 'txt', 'xml', 'tsv', 'syslog'];
+        if (!allowedExts.includes(ext)) {
+            alert(`Invalid file type: ${file.name}. Allowed: ${allowedExts.map(e => '.' + e).join(', ')}`);
+            continue;
+        }
+
+        // Add to list with "uploading" status
+        const fileEntry = {
+            upload_id: null,
+            filename: file.name,
+            status: 'uploading'
+        };
+        forensicsExternalFiles.push(fileEntry);
+        renderExternalFilesList();
+
+        // Use TUS to upload
+        try {
+            const upload = new tus.Upload(file, {
+                endpoint: '/files/',
+                metadata: {
+                    filename: file.name,
+                    purpose: 'agentic_external'
+                },
+                onError: (error) => {
+                    console.error('[External] Upload error:', error);
+                    fileEntry.status = 'error';
+                    renderExternalFilesList();
+                },
+                onProgress: (bytesUploaded, bytesTotal) => {
+                    const pct = Math.round((bytesUploaded / bytesTotal) * 100);
+                    fileEntry.status = `${pct}%`;
+                    renderExternalFilesList();
+                },
+                onSuccess: () => {
+                    // Extract upload_id from URL
+                    const uploadId = upload.url.split('/').pop();
+                    fileEntry.upload_id = uploadId;
+                    fileEntry.status = 'ready';
+                    console.log(`[External] Uploaded ${file.name} -> ${uploadId}`);
+                    renderExternalFilesList();
+                }
+            });
+            upload.start();
+        } catch (err) {
+            console.error('[External] Upload failed:', err);
+            fileEntry.status = 'error';
+            renderExternalFilesList();
+        }
+    }
+
+    // Clear file input so same file can be selected again
+    event.target.value = '';
+}
+
+function removeExternalFile(index) {
+    forensicsExternalFiles.splice(index, 1);
+    renderExternalFilesList();
+}
+
+function renderExternalFilesList() {
+    const container = document.getElementById('forensics-external-files');
+    if (!container) return;
+
+    if (forensicsExternalFiles.length === 0) {
+        container.innerHTML = '';
+        return;
+    }
+
+    container.innerHTML = forensicsExternalFiles.map((file, idx) => {
+        let statusClass = 'text-gray-400';
+        let statusText = file.status;
+        let statusIcon = '';
+
+        if (file.status === 'ready') {
+            statusClass = 'text-green-400';
+            statusIcon = '<svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>';
+        } else if (file.status === 'error') {
+            statusClass = 'text-red-400';
+            statusIcon = '<svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>';
+        } else if (file.status === 'uploading' || file.status.includes('%')) {
+            statusClass = 'text-blue-400';
+            statusIcon = '<svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/></svg>';
+        }
+
+        return '<div class="flex items-center gap-2 bg-gray-700/50 px-3 py-2 rounded-lg">' +
+            '<svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+            '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>' +
+            '</svg>' +
+            '<span class="flex-1 text-sm text-gray-300 truncate" title="' + file.filename + '">' + file.filename + '</span>' +
+            '<span class="flex items-center gap-1 text-xs ' + statusClass + '">' +
+            statusIcon +
+            '<span>' + statusText + '</span>' +
+            '</span>' +
+            '<button onclick="removeExternalFile(' + idx + ')" class="text-gray-500 hover:text-red-400 transition-colors" title="Remove">' +
+            '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+            '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>' +
+            '</svg>' +
+            '</button>' +
+            '</div>';
+    }).join('');
+}
+
+function getReadyExternalFiles() {
+    // Return only files that are ready for submission
+    return forensicsExternalFiles
+        .filter(f => f.status === 'ready' && f.upload_id)
+        .map(f => ({ upload_id: f.upload_id, filename: f.filename }));
 }
 
 function toggleForensicsTimeFilter() {
@@ -386,6 +511,10 @@ async function startForensicsCollection() {
                 }
             }
 
+            // Get external files if enabled
+            const includeExternal = document.getElementById('forensics-external-toggle')?.checked || false;
+            const externalFiles = includeExternal ? getReadyExternalFiles() : [];
+
             const response = await fetch('/api/agentic/run', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -399,13 +528,18 @@ async function startForensicsCollection() {
                     import_to_iris: importToIris,
                     iris_case_name: irisCaseName,
                     time_filter: timeFilter,
-                    min_severity: minSeverity
+                    min_severity: minSeverity,
+                    external_files: externalFiles
                 })
             });
 
             const data = await response.json();
             if (response.ok) {
-                statusEl.innerHTML = `<span class="text-green-400">AI Analysis started! Run ID: ${data.run_id}</span><br>Redirecting to Workflows...`;
+                const extInfo = externalFiles.length > 0 ? ` (+${externalFiles.length} external files)` : '';
+                statusEl.innerHTML = `<span class="text-green-400">AI Analysis started! Run ID: ${data.run_id}${extInfo}</span><br>Redirecting to Workflows...`;
+                // Clear external files after successful start
+                forensicsExternalFiles = [];
+                renderExternalFilesList();
                 // Redirect to workflows tab after short delay
                 setTimeout(() => {
                     if (window.Alpine && Alpine.store('app')) {
@@ -488,6 +622,10 @@ async function analyzeExistingCollection() {
             }
         }
 
+        // Get external files if enabled
+        const includeExternal = document.getElementById('forensics-external-toggle')?.checked || false;
+        const externalFiles = includeExternal ? getReadyExternalFiles() : [];
+
         const response = await fetch('/api/agentic/analyze-existing', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -500,13 +638,18 @@ async function analyzeExistingCollection() {
                 import_to_iris: importToIris,
                 iris_case_name: irisCaseName,
                 time_filter: timeFilter,
-                min_severity: minSeverity
+                min_severity: minSeverity,
+                external_files: externalFiles
             })
         });
 
         const data = await response.json();
         if (response.ok) {
-            statusEl.innerHTML = `<span class="text-green-400">AI Analysis started! Run ID: ${data.run_id}</span><br>Redirecting to Workflows...`;
+            const extInfo = externalFiles.length > 0 ? ` (+${externalFiles.length} external files)` : '';
+            statusEl.innerHTML = `<span class="text-green-400">AI Analysis started! Run ID: ${data.run_id}${extInfo}</span><br>Redirecting to Workflows...`;
+            // Clear external files after successful start
+            forensicsExternalFiles = [];
+            renderExternalFilesList();
             // Redirect to workflows tab after short delay
             setTimeout(() => {
                 if (window.Alpine && Alpine.store('app')) {

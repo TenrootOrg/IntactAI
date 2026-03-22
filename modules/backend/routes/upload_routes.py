@@ -82,13 +82,13 @@ def handle_tus_hook():
             purpose = metadata.get('purpose', '')
             filename = metadata.get('filename', '')
 
-            if purpose not in ['velociraptor', 'timesketch', 'upgrade_package']:
+            if purpose not in ['velociraptor', 'timesketch', 'upgrade_package', 'agentic_external']:
                 print(f"[TUS HOOK] Rejected: Invalid purpose '{purpose}'", flush=True)
                 return jsonify({
                     "RejectUpload": True,
                     "HTTPResponse": {
                         "StatusCode": 400,
-                        "Body": json.dumps({"error": "Invalid upload purpose. Must be 'velociraptor', 'timesketch', or 'upgrade_package'"})
+                        "Body": json.dumps({"error": "Invalid upload purpose. Must be 'velociraptor', 'timesketch', 'upgrade_package', or 'agentic_external'"})
                     }
                 }), 200  # Return 200 but with RejectUpload flag
 
@@ -101,6 +101,19 @@ def handle_tus_hook():
                         "HTTPResponse": {
                             "StatusCode": 400,
                             "Body": json.dumps({"error": "Upgrade packages must be .tar.gz or .tgz files"})
+                        }
+                    }), 200
+            elif purpose == 'agentic_external':
+                # Accept text-based log files for external log data
+                allowed_extensions = ['.csv', '.json', '.jsonl', '.log', '.txt', '.xml', '.tsv', '.evtx', '.syslog']
+                filename_lower = filename.lower()
+                if not any(filename_lower.endswith(ext) for ext in allowed_extensions):
+                    print(f"[TUS HOOK] Rejected: Not a supported log file '{filename}'", flush=True)
+                    return jsonify({
+                        "RejectUpload": True,
+                        "HTTPResponse": {
+                            "StatusCode": 400,
+                            "Body": json.dumps({"error": f"Supported formats: {', '.join(allowed_extensions)}"})
                         }
                     }), 200
             elif not filename.lower().endswith('.zip'):
@@ -267,6 +280,14 @@ def handle_tus_hook():
 
                 thread = threading.Thread(target=run_timesketch_processing, daemon=True)
                 thread.start()
+
+            elif purpose == 'agentic_external':
+                # External log file for agentic analysis - no processing needed
+                # File is stored and will be picked up by the agentic pipeline
+                print(f"[TUS HOOK] External log uploaded: {original_filename}", flush=True)
+                if run_id:
+                    add_log_to_run(run_id, f"External log file ready: {original_filename}", "success")
+                    update_run_status(run_id, "completed", progress=100)
 
             elif purpose == 'upgrade_package':
                 # Upgrade package uploaded - keep workflow running for upgrade to continue
