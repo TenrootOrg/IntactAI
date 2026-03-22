@@ -79,6 +79,10 @@ def start_agentic_run():
         if min_severity not in valid_severities:
             min_severity = 'informational'
 
+        # External log files (optional)
+        # Each item: {'upload_id': '...', 'filename': 'crowdstrike.csv'}
+        external_files = data.get('external_files', [])
+
         # Validate
         if not blueprint_id:
             return jsonify({"error": "blueprint_id is required"}), 400
@@ -139,6 +143,7 @@ def start_agentic_run():
                 "iris_case_name": iris_case_name,
                 "time_filter": time_filter if time_filter.get('enabled') else None,
                 "min_severity": min_severity,
+                "external_files": external_files if external_files else None,
                 "phase": "starting"
             }
         )
@@ -153,14 +158,16 @@ def start_agentic_run():
                 time_filter_info = f", time_filter=relative({time_filter.get('relative_range', '7d')})"
             else:
                 time_filter_info = f", time_filter=between"
-        print(f"[AGENTIC] Starting pipeline: run_id={run_id}, reports={report_types}{severity_info}{anonymize_info}{iris_info}{time_filter_info}", flush=True)
+        external_info = f", external_files={len(external_files)}" if external_files else ""
+        print(f"[AGENTIC] Starting pipeline: run_id={run_id}, reports={report_types}{severity_info}{anonymize_info}{iris_info}{time_filter_info}{external_info}", flush=True)
 
         # Start pipeline in background thread
         time_filter_arg = time_filter if time_filter.get('enabled') else None
         thread = threading.Thread(
             target=run_agentic_pipeline,
             args=(run_id, blueprint_id, client_ids, collection_minutes, llm_config, report_types,
-                  anonymize_data, custom_patterns, import_to_iris, iris_case_name, time_filter_arg, min_severity),
+                  anonymize_data, custom_patterns, import_to_iris, iris_case_name, time_filter_arg, min_severity,
+                  external_files),
             daemon=True
         )
         thread.start()
@@ -198,6 +205,9 @@ def analyze_existing_collection():
         if min_severity not in valid_severities:
             min_severity = 'informational'
 
+        # External log files (optional)
+        external_files = data.get('external_files', [])
+
         # Validate - need either flow_id or hunt_id
         if not flow_id and not hunt_id:
             return jsonify({"error": "Either flow_id or hunt_id is required"}), 400
@@ -229,6 +239,7 @@ def analyze_existing_collection():
                 "iris_case_name": iris_case_name,
                 "time_filter": time_filter if time_filter.get('enabled') else None,
                 "min_severity": min_severity,
+                "external_files": external_files if external_files else None,
                 "phase": "starting",
                 "analyze_existing": True
             }
@@ -242,14 +253,16 @@ def analyze_existing_collection():
                 time_filter_info = f", time_filter=relative({time_filter.get('relative_range', '7d')})"
             else:
                 time_filter_info = f", time_filter=between"
-        print(f"[AGENTIC] Starting analysis on existing {collection_type}: {collection_id}, run_id={run_id}{severity_info}{time_filter_info}", flush=True)
+        external_info = f", external_files={len(external_files)}" if external_files else ""
+        print(f"[AGENTIC] Starting analysis on existing {collection_type}: {collection_id}, run_id={run_id}{severity_info}{time_filter_info}{external_info}", flush=True)
 
         # Start pipeline in background thread
         time_filter_arg = time_filter if time_filter.get('enabled') else None
         thread = threading.Thread(
             target=run_agentic_on_existing,
             args=(run_id, flow_id, hunt_id, llm_config, report_types,
-                  anonymize_data, custom_patterns, import_to_iris, iris_case_name, time_filter_arg, min_severity),
+                  anonymize_data, custom_patterns, import_to_iris, iris_case_name, time_filter_arg, min_severity,
+                  external_files),
             daemon=True
         )
         thread.start()
@@ -281,9 +294,16 @@ def get_agentic_status(run_id):
         has_report = get_report_content(run_id) is not None
         available_reports = get_available_report_types(run_id) if has_report else []
 
-        # Get IRIS result if present
+        # Get details
         details = run.get('details', {})
-        iris_result = details.get('iris_result') if isinstance(details, dict) else None
+        if not isinstance(details, dict):
+            details = {}
+
+        iris_result = details.get('iris_result')
+        multi_client = details.get('multi_client', False)
+        report_zip = details.get('report_zip')
+        client_count = details.get('client_count', 1)
+        hostnames = details.get('hostnames', {})
 
         return jsonify({
             "run_id": run_id,
@@ -293,6 +313,10 @@ def get_agentic_status(run_id):
             "has_report": has_report,
             "available_reports": available_reports,
             "iris_result": iris_result,
+            "multi_client": multi_client,
+            "report_zip": report_zip is not None,
+            "client_count": client_count,
+            "hostnames": hostnames,
             "logs": run.get('logs', [])[-20:],  # Last 20 log entries
             "created_at": run.get('created_at'),
             "updated_at": run.get('updated_at')
@@ -324,6 +348,81 @@ def download_agentic_report(run_id):
                 'Content-Disposition': f'attachment; filename="{filename}"'
             }
         )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@agentic_bp.route('/api/agentic/run/<run_id>/download/zip', methods=['GET'])
+def download_agentic_reports_zip(run_id):
+    """Download all reports as a ZIP file (for multi-client analysis)."""
+    import os
+    try:
+        run = get_automation_run(run_id)
+        if not run:
+            return jsonify({"error": "Run not found"}), 404
+
+        details = run.get('details', {})
+        if not isinstance(details, dict):
+            return jsonify({"error": "No multi-client reports available"}), 404
+
+        zip_path = details.get('report_zip')
+        if not zip_path or not os.path.exists(zip_path):
+            return jsonify({"error": "Report ZIP not found"}), 404
+
+        # Read ZIP file
+        with open(zip_path, 'rb') as f:
+            zip_content = f.read()
+
+        return Response(
+            zip_content,
+            mimetype='application/zip',
+            headers={
+                'Content-Disposition': f'attachment; filename="agentic_reports_{run_id}.zip"'
+            }
+        )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@agentic_bp.route('/api/agentic/run/<run_id>/report/<client_id>', methods=['GET'])
+def get_client_report(run_id, client_id):
+    """Get the report for a specific client (for multi-client analysis)."""
+    import os
+    import zipfile
+    try:
+        run = get_automation_run(run_id)
+        if not run:
+            return jsonify({"error": "Run not found"}), 404
+
+        details = run.get('details', {})
+        if not isinstance(details, dict):
+            return jsonify({"error": "No multi-client reports available"}), 404
+
+        zip_path = details.get('report_zip')
+        if not zip_path or not os.path.exists(zip_path):
+            return jsonify({"error": "Report ZIP not found"}), 404
+
+        hostnames = details.get('hostnames', {})
+        hostname = hostnames.get(client_id, client_id)
+        safe_hostname = "".join(c if c.isalnum() or c in '-_' else '_' for c in hostname)
+
+        # Read from ZIP
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            # Try to find the client's report
+            for name in zf.namelist():
+                if safe_hostname in name and name.endswith('_report.md'):
+                    content = zf.read(name).decode('utf-8')
+                    return Response(
+                        content,
+                        mimetype='text/markdown',
+                        headers={
+                            'Content-Disposition': f'attachment; filename="{name}"'
+                        }
+                    )
+
+        return jsonify({"error": f"Report for client {client_id} not found"}), 404
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

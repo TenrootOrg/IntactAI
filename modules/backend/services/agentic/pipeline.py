@@ -21,7 +21,9 @@ from services.agentic.collectors import (
 from services.agentic.reports import (
     generate_final_report,
     generate_empty_report,
-    save_report_content
+    save_report_content,
+    generate_multi_client_reports,
+    create_report_package
 )
 from services.agentic.utils import extract_timeline_events, filter_malicious_events
 
@@ -29,7 +31,7 @@ from services.agentic.utils import extract_timeline_events, filter_malicious_eve
 def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, llm_config,
                          report_types=None, anonymize_data=False, custom_patterns=None,
                          import_to_iris=False, iris_case_name=None, time_filter=None,
-                         min_severity='informational'):
+                         min_severity='informational', external_files=None):
     """Background thread: full agentic forensics pipeline
     Args:
         report_types: List of report types to generate: ['technical'], or None for both
@@ -39,6 +41,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         iris_case_name: Optional custom name for the IRIS case (auto-generated if not provided)
         time_filter: Optional time filter config: {enabled, mode, relative_range/start_datetime/end_datetime}
         min_severity: Minimum severity level to send to LLM (informational, low, medium, high, critical)
+        external_files: Optional list of external log files [{upload_id, filename}, ...]
     """
     if report_types is None:
         report_types = ['technical']  # Default: both reports
@@ -129,6 +132,31 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         total_rows = sum(len(rows) for rows in all_results.values())
         add_log_to_run(run_id, f"[Pipeline] Collection complete: {total_rows} total rows across {len(all_results)} artifacts", "success")
 
+        # 5. Load external log files (if provided)
+        if external_files:
+            add_log_to_run(run_id, f"[External] Loading {len(external_files)} external log file(s)...", "info")
+            from services.agentic.external_data import parse_external_file, get_source_hint
+
+            for file_info in external_files:
+                upload_id = file_info.get('upload_id', '')
+                filename = file_info.get('filename', 'unknown.csv')
+                file_path = f"/data/uploads/{upload_id}"
+
+                try:
+                    rows = parse_external_file(file_path, filename)
+                    if rows:
+                        # Use filename to create descriptive artifact key
+                        source_name = get_source_hint(filename)
+                        artifact_key = f"External: {source_name}"
+
+                        all_results[artifact_key] = rows
+                        total_rows += len(rows)
+                        add_log_to_run(run_id, f"[External] Loaded {len(rows)} rows from {filename}", "info")
+                    else:
+                        add_log_to_run(run_id, f"[External] No data found in {filename}", "warning")
+                except Exception as e:
+                    add_log_to_run(run_id, f"[External] Error loading {filename}: {str(e)}", "warning")
+
         if total_rows == 0:
             add_log_to_run(run_id, "[Pipeline] No results collected from selected clients", "warning")
             report_content = generate_empty_report(blueprint, client_ids, collection_minutes)
@@ -140,17 +168,49 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
 
         # 7. Generate report(s) - skip if no report types selected
         report_content = {}
-        if report_types:
-            report_type_str = " + ".join(report_types) if len(report_types) > 1 else report_types[0]
-            add_log_to_run(run_id, f"[Report] Generating {report_type_str} report(s)...", "info")
-            _update_phase(run_id, "generating_report", 85)
-            report_content = generate_final_report(
-                run_id, blueprint, client_ids, collection_minutes,
-                artifact_summaries, all_results, llm_config, report_types, anonymizer
-            )
+        multi_reports = None
+        zip_path = None
 
-            # 8. Save report
-            save_report_content(run_id, report_content)
+        if report_types:
+            _update_phase(run_id, "generating_report", 85)
+
+            # Multi-client: generate per-client reports + macro summary
+            if len(client_ids) > 1:
+                add_log_to_run(run_id, f"[Report] Multi-client mode: {len(client_ids)} clients", "info")
+                multi_reports = generate_multi_client_reports(
+                    run_id, blueprint, client_ids, collection_minutes,
+                    artifact_summaries, all_results, llm_config, anonymizer
+                )
+
+                # Create ZIP package
+                zip_path = create_report_package(run_id, multi_reports)
+                add_log_to_run(run_id, f"[Report] Created ZIP package: {zip_path}", "info")
+
+                # Save macro report as the main report (for backwards compatibility)
+                report_content = {'technical': multi_reports['macro']}
+                save_report_content(run_id, report_content)
+
+                # Store multi-client info in workflow
+                workflow = get_workflow(run_id)
+                if workflow:
+                    if 'details' not in workflow:
+                        workflow['details'] = {}
+                    workflow['details']['multi_client'] = True
+                    workflow['details']['report_zip'] = zip_path
+                    workflow['details']['client_count'] = len(client_ids)
+                    workflow['details']['hostnames'] = multi_reports.get('hostnames', {})
+                    save_workflow(workflow)
+
+            # Single client: existing behavior
+            else:
+                report_type_str = " + ".join(report_types) if len(report_types) > 1 else report_types[0]
+                add_log_to_run(run_id, f"[Report] Generating {report_type_str} report(s)...", "info")
+                report_content = generate_final_report(
+                    run_id, blueprint, client_ids, collection_minutes,
+                    artifact_summaries, all_results, llm_config, report_types, anonymizer
+                )
+                # 8. Save report
+                save_report_content(run_id, report_content)
         else:
             add_log_to_run(run_id, "[Report] No report types selected - skipping report generation", "info")
             _update_phase(run_id, "skipping_report", 85)
@@ -244,7 +304,7 @@ def _update_phase(run_id, phase, progress):
 def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                              report_types=None, anonymize_data=False, custom_patterns=None,
                              import_to_iris=False, iris_case_name=None, time_filter=None,
-                             min_severity='informational'):
+                             min_severity='informational', external_files=None):
     """Run AI analysis on an existing Velociraptor flow or hunt (skip collection step)
 
     Args:
@@ -259,6 +319,7 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         iris_case_name: Optional custom IRIS case name
         time_filter: Optional time filter for post-collection filtering
         min_severity: Minimum severity level to send to LLM (informational, low, medium, high, critical)
+        external_files: Optional list of external log files [{upload_id, filename}, ...]
     """
     if report_types is None:
         report_types = ['technical']
@@ -324,6 +385,29 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
             add_log_to_run(run_id, f"[Pipeline] Severity filter: {before_filter} -> {total_rows} rows", "info")
 
         add_log_to_run(run_id, f"[Pipeline] Client info: {len(client_info)} clients", "info")
+
+        # Load external log files (if provided)
+        if external_files:
+            add_log_to_run(run_id, f"[External] Loading {len(external_files)} external log file(s)...", "info")
+            from services.agentic.external_data import parse_external_file, get_source_hint
+
+            for file_info in external_files:
+                upload_id = file_info.get('upload_id', '')
+                filename = file_info.get('filename', 'unknown.csv')
+                file_path = f"/data/uploads/{upload_id}"
+
+                try:
+                    rows = parse_external_file(file_path, filename)
+                    if rows:
+                        source_name = get_source_hint(filename)
+                        artifact_key = f"External: {source_name}"
+                        all_results[artifact_key] = rows
+                        total_rows += len(rows)
+                        add_log_to_run(run_id, f"[External] Loaded {len(rows)} rows from {filename}", "info")
+                    else:
+                        add_log_to_run(run_id, f"[External] No data found in {filename}", "warning")
+                except Exception as e:
+                    add_log_to_run(run_id, f"[External] Error loading {filename}: {str(e)}", "warning")
 
         if total_rows == 0:
             add_log_to_run(run_id, "[Pipeline] No data in collection results", "warning")
