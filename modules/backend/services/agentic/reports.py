@@ -4,12 +4,44 @@ Agentic Reports - Report generation functions for forensic analysis
 """
 
 import json
+import zipfile
+import os
 from datetime import datetime
 
 from services.workflow_service import add_log_to_run
 from services.file_storage_service import save_report, get_report
 from services.agentic.analyzers import call_llm
 from services.agentic.utils import extract_timeline_events
+
+
+def filter_results_by_client(all_results, client_id):
+    """Filter artifact results to only include rows from a specific client.
+
+    Args:
+        all_results: Dict of artifact_name -> list of rows (each row has _client_id)
+        client_id: The client ID to filter for
+
+    Returns:
+        Dict of artifact_name -> filtered list of rows for this client only
+    """
+    filtered = {}
+    for artifact_name, rows in all_results.items():
+        client_rows = [row for row in rows if row.get('_client_id') == client_id]
+        if client_rows:
+            filtered[artifact_name] = client_rows
+    return filtered
+
+
+def get_client_hostname(client_id, all_results):
+    """Extract hostname from results for a client (from any row that has it)."""
+    for rows in all_results.values():
+        for row in rows:
+            if row.get('_client_id') == client_id:
+                hostname = row.get('_hostname') or row.get('Hostname') or row.get('hostname')
+                if hostname:
+                    return hostname
+    # Fallback to client_id
+    return client_id.replace('C.', 'Client-')
 
 
 def generate_final_report(run_id, blueprint, client_ids, collection_minutes,
@@ -413,3 +445,285 @@ def get_available_report_types(run_id):
         pass
 
     return ['combined']  # Legacy format
+
+
+def generate_per_client_report(run_id, client_id, hostname, client_results, artifact_summaries, llm_config):
+    """Generate a detailed report for a single client.
+
+    Args:
+        run_id: Workflow run ID
+        client_id: Client ID
+        hostname: Client hostname
+        client_results: Dict of artifact -> rows for this client only
+        artifact_summaries: Dict of artifact -> LLM summary (shared across clients)
+        llm_config: LLM configuration
+
+    Returns:
+        Markdown report string
+    """
+    total_rows = sum(len(rows) for rows in client_results.values())
+    events = extract_timeline_events(client_results)
+
+    # Build summaries text from client-specific data
+    client_summaries_text = "\n\n---\n\n".join([
+        f"## {artifact}\n\n{artifact_summaries.get(artifact, 'No analysis available')}"
+        for artifact in client_results.keys()
+    ])
+
+    header = f"""# Forensics Report: {hostname}
+
+**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+**Client ID:** {client_id}
+**Hostname:** {hostname}
+**Artifacts:** {len(client_results)} analyzed
+**Total Data Rows:** {total_rows}
+**Timeline Events:** {len(events)} timestamped events
+
+---
+
+"""
+
+    system_prompt = """You are a senior DFIR analyst creating a DETAILED FORENSICS REPORT for a SINGLE CLIENT/HOST.
+
+Focus on this specific system only. Provide:
+1. **Critical Findings** - Most dangerous findings for THIS host
+2. **Executive Summary** - What happened on THIS system
+3. **Attack Timeline** - Chronological events on THIS host
+4. **IOCs Found** - Indicators specific to this system
+5. **MITRE ATT&CK Mapping** - Techniques observed
+6. **Remediation Actions** - Specific steps for THIS host
+
+Be specific and detailed. This is a per-host deep-dive report."""
+
+    user_prompt = f"""Create a detailed forensics report for host: {hostname}
+
+**Data Summary:**
+- Artifacts examined: {len(client_results)}
+- Data points: {total_rows}
+- Timeline events: {len(events)}
+
+**Artifact Analysis:**
+{client_summaries_text[:30000]}
+
+Generate the detailed report now:"""
+
+    try:
+        report_body = call_llm(user_prompt, system_prompt, llm_config)
+        return header + report_body
+    except Exception as e:
+        return header + f"Report generation failed: {str(e)}\n\n## Raw Analysis\n\n{client_summaries_text}"
+
+
+def generate_macro_report(run_id, client_ids, hostnames, all_results, artifact_summaries, llm_config):
+    """Generate a high-level organizational summary across all clients.
+
+    Args:
+        run_id: Workflow run ID
+        client_ids: List of client IDs
+        hostnames: Dict of client_id -> hostname
+        all_results: Full results dict (all clients)
+        artifact_summaries: Dict of artifact -> LLM summary
+        llm_config: LLM configuration
+
+    Returns:
+        Markdown report string
+    """
+    add_log_to_run(run_id, f"[Report] Generating macro summary for {len(client_ids)} clients...", "info")
+
+    # Build per-client stats
+    client_stats = []
+    for client_id in client_ids:
+        hostname = hostnames.get(client_id, client_id)
+        client_results = filter_results_by_client(all_results, client_id)
+        row_count = sum(len(rows) for rows in client_results.values())
+        artifact_count = len(client_results)
+
+        # Count severity levels (look for Level/Severity fields)
+        severity_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0, 'informational': 0}
+        for rows in client_results.values():
+            for row in rows:
+                level = str(row.get('Level') or row.get('Severity') or row.get('RuleLevel') or 'informational').lower()
+                if 'crit' in level:
+                    severity_counts['critical'] += 1
+                elif 'high' in level:
+                    severity_counts['high'] += 1
+                elif 'med' in level:
+                    severity_counts['medium'] += 1
+                elif 'low' in level:
+                    severity_counts['low'] += 1
+                else:
+                    severity_counts['informational'] += 1
+
+        client_stats.append({
+            'client_id': client_id,
+            'hostname': hostname,
+            'rows': row_count,
+            'artifacts': artifact_count,
+            'severity': severity_counts
+        })
+
+    # Build stats table
+    stats_table = "| Hostname | Artifacts | Findings | Critical | High | Medium |\n"
+    stats_table += "|----------|----------:|---------:|---------:|-----:|-------:|\n"
+    for stat in client_stats:
+        total_findings = stat['rows']
+        stats_table += f"| {stat['hostname']} | {stat['artifacts']} | {total_findings} | {stat['severity']['critical']} | {stat['severity']['high']} | {stat['severity']['medium']} |\n"
+
+    total_rows = sum(len(rows) for rows in all_results.values())
+    total_critical = sum(s['severity']['critical'] for s in client_stats)
+    total_high = sum(s['severity']['high'] for s in client_stats)
+    total_medium = sum(s['severity']['medium'] for s in client_stats)
+
+    # Build summaries text
+    summaries_text = "\n\n---\n\n".join([
+        f"## {artifact}\n\n{summary}"
+        for artifact, summary in artifact_summaries.items()
+    ])
+
+    header = f"""# Organization Analysis Summary
+
+**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+**Clients Analyzed:** {len(client_ids)}
+**Total Findings:** {total_rows}
+**Severity Breakdown:** Critical: {total_critical} | High: {total_high} | Medium: {total_medium}
+
+---
+
+## Per-Client Summary
+
+{stats_table}
+
+---
+
+"""
+
+    system_prompt = """You are a senior incident response consultant creating an ORGANIZATIONAL SUMMARY REPORT.
+
+This is a HIGH-LEVEL report covering MULTIPLE hosts/clients. Focus on:
+
+1. **Overall Threat Assessment** - Organization-wide risk level
+2. **Cross-Client Patterns** - Findings appearing on multiple hosts (shared IOCs, lateral movement indicators)
+3. **Attack Chain Reconstruction** - How the threat spread across systems (if applicable)
+4. **Priority Hosts** - Which systems need immediate attention and why
+5. **Organization-Wide Recommendations** - Top 5 actions for the security team
+
+DO NOT repeat detailed per-host findings. Keep it macro-level and actionable.
+If you see the same IOC on multiple hosts, highlight it as cross-host correlation.
+If you see sequential activity suggesting lateral movement, call it out."""
+
+    user_prompt = f"""Create an ORGANIZATIONAL SUMMARY REPORT for {len(client_ids)} clients.
+
+**Clients:** {', '.join(hostnames.values())}
+
+**Combined Artifact Analysis:**
+{summaries_text[:40000]}
+
+Focus on:
+- Patterns across multiple hosts
+- Most critical hosts requiring attention
+- Organization-wide remediation priorities
+
+Generate the macro summary now:"""
+
+    try:
+        report_body = call_llm(user_prompt, system_prompt, llm_config)
+        return header + report_body
+    except Exception as e:
+        add_log_to_run(run_id, f"[Report] Macro report generation failed: {str(e)}", "error")
+        return header + f"Report generation failed: {str(e)}\n\n## Raw Analysis\n\n{summaries_text}"
+
+
+def generate_multi_client_reports(run_id, blueprint, client_ids, collection_minutes,
+                                   artifact_summaries, all_results, llm_config, anonymizer=None):
+    """Generate per-client reports + macro summary for multi-client analysis.
+
+    Args:
+        run_id: Workflow run ID
+        blueprint: Blueprint dict
+        client_ids: List of client IDs
+        collection_minutes: Collection duration
+        artifact_summaries: Dict of artifact -> LLM summary
+        all_results: Full results dict (all clients)
+        llm_config: LLM configuration
+        anonymizer: Optional anonymizer instance
+
+    Returns:
+        Dict with:
+            - 'per_client': Dict of client_id -> report markdown
+            - 'macro': Macro summary markdown
+            - 'hostnames': Dict of client_id -> hostname
+    """
+    add_log_to_run(run_id, f"[Report] Generating reports for {len(client_ids)} clients...", "info")
+
+    # Build hostname mapping
+    hostnames = {}
+    for client_id in client_ids:
+        hostnames[client_id] = get_client_hostname(client_id, all_results)
+
+    # Generate per-client reports
+    per_client_reports = {}
+    for i, client_id in enumerate(client_ids):
+        hostname = hostnames[client_id]
+        add_log_to_run(run_id, f"[Report] Generating report for {hostname} ({i+1}/{len(client_ids)})...", "info")
+
+        client_results = filter_results_by_client(all_results, client_id)
+        if not client_results:
+            per_client_reports[client_id] = f"# {hostname}\n\nNo data collected from this client."
+            continue
+
+        report = generate_per_client_report(
+            run_id, client_id, hostname, client_results, artifact_summaries, llm_config
+        )
+        per_client_reports[client_id] = report
+
+    # Generate macro summary
+    add_log_to_run(run_id, "[Report] Generating organization summary...", "info")
+    macro_report = generate_macro_report(
+        run_id, client_ids, hostnames, all_results, artifact_summaries, llm_config
+    )
+
+    # Unmask if anonymization was used
+    if anonymizer:
+        add_log_to_run(run_id, "[Report] Restoring original values from anonymized data...", "info")
+        macro_report = anonymizer.unmask_text(macro_report)
+        for client_id in per_client_reports:
+            per_client_reports[client_id] = anonymizer.unmask_text(per_client_reports[client_id])
+
+    add_log_to_run(run_id, f"[Report] Generated {len(per_client_reports)} client reports + 1 summary", "success")
+
+    return {
+        'per_client': per_client_reports,
+        'macro': macro_report,
+        'hostnames': hostnames
+    }
+
+
+def create_report_package(run_id, multi_reports):
+    """Create a ZIP package containing all reports.
+
+    Args:
+        run_id: Workflow run ID
+        multi_reports: Dict from generate_multi_client_reports()
+
+    Returns:
+        Path to the created ZIP file
+    """
+    # Ensure downloads directory exists
+    downloads_dir = f"/data/downloads/{run_id}"
+    os.makedirs(downloads_dir, exist_ok=True)
+
+    zip_path = f"{downloads_dir}/reports.zip"
+    hostnames = multi_reports.get('hostnames', {})
+
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # Add macro summary first (00_ prefix for sorting)
+        zf.writestr("00_ORGANIZATION_SUMMARY.md", multi_reports['macro'])
+
+        # Add per-client reports
+        for client_id, report in multi_reports['per_client'].items():
+            hostname = hostnames.get(client_id, client_id)
+            # Clean hostname for filename
+            safe_hostname = "".join(c if c.isalnum() or c in '-_' else '_' for c in hostname)
+            zf.writestr(f"{safe_hostname}_report.md", report)
+
+    return zip_path
