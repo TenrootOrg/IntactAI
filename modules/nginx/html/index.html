@@ -78,20 +78,46 @@
                     <span x-show="!$store.app.sidebarCollapsed">Workflows</span>
                 </div>
 
-                <!-- Velociraptor -->
-                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'modules-forensics', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('modules-forensics')" :title="$store.app.sidebarCollapsed ? 'Velociraptor' : ''">
-                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                    </svg>
-                    <span x-show="!$store.app.sidebarCollapsed">Velociraptor</span>
-                </div>
+                <!-- Automation (collapsible parent) -->
+                <div x-data="{ automationOpen: true }">
+                    <!-- Parent item -->
+                    <div class="nav-item flex items-center gap-3"
+                         :class="{ 'justify-center': $store.app.sidebarCollapsed, 'bg-gray-800/50': ($store.app.currentTab === 'modules-forensics' || $store.app.currentTab === 'modules-timesketch') && !automationOpen }"
+                         @click="$store.app.sidebarCollapsed ? $store.app.switchTab('modules-forensics') : automationOpen = !automationOpen"
+                         :title="$store.app.sidebarCollapsed ? 'Automation' : ''">
+                        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+                        </svg>
+                        <span x-show="!$store.app.sidebarCollapsed" class="flex-1">Automation</span>
+                        <!-- Chevron indicator -->
+                        <svg x-show="!$store.app.sidebarCollapsed" class="w-4 h-4 transition-transform duration-200"
+                             :class="{ 'rotate-180': automationOpen }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                    </div>
 
-                <!-- TimeSketch -->
-                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'modules-timesketch', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('modules-timesketch')" :title="$store.app.sidebarCollapsed ? 'TimeSketch' : ''">
-                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                    </svg>
-                    <span x-show="!$store.app.sidebarCollapsed">TimeSketch</span>
+                    <!-- Child items (indented) -->
+                    <div x-show="automationOpen && !$store.app.sidebarCollapsed" x-transition class="ml-4 border-l border-gray-700 pl-2 mt-1">
+                        <!-- Velociraptor -->
+                        <div class="nav-item flex items-center gap-3 py-2 text-sm"
+                             :class="{ 'active': $store.app.currentTab === 'modules-forensics' }"
+                             @click.stop="$store.app.switchTab('modules-forensics')">
+                            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                            </svg>
+                            <span>Velociraptor</span>
+                        </div>
+
+                        <!-- TimeSketch -->
+                        <div class="nav-item flex items-center gap-3 py-2 text-sm"
+                             :class="{ 'active': $store.app.currentTab === 'modules-timesketch' }"
+                             @click.stop="$store.app.switchTab('modules-timesketch')">
+                            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            <span>TimeSketch</span>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'blueprints', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('blueprints')" :title="$store.app.sidebarCollapsed ? 'Blueprints' : ''">
@@ -411,10 +437,18 @@
                                         <td class="px-6 py-4 text-gray-300 text-xs" x-text="$store.workflows.formatTime(run.started_at)"></td>
                                         <td class="px-6 py-4 whitespace-nowrap">
                                             <div class="flex items-center gap-2">
-                                                <template x-if="run.type === 'agentic' && run.status === 'completed'">
+                                                <!-- Single client: single report -->
+                                                <template x-if="run.type === 'agentic' && run.status === 'completed' && !run.details?.multi_client">
                                                     <a :href="'/api/agentic/run/' + run.id + '/download?type=technical'" download class="bg-purple-600 hover:bg-purple-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Report">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                         Report
+                                                    </a>
+                                                </template>
+                                                <!-- Multi-client: ZIP with all reports -->
+                                                <template x-if="run.type === 'agentic' && run.status === 'completed' && run.details?.multi_client">
+                                                    <a :href="'/api/agentic/run/' + run.id + '/download/zip'" download class="bg-purple-600 hover:bg-purple-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" :title="'Download ' + (run.details?.client_count || 'all') + ' client reports (ZIP)'">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                        Reports (<span x-text="run.details?.client_count || '?'"></span>)
                                                     </a>
                                                 </template>
                                                 <template x-if="(run.type === 'velociraptor_offline_collector' || run.type === 'offline_collector') && run.status === 'completed' && run.details?.file_id">
@@ -846,6 +880,40 @@ sudo ./velociraptor service start</code></pre>
                                             <label class="block text-xs text-gray-400 mb-1">Case Name (optional)</label>
                                             <input type="text" id="forensics-iris-case-name" placeholder="Auto-generated if empty"
                                                 class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        </div>
+                                    </div>
+
+                                    <!-- External Logs Upload -->
+                                    <div class="border-t border-gray-700 pt-4 mt-2">
+                                        <label class="flex items-center gap-2 cursor-pointer mb-2">
+                                            <input type="checkbox" id="forensics-external-toggle" onchange="toggleForensicsExternal()"
+                                                class="w-4 h-4 rounded border-gray-700 bg-gray-900 text-green-600 focus:ring-green-500">
+                                            <span class="text-sm font-medium text-gray-300">Include External Logs</span>
+                                            <span class="ml-2 px-2 py-0.5 bg-green-900 text-green-300 text-xs rounded">CSV/JSON/LOG/TXT</span>
+                                        </label>
+                                        <div class="ml-6 mb-2 text-xs text-gray-500">
+                                            <p>Upload logs from external systems (CrowdStrike, SIEM, Fortinet, etc.)</p>
+                                        </div>
+                                        <div id="forensics-external-details" class="hidden ml-6 space-y-3">
+                                            <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-3">
+                                                <p class="text-xs text-gray-400 mb-2">
+                                                    <strong class="text-green-400">Tip:</strong> Use descriptive filenames so AI knows the source
+                                                    <br><span class="text-gray-500">e.g., crowdstrike_detections.csv, fortinet_firewall.json</span>
+                                                    <br><strong class="text-yellow-400 mt-1 inline-block">Important:</strong> <span class="text-gray-500">Filter data before upload - keep only relevant events to improve analysis quality</span>
+                                                </p>
+                                                <!-- Uploaded files list -->
+                                                <div id="forensics-external-files" class="space-y-2 mb-3"></div>
+                                                <!-- Upload button -->
+                                                <input type="file" id="forensics-external-input" accept=".csv,.json,.jsonl,.log,.txt,.xml,.tsv,.syslog" multiple
+                                                    onchange="uploadExternalFiles(event)" class="hidden">
+                                                <button type="button" onclick="document.getElementById('forensics-external-input').click()"
+                                                    class="w-full px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-dashed border-gray-500 rounded-lg text-sm text-gray-300 flex items-center justify-center gap-2 transition-colors">
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                                                    </svg>
+                                                    Add Log File
+                                                </button>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>

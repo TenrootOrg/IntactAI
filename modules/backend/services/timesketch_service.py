@@ -209,73 +209,6 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
     return (False, "unknown", None)
 
 
-def run_all_analyzers(sketch_id, timeline_id, timesketch_config, logger=None):
-    """Run all available analyzers on a timeline via Timesketch API
-
-    Args:
-        sketch_id: Timesketch sketch ID
-        timeline_id: Timesketch timeline ID
-        timesketch_config: Configuration dict with host, username, password
-        logger: Optional callback function(message, level) to log progress
-
-    Returns:
-        True if analyzers started successfully, False otherwise
-    """
-    def log(message, level="info"):
-        print(f"[TIMESKETCH] {message}", flush=True)
-        if logger:
-            try:
-                logger(f"[TIMESKETCH] {message}", level)
-            except:
-                pass
-
-    try:
-        api = _connect_timesketch_api(timesketch_config, logger)
-        if not api:
-            return False
-
-        log("Running all analyzers on timeline...")
-
-        sketch = api.get_sketch(sketch_id)
-
-        # Get all available analyzers
-        analyzers = sketch.list_available_analyzers()
-        analyzer_names = [a.get("name") for a in analyzers if a.get("name")]
-
-        if not analyzer_names:
-            log("⚠ No analyzers available", "warning")
-            return False
-
-        log(f"Found {len(analyzer_names)} analyzers: {', '.join(analyzer_names[:5])}...")
-
-        # Run each analyzer on the timeline
-        started_count = 0
-        for analyzer_name in analyzer_names:
-            try:
-                result = sketch.run_analyzer(
-                    analyzer_name=analyzer_name,
-                    timeline_id=timeline_id
-                )
-                if result:
-                    started_count += 1
-            except Exception as e:
-                log(f"⚠ Analyzer {analyzer_name} failed: {e}", "warning")
-
-        log(f"✓ Started {started_count} analyzer sessions", "success")
-
-        # Close the API session
-        try:
-            api.session.close()
-        except:
-            pass
-
-        return True
-
-    except Exception as e:
-        log(f"⚠ Error running analyzers: {e}", "warning")
-        return False
-
-
 def find_sketch_by_name(sketch_name, timesketch_config, logger=None):
     """Find an existing sketch by name
 
@@ -453,12 +386,8 @@ def import_to_timesketch(plaso_file, sketch_name, timeline_name, timesketch_conf
         log(f"Sketch ID: {sketch_id}", "success")
         log(f"Timeline ID: {timeline_id}", "success")
 
-        # Run analyzers
-        log("Running analyzers on the new timeline...")
-        if sketch_id and timeline_id:
-            run_all_analyzers(sketch_id, timeline_id, timesketch_config, logger)
-        else:
-            log(f"⚠ Could not run analyzers - sketch_id={sketch_id}, timeline_id={timeline_id}", "warning")
+        # Analyzers run automatically via AUTO_SKETCH_ANALYZERS config
+        log("✓ Analyzers will run automatically via Timesketch config", "info")
 
         # Close API session
         try:
