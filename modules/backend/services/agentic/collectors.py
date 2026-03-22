@@ -624,11 +624,19 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
             for source_name in final_sources:
                 rows = query_artifact_results(stub, client_id, flow_id, source_name)
                 if rows:
+                    # Apply severity filter (same as polling loop)
+                    filtered_rows = rows
+                    if min_severity != 'informational':
+                        filtered_rows = filter_by_severity(rows, min_severity)
+
                     if source_name not in all_results:
-                        all_results[source_name] = rows
-                        add_log_to_run(run_id, f"[Velociraptor] Final: {source_name} ({len(rows)} rows)", "info")
-                    elif len(rows) > len(all_results.get(source_name, [])):
-                        all_results[source_name] = rows
+                        all_results[source_name] = filtered_rows
+                        if min_severity != 'informational' and len(filtered_rows) < len(rows):
+                            add_log_to_run(run_id, f"[Velociraptor] Final: {source_name} ({len(rows)} rows, {len(filtered_rows)} after {min_severity}+ filter)", "info")
+                        else:
+                            add_log_to_run(run_id, f"[Velociraptor] Final: {source_name} ({len(rows)} rows)", "info")
+                    elif len(filtered_rows) > len(all_results.get(source_name, [])):
+                        all_results[source_name] = filtered_rows
 
         # Submit any remaining sources that haven't been analyzed yet
         for source_name in all_results.keys():

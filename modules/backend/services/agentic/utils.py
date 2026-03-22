@@ -498,13 +498,13 @@ def _event_dedup_key(event, include_timestamp=True):
     return f"{source}|{title}|{timestamp_part}|{'|'.join(key_fields)}"
 
 
-def filter_malicious_events(events, max_events=2000):
-    """Filter events for IRIS import - include ALL forensic data with deduplication.
+def filter_malicious_events(events, max_events=2000, min_severity='informational'):
+    """Filter events for IRIS import with severity filtering and deduplication.
 
-    This function is now permissive - includes everything except:
-    - Pstree (too verbose process trees)
-    - Netstat (too verbose network connections)
-    - Duplicates (same source + timestamp + key fields)
+    When min_severity > informational:
+    - Hayabusa/detection events: filter by Level/RuleLevel field
+    - High-value artifacts (Persistence, Detection): always include
+    - Low-value artifacts (Amcache, LNK, etc.): exclude when severity >= medium
 
     Events without timestamps are placed at top as important findings.
     """
@@ -512,16 +512,54 @@ def filter_malicious_events(events, max_events=2000):
     no_ts_included = []
     seen_keys = set()  # Track seen events for deduplication
 
+    # Severity filtering setup
+    SEVERITY_ORDER = ['informational', 'low', 'medium', 'high', 'critical']
+    min_idx = SEVERITY_ORDER.index(min_severity) if min_severity in SEVERITY_ORDER else 0
+
+    # High-value sources always included regardless of severity filter
+    HIGH_VALUE_SOURCES = ['persistence', 'detection', 'alert', 'sigma', 'malware', 'threat']
+
+    # Low-value sources excluded when severity >= medium
+    LOW_VALUE_SOURCES = ['amcache', 'lnk', 'prefetch', 'userassist', 'shimcache', 'recent', 'jumplist']
+
     # Skip only these verbose sources
     skip_sources = ['pstree', 'netstat']
 
     for event in events:
         source = str(event.get('source', '')).lower()
         no_timestamp = event.get('no_timestamp', False)
+        raw = event.get('raw', {})
 
         # Skip only verbose sources (pstree, netstat)
         if any(skip in source for skip in skip_sources):
             continue
+
+        # Severity filtering
+        if min_idx > 0:  # If filtering is active
+            # Check if event has severity info (Hayabusa, detections)
+            event_severity = None
+            for field in ['Level', 'level', 'RuleLevel', 'Severity', 'severity']:
+                if field in raw:
+                    event_severity = str(raw[field]).lower().strip()
+                    break
+
+            if event_severity:
+                # Map common severity names
+                severity_map = {'info': 'informational', 'informational': 'informational',
+                                'low': 'low', 'medium': 'medium', 'med': 'medium',
+                                'high': 'high', 'critical': 'critical', 'crit': 'critical'}
+                normalized = severity_map.get(event_severity, event_severity)
+                event_idx = SEVERITY_ORDER.index(normalized) if normalized in SEVERITY_ORDER else 0
+                if event_idx < min_idx:
+                    continue  # Skip - below threshold
+            else:
+                # No severity field - check if high-value or low-value source
+                is_high_value = any(hv in source for hv in HIGH_VALUE_SOURCES)
+                is_low_value = any(lv in source for lv in LOW_VALUE_SOURCES)
+
+                # When severity >= medium, skip low-value artifacts
+                if min_idx >= 2 and is_low_value and not is_high_value:
+                    continue  # Skip low-value artifact
 
         # Generate dedup key (includes timestamp for timestamped events)
         dedup_key = _event_dedup_key(event)
