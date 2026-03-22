@@ -17,7 +17,7 @@ A comprehensive security platform integrating Velociraptor EDR, ELK Stack, TimeS
 sudo apt update && sudo apt install -y unzip
 
 # 2. Extract the project (assuming main.zip is already transferred to server)
-unzip main.zip
+unzip risx.zip
 
 # 3. Enter directory
 cd risx
