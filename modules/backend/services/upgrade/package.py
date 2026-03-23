@@ -45,26 +45,109 @@ def _format_size(size_bytes: int) -> str:
     return f"{size_bytes:.1f} TB"
 
 
+def _get_dir_size(path: str) -> int:
+    """Get total size of a directory in bytes."""
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(path):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            if os.path.exists(fp):
+                total += os.path.getsize(fp)
+    return total
+
+
+def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
+                            logger: Callable, progress_interval: int = 10) -> Dict:
+    """Compress directory to tar.gz with progress updates.
+
+    Args:
+        source_dir: Parent directory containing source_name (e.g., /tmp)
+        source_name: Name of directory to compress (e.g., mssp-upgrade-20260323)
+        output_file: Output tar.gz path
+        logger: Logging function
+        progress_interval: Seconds between progress updates
+
+    Returns:
+        Dict with success status and error if failed
+    """
+    import subprocess
+    import time
+
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+
+    # Calculate source size for progress estimation
+    source_path = os.path.join(source_dir, source_name)
+    source_size = _get_dir_size(source_path)
+    log(f"  Source size: {_format_size(source_size)}", "info")
+
+    # Start tar in background
+    cmd = f"tar -czf {output_file} -C {source_dir} {source_name}"
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+
+    last_update = time.time()
+    last_size = 0
+
+    # Poll for progress
+    while process.poll() is None:
+        time.sleep(1)
+
+        now = time.time()
+        if now - last_update >= progress_interval:
+            if os.path.exists(output_file):
+                current_size = os.path.getsize(output_file)
+                # Estimate progress (compressed is ~30-50% of source for images)
+                # Use a rough estimate: output will be ~40% of source
+                estimated_final = source_size * 0.4
+                if estimated_final > 0:
+                    progress = min(99, int((current_size / estimated_final) * 100))
+                else:
+                    progress = 0
+
+                speed = (current_size - last_size) / progress_interval
+                log(f"  Compressing... {_format_size(current_size)} written ({_format_size(speed)}/s)", "info")
+                last_size = current_size
+            last_update = now
+
+    # Check result
+    returncode = process.returncode
+    stderr = process.stderr.read().decode() if process.stderr else ""
+
+    if returncode != 0:
+        return {"success": False, "error": stderr[:200]}
+
+    return {"success": True}
+
+
 def _pull_and_save_image(image: str, output_path: str, logger: Callable) -> bool:
     """Pull a Docker image and save it to a tar file."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
-    # Pull the image
+    # Pull the image with output shown
     log(f"  Pulling {image}...", "info")
-    result = run_command(f"docker pull {image}", timeout=600, logger=None)
+    result = run_command(f"docker pull {image}", timeout=1200, logger=log)
     if not result['success']:
-        log(f"  Failed to pull {image}: {result.get('error', '')[:100]}", "error")
+        log(f"  Failed to pull {image}: {result.get('error', '')[:200]}", "error")
         return False
 
-    # Save the image
+    # Save the image (increased timeout for large images)
     log(f"  Saving to {os.path.basename(output_path)}...", "info")
-    result = run_command(f"docker save -o {output_path} {image}", timeout=600, logger=None)
+    result = run_command(f"docker save -o {output_path} {image}", timeout=1200, logger=None)
     if not result['success']:
-        log(f"  Failed to save {image}: {result.get('error', '')[:100]}", "error")
+        log(f"  Failed to save {image}: {result.get('error', '')[:200]}", "error")
         return False
 
-    # Report size
+    # Check file size - warn if suspiciously small (less than 1MB)
     size = os.path.getsize(output_path)
+    if size < 1024 * 1024:  # Less than 1MB
+        log(f"  WARNING: Image file is only {_format_size(size)} - may be corrupted!", "warning")
+        log(f"  This can happen with docker-in-docker setups. Try running on host.", "warning")
+        return False
+
     log(f"  Done ({_format_size(size)})", "success")
     return True
 
@@ -108,12 +191,10 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
     log("", "info")
 
     try:
-        # Create directory structure
+        # Create directory structure (source dirs created only when RISX selected)
         log("Creating package directory structure...", "info")
         os.makedirs(f"{package_dir}/images", exist_ok=True)
         os.makedirs(f"{package_dir}/binaries", exist_ok=True)
-        os.makedirs(f"{package_dir}/source/backend", exist_ok=True)
-        os.makedirs(f"{package_dir}/source/frontend", exist_ok=True)
 
         manifest = {
             "package_version": "1.0",
@@ -215,10 +296,18 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                     run_command(f"chmod +x {velo_bin_dest}", logger=None)
 
                     # Build image with specific tag
+                    # Use host paths for docker compose (container paths don't work for build context)
+                    from .base import HOST_PATH, WORKDIR
+                    host_velo_dir = velo_dir.replace(WORKDIR, HOST_PATH, 1)
+                    compose_file = f"{host_velo_dir}/docker-compose.yaml"
+
                     image_tag = f"velociraptor-server:{clean_version}"
+                    velo_tag = f"{parts[0]}.{parts[1]}"
                     build_result = run_command(
-                        f"docker compose build --build-arg VELOCIRAPTOR_VERSION={clean_version} --build-arg VELOCIRAPTOR_TAG={parts[0]}.{parts[1]}",
-                        cwd=velo_dir, timeout=600, logger=None
+                        f"VELOCIRAPTOR_VERSION={clean_version} VELOCIRAPTOR_TAG={velo_tag} "
+                        f"docker compose -f {compose_file} --project-directory {host_velo_dir} build "
+                        f"--build-arg VELOCIRAPTOR_VERSION={clean_version} --build-arg VELOCIRAPTOR_TAG={velo_tag}",
+                        timeout=600, logger=None
                     )
 
                     if build_result['success']:
@@ -265,10 +354,12 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
         log("=== Creating Package Archive ===", "info")
         log("  Compressing package (this may take a few minutes)...", "info")
 
-        result = run_command(
-            f"tar -czvf {output_file} -C /tmp {package_name}",
-            timeout=1800,  # 30 minutes max for large packages
-            logger=None
+        result = _compress_with_progress(
+            source_dir="/tmp",
+            source_name=package_name,
+            output_file=output_file,
+            logger=log,
+            progress_interval=10
         )
 
         if not result['success']:
@@ -277,13 +368,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
         package_size = os.path.getsize(output_file)
         log(f"  Package created: {_format_size(package_size)}", "success")
 
-        # Cleanup temp directory
-        log("", "info")
-        log("=== Cleanup ===", "info")
-        shutil.rmtree(package_dir)
-        log("  Removed temporary directory", "info")
-
-        # Summary
+        # Summary (cleanup happens in finally block)
         log("", "info")
         log("=" * 50, "info")
         log("PACKAGE READY", "success")
@@ -304,9 +389,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
     except Exception as e:
         log(f"Package preparation failed: {str(e)}", "error")
 
-        # Cleanup on failure
-        if os.path.exists(package_dir):
-            shutil.rmtree(package_dir)
+        # Remove failed output file
         if os.path.exists(output_file):
             os.remove(output_file)
 
@@ -314,3 +397,18 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
             "success": False,
             "error": str(e)
         }
+
+    finally:
+        # Always cleanup temp directory and pulled images
+        if os.path.exists(package_dir):
+            try:
+                shutil.rmtree(package_dir)
+            except Exception:
+                pass
+
+        # Always cleanup pulled Docker images
+        for module, version in modules.items():
+            if module in DOCKER_IMAGES:
+                for image_template, _ in DOCKER_IMAGES[module]:
+                    image = image_template.format(version=version)
+                    run_command(f"docker rmi {image} 2>/dev/null || true", logger=None, timeout=60)

@@ -71,6 +71,26 @@ PLASO_IMAGE = f"log2timeline/plaso:{PLASO_VERSION}"
 PLASO_CPUS = "2"
 PLASO_MEMORY = "4g"
 
+
+def get_plaso_image():
+    """Get Plaso image, reading fresh from .env if available.
+
+    This allows upgrades to take effect without restarting the backend.
+    """
+    # Try workdir path first (inside container), then local path
+    env_paths = [
+        '/app/workdir/modules/backend/.env',
+        os.path.join(os.path.dirname(__file__), '.env')
+    ]
+    for env_file in env_paths:
+        if os.path.exists(env_file):
+            with open(env_file) as f:
+                for line in f:
+                    if line.startswith('PLASO_VERSION='):
+                        version = line.strip().split('=', 1)[1]
+                        return f"log2timeline/plaso:{version}"
+    return PLASO_IMAGE  # fallback to static value
+
 # Velociraptor data path inside container (where collections are stored)
 VELOCIRAPTOR_DATA_PATH = "/var."
 

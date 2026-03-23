@@ -45,6 +45,106 @@ from services.storage.base import (
     clear_upgrade_state,
 )
 
+# Database volumes that can be reset for fresh install (schema compatibility)
+RESET_VOLUMES = {
+    'timesketch': ['mssp_timesketch_postgres_data', 'mssp_timesketch_opensearch_data'],
+    'iris': ['mssp_iris_db_data'],
+    'elk': ['elk_elasticsearch_data'],
+}
+
+
+def reset_module_database(module_name: str, logger: Callable = None) -> bool:
+    """Remove database volumes for fresh install (new schema).
+
+    This is needed when upgrading between versions with incompatible
+    database schemas (e.g., Timesketch 2024 -> 2026 with DFIQ columns).
+
+    Args:
+        module_name: Name of the module (timesketch, iris, elk)
+        logger: Logging function
+
+    Returns:
+        True if successful, False otherwise
+    """
+    if module_name not in RESET_VOLUMES:
+        return True
+
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    log(f"Fresh install: removing {module_name} database for new schema...", "warning")
+
+    # Get module directory
+    module_dir = os.path.join(HOST_PATH, 'modules', module_name)
+
+    # Stop containers first
+    log(f"Stopping {module_name} containers...", "info")
+    run_command("docker compose down", cwd=module_dir, logger=log)
+
+    # Remove volumes
+    for volume in RESET_VOLUMES[module_name]:
+        log(f"Removing volume: {volume}", "info")
+        run_command(f"docker volume rm {volume} 2>/dev/null || true", logger=log)
+
+    log(f"Database volumes removed for {module_name}", "success")
+    return True
+
+
+def recreate_timesketch_user(logger: Callable = None) -> bool:
+    """Recreate Timesketch user after database reset.
+
+    Reads credentials from config.yaml and creates the user.
+
+    Args:
+        logger: Logging function
+
+    Returns:
+        True if successful, False otherwise
+    """
+    import time
+    import yaml
+
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    log("Recreating Timesketch user after database reset...", "info")
+
+    # Load config.yaml
+    config_path = os.path.join(HOST_PATH, 'config.yaml')
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+    except Exception as e:
+        log(f"Could not read config.yaml: {e}", "error")
+        return False
+
+    ts_user = config.get('modules', {}).get('timesketch', {}).get('id')
+    ts_pass = config.get('modules', {}).get('timesketch', {}).get('password')
+
+    if not ts_user or not ts_pass:
+        log("Timesketch credentials not found in config.yaml", "error")
+        return False
+
+    # Wait for Timesketch to be ready
+    log("Waiting for Timesketch to be ready...", "info")
+    time.sleep(15)
+
+    # Create user
+    result = run_command(
+        f'docker exec mssp_timesketch_web tsctl create-user "{ts_user}" --password "{ts_pass}"',
+        logger=log
+    )
+    if not result.get('success'):
+        log(f"Failed to create user: {result.get('error')}", "error")
+        return False
+
+    # Make admin
+    result = run_command(
+        f'docker exec mssp_timesketch_web tsctl make-admin "{ts_user}"',
+        logger=log
+    )
+    if not result.get('success'):
+        log(f"Warning: Could not make user admin: {result.get('error')}", "warning")
+
+    log(f"Timesketch user '{ts_user}' created successfully", "success")
+    return True
+
 
 def schedule_backend_restart():
     """Schedule backend restart after short delay using detached process."""
@@ -72,7 +172,8 @@ def restart_nginx(log: Callable) -> bool:
         return False
 
 
-def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str = 'online', logger: Callable = None) -> Dict:
+def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str = 'online',
+                         logger: Callable = None, db_overwrite: Dict = None) -> Dict:
     """Run upgrade workflow for selected modules with two-phase support.
 
     Two-Phase Upgrade:
@@ -85,11 +186,13 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
         run_id: Workflow run ID for state tracking
         mode: 'online' or 'offline'
         logger: Logging function
+        db_overwrite: Dict of module -> bool for fresh install (e.g., {"timesketch": True})
 
     Returns:
         Dict with success status and results per module
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    db_overwrite = db_overwrite or {}
 
     # RISX must be first so backend code is updated before modules
     upgrade_order = ['risx', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor']
@@ -121,7 +224,7 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
 
     # Save initial state if we have a run_id
     if run_id:
-        save_upgrade_state(run_id, 'phase1', modules, [], mode)
+        save_upgrade_state(run_id, 'phase1', modules, [], mode, db_overwrite=db_overwrite)
 
     try:
         for module_name in upgrade_order:
@@ -136,6 +239,10 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
             log(f"  Current version: {current}", "info")
             log(f"  Target version:  {target_version}", "info")
             log(f"{'='*50}", "info")
+
+            # Fresh install: remove database volumes if requested for this module
+            if db_overwrite.get(module_name, False):
+                reset_module_database(module_name, logger=log)
 
             upgrade_fn = upgrade_functions.get(module_name)
             if not upgrade_fn:
@@ -157,6 +264,10 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                     completed_modules.append(module_name)
                     log(f"{module_name.upper()} upgrade completed: {current} -> {target_version}", "success")
 
+                    # Recreate Timesketch user after fresh install
+                    if module_name == 'timesketch' and db_overwrite.get('timesketch', False):
+                        recreate_timesketch_user(logger=log)
+
                     # Special handling for RISX - trigger Phase 2
                     if module_name == 'risx' and run_id:
                         # Check if there are more modules to upgrade
@@ -168,8 +279,9 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                             log(f"Remaining modules for Phase 2: {', '.join(remaining)}", "info")
                             log(f"{'='*50}", "info")
 
-                            # Save state for Phase 2 resume
-                            save_upgrade_state(run_id, 'awaiting_restart', modules, completed_modules, mode)
+                            # Save state for Phase 2 resume (include db_overwrite)
+                            save_upgrade_state(run_id, 'awaiting_restart', modules, completed_modules, mode,
+                                               db_overwrite=db_overwrite)
 
                             # Schedule backend restart (nginx will restart at Phase 2 start)
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
@@ -282,6 +394,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     modules = state['target_modules']
     completed_modules = set(state['completed_modules'])
     mode = state.get('mode', 'online')
+    db_overwrite = state.get('db_overwrite', {})  # Per-module fresh install flags
 
     # Parse package paths from state (stored as JSON with extract_dir and package_path)
     package_dir_raw = state.get('package_dir')
@@ -352,6 +465,10 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             log(f"  Target version:  {target_version}", "info")
             log(f"{'='*50}", "info")
 
+            # Fresh install: remove database volumes if requested for this module
+            if db_overwrite.get(module_name, False):
+                reset_module_database(module_name, logger=log)
+
             upgrade_fn = upgrade_functions.get(module_name)
             if not upgrade_fn:
                 log(f"Unknown module: {module_name}", "error")
@@ -370,6 +487,11 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                 if result.get('success'):
                     completed_modules.add(module_name)
                     log(f"{module_name.upper()} upgrade completed: {current} -> {target_version}", "success")
+
+                    # Recreate Timesketch user after fresh install
+                    if module_name == 'timesketch' and db_overwrite.get('timesketch', False):
+                        recreate_timesketch_user(logger=log)
+
                     update_upgrade_phase(run_id, 'phase2', list(completed_modules))
                 else:
                     log(f"{module_name.upper()} upgrade failed: {result.get('error', 'unknown')}", "error")
@@ -434,7 +556,8 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     }
 
 
-def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: Callable = None) -> Dict:
+def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: Callable = None,
+                                  db_overwrite: Dict = None) -> Dict:
     """Run offline upgrade workflow from an uploaded package with two-phase support.
 
     Two-Phase Upgrade:
@@ -446,11 +569,13 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
         package_path: Path to the uploaded .tar.gz package
         run_id: Workflow run ID for state tracking
         logger: Logging function
+        db_overwrite: Dict of module -> bool for fresh install (e.g., {"timesketch": True})
 
     Returns:
         Dict with success status and results per module
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    db_overwrite = db_overwrite or {}
 
     log("=" * 50, "info")
     log("OFFLINE UPGRADE WORKFLOW", "info")
@@ -517,11 +642,12 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
     # Build modules dict for state tracking
     modules_dict = {k: v for k, v in versions.items()}
     if 'risx' not in modules_dict:
-        # Check if risx source exists in package
-        import os
+        # Check if risx source exists in package (not just empty dirs)
         backend_source = os.path.join(package_dir, 'source', 'backend')
         frontend_source = os.path.join(package_dir, 'source', 'frontend')
-        if os.path.exists(backend_source) or os.path.exists(frontend_source):
+        has_backend = os.path.exists(backend_source) and os.listdir(backend_source)
+        has_frontend = os.path.exists(frontend_source) and os.listdir(frontend_source)
+        if has_backend or has_frontend:
             modules_dict['risx'] = 'from_package'
 
     for module in upgrade_order:
@@ -531,7 +657,8 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
     # Save initial state if we have a run_id (include package_path for cleanup after Phase 2)
     extract_dir = verify_result.get('extract_dir')
     if run_id:
-        save_upgrade_state(run_id, 'phase1', modules_dict, [], 'offline', extract_dir, package_path)
+        save_upgrade_state(run_id, 'phase1', modules_dict, [], 'offline', extract_dir, package_path,
+                           db_overwrite=db_overwrite)
 
     try:
         for module_name in upgrade_order:
@@ -539,7 +666,6 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
 
             # For risx, check if source exists
             if module_name == 'risx':
-                import os
                 backend_source = os.path.join(package_dir, 'source', 'backend')
                 frontend_source = os.path.join(package_dir, 'source', 'frontend')
                 if not os.path.exists(backend_source) and not os.path.exists(frontend_source):
@@ -551,6 +677,10 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
             log(f"{'='*50}", "info")
             log(f"UPGRADING: {module_name.upper()} -> {version or 'from source'}", "info")
             log(f"{'='*50}", "info")
+
+            # Fresh install: remove database volumes if requested for this module
+            if db_overwrite.get(module_name, False):
+                reset_module_database(module_name, logger=log)
 
             upgrade_fn = offline_upgrade_functions.get(module_name)
             if not upgrade_fn:
@@ -574,6 +704,10 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
                 if result.get('success'):
                     log(f"{module_name.upper()} upgrade completed", "success")
 
+                    # Recreate Timesketch user after fresh install
+                    if module_name == 'timesketch' and db_overwrite.get('timesketch', False):
+                        recreate_timesketch_user(logger=log)
+
                     # Special handling for RISX - trigger Phase 2
                     if module_name == 'risx' and run_id and not result.get('skipped'):
                         remaining = [m for m in upgrade_order if m in modules_dict and m not in completed_modules]
@@ -585,7 +719,8 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
                             log(f"{'='*50}", "info")
 
                             # Save state for Phase 2 resume (include package_path for cleanup)
-                            save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline', extract_dir, package_path)
+                            save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline',
+                                               extract_dir, package_path, db_overwrite=db_overwrite)
 
                             # Schedule backend restart (nginx will restart at Phase 2 start)
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
@@ -637,10 +772,8 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
 
             # Cleanup extracted package
             log("Cleaning up...", "info")
-            if extract_dir:
-                import os
-                if os.path.exists(extract_dir):
-                    run_command(f"rm -rf {extract_dir}", logger=log)
+            if extract_dir and os.path.exists(extract_dir):
+                run_command(f"rm -rf {extract_dir}", logger=log)
 
             # Cleanup uploaded package file to free disk space
             if package_path and os.path.exists(package_path):
