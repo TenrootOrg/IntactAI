@@ -155,6 +155,7 @@ def create_tables():
             completed_modules TEXT,
             mode TEXT,
             package_dir TEXT,
+            db_overwrite TEXT DEFAULT '{}',
             created_at TEXT,
             updated_at TEXT
         );
@@ -338,6 +339,21 @@ def migrate_agentic_to_velociraptor():
         print(f"[STORAGE] Error merging agentic blueprints: {e}", flush=True)
 
 
+def migrate_add_db_overwrite_column():
+    """Add db_overwrite column to upgrade_state table if it doesn't exist."""
+    conn = get_connection()
+    try:
+        # Check if column exists
+        cursor = conn.execute("PRAGMA table_info(upgrade_state)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'db_overwrite' not in columns:
+            conn.execute("ALTER TABLE upgrade_state ADD COLUMN db_overwrite TEXT DEFAULT '{}'")
+            conn.commit()
+            print("[STORAGE] Added db_overwrite column to upgrade_state table", flush=True)
+    except Exception as e:
+        print(f"[STORAGE] Error adding db_overwrite column: {e}", flush=True)
+
+
 def init_storage() -> bool:
     """Initialize SQLite database, create tables, and migrate from JSON if needed"""
     try:
@@ -345,6 +361,7 @@ def init_storage() -> bool:
         create_tables()
         migrate_from_json()
         migrate_agentic_to_velociraptor()
+        migrate_add_db_overwrite_column()
         return True
     except Exception as e:
         print(f"[STORAGE] Failed to initialize: {e}", flush=True)
@@ -357,7 +374,8 @@ def init_storage() -> bool:
 
 def save_upgrade_state(run_id: str, phase: str, target_modules: Dict,
                        completed_modules: List[str], mode: str,
-                       package_dir: str = None, package_path: str = None) -> bool:
+                       package_dir: str = None, package_path: str = None,
+                       db_overwrite: Dict = None) -> bool:
     """Save or update upgrade state for two-phase upgrades.
 
     Args:
@@ -368,26 +386,30 @@ def save_upgrade_state(run_id: str, phase: str, target_modules: Dict,
         mode: 'online' or 'offline'
         package_dir: Path to extracted package directory (for offline mode)
         package_path: Path to uploaded package file (for cleanup after Phase 2)
+        db_overwrite: Dict of module -> bool for fresh install (e.g., {"timesketch": True, "iris": False})
     """
     # Store both paths as JSON in package_dir field for cleanup
     if package_path:
         package_dir = json.dumps({'extract_dir': package_dir, 'package_path': package_path})
+    # Default empty dict for db_overwrite
+    db_overwrite = db_overwrite or {}
     conn = get_connection()
     now = datetime.now().isoformat()
     try:
         conn.execute("""
             INSERT INTO upgrade_state
-            (run_id, phase, target_modules, completed_modules, mode, package_dir, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (run_id, phase, target_modules, completed_modules, mode, package_dir, db_overwrite, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id) DO UPDATE SET
                 phase = excluded.phase,
                 target_modules = excluded.target_modules,
                 completed_modules = excluded.completed_modules,
                 mode = excluded.mode,
                 package_dir = excluded.package_dir,
+                db_overwrite = excluded.db_overwrite,
                 updated_at = excluded.updated_at
         """, (run_id, phase, json.dumps(target_modules), json.dumps(completed_modules),
-              mode, package_dir, now, now))
+              mode, package_dir, json.dumps(db_overwrite), now, now))
         conn.commit()
         return True
     except Exception as e:
@@ -406,7 +428,7 @@ def get_pending_upgrade() -> Optional[Dict]:
             "SELECT * FROM upgrade_state WHERE phase = 'awaiting_restart' ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
         if row:
-            return row_to_dict(row, ['target_modules', 'completed_modules'])
+            return row_to_dict(row, ['target_modules', 'completed_modules', 'db_overwrite'])
         return None
     except Exception as e:
         print(f"[STORAGE] Error getting pending upgrade: {e}", flush=True)
@@ -421,7 +443,7 @@ def get_upgrade_state(run_id: str) -> Optional[Dict]:
             "SELECT * FROM upgrade_state WHERE run_id = ?", (run_id,)
         ).fetchone()
         if row:
-            return row_to_dict(row, ['target_modules', 'completed_modules'])
+            return row_to_dict(row, ['target_modules', 'completed_modules', 'db_overwrite'])
         return None
     except Exception as e:
         print(f"[STORAGE] Error getting upgrade state: {e}", flush=True)

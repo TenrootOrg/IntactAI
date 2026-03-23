@@ -21,7 +21,7 @@ from datetime import datetime
 from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
 from services.plaso_service import run_pinfo
 from services.timesketch_service import import_to_timesketch
-from config import PLASO_OUTPUT_DIR, PLASO_IMAGE, PLASO_CPUS, PLASO_MEMORY, TIMESKETCH_CONFIG
+from config import PLASO_OUTPUT_DIR, get_plaso_image, PLASO_CPUS, PLASO_MEMORY, TIMESKETCH_CONFIG
 
 
 def detect_kape_format(zip_path):
@@ -243,7 +243,7 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
             '--cpus', PLASO_CPUS,
             '--memory', PLASO_MEMORY,
             '--user', 'root',
-            PLASO_IMAGE,
+            get_plaso_image(),
             'log2timeline',
             '--workers', num_workers,
             '--status_view', 'window',

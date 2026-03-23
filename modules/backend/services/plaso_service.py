@@ -16,7 +16,7 @@ import shutil
 import urllib.parse
 import tempfile
 
-from config import PLASO_OUTPUT_DIR, PLASO_IMAGE, PLASO_CPUS, PLASO_MEMORY, VELOCIRAPTOR_CONTAINER, VELOCIRAPTOR_DATA_PATH
+from config import PLASO_OUTPUT_DIR, get_plaso_image, PLASO_CPUS, PLASO_MEMORY, VELOCIRAPTOR_CONTAINER, VELOCIRAPTOR_DATA_PATH
 
 
 def decompress_velociraptor_collection(source_dir, dest_dir, logger=None):
@@ -180,7 +180,7 @@ def run_pinfo(plaso_file, logger=None):
         pinfo_cmd = [
             'docker', 'run', '--rm',
             '-v', f'{PLASO_OUTPUT_DIR}:/data',
-            PLASO_IMAGE,
+            get_plaso_image(),
             'pinfo',
             f'/data/{filename}'
         ]
@@ -318,7 +318,7 @@ def process_with_plaso(client_id, flow_id, client_name, logger=None, parser=None
         # Check if Plaso is already running
         log("Step 1/5: Checking for existing Plaso processes...")
         result = subprocess.run(
-            ['docker', 'ps', '--filter', f'ancestor={PLASO_IMAGE}', '--format', '{{.Names}}'],
+            ['docker', 'ps', '--filter', f'ancestor={get_plaso_image()}', '--format', '{{.Names}}'],
             capture_output=True,
             text=True,
             timeout=5
@@ -335,18 +335,18 @@ def process_with_plaso(client_id, flow_id, client_name, logger=None, parser=None
         log("Step 1.5/5: Checking Plaso Docker image availability...")
         try:
             image_check = subprocess.run(
-                ['docker', 'images', '-q', PLASO_IMAGE],
+                ['docker', 'images', '-q', get_plaso_image()],
                 capture_output=True,
                 text=True,
                 timeout=5
             )
 
             if not image_check.stdout.strip():
-                log(f"⚠ Plaso image not found locally, downloading {PLASO_IMAGE}...", "warning")
+                log(f"⚠ Plaso image not found locally, downloading {get_plaso_image()}...", "warning")
                 log("This is a one-time download and may take 1-2 minutes", "info")
 
                 pull_result = subprocess.run(
-                    ['docker', 'pull', PLASO_IMAGE],
+                    ['docker', 'pull', get_plaso_image()],
                     capture_output=True,
                     text=True,
                     timeout=300  # 5 minute timeout for image pull
@@ -436,7 +436,7 @@ def process_with_plaso(client_id, flow_id, client_name, logger=None, parser=None
             '--cpus', PLASO_CPUS,
             '--memory', PLASO_MEMORY,
             '--user', 'root',
-            PLASO_IMAGE,
+            get_plaso_image(),
             'log2timeline',
             '--workers', num_workers,
             '--status_view', 'window',

@@ -324,35 +324,9 @@ document.addEventListener('alpine:init', () => {
             return timestamp ? new Date(timestamp).toLocaleString() : 'Unknown';
         },
 
-        async downloadPackage(runId) {
-            try {
-                // Check if package is available
-                const response = await fetch(`/api/upgrade/prepare/${runId}/status`);
-                const data = await response.json();
-
-                if (data.ready) {
-                    // Package available - trigger download
-                    window.location.href = `/api/upgrade/prepare/${runId}/download`;
-                } else {
-                    // Package expired or not found
-                    window.dispatchEvent(new CustomEvent('show-toast', {
-                        detail: {
-                            type: 'warning',
-                            title: 'Package Not Found',
-                            message: 'Only 1 upgrade package is kept to save storage. Please prepare a new package.'
-                        }
-                    }));
-                }
-            } catch (e) {
-                console.error('Failed to check package status:', e);
-                window.dispatchEvent(new CustomEvent('show-toast', {
-                    detail: {
-                        type: 'error',
-                        title: 'Error',
-                        message: 'Failed to check package availability.'
-                    }
-                }));
-            }
+        downloadPackage(runId) {
+            // Download immediately - package validity checked server-side
+            window.location.href = `/api/upgrade/prepare/${runId}/download`;
         }
     });
 
@@ -530,106 +504,18 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        // Upgrade modal state
-        showUpgradeModal: false,
-        upgradeLoading: false,
-        upgradeModules: [
-            { id: 'elk', name: 'ELK Stack', current: '', targetVersion: '', enabled: false, note: 'Downgrades not supported' },
-            { id: 'timesketch', name: 'Timesketch', current: '', targetVersion: '', enabled: false },
-            { id: 'plaso', name: 'Plaso (Timeline)', current: '', targetVersion: '', enabled: false, note: 'Used by Timesketch' },
-            { id: 'iris', name: 'IRIS', current: '', targetVersion: '', enabled: false },
-            { id: 'velociraptor', name: 'Velociraptor', current: '', targetVersion: '', enabled: false },
-            { id: 'risx', name: 'RISX Platform', current: '', targetVersion: '', enabled: false, note: 'Backend + Frontend' },
-        ],
+        // Fresh install flags (per module) - removes DB volumes for new schema
+        dbOverwriteTimesketch: false,
+        dbOverwriteIris: false,
+        dbOverwriteElk: false,
 
-        async openUpgradeModal() {
-            this.showUpgradeModal = true;
-            this.upgradeLoading = true;
-
-            // Reset modules
-            this.upgradeModules.forEach(m => {
-                m.enabled = false;
-                m.current = '';
-                m.targetVersion = '';
-            });
-
-            try {
-                const response = await fetch('/api/upgrade/status');
-                const data = await response.json();
-                if (data.success && data.versions) {
-                    this.upgradeModules.forEach(m => {
-                        const ver = data.versions[m.id];
-                        if (ver) {
-                            m.current = ver.current || 'unknown';
-                            m.targetVersion = ver.latest || ver.current || '';
-                        }
-                    });
-                }
-            } catch (e) {
-                console.error('Failed to fetch versions:', e);
-                this.showMessage('Failed to fetch module versions', 'error');
-            }
-            this.upgradeLoading = false;
-        },
-
-        closeUpgradeModal() {
-            this.showUpgradeModal = false;
-        },
-
-        // Helper to compare version strings
-        compareVersions(v1, v2) {
-            const parse = (v) => (v || '0').replace(/^v/, '').split('.').map(n => parseInt(n) || 0);
-            const p1 = parse(v1), p2 = parse(v2);
-            const len = Math.max(p1.length, p2.length);
-            for (let i = 0; i < len; i++) {
-                const a = p1[i] || 0, b = p2[i] || 0;
-                if (a < b) return -1;
-                if (a > b) return 1;
-            }
-            return 0;
-        },
-
-        async startUpgrade() {
-            const selected = this.upgradeModules.filter(m => m.enabled);
-            if (selected.length === 0) {
-                this.showMessage('Select at least one module to upgrade', 'error');
-                return;
-            }
-
-            // Check for ELK downgrade attempt
-            const elk = selected.find(m => m.id === 'elk');
-            if (elk && this.compareVersions(elk.targetVersion, elk.current) < 0) {
-                this.showMessage('ELK downgrade not supported. Elasticsearch only allows forward upgrades.', 'error');
-                return;
-            }
-
-            const modules = {};
-            selected.forEach(m => {
-                modules[m.id] = m.targetVersion;
-            });
-
-            this.upgradeLoading = true;
-            try {
-                const response = await fetch('/api/upgrade/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ modules, mode: 'online' })
-                });
-
-                const result = await response.json();
-                if (response.ok && result.success) {
-                    this.closeUpgradeModal();
-                    this.showMessage('Upgrade started - redirecting to Workflows', 'success');
-                    setTimeout(() => {
-                        Alpine.store('app').switchTab('workflows');
-                    }, 500);
-                } else {
-                    this.showMessage('Failed to start upgrade: ' + (result.error || 'Unknown error'), 'error');
-                }
-            } catch (e) {
-                this.showMessage('Upgrade error: ' + e.message, 'error');
-            }
-            this.upgradeLoading = false;
+        // Helper to get db_overwrite object
+        getDbOverwrite() {
+            return {
+                timesketch: this.dbOverwriteTimesketch,
+                iris: this.dbOverwriteIris,
+                elk: this.dbOverwriteElk
+            };
         },
 
         // ===== PREPARE UPGRADE PACKAGE =====
@@ -639,12 +525,12 @@ document.addEventListener('alpine:init', () => {
         preparePackageReady: false,
         preparePackageSize: '',
         prepareModules: [
-            { id: 'elk', name: 'ELK Stack', latest: '', targetVersion: '', enabled: false },
-            { id: 'timesketch', name: 'Timesketch', latest: '', targetVersion: '', enabled: false },
-            { id: 'plaso', name: 'Plaso (Timeline)', latest: '', targetVersion: '', enabled: false },
-            { id: 'iris', name: 'IRIS', latest: '', targetVersion: '', enabled: false },
-            { id: 'velociraptor', name: 'Velociraptor', latest: '', targetVersion: '', enabled: false },
-            { id: 'risx', name: 'RISX Source Code', latest: '1.0.0', targetVersion: '1.0.0', enabled: false },
+            { id: 'elk', name: 'ELK Stack', targetVersion: '', enabled: false, fallback: '8.17.0' },
+            { id: 'timesketch', name: 'Timesketch', targetVersion: '', enabled: false, fallback: '20240919' },
+            { id: 'plaso', name: 'Plaso (Timeline)', targetVersion: '', enabled: false, fallback: '20240308' },
+            { id: 'iris', name: 'IRIS', targetVersion: '', enabled: false, fallback: 'v2.4.19' },
+            { id: 'velociraptor', name: 'Velociraptor', targetVersion: '', enabled: false, fallback: '0.73.4' },
+            { id: 'risx', name: 'RISX Source Code', targetVersion: '1.0.0', enabled: false, fallback: '1.0.0' },
         ],
 
         async openPreparePackageModal() {
@@ -667,14 +553,20 @@ document.addEventListener('alpine:init', () => {
                     this.prepareModules.forEach(m => {
                         const ver = data.versions[m.id];
                         if (ver) {
-                            m.latest = ver.latest || 'unknown';
-                            m.targetVersion = ver.latest || '';
+                            m.targetVersion = ver.latest || m.fallback;
                         }
+                    });
+                } else {
+                    // Use fallback versions
+                    this.prepareModules.forEach(m => {
+                        m.targetVersion = m.fallback;
                     });
                 }
             } catch (e) {
-                console.error('Failed to fetch versions:', e);
-                this.showMessage('Failed to fetch module versions', 'error');
+                console.error('Failed to fetch versions, using fallbacks:', e);
+                this.prepareModules.forEach(m => {
+                    m.targetVersion = m.fallback;
+                });
             }
             this.prepareLoading = false;
         },
@@ -752,6 +644,16 @@ document.addEventListener('alpine:init', () => {
                 return;
             }
 
+            // Check if any fresh install is enabled
+            const dbOverwrite = this.getDbOverwrite();
+            const freshInstallModules = Object.entries(dbOverwrite).filter(([k, v]) => v).map(([k]) => k);
+            if (freshInstallModules.length > 0) {
+                if (!confirm(`Fresh install selected for: ${freshInstallModules.join(', ').toUpperCase()}\n\nThis will remove existing data to allow new database schema. Continue?`)) {
+                    event.target.value = ''; // Reset input
+                    return;
+                }
+            }
+
             // Show message and redirect to workflows immediately
             this.showMessage(`Uploading ${file.name}...`, 'info');
             Alpine.store('app').switchTab('workflows');
@@ -764,7 +666,8 @@ document.addEventListener('alpine:init', () => {
                 metadata: {
                     filename: file.name,
                     filetype: file.type || 'application/gzip',
-                    purpose: 'upgrade_package'
+                    purpose: 'upgrade_package',
+                    db_overwrite: JSON.stringify(dbOverwrite)
                 },
                 onError: (error) => {
                     console.error('Upload error:', error);

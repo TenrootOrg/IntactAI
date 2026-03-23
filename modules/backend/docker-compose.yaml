@@ -31,6 +31,7 @@ services:
       - ../../data:/app/data  # SQLite database (mssp.db) for workflows, configs, and reports
       - ../nginx/html/downloads:/app/downloads:rw  # Velociraptor binaries for offline collectors
       - ./app.py:/app/app.py:ro  # Mount app.py for live code updates
+      - ./config.py:/app/config.py:ro  # Mount config.py for live code updates
       - ./services:/app/services:ro  # Mount services for live code updates
       - ./routes:/app/routes:ro  # Mount routes for live code updates
       - ./config/default_blueprints.yaml:/app/config/default_blueprints.yaml:ro  # Live blueprint updates

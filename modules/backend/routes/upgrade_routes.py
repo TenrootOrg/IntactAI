@@ -43,19 +43,33 @@ def _save_package_info(info):
         print(f"[WARN] Failed to save package info: {e}")
 
 
+def _read_package_manifest(package_path):
+    """Read manifest.json from a prepared package to get version info."""
+    import tarfile
+    try:
+        with tarfile.open(package_path, 'r:gz') as tar:
+            # Find manifest.json in the archive
+            for member in tar.getmembers():
+                if member.name.endswith('manifest.json'):
+                    f = tar.extractfile(member)
+                    if f:
+                        return json.load(f)
+    except Exception as e:
+        print(f"[WARN] Failed to read package manifest: {e}")
+    return {}
+
+
 @upgrade_bp.route('/api/upgrade/status', methods=['GET'])
 def get_upgrade_status():
-    """Get current and latest versions for all modules."""
+    """Get latest versions for all modules (used by Prepare Package modal)."""
     try:
-        from services.upgrade import get_current_versions, get_latest_versions
+        from services.upgrade import get_latest_versions
 
-        current = get_current_versions()
         latest = get_latest_versions()
 
         versions = {}
         for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'risx']:
             versions[module] = {
-                'current': current.get(module, {}).get('current', 'unknown'),
                 'latest': latest.get(module, 'unknown')
             }
 
@@ -64,109 +78,7 @@ def get_upgrade_status():
             "versions": versions
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@upgrade_bp.route('/api/upgrade/start', methods=['POST'])
-def start_upgrade():
-    """Start upgrade workflow for selected modules.
-
-    Body: {
-        "modules": {"elk": "8.19.0", "iris": "v2.5.0", ...},
-        "mode": "online"
-    }
-    """
-    try:
-        data = request.json
-        if not data:
-            return jsonify({"error": "No data provided"}), 400
-
-        modules = data.get('modules', {})
-        mode = data.get('mode', 'online')
-
-        if not modules:
-            return jsonify({"error": "No modules selected for upgrade"}), 400
-
-        if mode != 'online':
-            return jsonify({"error": "Only 'online' mode is currently supported"}), 400
-
-        # Create workflow run
-        run_id = create_automation_run(
-            automation_type="upgrade",
-            name="System Upgrade",
-            details={
-                "trigger": "manual",
-                "mode": mode,
-                "modules": modules
-            }
-        )
-        add_log_to_run(run_id, f"Starting system upgrade ({mode} mode)", "info")
-        add_log_to_run(run_id, f"Modules to upgrade: {', '.join(modules.keys())}", "info")
-        update_run_status(run_id, "running", progress=5)
-
-        # Run upgrade in background
-        def run_upgrade():
-            try:
-                from services.upgrade import run_upgrade_workflow
-
-                # Calculate progress per module
-                total_modules = len(modules)
-                progress_per_module = 90 // total_modules if total_modules > 0 else 90
-                completed_modules = [0]  # Use list to allow modification in nested function
-
-                def logger(msg, level="info"):
-                    add_log_to_run(run_id, msg, level)
-                    # Update progress when a module upgrade starts
-                    if msg.startswith("UPGRADING:"):
-                        progress = 5 + (completed_modules[0] * progress_per_module)
-                        update_run_status(run_id, "running", progress=progress)
-                    # Update progress only on wrapper completion message (from __init__.py)
-                    # Format: "MODULE_NAME upgrade completed: X -> Y" where MODULE_NAME is uppercase
-                    # Avoid double-counting from module-level messages or health checks
-                    elif level == "success" and " upgrade completed:" in msg:
-                        # Only count if message starts with uppercase module name (wrapper message)
-                        first_word = msg.split()[0] if msg else ""
-                        if first_word.isupper() and first_word in ["ELK", "TIMESKETCH", "PLASO", "IRIS", "VELOCIRAPTOR", "RISX"]:
-                            completed_modules[0] += 1
-                            progress = 5 + (completed_modules[0] * progress_per_module)
-                            update_run_status(run_id, "running", progress=min(progress, 95))
-
-                add_log_to_run(run_id, f"Modules to upgrade: {', '.join(modules.keys())}", "info")
-                update_run_status(run_id, "running", progress=5)
-
-                result = run_upgrade_workflow(modules, run_id=run_id, mode=mode, logger=logger)
-
-                # Handle two-phase upgrade (backend restart pending)
-                if result.get('phase') == 'awaiting_restart':
-                    add_log_to_run(run_id, "Phase 1 complete. Backend restarting. Phase 2 will resume automatically.", "info")
-                    update_run_status(run_id, "running", progress=50)
-                    # Don't mark complete - Phase 2 will continue after restart
-                elif result.get('success'):
-                    add_log_to_run(run_id, f"Upgrade completed: {result['completed']}/{result['total']} modules", "success")
-                    update_run_status(run_id, "completed", progress=100)
-                else:
-                    failed = [m for m, r in result.get('results', {}).items() if not r.get('success')]
-                    add_log_to_run(run_id, f"Upgrade completed with failures: {', '.join(failed)}", "warning")
-                    update_run_status(run_id, "completed", progress=100)
-
-            except Exception as e:
-                add_log_to_run(run_id, f"Upgrade failed: {str(e)}", "error")
-                update_run_status(run_id, "failed", progress=0, error=str(e))
-                import traceback
-                traceback.print_exc()
-
-        # Start background thread
-        thread = threading.Thread(target=run_upgrade, daemon=True)
-        thread.start()
-
-        return jsonify({
-            "success": True,
-            "run_id": run_id,
-            "message": f"Upgrade started for {len(modules)} module(s)"
-        })
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"success": False, "error": str(e)}), 200  # Return 200 so frontend can use fallbacks
 
 
 @upgrade_bp.route('/api/upgrade/package-info', methods=['POST'])
@@ -197,7 +109,10 @@ def get_upgrade_package_info():
 def start_offline_upgrade():
     """Start offline upgrade from an uploaded package.
 
-    Body: { "package_path": "/data/uploads/..." }
+    Body: {
+        "package_path": "/data/uploads/...",
+        "db_overwrite": {"timesketch": true, "iris": false}  // optional: fresh install per module
+    }
     """
     try:
         data = request.json
@@ -205,6 +120,8 @@ def start_offline_upgrade():
             return jsonify({"error": "No data provided"}), 400
 
         package_path = data.get('package_path')
+        db_overwrite = data.get('db_overwrite', {})  # Per-module fresh install flags
+
         if not package_path:
             return jsonify({"error": "No package_path provided"}), 400
 
@@ -245,7 +162,8 @@ def start_offline_upgrade():
                             progress = 5 + min(completed_modules[0] * 15, 90)
                             update_run_status(run_id, "running", progress=progress)
 
-                result = run_offline_upgrade_workflow(package_path, run_id=run_id, logger=logger)
+                result = run_offline_upgrade_workflow(package_path, run_id=run_id, logger=logger,
+                                                      db_overwrite=db_overwrite)
 
                 # Handle two-phase upgrade (backend restart pending)
                 if result.get('phase') == 'awaiting_restart':
@@ -404,11 +322,14 @@ def get_prepare_status(run_id):
 
         # Check if package exists and matches this run_id
         if pkg and pkg.get('run_id') == run_id and os.path.exists(pkg.get('path', '')):
+            # Read manifest to get versions for user confirmation
+            manifest = _read_package_manifest(pkg['path'])
             return jsonify({
                 "success": True,
                 "ready": True,
                 "package_name": pkg['name'],
-                "package_size": pkg['size']
+                "package_size": pkg['size'],
+                "versions": manifest.get('versions', {})
             })
         else:
             return jsonify({

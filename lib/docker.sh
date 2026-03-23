@@ -95,6 +95,19 @@ install_docker_online() {
         return 1
     fi
 
+    # Configure Docker daemon to disable containerd snapshotter
+    # This is required for docker save to work properly with multi-platform images
+    log_info "Configuring Docker daemon..."
+    mkdir -p /etc/docker
+    cat > /etc/docker/daemon.json << 'EOF'
+{
+  "features": {
+    "containerd-snapshotter": false
+  }
+}
+EOF
+    log_success "Docker daemon configured (containerd-snapshotter disabled)"
+
     # Start and enable Docker with error checking
     log_info "Starting Docker service..."
     if ! systemctl start docker 2>> "$LOG_FILE"; then
@@ -128,6 +141,22 @@ install_docker_online() {
 install_docker() {
     if command -v docker &> /dev/null; then
         log_success "Docker already installed: $(docker --version)"
+
+        # Ensure daemon.json config exists (for docker save to work properly)
+        if [[ ! -f /etc/docker/daemon.json ]] || ! grep -q "containerd-snapshotter" /etc/docker/daemon.json 2>/dev/null; then
+            log_info "Configuring Docker daemon for proper image export..."
+            mkdir -p /etc/docker
+            cat > /etc/docker/daemon.json << 'EOF'
+{
+  "features": {
+    "containerd-snapshotter": false
+  }
+}
+EOF
+            log_info "Restarting Docker to apply configuration..."
+            systemctl restart docker 2>> "$LOG_FILE" || true
+            log_success "Docker daemon configured"
+        fi
 
         # Check if user is in docker group
         if [[ -n "$SUDO_USER" ]] && ! groups "$SUDO_USER" | grep -q '\bdocker\b'; then

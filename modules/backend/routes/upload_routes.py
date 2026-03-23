@@ -206,6 +206,13 @@ def handle_tus_hook():
             purpose = metadata.get('purpose', '')
             original_filename = metadata.get('filename', 'upload.zip')
 
+            # Extract db_overwrite for upgrade packages (JSON string -> dict)
+            db_overwrite_str = metadata.get('db_overwrite', '{}')
+            try:
+                db_overwrite = json.loads(db_overwrite_str) if db_overwrite_str else {}
+            except (json.JSONDecodeError, TypeError):
+                db_overwrite = {}
+
             # Get workflow run_id from pre-create
             run_id = _upload_runs.pop(upload_id, None)
 
@@ -318,7 +325,8 @@ def handle_tus_hook():
                                         progress = 15 + min(completed_modules[0] * 13, 80)
                                         update_run_status(run_id, "running", progress=progress)
 
-                            result = run_offline_upgrade_workflow(file_path, run_id=run_id, logger=logger)
+                            result = run_offline_upgrade_workflow(file_path, run_id=run_id, logger=logger,
+                                                                  db_overwrite=db_overwrite)
 
                             # Handle result
                             if result.get('phase') == 'awaiting_restart':
@@ -355,14 +363,16 @@ def handle_tus_hook():
                 add_log_to_run(run_id, "Upload cancelled by user", "warning")
                 update_run_status(run_id, "failed", error="Upload cancelled")
 
-            # Clean up partial upload file
+            # Clean up partial upload file and .info metadata
             file_path = f"/data/uploads/{upload_id}"
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                    print(f"[TUS HOOK] Cleaned up: {file_path}", flush=True)
-                except Exception as e:
-                    print(f"[TUS HOOK] Cleanup error: {e}", flush=True)
+            info_path = f"/data/uploads/{upload_id}.info"
+            for path in [file_path, info_path]:
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                        print(f"[TUS HOOK] Cleaned up: {path}", flush=True)
+                    except Exception as e:
+                        print(f"[TUS HOOK] Cleanup error: {e}", flush=True)
 
             return jsonify({"ok": True})
 
