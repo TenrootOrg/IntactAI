@@ -384,31 +384,61 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
             return
 
         total_rows = sum(len(rows) for rows in all_results.values())
+        original_total = total_rows  # Track for final summary
         add_log_to_run(run_id, f"[Pipeline] Retrieved {total_rows} rows across {len(all_results)} artifacts", "info")
 
         # Apply Python time filtering (more reliable than VQL filtering)
+        time_filtered = False
         if time_filter and time_filter.get('enabled'):
             from services.agentic.utils import filter_results_by_time
-            before_filter = total_rows
             all_results = filter_results_by_time(all_results, time_filter, run_id)
             total_rows = sum(len(rows) for rows in all_results.values())
-            add_log_to_run(run_id, f"[Pipeline] Time filter: {before_filter} -> {total_rows} rows", "info")
+            time_filtered = True
 
         # Apply severity filtering before LLM analysis
+        severity_filtered = False
         if min_severity != 'informational':
             from services.agentic.collectors import filter_by_severity
-            add_log_to_run(run_id, f"[Pipeline] Severity filter active: {min_severity}+ only", "info")
             before_filter = total_rows
+            severity_filtered = True
+
+            add_log_to_run(run_id, f"[Filter] Severity filter: {min_severity}+ only", "info")
+            add_log_to_run(run_id, f"[Filter] ─────────────────────────────────────────────", "info")
+
             filtered_results = {}
+            severity_stats = []  # [(artifact, before, after)]
+
             for source_name, rows in all_results.items():
+                before = len(rows)
                 filtered_rows = filter_by_severity(rows, min_severity)
+                after = len(filtered_rows) if filtered_rows else 0
+                severity_stats.append((source_name, before, after))
                 if filtered_rows:
                     filtered_results[source_name] = filtered_rows
-                    if len(filtered_rows) < len(rows):
-                        add_log_to_run(run_id, f"[Filter] {source_name}: {len(rows)} -> {len(filtered_rows)} rows", "info")
+
+            # Log per-artifact stats
+            for artifact, before, after in severity_stats:
+                removed = before - after
+                if removed > 0:
+                    pct = (removed / before * 100) if before > 0 else 0
+                    add_log_to_run(run_id, f"[Filter] {artifact}: {before} → {after} (-{removed}, {pct:.0f}% removed)", "info")
+
             all_results = filtered_results
             total_rows = sum(len(rows) for rows in all_results.values())
-            add_log_to_run(run_id, f"[Pipeline] Severity filter: {before_filter} -> {total_rows} rows", "info")
+            total_removed = before_filter - total_rows
+
+            # Log total summary
+            add_log_to_run(run_id, f"[Filter] ─────────────────────────────────────────────", "info")
+            pct_total = (total_removed / before_filter * 100) if before_filter > 0 else 0
+            add_log_to_run(run_id, f"[Filter] TOTAL: {before_filter} → {total_rows} (-{total_removed} rows, {pct_total:.0f}% removed)", "success" if total_removed > 0 else "info")
+
+        # Final combined summary if any filtering was applied
+        if time_filtered or severity_filtered:
+            total_removed_all = original_total - total_rows
+            if total_removed_all > 0:
+                pct_all = (total_removed_all / original_total * 100) if original_total > 0 else 0
+                add_log_to_run(run_id, f"[Filter] ═════════════════════════════════════════════", "info")
+                add_log_to_run(run_id, f"[Filter] FINAL: {original_total} → {total_rows} rows (-{total_removed_all}, {pct_all:.0f}% total removed)", "success")
 
         add_log_to_run(run_id, f"[Pipeline] Client info: {len(client_info)} clients", "info")
 
@@ -450,10 +480,8 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         # Run LLM analysis on the results
         add_log_to_run(run_id, "[LLM] Starting artifact analysis...", "info")
         _update_phase(run_id, "analyzing", 20)
-
         from services.agentic.analyzers import analyze_artifacts
         artifact_summaries = analyze_artifacts(run_id, all_results, llm_config, anonymizer)
-
         add_log_to_run(run_id, f"[LLM] Analysis complete: {len(artifact_summaries)} artifact summaries", "success")
         _update_phase(run_id, "analyzing", 80)
 

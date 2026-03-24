@@ -246,7 +246,7 @@ velociraptor:
 
   - id: agentic_purple_team
     name: "[Agentic] Purple Team Detection"
-    description: "Low-volume detection artifacts for purple team testing (10 artifacts)"
+    description: "Low-volume detection artifacts for purple team testing (11 artifacts)"
     is_default: true
     settings:
       hunt_expiry: 120
@@ -259,10 +259,40 @@ velociraptor:
       - DetectRaptor.Windows.Detection.BinaryRename
       - DetectRaptor.Windows.Detection.Powershell.PSReadline
       - DetectRaptor.Windows.Detection.Applications
-      - Windows.System.TaskScheduler
+      - DetectRaptor.Windows.Detection.Evtx
+      - DetectRaptor.Windows.Detection.MFT
       - Windows.System.UntrustedBinaries
       - Generic.System.Pstree
       - Windows.Forensics.SAM
+
+  - id: agentic_purple_team_extended
+    name: "[Agentic] Purple Team Extended"
+    description: "Extended detection with program execution, C2, and browser artifacts (15 artifacts)"
+    is_default: true
+    settings:
+      hunt_expiry: 120
+      timeout: 600
+      cpu_limit: 90
+    artifacts:
+      # Core Detection
+      - Windows.Hayabusa.Rules
+      - Windows.Detection.Malfind
+      - DetectRaptor.Windows.Detection.Evtx
+      - DetectRaptor.Windows.Detection.MFT
+      - DetectRaptor.Windows.Detection.BinaryRename
+      - DetectRaptor.Windows.Detection.Applications
+      - DetectRaptor.Windows.Detection.Powershell.PSReadline
+      # Program Execution
+      - DetectRaptor.Windows.Detection.Amcache
+      # C2/Network
+      - DetectRaptor.Windows.Detection.NamedPipes
+      - DetectRaptor.Windows.Detection.Webhistory
+      # Context
+      - Windows.EventLogs.RDPAuth
+      - Windows.System.UntrustedBinaries
+      - Generic.System.Pstree
+      - Windows.Forensics.SAM
+      - Windows.Forensics.Lnk
 
 # ============================================================================
 # Timesketch Blueprints
