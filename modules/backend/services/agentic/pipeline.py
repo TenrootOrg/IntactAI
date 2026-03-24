@@ -119,7 +119,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
             add_log_to_run(run_id, f"[Pipeline] Severity filter active: {min_severity}+ only", "info")
         _update_phase(run_id, "collecting", 10)
         all_results, artifact_summaries, timed_out = stream_collect_and_analyze(
-            run_id, success_collections, artifacts, collection_minutes, llm_config, anonymizer, _update_phase, min_severity
+            run_id, success_collections, artifacts, collection_minutes, llm_config, anonymizer, _update_phase, min_severity, time_filter
         )
 
         # 4. Cancel any remaining collections ONLY if we timed out

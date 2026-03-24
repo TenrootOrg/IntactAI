@@ -413,16 +413,18 @@ def filter_by_severity(rows, severity_level):
     return filtered
 
 
-def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes, llm_config, anonymizer=None, update_phase_func=None, min_severity='informational'):
+def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes, llm_config, anonymizer=None, update_phase_func=None, min_severity='informational', time_filter=None):
     """Monitor collection, poll artifact sources for data, analyze as data becomes available.
     Returns (all_results dict, summaries dict, timed_out bool).
     If anonymizer is provided, data is masked before LLM analysis.
     min_severity filters rows by severity level before LLM analysis (informational, low, medium, high, critical).
+    time_filter filters rows by timestamp fields (StartTime, EventTime, etc.) - applied in Python post-collection.
     timed_out is True if collection ended due to timeout, False if all flows completed naturally.
 
     STREAMING OPTIMIZATION: LLM analysis starts immediately when an artifact's flow completes,
     rather than waiting for all collections to finish."""
     from services.agentic.analyzers import analyze_single_artifact
+    from services.agentic.utils import filter_row_by_time
 
     total_seconds = collection_minutes * 60
     elapsed = 0
@@ -439,6 +441,12 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
 
     # Get max concurrent requests from config
     max_concurrent = llm_config.get('agentic', {}).get('max_concurrent_requests', 5)
+
+    # Create time filter function (if enabled)
+    time_filter_func = None
+    if time_filter and time_filter.get('enabled'):
+        from services.agentic.utils import create_time_filter_func
+        time_filter_func = create_time_filter_func(time_filter)
 
     # Get active flows
     active_flows = [c for c in collection_results if c.get('flow_id')]
@@ -527,16 +535,30 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                             retrieved_artifacts[artifact_key] = len(rows)
                             stable_artifacts[source_name] = 0  # Reset stability counter
 
-                            # Apply severity filter immediately after getting results
+                            # Apply time filter first (if enabled)
                             filtered_rows = rows
+                            rows_after_time = len(rows)
+                            if time_filter_func:
+                                filtered_rows = [r for r in filtered_rows if filter_row_by_time(r, time_filter_func)]
+                                rows_after_time = len(filtered_rows)
+
+                            # Then apply severity filter
+                            rows_after_severity = rows_after_time
                             if min_severity != 'informational':
-                                filtered_rows = filter_by_severity(rows, min_severity)
+                                filtered_rows = filter_by_severity(filtered_rows, min_severity)
+                                rows_after_severity = len(filtered_rows)
 
                             # Update all_results with filtered data
                             if source_name not in all_results:
                                 all_results[source_name] = []
-                                if min_severity != 'informational' and len(filtered_rows) < len(rows):
-                                    add_log_to_run(run_id, f"[Velociraptor] Found: {source_name} ({len(rows)} rows, {len(filtered_rows)} after {min_severity}+ filter)", "info")
+                                # Build informative log message
+                                if rows_after_time < len(rows) or rows_after_severity < rows_after_time:
+                                    filter_parts = []
+                                    if rows_after_time < len(rows):
+                                        filter_parts.append(f"{rows_after_time} after time filter")
+                                    if rows_after_severity < rows_after_time:
+                                        filter_parts.append(f"{rows_after_severity} after {min_severity}+ filter")
+                                    add_log_to_run(run_id, f"[Velociraptor] Found: {source_name} ({len(rows)} rows, {', '.join(filter_parts)})", "info")
                                 else:
                                     add_log_to_run(run_id, f"[Velociraptor] Found: {source_name} ({len(rows)} rows)", "info")
 
