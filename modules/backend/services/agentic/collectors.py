@@ -66,10 +66,31 @@ def check_flow_status(stub, client_id, flow_id):
                             backtrace = row.get('backtrace', '')
                             context = row.get('context', {})
                             artifacts_done = row.get('artifacts_with_results', [])
+                            artifacts_requested = row.get('request', {}).get('artifacts', [])
+
+                            # Find which artifact(s) failed
+                            failed_artifacts = []
+                            if artifacts_requested and artifacts_done:
+                                done_set = set(a.split('/')[0] for a in artifacts_done)  # Handle sub-sources
+                                failed_artifacts = [a for a in artifacts_requested if a not in done_set]
+
+                            # Try to extract error reason from backtrace
+                            error_reason = None
+                            if backtrace:
+                                # Look for common error patterns
+                                lines = backtrace.split('\n')
+                                for line in lines:
+                                    if 'error' in line.lower() or 'timeout' in line.lower():
+                                        error_reason = line.strip()[:100]
+                                        break
+
                             error_info = {
                                 'backtrace': backtrace[:500] if backtrace else None,
                                 'context': context,
-                                'artifacts_completed': len(artifacts_done) if artifacts_done else 0
+                                'artifacts_completed': len(artifacts_done) if artifacts_done else 0,
+                                'artifacts_requested': len(artifacts_requested) if artifacts_requested else 0,
+                                'failed_artifacts': failed_artifacts,
+                                'error_reason': error_reason
                             }
                             return 'ERROR', error_info
                         elif state_upper in ('RUNNING', 'IN_PROGRESS', 'WAITING'):
@@ -551,9 +572,22 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                     completed_flows.add(flow_id)
                     # Log error details but continue processing - data may still be available
                     if error_info and error_info.get('artifacts_completed', 0) > 0:
-                        add_log_to_run(run_id, f"[Velociraptor] Flow on {client_id} ended with errors but {error_info['artifacts_completed']} artifacts completed - continuing", "warning")
+                        completed = error_info['artifacts_completed']
+                        requested = error_info.get('artifacts_requested', 0)
+                        failed = error_info.get('failed_artifacts', [])
+                        reason = error_info.get('error_reason', 'unknown reason')
+
+                        # Build informative message
+                        if failed:
+                            failed_str = ', '.join(failed[:3])  # Show up to 3 failed
+                            if len(failed) > 3:
+                                failed_str += f" (+{len(failed)-3} more)"
+                            msg = f"[Velociraptor] Warning: {len(failed)} artifact(s) failed ({failed_str}) - {reason}. {completed}/{requested} completed, continuing with available data."
+                        else:
+                            msg = f"[Velociraptor] Warning: Flow ended with partial error ({reason}). {completed}/{requested} artifacts completed, continuing with available data."
+                        add_log_to_run(run_id, msg, "warning")
                     else:
-                        add_log_to_run(run_id, f"[Velociraptor] Flow cancelled/failed on {client_id}", "warning")
+                        add_log_to_run(run_id, f"[Velociraptor] Flow cancelled/failed on {client_id} - no data collected", "warning")
                     if error_info and error_info.get('backtrace'):
                         # Log first line of backtrace for debugging
                         bt_first_line = error_info['backtrace'].split('\n')[0][:100]
