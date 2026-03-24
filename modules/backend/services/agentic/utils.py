@@ -489,13 +489,9 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
         if not rows:
             continue
 
-        # Determine which timestamp field this artifact uses
+        # Find timestamp field - may be nested in sub-objects (e.g., MFT SI_Lt_Mod.Created0x10)
         sample_row = rows[0]
-        ts_field = None
-        for field in timestamp_fields:
-            if field in sample_row:
-                ts_field = field
-                break
+        ts_path, _ = find_field_recursive(sample_row, timestamp_fields)
 
         for row in rows:
             hostname = row.get('_hostname', 'Unknown')
@@ -503,8 +499,8 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
             title = get_short_title(row, artifact)
             description = build_rich_description(row, artifact)
 
-            if ts_field:
-                ts_value = row.get(ts_field)
+            if ts_path:
+                _, ts_value = find_field_recursive(row, timestamp_fields)
                 parsed_ts = parse_timestamp(ts_value)
                 if parsed_ts:
                     events.append({

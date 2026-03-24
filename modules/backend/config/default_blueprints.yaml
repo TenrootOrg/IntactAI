@@ -151,102 +151,9 @@ velociraptor:
   # AGENTIC BLUEPRINTS (LLM-optimized detection)
   # --------------------------------------------------------------------------
 
-  - id: agentic_test
-    name: "[Agentic] Test (Quick)"
-    description: "Fast test - forensically interesting artifacts that run in seconds (14 artifacts)"
-    is_default: true
-    settings:
-      hunt_expiry: 120
-      timeout: 120
-      cpu_limit: 90
-    artifacts:
-      - Generic.System.Pstree
-      - Windows.Detection.Malfind
-      - DetectRaptor.Windows.Detection.BinaryRename
-      - Windows.System.UntrustedBinaries
-      - DetectRaptor.Windows.Detection.Powershell.PSReadline
-      - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
-      - Windows.Forensics.PersistenceSniper
-      - Windows.System.TaskScheduler
-      - DetectRaptor.Windows.Detection.Amcache
-      - DetectRaptor.Windows.Detection.Applications
-      - Windows.System.DNSCache
-      - Windows.Registry.Sysinternals.Eulacheck
-      - Windows.Hayabusa.Rules
-      - Windows.EventLogs.RDPAuth
-
   - id: agentic_quick_wins
     name: "[Agentic] Quick Wins"
-    description: "Fast detection-focused scan with low data output (21 artifacts)"
-    is_default: true
-    settings:
-      hunt_expiry: 120
-      timeout: 120
-      cpu_limit: 90
-    artifacts:
-      - DetectRaptor.Windows.Detection.Amcache
-      - DetectRaptor.Windows.Detection.NamedPipes
-      - DetectRaptor.Windows.Detection.BinaryRename
-      - DetectRaptor.Windows.Detection.LolDriversMalicious
-      - DetectRaptor.Windows.Detection.LolDriversVulnerable
-      - DetectRaptor.Windows.Detection.HijackLibsEnv
-      - DetectRaptor.Windows.Detection.YaraProcessWin
-      - DetectRaptor.Windows.Detection.Powershell.PSReadline
-      - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
-      - DetectRaptor.Windows.Detection.ZoneIdentifier
-      - DetectRaptor.Windows.Detection.Applications
-      - DetectRaptor.Generic.Detection.YaraWebshell
-      - Windows.Detection.ISOMount
-      - Windows.Detection.Malfind
-      - Windows.Detection.PipeHunter
-      - Windows.Attack.UnexpectedImagePath
-      - Windows.System.UntrustedBinaries
-      - Windows.Registry.Sysinternals.Eulacheck
-      - Windows.Hayabusa.Rules
-      - Windows.Forensics.PersistenceSniper
-      - Generic.System.Pstree
-
-  - id: agentic_standard
-    name: "[Agentic] Standard"
-    description: "Full detection suite optimized for LLM analysis (28 artifacts)"
-    is_default: true
-    settings:
-      hunt_expiry: 120
-      timeout: 3600
-      cpu_limit: 90
-    artifacts:
-      - DetectRaptor.Windows.Detection.Amcache
-      - DetectRaptor.Windows.Detection.NamedPipes
-      - DetectRaptor.Windows.Detection.BinaryRename
-      - DetectRaptor.Windows.Detection.Bootloaders
-      - DetectRaptor.Windows.Detection.Applications
-      - DetectRaptor.Windows.Detection.LolDriversMalicious
-      - DetectRaptor.Windows.Detection.LolDriversVulnerable
-      - DetectRaptor.Windows.Detection.HijackLibsEnv
-      - DetectRaptor.Windows.Detection.HijackLibsMFT
-      - DetectRaptor.Windows.Detection.Powershell.PSReadline
-      - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
-      - DetectRaptor.Windows.Detection.YaraProcessWin
-      - DetectRaptor.Windows.Detection.Webhistory
-      - DetectRaptor.Windows.Detection.ZoneIdentifier
-      - DetectRaptor.Generic.Detection.YaraWebshell
-      - Windows.Detection.Yara.Process
-      - Windows.Detection.ISOMount
-      - Windows.Detection.Malfind
-      - Windows.Detection.PipeHunter
-      - Windows.Detection.Keylogger
-      - Windows.Detection.WonkaVision
-      - Windows.Hayabusa.Rules
-      - Windows.Forensics.PersistenceSniper
-      - Windows.EventLogs.RDPAuth
-      - Windows.Attack.UnexpectedImagePath
-      - Windows.System.UntrustedBinaries
-      - Windows.Registry.Sysinternals.Eulacheck
-      - Generic.System.Pstree
-
-  - id: agentic_purple_team
-    name: "[Agentic] Purple Team Detection"
-    description: "Low-volume detection artifacts for purple team testing (11 artifacts)"
+    description: "Low-volume detection artifacts for fast analysis (11 artifacts)"
     is_default: true
     settings:
       hunt_expiry: 120
@@ -265,8 +172,8 @@ velociraptor:
       - Generic.System.Pstree
       - Windows.Forensics.SAM
 
-  - id: agentic_purple_team_extended
-    name: "[Agentic] Purple Team Extended"
+  - id: agentic_quick_wins_extended
+    name: "[Agentic] Quick Wins Extended"
     description: "Extended detection with program execution, C2, and browser artifacts (15 artifacts)"
     is_default: true
     settings:
