@@ -15,17 +15,6 @@ from services.velociraptor_service import setup_velociraptor_connection
 from services.workflow_service import add_log_to_run
 
 
-# Mapping of artifacts to their time filter parameter names
-# Format: { 'ArtifactName': { 'start': 'ParamName', 'end': 'ParamName' } }
-ARTIFACT_TIME_PARAMS = {
-    'Windows.Hayabusa.Rules': {
-        'start': 'DateTimeAfter',
-        'end': 'DateTimeBefore'
-    },
-    # Add other artifacts with time parameters here as needed
-}
-
-
 def get_vql_time_filter(start_iso, end_iso):
     """Build a VQL WHERE clause for time filtering.
 
@@ -141,31 +130,12 @@ def calculate_time_range(time_filter_settings):
     return start_iso, end_iso
 
 
-def build_artifact_spec(artifacts, settings):
-    """Build the artifact spec dict with optional time parameters.
+def build_artifact_spec(artifacts, settings=None):
+    """Build the artifact spec dict for collection.
+    Time filtering is done post-collection via filter_results_by_time().
     Returns a VQL-compatible spec string."""
-    time_filter = settings.get('time_filter', {})
-    start_time, end_time = calculate_time_range(time_filter)
-
-    spec_parts = []
-    for artifact in artifacts:
-        time_params = ARTIFACT_TIME_PARAMS.get(artifact, {})
-
-        if start_time and time_params:
-            # Build params dict for this artifact
-            params = {}
-            if 'start' in time_params:
-                params[time_params['start']] = start_time
-            if 'end' in time_params and end_time:
-                params[time_params['end']] = end_time
-
-            # Format as VQL dict
-            param_str = ", ".join([f'{k}="{v}"' for k, v in params.items()])
-            spec_parts.append(f'`{artifact}`=dict({param_str})')
-        else:
-            # No time filtering for this artifact
-            spec_parts.append(f'`{artifact}`=dict()')
-
+    # All artifacts get empty spec - time/severity filtering done post-collection
+    spec_parts = [f'`{artifact}`=dict()' for artifact in artifacts]
     return ", ".join(spec_parts)
 
 
@@ -360,50 +330,48 @@ LIMIT 5000
 
 
 def filter_by_severity(rows, severity_level):
-    """Filter rows by minimum severity level.
+    """Filter rows by minimum severity level with recursive field detection.
     Severity order: informational < low < medium < high < critical
-    Only filters rows that have a severity/level field."""
+    Searches nested objects for severity fields (e.g., Detection.Criticality)."""
     if severity_level == 'informational':
         return rows  # No filtering - show all
 
-    severity_order = ['informational', 'low', 'medium', 'high', 'critical']
-    min_level_idx = severity_order.index(severity_level) if severity_level in severity_order else 2  # default medium
-
-    # Common severity field names
-    severity_fields = ['Level', 'level', 'Severity', 'severity', 'RuleLevel', 'rule_level',
-                       'Priority', 'priority', 'Criticality', 'criticality', 'Risk', 'risk']
-
-    # Check if rows have a severity field
     if not rows:
         return rows
-    sample = rows[0]
-    severity_field = None
-    for field in severity_fields:
-        if field in sample:
-            severity_field = field
-            break
 
-    if not severity_field:
+    from services.agentic.utils import find_field_recursive, get_nested_value, SEVERITY_FIELDS
+
+    severity_order = ['informational', 'low', 'medium', 'high', 'critical']
+    min_level_idx = severity_order.index(severity_level) if severity_level in severity_order else 2
+
+    # Find severity field recursively from first row (handles nested objects)
+    field_path, _ = find_field_recursive(rows[0], SEVERITY_FIELDS)
+    if not field_path:
         return rows  # No severity field - keep all rows
+
+    def normalize_level(value):
+        """Normalize severity level string to standard names."""
+        level_value = str(value or '').lower().strip()
+        if level_value in ('info', 'informational', '0', 'none'):
+            return 'informational'
+        elif level_value in ('lo', '1'):
+            return 'low'
+        elif level_value in ('med', 'moderate', '2'):
+            return 'medium'
+        elif level_value in ('hi', '3'):
+            return 'high'
+        elif level_value in ('crit', '4', 'emergency', 'alert'):
+            return 'critical'
+        return level_value
 
     filtered = []
     for row in rows:
-        level_value = str(row.get(severity_field, '')).lower().strip()
-        # Normalize common level names
-        if level_value in ('info', 'informational', '0', 'none'):
-            level_value = 'informational'
-        elif level_value in ('lo', '1'):
-            level_value = 'low'
-        elif level_value in ('med', 'moderate', '2'):
-            level_value = 'medium'
-        elif level_value in ('hi', '3'):
-            level_value = 'high'
-        elif level_value in ('crit', '4', 'emergency', 'alert'):
-            level_value = 'critical'
+        # Get value from nested path
+        value = get_nested_value(row, field_path)
+        level_value = normalize_level(value)
 
         if level_value in severity_order:
-            level_idx = severity_order.index(level_value)
-            if level_idx >= min_level_idx:
+            if severity_order.index(level_value) >= min_level_idx:
                 filtered.append(row)
         else:
             # Unknown severity - keep by default
