@@ -35,7 +35,12 @@ def get_vql_time_filter(start_iso, end_iso):
 
 
 def check_flow_status(stub, client_id, flow_id):
-    """Check the status of a Velociraptor flow. Returns 'RUNNING', 'FINISHED', 'ERROR', or None."""
+    """Check the status of a Velociraptor flow.
+
+    Returns tuple: (status, error_info)
+        - status: 'RUNNING', 'FINISHED', 'ERROR', or None
+        - error_info: dict with backtrace/context if ERROR, else None
+    """
     try:
         # Use get_flow() VQL function (same as kape_service)
         query = f"LET flow <= get_flow(client_id='{client_id}', flow_id='{flow_id}') SELECT * FROM flow"
@@ -52,21 +57,28 @@ def check_flow_status(stub, client_id, flow_id):
                         row = resp_data[0]
                         # Try both 'state' and 'State' field names
                         state = row.get('state') or row.get('State', '')
-                        # Debug: print what we got
-                        print(f"[AGENTIC] Flow status check: flow_id={flow_id}, state={state}, keys={list(row.keys())[:10]}", flush=True)
                         # Velociraptor flow states (case-insensitive check)
                         state_upper = str(state).upper()
                         if state_upper == 'FINISHED':
-                            return 'FINISHED'
+                            return 'FINISHED', None
                         elif state_upper in ('ERROR', 'CANCELLED', 'FAILED'):
-                            return 'ERROR'
-                        elif state_upper in ('RUNNING', 'IN_PROGRESS'):
-                            return 'RUNNING'
+                            # Extract error info for logging
+                            backtrace = row.get('backtrace', '')
+                            context = row.get('context', {})
+                            artifacts_done = row.get('artifacts_with_results', [])
+                            error_info = {
+                                'backtrace': backtrace[:500] if backtrace else None,
+                                'context': context,
+                                'artifacts_completed': len(artifacts_done) if artifacts_done else 0
+                            }
+                            return 'ERROR', error_info
+                        elif state_upper in ('RUNNING', 'IN_PROGRESS', 'WAITING'):
+                            return 'RUNNING', None
                 except Exception as e:
                     print(f"[AGENTIC] Flow status parse error: {e}", flush=True)
     except Exception as e:
         print(f"[AGENTIC] Flow status query error: {e}", flush=True)
-    return None
+    return None, None
 
 
 def calculate_time_range(time_filter_settings):
@@ -531,13 +543,21 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                 if not flow_id or flow_id in completed_flows:
                     continue
 
-                status = check_flow_status(stub, client_id, flow_id)
+                status, error_info = check_flow_status(stub, client_id, flow_id)
                 if status == 'FINISHED':
                     completed_flows.add(flow_id)
                     add_log_to_run(run_id, f"[Velociraptor] Flow completed on {client_id}", "info")
                 elif status == 'ERROR':
                     completed_flows.add(flow_id)
-                    add_log_to_run(run_id, f"[Velociraptor] Flow cancelled/failed on {client_id}", "warning")
+                    # Log error details but continue processing - data may still be available
+                    if error_info and error_info.get('artifacts_completed', 0) > 0:
+                        add_log_to_run(run_id, f"[Velociraptor] Flow on {client_id} ended with errors but {error_info['artifacts_completed']} artifacts completed - continuing", "warning")
+                    else:
+                        add_log_to_run(run_id, f"[Velociraptor] Flow cancelled/failed on {client_id}", "warning")
+                    if error_info and error_info.get('backtrace'):
+                        # Log first line of backtrace for debugging
+                        bt_first_line = error_info['backtrace'].split('\n')[0][:100]
+                        print(f"[AGENTIC] Flow {flow_id} error: {bt_first_line}", flush=True)
 
             # Check for completed LLM analyses
             check_completed_analyses()
