@@ -15,23 +15,9 @@ from services.velociraptor_service import setup_velociraptor_connection
 from services.workflow_service import add_log_to_run
 
 
-def get_vql_time_filter(start_iso, end_iso):
-    """Build a VQL WHERE clause for time filtering.
-
-    Args:
-        start_iso: Start time in ISO 8601 format (e.g., '2026-03-03T00:00:00Z')
-        end_iso: End time in ISO 8601 format
-
-    Returns:
-        VQL WHERE clause string or empty string if no filter needed
-    """
-    if not start_iso and not end_iso:
-        return ""
-
-    # Note: Time filtering in VQL depends on the artifact's timestamp field
-    # Most artifacts use _ts or EventTime, but this varies
-    # For now, return empty to avoid breaking queries - time filtering is done post-query
-    return ""
+# Note: VQL-level time filtering was removed - each artifact uses different timestamp fields
+# (EventTime, Timestamp, Created, etc.) making a universal VQL filter impractical.
+# Time filtering is done post-query in Python using find_field_recursive() and TIMESTAMP_FIELDS.
 
 
 def check_flow_status(stub, client_id, flow_id):
@@ -336,11 +322,9 @@ def query_artifact_results(stub, client_id, flow_id, artifact, start_iso=None, e
         List of rows or empty list
     """
     try:
-        # Build VQL query with optional time filter
-        time_filter_clause = get_vql_time_filter(start_iso, end_iso)
+        # Time filtering done in Python post-query (see filter_row_by_time)
         query = f"""
 SELECT * FROM source(client_id='{client_id}', flow_id='{flow_id}', artifact='{artifact}')
-{time_filter_clause}
 LIMIT 5000
 """
         request_obj = api_pb2.VQLCollectorArgs(
@@ -569,11 +553,12 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                             if source_name in all_results and source_name not in analyzed_artifacts:
                                 stable_artifacts[source_name] = stable_artifacts.get(source_name, 0) + 1
 
-                                # STREAMING: Start LLM when artifact data is stable (no new data for 1 poll)
+                                # STREAMING: Process artifact when data is stable (no new data for 1 poll)
                                 if stable_artifacts[source_name] >= 1 and all_results[source_name]:
                                     rows_to_analyze = all_results[source_name]
                                     if rows_to_analyze:
-                                        add_log_to_run(run_id, f"[Pipeline] Artifact {source_name} stable - starting LLM analysis ({len(rows_to_analyze)} rows)", "info")
+                                        # TODO: LLM DISABLED - message updated to reflect this
+                                        add_log_to_run(run_id, f"[Pipeline] Artifact {source_name} stable ({len(rows_to_analyze)} rows)", "info")
                                         submit_for_analysis(source_name, rows_to_analyze)
                                     else:
                                         add_log_to_run(run_id, f"[Filter] {source_name}: All rows filtered out - skipping LLM", "info")
@@ -668,10 +653,14 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
             for source_name in final_sources:
                 rows = query_artifact_results(stub, client_id, flow_id, source_name)
                 if rows:
-                    # Apply severity filter (same as polling loop)
+                    # Apply time filter first (same as polling loop)
                     filtered_rows = rows
+                    if time_filter_func:
+                        filtered_rows = [r for r in filtered_rows if filter_row_by_time(r, time_filter_func)]
+
+                    # Then apply severity filter
                     if min_severity != 'informational':
-                        filtered_rows = filter_by_severity(rows, min_severity)
+                        filtered_rows = filter_by_severity(filtered_rows, min_severity)
 
                     if source_name not in all_results:
                         all_results[source_name] = filtered_rows
@@ -903,16 +892,9 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
             add_log_to_run(run_id, f"[Velociraptor] Found {len(flow_sources)} artifact sources in flow", "info")
             artifacts = flow_sources
 
-            # Build VQL time filter clause if enabled
-            time_filter_clause = get_vql_time_filter(start_iso, end_iso)
-            if time_filter_clause:
-                add_log_to_run(run_id, f"[Velociraptor] VQL time filter active", "debug")
-
-            # Fetch results from each source with VQL time filtering
+            # Time filtering done in Python post-query (see filter_results_by_time)
             for source in flow_sources:
                 query = f"SELECT * FROM source(client_id='{client_id}', flow_id='{flow_id}', artifact='{source}')"
-                if time_filter_clause:
-                    query += time_filter_clause
                 request_obj = api_pb2.VQLCollectorArgs(
                     max_wait=60,
                     max_row=50000,
