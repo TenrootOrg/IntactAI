@@ -412,11 +412,17 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
                 why = "Persistence mechanism detected - allows attacker to maintain access after reboot. Verify legitimacy."
 
         elif 'Detection' in artifact:
-            name = row.get('Name') or row.get('Detection', 'Unknown')
+            # Handle nested Detection dict (DetectRaptor artifacts)
+            detection = row.get('Detection', {})
+            if isinstance(detection, dict):
+                name = detection.get('Name') or row.get('Name', 'Unknown')
+                severity = detection.get('Criticality') or detection.get('Severity') or row.get('Level', '')
+            else:
+                name = row.get('Name') or str(detection) if detection else 'Unknown'
+                severity = row.get('Severity') or row.get('Level', '')
             reason = row.get('Reason') or row.get('Message', '')
-            severity = row.get('Severity') or row.get('Level', '')
-            finding = name
-            if reason:
+            finding = str(name)
+            if reason and isinstance(reason, str):
                 finding += f" - {reason[:80]}"
             # Make why more specific
             if severity:
