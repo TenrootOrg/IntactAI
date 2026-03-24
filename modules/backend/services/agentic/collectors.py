@@ -577,17 +577,17 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                         failed = error_info.get('failed_artifacts', [])
                         reason = error_info.get('error_reason', 'unknown reason')
 
-                        # Build informative message
+                        # Build informative message - make clear it's warning, not error
                         if failed:
                             failed_str = ', '.join(failed[:3])  # Show up to 3 failed
                             if len(failed) > 3:
                                 failed_str += f" (+{len(failed)-3} more)"
-                            msg = f"[Velociraptor] Warning: {len(failed)} artifact(s) failed ({failed_str}) - {reason}. {completed}/{requested} completed, continuing with available data."
+                            msg = f"[Velociraptor] (Warning, non-blocking) {len(failed)} artifact(s) did not complete ({failed_str}). {completed}/{requested} succeeded - pipeline continues."
                         else:
-                            msg = f"[Velociraptor] Warning: Flow ended with partial error ({reason}). {completed}/{requested} artifacts completed, continuing with available data."
+                            msg = f"[Velociraptor] (Warning, non-blocking) Flow had partial issues. {completed}/{requested} artifacts succeeded - pipeline continues."
                         add_log_to_run(run_id, msg, "warning")
                     else:
-                        add_log_to_run(run_id, f"[Velociraptor] Flow cancelled/failed on {client_id} - no data collected", "warning")
+                        add_log_to_run(run_id, f"[Velociraptor] (Error) Flow failed on {client_id} - no data collected", "error")
                     if error_info and error_info.get('backtrace'):
                         # Log first line of backtrace for debugging
                         bt_first_line = error_info['backtrace'].split('\n')[0][:100]
