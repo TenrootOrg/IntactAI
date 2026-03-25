@@ -714,6 +714,11 @@ a:hover {
 }
 
 .bg-gray-900 {
+    background: var(--black-soft) !important;
+}
+
+/* Only body should be transparent to show gradient */
+body.bg-gray-900 {
     background: transparent !important;
 }
 
