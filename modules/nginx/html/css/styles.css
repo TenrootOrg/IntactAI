@@ -261,22 +261,30 @@ h1, h2, h3, .header-text {
     z-index: 1;
 }
 
-.tab-content h2,
-.tab-content h3 {
+/* Main page titles (outside cards) - dark for light background */
+.tab-content > h2 {
     color: #1a1a2e !important;
 }
 
-.tab-content > p {
-    color: #333344 !important;
+.tab-content > p.text-gray-400 {
+    color: #444455 !important;
 }
 
-/* Radio/checkbox labels in forms */
-.tab-content label span.text-white {
-    color: #1a1a2e !important;
+/* Inside cards/boxes - keep light text on dark backgrounds */
+.bg-gray-800 h2,
+.bg-gray-800 h3,
+.glass-card h2,
+.glass-card h3,
+.service-card h2,
+.service-card h3 {
+    color: #ffffff !important;
 }
 
-.tab-content label span.text-xs {
-    color: #555566 !important;
+.bg-gray-800 label,
+.bg-gray-800 span,
+.bg-gray-800 p,
+.bg-gray-800 div {
+    color: inherit;
 }
 
 /* ============================================
