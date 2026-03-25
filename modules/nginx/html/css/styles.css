@@ -100,6 +100,14 @@ h1, h2, h3, .header-text {
     font-family: 'Orbitron', 'JetBrains Mono', monospace;
     text-transform: uppercase;
     letter-spacing: 0.1em;
+    color: #ffffff !important;
+}
+
+/* Main content headings */
+.main-content h2,
+.tab-content h2,
+.tab-content h3 {
+    color: #ffffff !important;
 }
 
 /* ============================================
@@ -852,6 +860,16 @@ a[class*="bg-gray-"] {
 .text-sm.text-gray-400,
 .text-xs.text-gray-500 {
     color: var(--text-dim);
+}
+
+/* Form labels */
+label {
+    color: var(--text-dim) !important;
+}
+
+label.text-white,
+span.text-white {
+    color: #ffffff !important;
 }
 
 /* ============================================
