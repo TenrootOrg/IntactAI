@@ -255,10 +255,22 @@ h1, h2, h3, .header-text {
    ============================================ */
 .main-content {
     margin-left: 260px;
-    background: transparent;
+    background: linear-gradient(180deg, #0a0a12 0%, #000000 100%);
     min-height: 100vh;
     position: relative;
     z-index: 1;
+}
+
+.tab-content {
+    background: transparent;
+}
+
+.tab-content h2 {
+    color: #ffffff !important;
+}
+
+.tab-content p {
+    color: var(--text-dim) !important;
 }
 
 /* ============================================
