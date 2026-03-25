@@ -30,6 +30,10 @@ TIMESTAMP_FIELDS = [
     'TimeCreated', 'TimeGenerated', 'RecordTime', 'LogTime',
     'Time', 'time', 'DateTime', 'datetime', 'Date', 'date',
     'SystemTime',
+    # Azure/M365 timestamps
+    'createdDateTime', 'CreatedDateTime', 'activityDateTime', 'ActivityDateTime',
+    'detectedDateTime', 'DetectedDateTime', 'eventDateTime', 'EventDateTime',
+    'riskLastUpdatedDateTime', 'RiskLastUpdatedDateTime',
 
     # ─── PRIORITY 3: MODIFICATION TIMESTAMPS (when things changed) ───
     # Best for: TaskScheduler, config files, registry - "When was this modified?"

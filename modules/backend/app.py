@@ -27,7 +27,8 @@ from routes import (
     agentic_bp,
     db_bp,
     scheduler_bp,
-    upload_bp
+    upload_bp,
+    azure_bp
 )
 
 # Import initialization services
@@ -57,6 +58,7 @@ app.register_blueprint(agentic_bp)
 app.register_blueprint(db_bp)
 app.register_blueprint(scheduler_bp)
 app.register_blueprint(upload_bp)
+app.register_blueprint(azure_bp)
 
 # Global flag to track initialization status
 initialization_status = {

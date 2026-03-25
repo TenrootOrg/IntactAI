@@ -17,6 +17,7 @@ from routes.agentic_routes import agentic_bp
 from routes.db_routes import db_bp
 from routes.scheduler_routes import scheduler_bp
 from routes.upload_routes import upload_bp
+from routes.azure_routes import azure_bp
 
 __all__ = [
     'client_bp',
@@ -33,5 +34,6 @@ __all__ = [
     'agentic_bp',
     'db_bp',
     'scheduler_bp',
-    'upload_bp'
+    'upload_bp',
+    'azure_bp'
 ]

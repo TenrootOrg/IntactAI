@@ -399,3 +399,51 @@ create_velociraptor_collector() {
         return 1
     fi
 }
+
+# =============================================================================
+# Azure Security Tools
+# =============================================================================
+
+download_sigma_rules() {
+    # Download SIGMA detection rules for Azure security automation
+    # Clones SigmaHQ rules repository for offline use
+
+    local sigma_dir="/opt/sigma-rules"
+
+    log_info "Setting up SIGMA detection rules for Azure automation..."
+
+    # Check if already exists and is valid
+    if [[ -d "$sigma_dir/rules/cloud/azure" ]]; then
+        local rule_count=$(find "$sigma_dir/rules/cloud/azure" -name "*.yml" | wc -l)
+        if [[ $rule_count -gt 10 ]]; then
+            log_info "SIGMA rules already installed: $rule_count Azure rules found"
+            return 0
+        fi
+    fi
+
+    # Clone or update SIGMA rules
+    if [[ -d "$sigma_dir/.git" ]]; then
+        log_info "Updating existing SIGMA rules..."
+        cd "$sigma_dir"
+        git pull --depth 1 2>> "$LOG_FILE" || true
+        cd - > /dev/null
+    else
+        log_info "Cloning SIGMA rules repository..."
+        rm -rf "$sigma_dir" 2>/dev/null || true
+        if git clone --depth 1 https://github.com/SigmaHQ/sigma.git "$sigma_dir" 2>> "$LOG_FILE"; then
+            log_success "SIGMA rules cloned successfully"
+        else
+            log_warn "Failed to clone SIGMA rules - Azure detection will have limited rules"
+            return 1
+        fi
+    fi
+
+    # Verify installation
+    if [[ -d "$sigma_dir/rules/cloud/azure" ]]; then
+        local rule_count=$(find "$sigma_dir/rules/cloud/azure" -name "*.yml" | wc -l)
+        log_success "SIGMA rules installed: $rule_count Azure/cloud rules"
+    else
+        log_warn "SIGMA Azure rules directory not found"
+        return 1
+    fi
+}
