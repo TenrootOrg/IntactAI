@@ -79,10 +79,10 @@
                 </div>
 
                 <!-- Automation (collapsible parent) -->
-                <div x-data="{ automationOpen: true }">
+                <div x-data="{ automationOpen: true, onpremOpen: true, cloudOpen: false }">
                     <!-- Parent item -->
                     <div class="nav-item flex items-center gap-3"
-                         :class="{ 'justify-center': $store.app.sidebarCollapsed, 'bg-gray-800/50': ($store.app.currentTab === 'modules-forensics' || $store.app.currentTab === 'modules-timesketch') && !automationOpen }"
+                         :class="{ 'justify-center': $store.app.sidebarCollapsed, 'bg-gray-800/50': ($store.app.currentTab === 'modules-forensics' || $store.app.currentTab === 'modules-timesketch' || $store.app.currentTab === 'cloud-aws' || $store.app.currentTab === 'cloud-azure') && !automationOpen }"
                          @click="$store.app.sidebarCollapsed ? $store.app.switchTab('modules-forensics') : automationOpen = !automationOpen"
                          :title="$store.app.sidebarCollapsed ? 'Automation' : ''">
                         <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -98,24 +98,75 @@
 
                     <!-- Child items (indented) -->
                     <div x-show="automationOpen && !$store.app.sidebarCollapsed" x-transition class="ml-4 border-l border-gray-700 pl-2 mt-1">
-                        <!-- Velociraptor -->
-                        <div class="nav-item flex items-center gap-3 py-2 text-sm"
-                             :class="{ 'active': $store.app.currentTab === 'modules-forensics' }"
-                             @click.stop="$store.app.switchTab('modules-forensics')">
-                            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                            </svg>
-                            <span>Velociraptor</span>
+
+                        <!-- On-Prem Section -->
+                        <div>
+                            <div class="nav-item flex items-center gap-3 py-2 text-sm cursor-pointer"
+                                 :class="{ 'text-blue-400': onpremOpen }"
+                                 @click.stop="onpremOpen = !onpremOpen">
+                                <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"></path>
+                                </svg>
+                                <span class="flex-1">On-Prem</span>
+                                <svg class="w-3 h-3 transition-transform duration-200" :class="{ 'rotate-180': onpremOpen }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                </svg>
+                            </div>
+                            <div x-show="onpremOpen" x-transition class="ml-4 border-l border-gray-700 pl-2">
+                                <!-- Velociraptor -->
+                                <div class="nav-item flex items-center gap-3 py-2 text-sm"
+                                     :class="{ 'active': $store.app.currentTab === 'modules-forensics' }"
+                                     @click.stop="$store.app.switchTab('modules-forensics')">
+                                    <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                    </svg>
+                                    <span>Velociraptor</span>
+                                </div>
+                                <!-- TimeSketch -->
+                                <div class="nav-item flex items-center gap-3 py-2 text-sm"
+                                     :class="{ 'active': $store.app.currentTab === 'modules-timesketch' }"
+                                     @click.stop="$store.app.switchTab('modules-timesketch')">
+                                    <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    </svg>
+                                    <span>TimeSketch</span>
+                                </div>
+                            </div>
                         </div>
 
-                        <!-- TimeSketch -->
-                        <div class="nav-item flex items-center gap-3 py-2 text-sm"
-                             :class="{ 'active': $store.app.currentTab === 'modules-timesketch' }"
-                             @click.stop="$store.app.switchTab('modules-timesketch')">
-                            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                            </svg>
-                            <span>TimeSketch</span>
+                        <!-- Cloud Section -->
+                        <div>
+                            <div class="nav-item flex items-center gap-3 py-2 text-sm cursor-pointer"
+                                 :class="{ 'text-blue-400': cloudOpen }"
+                                 @click.stop="cloudOpen = !cloudOpen">
+                                <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"></path>
+                                </svg>
+                                <span class="flex-1">Cloud</span>
+                                <svg class="w-3 h-3 transition-transform duration-200" :class="{ 'rotate-180': cloudOpen }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                </svg>
+                            </div>
+                            <div x-show="cloudOpen" x-transition class="ml-4 border-l border-gray-700 pl-2">
+                                <!-- Azure -->
+                                <div class="nav-item flex items-center gap-3 py-2 text-sm"
+                                     :class="{ 'active': $store.app.currentTab === 'cloud-azure' }"
+                                     @click.stop="$store.app.switchTab('cloud-azure')">
+                                    <svg class="w-4 h-4 flex-shrink-0 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M13.05 4.24L6.56 18.05a.5.5 0 00.46.7h8.48l-2.45 5.01h-8.6a2.5 2.5 0 01-2.3-3.48L9.95 4.24h3.1z"/>
+                                    </svg>
+                                    <span>Azure</span>
+                                </div>
+                                <!-- AWS -->
+                                <div class="nav-item flex items-center gap-3 py-2 text-sm"
+                                     :class="{ 'active': $store.app.currentTab === 'cloud-aws' }"
+                                     @click.stop="$store.app.switchTab('cloud-aws')">
+                                    <svg class="w-4 h-4 flex-shrink-0 text-orange-400" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93z"/>
+                                    </svg>
+                                    <span>AWS</span>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1591,15 +1642,277 @@ sudo ./velociraptor service start</code></pre>
 
             <!-- Cloud AWS Tab -->
             <div x-show="$store.app.currentTab === 'cloud-aws'" x-transition class="tab-content">
-                <div class="flex items-center justify-center h-64">
-                    <h3 class="text-3xl font-semibold text-gray-500">TBD</h3>
+                <h2 class="text-3xl font-bold text-white mb-6">AWS Integration</h2>
+                <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-8 max-w-2xl">
+                    <div class="flex items-center gap-4 mb-4">
+                        <svg class="w-12 h-12 text-orange-400" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+                        </svg>
+                        <div>
+                            <h3 class="text-xl font-semibold text-white">In Development</h3>
+                            <p class="text-gray-400">AWS cloud automation features are coming soon.</p>
+                        </div>
+                    </div>
+                    <p class="text-gray-500 text-sm">
+                        Planned features: CloudTrail log analysis, GuardDuty integration,
+                        S3 bucket forensics, and EC2 instance collection.
+                    </p>
                 </div>
             </div>
 
             <!-- Cloud Azure Tab -->
-            <div x-show="$store.app.currentTab === 'cloud-azure'" x-transition class="tab-content">
-                <div class="flex items-center justify-center h-64">
-                    <h3 class="text-3xl font-semibold text-gray-500">Coming Soon</h3>
+            <div x-show="$store.app.currentTab === 'cloud-azure'" x-transition class="tab-content"
+                 x-data="{
+                     azureMode: 'online',
+                     azureStatus: null,
+                     azureBlueprint: 'azure_quick_scan',
+                     azureTimeFilter: '7d',
+                     azureCustomStart: '',
+                     azureCustomEnd: '',
+                     azureEnableLLM: false,
+                     azureRunning: false,
+                     azureRunId: null,
+                     azureResults: null,
+                     azureUploadedFiles: [],
+                     async checkAzureStatus() {
+                         try {
+                             const res = await fetch('/api/azure/status');
+                             this.azureStatus = await res.json();
+                         } catch(e) { console.error(e); }
+                     },
+                     async startAzureScan() {
+                         this.azureRunning = true;
+                         this.azureResults = null;
+                         try {
+                             const timeFilter = this.azureTimeFilter === 'custom'
+                                 ? { type: 'between', start: this.azureCustomStart, end: this.azureCustomEnd }
+                                 : { type: 'relative', value: this.azureTimeFilter };
+                             const res = await fetch('/api/azure/scan', {
+                                 method: 'POST',
+                                 headers: { 'Content-Type': 'application/json' },
+                                 body: JSON.stringify({
+                                     blueprint: this.azureBlueprint,
+                                     time_filter: timeFilter,
+                                     enable_llm: this.azureEnableLLM
+                                 })
+                             });
+                             const data = await res.json();
+                             this.azureRunId = data.run_id;
+                             if (data.status === 'complete') {
+                                 await this.loadAzureResults(data.run_id);
+                             }
+                         } catch(e) { console.error(e); alert('Scan failed: ' + e); }
+                         this.azureRunning = false;
+                     },
+                     async uploadAzureLogs(event) {
+                         const files = event.target.files;
+                         if (!files.length) return;
+                         this.azureRunning = true;
+                         const formData = new FormData();
+                         for (const file of files) formData.append('files', file);
+                         try {
+                             const res = await fetch('/api/azure/upload', { method: 'POST', body: formData });
+                             const data = await res.json();
+                             this.azureRunId = data.run_id;
+                             this.azureUploadedFiles = data.files || [];
+                             alert('Uploaded ' + data.total_records + ' records. Click Analyze to run detection.');
+                         } catch(e) { console.error(e); alert('Upload failed'); }
+                         this.azureRunning = false;
+                     },
+                     async analyzeOffline() {
+                         if (!this.azureRunId) { alert('Upload files first'); return; }
+                         this.azureRunning = true;
+                         try {
+                             const res = await fetch('/api/azure/analyze-offline', {
+                                 method: 'POST',
+                                 headers: { 'Content-Type': 'application/json' },
+                                 body: JSON.stringify({
+                                     run_id: this.azureRunId,
+                                     enable_llm: this.azureEnableLLM
+                                 })
+                             });
+                             const data = await res.json();
+                             await this.loadAzureResults(this.azureRunId);
+                         } catch(e) { console.error(e); }
+                         this.azureRunning = false;
+                     },
+                     async loadAzureResults(runId) {
+                         try {
+                             const [statusRes, findingsRes] = await Promise.all([
+                                 fetch('/api/azure/status/' + runId),
+                                 fetch('/api/azure/findings/' + runId)
+                             ]);
+                             this.azureResults = {
+                                 status: await statusRes.json(),
+                                 findings: await findingsRes.json()
+                             };
+                         } catch(e) { console.error(e); }
+                     }
+                 }"
+                 x-init="checkAzureStatus()">
+
+                <h2 class="text-3xl font-bold text-white mb-2">Azure Security Automation</h2>
+                <p class="text-gray-400 mb-6">Collect Azure/M365 logs and run SIGMA detection rules with LLM analysis</p>
+
+                <!-- Status Banner -->
+                <div x-show="azureStatus" class="mb-6 p-3 rounded-lg"
+                     :class="azureStatus?.status === 'ready' ? 'bg-green-900/30 border border-green-700' : 'bg-yellow-900/30 border border-yellow-700'">
+                    <div class="flex items-center gap-2 text-sm">
+                        <span :class="azureStatus?.status === 'ready' ? 'text-green-400' : 'text-yellow-400'">
+                            <template x-if="azureStatus?.status === 'ready'">Ready</template>
+                            <template x-if="azureStatus?.status !== 'ready'">Partial Setup</template>
+                        </span>
+                        <span class="text-gray-400">|</span>
+                        <span class="text-gray-400">SIGMA Rules: <span :class="azureStatus?.sigma_rules?.available ? 'text-green-400' : 'text-red-400'" x-text="azureStatus?.sigma_rules?.available ? 'Available' : 'Not Found'"></span></span>
+                        <span class="text-gray-400">|</span>
+                        <span class="text-gray-400">Azure Credentials: <span :class="azureStatus?.azure_credentials?.configured ? 'text-green-400' : 'text-yellow-400'" x-text="azureStatus?.azure_credentials?.configured ? 'Configured' : 'Not Set'"></span></span>
+                    </div>
+                </div>
+
+                <!-- Mode Selection -->
+                <div class="flex gap-6 mb-6">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="radio" name="azure-mode" value="online" x-model="azureMode" class="text-blue-500">
+                        <span class="text-white">Online Collection</span>
+                        <span class="text-xs text-gray-500">(Live API)</span>
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="radio" name="azure-mode" value="offline" x-model="azureMode" class="text-blue-500">
+                        <span class="text-white">Offline Analysis</span>
+                        <span class="text-xs text-gray-500">(Upload logs)</span>
+                    </label>
+                </div>
+
+                <div class="max-w-2xl">
+                    <!-- Online Mode -->
+                    <div x-show="azureMode === 'online'" class="space-y-4">
+                        <!-- Blueprint Selection -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Blueprint</label>
+                            <select x-model="azureBlueprint" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                <option value="azure_quick_scan">Quick Scan (7 days, Free tier)</option>
+                                <option value="azure_full_investigation">Full Investigation (30 days, all sources)</option>
+                                <option value="azure_identity_focus">Identity Focus (14 days, sign-ins)</option>
+                                <option value="azure_persistence_hunt">Persistence Hunt (30 days, audit logs)</option>
+                            </select>
+                        </div>
+
+                        <!-- Time Filter -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Time Filter</label>
+                            <select x-model="azureTimeFilter" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                <option value="24h">Last 24 hours</option>
+                                <option value="7d">Last 7 days</option>
+                                <option value="14d">Last 14 days</option>
+                                <option value="30d">Last 30 days</option>
+                                <option value="custom">Custom range</option>
+                            </select>
+                        </div>
+
+                        <!-- Custom Date Range -->
+                        <div x-show="azureTimeFilter === 'custom'" class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">Start Date</label>
+                                <input type="datetime-local" x-model="azureCustomStart" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                            </div>
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">End Date</label>
+                                <input type="datetime-local" x-model="azureCustomEnd" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                            </div>
+                        </div>
+
+                        <!-- LLM Toggle -->
+                        <div class="flex items-center gap-3">
+                            <input type="checkbox" id="azure-llm" x-model="azureEnableLLM" class="rounded bg-gray-700 border-gray-600">
+                            <label for="azure-llm" class="text-gray-300">Enable LLM Analysis</label>
+                        </div>
+
+                        <!-- Start Button -->
+                        <button @click="startAzureScan()"
+                                :disabled="azureRunning || !azureStatus?.azure_credentials?.configured"
+                                class="w-full py-3 rounded-lg font-medium transition-colors"
+                                :class="azureRunning || !azureStatus?.azure_credentials?.configured ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'">
+                            <span x-show="!azureRunning">Start Azure Scan</span>
+                            <span x-show="azureRunning">Scanning...</span>
+                        </button>
+
+                        <p x-show="!azureStatus?.azure_credentials?.configured" class="text-yellow-400 text-sm">
+                            Configure Azure credentials in Settings to use online mode.
+                        </p>
+                    </div>
+
+                    <!-- Offline Mode -->
+                    <div x-show="azureMode === 'offline'" class="space-y-4">
+                        <!-- File Upload -->
+                        <div class="border-2 border-dashed border-gray-600 rounded-lg p-6 text-center">
+                            <input type="file" id="azure-upload" @change="uploadAzureLogs($event)" multiple accept=".json,.jsonl,.csv" class="hidden">
+                            <label for="azure-upload" class="cursor-pointer">
+                                <svg class="w-12 h-12 mx-auto text-gray-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                </svg>
+                                <p class="text-gray-300">Click to upload Azure/M365 logs</p>
+                                <p class="text-gray-500 text-sm mt-1">Supports JSON, JSONL, CSV</p>
+                            </label>
+                        </div>
+
+                        <!-- Uploaded Files List -->
+                        <div x-show="azureUploadedFiles.length > 0" class="bg-gray-800 rounded-lg p-4">
+                            <h4 class="text-sm font-medium text-gray-300 mb-2">Uploaded Files:</h4>
+                            <template x-for="file in azureUploadedFiles" :key="file.filename">
+                                <div class="flex justify-between text-sm py-1">
+                                    <span class="text-gray-400" x-text="file.filename"></span>
+                                    <span class="text-green-400" x-text="file.records + ' records'"></span>
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- LLM Toggle -->
+                        <div class="flex items-center gap-3">
+                            <input type="checkbox" id="azure-llm-offline" x-model="azureEnableLLM" class="rounded bg-gray-700 border-gray-600">
+                            <label for="azure-llm-offline" class="text-gray-300">Enable LLM Analysis</label>
+                        </div>
+
+                        <!-- Analyze Button -->
+                        <button @click="analyzeOffline()"
+                                :disabled="azureRunning || !azureRunId"
+                                class="w-full py-3 rounded-lg font-medium transition-colors"
+                                :class="azureRunning || !azureRunId ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'">
+                            <span x-show="!azureRunning">Analyze Uploaded Logs</span>
+                            <span x-show="azureRunning">Analyzing...</span>
+                        </button>
+                    </div>
+
+                    <!-- Results Section -->
+                    <div x-show="azureResults" class="mt-8 bg-gray-800 rounded-lg p-6">
+                        <h3 class="text-lg font-semibold text-white mb-4">Results</h3>
+
+                        <!-- Status -->
+                        <div class="grid grid-cols-3 gap-4 mb-4">
+                            <div class="bg-gray-900 rounded p-3">
+                                <div class="text-2xl font-bold text-white" x-text="azureResults?.findings?.total_findings || 0"></div>
+                                <div class="text-sm text-gray-400">SIGMA Findings</div>
+                            </div>
+                            <div class="bg-gray-900 rounded p-3">
+                                <div class="text-2xl font-bold text-white" x-text="Object.keys(azureResults?.findings?.findings || {}).length"></div>
+                                <div class="text-sm text-gray-400">Rules Matched</div>
+                            </div>
+                            <div class="bg-gray-900 rounded p-3">
+                                <div class="text-lg font-bold" :class="azureResults?.status?.status === 'complete' ? 'text-green-400' : 'text-yellow-400'" x-text="azureResults?.status?.status || 'unknown'"></div>
+                                <div class="text-sm text-gray-400">Status</div>
+                            </div>
+                        </div>
+
+                        <!-- Findings by Source -->
+                        <div x-show="Object.keys(azureResults?.findings?.findings || {}).length > 0">
+                            <h4 class="text-sm font-medium text-gray-300 mb-2">Findings by Detection Rule:</h4>
+                            <template x-for="(findings, source) in (azureResults?.findings?.findings || {})" :key="source">
+                                <div class="flex justify-between py-1 text-sm border-b border-gray-700">
+                                    <span class="text-gray-400" x-text="source.replace('SIGMA.', '')"></span>
+                                    <span class="text-red-400" x-text="findings.length + ' hits'"></span>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
                 </div>
             </div>
 

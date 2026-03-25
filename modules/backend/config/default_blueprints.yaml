@@ -244,3 +244,52 @@ timesketch:
       plaso_hasher_size: 100
       collection_timeout: 10000
       cpu_limit: 80
+
+# ============================================================================
+# Azure Security Blueprints
+# ============================================================================
+azure:
+
+  - id: azure_quick_scan
+    name: "Quick Scan"
+    description: "Fast check using Unified Audit Log - works on Free tier (7 days)"
+    is_default: true
+    settings:
+      sources:
+        - unified_audit
+      time_range_days: 7
+      min_severity: low
+
+  - id: azure_full_investigation
+    name: "Full Investigation"
+    description: "Complete Azure security analysis with all available sources (30 days)"
+    is_default: true
+    settings:
+      sources:
+        - all
+      time_range_days: 30
+      min_severity: informational
+
+  - id: azure_identity_focus
+    name: "Identity Focus"
+    description: "Focus on authentication and identity threats - sign-ins and audit"
+    is_default: true
+    settings:
+      sources:
+        - signin_logs
+        - audit_logs
+        - risky_signins
+      time_range_days: 14
+      min_severity: low
+
+  - id: azure_persistence_hunt
+    name: "Persistence Hunt"
+    description: "Hunt for persistence mechanisms - service principals and federation"
+    is_default: true
+    settings:
+      sources:
+        - audit_logs
+        - activity_logs
+        - unified_audit
+      time_range_days: 30
+      min_severity: low

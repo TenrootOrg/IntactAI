@@ -29,3 +29,8 @@ openai==2.21.0
 # Scheduler
 APScheduler==3.11.2
 SQLAlchemy==2.0.46
+
+# Azure Security Automation
+pysigma>=0.10.0
+azure-identity>=1.15.0
+msgraph-sdk>=1.0.0
