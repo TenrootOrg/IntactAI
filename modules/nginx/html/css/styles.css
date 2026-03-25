@@ -262,11 +262,14 @@ h1, h2, h3, .header-text {
 }
 
 /* Main page titles (outside cards) - dark for light background */
-.tab-content > h2 {
+.tab-content > h2,
+.tab-content > div > h2,
+.tab-content > .flex > h2 {
     color: #1a1a2e !important;
 }
 
-.tab-content > p.text-gray-400 {
+.tab-content > p.text-gray-400,
+.tab-content > div > p.text-gray-400 {
     color: #444455 !important;
 }
 
