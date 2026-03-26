@@ -2133,7 +2133,17 @@ sudo ./velociraptor service start</code></pre>
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">Model</label>
-                                    <input type="text" x-model="$store.settings.config.agentic.online_llm.model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    <select x-model="$store.settings.config.agentic.online_llm.model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                        <option value="claude-opus">Claude Opus</option>
+                                        <option value="claude-sonnet">Claude Sonnet</option>
+                                        <option value="claude-haiku">Claude Haiku</option>
+                                        <option value="gpt-4o">GPT-4o</option>
+                                        <option value="gpt-4.1">GPT-4.1</option>
+                                        <option value="gemini-flash">Gemini Flash</option>
+                                        <option value="gemini-pro">Gemini Pro</option>
+                                        <option value="deepseek-v3">DeepSeek V3</option>
+                                        <option value="deepseek-r1">DeepSeek R1</option>
+                                    </select>
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">API Key</label>

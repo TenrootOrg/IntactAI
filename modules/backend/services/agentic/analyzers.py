@@ -12,6 +12,78 @@ from services.agentic.constants import (
     OLLAMA_CONTEXT_SIZE, OLLAMA_TIMEOUT_SECONDS
 )
 
+# =============================================================================
+# Model Aliases - Friendly names that resolve to latest model IDs
+# =============================================================================
+# Anthropic supports aliases without dates (e.g., claude-opus-4-6 auto-updates)
+# OpenRouter requires specific model IDs that may need periodic updates
+
+MODEL_ALIASES = {
+    # Claude models (Anthropic aliases work without dates)
+    "claude-opus": {
+        "claude": "claude-opus-4-6",
+        "openrouter": "anthropic/claude-opus-4-6"
+    },
+    "claude-sonnet": {
+        "claude": "claude-sonnet-4-6",
+        "openrouter": "anthropic/claude-sonnet-4-6"
+    },
+    "claude-haiku": {
+        "claude": "claude-haiku-4-5",
+        "openrouter": "anthropic/claude-haiku-4-5"
+    },
+    # OpenAI models
+    "gpt-4o": {
+        "openai": "gpt-4o",
+        "openrouter": "openai/gpt-4o"
+    },
+    "gpt-4.1": {
+        "openai": "gpt-4.1",
+        "openrouter": "openai/gpt-4.1"
+    },
+    # Google models
+    "gemini-flash": {
+        "openrouter": "google/gemini-2.5-flash-preview"
+    },
+    "gemini-pro": {
+        "openrouter": "google/gemini-2.5-pro-preview"
+    },
+    # DeepSeek models
+    "deepseek-v3": {
+        "openrouter": "deepseek/deepseek-chat-v3-0324"
+    },
+    "deepseek-r1": {
+        "openrouter": "deepseek/deepseek-r1"
+    },
+}
+
+def resolve_model_alias(model_name: str, provider: str) -> str:
+    """Resolve a friendly model name to the actual model ID for a provider.
+
+    Args:
+        model_name: Friendly name (e.g., 'claude-sonnet') or actual model ID
+        provider: Provider name ('claude', 'openai', 'openrouter')
+
+    Returns:
+        Actual model ID to use with the API
+    """
+    # Check if it's an alias
+    if model_name in MODEL_ALIASES:
+        alias_map = MODEL_ALIASES[model_name]
+        if provider in alias_map:
+            return alias_map[provider]
+        # Fallback: try openrouter if direct provider not found
+        if 'openrouter' in alias_map:
+            return alias_map['openrouter']
+
+    # Not an alias, return as-is (user provided actual model ID)
+    return model_name
+
+
+def get_available_models() -> list:
+    """Return list of available model aliases for frontend dropdown."""
+    return list(MODEL_ALIASES.keys())
+
 
 def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None):
     """Analyze a single artifact with LLM. Returns (artifact, summary, error) tuple.
@@ -152,7 +224,10 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens):
     """Call Claude or other online LLM"""
     provider = provider_config.get('provider', 'claude')
     api_key = provider_config.get('api_key', '')
-    model = provider_config.get('model', 'claude-sonnet-4-6')
+    model_input = provider_config.get('model', 'claude-sonnet')
+
+    # Resolve model alias to actual model ID
+    model = resolve_model_alias(model_input, provider)
 
     if not api_key:
         raise ValueError("Online LLM API key not configured. Set it in Settings.")

@@ -19,9 +19,9 @@ DEFAULT_CONFIG = {
             "batch_size": 100
         },
         "online_llm": {
-            "provider": "claude",
+            "provider": "openrouter",
             "api_key": "",
-            "model": "claude-sonnet-4-6",
+            "model": "claude-sonnet",
             "batch_size": 100
         }
     }
@@ -90,6 +90,23 @@ def _save_cloud_config(config):
     """Save cloud configuration to database."""
     from services.file_storage_service import save_cloud_config
     save_cloud_config(config)
+
+
+# =============================================================================
+# LLM Model Aliases Endpoint
+# =============================================================================
+
+@config_bp.route('/api/config/models', methods=['GET'])
+def get_available_models():
+    """Get available LLM model aliases for dropdown selection."""
+    try:
+        from services.agentic.analyzers import MODEL_ALIASES
+        return jsonify({
+            "models": list(MODEL_ALIASES.keys()),
+            "aliases": MODEL_ALIASES
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # =============================================================================
