@@ -18,13 +18,18 @@ from services.velociraptor_service import setup_velociraptor_connection
 # TenRoot custom artifacts zip (downloaded by tools_download_service)
 TENROOT_ARTIFACTS_ZIP = "/app/data/tools/Velociraptor-Artifacts-main.zip"
 
+# Local custom artifacts directory (for artifacts not in the TenRoot zip)
+CUSTOM_ARTIFACTS_DIR = "/app/data/custom_artifacts"
+
 # Server artifacts to run on startup (two-step import process)
 # Step 1: Import ArtifactExchange - makes the DetectRaptor import artifact available
 # Step 2: Import DetectRaptor hunting artifacts (requires ArtifactExchange first)
+# Step 3: Start Custom.Elastic.Flows.Upload to forward data to Elasticsearch
 STARTUP_SERVER_ARTIFACTS = [
     "Server.Import.ArtifactExchange",
     "Server.Import.DetectRaptor",
     "Server.Import.Extras",
+    "Custom.Elastic.Flows.Upload",  # Auto-upload flows to Elasticsearch
 ]
 
 # Additional exchange artifacts that need manual import after startup:
@@ -187,6 +192,14 @@ def initialize_velociraptor_artifacts(logger_func=None):
     results["success"].extend(tenroot_results.get("success", []))
     results["failed"].extend(tenroot_results.get("failed", []))
     results["skipped"].extend(tenroot_results.get("skipped", []))
+
+    # Import local custom artifacts (ELK integration, etc.)
+    log("")
+    log("Importing local custom artifacts...")
+    local_results = import_local_custom_artifacts(logger_func)
+    results["success"].extend(local_results.get("success", []))
+    results["failed"].extend(local_results.get("failed", []))
+    results["skipped"].extend(local_results.get("skipped", []))
 
     log("=" * 60)
     log("Velociraptor initialization complete")
@@ -387,6 +400,91 @@ def import_tenroot_artifacts(logger_func=None):
 
     except Exception as e:
         log(f"Error importing TenRoot artifacts: {e}", "error")
+        traceback.print_exc()
+
+    return results
+
+
+def import_local_custom_artifacts(logger_func=None):
+    """Import custom artifacts from the local custom_artifacts directory
+
+    This imports artifacts that are not in the TenRoot zip, such as:
+    - Custom.Elastic.Flows.Upload - Auto-forwards Velociraptor data to Elasticsearch
+
+    Args:
+        logger_func: Optional logging function
+
+    Returns:
+        dict with success/failed lists
+    """
+    def log(message, level="info"):
+        print(f"[VELO-INIT] {message}", flush=True)
+        if logger_func:
+            try:
+                logger_func(f"[VELO-INIT] {message}", level)
+            except:
+                pass
+
+    results = {
+        "success": [],
+        "failed": [],
+        "skipped": []
+    }
+
+    # Check if custom artifacts directory exists
+    if not os.path.exists(CUSTOM_ARTIFACTS_DIR):
+        log(f"Custom artifacts directory not found: {CUSTOM_ARTIFACTS_DIR}", "info")
+        return results
+
+    log("=" * 60)
+    log("Importing local custom artifacts")
+    log("=" * 60)
+
+    try:
+        # Find all .yaml files in the custom artifacts directory
+        yaml_files = []
+        for f in os.listdir(CUSTOM_ARTIFACTS_DIR):
+            if f.endswith('.yaml'):
+                yaml_files.append(os.path.join(CUSTOM_ARTIFACTS_DIR, f))
+
+        if not yaml_files:
+            log("No custom artifact YAML files found")
+            return results
+
+        log(f"Found {len(yaml_files)} custom artifact YAML files")
+
+        # Import each artifact
+        for yaml_path in yaml_files:
+            filename = os.path.basename(yaml_path)
+
+            try:
+                with open(yaml_path, 'r', encoding='utf-8') as f:
+                    yaml_content = f.read()
+
+                # Skip empty or very small files
+                if len(yaml_content.strip()) < 50:
+                    results["skipped"].append(filename)
+                    continue
+
+                artifact_name = import_custom_artifact(yaml_content, logger_func)
+
+                if artifact_name:
+                    results["success"].append(artifact_name)
+                    log(f"  ✓ Imported: {artifact_name}")
+                else:
+                    results["failed"].append(filename)
+                    log(f"  ✗ Failed: {filename}", "warning")
+
+            except Exception as e:
+                results["failed"].append(filename)
+                log(f"  ✗ Error with {filename}: {e}", "warning")
+
+        log("=" * 60)
+        log(f"Local custom import complete: {len(results['success'])} succeeded, {len(results['failed'])} failed")
+        log("=" * 60)
+
+    except Exception as e:
+        log(f"Error importing local custom artifacts: {e}", "error")
         traceback.print_exc()
 
     return results
