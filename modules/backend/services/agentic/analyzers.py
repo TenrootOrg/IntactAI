@@ -228,8 +228,14 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens):
     api_key = provider_config.get('api_key', '')
     model_input = provider_config.get('model', 'claude-sonnet')
 
-    # Resolve model alias to actual model ID
-    model = resolve_model_alias(model_input, provider)
+    # Handle custom model for OpenRouter
+    if model_input == 'custom':
+        model = provider_config.get('custom_model', '')
+        if not model:
+            raise ValueError("Custom model selected but no model ID provided")
+    else:
+        # Resolve model alias to actual model ID
+        model = resolve_model_alias(model_input, provider)
 
     if not api_key:
         raise ValueError("Online LLM API key not configured. Set it in Settings.")
