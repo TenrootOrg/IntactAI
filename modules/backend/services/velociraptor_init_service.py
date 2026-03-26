@@ -21,14 +21,18 @@ TENROOT_ARTIFACTS_ZIP = "/app/data/tools/Velociraptor-Artifacts-main.zip"
 # Local custom artifacts directory (for artifacts not in the TenRoot zip)
 CUSTOM_ARTIFACTS_DIR = "/app/data/custom_artifacts"
 
-# Server artifacts to run on startup (two-step import process)
+# Server artifacts to run on startup (import artifacts)
 # Step 1: Import ArtifactExchange - makes the DetectRaptor import artifact available
 # Step 2: Import DetectRaptor hunting artifacts (requires ArtifactExchange first)
-# Step 3: Start Custom.Elastic.Flows.Upload to forward data to Elasticsearch
 STARTUP_SERVER_ARTIFACTS = [
     "Server.Import.ArtifactExchange",
     "Server.Import.DetectRaptor",
     "Server.Import.Extras",
+]
+
+# Server EVENT artifacts to start monitoring (run continuously)
+# These use add_server_monitoring() instead of collect_client()
+STARTUP_SERVER_EVENT_ARTIFACTS = [
     "Custom.Elastic.Flows.Upload",  # Auto-upload flows to Elasticsearch
 ]
 
@@ -116,6 +120,70 @@ def run_server_artifact(artifact_name, parameters=None, logger_func=None):
         return None
 
 
+def start_server_event_artifact(artifact_name, logger_func=None):
+    """Start a server event artifact for continuous monitoring
+
+    Args:
+        artifact_name: Name of the SERVER_EVENT artifact to start
+        logger_func: Optional logging function
+
+    Returns:
+        True if successful, False otherwise
+    """
+    def log(message, level="info"):
+        print(f"[VELO-INIT] {message}", flush=True)
+        if logger_func:
+            try:
+                logger_func(f"[VELO-INIT] {message}", level)
+            except:
+                pass
+
+    try:
+        log(f"Starting server event artifact: {artifact_name}")
+
+        channel = setup_velociraptor_connection()
+        if not channel:
+            log("Failed to connect to Velociraptor", "error")
+            return False
+
+        stub = api_pb2_grpc.APIStub(channel)
+
+        # Use add_server_monitoring() for SERVER_EVENT artifacts
+        query = f"SELECT add_server_monitoring(artifact='{artifact_name}') AS Result FROM scope()"
+
+        log(f"VQL: {query}")
+
+        request = api_pb2.VQLCollectorArgs(
+            max_wait=10,
+            Query=[api_pb2.VQLRequest(
+                Name=artifact_name,
+                VQL=query
+            )]
+        )
+
+        success = False
+        for response in stub.Query(request, timeout=30):
+            if response.log:
+                log(f"Server log: {response.log}")
+
+            if response.Response:
+                try:
+                    data = json.loads(response.Response)
+                    if isinstance(data, list) and len(data) > 0:
+                        log(f"Server event artifact started: {data}")
+                        success = True
+                except (json.JSONDecodeError, KeyError) as e:
+                    log(f"Could not parse response: {e}", "warning")
+
+        channel.close()
+        return success
+
+    except Exception as e:
+        log(f"Error starting server event artifact {artifact_name}: {e}", "error")
+        traceback.print_exc()
+        return False
+
+
 def initialize_velociraptor_artifacts(logger_func=None):
     """Initialize Velociraptor by running server artifacts in sequence
 
@@ -123,6 +191,7 @@ def initialize_velociraptor_artifacts(logger_func=None):
     artifacts are available in Velociraptor:
     1. Server.Import.ArtifactExchange - imports exchange artifacts
     2. Server.Import.DetectRaptor - imports DetectRaptor artifacts
+    3. Start server event artifacts (Custom.Elastic.Flows.Upload)
 
     Args:
         logger_func: Optional logging function
@@ -200,6 +269,21 @@ def initialize_velociraptor_artifacts(logger_func=None):
     results["success"].extend(local_results.get("success", []))
     results["failed"].extend(local_results.get("failed", []))
     results["skipped"].extend(local_results.get("skipped", []))
+
+    # Start server event artifacts (continuous monitoring)
+    log("")
+    log("Starting server event artifacts...")
+    for artifact in STARTUP_SERVER_EVENT_ARTIFACTS:
+        try:
+            if start_server_event_artifact(artifact, logger_func):
+                results["success"].append(f"{artifact} (monitoring)")
+                log(f"Successfully started {artifact} for monitoring")
+            else:
+                results["failed"].append(f"{artifact} (monitoring)")
+                log(f"Failed to start {artifact} for monitoring", "warning")
+        except Exception as e:
+            log(f"Failed to start {artifact}: {e}", "error")
+            results["failed"].append(f"{artifact} (monitoring)")
 
     log("=" * 60)
     log("Velociraptor initialization complete")

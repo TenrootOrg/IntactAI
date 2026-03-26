@@ -19,7 +19,7 @@ velociraptor:
     is_default: true
     settings:
       hunt_expiry: 120
-      timeout: 120
+      timeout: 600
       cpu_limit: 90
     artifacts:
       - DetectRaptor.Windows.Detection.Amcache
@@ -157,7 +157,7 @@ velociraptor:
     is_default: true
     settings:
       hunt_expiry: 120
-      timeout: 120
+      timeout: 600
       cpu_limit: 90
     artifacts:
       - Windows.Hayabusa.Rules
