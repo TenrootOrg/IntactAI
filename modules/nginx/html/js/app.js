@@ -684,11 +684,12 @@ document.addEventListener('alpine:init', () => {
         },
 
         onProviderChange() {
+            // Set default model based on provider (using friendly aliases)
             const modelDefaults = {
                 'openai': 'gpt-4o',
-                'claude': 'claude-sonnet-4-6',
-                'gemini': 'gemini-pro',
-                'openrouter': 'anthropic/claude-opus-4-6'
+                'claude': 'claude-sonnet',
+                'gemini': 'gemini-flash',
+                'openrouter': 'claude-sonnet'
             };
             const defaultModel = modelDefaults[this.config.agentic.online_llm.provider];
             if (defaultModel) {
