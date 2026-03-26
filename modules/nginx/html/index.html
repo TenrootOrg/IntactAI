@@ -1684,9 +1684,13 @@ sudo ./velociraptor service start</code></pre>
                          this.azureRunning = true;
                          this.azureResults = null;
                          try {
-                             const timeFilter = this.azureTimeFilter === 'custom'
-                                 ? { type: 'between', start: this.azureCustomStart, end: this.azureCustomEnd }
-                                 : { type: 'relative', value: this.azureTimeFilter };
+                             let timeFilter;
+                             if (this.azureTimeFilter === 'custom') {
+                                 const customDates = getAzureCustomDates();
+                                 timeFilter = { type: 'between', start: customDates.start, end: customDates.end };
+                             } else {
+                                 timeFilter = { type: 'relative', value: this.azureTimeFilter };
+                             }
                              const res = await fetch('/api/azure/scan', {
                                  method: 'POST',
                                  headers: { 'Content-Type': 'application/json' },
@@ -1812,15 +1816,58 @@ sudo ./velociraptor service start</code></pre>
                         </div>
 
                         <!-- Custom Date Range -->
-                        <div x-show="azureTimeFilter === 'custom'" class="grid grid-cols-2 gap-4">
+                        <div x-show="azureTimeFilter === 'custom'" x-init="$watch('azureTimeFilter', val => val === 'custom' && initAzureDatePickers())" class="space-y-4">
+                            <!-- From Date/Time -->
                             <div>
-                                <label class="block text-sm text-gray-400 mb-1">Start Date</label>
-                                <input type="datetime-local" x-model="azureCustomStart" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                <label class="block text-xs text-gray-400 mb-2">From (UTC)</label>
+                                <div class="flex items-center gap-2">
+                                    <div class="flex-1 relative">
+                                        <input type="text" id="azure-date-start" placeholder="Select date..."
+                                            class="azure-flatpickr w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none" readonly>
+                                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                        </span>
+                                    </div>
+                                    <select id="azure-time-start-hour" onchange="updateAzureStartDateTime()"
+                                        class="w-20 bg-gray-900 border border-gray-700 rounded-lg px-2 py-2.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none text-center">
+                                        <option value="00">00:00</option><option value="01">01:00</option><option value="02">02:00</option><option value="03">03:00</option>
+                                        <option value="04">04:00</option><option value="05">05:00</option><option value="06">06:00</option><option value="07">07:00</option>
+                                        <option value="08">08:00</option><option value="09">09:00</option><option value="10">10:00</option><option value="11">11:00</option>
+                                        <option value="12">12:00</option><option value="13">13:00</option><option value="14">14:00</option><option value="15">15:00</option>
+                                        <option value="16">16:00</option><option value="17">17:00</option><option value="18">18:00</option><option value="19">19:00</option>
+                                        <option value="20">20:00</option><option value="21">21:00</option><option value="22">22:00</option><option value="23">23:00</option>
+                                    </select>
+                                </div>
                             </div>
+                            <!-- Arrow -->
+                            <div class="flex justify-center text-blue-400">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
+                            </div>
+                            <!-- To Date/Time -->
                             <div>
-                                <label class="block text-sm text-gray-400 mb-1">End Date</label>
-                                <input type="datetime-local" x-model="azureCustomEnd" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                <label class="block text-xs text-gray-400 mb-2">To (UTC) <span class="text-gray-500">- empty = now</span></label>
+                                <div class="flex items-center gap-2">
+                                    <div class="flex-1 relative">
+                                        <input type="text" id="azure-date-end" placeholder="Select date..."
+                                            class="azure-flatpickr w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none" readonly>
+                                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                        </span>
+                                    </div>
+                                    <select id="azure-time-end-hour" onchange="updateAzureEndDateTime()"
+                                        class="w-20 bg-gray-900 border border-gray-700 rounded-lg px-2 py-2.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none text-center">
+                                        <option value="00">00:00</option><option value="01">01:00</option><option value="02">02:00</option><option value="03">03:00</option>
+                                        <option value="04">04:00</option><option value="05">05:00</option><option value="06">06:00</option><option value="07">07:00</option>
+                                        <option value="08">08:00</option><option value="09">09:00</option><option value="10">10:00</option><option value="11">11:00</option>
+                                        <option value="12">12:00</option><option value="13">13:00</option><option value="14">14:00</option><option value="15">15:00</option>
+                                        <option value="16">16:00</option><option value="17">17:00</option><option value="18">18:00</option><option value="19">19:00</option>
+                                        <option value="20">20:00</option><option value="21">21:00</option><option value="22">22:00</option><option value="23">23:00</option>
+                                    </select>
+                                </div>
                             </div>
+                            <!-- Hidden combined fields -->
+                            <input type="hidden" id="azure-time-start">
+                            <input type="hidden" id="azure-time-end">
                         </div>
 
                         <!-- LLM Toggle -->
@@ -2385,5 +2432,70 @@ sudo ./velociraptor service start</code></pre>
     <script src="js/timesketch.js"></script>
     <script src="js/agentic.js"></script>
     <script src="js/scheduler.js"></script>
+    <!-- Azure date pickers -->
+    <script>
+    let azureFpStart = null, azureFpEnd = null;
+
+    function initAzureDatePickers() {
+        if (typeof flatpickr === 'undefined') return;
+        const startEl = document.getElementById('azure-date-start');
+        const endEl = document.getElementById('azure-date-end');
+        if (!startEl || !endEl) return;
+
+        // Destroy existing
+        if (azureFpStart) { azureFpStart.destroy(); azureFpStart = null; }
+        if (azureFpEnd) { azureFpEnd.destroy(); azureFpEnd = null; }
+
+        const config = {
+            dateFormat: "Y-m-d",
+            disableMobile: true,
+            allowInput: false,
+            clickOpens: true,
+            appendTo: document.body
+        };
+
+        setTimeout(() => {
+            azureFpStart = flatpickr(startEl, {
+                ...config,
+                onChange: (dates, str) => {
+                    updateAzureStartDateTime();
+                    if (azureFpEnd && dates[0]) azureFpEnd.set('minDate', dates[0]);
+                }
+            });
+            azureFpEnd = flatpickr(endEl, {
+                ...config,
+                onChange: (dates, str) => {
+                    updateAzureEndDateTime();
+                    if (azureFpStart && dates[0]) azureFpStart.set('maxDate', dates[0]);
+                }
+            });
+        }, 50);
+    }
+
+    function updateAzureStartDateTime() {
+        const dateEl = document.getElementById('azure-date-start');
+        const hourEl = document.getElementById('azure-time-start-hour');
+        const hiddenEl = document.getElementById('azure-time-start');
+        if (dateEl?.value && hourEl && hiddenEl) {
+            hiddenEl.value = dateEl.value + 'T' + hourEl.value + ':00:00Z';
+        }
+    }
+
+    function updateAzureEndDateTime() {
+        const dateEl = document.getElementById('azure-date-end');
+        const hourEl = document.getElementById('azure-time-end-hour');
+        const hiddenEl = document.getElementById('azure-time-end');
+        if (dateEl?.value && hourEl && hiddenEl) {
+            hiddenEl.value = dateEl.value + 'T' + hourEl.value + ':00:00Z';
+        }
+    }
+
+    function getAzureCustomDates() {
+        return {
+            start: document.getElementById('azure-time-start')?.value || '',
+            end: document.getElementById('azure-time-end')?.value || ''
+        };
+    }
+    </script>
 </body>
 </html>

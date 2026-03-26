@@ -262,15 +262,19 @@ h1, h2, h3, .header-text {
 }
 
 /* Main page titles (outside cards) - dark for light background */
-.tab-content > h2,
-.tab-content > div > h2,
-.tab-content > .flex > h2 {
+.tab-content h2.text-3xl {
     color: #1a1a2e !important;
 }
 
 .tab-content > p.text-gray-400,
-.tab-content > div > p.text-gray-400 {
+.tab-content > div p.text-gray-400:first-of-type {
     color: #444455 !important;
+}
+
+/* Keep titles inside dark cards white */
+.bg-gray-800 h2,
+.bg-gray-800 h3 {
+    color: #ffffff !important;
 }
 
 /* Inside cards/boxes - keep light text on dark backgrounds */
