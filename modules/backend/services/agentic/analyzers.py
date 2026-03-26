@@ -19,17 +19,17 @@ from services.agentic.constants import (
 # OpenRouter requires specific model IDs that may need periodic updates
 
 MODEL_ALIASES = {
-    # Claude models (Anthropic aliases work without dates)
+    # Claude models - simple aliases auto-update to latest
     "claude-opus": {
-        "claude": "claude-opus-4-6",
-        "openrouter": "anthropic/claude-opus-4-6"
+        "claude": "opus",  # Auto-resolves to latest Opus
+        "openrouter": "anthropic/claude-opus-4-6"  # OpenRouter needs specific version
     },
     "claude-sonnet": {
-        "claude": "claude-sonnet-4-6",
+        "claude": "sonnet",  # Auto-resolves to latest Sonnet
         "openrouter": "anthropic/claude-sonnet-4-6"
     },
     "claude-haiku": {
-        "claude": "claude-haiku-4-5",
+        "claude": "haiku",  # Auto-resolves to latest Haiku
         "openrouter": "anthropic/claude-haiku-4-5"
     },
     # OpenAI models
@@ -41,16 +41,16 @@ MODEL_ALIASES = {
         "openai": "gpt-4.1",
         "openrouter": "openai/gpt-4.1"
     },
-    # Google models
+    # Google models - use -latest suffix for auto-updates
     "gemini-flash": {
-        "gemini": "gemini-2.5-flash",
+        "gemini": "gemini-2.5-flash-latest",  # Auto-resolves to latest Flash
         "openrouter": "google/gemini-2.5-flash-preview"
     },
     "gemini-pro": {
-        "gemini": "gemini-2.5-pro",
+        "gemini": "gemini-2.5-pro-latest",  # Auto-resolves to latest Pro
         "openrouter": "google/gemini-2.5-pro-preview"
     },
-    # DeepSeek models
+    # DeepSeek models (OpenRouter only)
     "deepseek-v3": {
         "openrouter": "deepseek/deepseek-chat-v3-0324"
     },
