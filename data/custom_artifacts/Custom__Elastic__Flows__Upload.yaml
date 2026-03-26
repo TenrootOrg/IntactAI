@@ -38,6 +38,6 @@ sources:
 
       - SELECT * FROM elastic_upload(
             query=documents,
-            addresses=["http://elasticsearch:9200"],
+            addresses=["http://mssp_elasticsearch:9200"],
             index="velociraptor",
             type="artifact")
