@@ -2156,7 +2156,7 @@ sudo ./velociraptor service start</code></pre>
                                                 <option value="gemini-pro">Gemini Pro</option>
                                             </optgroup>
                                         </template>
-                                        <!-- OpenRouter - all models -->
+                                        <!-- OpenRouter - all models + custom -->
                                         <template x-if="$store.settings.config.agentic.online_llm.provider === 'openrouter'">
                                             <optgroup label="All Models">
                                                 <option value="claude-opus">Claude Opus</option>
@@ -2168,9 +2168,16 @@ sudo ./velociraptor service start</code></pre>
                                                 <option value="gemini-pro">Gemini Pro</option>
                                                 <option value="deepseek-v3">DeepSeek V3</option>
                                                 <option value="deepseek-r1">DeepSeek R1</option>
+                                                <option value="custom">-- Custom Model --</option>
                                             </optgroup>
                                         </template>
                                     </select>
+                                    <!-- Custom model input for OpenRouter -->
+                                    <input x-show="$store.settings.config.agentic.online_llm.provider === 'openrouter' && $store.settings.config.agentic.online_llm.model === 'custom'"
+                                           type="text"
+                                           x-model="$store.settings.config.agentic.online_llm.custom_model"
+                                           class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm mt-1"
+                                           placeholder="e.g. anthropic/claude-opus-4-6">
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">API Key</label>
