@@ -179,8 +179,16 @@ create_data_directory() {
         log_info "Data directory already exists: $data_dir"
     fi
 
+    # Create custom_artifacts directory for Velociraptor artifacts (ELK integration, etc.)
+    local custom_artifacts_dir="${data_dir}/custom_artifacts"
+    if [[ ! -d "$custom_artifacts_dir" ]]; then
+        mkdir -p "$custom_artifacts_dir"
+        log_success "Created custom_artifacts directory: $custom_artifacts_dir"
+    fi
+
     # Set proper permissions (readable/writable by all)
     chmod 755 "$data_dir"
+    chmod 755 "$custom_artifacts_dir"
 
     log_success "Data directory ready (SQLite database will be created on first startup)"
 }
