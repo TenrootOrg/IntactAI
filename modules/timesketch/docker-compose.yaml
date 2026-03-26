@@ -79,8 +79,6 @@ services:
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
       - ./python-packages:/tmp/packages:ro
-    ports:
-      - "5000:5000"
     restart: unless-stopped
     depends_on:
       timesketch-postgres:
@@ -89,6 +87,39 @@ services:
         condition: service_healthy
       timesketch-redis:
         condition: service_healthy
+    networks:
+      - mssp_network
+
+  timesketch-web-legacy:
+    container_name: mssp_timesketch_web_legacy
+    image: us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:${TIMESKETCH_VERSION:-latest}
+    entrypoint: ["/docker-entrypoint.sh"]
+    command: ["timesketch-web-legacy"]
+    environment:
+      - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-2}
+      - TIMESKETCH_UI_MODE=legacy
+      - TIMESKETCH_SETTINGS=/etc/timesketch/timesketch_legacy.conf
+    volumes:
+      - ./config:/etc/timesketch
+      - timesketch_upload:/usr/share/timesketch/upload
+      - timesketch_logs:/var/log/timesketch
+    restart: unless-stopped
+    depends_on:
+      - timesketch-web
+    networks:
+      - mssp_network
+
+  timesketch-nginx:
+    container_name: mssp_timesketch_nginx
+    image: nginx:alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    depends_on:
+      - timesketch-web
+      - timesketch-web-legacy
     networks:
       - mssp_network
 
