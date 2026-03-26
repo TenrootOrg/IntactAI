@@ -26,7 +26,7 @@ def main():
     # =========================================================================
     # Task 1: Import Velociraptor artifacts
     # =========================================================================
-    log("Task 1/3: Importing Velociraptor artifacts...")
+    log("Task 1/4: Importing Velociraptor artifacts...")
     try:
         from services.velociraptor_init_service import initialize_velociraptor_artifacts
         results = initialize_velociraptor_artifacts()
@@ -58,7 +58,7 @@ def main():
     # =========================================================================
     # Task 2: Download tools and configure inventory
     # =========================================================================
-    log("Task 2/3: Downloading tools...")
+    log("Task 2/4: Downloading tools...")
     try:
         from services.tools_download_service import download_and_configure_tools
 
@@ -89,9 +89,56 @@ def main():
     print("", flush=True)
 
     # =========================================================================
-    # Task 3: Health check
+    # Task 3: Create Kibana data view for Velociraptor artifacts
     # =========================================================================
-    log("Task 3/3: Health check...")
+    log("Task 3/4: Creating Kibana data view...")
+    try:
+        import requests
+
+        # Check if Kibana is reachable
+        kibana_url = "http://mssp_kibana:5601"
+        kibana_health = requests.get(f"{kibana_url}/api/status", timeout=10)
+
+        if kibana_health.status_code == 200:
+            # Create data view for Velociraptor artifacts
+            data_view_payload = {
+                "data_view": {
+                    "title": "artifact_*",
+                    "name": "Velociraptor Artifacts",
+                    "timeFieldName": "@timestamp"
+                }
+            }
+
+            headers = {
+                "kbn-xsrf": "true",
+                "Content-Type": "application/json"
+            }
+
+            # Try to create the data view
+            response = requests.post(
+                f"{kibana_url}/api/data_views/data_view",
+                json=data_view_payload,
+                headers=headers,
+                timeout=10
+            )
+
+            if response.status_code in [200, 201]:
+                log("  Kibana: Created 'Velociraptor Artifacts' data view", "success")
+            elif response.status_code == 409:
+                log("  Kibana: Data view already exists", "info")
+            else:
+                log(f"  Kibana: Could not create data view ({response.status_code})", "warning")
+        else:
+            log("  Kibana: Not ready yet", "info")
+    except Exception as e:
+        log(f"  Kibana: {str(e)[:50]}", "info")
+
+    print("", flush=True)
+
+    # =========================================================================
+    # Task 4: Health check
+    # =========================================================================
+    log("Task 4/4: Health check...")
     health_ok = True
 
     # Check Velociraptor connection
