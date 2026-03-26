@@ -43,9 +43,11 @@ MODEL_ALIASES = {
     },
     # Google models
     "gemini-flash": {
+        "gemini": "gemini-2.5-flash",
         "openrouter": "google/gemini-2.5-flash-preview"
     },
     "gemini-pro": {
+        "gemini": "gemini-2.5-pro",
         "openrouter": "google/gemini-2.5-pro-preview"
     },
     # DeepSeek models
@@ -273,6 +275,19 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens):
             temperature=0.1
         )
         return response.choices[0].message.content
+    elif provider == 'gemini':
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        gemini_model = genai.GenerativeModel(model)
+        full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+        response = gemini_model.generate_content(
+            full_prompt,
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=max_tokens,
+                temperature=0.1
+            )
+        )
+        return response.text
     else:
         raise ValueError(f"Unsupported online provider: {provider}")
 
