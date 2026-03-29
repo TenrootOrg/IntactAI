@@ -216,8 +216,22 @@ Connect related events. If event A at 10:00 leads to event B at 10:05, explain t
 For events without timestamps, group them logically in a "Time Unknown" section but still integrate them into the narrative.
 
 ### 4. Indicators of Compromise
-| Type | Value | Context |
-Only include IOCs actually found in the data. Include: file paths, hashes, IPs, domains, commands, registry keys.
+
+**IMPORTANT: Consolidate related indicators. ONE row per object (file, process, connection):**
+
+| Name | Details | Hashes | Source | Why Suspicious |
+|------|---------|--------|--------|----------------|
+| AdFind.exe | Path: C:\\AtomicRedTeam\\bin\\ | MD5:12011c44 SHA1:4f4f8cf0 SHA256:c92c158d | DetectRaptor | AD enumeration tool |
+| svchost.exe | PID: 1234, Remote: 1.2.3.4:443 | N/A | Netstat | Suspicious outbound connection |
+| evil.com | Visited 5 times | N/A | Browser | Known C2 domain |
+
+RULES:
+- ONE row per unique object (file, process, network connection, domain)
+- If object has multiple hashes, put ALL in Hashes column as: MD5:xxx SHA1:yyy SHA256:zzz
+- Name = primary identifier (filename, process name, domain, IP)
+- Details = context (path, PID, port, count, etc.)
+- Only include suspicious/malicious indicators found in the data
+- **Why Suspicious is REQUIRED** - explain WHY each IOC is malicious (e.g., "Download source for AdFind.exe", "Known C2 infrastructure", "Tool used for credential theft")
 
 ### 5. MITRE ATT&CK Mapping
 | Tactic | Technique | Evidence |
