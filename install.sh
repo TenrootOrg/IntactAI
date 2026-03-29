@@ -114,8 +114,23 @@ fix_source_permissions() {
     log_info "Fixing source file permissions..."
     local uid=$(stat -c '%u' "${SCRIPT_DIR}")
     local gid=$(stat -c '%g' "${SCRIPT_DIR}")
-    chown -R "${uid}:${gid}" "${SCRIPT_DIR}/modules/backend/" 2>/dev/null || true
-    chown -R "${uid}:${gid}" "${SCRIPT_DIR}/modules/nginx/html/" 2>/dev/null || true
+
+    # Fix ownership for entire project
+    chown -R "${uid}:${gid}" "${SCRIPT_DIR}" 2>/dev/null || true
+
+    # Fix directory permissions (755 = rwxr-xr-x)
+    find "${SCRIPT_DIR}" -type d -exec chmod 755 {} \; 2>/dev/null || true
+
+    # Fix file permissions (644 = rw-r--r--)
+    find "${SCRIPT_DIR}" -type f -exec chmod 644 {} \; 2>/dev/null || true
+
+    # Restore execute permission on scripts
+    chmod +x "${SCRIPT_DIR}/install.sh" 2>/dev/null || true
+    chmod +x "${SCRIPT_DIR}/lib/"*.sh 2>/dev/null || true
+    chmod +x "${SCRIPT_DIR}/scripts/"*.sh 2>/dev/null || true
+    chmod +x "${SCRIPT_DIR}/modules/iris/scripts/"*.sh 2>/dev/null || true
+    chmod +x "${SCRIPT_DIR}/modules/backend/scripts/"*.py 2>/dev/null || true
+
     log_info "Source file permissions fixed"
 }
 
