@@ -273,7 +273,8 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                 selected_clients = [c for c in all_clients if c.get('client_id') in client_ids]
                 add_log_to_run(run_id, f"[IRIS] Found {len(selected_clients)} clients to add as assets", "info")
 
-                # Import to IRIS
+                # Import to IRIS - pass unfiltered events for IOC extraction
+                # (Amcache/Prefetch have hashes but are filtered from timeline_events)
                 iris_result = iris_import(
                     run_id=run_id,
                     case_name=iris_case_name,
@@ -282,6 +283,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                     iris_config=IRIS_CONFIG,
                     clients=selected_clients,
                     blueprint_name=blueprint.get('name', 'Agentic Analysis'),
+                    all_events_for_iocs=all_events,
                     logger=lambda msg, level: add_log_to_run(run_id, msg, level)
                 )
 
@@ -543,6 +545,7 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
 
                 add_log_to_run(run_id, f"[IRIS] Found {len(list(client_info.values()))} clients to add as assets", "info")
 
+                # Pass unfiltered events for IOC extraction
                 iris_result = iris_import(
                     run_id=run_id,
                     case_name=iris_case_name,
@@ -551,6 +554,7 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                     iris_config=IRIS_CONFIG,
                     clients=list(client_info.values()),
                     blueprint_name=f"Existing {collection_type.title()}",
+                    all_events_for_iocs=all_events,
                     logger=lambda msg, level: add_log_to_run(run_id, msg, level)
                 )
 

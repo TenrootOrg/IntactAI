@@ -416,65 +416,103 @@ def add_timeline_events(case_id: int, events: List[dict], iris_config: dict,
     return imported_count
 
 
-def extract_ioc_context(report_content: str, ioc_value: str, context_chars: int = 200) -> str:
-    """Extract surrounding context from report for an IOC.
+def extract_ioc_context(report_content: str, ioc_value: str, ioc_type: str = None) -> str:
+    """Extract context explaining WHY this IOC is malicious and WHERE it was found.
 
-    Searches for the IOC in the report and extracts the sentence/paragraph
-    context that explains why it was flagged.
+    Searches for the IOC in the report and finds:
+    1. The section/artifact header it appears under
+    2. Any analysis text near it explaining why it's suspicious
 
     Args:
         report_content: Full technical report text
         ioc_value: The IOC value (IP, hash, domain)
-        context_chars: Characters to extract around the IOC
+        ioc_type: Type of IOC (ip, md5, sha1, sha256, domain)
 
     Returns:
-        Contextual description or None if no good context found
+        Detailed description or None if no context found
     """
-    pattern = re.escape(ioc_value)
-    best_context = None
-    best_score = 0
+    # Split report into lines for easier section detection
+    lines = report_content.split('\n')
+    ioc_lower = ioc_value.lower()
 
-    indicator_keywords = [
-        'malicious', 'suspicious', 'c2', 'command and control', 'exfiltration',
-        'attack', 'threat', 'compromise', 'beacon', 'callback', 'infected',
-        'associated with', 'identified as', 'observed', 'detected', 'flagged',
-        'indicator', 'critical', 'high', 'evidence', 'executed', 'connected'
-    ]
+    # Find all lines containing this IOC
+    ioc_line_indices = []
+    for i, line in enumerate(lines):
+        if ioc_lower in line.lower():
+            ioc_line_indices.append(i)
 
-    for match in re.finditer(pattern, report_content, re.IGNORECASE):
-        start = max(0, match.start() - context_chars)
-        end = min(len(report_content), match.end() + context_chars)
-        context = report_content[start:end]
+    if not ioc_line_indices:
+        return None
 
-        # Clean up: find sentence boundaries
-        sentence_start = context.rfind('. ', 0, context_chars)
-        if sentence_start == -1:
-            sentence_start = context.rfind('\n', 0, context_chars)
-        if sentence_start != -1:
-            context = context[sentence_start + 2:]
+    best_context_parts = []
+    found_section = None
+    found_artifact = None
 
-        # Look for end of sentence
-        sentence_end = context.find('. ', len(ioc_value) + 10)
-        if sentence_end == -1:
-            sentence_end = context.find('\n\n', len(ioc_value) + 10)
-        if sentence_end != -1:
-            context = context[:sentence_end + 1]
+    for line_idx in ioc_line_indices:
+        # Search backwards for nearest header (section context)
+        for i in range(line_idx, max(0, line_idx - 30), -1):
+            line = lines[i]
+            if line.startswith('#'):
+                # Found a header - extract section name
+                header = line.lstrip('#').strip()
+                if not found_section:
+                    found_section = header
+                # Check if it's an artifact name
+                artifact_keywords = ['amcache', 'prefetch', 'browser', 'persistence',
+                                   'detection', 'hayabusa', 'network', 'rdp', 'registry',
+                                   'event', 'lnk', 'scheduled', 'dns']
+                for kw in artifact_keywords:
+                    if kw in header.lower():
+                        found_artifact = header
+                        break
+                break
 
-        # Score by indicator keywords
-        score = sum(1 for kw in indicator_keywords if kw in context.lower())
-        if score > best_score:
-            best_score = score
-            best_context = context.strip()
+        # Get the line containing the IOC and surrounding lines
+        start_idx = max(0, line_idx - 2)
+        end_idx = min(len(lines), line_idx + 3)
+        context_lines = lines[start_idx:end_idx]
 
-    if best_context and len(best_context) > 20:
-        # Clean up markdown formatting
-        best_context = best_context.replace('**', '').replace('`', '')
-        # Truncate at word boundary if too long
-        if len(best_context) > 300:
-            truncate_at = best_context.rfind(' ', 0, 297)
-            if truncate_at > 200:
-                best_context = best_context[:truncate_at] + '...'
-        return best_context
+        # Look for analysis keywords in nearby lines
+        analysis_keywords = ['suspicious', 'malicious', 'indicates', 'suggests',
+                           'evidence', 'executed', 'connected', 'downloaded',
+                           'attack', 'compromise', 'threat', 'C2', 'callback']
+
+        for ctx_line in context_lines:
+            # Skip table rows and empty lines
+            stripped = ctx_line.strip()
+            if not stripped or stripped.startswith('|') or stripped.startswith('---'):
+                continue
+
+            ctx_lower = ctx_line.lower()
+            if any(kw in ctx_lower for kw in analysis_keywords):
+                # Found analysis text
+                cleaned = stripped.lstrip('-•*').strip()
+                if cleaned and len(cleaned) > 20 and cleaned not in best_context_parts:
+                    best_context_parts.append(cleaned)
+
+    # Build description
+    description_parts = []
+
+    if found_artifact:
+        description_parts.append(f"Source: {found_artifact}.")
+    elif found_section:
+        description_parts.append(f"Found in: {found_section}.")
+
+    if best_context_parts:
+        # Join context parts, limit total length
+        context_text = ' '.join(best_context_parts)
+        # Clean markdown
+        context_text = context_text.replace('**', '').replace('`', '').replace('*', '')
+        if len(context_text) > 350:
+            truncate_at = context_text.rfind('. ', 0, 350)
+            if truncate_at > 150:
+                context_text = context_text[:truncate_at + 1]
+            else:
+                context_text = context_text[:347] + '...'
+        description_parts.append(context_text)
+
+    if description_parts:
+        return ' '.join(description_parts)
 
     return None
 
@@ -482,17 +520,14 @@ def extract_ioc_context(report_content: str, ioc_value: str, context_chars: int 
 def parse_iocs_from_report(report_content: str) -> List[dict]:
     """Extract IOCs from technical report content.
 
-    Parses for:
-    - IP addresses (IPv4)
-    - Domains
-    - File hashes (MD5, SHA1, SHA256)
-    - File paths
+    First parses the "Indicators of Compromise" table which has Context descriptions.
+    Then falls back to regex extraction for any IOCs not in the table.
 
     Args:
         report_content: Markdown report text
 
     Returns:
-        List of IOC dicts with type and value
+        List of IOC dicts with type, value, and description
     """
     iocs = []
     seen = set()  # Avoid duplicates
@@ -500,6 +535,235 @@ def parse_iocs_from_report(report_content: str) -> List[dict]:
     # Skip well-known safe values
     SAFE_IPS = {'127.0.0.1', '0.0.0.0', '8.8.8.8', '1.1.1.1', '255.255.255.255'}
     SAFE_DOMAINS = {'localhost', 'example.com', 'example.org', 'microsoft.com', 'windows.com'}
+
+    # IOC type mapping to IRIS type IDs
+    TYPE_MAP = {
+        'ip': 76, 'ip address': 76, 'ipv4': 76,
+        'md5': 90, 'md5 hash': 90,
+        'sha1': 111, 'sha1 hash': 111,
+        'sha256': 113, 'sha256 hash': 113,
+        'domain': 20, 'fqdn': 20,
+        'hash': 90,  # Default to MD5 for generic "hash"
+        'file path': 118, 'path': 118, 'filepath': 118,
+        'url': 141,
+        'command': 1, 'cmd': 1,
+        'registry': 118, 'registry key': 118,
+    }
+
+    # STEP 0: Parse consolidated IOC table (new format)
+    # Format: | Name | Details | Hashes | Source | Why Suspicious |
+    # Example: | AdFind.exe | Path: C:\path\ | MD5:abc SHA1:def SHA256:ghi | DetectRaptor | AD tool |
+    # Example: | svchost.exe | PID: 1234 | N/A | Netstat | Suspicious connection |
+
+    in_ioc_section = False
+    for line in report_content.split('\n'):
+        line_lower = line.lower()
+        if 'indicator' in line_lower and 'compromise' in line_lower:
+            in_ioc_section = True
+            continue
+        if in_ioc_section and line.startswith('#') and 'indicator' not in line_lower:
+            in_ioc_section = False
+
+        if in_ioc_section and '|' in line:
+            parts = [p.strip() for p in line.split('|')]
+            parts = [p for p in parts if p]
+
+            # Check for consolidated format: | Name | Details | Hashes | Source | Why |
+            # Detect by: has 4+ columns AND (has hash pattern in col 3 OR has "N/A" in col 3)
+            if len(parts) >= 4:
+                name = re.sub(r'[`*]', '', parts[0]).strip()
+                details = re.sub(r'[`*]', '', parts[1]).strip() if len(parts) > 1 else ''
+                hashes_str = parts[2] if len(parts) > 2 else ''
+                source = re.sub(r'[`*]', '', parts[3]).strip() if len(parts) > 3 else ''
+                why = re.sub(r'[`*]', '', parts[4]).strip() if len(parts) > 4 else ''
+
+                # Skip header rows
+                if name.lower() in ('name', 'file name', 'type', '---', ''):
+                    continue
+                if 'details' in details.lower() and 'hashes' in hashes_str.lower():
+                    continue
+
+                # Check if this is consolidated format (has hashes OR has N/A in hash column)
+                has_hashes = re.search(r'(MD5|SHA1|SHA256):', hashes_str, re.I)
+                is_consolidated = has_hashes or hashes_str.strip().upper() == 'N/A'
+
+                if is_consolidated and name and len(name) > 2:
+                    # Parse hashes from "MD5:xxx SHA1:yyy SHA256:zzz"
+                    md5_match = re.search(r'MD5:([a-f0-9]{32})', hashes_str, re.I)
+                    sha1_match = re.search(r'SHA1:([a-f0-9]{40})', hashes_str, re.I)
+                    sha256_match = re.search(r'SHA256:([a-f0-9]{64})', hashes_str, re.I)
+
+                    # Build consolidated description
+                    desc_parts = [f"**Name:** {name}"]
+                    if details and details.upper() != 'N/A':
+                        desc_parts.append(f"**Details:** {details}")
+                    if md5_match:
+                        desc_parts.append(f"**MD5:** {md5_match.group(1).lower()}")
+                    if sha1_match:
+                        desc_parts.append(f"**SHA1:** {sha1_match.group(1).lower()}")
+                    if sha256_match:
+                        desc_parts.append(f"**SHA256:** {sha256_match.group(1).lower()}")
+                    if source and source.upper() != 'N/A':
+                        desc_parts.append(f"**Source:** {source}")
+                    if why and why.upper() != 'N/A':
+                        desc_parts.append(f"**Why IOC:** {why}")
+
+                    # Determine IOC type - use filename|sha256 composite when we have SHA256
+                    name_lower = name.lower()
+
+                    # Check if this is a file-like IOC (has extension or has SHA256)
+                    is_file_ioc = re.search(r'\.(exe|dll|ps1|bat|cmd|vbs|js|msi|scr)$', name_lower)
+                    is_domain = re.match(r'^[a-z0-9.-]+\.[a-z]{2,}$', name_lower) and not is_file_ioc
+                    is_ip = re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', name)
+
+                    # Build dedup key
+                    if sha256_match:
+                        dedup_key = f"{name}|{sha256_match.group(1)}".lower()
+                    else:
+                        dedup_key = name_lower
+
+                    if dedup_key not in seen:
+                        seen.add(dedup_key)
+
+                        # Use filename|sha256 composite type when we have SHA256 for files
+                        if sha256_match and (is_file_ioc or (not is_domain and not is_ip)):
+                            sha256_hash = sha256_match.group(1).lower()
+                            composite_value = f"{name}|{sha256_hash}"
+                            iocs.append({
+                                'type': 'filename|sha256',
+                                'type_id': 46,
+                                'value': composite_value,
+                                'description': '\n'.join(desc_parts)
+                            })
+                        elif is_domain:
+                            iocs.append({
+                                'type': 'domain',
+                                'type_id': 20,
+                                'value': name,
+                                'description': '\n'.join(desc_parts)
+                            })
+                        elif is_ip:
+                            iocs.append({
+                                'type': 'ip',
+                                'type_id': 76,
+                                'value': name,
+                                'description': '\n'.join(desc_parts)
+                            })
+                        # Skip plain filenames without SHA256 - they would create duplicates
+
+                        # Add all hashes and filename to seen to prevent duplicates
+                        seen.add(name_lower)
+                        if md5_match:
+                            seen.add(md5_match.group(1).lower())
+                        if sha1_match:
+                            seen.add(sha1_match.group(1).lower())
+                        if sha256_match:
+                            seen.add(sha256_match.group(1).lower())
+
+                    continue  # Skip to next line, don't process with old parser
+
+    # STEP 1: Parse the IOC table from the report (legacy format)
+    # Format: | Type | Value | Artifact Source | Timestamp | Why IOC |
+    # Or old: | Type | Value | Context | Severity | (still supported)
+
+    in_ioc_section = False
+    for line in report_content.split('\n'):
+        line_lower = line.lower()
+        # Detect IOC section
+        if 'indicator' in line_lower and 'compromise' in line_lower:
+            in_ioc_section = True
+            continue
+        # Exit IOC section on next major header
+        if in_ioc_section and line.startswith('#') and 'indicator' not in line_lower:
+            in_ioc_section = False
+
+        if in_ioc_section and '|' in line:
+            # Split by pipe and clean up
+            parts = [p.strip() for p in line.split('|')]
+            parts = [p for p in parts if p]  # Remove empty parts
+
+            if len(parts) >= 3:
+                ioc_type_raw = parts[0].lower()
+                ioc_value = parts[1]
+
+                # Skip header row and separator
+                if 'type' in ioc_type_raw and ('value' in parts[1].lower() or 'artifact' in str(parts).lower()):
+                    continue
+                if '---' in ioc_type_raw or '---' in ioc_value:
+                    continue
+
+                # Clean up markdown formatting: **text**, `text`, *text*
+                ioc_type_raw = re.sub(r'\*+', '', ioc_type_raw).strip()
+                ioc_value = re.sub(r'[`*]', '', ioc_value).strip()
+
+                # Extract columns based on format (new 5-col or old 4-col)
+                artifact_source = ''
+                timestamp = ''
+                why_ioc = ''
+                context = ''
+
+                if len(parts) >= 5:
+                    # New format: Type | Value | Artifact Source | Timestamp | Why IOC
+                    artifact_source = re.sub(r'[`*]', '', parts[2]).strip()
+                    timestamp = re.sub(r'[`*]', '', parts[3]).strip()
+                    why_ioc = re.sub(r'[`*]', '', parts[4]).strip()
+                elif len(parts) >= 4:
+                    # Old format: Type | Value | Context | Severity
+                    context = re.sub(r'[`*]', '', parts[2]).strip()
+                    severity = re.sub(r'[`*]', '', parts[3]).strip()
+                    why_ioc = f"{context} (Severity: {severity})" if severity else context
+                elif len(parts) >= 3:
+                    context = re.sub(r'[`*]', '', parts[2]).strip()
+                    why_ioc = context
+
+                # Determine IOC type - MUST match a known type
+                ioc_type = None
+                type_id = None
+                for key, tid in TYPE_MAP.items():
+                    if key in ioc_type_raw:
+                        ioc_type = key.split()[0]  # Get first word (ip, md5, etc.)
+                        type_id = tid
+                        break
+
+                # Skip if no recognized IOC type (prevents trash entries)
+                if type_id is None:
+                    continue
+
+                # Skip individual hash rows - hashes should be in consolidated file IOCs
+                if ioc_type in ('md5', 'sha1', 'sha256', 'hash'):
+                    continue
+
+                # Skip file path IOCs - we use filename|sha256 composite instead
+                # File paths create duplicates and type_id 118 may not exist in IRIS
+                if ioc_type in ('file', 'path', 'filepath', 'registry'):
+                    continue
+
+                # Validate and add IOC
+                if ioc_value and ioc_value.lower() not in seen and len(ioc_value) > 3:
+                    # Skip if it looks like a header
+                    if ioc_value.lower() in ('value', 'context', 'type', 'severity', 'artifact', 'timestamp', 'why'):
+                        continue
+                    seen.add(ioc_value.lower())
+
+                    # Build rich description like timeline format
+                    desc_parts = []
+                    if artifact_source and artifact_source.lower() not in ('artifact source', 'source', '-', 'n/a', ''):
+                        desc_parts.append(f"**Artifact:** {artifact_source}")
+                    if timestamp and timestamp.lower() not in ('timestamp', '-', 'n/a', ''):
+                        desc_parts.append(f"**Found:** {timestamp}")
+                    if why_ioc and why_ioc.lower() not in ('why ioc', 'why', '-', 'n/a', ''):
+                        desc_parts.append(f"**Why IOC:** {why_ioc}")
+
+                    description = '\n'.join(desc_parts) if desc_parts else None
+
+                    iocs.append({
+                        'type': ioc_type or 'other',
+                        'type_id': type_id,
+                        'value': ioc_value,
+                        'description': description or f'Identified in forensic analysis'
+                    })
+
+    # STEP 2: Fall back to regex extraction for IOCs not in the table
 
     # IPv4 addresses
     ip_pattern = r'\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'
@@ -511,55 +775,27 @@ def parse_iocs_from_report(report_content: str) -> List[dict]:
                     ip.startswith('172.16.') or ip.startswith('172.17.') or
                     ip.startswith('169.254.')):
                 seen.add(ip)
-                context = extract_ioc_context(report_content, ip)
+                context = extract_ioc_context(report_content, ip, 'ip')
                 iocs.append({
                     'type': 'ip',
                     'type_id': 76,  # IRIS type ID for IP
                     'value': ip,
-                    'description': context or 'External IP address observed in forensic artifacts'
+                    'description': context or 'External IP address identified in network/connection artifacts during forensic analysis'
                 })
 
-    # MD5 hashes (32 hex chars)
-    md5_pattern = r'\b[a-fA-F0-9]{32}\b'
-    for match in re.finditer(md5_pattern, report_content):
-        hash_val = match.group().lower()
-        if hash_val not in seen:
-            seen.add(hash_val)
-            context = extract_ioc_context(report_content, hash_val)
-            iocs.append({
-                'type': 'md5',
-                'type_id': 90,  # IRIS type ID for MD5
-                'value': hash_val,
-                'description': context or 'MD5 file hash - verify against threat intel'
-            })
-
-    # SHA1 hashes (40 hex chars)
-    sha1_pattern = r'\b[a-fA-F0-9]{40}\b'
-    for match in re.finditer(sha1_pattern, report_content):
-        hash_val = match.group().lower()
-        if hash_val not in seen:
-            seen.add(hash_val)
-            context = extract_ioc_context(report_content, hash_val)
-            iocs.append({
-                'type': 'sha1',
-                'type_id': 111,  # IRIS type ID for SHA1
-                'value': hash_val,
-                'description': context or 'SHA1 file hash - correlate with known malware'
-            })
-
-    # SHA256 hashes (64 hex chars)
-    sha256_pattern = r'\b[a-fA-F0-9]{64}\b'
-    for match in re.finditer(sha256_pattern, report_content):
-        hash_val = match.group().lower()
-        if hash_val not in seen:
-            seen.add(hash_val)
-            context = extract_ioc_context(report_content, hash_val)
-            iocs.append({
-                'type': 'sha256',
-                'type_id': 113,  # IRIS type ID for SHA256
-                'value': hash_val,
-                'description': context or 'SHA256 file hash - check VirusTotal/threat feeds'
-            })
+    # DISABLED: Hash regex extraction creates duplicates when consolidated format is used
+    # Hashes should be part of consolidated file IOCs, not separate entries
+    # If needed, uncomment below for legacy reports without consolidated format
+    #
+    # # MD5 hashes (32 hex chars)
+    # md5_pattern = r'\b[a-fA-F0-9]{32}\b'
+    # for match in re.finditer(md5_pattern, report_content):
+    #     hash_val = match.group().lower()
+    #     if hash_val not in seen:
+    #         seen.add(hash_val)
+    #         iocs.append({'type': 'md5', 'type_id': 90, 'value': hash_val, 'description': 'MD5 hash from forensic analysis'})
+    #
+    # # SHA1/SHA256 extraction similarly disabled
 
     # Domains (basic pattern - look for domain-like strings)
     domain_pattern = r'\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+(?:com|net|org|io|ru|cn|tk|xyz|top|info|biz|cc|pw)\b'
@@ -567,13 +803,220 @@ def parse_iocs_from_report(report_content: str) -> List[dict]:
         domain = match.group().lower()
         if domain not in seen and domain not in SAFE_DOMAINS:
             seen.add(domain)
-            context = extract_ioc_context(report_content, domain)
+            context = extract_ioc_context(report_content, domain, 'domain')
+
+            # Build a more informative default description if no context found
+            if not context:
+                # Check if domain is mentioned near any tool/file names
+                desc_parts = [f"**Domain:** {domain}"]
+
+                # Search for surrounding context in report
+                lines = report_content.split('\n')
+                for i, line in enumerate(lines):
+                    if domain in line.lower():
+                        # Check nearby lines for tool references
+                        context_window = '\n'.join(lines[max(0,i-3):min(len(lines),i+4)])
+                        tool_refs = re.findall(r'(\w+\.exe|\w+\.dll)', context_window, re.I)
+                        if tool_refs:
+                            desc_parts.append(f"**Associated with:** {', '.join(set(tool_refs))}")
+                        break
+
+                desc_parts.append("**Action:** Check reputation on VirusTotal, URLhaus, or threat feeds")
+                context = '\n'.join(desc_parts)
+
             iocs.append({
                 'type': 'domain',
                 'type_id': 20,  # IRIS type ID for domain
                 'value': domain,
-                'description': context or 'Domain observed in artifacts - verify reputation'
+                'description': context
             })
+
+    return iocs
+
+
+def extract_iocs_from_timeline(timeline_events: List[dict]) -> List[dict]:
+    """Extract IOCs from timeline events - uses the same rich descriptions.
+
+    Scans each timeline event's raw data for IOC values (hashes, IPs, domains)
+    and uses the event's description as the IOC description.
+
+    Args:
+        timeline_events: List of timeline event dicts with 'raw', 'description', 'source'
+
+    Returns:
+        List of IOC dicts with type, value, and description from the timeline event
+    """
+    iocs = []
+    seen = set()
+
+    # IOC patterns
+    patterns = {
+        'md5': (r'\b[a-fA-F0-9]{32}\b', 90),
+        'sha1': (r'\b[a-fA-F0-9]{40}\b', 111),
+        'sha256': (r'\b[a-fA-F0-9]{64}\b', 113),
+        'ip': (r'\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b', 76),
+    }
+
+    # Safe values to skip
+    SAFE_IPS = {'127.0.0.1', '0.0.0.0', '8.8.8.8', '1.1.1.1', '255.255.255.255'}
+
+    # Hash field names to look for in raw data
+    hash_fields = ['SHA1', 'SHA256', 'MD5', 'Hash', 'FileHash', 'sha1', 'sha256', 'md5']
+    ip_fields = ['SourceIP', 'DestIP', 'RemoteAddress', 'IpAddress', 'Raddr', 'IP']
+
+    for event in timeline_events:
+        raw = event.get('raw', {})
+        description = event.get('description', '')
+        source = event.get('source', 'Unknown')
+        timestamp = event.get('timestamp', '')
+        title = event.get('title', '')
+
+        if not raw:
+            continue
+
+        # Extract context from raw data for richer IOC descriptions
+        filename = raw.get('Name') or raw.get('FileName') or raw.get('Process') or ''
+        filepath = raw.get('FullPath') or raw.get('Path') or raw.get('FilePath') or ''
+        user = raw.get('User') or raw.get('UserName') or raw.get('Account') or ''
+        process = raw.get('Process') or raw.get('ProcessName') or raw.get('Name') or ''
+        cmdline = raw.get('CommandLine') or raw.get('Cmdline') or ''
+
+        # Extract "Why it matters" from the event description
+        why_matters = ''
+        if '**Why it matters:**' in description:
+            why_matters = description.split('**Why it matters:**')[-1].strip()
+        elif 'Why it matters:' in description:
+            why_matters = description.split('Why it matters:')[-1].strip()
+
+        def build_ip_description(ip_value):
+            """Build specific description for an IP IOC."""
+            parts = []
+
+            # What is this IOC?
+            parts.append(f"**What:** External IP address")
+
+            # Connection context
+            if process:
+                parts.append(f"**Process:** `{process}`")
+
+            dest_port = raw.get('DestPort') or raw.get('RemotePort') or raw.get('Rport') or ''
+            if dest_port:
+                parts.append(f"**Port:** {dest_port}")
+
+            # How was it found?
+            parts.append(f"**Found in:** {source} artifact")
+
+            # When?
+            if timestamp:
+                parts.append(f"**When:** {timestamp}")
+
+            # Why is it an IOC?
+            if why_matters:
+                parts.append(f"**Why IOC:** {why_matters}")
+            else:
+                parts.append(f"**Why IOC:** External connection identified during investigation")
+
+            return '\n'.join(parts)
+
+        # CONSOLIDATE all hashes from this row into ONE IOC entry
+        # Instead of creating separate IOCs for MD5, SHA1, SHA256
+        hashes_found = {}
+        for field in hash_fields:
+            if field in raw:
+                value = str(raw[field]).lower().strip()
+                if value and len(value) in (32, 40, 64):
+                    # Determine hash type by length
+                    if len(value) == 32:
+                        hashes_found['md5'] = value
+                    elif len(value) == 40:
+                        hashes_found['sha1'] = value
+                    elif len(value) == 64:
+                        hashes_found['sha256'] = value
+
+        # Also check for nested Hash object (common in DetectRaptor artifacts)
+        hash_obj = raw.get('Hash')
+        if isinstance(hash_obj, dict):
+            for key, value in hash_obj.items():
+                if value and isinstance(value, str):
+                    value = value.lower().strip()
+                    key_lower = key.lower()
+                    if 'md5' in key_lower and len(value) == 32:
+                        hashes_found['md5'] = value
+                    elif 'sha1' in key_lower and len(value) == 40:
+                        hashes_found['sha1'] = value
+                    elif 'sha256' in key_lower and len(value) == 64:
+                        hashes_found['sha256'] = value
+
+        # Create ONE consolidated IOC if hashes found
+        if hashes_found:
+            # Use filename + source + filepath as dedup key (not individual hash values)
+            file_key = f"{source}:{filename}:{filepath}".lower()
+            if file_key not in seen:
+                seen.add(file_key)
+
+                # Build consolidated description with ALL hashes
+                desc_parts = []
+                if filename:
+                    desc_parts.append(f"**File:** {filename}")
+                if filepath:
+                    desc_parts.append(f"**Location:** {filepath}")
+
+                # List all hashes
+                for ht in ['md5', 'sha1', 'sha256']:
+                    if ht in hashes_found:
+                        desc_parts.append(f"**{ht.upper()}:** {hashes_found[ht]}")
+
+                desc_parts.append(f"**Found in:** {source}")
+                if timestamp:
+                    desc_parts.append(f"**When:** {timestamp}")
+                if user:
+                    desc_parts.append(f"**User:** {user}")
+                if why_matters:
+                    desc_parts.append(f"**Why IOC:** {why_matters}")
+                elif 'suspicious' in description.lower() or 'malicious' in description.lower():
+                    desc_parts.append(f"**Why IOC:** Flagged as suspicious in forensic analysis")
+
+                # Use filename|sha256 composite type when we have both filename and SHA256
+                if filename and 'sha256' in hashes_found:
+                    sha256_hash = hashes_found['sha256']
+                    composite_value = f"{filename}|{sha256_hash}"
+                    iocs.append({
+                        'type': 'filename|sha256',
+                        'type_id': 46,
+                        'value': composite_value,
+                        'description': '\n'.join(desc_parts)
+                    })
+                    # Add to seen to prevent duplicates
+                    seen.add(sha256_hash.lower())
+                    seen.add(filename.lower())
+                elif 'sha256' in hashes_found:
+                    # No filename, just use SHA256 alone
+                    iocs.append({
+                        'type': 'sha256',
+                        'type_id': 113,
+                        'value': hashes_found['sha256'],
+                        'description': '\n'.join(desc_parts)
+                    })
+                # Skip if no SHA256 - we only keep SHA256 to reduce data
+
+        # Look for IPs in specific fields
+        for field in ip_fields:
+            if field in raw:
+                value = str(raw[field]).strip()
+                if value and value not in seen and value not in SAFE_IPS:
+                    # Validate IP format
+                    if re.match(patterns['ip'][0], value):
+                        # Skip private ranges
+                        if not (value.startswith('10.') or value.startswith('192.168.') or
+                                value.startswith('172.16.') or value.startswith('172.17.') or
+                                value.startswith('169.254.')):
+                            seen.add(value)
+                            iocs.append({
+                                'type': 'ip',
+                                'type_id': 76,
+                                'value': value,
+                                'description': build_ip_description(value)
+                            })
 
     return iocs
 
@@ -760,6 +1203,7 @@ def add_assets(case_id: int, clients: List[dict], iris_config: dict,
 def import_to_iris(run_id: str, case_name: str, timeline_events: List[dict],
                    technical_report: str, iris_config: dict,
                    clients: List[dict] = None, blueprint_name: str = None,
+                   all_events_for_iocs: List[dict] = None,
                    logger: Callable = None) -> dict:
     """Main entry point for importing agentic analysis results to IRIS.
 
@@ -773,11 +1217,12 @@ def import_to_iris(run_id: str, case_name: str, timeline_events: List[dict],
     Args:
         run_id: Agentic pipeline run ID (for reference)
         case_name: Name for the IRIS case
-        timeline_events: List of timeline event dicts
+        timeline_events: List of timeline event dicts (filtered for display)
         technical_report: Technical report markdown content
         iris_config: IRIS configuration dict
         clients: List of client dicts (hostname, os, client_id) to add as assets
         blueprint_name: Name of the blueprint used for analysis
+        all_events_for_iocs: Unfiltered events for IOC extraction (optional, falls back to timeline_events)
         logger: Optional callback function
 
     Returns:
@@ -809,8 +1254,44 @@ def import_to_iris(run_id: str, case_name: str, timeline_events: List[dict],
             result['error'] = "Failed to get IRIS API key"
             return result
 
-        # Parse IOCs early to include count in description
-        iocs = parse_iocs_from_report(technical_report) if technical_report else []
+        # Extract IOCs from ALL events (unfiltered) for better hash coverage
+        # Amcache/Prefetch have hashes but may be filtered from timeline_events
+        ioc_source_events = all_events_for_iocs if all_events_for_iocs else timeline_events
+        timeline_iocs = extract_iocs_from_timeline(ioc_source_events) if ioc_source_events else []
+
+        # Also parse IOCs from report (catches any not in timeline)
+        report_iocs = parse_iocs_from_report(technical_report) if technical_report else []
+
+        # Merge IOCs - timeline IOCs first (better descriptions), then report IOCs
+        # Extract ALL hashes AND filenames from timeline IOCs to avoid duplicates
+        seen_values = set()
+        for ioc in timeline_iocs:
+            ioc_value = ioc['value'].lower()
+            seen_values.add(ioc_value)
+
+            # For composite filename|sha256, also add the parts separately
+            if '|' in ioc_value:
+                parts = ioc_value.split('|', 1)
+                seen_values.add(parts[0])  # Add filename
+                if len(parts) > 1:
+                    seen_values.add(parts[1])  # Add hash
+
+            # Also extract any hashes mentioned in description (MD5, SHA1, SHA256 lines)
+            desc = ioc.get('description', '')
+            for line in desc.split('\n'):
+                if line.startswith('**MD5:**') or line.startswith('**SHA1:**') or line.startswith('**SHA256:**'):
+                    hash_val = line.split(':', 1)[-1].strip().lower()
+                    if hash_val:
+                        seen_values.add(hash_val)
+                # Also extract filename from **File:** line
+                if line.startswith('**File:**'):
+                    filename = line.split(':', 1)[-1].strip().lower()
+                    if filename:
+                        seen_values.add(filename)
+
+        iocs = timeline_iocs + [ioc for ioc in report_iocs if ioc['value'].lower() not in seen_values]
+
+        log(f"IOCs found: {len(timeline_iocs)} from timeline, {len(report_iocs)} from report, {len(iocs)} total unique")
 
         # Build client list for summary
         client_names = []
@@ -863,12 +1344,9 @@ This case was automatically created by the MSSP Agentic Analysis module using Ve
                 case_id, timeline_events, iris_config, api_key, logger, asset_cache=asset_cache
             )
 
-        # 5. Parse and import IOCs
-        if technical_report:
-            iocs = parse_iocs_from_report(technical_report)
-            if iocs:
-                log(f"Found {len(iocs)} IOCs in technical report")
-                result['iocs_imported'] = add_iocs(case_id, iocs, iris_config, api_key, logger)
+        # 5. Import IOCs (already extracted above from timeline + report)
+        if iocs:
+            result['iocs_imported'] = add_iocs(case_id, iocs, iris_config, api_key, logger)
 
         result['success'] = True
         log(f"IRIS import complete! Case URL: {result['case_url']}", "success")
