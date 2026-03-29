@@ -303,6 +303,36 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
             return str(val.get('Path') or val.get('Name') or val.get('Value') or val)[:200]
         return str(val)
 
+    def clean_multiline_details(details_str: str, max_length: int = 100) -> str:
+        """Clean up YAML multiline content for inline display.
+
+        Converts:
+            '|\\nNewEngineState=Available\\nPreviousEngineState=None'
+        To:
+            'NewEngineState=Available, PreviousEngineState=None'
+        """
+        if not details_str:
+            return ''
+        cleaned = details_str.strip()
+        # Remove YAML multiline indicators (| or >)
+        if cleaned.startswith('|') or cleaned.startswith('>'):
+            cleaned = cleaned[1:].strip()
+        # Replace newlines with comma-space for inline display
+        cleaned = ', '.join(
+            part.strip()
+            for part in cleaned.split('\n')
+            if part.strip()
+        )
+        # Smart truncation: avoid cutting mid-word/mid-key
+        if len(cleaned) > max_length:
+            truncate_at = max_length
+            for i in range(max_length - 1, max(0, max_length - 30), -1):
+                if cleaned[i] in (',', ' '):
+                    truncate_at = i
+                    break
+            cleaned = cleaned[:truncate_at].rstrip(',').strip() + '...'
+        return cleaned
+
     def build_rich_description(row, artifact):
         """Build structured description: Artifact, Finding, Why it matters."""
         # Artifact-specific findings
@@ -401,7 +431,7 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
             mitre = safe_str(row.get('MitreAttack')) or safe_str(row.get('MITRE')) or ''
             finding = f"{title}"
             if details:
-                finding += f" - {details[:100]}"
+                finding += f" - {clean_multiline_details(details, 100)}"
             if mitre:
                 finding += f" [MITRE: {mitre}]"
             # Make why more specific based on level
