@@ -416,6 +416,69 @@ def add_timeline_events(case_id: int, events: List[dict], iris_config: dict,
     return imported_count
 
 
+def extract_ioc_context(report_content: str, ioc_value: str, context_chars: int = 200) -> str:
+    """Extract surrounding context from report for an IOC.
+
+    Searches for the IOC in the report and extracts the sentence/paragraph
+    context that explains why it was flagged.
+
+    Args:
+        report_content: Full technical report text
+        ioc_value: The IOC value (IP, hash, domain)
+        context_chars: Characters to extract around the IOC
+
+    Returns:
+        Contextual description or None if no good context found
+    """
+    pattern = re.escape(ioc_value)
+    best_context = None
+    best_score = 0
+
+    indicator_keywords = [
+        'malicious', 'suspicious', 'c2', 'command and control', 'exfiltration',
+        'attack', 'threat', 'compromise', 'beacon', 'callback', 'infected',
+        'associated with', 'identified as', 'observed', 'detected', 'flagged',
+        'indicator', 'critical', 'high', 'evidence', 'executed', 'connected'
+    ]
+
+    for match in re.finditer(pattern, report_content, re.IGNORECASE):
+        start = max(0, match.start() - context_chars)
+        end = min(len(report_content), match.end() + context_chars)
+        context = report_content[start:end]
+
+        # Clean up: find sentence boundaries
+        sentence_start = context.rfind('. ', 0, context_chars)
+        if sentence_start == -1:
+            sentence_start = context.rfind('\n', 0, context_chars)
+        if sentence_start != -1:
+            context = context[sentence_start + 2:]
+
+        # Look for end of sentence
+        sentence_end = context.find('. ', len(ioc_value) + 10)
+        if sentence_end == -1:
+            sentence_end = context.find('\n\n', len(ioc_value) + 10)
+        if sentence_end != -1:
+            context = context[:sentence_end + 1]
+
+        # Score by indicator keywords
+        score = sum(1 for kw in indicator_keywords if kw in context.lower())
+        if score > best_score:
+            best_score = score
+            best_context = context.strip()
+
+    if best_context and len(best_context) > 20:
+        # Clean up markdown formatting
+        best_context = best_context.replace('**', '').replace('`', '')
+        # Truncate at word boundary if too long
+        if len(best_context) > 300:
+            truncate_at = best_context.rfind(' ', 0, 297)
+            if truncate_at > 200:
+                best_context = best_context[:truncate_at] + '...'
+        return best_context
+
+    return None
+
+
 def parse_iocs_from_report(report_content: str) -> List[dict]:
     """Extract IOCs from technical report content.
 
@@ -448,11 +511,12 @@ def parse_iocs_from_report(report_content: str) -> List[dict]:
                     ip.startswith('172.16.') or ip.startswith('172.17.') or
                     ip.startswith('169.254.')):
                 seen.add(ip)
+                context = extract_ioc_context(report_content, ip)
                 iocs.append({
                     'type': 'ip',
                     'type_id': 76,  # IRIS type ID for IP
                     'value': ip,
-                    'description': 'Extracted from forensic analysis'
+                    'description': context or 'External IP address observed in forensic artifacts'
                 })
 
     # MD5 hashes (32 hex chars)
@@ -461,11 +525,12 @@ def parse_iocs_from_report(report_content: str) -> List[dict]:
         hash_val = match.group().lower()
         if hash_val not in seen:
             seen.add(hash_val)
+            context = extract_ioc_context(report_content, hash_val)
             iocs.append({
                 'type': 'md5',
                 'type_id': 90,  # IRIS type ID for MD5
                 'value': hash_val,
-                'description': 'MD5 hash from forensic analysis'
+                'description': context or 'MD5 file hash - verify against threat intel'
             })
 
     # SHA1 hashes (40 hex chars)
@@ -474,11 +539,12 @@ def parse_iocs_from_report(report_content: str) -> List[dict]:
         hash_val = match.group().lower()
         if hash_val not in seen:
             seen.add(hash_val)
+            context = extract_ioc_context(report_content, hash_val)
             iocs.append({
                 'type': 'sha1',
                 'type_id': 111,  # IRIS type ID for SHA1
                 'value': hash_val,
-                'description': 'SHA1 hash from forensic analysis'
+                'description': context or 'SHA1 file hash - correlate with known malware'
             })
 
     # SHA256 hashes (64 hex chars)
@@ -487,11 +553,12 @@ def parse_iocs_from_report(report_content: str) -> List[dict]:
         hash_val = match.group().lower()
         if hash_val not in seen:
             seen.add(hash_val)
+            context = extract_ioc_context(report_content, hash_val)
             iocs.append({
                 'type': 'sha256',
                 'type_id': 113,  # IRIS type ID for SHA256
                 'value': hash_val,
-                'description': 'SHA256 hash from forensic analysis'
+                'description': context or 'SHA256 file hash - check VirusTotal/threat feeds'
             })
 
     # Domains (basic pattern - look for domain-like strings)
@@ -500,11 +567,12 @@ def parse_iocs_from_report(report_content: str) -> List[dict]:
         domain = match.group().lower()
         if domain not in seen and domain not in SAFE_DOMAINS:
             seen.add(domain)
+            context = extract_ioc_context(report_content, domain)
             iocs.append({
                 'type': 'domain',
                 'type_id': 20,  # IRIS type ID for domain
                 'value': domain,
-                'description': 'Domain from forensic analysis'
+                'description': context or 'Domain observed in artifacts - verify reputation'
             })
 
     return iocs
