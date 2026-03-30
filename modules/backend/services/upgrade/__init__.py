@@ -47,8 +47,8 @@ from services.storage.base import (
 
 # Database volumes that can be reset for fresh install (schema compatibility)
 RESET_VOLUMES = {
-    'timesketch': ['mssp_timesketch_postgres_data', 'mssp_timesketch_opensearch_data'],
-    'iris': ['mssp_iris_db_data'],
+    'timesketch': ['timesketch_timesketch_postgres_data', 'timesketch_timesketch_opensearch_data'],
+    'iris': ['iris_iris_db_data'],
     'elk': ['elk_elasticsearch_data'],
 }
 
