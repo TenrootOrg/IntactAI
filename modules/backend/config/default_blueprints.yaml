@@ -78,7 +78,7 @@ velociraptor:
 
   - id: velociraptor_full_collection
     name: "Full Collection"
-    description: "Maximum artifact collection for deep forensic analysis (55 artifacts)"
+    description: "Maximum artifact collection for deep forensic analysis (53 artifacts)"
     is_default: true
     settings:
       hunt_expiry: 180

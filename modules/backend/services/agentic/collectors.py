@@ -422,6 +422,7 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
     summaries = {}  # artifact -> summary
     analyzed_artifacts = set()  # Artifacts already submitted for LLM analysis
     llm_futures = {}  # future -> artifact
+    total_rows_before_filter = 0  # Track raw row count before any filtering
 
     # Get max concurrent requests from config
     max_concurrent = llm_config.get('agentic', {}).get('max_concurrent_requests', 5)
@@ -436,7 +437,7 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
     active_flows = [c for c in collection_results if c.get('flow_id')]
     if not active_flows:
         add_log_to_run(run_id, "[Velociraptor] No active flows to monitor", "warning")
-        return all_results, summaries, False
+        return all_results, summaries, False, 0
 
     # Setup Velociraptor connection
     channel = setup_velociraptor_connection()
@@ -444,7 +445,7 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
 
     if not stub:
         add_log_to_run(run_id, "[Velociraptor] Could not establish connection", "warning")
-        return all_results, summaries, False
+        return all_results, summaries, False, 0
 
     add_log_to_run(run_id, f"[Velociraptor] Streaming mode: polling {len(artifacts)} artifacts across {len(active_flows)} clients", "info")
     add_log_to_run(run_id, f"[Pipeline] Streaming analysis enabled - LLM starts as artifacts complete", "info")
@@ -517,6 +518,7 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                         if len(rows) > prev_count:
                             # New data available!
                             retrieved_artifacts[artifact_key] = len(rows)
+                            total_rows_before_filter += len(rows) - prev_count  # Track raw rows
                             stable_artifacts[source_name] = 0  # Reset stability counter
 
                             # Apply time filter first (if enabled)
@@ -715,7 +717,7 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
 
     # Return whether we timed out (vs completed naturally)
     timed_out = elapsed >= total_seconds
-    return all_results, summaries, timed_out
+    return all_results, summaries, timed_out, total_rows_before_filter
 
 
 def cancel_collections(run_id, collection_results):

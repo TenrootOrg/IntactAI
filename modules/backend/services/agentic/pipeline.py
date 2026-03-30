@@ -118,7 +118,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         if min_severity != 'informational':
             add_log_to_run(run_id, f"[Pipeline] Severity filter active: {min_severity}+ only", "info")
         _update_phase(run_id, "collecting", 10)
-        all_results, artifact_summaries, timed_out = stream_collect_and_analyze(
+        all_results, artifact_summaries, timed_out, total_rows_before_filter = stream_collect_and_analyze(
             run_id, success_collections, artifacts, collection_minutes, llm_config, anonymizer, _update_phase, min_severity, time_filter
         )
 
@@ -158,11 +158,18 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                     add_log_to_run(run_id, f"[External] Error loading {filename}: {str(e)}", "warning")
 
         if total_rows == 0:
-            add_log_to_run(run_id, "[Pipeline] No results collected from selected clients", "warning")
+            if total_rows_before_filter > 0:
+                # Data existed but filters removed everything
+                add_log_to_run(run_id, f"[Pipeline] Data was collected ({total_rows_before_filter} rows) but all rows were removed by filters (severity: {min_severity}+). Try lowering the severity filter or adjusting the time range.", "warning")
+            else:
+                # No data at all from Velociraptor
+                add_log_to_run(run_id, "[Pipeline] No data was returned from the selected clients. Possible causes:", "warning")
+                add_log_to_run(run_id, "  - Collection time too short - try increasing it", "warning")
+                add_log_to_run(run_id, "  - Artifacts not applicable to this system - try a different blueprint", "warning")
+                add_log_to_run(run_id, "  - Clients may be offline - verify client status in Velociraptor", "warning")
             report_content = generate_empty_report(blueprint, client_ids, collection_minutes)
             save_report_content(run_id, report_content)
             _update_phase(run_id, "completed", 100)
-            add_log_to_run(run_id, "[Report] Report generated (no data collected)", "info")
             update_run_status(run_id, "completed", progress=100)
             return
 
@@ -381,8 +388,8 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         )
 
         if not all_results:
-            add_log_to_run(run_id, f"[Pipeline] No results found in {collection_type} {collection_id}", "error")
-            update_run_status(run_id, "failed", error="No results found in collection")
+            add_log_to_run(run_id, f"[Pipeline] No data found in {collection_type} {collection_id}. The collection returned no results - try running a new collection with more artifacts or a longer time window.", "warning")
+            update_run_status(run_id, "completed", progress=100)
             return
 
         total_rows = sum(len(rows) for rows in all_results.values())
@@ -468,7 +475,10 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                     add_log_to_run(run_id, f"[External] Error loading {filename}: {str(e)}", "warning")
 
         if total_rows == 0:
-            add_log_to_run(run_id, "[Pipeline] No data in collection results", "warning")
+            if original_total > 0:
+                add_log_to_run(run_id, f"[Pipeline] Data was collected ({original_total} rows) but all rows were removed by filters. Try lowering the severity filter or adjusting the time range.", "warning")
+            else:
+                add_log_to_run(run_id, "[Pipeline] No data in collection results - try a different blueprint or longer collection time.", "warning")
             report_content = generate_empty_report(
                 {"name": f"Existing {collection_type.title()}", "artifacts": artifacts},
                 list(client_info.keys()),
