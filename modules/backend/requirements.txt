@@ -4,6 +4,7 @@
 # Web Framework
 Flask==3.1.2
 flask-cors==6.0.2
+Werkzeug==3.1.6  # Pin - 3.1.7 breaks internal Docker webhooks with strict host validation
 
 # HTTP & Data
 requests==2.32.5
