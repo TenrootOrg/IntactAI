@@ -256,6 +256,8 @@ download_timesketch_packages() {
     fi
 
     # Download all dependencies explicitly
+    # NOTE: grpcio, grpcio-status, protobuf are pinned for compatibility with
+    # Timesketch's dfir-unfurl which requires protobuf==4.*
     local deps=(
         "google-ai-generativelanguage"
         "google-api-core"
@@ -263,11 +265,11 @@ download_timesketch_packages() {
         "google-auth"
         "google-auth-httplib2"
         "googleapis-common-protos"
-        "grpcio"
-        "grpcio-status"
+        "grpcio==1.62.3"
+        "grpcio-status==1.62.3"
         "httplib2"
         "proto-plus"
-        "protobuf"
+        "protobuf>=4,<5"
         "pyasn1"
         "pyasn1-modules"
         "rsa"
