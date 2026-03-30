@@ -31,6 +31,15 @@ def get_installation_options():
     config = load_main_config()
     return config.get('options', {})
 
+
+def is_module_enabled(module_name):
+    """Check if a module is enabled in config.yaml."""
+    config = load_main_config()
+    mod = config.get('modules', {}).get(module_name, {})
+    if isinstance(mod, dict):
+        return mod.get('enabled', True)
+    return True
+
 # Artifact name mapping - keeping only essential automations
 ARTIFACT_MAPPING = {
     'kape': 'Windows.KapeFiles.Targets'

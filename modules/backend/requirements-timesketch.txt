@@ -1,0 +1,3 @@
+# Timesketch Module Dependencies
+timesketch-api-client==20260209
+timesketch-import-client==20260108

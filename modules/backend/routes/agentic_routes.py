@@ -12,6 +12,7 @@ from services.workflow_service import (
     create_automation_run,
     get_automation_run
 )
+from config import is_module_enabled
 
 agentic_bp = Blueprint('agentic', __name__)
 
@@ -50,6 +51,8 @@ def _load_llm_config():
 @agentic_bp.route('/api/agentic/run', methods=['POST'])
 def start_agentic_run():
     """Start a full agentic forensics pipeline"""
+    if not is_module_enabled('agentic'):
+        return jsonify({"error": "Agentic module is not enabled. Enable it in config.yaml and rebuild the backend."}), 400
     try:
         data = request.get_json()
         blueprint_id = data.get('blueprint_id')
@@ -188,6 +191,8 @@ def start_agentic_run():
 @agentic_bp.route('/api/agentic/analyze-existing', methods=['POST'])
 def analyze_existing_collection():
     """Run AI analysis on an existing Velociraptor flow or hunt (skip collection step)"""
+    if not is_module_enabled('agentic'):
+        return jsonify({"error": "Agentic module is not enabled. Enable it in config.yaml and rebuild the backend."}), 400
     try:
         data = request.get_json()
         flow_id = data.get('flow_id')

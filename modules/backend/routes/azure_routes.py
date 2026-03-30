@@ -24,6 +24,7 @@ from services.azure.collectors import parse_uploaded_logs
 from services.azure.sigma_runner import validate_rules_directory, get_available_rules_count
 from services.workflow_logger import add_log_to_run
 from routes.config_routes import _load_cloud_config
+from config import is_module_enabled
 
 azure_bp = Blueprint('azure', __name__)
 
@@ -136,6 +137,8 @@ def start_scan():
         "iris_config": {...}
     }
     """
+    if not is_module_enabled('azure'):
+        return jsonify({"error": "Azure module is not enabled. Enable it in config.yaml and rebuild the backend."}), 400
     try:
         data = request.json or {}
 
@@ -216,6 +219,8 @@ def upload_logs():
     Accepts multipart form data with files.
     Returns run_id for subsequent analysis.
     """
+    if not is_module_enabled('azure'):
+        return jsonify({"error": "Azure module is not enabled. Enable it in config.yaml and rebuild the backend."}), 400
     try:
         if 'files' not in request.files and 'file' not in request.files:
             return jsonify({'error': 'No files provided'}), 400

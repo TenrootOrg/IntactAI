@@ -1,5 +1,5 @@
-# MSSP Backend Dependencies
-# Generated from running container - pinned for reproducibility
+# MSSP Backend - Core Dependencies (always installed)
+# Module-specific dependencies are in requirements-{module}.txt
 
 # Web Framework
 Flask==3.1.2
@@ -10,28 +10,6 @@ Werkzeug==3.1.6  # Pin - 3.1.7 breaks internal Docker webhooks with strict host 
 requests==2.32.5
 PyYAML==6.0.3
 
-# gRPC (Velociraptor communication)
-grpcio==1.78.0
-grpcio-tools==1.78.0
-protobuf==6.33.5
-pyvelociraptor==0.1.9
-
-# Timesketch Integration
-timesketch-api-client==20260209
-timesketch-import-client==20260108
-
-# Elasticsearch
-elasticsearch>=8,<9
-
-# LLM Providers
-anthropic==0.79.0
-openai==2.21.0
-
 # Scheduler
 APScheduler==3.11.2
 SQLAlchemy==2.0.46
-
-# Azure Security Automation
-pysigma>=0.10.0
-azure-identity>=1.15.0
-msgraph-sdk>=1.0.0
