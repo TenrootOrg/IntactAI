@@ -159,9 +159,27 @@ def get_openrouter_models():
                 "created": m.get("created", 0),
             })
 
-        # Sort newest first, deduplicate similar models
-        all_models.sort(key=lambda x: x.get("created", 0), reverse=True)
-        models = [{"id": m["id"], "name": m["name"]} for m in all_models]
+        # Group by model family, keep only 2 newest per family
+        # Family = base name without version (e.g. "claude-opus", "gpt-5", "o3", "qwen3-max")
+        import re
+        from collections import defaultdict
+        families = defaultdict(list)
+        for m in all_models:
+            # Extract family: provider/name without trailing version numbers
+            # anthropic/claude-opus-4.6 → anthropic/claude-opus
+            # openai/gpt-5.4-pro → openai/gpt-pro (strip middle versions too)
+            model_id = m["id"]
+            # Remove version at end: -4.6, -4.5, -4, .4, -2.5
+            family = re.sub(r'[-.][\d]+(?:\.[\d]+)?$', '', model_id)
+            families[family].append(m)
+
+        # Keep 2 newest per family
+        models = []
+        for family, group in families.items():
+            group.sort(key=lambda x: x.get("created", 0), reverse=True)
+            for m in group[:2]:
+                models.append({"id": m["id"], "name": m["name"]})
+
         models.sort(key=lambda x: x["name"].lower())
 
         _openrouter_models_cache["models"] = models
