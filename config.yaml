@@ -7,6 +7,10 @@ options:
   download_forensic_tools: true
 
 modules:
+  agentic:
+    enabled: true
+  azure:
+    enabled: false
   elk:
     enabled: true
     id: elastic

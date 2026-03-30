@@ -1,0 +1,3 @@
+# Agentic (LLM) Module Dependencies
+anthropic==0.79.0
+openai==2.21.0

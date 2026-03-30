@@ -1,0 +1,2 @@
+# ELK Module Dependencies
+elasticsearch>=8,<9

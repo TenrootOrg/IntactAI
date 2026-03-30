@@ -13,9 +13,16 @@ RUN apt-get update && \
 # Upgrade pip and wheel first to fix security vulnerabilities (CVE-2025-8869, CVE-2026-1703, CVE-2026-24049)
 RUN pip install --no-cache-dir --upgrade pip>=26.0 wheel>=0.46.2
 
-# Copy and install Python dependencies from requirements.txt
-COPY modules/backend/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# Copy config.yaml early so we can conditionally install module dependencies
+COPY config.yaml /app/config.yaml
+
+# Copy all requirements files and install script
+COPY modules/backend/requirements*.txt /app/
+COPY modules/backend/install_deps.py /app/
+
+# Install core dependencies, then conditionally install module dependencies
+RUN pip install --no-cache-dir -r /app/requirements.txt && \
+    python3 /app/install_deps.py /app/config.yaml /app
 
 # Copy application files
 COPY modules/backend/config.py /app/

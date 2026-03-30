@@ -1,0 +1,5 @@
+# Velociraptor Module Dependencies
+grpcio==1.78.0
+grpcio-tools==1.78.0
+protobuf==6.33.5
+pyvelociraptor==0.1.9
