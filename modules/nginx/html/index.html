@@ -2133,8 +2133,9 @@ sudo ./velociraptor service start</code></pre>
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">Model</label>
-                                    <select x-model="$store.settings.config.agentic.online_llm.model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
-                                        <!-- Claude provider -->
+                                    <!-- Standard dropdown for Claude/OpenAI/Gemini -->
+                                    <select x-show="$store.settings.config.agentic.online_llm.provider !== 'openrouter'"
+                                            x-model="$store.settings.config.agentic.online_llm.model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
                                         <template x-if="$store.settings.config.agentic.online_llm.provider === 'claude'">
                                             <optgroup label="Claude">
                                                 <option value="claude-opus">Claude Opus</option>
@@ -2142,42 +2143,72 @@ sudo ./velociraptor service start</code></pre>
                                                 <option value="claude-haiku">Claude Haiku</option>
                                             </optgroup>
                                         </template>
-                                        <!-- OpenAI provider -->
                                         <template x-if="$store.settings.config.agentic.online_llm.provider === 'openai'">
                                             <optgroup label="OpenAI">
                                                 <option value="gpt-4o">GPT-4o</option>
                                                 <option value="gpt-4.1">GPT-4.1</option>
                                             </optgroup>
                                         </template>
-                                        <!-- Gemini provider -->
                                         <template x-if="$store.settings.config.agentic.online_llm.provider === 'gemini'">
                                             <optgroup label="Gemini">
                                                 <option value="gemini-flash">Gemini Flash</option>
                                                 <option value="gemini-pro">Gemini Pro</option>
                                             </optgroup>
                                         </template>
-                                        <!-- OpenRouter - all models + custom -->
-                                        <template x-if="$store.settings.config.agentic.online_llm.provider === 'openrouter'">
-                                            <optgroup label="All Models">
-                                                <option value="claude-opus">Claude Opus</option>
-                                                <option value="claude-sonnet">Claude Sonnet</option>
-                                                <option value="claude-haiku">Claude Haiku</option>
-                                                <option value="gpt-4o">GPT-4o</option>
-                                                <option value="gpt-4.1">GPT-4.1</option>
-                                                <option value="gemini-flash">Gemini Flash</option>
-                                                <option value="gemini-pro">Gemini Pro</option>
-                                                <option value="deepseek-v3">DeepSeek V3</option>
-                                                <option value="deepseek-r1">DeepSeek R1</option>
-                                                <option value="custom">-- Custom Model --</option>
-                                            </optgroup>
-                                        </template>
                                     </select>
-                                    <!-- Custom model input for OpenRouter -->
-                                    <input x-show="$store.settings.config.agentic.online_llm.provider === 'openrouter' && $store.settings.config.agentic.online_llm.model === 'custom'"
-                                           type="text"
-                                           x-model="$store.settings.config.agentic.online_llm.custom_model"
-                                           class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm mt-1"
-                                           placeholder="e.g. anthropic/claude-opus-4-6">
+                                    <!-- OpenRouter: autocomplete text input -->
+                                    <div x-show="$store.settings.config.agentic.online_llm.provider === 'openrouter'"
+                                         x-data="{
+                                             search: $store.settings.config.agentic.online_llm.model || '',
+                                             models: [],
+                                             filtered: [],
+                                             open: false,
+                                             loading: false,
+                                             async fetchModels() {
+                                                 if (this.models.length > 0) return;
+                                                 this.loading = true;
+                                                 try {
+                                                     const resp = await fetch('/api/config/openrouter/models');
+                                                     const data = await resp.json();
+                                                     this.models = data.models || [];
+                                                 } catch(e) { this.models = []; }
+                                                 this.loading = false;
+                                             },
+                                             filter() {
+                                                 const q = this.search.toLowerCase();
+                                                 this.filtered = this.models.filter(m =>
+                                                     m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)
+                                                 ).slice(0, 15);
+                                             },
+                                             select(model) {
+                                                 this.search = model.id;
+                                                 $store.settings.config.agentic.online_llm.model = model.id;
+                                                 this.open = false;
+                                             }
+                                         }"
+                                         x-init="search = $store.settings.config.agentic.online_llm.model || ''"
+                                         class="relative">
+                                        <input type="text" x-model="search"
+                                               @focus="fetchModels(); filter(); open = true"
+                                               @input="filter(); open = true"
+                                               @click.away="open = false"
+                                               @keydown.escape="open = false"
+                                               @change="$store.settings.config.agentic.online_llm.model = search"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
+                                               placeholder="Type to search models... e.g. claude, deepseek, llama">
+                                        <div x-show="loading" class="absolute right-2 top-2 text-xs text-gray-500">Loading...</div>
+                                        <!-- Dropdown results -->
+                                        <div x-show="open && filtered.length > 0"
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg max-h-48 overflow-y-auto">
+                                            <template x-for="m in filtered" :key="m.id">
+                                                <div @mousedown.prevent="select(m)"
+                                                     class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50">
+                                                    <div class="text-white" x-text="m.name"></div>
+                                                    <div class="text-xs text-gray-500" x-text="m.id"></div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">API Key</label>

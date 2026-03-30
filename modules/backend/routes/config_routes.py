@@ -109,6 +109,72 @@ def get_available_models():
         return jsonify({"error": str(e)}), 500
 
 
+# Cache for OpenRouter models (fetched once, reused)
+_openrouter_models_cache = {"models": None, "fetched_at": 0}
+
+@config_bp.route('/api/config/openrouter/models', methods=['GET'])
+def get_openrouter_models():
+    """Fetch available models from OpenRouter API with caching."""
+    import time, requests
+
+    # Return cache if less than 1 hour old
+    if _openrouter_models_cache["models"] and (time.time() - _openrouter_models_cache["fetched_at"]) < 3600:
+        return jsonify({"models": _openrouter_models_cache["models"]})
+
+    # Only show models from these providers
+    ALLOWED_PROVIDERS = ['anthropic', 'openai', 'google', 'qwen']
+    # Skip non-text models, old versions, weak models, and noise
+    SKIP_PATTERNS = [':free', ':extended', ':thinking', '-image', '-audio', '-vl-', 'vl-', '-search-',
+                     'gpt-3.5', 'gpt-4-turbo', 'gpt-4-1106', 'gpt-4-0314', 'gpt-4o-2024',
+                     'gpt-4o-mini', 'gpt-4.1-nano', 'gpt-4', 'gpt-5-nano', 'gpt-5.4-nano',
+                     'gemma-', 'nano-banana', 'safeguard', 'gpt-oss',
+                     '-deep-research', '-codex', '-chat', 'customtools',
+                     'claude-3-haiku', 'claude-3.5', 'claude-3.7', 'claude-sonnet-4:',
+                     'claude-opus-4:', 'claude-opus-4.1',
+                     'qwen-2.5', 'qwen2.5', 'qwq-', 'qwen3-8b', 'qwen3-14b', 'qwen3-32b',
+                     'qwen3-235b', 'qwen3-30b', 'qwen3-next', 'qwen3.5-9b', 'qwen3.5-27b',
+                     'qwen3.5-35b', 'qwen3.5-122b', 'qwen3.5-397b', 'qwen3-coder-30b',
+                     'qwen-plus-2025', 'thinking-2507',
+                     'preview', 'flash-lite', 'gemini-2.0',
+                     'o1-pro', 'o3-mini', 'o4-mini-high',
+                     'gpt-5.1', 'gpt-5.2', 'gpt-5.3']
+
+    try:
+        resp = requests.get("https://openrouter.ai/api/v1/models", timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Filter to popular providers, skip noise
+        all_models = []
+        for m in data.get("data", []):
+            model_id = m.get("id", "")
+            provider = model_id.split("/")[0] if "/" in model_id else ""
+            if provider not in ALLOWED_PROVIDERS:
+                continue
+            if any(skip in model_id.lower() for skip in SKIP_PATTERNS):
+                continue
+            all_models.append({
+                "id": model_id,
+                "name": m.get("name", ""),
+                "created": m.get("created", 0),
+            })
+
+        # Sort newest first, deduplicate similar models
+        all_models.sort(key=lambda x: x.get("created", 0), reverse=True)
+        models = [{"id": m["id"], "name": m["name"]} for m in all_models]
+        models.sort(key=lambda x: x["name"].lower())
+
+        _openrouter_models_cache["models"] = models
+        _openrouter_models_cache["fetched_at"] = time.time()
+
+        return jsonify({"models": models})
+    except Exception as e:
+        # Return cache if available, otherwise empty
+        if _openrouter_models_cache["models"]:
+            return jsonify({"models": _openrouter_models_cache["models"]})
+        return jsonify({"models": [], "error": str(e)})
+
+
 # =============================================================================
 # Frontend Configuration Endpoints
 # =============================================================================
