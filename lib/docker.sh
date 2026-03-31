@@ -234,79 +234,9 @@ pull_python_alpine_image() {
 }
 
 download_timesketch_packages() {
-    # Download Python packages for Timesketch AI features (google-generativeai)
-    # These are installed offline from local wheels in air-gap environments
-
-    local packages_dir="${SCRIPT_DIR}/modules/timesketch/python-packages"
-
-    log_info "Downloading Timesketch Python packages for offline use..."
-
-    mkdir -p "$packages_dir"
-
-    # Download google-generativeai and ALL its dependencies
-    # Using pip download to get wheels for the target platform
-    if python3 -m pip download google-generativeai \
-        --dest "$packages_dir" \
-        --only-binary=:all: \
-        --platform manylinux2014_x86_64 \
-        --platform manylinux_2_17_x86_64 \
-        --python-version 312 \
-        --no-deps 2>> "$LOG_FILE"; then
-        log_info "  Downloaded google-generativeai"
-    fi
-
-    # Download all dependencies explicitly
-    # NOTE: grpcio, grpcio-status, protobuf are pinned for compatibility with
-    # Timesketch's dfir-unfurl which requires protobuf==4.*
-    local deps=(
-        "google-ai-generativelanguage"
-        "google-api-core"
-        "google-api-python-client"
-        "google-auth"
-        "google-auth-httplib2"
-        "googleapis-common-protos"
-        "grpcio==1.62.3"
-        "grpcio-status==1.62.3"
-        "httplib2"
-        "proto-plus"
-        "protobuf>=4,<5"
-        "pyasn1"
-        "pyasn1-modules"
-        "rsa"
-        "cachetools"
-        "certifi"
-        "charset-normalizer"
-        "idna"
-        "requests"
-        "urllib3"
-        "pydantic"
-        "pydantic-core"
-        "annotated-types"
-        "typing-extensions"
-        "tqdm"
-        "pyparsing"
-        "uritemplate"
-        "cffi"
-        "pycparser"
-        "cryptography"
-    )
-
-    for dep in "${deps[@]}"; do
-        if python3 -m pip download "$dep" \
-            --dest "$packages_dir" \
-            --only-binary=:all: \
-            --platform manylinux2014_x86_64 \
-            --platform manylinux_2_17_x86_64 \
-            --python-version 312 \
-            --no-deps 2>> "$LOG_FILE"; then
-            log_info "  Downloaded $dep"
-        else
-            log_warn "  Could not download $dep (may already exist or not needed)"
-        fi
-    done
-
-    local count=$(ls -1 "$packages_dir"/*.whl 2>/dev/null | wc -l)
-    log_success "Timesketch packages: $count wheel files in $packages_dir"
+    # Timesketch 20260311+ includes google-genai built-in (no external packages needed)
+    # This function is kept for backwards compatibility but no longer downloads packages
+    log_info "Timesketch LLM packages: included in Timesketch image (no download needed)"
 }
 
 download_offline_collector_binaries() {

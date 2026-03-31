@@ -39,6 +39,6 @@ versions:
   iris: v2.4.25
   plaso: '20260119'
   portainer: 2.33.6
-  timesketch: '20260209'
+  timesketch: '20260311'
   velociraptor: '0.75.6'
   backend: '1.0.0'
