@@ -373,8 +373,9 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None):
         add_log_to_run(run_id, f"Client hostname: {client_name}")
         update_run_status(run_id, "running", progress=10)
 
-        # Create temp directory for extraction
-        temp_dir = tempfile.mkdtemp(prefix='kape_upload_')
+        # Create temp directory for extraction inside PLASO_OUTPUT_DIR (shared with host via Docker volume)
+        # Must be under /tmp/plaso/ so the Plaso Docker container can access the files
+        temp_dir = tempfile.mkdtemp(prefix='kape_upload_', dir=PLASO_OUTPUT_DIR)
         extract_dir = os.path.join(temp_dir, 'extracted')
         os.makedirs(extract_dir)
         add_log_to_run(run_id, f"Working directory: {temp_dir}")
