@@ -10,7 +10,7 @@ import shutil
 from datetime import datetime
 from typing import Dict, Callable, List
 
-from .base import run_command, WORKDIR
+from .base import run_command, WORKDIR, HOST_PATH
 
 
 # Docker image mappings for each module
@@ -297,7 +297,6 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
 
                     # Build image with specific tag
                     # Use host paths for docker compose (container paths don't work for build context)
-                    from .base import HOST_PATH, WORKDIR
                     host_velo_dir = velo_dir.replace(WORKDIR, HOST_PATH, 1)
                     compose_file = f"{host_velo_dir}/docker-compose.yaml"
 
