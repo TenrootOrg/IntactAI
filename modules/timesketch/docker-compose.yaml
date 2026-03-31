@@ -66,11 +66,6 @@ services:
     command:
       - |
         mkdir -p /var/log/timesketch
-        if ls /tmp/packages/*.whl >/dev/null 2>&1; then
-          pip3 install --no-index --find-links=/tmp/packages google-generativeai || true
-        else
-          pip3 install google-generativeai 2>/dev/null || true
-        fi
         exec /docker-entrypoint.sh timesketch-web
     environment:
       - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-4}
@@ -78,7 +73,6 @@ services:
       - ./config:/etc/timesketch
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
-      - ./python-packages:/tmp/packages:ro
     restart: unless-stopped
     depends_on:
       timesketch-postgres:
@@ -130,11 +124,6 @@ services:
     command:
       - |
         mkdir -p /var/log/timesketch
-        if ls /tmp/packages/*.whl >/dev/null 2>&1; then
-          pip3 install --no-index --find-links=/tmp/packages google-generativeai || true
-        else
-          pip3 install google-generativeai 2>/dev/null || true
-        fi
         exec /docker-entrypoint.sh timesketch-worker
     environment:
       - WORKER_LOG_LEVEL=${WORKER_LOG_LEVEL:-INFO}
@@ -142,7 +131,6 @@ services:
       - ./config:/etc/timesketch
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
-      - ./python-packages:/tmp/packages:ro
     restart: unless-stopped
     depends_on:
       - timesketch-web

@@ -342,6 +342,13 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
 
             completed += 1
 
+        # Check if any modules were actually packaged
+        has_content = (manifest["contents"]["images"] or
+                      manifest["contents"]["binaries"] or
+                      manifest["contents"].get("include_source", False))
+        if not has_content:
+            raise Exception("No modules were packaged successfully. Check your internet connection and try again.")
+
         # Write manifest
         log("", "info")
         log("=== Creating Manifest ===", "info")
