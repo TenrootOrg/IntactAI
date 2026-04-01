@@ -220,8 +220,8 @@ def is_source_relevant(source_name: str, product: str, service: str) -> bool:
         if service == svc or any(kw in source_lower for kw in keywords):
             return True
 
-    # Default: try to match
-    return True
+    # Default: don't match unknown sources
+    return False
 
 
 def evaluate_detection(
@@ -251,10 +251,10 @@ def evaluate_selection(record: Dict, criteria: Any) -> bool:
     """
     Evaluate a selection criteria against a record.
 
-    Handles: field|contains, field|startswith, field|endswith, field|re, lists
+    Handles: field|contains, field|startswith, field|endswith, field|re, lists, keywords
     """
     if criteria is None:
-        return True
+        return False
 
     if isinstance(criteria, dict):
         # All criteria in dict must match (AND)
@@ -264,16 +264,26 @@ def evaluate_selection(record: Dict, criteria: Any) -> bool:
         return True
 
     elif isinstance(criteria, list):
-        # Any item in list can match (OR) - typically list of dicts
+        # Any item in list can match (OR)
         for item in criteria:
             if isinstance(item, dict):
                 if evaluate_selection(record, item):
                     return True
-            else:
-                return True
+            elif isinstance(item, str):
+                # Keyword search - check if string appears anywhere in record values
+                item_lower = item.lower()
+                record_str = json.dumps(record, default=str).lower()
+                if item_lower in record_str:
+                    return True
         return False
 
-    return True
+    elif isinstance(criteria, str):
+        # Single keyword search
+        criteria_lower = criteria.lower()
+        record_str = json.dumps(record, default=str).lower()
+        return criteria_lower in record_str
+
+    return False
 
 
 def match_field(record: Dict, field_spec: str, value_spec: Any) -> bool:

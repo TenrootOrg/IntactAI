@@ -163,43 +163,60 @@ def start_scan():
             # Custom blueprint config provided
             blueprint = blueprint_id
 
-        # Create run ID
-        run_id = f"azure_{uuid.uuid4().hex[:12]}"
+        # Load LLM config from saved settings (same as agentic pipeline)
+        from services.file_storage_service import load_frontend_config
+        llm_config = load_frontend_config() or {}
 
         # Build options
         options = {
             'enable_llm': data.get('enable_llm', False),
-            'llm_config': data.get('llm_config', {}),
+            'llm_config': llm_config,
             'time_filter': data.get('time_filter'),
+            'min_severity': data.get('min_severity', 'medium'),
             'iris_config': data.get('iris_config'),
             'anonymizer': None  # TODO: Add anonymizer support
         }
 
-        # Store run info
-        _azure_runs[run_id] = {
-            'status': 'starting',
-            'mode': 'online',
-            'blueprint': blueprint,
-            'start_time': datetime.utcnow().isoformat()
-        }
-
+        # Create workflow run (same pattern as agentic/timesketch)
+        from services.workflow_service import create_automation_run, update_run_status
+        run_id = create_automation_run(
+            automation_type="azure_scan",
+            name=f"Azure Scan: {blueprint.get('name', 'Custom')}",
+            details={
+                "trigger": "manual",
+                "blueprint": blueprint.get('name', 'Custom'),
+                "mode": "online"
+            }
+        )
+        update_run_status(run_id, "running", progress=5)
         add_log_to_run(run_id, f"[AZURE] Starting scan with blueprint: {blueprint.get('name', 'Custom')}", "info")
 
-        # Run pipeline (in production, this would be async/background)
-        result = run_azure_pipeline(
-            run_id=run_id,
-            azure_config=azure_config,
-            blueprint=blueprint,
-            options=options
-        )
+        # Run pipeline in background thread
+        import threading
+        def run_scan():
+            try:
+                result = run_azure_pipeline(
+                    run_id=run_id,
+                    azure_config=azure_config,
+                    blueprint=blueprint,
+                    options=options
+                )
+                _azure_runs[run_id] = result
+                if result.get('status') == 'failed':
+                    update_run_status(run_id, "failed", error=result.get('error', 'Unknown error'))
+                else:
+                    update_run_status(run_id, "completed", progress=100)
+            except Exception as e:
+                add_log_to_run(run_id, f"[AZURE] Scan failed: {str(e)}", "error")
+                update_run_status(run_id, "failed", error=str(e))
 
-        # Store result
-        _azure_runs[run_id] = result
+        thread = threading.Thread(target=run_scan, daemon=True)
+        thread.start()
 
         return jsonify({
             'run_id': run_id,
-            'status': result.get('status'),
-            'message': 'Scan started' if result.get('status') == 'running' else 'Scan completed'
+            'status': 'running',
+            'message': 'Azure scan started'
         })
 
     except Exception as e:
