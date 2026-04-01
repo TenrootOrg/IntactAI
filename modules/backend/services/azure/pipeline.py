@@ -75,9 +75,10 @@ def run_azure_pipeline(
         enable_llm = options.get('enable_llm', False)
         llm_config = options.get('llm_config', {})
         if enable_llm:
-            llm_valid, llm_error = validate_llm_config(llm_config)
-            if not llm_valid:
-                add_log_to_run(run_id, f"[AZURE] LLM disabled: {llm_error}", "warning")
+            try:
+                validate_llm_config(llm_config)
+            except ValueError as e:
+                add_log_to_run(run_id, f"[AZURE] LLM disabled: {e}", "warning")
                 enable_llm = False
 
         result['phases']['validation'] = {'status': 'complete'}
@@ -87,8 +88,9 @@ def run_azure_pipeline(
         # =====================================================================
         add_log_to_run(run_id, "[AZURE] Phase 2: Collecting logs from Azure...", "info")
 
-        sources = blueprint.get('sources', ['all'])
-        time_range_days = blueprint.get('time_range_days', 7)
+        bp_settings = blueprint.get('settings', {})
+        sources = bp_settings.get('sources', ['all'])
+        time_range_days = bp_settings.get('time_range_days', 7)
 
         collected_data, collection_status = collect_azure_logs(
             azure_config=azure_config,
@@ -110,10 +112,22 @@ def run_azure_pipeline(
             "info"
         )
 
+        # Log per-source results
+        for source_key, records in collected_data.items():
+            add_log_to_run(run_id, f"[AZURE] {source_key}: {len(records)} records", "success")
+
+        # Log any errors/skipped sources
+        for error in collection_status.get('errors', []):
+            add_log_to_run(run_id, f"[AZURE] {error}", "warning")
+
         if not collected_data:
-            add_log_to_run(run_id, "[AZURE] No data collected - check Azure credentials and permissions", "error")
-            result['status'] = 'error'
-            result['error'] = 'No data collected'
+            total_errors = len(collection_status.get('errors', []))
+            if total_errors > 0:
+                add_log_to_run(run_id, "[AZURE] No data collected. Some sources were skipped - check license tier and API permissions.", "warning")
+            else:
+                add_log_to_run(run_id, "[AZURE] No events found in the selected time range.", "warning")
+            result['status'] = 'completed'
+            result['message'] = 'No data collected'
             return result
 
         # =====================================================================
@@ -136,7 +150,8 @@ def run_azure_pipeline(
         # =====================================================================
         add_log_to_run(run_id, "[AZURE] Phase 4: Running SIGMA detection rules...", "info")
 
-        min_severity = blueprint.get('min_severity', 'low')
+        min_severity = options.get('min_severity') or bp_settings.get('min_severity', 'low')
+        add_log_to_run(run_id, f"[AZURE] Minimum severity filter: {min_severity}+", "info")
         findings, detection_status = run_sigma_rules(
             logs=collected_data,
             min_level=min_severity
@@ -168,6 +183,7 @@ def run_azure_pipeline(
             try:
                 # Analyze findings (not raw logs)
                 analysis_results = analyze_artifacts(
+                    run_id=run_id,
                     all_results=findings,
                     llm_config=llm_config,
                     anonymizer=options.get('anonymizer')
@@ -198,25 +214,24 @@ def run_azure_pipeline(
             add_log_to_run(run_id, "[AZURE] Phase 6: Generating reports...", "info")
 
             try:
-                # Extract timeline events from findings
-                timeline_events = extract_timeline_events(findings)
-
-                # Generate reports
+                # Generate reports using agentic report generator
                 reports = generate_final_report(
+                    run_id=run_id,
+                    blueprint={'name': f"Azure: {blueprint.get('name', 'Scan')}"},
+                    client_ids=[],
+                    collection_minutes=0,
                     artifact_summaries=analysis_results,
-                    timeline_events=timeline_events,
+                    all_results=findings,
                     llm_config=llm_config,
-                    metadata={
-                        'platform': 'Azure',
-                        'mode': 'online',
-                        'blueprint': blueprint.get('name', 'Unknown'),
-                        'sources': list(collected_data.keys()),
-                        'findings_count': detection_status.get('total_findings', 0)
-                    }
+                    report_types=['technical']
                 )
 
                 result['reports'] = reports
                 result['phases']['reporting'] = {'status': 'complete'}
+
+                # Save report to storage (so it can be viewed/downloaded)
+                from services.agentic.reports import save_report_content
+                save_report_content(run_id, reports)
 
                 add_log_to_run(run_id, "[AZURE] Reports generated successfully", "info")
             except Exception as e:

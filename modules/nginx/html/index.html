@@ -489,6 +489,13 @@
                                         <td class="px-6 py-4 text-gray-300 text-xs" x-text="$store.workflows.formatTime(run.started_at)"></td>
                                         <td class="px-6 py-4 whitespace-nowrap">
                                             <div class="flex items-center gap-2">
+                                                <!-- Azure scan report -->
+                                                <template x-if="run.type === 'azure_scan' && run.status === 'completed'">
+                                                    <a :href="'/api/agentic/run/' + run.id + '/download?type=technical'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Azure Report">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                        Report
+                                                    </a>
+                                                </template>
                                                 <!-- Single client: single report -->
                                                 <template x-if="run.type === 'agentic' && run.status === 'completed' && !run.details?.multi_client">
                                                     <a :href="'/api/agentic/run/' + run.id + '/download?type=technical'" download class="bg-purple-600 hover:bg-purple-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Report">
@@ -1670,6 +1677,7 @@ sudo ./velociraptor service start</code></pre>
                      azureTimeFilter: '7d',
                      azureCustomStart: '',
                      azureCustomEnd: '',
+                     azureMinSeverity: 'medium',
                      azureEnableLLM: false,
                      azureRunning: false,
                      azureRunId: null,
@@ -1698,13 +1706,16 @@ sudo ./velociraptor service start</code></pre>
                                  body: JSON.stringify({
                                      blueprint: this.azureBlueprint,
                                      time_filter: timeFilter,
-                                     enable_llm: this.azureEnableLLM
+                                     enable_llm: this.azureEnableLLM,
+                                     min_severity: this.azureMinSeverity
                                  })
                              });
                              const data = await res.json();
-                             this.azureRunId = data.run_id;
-                             if (data.status === 'complete') {
-                                 await this.loadAzureResults(data.run_id);
+                             if (res.ok && data.run_id) {
+                                 this.azureRunId = data.run_id;
+                                 $store.app.switchTab('workflows');
+                             } else {
+                                 alert('Error: ' + (data.error || 'Failed to start scan'));
                              }
                          } catch(e) { console.error(e); alert('Scan failed: ' + e); }
                          this.azureRunning = false;
@@ -1869,6 +1880,18 @@ sudo ./velociraptor service start</code></pre>
                             <!-- Hidden combined fields -->
                             <input type="hidden" id="azure-time-start">
                             <input type="hidden" id="azure-time-end">
+                        </div>
+
+                        <!-- Minimum Severity -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Minimum Severity</label>
+                            <select x-model="azureMinSeverity" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                <option value="informational">Informational (all findings)</option>
+                                <option value="low">Low+</option>
+                                <option value="medium">Medium+ (recommended)</option>
+                                <option value="high">High+</option>
+                                <option value="critical">Critical only</option>
+                            </select>
                         </div>
 
                         <!-- LLM Toggle -->

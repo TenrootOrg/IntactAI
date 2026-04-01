@@ -252,11 +252,12 @@ azure:
 
   - id: azure_quick_scan
     name: "Quick Scan"
-    description: "Fast check using Unified Audit Log - works on Free tier (7 days)"
+    description: "Fast check of sign-in and audit logs (7 days)"
     is_default: true
     settings:
       sources:
-        - unified_audit
+        - signin_logs
+        - audit_logs
       time_range_days: 7
       min_severity: low
 
