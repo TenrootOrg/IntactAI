@@ -340,6 +340,13 @@ download_sigma_rules() {
     # Download SIGMA detection rules for Azure security automation
     # Clones SigmaHQ rules repository for offline use
 
+    # Skip if azure module is disabled
+    local azure_enabled=$(read_config "['modules']['azure']['enabled']")
+    if ! is_enabled "$azure_enabled"; then
+        log_info "Azure module disabled, skipping SIGMA rules download"
+        return 0
+    fi
+
     local sigma_dir="/opt/sigma-rules"
 
     log_info "Setting up SIGMA detection rules for Azure automation..."

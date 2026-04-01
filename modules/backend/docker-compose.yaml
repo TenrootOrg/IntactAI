@@ -40,6 +40,7 @@ services:
       - ../..:/app/workdir:rw  # MSSP root for upgrade operations
       # Also mount at host path for docker compose --project-directory to work
       - /home/tenroot/risx:/home/tenroot/risx:rw
+      - /opt/sigma-rules:/opt/sigma-rules:ro  # SIGMA detection rules for Azure automation
     ports:
       - "5001:5001"
     restart: unless-stopped
