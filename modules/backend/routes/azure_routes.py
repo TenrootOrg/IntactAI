@@ -11,7 +11,7 @@ import json
 import uuid
 import traceback
 from datetime import datetime
-from flask import Blueprint, jsonify, request, current_app
+from flask import Blueprint, jsonify, request, current_app, Response
 from werkzeug.utils import secure_filename
 
 from services.azure.pipeline import (
@@ -137,91 +137,110 @@ def start_scan():
         "iris_config": {...}
     }
     """
-    if not is_module_enabled('azure'):
-        return jsonify({"error": "Azure module is not enabled. Enable it in config.yaml and rebuild the backend."}), 400
-    try:
-        data = request.json or {}
+    # Always create workflow first so everything is visible in logs
+    from services.workflow_service import create_automation_run, update_run_status
 
-        # Get Azure credentials
-        cloud_config = _load_cloud_config()
-        azure_config = cloud_config.get('azure', {})
+    data = request.json or {}
+    blueprint_id = data.get('blueprint', 'azure_quick_triage')
 
-        if not azure_config.get('tenant_id') or not azure_config.get('client_id'):
-            return jsonify({
-                'error': 'Azure credentials not configured. Please configure in Settings.'
-            }), 400
-
-        # Get or create blueprint config
-        blueprint_id = data.get('blueprint', 'azure_quick_scan')
-        if isinstance(blueprint_id, str):
-            # Look up blueprint by ID
-            blueprints = get_azure_blueprints()
-            blueprint = next((b for b in blueprints if b['id'] == blueprint_id), None)
-            if not blueprint:
-                return jsonify({'error': f'Blueprint not found: {blueprint_id}'}), 400
-        else:
-            # Custom blueprint config provided
-            blueprint = blueprint_id
-
-        # Load LLM config from saved settings (same as agentic pipeline)
-        from services.file_storage_service import load_frontend_config
-        llm_config = load_frontend_config() or {}
-
-        # Build options
-        options = {
-            'enable_llm': data.get('enable_llm', False),
-            'llm_config': llm_config,
-            'time_filter': data.get('time_filter'),
-            'min_severity': data.get('min_severity', 'medium'),
-            'iris_config': data.get('iris_config'),
-            'anonymizer': None  # TODO: Add anonymizer support
+    run_id = create_automation_run(
+        automation_type="azure_scan",
+        name=f"Azure Scan: {blueprint_id}",
+        details={
+            "trigger": "manual",
+            "blueprint": blueprint_id,
+            "mode": "online",
+            "target_users": data.get('target_users', []),
+            "target_ips": data.get('target_ips', []),
         }
+    )
+    update_run_status(run_id, "running", progress=5)
 
-        # Create workflow run (same pattern as agentic/timesketch)
-        from services.workflow_service import create_automation_run, update_run_status
-        run_id = create_automation_run(
-            automation_type="azure_scan",
-            name=f"Azure Scan: {blueprint.get('name', 'Custom')}",
-            details={
-                "trigger": "manual",
-                "blueprint": blueprint.get('name', 'Custom'),
-                "mode": "online"
+    # Run everything in background thread - all errors go to workflow log
+    import threading
+    def run_scan():
+        try:
+            # Validate module
+            if not is_module_enabled('azure'):
+                add_log_to_run(run_id, "Azure module is not enabled. Enable it in config.yaml and rebuild.", "error")
+                update_run_status(run_id, "failed", error="Azure module not enabled")
+                return
+
+            # Get Azure credentials
+            cloud_config = _load_cloud_config()
+            azure_config = cloud_config.get('azure', {})
+
+            if not azure_config.get('tenant_id') or not azure_config.get('client_id'):
+                add_log_to_run(run_id, "Azure credentials not configured. Please configure in Settings.", "error")
+                update_run_status(run_id, "failed", error="Azure credentials not configured")
+                return
+
+            # Get or create blueprint config
+            if isinstance(blueprint_id, str):
+                blueprints = get_azure_blueprints()
+                blueprint = next((b for b in blueprints if b['id'] == blueprint_id), None)
+                if not blueprint:
+                    add_log_to_run(run_id, f"Blueprint not found: {blueprint_id}", "error")
+                    update_run_status(run_id, "failed", error=f"Blueprint not found: {blueprint_id}")
+                    return
+            else:
+                blueprint = blueprint_id
+
+            # Update workflow name with resolved blueprint
+            add_log_to_run(run_id, f"[AZURE] Starting scan with blueprint: {blueprint.get('name', 'Custom')}", "info")
+
+            # Load LLM config
+            from services.file_storage_service import load_frontend_config
+            llm_config = load_frontend_config() or {}
+
+            # Build options with identity filters
+            options = {
+                'enable_llm': data.get('enable_llm', False),
+                'llm_config': llm_config,
+                'time_filter': data.get('time_filter'),
+                'min_severity': data.get('min_severity', 'medium'),
+                'iris_config': data.get('iris_config'),
+                'target_users': data.get('target_users', []),
+                'target_ips': data.get('target_ips', []),
+                'pivot_mode': data.get('pivot_mode', False),
+                'anonymizer': None
             }
-        )
-        update_run_status(run_id, "running", progress=5)
-        add_log_to_run(run_id, f"[AZURE] Starting scan with blueprint: {blueprint.get('name', 'Custom')}", "info")
 
-        # Run pipeline in background thread
-        import threading
-        def run_scan():
+            result = run_azure_pipeline(
+                run_id=run_id,
+                azure_config=azure_config,
+                blueprint=blueprint,
+                options=options
+            )
+            _azure_runs[run_id] = result
+
+            # Persist raw data to disk so it survives backend restart
             try:
-                result = run_azure_pipeline(
-                    run_id=run_id,
-                    azure_config=azure_config,
-                    blueprint=blueprint,
-                    options=options
-                )
-                _azure_runs[run_id] = result
-                if result.get('status') == 'failed':
-                    update_run_status(run_id, "failed", error=result.get('error', 'Unknown error'))
-                else:
-                    update_run_status(run_id, "completed", progress=100)
-            except Exception as e:
-                add_log_to_run(run_id, f"[AZURE] Scan failed: {str(e)}", "error")
-                update_run_status(run_id, "failed", error=str(e))
+                persist_dir = "/data/db/azure_runs"
+                os.makedirs(persist_dir, exist_ok=True)
+                with open(f"{persist_dir}/{run_id}.json", 'w') as f:
+                    json.dump(result, f, default=str)
+            except Exception as persist_err:
+                print(f"[AZURE] Warning: Could not persist raw data: {persist_err}", flush=True)
 
-        thread = threading.Thread(target=run_scan, daemon=True)
-        thread.start()
+            if result.get('status') == 'failed':
+                update_run_status(run_id, "failed", error=result.get('error', 'Unknown error'))
+            else:
+                update_run_status(run_id, "completed", progress=100, details={'has_report': bool(result.get('has_report'))})
 
-        return jsonify({
-            'run_id': run_id,
-            'status': 'running',
-            'message': 'Azure scan started'
-        })
+        except Exception as e:
+            add_log_to_run(run_id, f"[AZURE] Scan failed: {str(e)}", "error")
+            update_run_status(run_id, "failed", error=str(e))
+            traceback.print_exc()
 
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+    thread = threading.Thread(target=run_scan, daemon=True)
+    thread.start()
+
+    return jsonify({
+        'run_id': run_id,
+        'status': 'running',
+        'message': 'Azure scan started'
+    })
 
 
 # =============================================================================
@@ -518,6 +537,133 @@ def list_runs():
         runs.sort(key=lambda x: x.get('start_time', ''), reverse=True)
 
         return jsonify({'runs': runs})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@azure_bp.route('/api/azure/report/<run_id>/download', methods=['GET'])
+def download_azure_report(run_id):
+    """Download Azure security report as markdown file.
+
+    Query params:
+        type: 'executive', 'technical', or omit for combined
+    """
+    try:
+        from services.azure.reports import get_azure_report, get_azure_report_types
+
+        report_type = request.args.get('type')
+        content = get_azure_report(run_id, report_type)
+
+        if not content:
+            available = get_azure_report_types(run_id)
+            if available:
+                return jsonify({
+                    'error': f"Report type '{report_type}' not found. Available: {available}"
+                }), 404
+            return jsonify({'error': 'No report found for this run'}), 404
+
+        if report_type:
+            filename = f"azure_{report_type}_report_{run_id}.md"
+        else:
+            filename = f"azure_report_{run_id}.md"
+
+        return Response(
+            content,
+            mimetype='text/markdown',
+            headers={
+                'Content-Disposition': f'attachment; filename="{filename}"'
+            }
+        )
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@azure_bp.route('/api/azure/report/<run_id>/types', methods=['GET'])
+def get_azure_report_types_endpoint(run_id):
+    """Get available report types for an Azure scan."""
+    try:
+        from services.azure.reports import get_azure_report_types
+        types = get_azure_report_types(run_id)
+        return jsonify({'types': types})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@azure_bp.route('/api/azure/data/<run_id>/download', methods=['GET'])
+def download_azure_raw_data(run_id):
+    """Download raw collected data, SIGMA findings, and LLM analysis as a ZIP file."""
+    import zipfile
+    import io
+
+    try:
+        # Try in-memory first, then persisted data
+        run_data = _azure_runs.get(run_id)
+        if not run_data:
+            # Load from persisted file
+            data_path = f"/data/db/azure_runs/{run_id}.json"
+            if os.path.exists(data_path):
+                with open(data_path, 'r') as f:
+                    run_data = json.load(f)
+            else:
+                return jsonify({'error': 'Raw data not found. Data is only available for scans run after this update.'}), 404
+
+        collected = run_data.get('collected_data', {})
+        findings = run_data.get('findings', {})
+        analysis = run_data.get('analysis', {})
+
+        # Build ZIP in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Raw collected data per source
+            for source, records in collected.items():
+                # Strip internal fields for cleaner output
+                clean_records = []
+                for r in records:
+                    clean = r.get('_original', r)
+                    clean_records.append(clean)
+                zf.writestr(
+                    f"collected/{source}.json",
+                    json.dumps(clean_records, indent=2, default=str)
+                )
+
+            # SIGMA findings per rule
+            for rule_name, matches in findings.items():
+                zf.writestr(
+                    f"findings/{rule_name}.json",
+                    json.dumps(matches, indent=2, default=str)
+                )
+
+            # LLM analysis
+            if analysis:
+                for artifact, summary in analysis.items():
+                    zf.writestr(
+                        f"analysis/{artifact}.md",
+                        summary if isinstance(summary, str) else json.dumps(summary, indent=2)
+                    )
+
+            # Scan metadata
+            metadata = {
+                'run_id': run_id,
+                'mode': run_data.get('mode'),
+                'start_time': run_data.get('start_time'),
+                'sources_collected': list(collected.keys()),
+                'total_records': sum(len(v) for v in collected.values()),
+                'sigma_rules_fired': len(findings),
+                'total_findings': sum(len(v) for v in findings.values()),
+            }
+            zf.writestr('metadata.json', json.dumps(metadata, indent=2))
+
+        zip_buffer.seek(0)
+
+        return Response(
+            zip_buffer.getvalue(),
+            mimetype='application/zip',
+            headers={
+                'Content-Disposition': f'attachment; filename="azure_scan_{run_id}.zip"'
+            }
+        )
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500

@@ -504,6 +504,22 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        async runPurge() {
+            if (!confirm('This will delete ALL workflows, reports, uploads, temp files, and Velociraptor hunt data.\n\nThis cannot be undone. Continue?')) return;
+            this.saving = true;
+            try {
+                const response = await fetch('/api/maintenance/purge', { method: 'POST' });
+                const result = await response.json();
+                if (result.run_id) {
+                    this.showMessage('Purge started - redirecting to Workflows', 'info');
+                    setTimeout(() => { Alpine.store('app').switchTab('workflows'); }, 500);
+                }
+            } catch (e) {
+                this.showMessage('Purge error: ' + e.message, 'error');
+            }
+            this.saving = false;
+        },
+
         // Fresh install flags (per module) - removes DB volumes for new schema
         dbOverwriteTimesketch: false,
         dbOverwriteIris: false,

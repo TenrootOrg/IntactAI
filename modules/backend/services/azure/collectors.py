@@ -24,52 +24,81 @@ GRAPH_ENDPOINTS = {
     'signin_logs': {
         'endpoint': '/auditLogs/signIns',
         'time_field': 'createdDateTime',
+        'user_field': 'userPrincipalName',
+        'ip_field': 'ipAddress',
     },
     'audit_logs': {
         'endpoint': '/auditLogs/directoryAudits',
         'time_field': 'activityDateTime',
+        'user_field': 'initiatedBy/user/userPrincipalName',
+        'ip_field': None,
     },
     'risky_signins': {
         'endpoint': '/identityProtection/riskySignIns',
         'time_field': 'riskLastUpdatedDateTime',
+        'user_field': 'userPrincipalName',
+        'ip_field': 'ipAddress',
     },
     'risk_detections': {
         'endpoint': '/identityProtection/riskDetections',
         'time_field': 'detectedDateTime',
+        'user_field': 'userPrincipalName',
+        'ip_field': 'ipAddress',
+    },
+    'security_alerts': {
+        'endpoint': '/security/alerts_v2',
+        'time_field': 'createdDateTime',
+        'user_field': None,
+        'ip_field': None,
     },
 }
 
-# Log source types with their license requirements
+# Log source types with their license requirements and tier
 LOG_SOURCES = {
-    'unified_audit': {
-        'name': 'Unified Audit Log',
+    # Tier 1: Microsoft Detections (low volume, high value)
+    'security_alerts': {
+        'name': 'Security Alerts',
         'license': 'free',
-        'sigma_prefix': 'Azure.UnifiedAudit'
-    },
-    'signin_logs': {
-        'name': 'Sign-in Logs',
-        'license': 'free',
-        'sigma_prefix': 'Azure.SignIn'
-    },
-    'audit_logs': {
-        'name': 'Directory Audit Logs',
-        'license': 'free',
-        'sigma_prefix': 'Azure.Audit'
-    },
-    'risky_signins': {
-        'name': 'Risky Sign-ins',
-        'license': 'p2',
-        'sigma_prefix': 'Azure.RiskySignIn'
+        'sigma_prefix': 'Azure.SecurityAlert',
+        'tier': 1
     },
     'risk_detections': {
         'name': 'Risk Detections',
         'license': 'p2',
-        'sigma_prefix': 'Azure.RiskDetection'
+        'sigma_prefix': 'Azure.RiskDetection',
+        'tier': 1
+    },
+    'risky_signins': {
+        'name': 'Risky Sign-ins',
+        'license': 'p2',
+        'sigma_prefix': 'Azure.RiskySignIn',
+        'tier': 1
+    },
+    # Tier 2: Targeted queries (filtered by user/IP)
+    'signin_logs': {
+        'name': 'Sign-in Logs',
+        'license': 'free',
+        'sigma_prefix': 'Azure.SignIn',
+        'tier': 2
+    },
+    'audit_logs': {
+        'name': 'Directory Audit Logs',
+        'license': 'free',
+        'sigma_prefix': 'Azure.Audit',
+        'tier': 2
+    },
+    # Tier 3: External tools (DFIR-O365RC)
+    'unified_audit': {
+        'name': 'Unified Audit Log',
+        'license': 'free',
+        'sigma_prefix': 'Azure.UnifiedAudit',
+        'tier': 3
     },
     'activity_logs': {
         'name': 'Azure Activity Logs',
         'license': 'free',
-        'sigma_prefix': 'Azure.Activity'
+        'sigma_prefix': 'Azure.Activity',
+        'tier': 3
     }
 }
 
@@ -170,19 +199,57 @@ def collect_with_pagination(token: str, endpoint: str, time_filter: Optional[str
 # Online Collection
 # =============================================================================
 
+def build_odata_filter(time_field: str, start_date: str, end_date: Optional[str] = None,
+                       user_field: Optional[str] = None, target_users: Optional[List[str]] = None,
+                       ip_field: Optional[str] = None, target_ips: Optional[List[str]] = None) -> str:
+    """Build OData $filter string with time, user, and IP filters."""
+    filters = [f"{time_field} ge {start_date}"]
+
+    if end_date:
+        filters.append(f"{time_field} le {end_date}")
+
+    # User filter (OR across multiple users)
+    if target_users and user_field and '/' not in user_field:
+        if len(target_users) == 1:
+            filters.append(f"{user_field} eq '{target_users[0]}'")
+        else:
+            user_clauses = ' or '.join(f"{user_field} eq '{u}'" for u in target_users)
+            filters.append(f"({user_clauses})")
+
+    # IP filter (OR across multiple IPs)
+    if target_ips and ip_field:
+        if len(target_ips) == 1:
+            filters.append(f"{ip_field} eq '{target_ips[0]}'")
+        else:
+            ip_clauses = ' or '.join(f"{ip_field} eq '{ip}'" for ip in target_ips)
+            filters.append(f"({ip_clauses})")
+
+    return ' and '.join(filters)
+
+
 def collect_azure_logs(
     azure_config: Dict[str, str],
     sources: List[str],
     time_range_days: int = 7,
+    start_date_str: Optional[str] = None,
+    end_date_str: Optional[str] = None,
+    target_users: Optional[List[str]] = None,
+    target_ips: Optional[List[str]] = None,
+    pivot_mode: bool = False,
     output_dir: Optional[str] = None
 ) -> Tuple[Dict[str, List[Dict]], Dict[str, str]]:
     """
-    Collect Azure/M365 logs from Microsoft Graph API.
+    Collect Azure/M365 logs from Microsoft Graph API with identity filters.
 
     Args:
         azure_config: Dict with tenant_id, client_id, client_secret
         sources: List of source types to collect (or ['all'] for all available)
-        time_range_days: Number of days to look back
+        time_range_days: Number of days to look back (used if start_date_str not provided)
+        start_date_str: Explicit start date (ISO format)
+        end_date_str: Explicit end date (ISO format)
+        target_users: List of email addresses to filter by
+        target_ips: List of IP addresses to filter by
+        pivot_mode: If True, discover IPs from target users then search all users from those IPs
         output_dir: Directory for output files (unused, kept for API compatibility)
 
     Returns:
@@ -206,13 +273,25 @@ def collect_azure_logs(
         'available_sources': available_sources,
         'skipped_sources': [s for s in sources if s not in available_sources and s != 'all'],
         'collection_start': datetime.utcnow().isoformat(),
+        'target_users': target_users or [],
+        'target_ips': target_ips or [],
+        'pivot_mode': pivot_mode,
         'errors': []
     }
 
     collected_data = {}
 
-    # Calculate time filter
-    start_date = (datetime.utcnow() - timedelta(days=time_range_days)).strftime('%Y-%m-%dT00:00:00Z')
+    # Calculate time window
+    if start_date_str:
+        start_date = start_date_str
+    else:
+        start_date = (datetime.utcnow() - timedelta(days=time_range_days)).strftime('%Y-%m-%dT00:00:00Z')
+    end_date = end_date_str  # None = now
+
+    if target_users:
+        print(f"[AZURE] Target users: {', '.join(target_users)}")
+    if target_ips:
+        print(f"[AZURE] Target IPs: {', '.join(target_ips)}")
 
     for source in available_sources:
         source_info = LOG_SOURCES.get(source, {})
@@ -220,7 +299,6 @@ def collect_azure_logs(
         graph_info = GRAPH_ENDPOINTS.get(source)
 
         if not graph_info:
-            # Source not available via Graph API (e.g., unified_audit needs PowerShell)
             print(f"[AZURE] Skipping {source_name} (not available via Graph API)")
             status['errors'].append(f"{source_name}: Not available via Graph API (requires PowerShell/DFIR-O365RC)")
             continue
@@ -228,13 +306,19 @@ def collect_azure_logs(
         print(f"[AZURE] Collecting {source_name}...")
 
         try:
-            time_field = graph_info['time_field']
-            time_filter = f"{time_field} ge {start_date}"
+            odata_filter = build_odata_filter(
+                time_field=graph_info['time_field'],
+                start_date=start_date,
+                end_date=end_date,
+                user_field=graph_info.get('user_field'),
+                target_users=target_users,
+                ip_field=graph_info.get('ip_field'),
+                target_ips=target_ips
+            )
 
-            data = collect_with_pagination(token, graph_info['endpoint'], time_filter)
+            data = collect_with_pagination(token, graph_info['endpoint'], odata_filter)
 
             if data is None:
-                # 403 - source not available at this tier
                 print(f"[AZURE] Skipped {source_name} (insufficient license)")
                 status['errors'].append(f"{source_name}: Insufficient license tier")
                 continue
@@ -252,6 +336,45 @@ def collect_azure_logs(
             error_msg = f"Failed to collect {source_name}: {str(e)}"
             status['errors'].append(error_msg)
             print(f"[AZURE] {error_msg}")
+
+    # Pivot Mode: discover IPs from target users, then search for other users from those IPs
+    if pivot_mode and target_users and 'Azure.SignIn' in collected_data:
+        discovered_ips = set()
+        for record in collected_data['Azure.SignIn']:
+            ip = record.get('ipAddress')
+            if ip and ip not in (target_ips or []):
+                discovered_ips.add(ip)
+
+        if discovered_ips:
+            print(f"[AZURE] Pivot: Discovered {len(discovered_ips)} IPs from target users: {', '.join(discovered_ips)}")
+            status['discovered_ips'] = list(discovered_ips)
+
+            # Search sign-ins from discovered IPs (without user filter = all users)
+            try:
+                pivot_filter = build_odata_filter(
+                    time_field='createdDateTime',
+                    start_date=start_date,
+                    end_date=end_date,
+                    ip_field='ipAddress',
+                    target_ips=list(discovered_ips)
+                )
+                pivot_data = collect_with_pagination(token, '/auditLogs/signIns', pivot_filter)
+
+                if pivot_data:
+                    # Filter out records we already have (target users)
+                    new_records = [r for r in pivot_data if r.get('userPrincipalName', '').lower() not in
+                                   [u.lower() for u in target_users]]
+                    if new_records:
+                        normalized_pivot = normalize_logs(new_records, 'Azure.SignIn.Pivot')
+                        collected_data['Azure.SignIn.Pivot'] = normalized_pivot
+                        pivot_users = set(r.get('userPrincipalName', '') for r in new_records)
+                        print(f"[AZURE] Pivot: Found {len(new_records)} sign-ins from {len(pivot_users)} other users: {', '.join(pivot_users)}")
+                        status['pivot_users'] = list(pivot_users)
+                    else:
+                        print("[AZURE] Pivot: No other users found from discovered IPs")
+            except Exception as e:
+                print(f"[AZURE] Pivot search failed: {e}")
+                status['errors'].append(f"Pivot search failed: {e}")
 
     status['collection_end'] = datetime.utcnow().isoformat()
     status['total_records'] = sum(len(v) for v in collected_data.values())

@@ -20,7 +20,7 @@ from .sigma_runner import run_sigma_rules, load_azure_rules, validate_rules_dire
 
 # Reuse existing agentic components
 from services.agentic.analyzers import analyze_artifacts, validate_llm_config
-from services.agentic.reports import generate_final_report
+from services.azure.reports import generate_azure_report, save_azure_report
 from services.agentic.utils import (
     extract_timeline_events,
     filter_results_by_time,
@@ -64,7 +64,31 @@ def run_azure_pipeline(
         # =====================================================================
         # Phase 1: Validate Configuration
         # =====================================================================
-        add_log_to_run(run_id, "[AZURE] Starting online collection pipeline", "info")
+        # Log scan configuration summary
+        bp_settings = blueprint.get('settings', {})
+        target_users = options.get('target_users', [])
+        target_ips = options.get('target_ips', [])
+        pivot_mode = options.get('pivot_mode', False)
+        time_filter = options.get('time_filter', {})
+        enable_llm = options.get('enable_llm', False)
+
+        add_log_to_run(run_id, "=" * 50, "info")
+        add_log_to_run(run_id, f"Blueprint: {blueprint.get('name', 'Custom')}", "info")
+        if isinstance(time_filter, dict):
+            if time_filter.get('type') == 'between':
+                add_log_to_run(run_id, f"Time Range: {time_filter.get('start', '?')} → {time_filter.get('end', 'now')}", "info")
+            else:
+                add_log_to_run(run_id, f"Time Range: Last {time_filter.get('value', '7d')}", "info")
+        add_log_to_run(run_id, f"Sources: {', '.join(bp_settings.get('sources', ['all']))}", "info")
+        if target_users:
+            add_log_to_run(run_id, f"Target Users: {', '.join(target_users)}", "info")
+        if target_ips:
+            add_log_to_run(run_id, f"Target IPs: {', '.join(target_ips)}", "info")
+        if pivot_mode:
+            add_log_to_run(run_id, "Pivot Mode: ON (will discover other accounts from same IPs)", "info")
+        add_log_to_run(run_id, f"LLM Analysis: {'ON' if enable_llm else 'OFF'}", "info")
+        add_log_to_run(run_id, f"Min Severity: {options.get('min_severity', 'medium')}", "info")
+        add_log_to_run(run_id, "=" * 50, "info")
 
         # Validate SIGMA rules are available
         rules_valid, rules_msg = validate_rules_directory()
@@ -72,7 +96,6 @@ def run_azure_pipeline(
             add_log_to_run(run_id, f"[AZURE] Warning: {rules_msg}", "warning")
 
         # Validate LLM config if enabled
-        enable_llm = options.get('enable_llm', False)
         llm_config = options.get('llm_config', {})
         if enable_llm:
             try:
@@ -88,14 +111,41 @@ def run_azure_pipeline(
         # =====================================================================
         add_log_to_run(run_id, "[AZURE] Phase 2: Collecting logs from Azure...", "info")
 
-        bp_settings = blueprint.get('settings', {})
         sources = bp_settings.get('sources', ['all'])
         time_range_days = bp_settings.get('time_range_days', 7)
+
+        # Time window
+        start_date_str = None
+        end_date_str = None
+        if isinstance(time_filter, dict):
+            if time_filter.get('type') == 'between':
+                start_date_str = time_filter.get('start')
+                end_date_str = time_filter.get('end')
+            elif time_filter.get('type') == 'relative':
+                val = time_filter.get('value', '7d')
+                days = int(val.replace('d', '').replace('h', '')) if 'd' in val else 1
+                if 'h' in val:
+                    hours = int(val.replace('h', ''))
+                    start_date_str = (datetime.utcnow() - timedelta(hours=hours)).strftime('%Y-%m-%dT%H:%M:%SZ')
+                else:
+                    time_range_days = days
+
+        if target_users:
+            add_log_to_run(run_id, f"[AZURE] Target users: {', '.join(target_users)}", "info")
+        if target_ips:
+            add_log_to_run(run_id, f"[AZURE] Target IPs: {', '.join(target_ips)}", "info")
+        if pivot_mode:
+            add_log_to_run(run_id, "[AZURE] Pivot mode enabled", "info")
 
         collected_data, collection_status = collect_azure_logs(
             azure_config=azure_config,
             sources=sources,
-            time_range_days=time_range_days
+            time_range_days=time_range_days,
+            start_date_str=start_date_str,
+            end_date_str=end_date_str,
+            target_users=target_users,
+            target_ips=target_ips,
+            pivot_mode=pivot_mode
         )
 
         result['phases']['collection'] = {
@@ -214,24 +264,30 @@ def run_azure_pipeline(
             add_log_to_run(run_id, "[AZURE] Phase 6: Generating reports...", "info")
 
             try:
-                # Generate reports using agentic report generator
-                reports = generate_final_report(
+                # Generate Azure-specific reports
+                reports = generate_azure_report(
                     run_id=run_id,
-                    blueprint={'name': f"Azure: {blueprint.get('name', 'Scan')}"},
-                    client_ids=[],
-                    collection_minutes=0,
-                    artifact_summaries=analysis_results,
-                    all_results=findings,
+                    blueprint=blueprint,
+                    collected_data=collected_data,
+                    findings=findings,
+                    analysis_results=analysis_results,
                     llm_config=llm_config,
-                    report_types=['technical']
+                    scan_metadata={
+                        'time_filter': options.get('time_filter', {}),
+                        'sources': list(collected_data.keys()),
+                    }
                 )
 
                 result['reports'] = reports
                 result['phases']['reporting'] = {'status': 'complete'}
+                result['has_report'] = True
 
-                # Save report to storage (so it can be viewed/downloaded)
-                from services.agentic.reports import save_report_content
-                save_report_content(run_id, reports)
+                # Save reports to storage
+                save_azure_report(run_id, reports)
+
+                # Mark workflow as having a report (for UI button visibility)
+                from services.workflow_service import update_run_status
+                update_run_status(run_id, "running", details={'has_report': True})
 
                 add_log_to_run(run_id, "[AZURE] Reports generated successfully", "info")
             except Exception as e:
@@ -462,40 +518,50 @@ def run_azure_on_existing(
 # =============================================================================
 
 def get_azure_blueprints() -> List[Dict]:
-    """Get available Azure blueprints."""
-    # These would typically be loaded from default_blueprints.yaml
+    """Get available Azure DFIR blueprints (detection-first model)."""
     return [
         {
-            'id': 'azure_quick_scan',
-            'name': 'Quick Scan',
-            'description': 'Fast check using Unified Audit Log (works on Free tier)',
-            'sources': ['unified_audit'],
-            'time_range_days': 7,
+            'id': 'azure_quick_triage',
+            'name': 'Quick Triage',
+            'description': 'Fast check: security alerts + risk detections only (Tier 1)',
+            'settings': {
+                'sources': ['security_alerts', 'risk_detections', 'risky_signins'],
+                'time_range_days': 7,
+            },
             'min_severity': 'low'
+        },
+        {
+            'id': 'azure_account_investigation',
+            'name': 'Account Investigation',
+            'description': 'Investigate specific accounts: sign-ins + audit filtered by target users',
+            'settings': {
+                'sources': ['security_alerts', 'risk_detections', 'risky_signins', 'signin_logs', 'audit_logs'],
+                'time_range_days': 2,
+            },
+            'min_severity': 'low',
+            'requires_target_users': True
+        },
+        {
+            'id': 'azure_lateral_movement',
+            'name': 'Lateral Movement',
+            'description': 'Find other accounts accessed from same IPs as target users (pivot mode)',
+            'settings': {
+                'sources': ['security_alerts', 'risk_detections', 'signin_logs', 'audit_logs'],
+                'time_range_days': 2,
+            },
+            'min_severity': 'low',
+            'requires_target_users': True,
+            'pivot_mode': True
         },
         {
             'id': 'azure_full_investigation',
             'name': 'Full Investigation',
-            'description': 'Complete Azure security analysis with all available sources',
-            'sources': ['all'],
-            'time_range_days': 30,
+            'description': 'All available sources (Tier 1 + 2 + 3). Higher volume.',
+            'settings': {
+                'sources': ['all'],
+                'time_range_days': 7,
+            },
             'min_severity': 'informational'
-        },
-        {
-            'id': 'azure_identity_focus',
-            'name': 'Identity Focus',
-            'description': 'Focus on authentication and identity-related threats',
-            'sources': ['signin_logs', 'audit_logs', 'risky_signins'],
-            'time_range_days': 14,
-            'min_severity': 'low'
-        },
-        {
-            'id': 'azure_persistence_hunt',
-            'name': 'Persistence Hunt',
-            'description': 'Hunt for persistence mechanisms and backdoors',
-            'sources': ['audit_logs', 'activity_logs', 'unified_audit'],
-            'time_range_days': 30,
-            'min_severity': 'low'
         }
     ]
 
