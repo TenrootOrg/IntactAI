@@ -491,10 +491,16 @@
                                             <div class="flex items-center gap-2">
                                                 <!-- Azure scan report -->
                                                 <template x-if="run.type === 'azure_scan' && run.status === 'completed'">
-                                                    <a :href="'/api/agentic/run/' + run.id + '/download?type=technical'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Azure Report">
-                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                                                        Report
-                                                    </a>
+                                                    <div class="flex items-center gap-1">
+                                                        <a :href="'/api/azure/report/' + run.id + '/download?type=technical'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Azure Report">
+                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                            Report
+                                                        </a>
+                                                        <a :href="'/api/azure/data/' + run.id + '/download'" download class="bg-gray-600 hover:bg-gray-500 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Raw Data (ZIP)">
+                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                            Data
+                                                        </a>
+                                                    </div>
                                                 </template>
                                                 <!-- Single client: single report -->
                                                 <template x-if="run.type === 'agentic' && run.status === 'completed' && !run.details?.multi_client">
@@ -1673,8 +1679,8 @@ sudo ./velociraptor service start</code></pre>
                  x-data="{
                      azureMode: 'online',
                      azureStatus: null,
-                     azureBlueprint: 'azure_quick_scan',
-                     azureTimeFilter: '7d',
+                     azureBlueprint: 'azure_account_investigation',
+                     azureTimeFilter: '24h',
                      azureCustomStart: '',
                      azureCustomEnd: '',
                      azureMinSeverity: 'medium',
@@ -1683,6 +1689,9 @@ sudo ./velociraptor service start</code></pre>
                      azureRunId: null,
                      azureResults: null,
                      azureUploadedFiles: [],
+                     azureTargetUsers: '',
+                     azureTargetIPs: '',
+                     azurePivotMode: false,
                      async checkAzureStatus() {
                          try {
                              const res = await fetch('/api/azure/status');
@@ -1707,17 +1716,19 @@ sudo ./velociraptor service start</code></pre>
                                      blueprint: this.azureBlueprint,
                                      time_filter: timeFilter,
                                      enable_llm: this.azureEnableLLM,
-                                     min_severity: this.azureMinSeverity
+                                     min_severity: this.azureMinSeverity,
+                                     target_users: this.azureTargetUsers.split(',').map(u => u.trim()).filter(u => u),
+                                     target_ips: this.azureTargetIPs.split(',').map(ip => ip.trim()).filter(ip => ip),
+                                     pivot_mode: this.azurePivotMode
                                  })
                              });
                              const data = await res.json();
-                             if (res.ok && data.run_id) {
+                             if (data.run_id) {
                                  this.azureRunId = data.run_id;
+                                 // Always redirect to workflows - all status/errors visible in log
                                  $store.app.switchTab('workflows');
-                             } else {
-                                 alert('Error: ' + (data.error || 'Failed to start scan'));
                              }
-                         } catch(e) { console.error(e); alert('Scan failed: ' + e); }
+                         } catch(e) { console.error(e); }
                          this.azureRunning = false;
                      },
                      async uploadAzureLogs(event) {
@@ -1808,11 +1819,31 @@ sudo ./velociraptor service start</code></pre>
                         <div>
                             <label class="block text-sm font-medium text-gray-300 mb-2">Blueprint</label>
                             <select x-model="azureBlueprint" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
-                                <option value="azure_quick_scan">Quick Scan (7 days, Free tier)</option>
-                                <option value="azure_full_investigation">Full Investigation (30 days, all sources)</option>
-                                <option value="azure_identity_focus">Identity Focus (14 days, sign-ins)</option>
-                                <option value="azure_persistence_hunt">Persistence Hunt (30 days, audit logs)</option>
+                                <option value="azure_quick_triage">Quick Triage (alerts + risk detections only)</option>
+                                <option value="azure_account_investigation">Account Investigation (sign-ins + audit for target users)</option>
+                                <option value="azure_lateral_movement">Lateral Movement (pivot from user IPs to other accounts)</option>
+                                <option value="azure_full_investigation">Full Investigation (all sources)</option>
                             </select>
+                        </div>
+
+                        <!-- Identity Filters -->
+                        <div class="p-4 bg-gray-900/50 rounded-lg border border-gray-700 space-y-3">
+                            <label class="block text-sm font-medium text-blue-400">Identity Filters</label>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Target Users <span class="text-gray-600">(comma-separated emails)</span></label>
+                                <input type="text" x-model="azureTargetUsers" placeholder="user1@domain.com, user2@domain.com"
+                                       class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600">
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Target IPs <span class="text-gray-600">(comma-separated)</span></label>
+                                <input type="text" x-model="azureTargetIPs" placeholder="1.2.3.4, 5.6.7.8"
+                                       class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600">
+                            </div>
+                            <div class="flex items-center gap-3">
+                                <input type="checkbox" id="azure-pivot" x-model="azurePivotMode" class="rounded bg-gray-700 border-gray-600">
+                                <label for="azure-pivot" class="text-gray-300 text-sm">Pivot Mode</label>
+                                <span class="text-xs text-gray-500">(find other accounts from same IPs)</span>
+                            </div>
                         </div>
 
                         <!-- Time Filter -->
@@ -2092,6 +2123,24 @@ sudo ./velociraptor service start</code></pre>
                                             <span class="text-gray-300">ELK</span>
                                         </label>
                                     </div>
+                                </div>
+                            </div>
+
+                            <!-- System Purge -->
+                            <div class="p-4 bg-gray-900 rounded-lg border border-red-900/50">
+                                <div class="flex items-center justify-between">
+                                    <div>
+                                        <h4 class="text-red-400 font-medium">System Purge</h4>
+                                        <p class="text-gray-400 text-sm">Remove all workflows, reports, uploads, temp files, and Velociraptor hunt data</p>
+                                    </div>
+                                    <button @click="$store.settings.runPurge()"
+                                            :disabled="$store.settings.saving"
+                                            class="bg-red-600 hover:bg-red-700 disabled:bg-red-800 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                        </svg>
+                                        <span x-text="$store.settings.saving ? 'Running...' : 'Purge Data'"></span>
+                                    </button>
                                 </div>
                             </div>
                         </div>

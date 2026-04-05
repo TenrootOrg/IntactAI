@@ -301,3 +301,309 @@ def get_velociraptor_tools_inventory():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@maintenance_bp.route('/api/maintenance/purge', methods=['POST'])
+def run_system_purge():
+    """Purge all accumulated data: workflows, reports, uploads, temp files, Velociraptor hunt data."""
+    run_id = create_automation_run(
+        automation_type="system_purge",
+        name="System Purge",
+        details={"trigger": "manual"}
+    )
+    update_run_status(run_id, "running", progress=5)
+    add_log_to_run(run_id, "Starting system purge...", "info")
+
+    def run_purge():
+        import os
+        import shutil
+        import glob
+        import sqlite3
+
+        total_freed = 0
+
+        def get_dir_size(path):
+            total = 0
+            if os.path.isfile(path):
+                return os.path.getsize(path)
+            if not os.path.exists(path):
+                return 0
+            for dirpath, _, filenames in os.walk(path):
+                for f in filenames:
+                    try:
+                        total += os.path.getsize(os.path.join(dirpath, f))
+                    except (OSError, FileNotFoundError):
+                        pass
+            return total
+
+        def fmt(size_bytes):
+            if size_bytes >= 1024**3:
+                return f"{size_bytes / 1024**3:.1f} GB"
+            elif size_bytes >= 1024**2:
+                return f"{size_bytes / 1024**2:.1f} MB"
+            elif size_bytes >= 1024:
+                return f"{size_bytes / 1024:.1f} KB"
+            return f"{size_bytes} B"
+
+        def purge_dir(path):
+            if not os.path.exists(path):
+                return 0, 0
+            size = get_dir_size(path)
+            count = 0
+            for item in os.listdir(path):
+                item_path = os.path.join(path, item)
+                try:
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                    else:
+                        os.remove(item_path)
+                    count += 1
+                except Exception as e:
+                    add_log_to_run(run_id, f"  Warning: Could not remove {item}: {e}", "warning")
+            return size, count
+
+        try:
+            # === 1. Workflows & Reports ===
+            add_log_to_run(run_id, "=" * 50, "info")
+            add_log_to_run(run_id, "PURGE: Workflows & Reports", "info")
+            add_log_to_run(run_id, "=" * 50, "info")
+            update_run_status(run_id, "running", progress=10)
+
+            try:
+                db_path = "/app/data/mssp.db"
+                db_size_before = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+                conn = sqlite3.connect(db_path)
+                c = conn.cursor()
+                c.execute("SELECT COUNT(*) FROM workflows")
+                wf_count = c.fetchone()[0]
+                c.execute("SELECT COUNT(*) FROM reports")
+                rpt_count = c.fetchone()[0]
+                c.execute("DELETE FROM workflows WHERE run_id != ?", (run_id,))
+                c.execute("DELETE FROM reports")
+                conn.commit()
+                c.execute("VACUUM")
+                conn.commit()
+                conn.close()
+                db_size_after = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+                freed = max(0, db_size_before - db_size_after)
+                total_freed += freed
+                add_log_to_run(run_id, f"  Deleted {wf_count - 1} workflows, {rpt_count} reports", "info")
+                add_log_to_run(run_id, f"  Freed: {fmt(freed)}", "success")
+            except Exception as e:
+                add_log_to_run(run_id, f"  Error: {e}", "error")
+
+            # === 2. Azure Scan Data ===
+            add_log_to_run(run_id, "=" * 50, "info")
+            add_log_to_run(run_id, "PURGE: Azure Scan Data", "info")
+            add_log_to_run(run_id, "=" * 50, "info")
+            update_run_status(run_id, "running", progress=20)
+            freed, count = purge_dir("/data/db/azure_runs")
+            total_freed += freed
+            add_log_to_run(run_id, f"  Removed {count} scan files | Freed: {fmt(freed)}", "success")
+
+            # === 3. Upload Data ===
+            add_log_to_run(run_id, "=" * 50, "info")
+            add_log_to_run(run_id, "PURGE: Upload Data (KAPE, packages, logs)", "info")
+            add_log_to_run(run_id, "=" * 50, "info")
+            update_run_status(run_id, "running", progress=30)
+            freed, count = purge_dir("/data/uploads")
+            total_freed += freed
+            add_log_to_run(run_id, f"  Removed {count} uploads | Freed: {fmt(freed)}", "success")
+
+            # === 4. Upgrade Packages ===
+            add_log_to_run(run_id, "=" * 50, "info")
+            add_log_to_run(run_id, "PURGE: Upgrade Packages", "info")
+            add_log_to_run(run_id, "=" * 50, "info")
+            update_run_status(run_id, "running", progress=40)
+            freed, count = purge_dir("/data/upgrade_packages")
+            for f in ["/data/db/prepared_package.json", "/data/db/prepared_packages.json"]:
+                if os.path.exists(f):
+                    freed += os.path.getsize(f)
+                    os.remove(f)
+                    count += 1
+            total_freed += freed
+            add_log_to_run(run_id, f"  Removed {count} items | Freed: {fmt(freed)}", "success")
+
+            # === 5. Temp Files ===
+            add_log_to_run(run_id, "=" * 50, "info")
+            add_log_to_run(run_id, "PURGE: Temp Files", "info")
+            add_log_to_run(run_id, "=" * 50, "info")
+            update_run_status(run_id, "running", progress=50)
+            freed = 0
+            for temp_dir in ["/data/tmp", "/tmp/plaso", "/tmp/azure_uploads"]:
+                d_freed, _ = purge_dir(temp_dir)
+                freed += d_freed
+            for d in glob.glob("/tmp/mssp-upgrade-*"):
+                freed += get_dir_size(d)
+                shutil.rmtree(d, ignore_errors=True)
+            total_freed += freed
+            add_log_to_run(run_id, f"  Freed: {fmt(freed)}", "success")
+
+            # === 6. Report Downloads ===
+            add_log_to_run(run_id, "=" * 50, "info")
+            add_log_to_run(run_id, "PURGE: Report Downloads", "info")
+            add_log_to_run(run_id, "=" * 50, "info")
+            update_run_status(run_id, "running", progress=60)
+            freed, count = purge_dir("/app/downloads")
+            total_freed += freed
+            add_log_to_run(run_id, f"  Removed {count} items | Freed: {fmt(freed)}", "success")
+
+            # === 7. Velociraptor Hunt Data ===
+            add_log_to_run(run_id, "=" * 50, "info")
+            add_log_to_run(run_id, "PURGE: Velociraptor Hunts & Collections", "info")
+            add_log_to_run(run_id, "=" * 50, "info")
+            update_run_status(run_id, "running", progress=70)
+
+            try:
+                from services.upgrade.base import run_command
+                import json as json_mod
+
+                # Velociraptor datastore is at /var./ (configured in server.config.yaml)
+                # Measure before (exclude /var./public/ which contains forensic tools)
+                du_before = run_command("docker exec mssp_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'", logger=None)
+                size_before = int(du_before.get('stdout', '0').split()[0]) if du_before.get('success') else 0
+                add_log_to_run(run_id, f"  Datastore size: {fmt(size_before)}", "info")
+
+                # Delete all hunts via VQL
+                add_log_to_run(run_id, "  Deleting hunts...", "info")
+                list_result = run_command(
+                    'docker exec mssp_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
+                    '"SELECT hunt_id, state FROM hunts()"',
+                    logger=None
+                )
+                hunt_count = 0
+                if list_result.get('success') and list_result.get('stdout', '').strip():
+                    try:
+                        hunts = json_mod.loads(list_result['stdout'])
+                        for hunt in (hunts if isinstance(hunts, list) else []):
+                            hunt_id = hunt.get('hunt_id', '')
+                            if hunt_id:
+                                run_command(
+                                    f'docker exec mssp_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
+                                    f'"SELECT * FROM hunt_delete(hunt_id=\'{hunt_id}\', really_do_it=true)"',
+                                    logger=None
+                                )
+                                hunt_count += 1
+                    except (json_mod.JSONDecodeError, ValueError):
+                        pass
+                add_log_to_run(run_id, f"  Deleted {hunt_count} hunts", "info")
+
+                # Clean client collection data (flows/uploads)
+                add_log_to_run(run_id, "  Cleaning client collections & uploads...", "info")
+                run_command("docker exec mssp_velociraptor sh -c 'rm -rf /var./clients/*/collections/ /var./clients/*/uploads/ 2>/dev/null; true'", logger=None)
+
+                # Clean downloads
+                add_log_to_run(run_id, "  Cleaning downloads...", "info")
+                run_command("docker exec mssp_velociraptor sh -c 'rm -rf /var./downloads/* 2>/dev/null; true'", logger=None)
+
+                # Clean notebooks
+                add_log_to_run(run_id, "  Cleaning notebooks...", "info")
+                run_command("docker exec mssp_velociraptor sh -c 'rm -rf /var./notebooks/* 2>/dev/null; true'", logger=None)
+
+                # Clean server artifact logs and server artifacts
+                run_command("docker exec mssp_velociraptor sh -c 'rm -rf /var./server_artifact_logs/* /var./server_artifacts/* 2>/dev/null; true'", logger=None)
+
+                # Measure after (exclude /var./public/ which contains forensic tools)
+                du_after = run_command("docker exec mssp_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'", logger=None)
+                size_after = int(du_after.get('stdout', '0').split()[0]) if du_after.get('success') else 0
+                freed = max(0, size_before - size_after)
+                total_freed += freed
+                add_log_to_run(run_id, f"  Freed: {fmt(freed)}", "success")
+            except Exception as e:
+                add_log_to_run(run_id, f"  Velociraptor cleanup error: {e}", "warning")
+
+            # === 8. ELK (Velociraptor Artifacts) ===
+            add_log_to_run(run_id, "=" * 50, "info")
+            add_log_to_run(run_id, "PURGE: ELK (Velociraptor Artifact Indices)", "info")
+            add_log_to_run(run_id, "=" * 50, "info")
+            update_run_status(run_id, "running", progress=80)
+
+            try:
+                import requests as req
+                # Get size before
+                es_resp = req.get("http://mssp_elasticsearch:9200/_cat/indices?h=index,store.size&bytes=b", timeout=5)
+                es_size_before = 0
+                es_index_count = 0
+                if es_resp.status_code == 200:
+                    for line in es_resp.text.strip().split('\n'):
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[0].startswith('artifact_'):
+                            es_size_before += int(parts[1])
+                            es_index_count += 1
+
+                add_log_to_run(run_id, f"  Found {es_index_count} artifact indices ({fmt(es_size_before)})", "info")
+
+                if es_index_count > 0:
+                    # Delete each index individually (wildcard delete is disabled by default)
+                    deleted = 0
+                    for line in es_resp.text.strip().split('\n'):
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[0].startswith('artifact_'):
+                            del_resp = req.delete(f"http://mssp_elasticsearch:9200/{parts[0]}", timeout=10)
+                            if del_resp.status_code == 200:
+                                deleted += 1
+                    add_log_to_run(run_id, f"  Deleted {deleted}/{es_index_count} indices", "info")
+                    total_freed += es_size_before
+
+                add_log_to_run(run_id, f"  Freed: {fmt(es_size_before)}", "success")
+            except Exception as e:
+                add_log_to_run(run_id, f"  ELK cleanup error: {e}", "warning")
+
+            # === 9. Timesketch (Timelines & Events) ===
+            add_log_to_run(run_id, "=" * 50, "info")
+            add_log_to_run(run_id, "PURGE: Timesketch (Timelines & Events)", "info")
+            add_log_to_run(run_id, "=" * 50, "info")
+            update_run_status(run_id, "running", progress=85)
+
+            try:
+                # Get OpenSearch size before (exclude system indices starting with .)
+                os_resp = run_command(
+                    "docker exec mssp_timesketch_opensearch curl -s 'http://localhost:9200/_cat/indices?h=index,store.size&bytes=b'",
+                    logger=None
+                )
+                os_size_before = 0
+                os_index_count = 0
+                if os_resp.get('success'):
+                    for line in os_resp.get('stdout', '').strip().split('\n'):
+                        parts = line.split()
+                        if len(parts) >= 2 and not parts[0].startswith('.'):
+                            try:
+                                os_size_before += int(parts[1])
+                                os_index_count += 1
+                            except ValueError:
+                                pass
+
+                add_log_to_run(run_id, f"  Found {os_index_count} timeline indices ({fmt(os_size_before)})", "info")
+
+                if os_index_count > 0:
+                    # Delete timeline indices from OpenSearch
+                    run_command(
+                        "docker exec mssp_timesketch_opensearch curl -s -X DELETE 'http://localhost:9200/*,-.*'",
+                        logger=None
+                    )
+                    # Clear PostgreSQL timeline data
+                    run_command(
+                        "docker exec mssp_timesketch_postgres psql -U timesketch -d timesketch -c 'DELETE FROM timeline; DELETE FROM searchindex;'",
+                        logger=None
+                    )
+                    add_log_to_run(run_id, f"  Deleted {os_index_count} indices and cleared timeline database", "info")
+                    total_freed += os_size_before
+
+                add_log_to_run(run_id, f"  Freed: {fmt(os_size_before)}", "success")
+            except Exception as e:
+                add_log_to_run(run_id, f"  Timesketch cleanup error: {e}", "warning")
+
+            # === SUMMARY ===
+            add_log_to_run(run_id, "=" * 50, "info")
+            add_log_to_run(run_id, f"PURGE COMPLETE - Total freed: {fmt(total_freed)}", "success")
+            add_log_to_run(run_id, "=" * 50, "info")
+            update_run_status(run_id, "completed", progress=100)
+
+        except Exception as e:
+            add_log_to_run(run_id, f"Purge failed: {str(e)}", "error")
+            update_run_status(run_id, "failed", error=str(e))
+
+    thread = threading.Thread(target=run_purge, daemon=True)
+    thread.start()
+
+    return jsonify({"success": True, "run_id": run_id, "message": "System purge started"})
