@@ -209,7 +209,7 @@ def build_odata_filter(time_field: str, start_date: str, end_date: Optional[str]
         filters.append(f"{time_field} le {end_date}")
 
     # User filter (OR across multiple users)
-    if target_users and user_field and '/' not in user_field:
+    if target_users and user_field:
         if len(target_users) == 1:
             filters.append(f"{user_field} eq '{target_users[0]}'")
         else:
@@ -225,6 +225,18 @@ def build_odata_filter(time_field: str, start_date: str, end_date: Optional[str]
             filters.append(f"({ip_clauses})")
 
     return ' and '.join(filters)
+
+
+def _get_source_fix(source: str) -> str:
+    """Get actionable fix message for unavailable sources."""
+    fixes = {
+        'security_alerts': 'Requires Microsoft Defender for Cloud (paid add-on). Enable at Azure Portal → Defender for Cloud.',
+        'risk_detections': 'Requires Azure AD P2 license. Upgrade at Azure Portal → Entra ID → Licenses.',
+        'risky_signins': 'Requires Azure AD P2 license. Upgrade at Azure Portal → Entra ID → Licenses.',
+        'unified_audit': 'Not available via Graph API. Will be supported via DFIR-O365RC integration.',
+        'activity_logs': 'Not available via Graph API. Will be supported via DFIR-O365RC integration.',
+    }
+    return fixes.get(source, 'Source not available with current license or API permissions.')
 
 
 def collect_azure_logs(
@@ -299,8 +311,9 @@ def collect_azure_logs(
         graph_info = GRAPH_ENDPOINTS.get(source)
 
         if not graph_info:
-            print(f"[AZURE] Skipping {source_name} (not available via Graph API)")
-            status['errors'].append(f"{source_name}: Not available via Graph API (requires PowerShell/DFIR-O365RC)")
+            fix = _get_source_fix(source)
+            print(f"[AZURE] Skipped {source_name}: {fix}")
+            status['errors'].append(f"{source_name}: {fix}")
             continue
 
         print(f"[AZURE] Collecting {source_name}...")
@@ -319,8 +332,9 @@ def collect_azure_logs(
             data = collect_with_pagination(token, graph_info['endpoint'], odata_filter)
 
             if data is None:
-                print(f"[AZURE] Skipped {source_name} (insufficient license)")
-                status['errors'].append(f"{source_name}: Insufficient license tier")
+                fix = _get_source_fix(source)
+                print(f"[AZURE] Skipped {source_name}: {fix}")
+                status['errors'].append(f"{source_name}: {fix}")
                 continue
 
             if data:
