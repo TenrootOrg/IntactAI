@@ -229,13 +229,24 @@ def build_odata_filter(time_field: str, start_date: str, end_date: Optional[str]
 
 def _get_source_fix(source: str) -> str:
     """Get actionable fix message for unavailable sources."""
+    from .dfir_o365rc import is_available as dfir_available
+
     fixes = {
         'security_alerts': 'Requires Microsoft Defender for Cloud (paid add-on). Enable at Azure Portal → Defender for Cloud.',
         'risk_detections': 'Requires Azure AD P2 license. Upgrade at Azure Portal → Entra ID → Licenses.',
         'risky_signins': 'Requires Azure AD P2 license. Upgrade at Azure Portal → Entra ID → Licenses.',
-        'unified_audit': 'Not available via Graph API. Will be supported via DFIR-O365RC integration.',
-        'activity_logs': 'Not available via Graph API. Will be supported via DFIR-O365RC integration.',
+        'activity_logs': 'Not available via Graph API. Requires Azure CLI or DFIR-O365RC.',
     }
+
+    if source == 'unified_audit':
+        status = dfir_available()
+        if not status['has_image']:
+            return 'DFIR-O365RC not installed. Run: docker pull anssi/dfir-o365rc:latest'
+        elif not status['has_certificate']:
+            return 'Certificate not generated. Run install.sh or go to Settings → Cloud → Azure.'
+        else:
+            return 'Certificate not uploaded to Azure App Registration. Go to Settings → Cloud → Azure for instructions.'
+
     return fixes.get(source, 'Source not available with current license or API permissions.')
 
 
@@ -311,6 +322,35 @@ def collect_azure_logs(
         graph_info = GRAPH_ENDPOINTS.get(source)
 
         if not graph_info:
+            # Try DFIR-O365RC for unified_audit
+            if source == 'unified_audit':
+                from .dfir_o365rc import is_available as dfir_available, collect_unified_audit_log
+                dfir_status = dfir_available()
+                if dfir_status['available']:
+                    print(f"[AZURE] Collecting {source_name} via DFIR-O365RC...")
+                    try:
+                        ual_result = collect_unified_audit_log(
+                            tenant=azure_config.get('tenant_id', ''),
+                            app_id=azure_config.get('client_id', ''),
+                            start_date=start_date,
+                            end_date=end_date or datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                            target_users=target_users,
+                            logger=lambda msg, level="info": print(f"[AZURE] {msg}")
+                        )
+                        if ual_result['success'] and ual_result['records']:
+                            normalized = normalize_logs(ual_result['records'], source_info.get('sigma_prefix', source))
+                            collected_data[source_info['sigma_prefix']] = normalized
+                            print(f"[AZURE] Collected {len(normalized)} records from {source_name}")
+                        elif ual_result['error']:
+                            status['errors'].append(f"{source_name}: {ual_result['error']}")
+                            print(f"[AZURE] {source_name} failed: {ual_result['error']}")
+                        else:
+                            print(f"[AZURE] No records found for {source_name}")
+                    except Exception as e:
+                        status['errors'].append(f"{source_name}: DFIR-O365RC error: {str(e)}")
+                        print(f"[AZURE] {source_name} error: {e}")
+                    continue
+
             fix = _get_source_fix(source)
             print(f"[AZURE] Skipped {source_name}: {fix}")
             status['errors'].append(f"{source_name}: {fix}")

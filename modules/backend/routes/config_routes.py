@@ -268,3 +268,23 @@ def save_cloud_config_endpoint():
     except Exception as e:
         print(f"[CLOUD] Error saving config: {e}", flush=True)
         return jsonify({"error": str(e)}), 500
+
+
+@config_bp.route('/api/config/azure/certificate', methods=['GET'])
+def get_azure_certificate():
+    """Get Azure DFIR-O365RC certificate status and public key."""
+    try:
+        from services.azure.dfir_o365rc import is_available, get_public_certificate
+
+        status = is_available()
+        public_key = get_public_certificate()
+
+        return jsonify({
+            "has_certificate": status['has_certificate'],
+            "has_image": status['has_image'],
+            "available": status['available'],
+            "public_key": public_key,
+            "message": status['message']
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

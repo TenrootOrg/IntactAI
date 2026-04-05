@@ -74,9 +74,11 @@ main() {
     create_velociraptor_collector
 
     # -------------------------------------------------------------------------
-    # Azure Security Tools (SIGMA Rules)
+    # Azure Security Tools (SIGMA Rules + DFIR-O365RC)
     # -------------------------------------------------------------------------
     download_sigma_rules
+    pull_dfir_o365rc_image
+    generate_azure_certificate
 
     # -------------------------------------------------------------------------
     # Configuration
