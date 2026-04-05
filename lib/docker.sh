@@ -386,3 +386,77 @@ download_sigma_rules() {
         return 1
     fi
 }
+
+
+pull_dfir_o365rc_image() {
+    # Pull DFIR-O365RC image for Unified Audit Log collection
+
+    local azure_enabled=$(read_config "['modules']['azure']['enabled']")
+    if ! is_enabled "$azure_enabled"; then
+        log_info "Azure module disabled, skipping DFIR-O365RC"
+        return 0
+    fi
+
+    log_info "Pulling DFIR-O365RC image (Unified Audit Log collection)..."
+
+    if docker image inspect anssi/dfir-o365rc:latest > /dev/null 2>&1; then
+        log_info "DFIR-O365RC image already present"
+        return 0
+    fi
+
+    if docker pull anssi/dfir-o365rc:latest 2>> "$LOG_FILE"; then
+        log_success "DFIR-O365RC image pulled successfully"
+    else
+        log_warn "Failed to pull DFIR-O365RC image - Unified Audit Log collection will not be available"
+        return 1
+    fi
+}
+
+
+generate_azure_certificate() {
+    # Generate self-signed certificate for DFIR-O365RC authentication
+    # The public key must be uploaded to Azure App Registration by the user
+
+    local azure_enabled=$(read_config "['modules']['azure']['enabled']")
+    if ! is_enabled "$azure_enabled"; then
+        return 0
+    fi
+
+    local cert_dir="${SCRIPT_DIR}/data"
+    local pfx_path="${cert_dir}/azure_cert.pfx"
+    local pub_path="${cert_dir}/azure_cert_public.pem"
+
+    if [[ -f "$pfx_path" ]]; then
+        log_info "Azure certificate already exists, skipping generation"
+        return 0
+    fi
+
+    log_info "Generating Azure certificate for DFIR-O365RC..."
+    mkdir -p "$cert_dir"
+
+    # Generate self-signed cert (RSA 2048, valid 2 years)
+    openssl req -x509 -newkey rsa:2048 \
+        -keyout /tmp/azure_key.pem -out /tmp/azure_cert.pem \
+        -days 730 -nodes -subj "/CN=RISX-MSSP-DFIR" 2>> "$LOG_FILE"
+
+    # Create PFX (no password)
+    openssl pkcs12 -export -out "$pfx_path" \
+        -inkey /tmp/azure_key.pem -in /tmp/azure_cert.pem \
+        -passout pass: 2>> "$LOG_FILE"
+
+    # Export public key for user to upload to Azure
+    cp /tmp/azure_cert.pem "$pub_path"
+
+    # Cleanup temp files
+    rm -f /tmp/azure_key.pem /tmp/azure_cert.pem
+
+    if [[ -f "$pfx_path" ]]; then
+        log_success "Azure certificate generated"
+        log_info "  PFX certificate: $pfx_path"
+        log_info "  Public key: $pub_path"
+        log_info "  Upload the public key to Azure App Registration → Certificates & secrets"
+    else
+        log_warn "Failed to generate Azure certificate"
+        return 1
+    fi
+}
