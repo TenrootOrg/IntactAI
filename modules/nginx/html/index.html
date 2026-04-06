@@ -1835,60 +1835,15 @@ sudo ./velociraptor service start</code></pre>
 
                             <!-- Blueprint Details Card -->
                             <template x-if="selectedBlueprint">
-                                <div class="mt-3 p-4 bg-gray-900/60 rounded-lg border border-blue-500/30 space-y-3 text-sm">
+                                <div class="mt-3 p-3 bg-gray-900/60 rounded-lg border border-blue-500/30 space-y-2 text-sm">
                                     <div class="text-gray-200" x-text="selectedBlueprint.description"></div>
-
-                                    <div class="grid grid-cols-2 gap-3">
-                                        <div>
-                                            <div class="text-xs text-gray-500 uppercase tracking-wide">Use Case</div>
-                                            <div class="text-gray-300 mt-1" x-text="selectedBlueprint.use_case || '—'"></div>
-                                        </div>
-                                        <div>
-                                            <div class="text-xs text-gray-500 uppercase tracking-wide">Duration</div>
-                                            <div class="text-gray-300 mt-1" x-text="selectedBlueprint.duration || '—'"></div>
-                                        </div>
-                                        <div>
-                                            <div class="text-xs text-gray-500 uppercase tracking-wide">Volume</div>
-                                            <div class="text-gray-300 mt-1" x-text="selectedBlueprint.volume || '—'"></div>
-                                        </div>
-                                        <div>
-                                            <div class="text-xs text-gray-500 uppercase tracking-wide">Default Range</div>
-                                            <div class="text-gray-300 mt-1">
-                                                <span x-text="selectedBlueprint.settings?.time_range_days || 7"></span> days
-                                            </div>
-                                        </div>
+                                    <div class="flex flex-wrap gap-1.5">
+                                        <template x-for="src in Object.keys(selectedBlueprint.source_details || {})" :key="src">
+                                            <span class="px-2 py-0.5 bg-blue-900/40 border border-blue-700/40 rounded text-blue-300 font-mono text-xs" x-text="src"></span>
+                                        </template>
                                     </div>
-
-                                    <div>
-                                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Sources Used</div>
-                                        <div class="space-y-1">
-                                            <template x-for="(desc, src) in (selectedBlueprint.source_details || {})" :key="src">
-                                                <div class="flex gap-2">
-                                                    <span class="text-blue-400 font-mono text-xs whitespace-nowrap" x-text="src"></span>
-                                                    <span class="text-gray-400 text-xs" x-text="'— ' + desc"></span>
-                                                </div>
-                                            </template>
-                                        </div>
-                                    </div>
-
-                                    <template x-if="(selectedBlueprint.requirements || []).length">
-                                        <div>
-                                            <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Requirements</div>
-                                            <ul class="space-y-1">
-                                                <template x-for="req in selectedBlueprint.requirements" :key="req">
-                                                    <li class="text-gray-400 text-xs flex gap-2">
-                                                        <span class="text-yellow-500">•</span>
-                                                        <span x-text="req"></span>
-                                                    </li>
-                                                </template>
-                                            </ul>
-                                        </div>
-                                    </template>
-
                                     <template x-if="selectedBlueprint.requires_target_users">
-                                        <div class="text-xs text-yellow-400 bg-yellow-900/20 border border-yellow-700/30 rounded p-2">
-                                            ⚠️ This blueprint requires <strong>Target Users</strong> below.
-                                        </div>
+                                        <div class="text-xs text-yellow-400">⚠️ Requires Target Users</div>
                                     </template>
                                 </div>
                             </template>
