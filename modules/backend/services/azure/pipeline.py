@@ -464,6 +464,7 @@ def run_azure_pipeline(
                         analysis_results=analysis_results,
                         llm_config=llm_config,
                         scan_metadata={
+                            'tenant_id': azure_config.get('tenant_id', ''),
                             'time_filter': options.get('time_filter', {}),
                             'sources': list(collected_data.keys()),
                         }

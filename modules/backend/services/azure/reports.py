@@ -155,33 +155,64 @@ def generate_azure_report(run_id, blueprint, collected_data, findings,
     sources = list(collected_data.keys())
     num_rules_fired = len(findings)
 
-    # Build SIGMA summary table for the prompt
-    sigma_table = "| Rule | Hits | Source |\n|------|------|--------|\n"
+    # Compute time range from actual records (not the requested filter)
+    actual_min_ts, actual_max_ts = None, None
+    distinct_dates = set()
+    for records in collected_data.values():
+        for r in records:
+            ts = (r.get('_timestamp') or r.get('CreationTime') or
+                  r.get('createdDateTime') or r.get('activityDateTime'))
+            if ts:
+                ts_str = str(ts)
+                if actual_min_ts is None or ts_str < actual_min_ts:
+                    actual_min_ts = ts_str
+                if actual_max_ts is None or ts_str > actual_max_ts:
+                    actual_max_ts = ts_str
+                if len(ts_str) >= 10:
+                    distinct_dates.add(ts_str[:10])
+
+    # Build SIGMA summary table for the prompt — list ALL sources a rule matched, not just first
+    sigma_table = "| Rule | Hits | Source(s) | Severity |\n|------|------|--------|---|\n"
     for rule_name, matches in findings.items():
-        source = matches[0].get('_source', 'Unknown') if matches else 'Unknown'
-        sigma_table += f"| {rule_name} | {len(matches)} | {source} |\n"
+        srcs = sorted({m.get('_source', '?') for m in matches}) if matches else ['?']
+        sev = matches[0].get('severity', '?') if matches else '?'
+        sigma_table += f"| {rule_name} | {len(matches)} | {', '.join(srcs)} | {sev} |\n"
 
-    # Combine LLM analysis summaries
-    summaries_text = "\n\n---\n\n".join([
-        f"## {artifact}\n\n{summary}"
-        for artifact, summary in analysis_results.items()
-    ])
-
-    # Build metadata header
-    scan_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    # Build metadata header (Azure-specific, no fake "Clients" or "Collection Duration")
+    scan_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')
     blueprint_name = blueprint.get('name', 'Azure Scan')
+    blueprint_id = blueprint.get('id', '')
+    tenant = scan_metadata.get('tenant_id', '?')
     time_filter = scan_metadata.get('time_filter', {})
-    period = time_filter.get('value', 'unknown') if isinstance(time_filter, dict) else str(time_filter)
+    if isinstance(time_filter, dict):
+        if time_filter.get('type') == 'between':
+            requested_period = f"{time_filter.get('start', '?')} → {time_filter.get('end', '?')}"
+        else:
+            requested_period = f"Last {time_filter.get('value', '?')}"
+    else:
+        requested_period = str(time_filter) if time_filter else 'unknown'
+
+    actual_period = (
+        f"{actual_min_ts} → {actual_max_ts} ({len(distinct_dates)} distinct day(s))"
+        if actual_min_ts else 'no events with timestamps'
+    )
+
+    # Per-source breakdown
+    per_source_lines = "\n".join(f"- `{src}`: {len(records):,} records" for src, records in collected_data.items())
 
     header = f"""# Azure Security Assessment Report
 
 **Scan Date:** {scan_date}
-**Blueprint:** {blueprint_name}
-**Period:** {period}
-**Log Sources:** {', '.join(sources)}
+**Blueprint:** {blueprint_name}{f' ({blueprint_id})' if blueprint_id else ''}
+**Tenant:** {tenant}
+**Requested Period:** {requested_period}
+**Actual Data Time Range:** {actual_period}
 **Total Events Collected:** {total_events:,}
-**SIGMA Rules Triggered:** {num_rules_fired}
+**Findings Triggered:** {num_rules_fired}
 **Total Detections:** {total_findings:,}
+
+**Sources:**
+{per_source_lines}
 
 ---
 
@@ -192,45 +223,59 @@ def generate_azure_report(run_id, blueprint, collected_data, findings,
     # === Technical Report ===
     add_log_to_run(run_id, "[Report] Generating Azure Technical Report...", "info")
 
-    tech_prompt = f"""Create an AZURE SECURITY ASSESSMENT REPORT based on this scan data:
+    # IMPORTANT: We do NOT pass the per-artifact analysis to the report-LLM and ALSO append
+    # it. That was the duplication bug. The per-artifact JSON output already has the structured
+    # findings — the report-LLM only needs the summary table to write the high-level
+    # synthesis. Per-rule details are linked from `analysis_results` which is saved separately
+    # and accessible via the API.
 
-**SCAN METADATA:**
+    # Brief summary lines from each artifact's prose part (after the JSON block) — capped
+    artifact_briefs = []
+    for artifact, summary in analysis_results.items():
+        # Strip JSON block if present, keep only prose part for the synthesis prompt
+        text = str(summary)
+        if '```json' in text and '```' in text.split('```json', 1)[1]:
+            after = text.split('```json', 1)[1]
+            prose = after.split('```', 1)[1] if '```' in after else after
+            prose = prose.strip()
+        else:
+            prose = text.strip()
+        artifact_briefs.append(f"### {artifact}\n{prose[:1500]}")
+    artifact_briefs_text = "\n\n".join(artifact_briefs)[:25000]
+
+    tech_prompt = f"""You are writing the synthesis section of an Azure Security Assessment Report.
+
+The per-rule analyses have ALREADY been done. Your job is to write a SHORT, accurate, top-level summary that ties them together — NOT to repeat the per-rule details.
+
+## SCAN METADATA (use these EXACT values; do not invent dates or counts)
 - Blueprint: {blueprint_name}
-- Period: {period}
-- Log Sources Collected: {', '.join(sources)}
-- Total Events: {total_events:,}
-- SIGMA Rules Triggered: {num_rules_fired}
-- Total Detections: {total_findings:,}
+- Tenant: {tenant}
+- Requested Period: {requested_period}
+- **Actual data time range: {actual_period}**
+- Total events collected: {total_events:,}
+- Distinct sources: {len(sources)}
 
-**SIGMA DETECTION SUMMARY:**
+## SIGMA / FINDINGS SUMMARY
 {sigma_table}
 
-**DETAILED ANALYSIS PER DETECTION:**
-{summaries_text[:30000]}
+## PER-RULE ANALYSIS BRIEFS (already produced — do NOT recopy)
+{artifact_briefs_text}
 
-Generate the full Azure Security Assessment Report with ALL required sections.
-Every SIGMA detection must appear in the report. Be specific with usernames, IPs, and timestamps from the data."""
+## REQUIREMENTS
+- Use only dates/users/IPs/counts that appear in the metadata or briefs above.
+- Do NOT describe a multi-day campaign unless the actual time range spans multiple days.
+- Keep the synthesis concise (max ~1000 words). Sections: Executive Summary (≤150 words), Top Concerns (bulleted, max 5), Recommended Next Steps (max 5 bullets), Confidence & Caveats.
+- Reference findings by their rule name; do not recopy individual events.
+"""
 
     try:
         tech_body = call_llm(tech_prompt, AZURE_REPORT_SYSTEM_PROMPT, llm_config)
-
-        # Append raw analysis as appendix
-        appendix = f"""
-
----
-
-# Appendix: Detailed Detection Analysis
-
-*Per-rule analysis from SIGMA detections.*
-
-{summaries_text}
-"""
-        reports['technical'] = header + tech_body + appendix
+        reports['technical'] = header + tech_body
         add_log_to_run(run_id, "[Report] Azure Technical Report complete", "success")
     except Exception as e:
         add_log_to_run(run_id, f"[Report] Technical Report failed: {e}", "error")
-        reports['technical'] = header + f"Report generation failed: {e}\n\n## Detection Analysis\n\n{summaries_text}"
-
+        # Fallback: include the artifact briefs directly so the user still sees something
+        reports['technical'] = header + f"Synthesis generation failed: {e}\n\n## Per-Rule Findings\n\n{artifact_briefs_text}"
 
     return reports
 
