@@ -28,6 +28,107 @@ from services.agentic.utils import (
 )
 from services.iris_service import import_to_iris
 from services.workflow_logger import add_log_to_run
+from services.workflow_service import update_run_status as _update_run_status
+
+
+def _set_progress(run_id: str, pct: int) -> None:
+    """Update workflow progress percentage if run_id is set."""
+    if run_id:
+        try:
+            _update_run_status(run_id, "running", progress=pct)
+        except Exception:
+            pass
+
+
+def _build_findings_report(blueprint: Dict, collected_data: Dict, findings: Dict, time_filter: Dict) -> str:
+    """Build a structured markdown report listing findings without LLM analysis.
+
+    Used when LLM is disabled. Each finding gets the SIGMA/UAL metadata laid out
+    so a human (or downstream LLM) can act on it.
+    """
+    lines = []
+    lines.append("# Azure Security Findings Report")
+    lines.append("")
+    lines.append(f"**Scan Date:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    lines.append(f"**Blueprint:** {blueprint.get('name', 'Custom')}")
+    lines.append(f"**Sources:** {', '.join(collected_data.keys()) or 'none'}")
+    total_events = sum(len(v) for v in collected_data.values())
+    total_findings = sum(len(v) for v in findings.values())
+    lines.append(f"**Total Events Collected:** {total_events:,}")
+    lines.append(f"**Total Findings:** {total_findings:,}")
+    lines.append(f"**Finding Categories:** {len(findings)}")
+    if time_filter:
+        lines.append(f"**Time Filter:** `{time_filter}`")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append("> **Note:** This report was generated without LLM analysis. "
+                 "Enable LLM in the scan options for forensic narrative + recommended actions.")
+    lines.append("")
+
+    # Summary table
+    lines.append("## Findings Summary")
+    lines.append("")
+    lines.append("| Category / Rule | Count | Severity |")
+    lines.append("|---|---|---|")
+    for key, items in sorted(findings.items(), key=lambda kv: -len(kv[1])):
+        if not items:
+            continue
+        # Get most common severity in this category
+        sev_counts = {}
+        for item in items:
+            sev = item.get('severity') or item.get('_severity') or 'unknown'
+            sev_counts[sev] = sev_counts.get(sev, 0) + 1
+        sev_str = ", ".join(f"{k}={v}" for k, v in sorted(sev_counts.items(), key=lambda x: -x[1]))
+        lines.append(f"| {key} | {len(items)} | {sev_str} |")
+    lines.append("")
+
+    # Detailed findings per category
+    lines.append("## Findings Detail")
+    lines.append("")
+    for key, items in sorted(findings.items(), key=lambda kv: -len(kv[1])):
+        if not items:
+            continue
+        lines.append(f"### {key} ({len(items)} events)")
+        lines.append("")
+        for i, item in enumerate(items[:50], 1):  # cap at 50 per category
+            record = item.get('matched_record', item)
+            ts = item.get('_timestamp') or record.get('CreationTime') or record.get('createdDateTime') or '?'
+            sev = item.get('severity') or item.get('_severity') or '?'
+            cat = item.get('_category') or record.get('_category') or '?'
+            desc = item.get('_description') or record.get('_description') or item.get('rule_title', '')
+
+            # Extract actor from various possible field shapes
+            actor = (
+                record.get('UserId')
+                or record.get('userPrincipalName')
+                or record.get('Actor')
+            )
+            initiated_by = record.get('initiatedBy')
+            if not actor and isinstance(initiated_by, dict):
+                user_info = initiated_by.get('user') or {}
+                if isinstance(user_info, dict):
+                    actor = user_info.get('userPrincipalName')
+            # UAL Actor field can be a list like [{Type:0, ID:"user@x.com"}]
+            if not actor and isinstance(record.get('Actor'), list):
+                for a in record['Actor']:
+                    if isinstance(a, dict) and a.get('ID'):
+                        actor = a['ID']
+                        break
+            actor = actor or '?'
+
+            op = record.get('Operation') or record.get('activityDisplayName') or '?'
+            lines.append(f"**{i}.** `{ts}` | **{sev.upper()}** | `{cat}`")
+            lines.append(f"   - Operation: `{op}`")
+            lines.append(f"   - Actor: `{actor}`")
+            if desc and desc != op:
+                lines.append(f"   - Description: {desc}")
+            lines.append("")
+        if len(items) > 50:
+            lines.append(f"_(... {len(items) - 50} more events truncated, see raw data)_")
+            lines.append("")
+
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -105,11 +206,13 @@ def run_azure_pipeline(
                 enable_llm = False
 
         result['phases']['validation'] = {'status': 'complete'}
+        _set_progress(run_id, 10)
 
         # =====================================================================
         # Phase 2: Collection
         # =====================================================================
         add_log_to_run(run_id, "[AZURE] Phase 2: Collecting logs from Azure...", "info")
+        _set_progress(run_id, 15)
 
         sources = bp_settings.get('sources', ['all'])
         time_range_days = bp_settings.get('time_range_days', 7)
@@ -137,8 +240,32 @@ def run_azure_pipeline(
         if pivot_mode:
             add_log_to_run(run_id, "[AZURE] Pivot mode enabled", "info")
 
+        # Collection is the longest phase - especially UAL via DFIR-O365RC (~5-10 min)
+        # Note this clearly in the log; progress only moves on real source completion.
+        if 'unified_audit' in sources or 'all' in sources:
+            add_log_to_run(run_id, "[AZURE] Note: UAL collection via DFIR-O365RC is the longest phase (~5-10 minutes)", "info")
+
+        # Calculate progress per source: spread 15 -> 55 evenly across requested sources
+        def _resolve_count(sources_list):
+            if 'all' in sources_list:
+                return 5  # signin, audit, unified_audit, activity_logs, security_alerts
+            return max(len(sources_list), 1)
+        total_sources = _resolve_count(sources)
+        progress_per_source = max(1, (55 - 15) // total_sources)
+        collection_progress = {'pct': 15, 'completed': 0}
+
         def collection_logger(msg, level="info"):
             add_log_to_run(run_id, f"[AZURE] {msg}" if not msg.startswith("[AZURE]") else msg, level)
+            # Bump progress only when a source actually completes (success or skip)
+            is_done = (
+                (level == "success" and "Collected" in msg and "records from" in msg)
+                or (level == "warning" and "Skipped" in msg)
+                or ("No records found for" in msg)
+            )
+            if is_done:
+                collection_progress['completed'] += 1
+                collection_progress['pct'] = min(15 + collection_progress['completed'] * progress_per_source, 55)
+                _set_progress(run_id, collection_progress['pct'])
 
         collected_data, collection_status = collect_azure_logs(
             azure_config=azure_config,
@@ -198,11 +325,13 @@ def run_azure_pipeline(
 
         # Store collected data for API access
         result['collected_data'] = collected_data
+        _set_progress(run_id, 60)
 
         # =====================================================================
         # Phase 4: SIGMA Detection
         # =====================================================================
         add_log_to_run(run_id, "[AZURE] Phase 4: Running SIGMA detection rules...", "info")
+        _set_progress(run_id, 65)
 
         min_severity = options.get('min_severity') or bp_settings.get('min_severity', 'low')
         add_log_to_run(run_id, f"[AZURE] Minimum severity filter: {min_severity}+", "info")
@@ -224,8 +353,62 @@ def run_azure_pipeline(
             "info"
         )
 
+        # =====================================================================
+        # Phase 4b: UAL Severity-Tagged Events as Pre-Detected Findings
+        # =====================================================================
+        # The UAL filter (filter_and_score_ual_records) already does detection:
+        # it tags events with _severity, _category, _description.
+        # These are pre-detected findings — they don't need SIGMA rules.
+        # Group them by category so each category becomes one "finding bucket".
+        SEVERITY_RANK = {'informational': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
+        min_rank = SEVERITY_RANK.get(min_severity, 1)
+
+        ual_events = collected_data.get('Azure.UnifiedAudit', [])
+        ual_findings_added = 0
+        if ual_events:
+            # Filter by min_severity (respecting the UI choice)
+            filtered = [e for e in ual_events
+                        if SEVERITY_RANK.get(e.get('_severity', 'low'), 1) >= min_rank]
+
+            # Group by category for clean LLM artifact buckets
+            by_category = {}
+            for event in filtered:
+                cat = event.get('_category', 'unknown')
+                if cat == 'unknown':
+                    continue  # Skip unknown ops to reduce noise
+                key = f"UAL.{cat}"
+                if key not in by_category:
+                    by_category[key] = []
+                # Wrap as a finding (matches SIGMA finding shape so LLM treats it the same)
+                by_category[key].append({
+                    '_source': 'Azure.UnifiedAudit',
+                    '_severity': event.get('_severity'),
+                    '_category': event.get('_category'),
+                    '_description': event.get('_description'),
+                    '_timestamp': event.get('CreationTime') or event.get('_timestamp'),
+                    'rule_title': f"UAL: {event.get('_description', cat)}",
+                    'severity': event.get('_severity'),
+                    'matched_record': event,
+                    '_finding_time': datetime.utcnow().isoformat()
+                })
+
+            # Merge into findings dict
+            for key, items in by_category.items():
+                findings[key] = items
+                ual_findings_added += len(items)
+
+            if ual_findings_added > 0:
+                add_log_to_run(
+                    run_id,
+                    f"[AZURE] Added {ual_findings_added} UAL pre-detected findings "
+                    f"in {len(by_category)} categories (severity >= {min_severity})",
+                    "info"
+                )
+
         # Store findings for API access
         result['findings'] = findings
+
+        _set_progress(run_id, 70)
 
         # =====================================================================
         # Phase 5: LLM Analysis (if enabled)
@@ -233,6 +416,7 @@ def run_azure_pipeline(
         analysis_results = {}
         if enable_llm and findings:
             add_log_to_run(run_id, "[AZURE] Phase 5: Running LLM analysis...", "info")
+            _set_progress(run_id, 75)
 
             try:
                 # Analyze findings (not raw logs)
@@ -260,27 +444,40 @@ def run_azure_pipeline(
             result['phases']['analysis'] = {'status': 'skipped', 'reason': 'LLM disabled or no findings'}
 
         result['analysis'] = analysis_results
+        _set_progress(run_id, 90)
 
         # =====================================================================
-        # Phase 6: Report Generation (if LLM enabled)
+        # Phase 6: Report Generation (always, even without LLM)
         # =====================================================================
-        if enable_llm and analysis_results:
+        if findings:
             add_log_to_run(run_id, "[AZURE] Phase 6: Generating reports...", "info")
+            _set_progress(run_id, 95)
 
             try:
-                # Generate Azure-specific reports
-                reports = generate_azure_report(
-                    run_id=run_id,
-                    blueprint=blueprint,
-                    collected_data=collected_data,
-                    findings=findings,
-                    analysis_results=analysis_results,
-                    llm_config=llm_config,
-                    scan_metadata={
-                        'time_filter': options.get('time_filter', {}),
-                        'sources': list(collected_data.keys()),
+                if enable_llm and analysis_results:
+                    # Full LLM-narrated report
+                    reports = generate_azure_report(
+                        run_id=run_id,
+                        blueprint=blueprint,
+                        collected_data=collected_data,
+                        findings=findings,
+                        analysis_results=analysis_results,
+                        llm_config=llm_config,
+                        scan_metadata={
+                            'time_filter': options.get('time_filter', {}),
+                            'sources': list(collected_data.keys()),
+                        }
+                    )
+                else:
+                    # Structured findings list (no LLM tokens spent)
+                    reports = {
+                        'technical': _build_findings_report(
+                            blueprint=blueprint,
+                            collected_data=collected_data,
+                            findings=findings,
+                            time_filter=options.get('time_filter', {}),
+                        )
                     }
-                )
 
                 result['reports'] = reports
                 result['phases']['reporting'] = {'status': 'complete'}

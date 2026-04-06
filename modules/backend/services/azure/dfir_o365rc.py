@@ -222,37 +222,24 @@ def collect_unified_audit_log(
         "\\$cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new('/mnt/cert/azure_cert.pfx', '', 'Exportable,PersistKeySet'); "
     )
 
+    # NOTE: We always use requestType=Unfiltered which is much faster than UserIds
+    # filtering. If target_users is set, we filter client-side after collection.
+    ps_cmd = (
+        cert_load +
+        f"Get-UnifiedAuditLogPurview "
+        f"-requestType Unfiltered "
+        f"-sessionName '{session_name}' "
+        f"-startDate '{ps_start}' "
+        f"-endDate '{ps_end}' "
+        f"-certificate \\$cert "
+        f"-appId '{app_id}' "
+        f"-tenant '{tenant}' "
+        f"-logFile '{log_file}' "
+        f"-outputFile '{output_file}'"
+    )
     if target_users:
-        user_ids_arr = "','".join(target_users)
-        ps_cmd = (
-            cert_load +
-            f"Get-UnifiedAuditLogPurview "
-            f"-requestType UserIds "
-            f"-userIds @('{user_ids_arr}') "
-            f"-sessionName '{session_name}' "
-            f"-startDate '{ps_start}' "
-            f"-endDate '{ps_end}' "
-            f"-certificate \\$cert "
-            f"-appId '{app_id}' "
-            f"-tenant '{tenant}' "
-            f"-logFile '{log_file}' "
-            f"-outputFile '{output_file}'"
-        )
-        log(f"Collecting UAL for users via Purview API: {', '.join(target_users)}", "info")
+        log(f"Collecting UAL (all events, will filter for {', '.join(target_users)} client-side)", "info")
     else:
-        ps_cmd = (
-            cert_load +
-            f"Get-UnifiedAuditLogPurview "
-            f"-requestType Unfiltered "
-            f"-sessionName '{session_name}' "
-            f"-startDate '{ps_start}' "
-            f"-endDate '{ps_end}' "
-            f"-certificate \\$cert "
-            f"-appId '{app_id}' "
-            f"-tenant '{tenant}' "
-            f"-logFile '{log_file}' "
-            f"-outputFile '{output_file}'"
-        )
         log("Collecting UAL (all events) via Purview API", "info")
 
     # Run DFIR-O365RC in Docker container with live log streaming
@@ -410,6 +397,42 @@ def collect_unified_audit_log(
     shutil.rmtree(output_dir, ignore_errors=True)
 
     log(f"Collected {len(records)} raw Unified Audit Log records", "success")
+
+    # Client-side filter by target users (matches UAL UserId/UserKey fields)
+    if target_users:
+        target_set = {u.lower() for u in target_users}
+
+        def _to_strs(v):
+            """Normalize a UAL field that may be a string, list, or dict to a list of strings."""
+            if v is None:
+                return []
+            if isinstance(v, str):
+                return [v.lower()]
+            if isinstance(v, list):
+                out = []
+                for item in v:
+                    if isinstance(item, str):
+                        out.append(item.lower())
+                    elif isinstance(item, dict):
+                        # UAL Actor field is often [{Type:0, ID:"user@x.com"}]
+                        for val in item.values():
+                            if isinstance(val, str):
+                                out.append(val.lower())
+                return out
+            if isinstance(v, dict):
+                return [str(val).lower() for val in v.values() if isinstance(val, str)]
+            return []
+
+        def _matches_user(r):
+            for field in ('UserId', 'UserKey', 'Actor', 'ObjectId'):
+                for val in _to_strs(r.get(field)):
+                    if val in target_set:
+                        return True
+            return False
+
+        before = len(records)
+        records = [r for r in records if _matches_user(r)]
+        log(f"User filter: {before} -> {len(records)} records (kept events for {', '.join(target_users)})", "info")
 
     # Filter noise and add severity scoring (security-relevant events only)
     filter_result = filter_and_score_ual_records(records, min_severity='low')
