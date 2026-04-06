@@ -405,6 +405,54 @@ def run_azure_pipeline(
                     "info"
                 )
 
+        # =====================================================================
+        # Phase 4c: State-Snapshot Sources (CA policies, federation)
+        # =====================================================================
+        # These are NOT events — they're current configuration. They bypass
+        # SIGMA entirely (no rule will match a config dump). Each state source
+        # becomes its own INV.* finding bucket and goes straight to the LLM
+        # with the "state snapshot" framing.
+        STATE_SOURCE_MAP = {
+            'Azure.CAPolicy': 'INV.ca_policies',
+            'Azure.Federation': 'INV.federation',
+        }
+        state_findings_added = 0
+        for src_key, finding_key in STATE_SOURCE_MAP.items():
+            records = collected_data.get(src_key, [])
+            if not records:
+                continue
+            # Filter by min_severity — same UI ladder used for everything else
+            filtered = [r for r in records
+                        if SEVERITY_RANK.get(r.get('_severity', 'low'), 1) >= min_rank]
+            if not filtered:
+                continue
+            # Wrap each filtered record as a finding (same shape as SIGMA findings)
+            findings[finding_key] = [
+                {
+                    '_source': src_key,
+                    '_severity': r.get('_severity'),
+                    '_category': r.get('_category'),
+                    '_description': r.get('_description'),
+                    '_timestamp': None,  # state snapshot — no event time
+                    'rule_title': f"State: {r.get('_description', finding_key)}",
+                    'rule_description': f'Current configuration of {src_key} (state snapshot, not an event)',
+                    'severity': r.get('_severity'),
+                    'matched_record': r,
+                    '_finding_time': datetime.utcnow().isoformat(),
+                    '_state_snapshot': True,
+                }
+                for r in filtered
+            ]
+            state_findings_added += len(filtered)
+
+        if state_findings_added > 0:
+            add_log_to_run(
+                run_id,
+                f"[AZURE] Added {state_findings_added} state-snapshot findings "
+                f"from {len([k for k in STATE_SOURCE_MAP if STATE_SOURCE_MAP[k] in findings])} sources",
+                "info"
+            )
+
         # Store findings for API access
         result['findings'] = findings
 
