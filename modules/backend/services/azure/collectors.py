@@ -168,13 +168,20 @@ def get_access_token(azure_config: Dict[str, str]) -> str:
 # Graph API Collection
 # =============================================================================
 
-def graph_request(token: str, endpoint: str, params: Optional[Dict] = None) -> requests.Response:
-    """Make authenticated request to Microsoft Graph API with retry on 429."""
+def graph_request(token: str, endpoint: str, params: Optional[Dict] = None,
+                  extra_headers: Optional[Dict] = None) -> requests.Response:
+    """Make authenticated request to Microsoft Graph API with retry on 429.
+
+    `extra_headers` is merged into the request headers — used for advanced query
+    filters that require `ConsistencyLevel: eventual`.
+    """
     url = endpoint if endpoint.startswith('http') else f'{GRAPH_BASE_URL}{endpoint}'
     headers = {
         'Authorization': f'Bearer {token}',
         'Content-Type': 'application/json'
     }
+    if extra_headers:
+        headers.update(extra_headers)
 
     for attempt in range(3):
         resp = requests.get(url, headers=headers, params=params, timeout=30)
@@ -189,9 +196,16 @@ def graph_request(token: str, endpoint: str, params: Optional[Dict] = None) -> r
 
 
 def collect_with_pagination(token: str, endpoint: str, time_filter: Optional[str] = None,
-                           max_records: int = 10000) -> Optional[List[Dict]]:
+                           max_records: int = 10000,
+                           extra_headers: Optional[Dict] = None,
+                           extra_params: Optional[Dict] = None) -> Optional[List[Dict]]:
     """
     Collect records from Graph API with pagination.
+
+    Args:
+        extra_headers: Merged into request headers (e.g. `{'ConsistencyLevel': 'eventual'}`
+                       for advanced sign-in filters).
+        extra_params: Merged into query params (e.g. `{'$count': 'true'}`).
 
     Returns:
         List of records, or None if 403 (license tier doesn't include this source)
@@ -200,11 +214,15 @@ def collect_with_pagination(token: str, endpoint: str, time_filter: Optional[str
     params = {'$top': '999'}
     if time_filter:
         params['$filter'] = time_filter
+    if extra_params:
+        params.update(extra_params)
 
-    url = f'{GRAPH_BASE_URL}{endpoint}'
+    # Allow absolute URLs (e.g. for the beta endpoint) — only prepend the base
+    # for relative paths starting with '/'.
+    url = endpoint if endpoint.startswith('http') else f'{GRAPH_BASE_URL}{endpoint}'
 
     while url and len(records) < max_records:
-        resp = graph_request(token, url, params)
+        resp = graph_request(token, url, params, extra_headers=extra_headers)
 
         if resp.status_code == 403:
             return None  # Source not available at this license tier
@@ -466,13 +484,29 @@ def collect_azure_logs(
             # For signin_logs, ALSO query the non-default sign-in event types
             # (servicePrincipal, managedIdentity, nonInteractiveUser) — these are
             # major blind spots otherwise (refresh tokens, app-to-app, etc.)
+            #
+            # Filtering on `signInEventTypes` requires Microsoft Graph BETA endpoint
+            # plus advanced query mode (ConsistencyLevel: eventual + $count=true).
+            # The v1.0 endpoint does NOT expose signInEventTypes as a filterable
+            # property as of 2026.
             if source == 'signin_logs' and data is not None:
+                advanced_headers = {'ConsistencyLevel': 'eventual'}
+                advanced_params = {'$count': 'true'}
+                # Build a beta-endpoint version of the same path
+                beta_endpoint = graph_info['endpoint']  # e.g. /auditLogs/signIns
                 for sign_type in ('servicePrincipal', 'managedIdentity', 'nonInteractiveUser'):
                     try:
-                        type_filter = f"signInEventTypes/any(t: t eq '{sign_type}')"
-                        # Combine with the existing odata filter if any
+                        type_filter = f"signInEventTypes/any(t:t eq '{sign_type}')"
                         combined = f"({odata_filter}) and {type_filter}" if odata_filter else type_filter
-                        extra = collect_with_pagination(token, graph_info['endpoint'], combined)
+                        # Use beta API for signInEventTypes filter (v1.0 doesn't support it)
+                        beta_url = f'https://graph.microsoft.com/beta{beta_endpoint}'
+                        extra = collect_with_pagination(
+                            token,
+                            beta_url,  # full URL — collect_with_pagination prepends only if relative
+                            combined,
+                            extra_headers=advanced_headers,
+                            extra_params=advanced_params,
+                        )
                         if extra:
                             for r in extra:
                                 r['_signin_type'] = sign_type
