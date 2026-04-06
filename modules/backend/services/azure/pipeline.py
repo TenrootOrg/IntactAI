@@ -719,50 +719,118 @@ def run_azure_on_existing(
 # =============================================================================
 
 def get_azure_blueprints() -> List[Dict]:
-    """Get available Azure DFIR blueprints (detection-first model)."""
+    """Get available Azure DFIR blueprints (detection-first model).
+
+    Each blueprint includes:
+    - sources: which log sources are queried
+    - source_details: human description of what each source contributes
+    - use_case: when to run this blueprint
+    - duration: rough expected runtime
+    - volume: expected data volume
+    - requirements: prerequisites (license tier, target users, permissions)
+    """
     return [
         {
             'id': 'azure_quick_triage',
             'name': 'Quick Triage',
-            'description': 'Fast check: security alerts + risk detections only (Tier 1)',
+            'description': "Fast daily health check using Microsoft's pre-detected security signals.",
+            'use_case': 'Morning SOC check, fast pulse on tenant health',
+            'duration': '~30 sec - 1 min',
+            'volume': 'Very low (only triggered alerts)',
             'settings': {
                 'sources': ['security_alerts', 'risk_detections', 'risky_signins'],
                 'time_range_days': 7,
             },
-            'min_severity': 'low'
+            'source_details': {
+                'security_alerts': 'Microsoft 365 Defender / Defender for Cloud alerts (Graph API)',
+                'risk_detections': 'Entra ID Protection risk events (Entra ID P2 license)',
+                'risky_signins': 'Users flagged as risky by Entra ID Protection',
+            },
+            'requirements': [
+                'API permissions: SecurityAlert.Read.All, IdentityRiskEvent.Read.All',
+                'Optional: Entra ID P2 license for full risk detection coverage',
+            ],
+            'min_severity': 'low',
         },
         {
             'id': 'azure_account_investigation',
             'name': 'Account Investigation',
-            'description': 'Investigate specific accounts: sign-ins + audit filtered by target users',
+            'description': 'Deep dive into specific user accounts: sign-ins, directory operations, and pre-detected signals filtered to your target users.',
+            'use_case': 'Suspected account compromise, post-incident analysis, employee offboarding review',
+            'duration': '~1-2 min',
+            'volume': 'Medium (filtered to target users)',
             'settings': {
                 'sources': ['security_alerts', 'risk_detections', 'risky_signins', 'signin_logs', 'audit_logs'],
                 'time_range_days': 2,
             },
+            'source_details': {
+                'security_alerts': 'Pre-detected Microsoft security alerts',
+                'risk_detections': 'Identity Protection risk events for the targeted users',
+                'risky_signins': 'Risky sign-in entries',
+                'signin_logs': 'Every Entra ID sign-in attempt (success and failure) with IP, location, device, MFA result',
+                'audit_logs': 'Directory operations: role changes, password resets, user updates, app changes',
+            },
+            'requirements': [
+                'Target users (email addresses) MUST be specified',
+                'API permissions: AuditLog.Read.All, Directory.Read.All',
+                'Entra ID P1 license for sign-in/audit logs',
+            ],
             'min_severity': 'low',
-            'requires_target_users': True
+            'requires_target_users': True,
         },
         {
             'id': 'azure_lateral_movement',
             'name': 'Lateral Movement',
-            'description': 'Find other accounts accessed from same IPs as target users (pivot mode)',
+            'description': 'Pivot mode: starting from your target users, find OTHER accounts that signed in from the same IP addresses (potential compromise spread).',
+            'use_case': 'Spreading attack discovery, multi-account compromise investigation',
+            'duration': '~1-2 min',
+            'volume': 'Medium-high (target users + their IPs + all other accounts on those IPs)',
             'settings': {
                 'sources': ['security_alerts', 'risk_detections', 'signin_logs', 'audit_logs'],
                 'time_range_days': 2,
             },
+            'source_details': {
+                'security_alerts': 'Pre-detected Microsoft security alerts',
+                'risk_detections': 'Identity Protection risk events',
+                'signin_logs': 'Sign-ins for target users + sign-ins from same IPs by ANY user',
+                'audit_logs': 'Directory operations relevant to discovered accounts',
+            },
+            'requirements': [
+                'Target users (email addresses) MUST be specified',
+                'API permissions: AuditLog.Read.All, Directory.Read.All',
+                'Entra ID P1 license',
+            ],
             'min_severity': 'low',
             'requires_target_users': True,
-            'pivot_mode': True
+            'pivot_mode': True,
         },
         {
             'id': 'azure_full_investigation',
             'name': 'Full Investigation',
-            'description': 'All available sources (Tier 1 + 2 + 3). Higher volume.',
+            'description': 'Comprehensive tenant audit: every supported source including the Microsoft 365 Unified Audit Log (Exchange, SharePoint, Teams, Files) via DFIR-O365RC.',
+            'use_case': 'Annual security review, post-breach forensics, deep tenant audit, IR scoping',
+            'duration': '~6-10 min (UAL collection is the long part)',
+            'volume': 'HIGH - thousands of events',
             'settings': {
                 'sources': ['all'],
                 'time_range_days': 7,
             },
-            'min_severity': 'informational'
+            'source_details': {
+                'security_alerts': 'Microsoft 365 Defender / Defender for Cloud alerts',
+                'risk_detections': 'Entra ID Protection risk events',
+                'risky_signins': 'Risky sign-ins from Identity Protection',
+                'signin_logs': 'All Entra ID sign-ins (P1+)',
+                'audit_logs': 'All Entra ID directory operations (P1+)',
+                'unified_audit': 'Microsoft 365 Unified Audit Log via DFIR-O365RC: mailbox access, file ops, sharing, OAuth consent, mail rules, eDiscovery, Teams events',
+                'activity_logs': 'Azure Resource Manager activity logs via DFIR-O365RC (subscription-level events)',
+            },
+            'requirements': [
+                'API permissions: AuditLog.Read.All, AuditLogsQuery.Read.All, Directory.Read.All, '
+                'SecurityAlert.Read.All, IdentityRiskEvent.Read.All, User.Read.All',
+                'DFIR-O365RC certificate uploaded to App Registration',
+                'Entra ID P1 (P2 recommended for full risk coverage)',
+            ],
+            'min_severity': 'informational',
         }
     ]
 
