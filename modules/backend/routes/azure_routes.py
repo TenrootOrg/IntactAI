@@ -216,7 +216,7 @@ def start_scan():
 
             # Persist raw data to disk so it survives backend restart
             try:
-                persist_dir = "/data/db/azure_runs"
+                persist_dir = "/app/data/azure_runs"
                 os.makedirs(persist_dir, exist_ok=True)
                 with open(f"{persist_dir}/{run_id}.json", 'w') as f:
                     json.dump(result, f, default=str)
@@ -602,7 +602,7 @@ def download_azure_raw_data(run_id):
         run_data = _azure_runs.get(run_id)
         if not run_data:
             # Load from persisted file
-            data_path = f"/data/db/azure_runs/{run_id}.json"
+            data_path = f"/app/data/azure_runs/{run_id}.json"
             if os.path.exists(data_path):
                 with open(data_path, 'r') as f:
                     run_data = json.load(f)

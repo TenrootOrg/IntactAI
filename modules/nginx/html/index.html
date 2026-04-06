@@ -1683,7 +1683,7 @@ sudo ./velociraptor service start</code></pre>
                      azureTimeFilter: '24h',
                      azureCustomStart: '',
                      azureCustomEnd: '',
-                     azureMinSeverity: 'medium',
+                     azureMinSeverity: 'high',
                      azureEnableLLM: false,
                      azureRunning: false,
                      azureRunId: null,
@@ -1919,8 +1919,8 @@ sudo ./velociraptor service start</code></pre>
                             <select x-model="azureMinSeverity" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
                                 <option value="informational">Informational (all findings)</option>
                                 <option value="low">Low+</option>
-                                <option value="medium">Medium+ (recommended)</option>
-                                <option value="high">High+</option>
+                                <option value="medium">Medium+</option>
+                                <option value="high">High+ (recommended)</option>
                                 <option value="critical">Critical only</option>
                             </select>
                         </div>
@@ -2474,14 +2474,11 @@ sudo ./velociraptor service start</code></pre>
                                 </div>
                                 <template x-if="certData?.public_key">
                                     <div>
-                                        <p class="text-xs text-gray-400 mb-1">Upload this public key to Azure Portal → App Registration → Certificates & secrets → Upload certificate:</p>
-                                        <div class="relative">
-                                            <textarea readonly x-text="certData.public_key" class="w-full bg-gray-900 text-gray-300 border border-gray-600 rounded px-2 py-1.5 text-xs font-mono h-20 resize-none"></textarea>
-                                            <button @click="navigator.clipboard.writeText(certData.public_key); copied = true; setTimeout(() => copied = false, 2000)"
-                                                    class="absolute top-1 right-1 bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs text-gray-300">
-                                                <span x-text="copied ? 'Copied!' : 'Copy'"></span>
-                                            </button>
-                                        </div>
+                                        <p class="text-xs text-gray-400 mb-2">Download the certificate and upload it to Azure Portal → App Registration → Certificates & secrets → Upload certificate</p>
+                                        <a href="/api/config/azure/certificate/download" download class="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded text-xs font-medium text-white">
+                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                            Download Certificate (.pem)
+                                        </a>
                                     </div>
                                 </template>
                                 <template x-if="certData && !certData?.has_certificate">

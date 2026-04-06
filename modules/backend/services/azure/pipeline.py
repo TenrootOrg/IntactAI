@@ -137,6 +137,9 @@ def run_azure_pipeline(
         if pivot_mode:
             add_log_to_run(run_id, "[AZURE] Pivot mode enabled", "info")
 
+        def collection_logger(msg, level="info"):
+            add_log_to_run(run_id, f"[AZURE] {msg}" if not msg.startswith("[AZURE]") else msg, level)
+
         collected_data, collection_status = collect_azure_logs(
             azure_config=azure_config,
             sources=sources,
@@ -145,7 +148,8 @@ def run_azure_pipeline(
             end_date_str=end_date_str,
             target_users=target_users,
             target_ips=target_ips,
-            pivot_mode=pivot_mode
+            pivot_mode=pivot_mode,
+            logger=collection_logger
         )
 
         result['phases']['collection'] = {
