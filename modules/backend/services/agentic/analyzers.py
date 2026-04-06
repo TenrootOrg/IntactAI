@@ -87,40 +87,214 @@ def get_available_models() -> list:
     return list(MODEL_ALIASES.keys())
 
 
-def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None):
+def _compute_data_scope(rows):
+    """Pre-compute factual scope of the data for the LLM prompt.
+
+    Returns a dict with the actual min/max timestamps, unique users, unique IPs,
+    record count, etc. The LLM is instructed to ONLY reference these values.
+    """
+    if not rows:
+        return {
+            'total_count': 0,
+            'time_range': 'no data',
+            'unique_users': [],
+            'unique_ips': [],
+            'unique_operations': [],
+        }
+
+    # Extract timestamps from various possible fields
+    timestamps = []
+    users = set()
+    ips = set()
+    operations = set()
+
+    def _get_first(rec, *keys):
+        if not isinstance(rec, dict):
+            return None
+        for k in keys:
+            v = rec.get(k)
+            if v:
+                return v
+        return None
+
+    for r in rows:
+        # Records may be findings (with matched_record nested) or raw events
+        rec = r.get('matched_record', r) if isinstance(r, dict) else {}
+        if not isinstance(rec, dict):
+            continue
+
+        ts = _get_first(rec, '_timestamp', 'CreationTime', 'createdDateTime',
+                        'activityDateTime', 'TimeGenerated', 'eventDateTime')
+        if ts:
+            timestamps.append(str(ts))
+
+        user = _get_first(rec, 'UserId', 'userPrincipalName', 'Actor')
+        if isinstance(user, str):
+            users.add(user)
+        elif isinstance(user, list):
+            for u in user:
+                if isinstance(u, str):
+                    users.add(u)
+                elif isinstance(u, dict) and u.get('ID'):
+                    users.add(u['ID'])
+
+        # initiatedBy.user.userPrincipalName
+        ib = rec.get('initiatedBy')
+        if isinstance(ib, dict):
+            u = ib.get('user', {}) if isinstance(ib.get('user'), dict) else {}
+            if u.get('userPrincipalName'):
+                users.add(u['userPrincipalName'])
+
+        ip = _get_first(rec, 'ipAddress', 'IPAddress', 'ClientIP', 'ClientIPAddress')
+        if isinstance(ip, str):
+            ips.add(ip)
+
+        op = _get_first(rec, 'Operation', 'activityDisplayName', 'eventName')
+        if isinstance(op, str):
+            operations.add(op)
+
+    timestamps.sort()
+    distinct_dates = sorted({t[:10] for t in timestamps if len(t) >= 10})
+    time_range = (
+        f"{timestamps[0]} → {timestamps[-1]} ({len(distinct_dates)} distinct day(s))"
+        if timestamps else 'unknown'
+    )
+
+    return {
+        'total_count': len(rows),
+        'time_range': time_range,
+        'distinct_dates': distinct_dates,
+        'unique_users': sorted(users)[:50],
+        'unique_ips': sorted(ips)[:50],
+        'unique_operations': sorted(operations)[:50],
+    }
+
+
+def _sample_records_for_llm(rows, max_count=90):
+    """Sample records to send to LLM: first N + last N + random middle.
+
+    Avoids sending thousands of identical records that encourage narrative
+    inflation, while still giving the LLM a representative slice.
+    """
+    import random
+    if len(rows) <= max_count:
+        return rows, False
+    third = max_count // 3
+    first = rows[:third]
+    last = rows[-third:]
+    middle_pool = rows[third:-third] if len(rows) > 2 * third else []
+    middle = random.sample(middle_pool, min(third, len(middle_pool))) if middle_pool else []
+    return first + middle + last, True
+
+
+def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None, finding_meta=None):
     """Analyze a single artifact with LLM. Returns (artifact, summary, error) tuple.
-    If anonymizer is provided, data is masked before sending to LLM."""
-    # Apply anonymization if enabled
+
+    Anti-hallucination guards:
+    - Pre-computes data scope (timestamps, users, IPs) and pins it in the prompt
+    - Includes the SIGMA rule's own description if `finding_meta` is provided
+    - Hard rule: only reference values that appear in the records
+    - Forces structured output (machine-parseable findings + prose summary)
+    - Caps record count to a representative sample to avoid context bloat
+    """
     if anonymizer:
         rows = anonymizer.mask_data(rows)
 
-    # Truncate data to fit context window
-    data_str = json.dumps(rows, indent=2, default=str)
+    # Pre-compute factual scope from the FULL set, before sampling
+    scope = _compute_data_scope(rows)
+    sampled_rows, was_sampled = _sample_records_for_llm(rows, max_count=90)
+
+    data_str = json.dumps(sampled_rows, indent=2, default=str)
     if len(data_str) > TRUNCATE_TOKEN_LIMIT:
         data_str = data_str[:TRUNCATE_TOKEN_LIMIT] + "\n... (truncated)"
 
-    system_prompt = """You are a forensic security analyst performing incident response triage. Analyze the provided Velociraptor artifact data thoroughly.
+    # Pull rule context from the first finding (all share the same rule)
+    rule_context = ""
+    if finding_meta:
+        rule_context = "\n".join(filter(None, [
+            f"**Rule:** {finding_meta.get('rule_title', artifact)}",
+            f"**Rule ID:** {finding_meta.get('rule_id', '')}" if finding_meta.get('rule_id') else None,
+            f"**Severity (rule level):** {finding_meta.get('severity', 'unknown')}",
+            f"**Description:** {finding_meta.get('rule_description', '')}" if finding_meta.get('rule_description') else None,
+            f"**Known false positives:** {', '.join(finding_meta.get('falsepositives', []))}" if finding_meta.get('falsepositives') else None,
+            f"**MITRE:** {', '.join(t.get('id') or t.get('name', '') for t in finding_meta.get('mitre_attack', []))}" if finding_meta.get('mitre_attack') else None,
+        ]))
 
-For EACH artifact, you MUST provide:
-1. **Summary**: What this data shows (1-2 sentences)
-2. **Notable Findings**: List ALL interesting items, categorized by severity:
-   - CRITICAL/HIGH: Active threats, malware, unauthorized access, credential theft
-   - MEDIUM: Suspicious activity, renamed binaries, unusual persistence, recon commands
-   - LOW/INFO: Baseline context (user accounts, installed software, network connections)
-3. **IOCs Found**: Any IPs, domains, hashes, suspicious file paths, registry keys
-4. **MITRE ATT&CK**: Map findings to technique IDs where applicable
+    scope_block = (
+        f"**Total records:** {scope['total_count']}\n"
+        f"**Time range:** {scope['time_range']}\n"
+        f"**Distinct dates:** {', '.join(scope['distinct_dates']) or '(none)'}\n"
+        f"**Unique users (up to 50):** {', '.join(scope['unique_users']) or '(none)'}\n"
+        f"**Unique IPs (up to 50):** {', '.join(scope['unique_ips']) or '(none)'}\n"
+        f"**Unique operations (up to 50):** {', '.join(scope['unique_operations']) or '(none)'}"
+    )
 
-IMPORTANT: Do NOT dismiss data as "no significant findings" unless the artifact is truly empty.
-Even benign-looking data provides forensic context. Report what you see - renamed binaries,
-downloaded tools, PowerShell history, RDP sessions, DNS lookups, persistence entries,
-unusual processes, and service installations are ALL worth reporting."""
+    sample_note = (
+        f"\n\nNote: Showing {len(sampled_rows)} of {scope['total_count']} records (first/middle/last sample)."
+        if was_sampled else ""
+    )
 
-    user_prompt = f"""Analyze these forensic results from artifact: {artifact}
+    system_prompt = """You are a senior forensic security analyst. Your job is to triage detection findings and write a concise analysis a SOC analyst can act on.
 
-Data ({len(rows)} rows):
+## HARD RULES — DO NOT VIOLATE
+1. **Only reference dates, users, IPs, hostnames, and counts that appear in the SCOPE FACTS or the RECORDS shown below.** If the records cover one day, do NOT describe a multi-day campaign. If you compute a number, show how (e.g., "5 events from 213.x.x.x out of 242 total").
+2. **Do not invent attacker tools, threat actor names, or campaign narratives.** "Likely Hydra/Medusa", "APT29", "credential stuffing botnet" are forbidden unless the records contain explicit indicators.
+3. **Distinguish FACT vs INFERENCE.** Tag every claim. Facts are directly observable in the records. Inferences are interpretations and must be marked as such with confidence level.
+4. **Default values are not evidence.** `riskDetail: "hidden"` is the Microsoft default when no risk was detected — it is NOT "suppressed" or "hidden by attacker". Empty `deviceId` is normal for non-AAD-joined devices. `conditionalAccessStatus: "notApplied"` means no policy targeted the sign-in, NOT a bypass.
+5. **Calibrate severity honestly.** Reserve CRITICAL for confirmed compromise. Use HIGH for strong inference. Use MEDIUM for suspicious patterns needing investigation. Use LOW for context. Prefer downgrading when in doubt — false alarms destroy SOC trust.
+6. **Always include a `false_positive_check` for every finding** explaining what would make this benign (e.g., "user is on personal BYOD device", "service principal token refresh", "scheduled background sync").
+
+## OUTPUT FORMAT
+Return your response in two parts:
+
+### Part 1: Structured findings (JSON in a code block)
+```json
+{
+  "summary": "1-2 sentences describing what the data shows.",
+  "scan_scope_acknowledged": "Echo back the time range and record count from SCOPE FACTS.",
+  "findings": [
+    {
+      "id": "F1",
+      "title": "Short title",
+      "severity": "critical|high|medium|low|informational",
+      "confidence": "low|medium|high",
+      "evidence": "Direct quote or specific values from the records (FACT)",
+      "evidence_count": 12,
+      "interpretation": "Your inference about what this means (INFERENCE)",
+      "false_positive_check": "What would make this benign",
+      "sample_users": ["user1@x.com"],
+      "sample_ips": ["1.2.3.4"],
+      "sample_timestamps": ["2026-04-01T07:20:17Z"],
+      "mitre": ["T1110"],
+      "recommended_action": "What the analyst should do next"
+    }
+  ],
+  "iocs": {
+    "ips": [],
+    "users": [],
+    "hashes": [],
+    "domains": []
+  }
+}
+```
+
+### Part 2: Brief prose summary (max 200 words)
+A short narrative the analyst can paste into a ticket. NO recap of every finding — just the top 1-3 issues and what to check first.
+"""
+
+    user_prompt = f"""## ARTIFACT
+{artifact}
+
+## RULE CONTEXT
+{rule_context or '(no SIGMA rule metadata available)'}
+
+## SCOPE FACTS (these are your ONLY source of truth for dates/users/IPs/counts)
+{scope_block}
+
+## RECORDS{sample_note}
 {data_str}
 
-Provide a detailed triage summary:"""
+Now produce the JSON findings + brief prose summary, following all HARD RULES above."""
 
     try:
         summary = call_llm(user_prompt, system_prompt, llm_config)
@@ -153,8 +327,20 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
     with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
         for artifact in artifacts_list:
             rows = all_results[artifact]
+            # Extract rule/finding metadata from the first item (all share it)
+            finding_meta = None
+            if rows and isinstance(rows[0], dict):
+                first = rows[0]
+                finding_meta = {
+                    'rule_title': first.get('rule_title') or artifact,
+                    'rule_id': first.get('rule_id', ''),
+                    'rule_description': first.get('rule_description') or first.get('_description', ''),
+                    'severity': first.get('severity') or first.get('_severity', 'unknown'),
+                    'falsepositives': first.get('falsepositives', []),
+                    'mitre_attack': first.get('mitre_attack', []),
+                }
             log(f"[LLM] Queued {artifact} ({len(rows)} rows) for analysis")
-            future = executor.submit(analyze_single_artifact, artifact, rows, llm_config, anonymizer)
+            future = executor.submit(analyze_single_artifact, artifact, rows, llm_config, anonymizer, finding_meta)
             futures[future] = artifact
 
         # Collect results as they complete
