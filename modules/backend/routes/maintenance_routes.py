@@ -430,10 +430,10 @@ def run_system_purge():
             add_log_to_run(run_id, "=" * 50, "info")
             update_run_status(run_id, "running", progress=50)
             freed = 0
-            for temp_dir in ["/data/tmp", "/tmp/plaso", "/tmp/azure_uploads"]:
+            for temp_dir in ["/app/data/tmp", "/data/tmp", "/tmp/plaso", "/tmp/azure_uploads"]:
                 d_freed, _ = purge_dir(temp_dir)
                 freed += d_freed
-            for d in glob.glob("/tmp/mssp-upgrade-*"):
+            for d in glob.glob("/app/data/tmp/mssp-upgrade-*") + glob.glob("/tmp/mssp-upgrade-*"):
                 freed += get_dir_size(d)
                 shutil.rmtree(d, ignore_errors=True)
             total_freed += freed

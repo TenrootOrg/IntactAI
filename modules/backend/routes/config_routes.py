@@ -288,3 +288,24 @@ def get_azure_certificate():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@config_bp.route('/api/config/azure/certificate/download', methods=['GET'])
+def download_azure_certificate():
+    """Download the public certificate file for uploading to Azure App Registration."""
+    try:
+        from services.azure.dfir_o365rc import CERT_PUBLIC_PATH
+        import os
+        from flask import send_file
+
+        if not os.path.exists(CERT_PUBLIC_PATH):
+            return jsonify({"error": "Certificate not generated. Run install.sh first."}), 404
+
+        return send_file(
+            CERT_PUBLIC_PATH,
+            as_attachment=True,
+            download_name="risx_azure_certificate.pem",
+            mimetype="application/x-pem-file"
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

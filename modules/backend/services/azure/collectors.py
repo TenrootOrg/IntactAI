@@ -232,7 +232,7 @@ def _get_source_fix(source: str) -> str:
     from .dfir_o365rc import is_available as dfir_available
 
     fixes = {
-        'security_alerts': 'Requires Microsoft Defender for Cloud (paid add-on). Enable at Azure Portal → Defender for Cloud.',
+        'security_alerts': 'Missing API permission: SecurityAlert.Read.All (and optionally SecurityIncident.Read.All). Add to App Registration → API permissions.',
         'risk_detections': 'Requires Azure AD P2 license. Upgrade at Azure Portal → Entra ID → Licenses.',
         'risky_signins': 'Requires Azure AD P2 license. Upgrade at Azure Portal → Entra ID → Licenses.',
         'activity_logs': 'Not available via Graph API. Requires Azure CLI or DFIR-O365RC.',
@@ -259,7 +259,8 @@ def collect_azure_logs(
     target_users: Optional[List[str]] = None,
     target_ips: Optional[List[str]] = None,
     pivot_mode: bool = False,
-    output_dir: Optional[str] = None
+    output_dir: Optional[str] = None,
+    logger=None
 ) -> Tuple[Dict[str, List[Dict]], Dict[str, str]]:
     """
     Collect Azure/M365 logs from Microsoft Graph API with identity filters.
@@ -278,14 +279,16 @@ def collect_azure_logs(
     Returns:
         Tuple of (collected_data dict, status dict)
     """
+    log = logger or (lambda msg, level="info": print(f"[AZURE] {msg}"))
+
     # Authenticate
-    print("[AZURE] Authenticating with Microsoft Graph API...")
+    log("Authenticating with Microsoft Graph API...", "info")
     token = get_access_token(azure_config)
-    print("[AZURE] Authentication successful")
+    log("Authentication successful", "info")
 
     # Detect license tier
     license_tier = detect_license_tier(token)
-    print(f"[AZURE] Detected license tier: {license_tier.upper()}")
+    log(f"Detected license tier: {license_tier.upper()}", "info")
 
     # Filter sources based on license
     available_sources = get_available_sources(sources, license_tier)
@@ -312,9 +315,9 @@ def collect_azure_logs(
     end_date = end_date_str  # None = now
 
     if target_users:
-        print(f"[AZURE] Target users: {', '.join(target_users)}")
+        log(f"Target users: {', '.join(target_users)}", "info")
     if target_ips:
-        print(f"[AZURE] Target IPs: {', '.join(target_ips)}")
+        log(f"Target IPs: {', '.join(target_ips)}", "info")
 
     for source in available_sources:
         source_info = LOG_SOURCES.get(source, {})
@@ -327,7 +330,7 @@ def collect_azure_logs(
                 from .dfir_o365rc import is_available as dfir_available, collect_unified_audit_log
                 dfir_status = dfir_available()
                 if dfir_status['available']:
-                    print(f"[AZURE] Collecting {source_name} via DFIR-O365RC...")
+                    log(f"Collecting {source_name} via DFIR-O365RC...", "info")
                     try:
                         ual_result = collect_unified_audit_log(
                             tenant=azure_config.get('tenant_id', ''),
@@ -335,28 +338,59 @@ def collect_azure_logs(
                             start_date=start_date,
                             end_date=end_date or datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
                             target_users=target_users,
-                            logger=lambda msg, level="info": print(f"[AZURE] {msg}")
+                            logger=log,
+                            azure_config=azure_config
                         )
-                        if ual_result['success'] and ual_result['records']:
+                        if ual_result.get('skipped'):
+                            log(f"{source_name} skipped: {ual_result.get('reason', 'Exchange Online not available')}", "info")
+                        elif ual_result['success'] and ual_result['records']:
                             normalized = normalize_logs(ual_result['records'], source_info.get('sigma_prefix', source))
                             collected_data[source_info['sigma_prefix']] = normalized
-                            print(f"[AZURE] Collected {len(normalized)} records from {source_name}")
+                            log(f"Collected {len(normalized)} records from {source_name}", "success")
                         elif ual_result['error']:
                             status['errors'].append(f"{source_name}: {ual_result['error']}")
-                            print(f"[AZURE] {source_name} failed: {ual_result['error']}")
+                            log(f"{source_name}: {ual_result['error'][:200]}", "warning")
                         else:
-                            print(f"[AZURE] No records found for {source_name}")
+                            log(f"No records found for {source_name}", "info")
                     except Exception as e:
-                        status['errors'].append(f"{source_name}: DFIR-O365RC error: {str(e)}")
-                        print(f"[AZURE] {source_name} error: {e}")
+                        status['errors'].append(f"{source_name}: {str(e)}")
+                        log(f"{source_name}: {str(e)[:200]}", "warning")
+                    continue
+
+            # Try DFIR-O365RC for activity_logs (Azure RM Activity Logs - no Exchange needed)
+            if source == 'activity_logs':
+                from .dfir_o365rc import is_available as dfir_available, collect_azure_activity_logs
+                dfir_status = dfir_available()
+                if dfir_status['available']:
+                    log(f"Collecting {source_name} via DFIR-O365RC...", "info")
+                    try:
+                        act_result = collect_azure_activity_logs(
+                            tenant=azure_config.get('tenant_id', ''),
+                            app_id=azure_config.get('client_id', ''),
+                            start_date=start_date,
+                            end_date=end_date or datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                            logger=log
+                        )
+                        if act_result['success'] and act_result['records']:
+                            normalized = normalize_logs(act_result['records'], source_info.get('sigma_prefix', source))
+                            collected_data[source_info['sigma_prefix']] = normalized
+                            log(f"Collected {len(normalized)} records from {source_name}", "success")
+                        elif act_result.get('error'):
+                            status['errors'].append(f"{source_name}: {act_result['error']}")
+                            log(f"{source_name}: {act_result['error'][:200]}", "warning")
+                        else:
+                            log(f"No records found for {source_name}", "info")
+                    except Exception as e:
+                        status['errors'].append(f"{source_name}: {str(e)}")
+                        log(f"{source_name}: {str(e)[:200]}", "warning")
                     continue
 
             fix = _get_source_fix(source)
-            print(f"[AZURE] Skipped {source_name}: {fix}")
+            log(f"Skipped {source_name}: {fix}", "warning")
             status['errors'].append(f"{source_name}: {fix}")
             continue
 
-        print(f"[AZURE] Collecting {source_name}...")
+        log(f"Collecting {source_name}...", "info")
 
         try:
             odata_filter = build_odata_filter(
@@ -373,23 +407,23 @@ def collect_azure_logs(
 
             if data is None:
                 fix = _get_source_fix(source)
-                print(f"[AZURE] Skipped {source_name}: {fix}")
+                log(f"Skipped {source_name}: {fix}", "warning")
                 status['errors'].append(f"{source_name}: {fix}")
                 continue
 
             if data:
                 normalized = normalize_logs(data, source_info.get('sigma_prefix', source))
                 collected_data[source_info['sigma_prefix']] = normalized
-                print(f"[AZURE] Collected {len(normalized)} records from {source_name}")
+                log(f"Collected {len(normalized)} records from {source_name}", "success")
             else:
-                print(f"[AZURE] No records found for {source_name}")
+                log(f"No records found for {source_name}", "info")
 
         except ValueError as e:
             raise  # Re-raise auth errors
         except Exception as e:
             error_msg = f"Failed to collect {source_name}: {str(e)}"
             status['errors'].append(error_msg)
-            print(f"[AZURE] {error_msg}")
+            log(f"{error_msg}", "error")
 
     # Pivot Mode: discover IPs from target users, then search for other users from those IPs
     if pivot_mode and target_users and 'Azure.SignIn' in collected_data:
@@ -400,7 +434,7 @@ def collect_azure_logs(
                 discovered_ips.add(ip)
 
         if discovered_ips:
-            print(f"[AZURE] Pivot: Discovered {len(discovered_ips)} IPs from target users: {', '.join(discovered_ips)}")
+            log(f"Pivot: Discovered {len(discovered_ips)} IPs from target users: {', '.join(discovered_ips)}", "info")
             status['discovered_ips'] = list(discovered_ips)
 
             # Search sign-ins from discovered IPs (without user filter = all users)
@@ -422,12 +456,12 @@ def collect_azure_logs(
                         normalized_pivot = normalize_logs(new_records, 'Azure.SignIn.Pivot')
                         collected_data['Azure.SignIn.Pivot'] = normalized_pivot
                         pivot_users = set(r.get('userPrincipalName', '') for r in new_records)
-                        print(f"[AZURE] Pivot: Found {len(new_records)} sign-ins from {len(pivot_users)} other users: {', '.join(pivot_users)}")
+                        log(f"Pivot: Found {len(new_records)} sign-ins from {len(pivot_users)} other users: {', '.join(pivot_users)}", "info")
                         status['pivot_users'] = list(pivot_users)
                     else:
                         print("[AZURE] Pivot: No other users found from discovered IPs")
             except Exception as e:
-                print(f"[AZURE] Pivot search failed: {e}")
+                log(f"Pivot search failed: {e}", "error")
                 status['errors'].append(f"Pivot search failed: {e}")
 
     status['collection_end'] = datetime.utcnow().isoformat()

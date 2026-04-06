@@ -15,13 +15,43 @@ import json
 import glob
 import shutil
 import time
-from typing import Dict, List, Optional
+import subprocess
+import threading
+from typing import Dict, List, Optional, Callable
 
-from services.upgrade.base import run_command
+from services.upgrade.base import run_command, HOST_PATH
 
 CERT_PATH = "/app/data/azure_cert.pfx"
 CERT_PUBLIC_PATH = "/app/data/azure_cert_public.pem"
 DOCKER_IMAGE = "anssi/dfir-o365rc:latest"
+
+
+def _cleanup_container(container_name: str):
+    """Remove a DFIR-O365RC container if it exists (prevent orphans)."""
+    try:
+        subprocess.run(
+            f"docker rm -f {container_name}",
+            shell=True, capture_output=True, timeout=10
+        )
+    except Exception:
+        pass
+
+
+def cleanup_orphan_containers():
+    """Remove any leftover DFIR-O365RC containers (called on startup or purge)."""
+    try:
+        result = subprocess.run(
+            "docker ps -a --filter name=dfir_o365rc_ -q",
+            shell=True, capture_output=True, text=True, timeout=10
+        )
+        if result.stdout.strip():
+            containers = result.stdout.strip().split('\n')
+            for cid in containers:
+                subprocess.run(f"docker rm -f {cid}", shell=True, capture_output=True, timeout=10)
+            return len(containers)
+    except Exception:
+        pass
+    return 0
 
 
 def is_available() -> Dict[str, any]:
@@ -59,13 +89,90 @@ def get_public_certificate() -> Optional[str]:
     return None
 
 
+def check_exchange_online_available(azure_config: Dict[str, str]) -> Dict[str, any]:
+    """Check if the tenant has an active Exchange Online subscription.
+
+    DFIR-O365RC requires active (non-expired) Exchange Online for UAL collection.
+    Checks both SKU presence AND capabilityStatus (Enabled vs Suspended/Warning/Deleted).
+    Also tries to fetch mailbox settings to verify Exchange Online is actually responding.
+    Returns a dict with 'available' (bool) and 'message' (str).
+    """
+    try:
+        from .collectors import get_access_token, graph_request
+
+        token = get_access_token(azure_config)
+
+        # Real Exchange Online plans (excluding EXCHANGE_S_FOUNDATION which is shared/bundled)
+        real_exchange_plans = {
+            'EXCHANGE_S_STANDARD',
+            'EXCHANGE_S_ENTERPRISE',
+            'EXCHANGE_S_DESKLESS',
+            'EXCHANGE_S_ARCHIVE',
+            'EXCHANGE_B_STANDARD',
+            'EXCHANGE_DESKLESS',
+        }
+
+        resp = graph_request(token, '/subscribedSkus')
+        if resp.status_code != 200:
+            return {'available': False, 'message': f'Failed to query subscribed SKUs (HTTP {resp.status_code})'}
+
+        # Check for an ENABLED Exchange Online SKU
+        skus = resp.json().get('value', [])
+        active_exchange_sku = None
+        suspended_exchange = False
+
+        for sku in skus:
+            sku_capability = sku.get('capabilityStatus', '')
+            for plan in sku.get('servicePlans', []):
+                plan_name = plan.get('servicePlanName', '').upper()
+                if plan_name in real_exchange_plans:
+                    if sku_capability == 'Enabled' and plan.get('provisioningStatus') == 'Success':
+                        active_exchange_sku = plan_name
+                        break
+                    else:
+                        suspended_exchange = True
+            if active_exchange_sku:
+                break
+
+        if not active_exchange_sku:
+            if suspended_exchange:
+                return {'available': False, 'message': 'Exchange Online SKU exists but is suspended/expired (likely trial expired)'}
+            return {'available': False, 'message': 'No active Exchange Online subscription in tenant'}
+
+        # Definitive test: try to fetch mailboxSettings for any user
+        # This will fail if Exchange Online is suspended even if SKU shows Enabled
+        users_resp = graph_request(token, '/users', params={'$select': 'id,mail', '$top': '10'})
+        if users_resp.status_code == 200:
+            users = users_resp.json().get('value', [])
+            for user in users:
+                if not user.get('mail'):
+                    continue
+                mb_resp = graph_request(token, f"/users/{user['id']}/mailboxSettings")
+                if mb_resp.status_code == 200:
+                    return {'available': True, 'message': f'Exchange Online active and responding ({active_exchange_sku})'}
+                elif mb_resp.status_code in (403, 404):
+                    err = mb_resp.json().get('error', {}).get('code', '') if mb_resp.text else ''
+                    if 'MailboxNotEnabled' in err or 'NotFound' in err:
+                        continue
+                    # Other errors mean Exchange is responding but blocking us
+                    return {'available': False, 'message': f'Exchange Online not accessible: {err}'}
+
+            return {'available': False, 'message': 'Exchange Online SKU active but no functional mailboxes found (likely expired/suspended)'}
+
+        return {'available': True, 'message': f'Exchange Online available ({active_exchange_sku})'}
+
+    except Exception as e:
+        return {'available': False, 'message': f'Exchange check failed: {str(e)[:200]}'}
+
+
 def collect_unified_audit_log(
     tenant: str,
     app_id: str,
     start_date: str,
     end_date: str,
     target_users: Optional[List[str]] = None,
-    logger=None
+    logger=None,
+    azure_config: Optional[Dict[str, str]] = None
 ) -> Dict:
     """
     Collect Unified Audit Log via DFIR-O365RC Docker container.
@@ -88,67 +195,199 @@ def collect_unified_audit_log(
     if not status['available']:
         return {'success': False, 'records': [], 'error': status['message']}
 
-    # Create temp output directory on host (mounted into container)
-    output_dir = f"/data/tmp/dfir-o365rc-{int(time.time())}"
+    # Create temp output directory in mounted volume (/app/data is mounted from host's data/)
+    # Container path: /app/data/tmp/dfir-o365rc-*
+    # Host path: {HOST_PATH}/data/tmp/dfir-o365rc-* (used for docker -v mount)
+    timestamp = int(time.time())
+    output_dir = f"/app/data/tmp/dfir-o365rc-{timestamp}"
     os.makedirs(output_dir, exist_ok=True)
+
+    # Translate to host path for docker volume mount
+    from services.upgrade.base import HOST_PATH
+    host_output_dir = f"{HOST_PATH}/data/tmp/dfir-o365rc-{timestamp}"
 
     # Format dates for PowerShell (MM/DD/YYYY HH:mm:ss)
     ps_start = _format_date_for_powershell(start_date)
     ps_end = _format_date_for_powershell(end_date)
 
-    # Build PowerShell command
-    if target_users:
-        user_ids_str = '","'.join(target_users)
-        ps_cmd = (
-            f'Search-O365 '
-            f'-startDate "{ps_start}" '
-            f'-endDate "{ps_end}" '
-            f'-appId "{app_id}" '
-            f'-tenant "{tenant}" '
-            f'-certificatePath "/mnt/cert/azure_cert.pfx" '
-            f'-userIds "{user_ids_str}"'
-        )
-        log(f"Collecting UAL for users: {', '.join(target_users)}", "info")
-    else:
-        ps_cmd = (
-            f'Get-O365Light '
-            f'-startDate "{ps_start}" '
-            f'-endDate "{ps_end}" '
-            f'-appId "{app_id}" '
-            f'-tenant "{tenant}" '
-            f'-certificatePath "/mnt/cert/azure_cert.pfx"'
-        )
-        log("Collecting UAL (all users, light mode)", "info")
+    # Use Get-UnifiedAuditLogPurview which uses the modern Graph Audit Log Query API
+    # (requires AuditLogsQuery.Read.All permission - no Exchange Online needed!)
+    session_name = f"mssp_session_{timestamp}"
+    log_file = f"/mnt/host/output/{session_name}.log"
+    output_file = f"/mnt/host/output/{session_name}.json"
 
-    # Run DFIR-O365RC in Docker container
-    # The cert is at /app/data/ inside backend container, but the Docker run
-    # command executes on the host via docker socket, so we need the HOST path.
-    # /app/data maps to {WORKDIR}/data on host (from docker-compose volume mount)
-    from services.upgrade.base import HOST_PATH
-    host_data_dir = f"{HOST_PATH}/data"
-
-    docker_cmd = (
-        f'docker run --rm '
-        f'-v {output_dir}:/mnt/host/output '
-        f'-v {host_data_dir}:/mnt/cert:ro '
-        f'{DOCKER_IMAGE} '
-        f'pwsh -NonInteractive -Command "{ps_cmd}"'
+    # Build PowerShell script: load cert, then call Get-UnifiedAuditLogPurview
+    # Escape $ as \$ so bash doesn't interpret it as a shell variable
+    cert_load = (
+        "\\$cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new('/mnt/cert/azure_cert.pfx', '', 'Exportable,PersistKeySet'); "
     )
 
+    if target_users:
+        user_ids_arr = "','".join(target_users)
+        ps_cmd = (
+            cert_load +
+            f"Get-UnifiedAuditLogPurview "
+            f"-requestType UserIds "
+            f"-userIds @('{user_ids_arr}') "
+            f"-sessionName '{session_name}' "
+            f"-startDate '{ps_start}' "
+            f"-endDate '{ps_end}' "
+            f"-certificate \\$cert "
+            f"-appId '{app_id}' "
+            f"-tenant '{tenant}' "
+            f"-logFile '{log_file}' "
+            f"-outputFile '{output_file}'"
+        )
+        log(f"Collecting UAL for users via Purview API: {', '.join(target_users)}", "info")
+    else:
+        ps_cmd = (
+            cert_load +
+            f"Get-UnifiedAuditLogPurview "
+            f"-requestType Unfiltered "
+            f"-sessionName '{session_name}' "
+            f"-startDate '{ps_start}' "
+            f"-endDate '{ps_end}' "
+            f"-certificate \\$cert "
+            f"-appId '{app_id}' "
+            f"-tenant '{tenant}' "
+            f"-logFile '{log_file}' "
+            f"-outputFile '{output_file}'"
+        )
+        log("Collecting UAL (all events) via Purview API", "info")
+
+    # Run DFIR-O365RC in Docker container with live log streaming
+    host_data_dir = f"{HOST_PATH}/data"
+    container_name = f"dfir_o365rc_{timestamp}"
+    timeout_seconds = 600  # 10 minutes - Purview audit log queries can take time
+
     log("Starting DFIR-O365RC container...", "info")
-    result = run_command(docker_cmd, timeout=600, logger=None)
 
-    if not result.get('success'):
-        error = result.get('stderr', result.get('error', 'Unknown error'))
-        # Check for common auth errors
-        if 'AADSTS' in str(error):
-            error = f"Azure authentication failed. Ensure the public certificate is uploaded to your App Registration. Error: {error[:200]}"
-        elif 'certificate' in str(error).lower():
-            error = f"Certificate error. Check that the PFX certificate is valid and the public key is uploaded to Azure. Error: {error[:200]}"
+    # Run container detached, then stream logs with timeout
+    try:
+        # Start container detached (use host_output_dir for -v since docker daemon runs on host)
+        start_result = subprocess.run(
+            f'docker run -d --name {container_name} '
+            f'-v {host_output_dir}:/mnt/host/output '
+            f'-v {host_data_dir}:/mnt/cert:ro '
+            f'{DOCKER_IMAGE} '
+            f'pwsh -NonInteractive -Command "{ps_cmd}"',
+            shell=True, capture_output=True, text=True, timeout=30
+        )
 
-        log(f"DFIR-O365RC failed: {error[:300]}", "error")
+        if start_result.returncode != 0:
+            error = start_result.stderr[:300]
+            log(f"Failed to start container: {error}", "error")
+            _cleanup_container(container_name)
+            shutil.rmtree(output_dir, ignore_errors=True)
+            return {'success': False, 'records': [], 'error': f'Container start failed: {error}'}
+
+        # Stream logs with timeout using a separate thread for reading
+        start_time = time.time()
+        timed_out = False
+        last_log_time = time.time()
+
+        log_process = subprocess.Popen(
+            f'docker logs -f {container_name}',
+            shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        )
+
+        import select
+        import fcntl
+
+        # Make stdout non-blocking
+        fd = log_process.stdout.fileno()
+        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+        while True:
+            elapsed = time.time() - start_time
+
+            # Check timeout
+            if elapsed > timeout_seconds:
+                timed_out = True
+                log(f"DFIR-O365RC timed out after {timeout_seconds}s - killing container", "error")
+                subprocess.run(f"docker kill {container_name}", shell=True, capture_output=True)
+                break
+
+            # Check if container is still running
+            inspect = subprocess.run(
+                f"docker inspect -f '{{{{.State.Running}}}}' {container_name}",
+                shell=True, capture_output=True, text=True
+            )
+            container_running = inspect.stdout.strip() == 'true'
+
+            # Read available output (non-blocking)
+            try:
+                ready, _, _ = select.select([log_process.stdout], [], [], 1.0)
+                if ready:
+                    data = log_process.stdout.read()
+                    if data:
+                        for line in data.strip().split('\n'):
+                            line = line.strip()
+                            if not line:
+                                continue
+                            if 'error' in line.lower() or 'AADSTS' in line or 'fail' in line.lower():
+                                log(f"  {line}", "error")
+                            elif 'warning' in line.lower():
+                                log(f"  {line}", "warning")
+                            elif line.startswith('{') or line.startswith('['):
+                                pass  # Skip raw JSON
+                            else:
+                                log(f"  {line}", "info")
+                            last_log_time = time.time()
+            except (IOError, OSError):
+                pass
+
+            if not container_running:
+                # Read any remaining output
+                time.sleep(0.5)
+                try:
+                    remaining = log_process.stdout.read()
+                    if remaining:
+                        for line in remaining.strip().split('\n'):
+                            line = line.strip()
+                            if line and not line.startswith('{') and not line.startswith('['):
+                                log(f"  {line}", "info")
+                except (IOError, OSError):
+                    pass
+                break
+
+            # Log a heartbeat if no output for 30s
+            if time.time() - last_log_time > 30:
+                log(f"  Waiting for Azure response... ({int(elapsed)}s elapsed)", "info")
+                last_log_time = time.time()
+
+        log_process.kill()
+
+        # Get exit code
+        if not timed_out:
+            inspect_exit = subprocess.run(
+                f"docker inspect -f '{{{{.State.ExitCode}}}}' {container_name}",
+                shell=True, capture_output=True, text=True
+            )
+            exit_code = int(inspect_exit.stdout.strip()) if inspect_exit.stdout.strip().isdigit() else -1
+        else:
+            exit_code = -1
+
+    except Exception as e:
+        log(f"Failed to run DFIR-O365RC: {e}", "error")
+        _cleanup_container(container_name)
         shutil.rmtree(output_dir, ignore_errors=True)
-        return {'success': False, 'records': [], 'error': error[:500]}
+        return {'success': False, 'records': [], 'error': str(e)}
+
+    # Always cleanup container (in case --rm didn't work due to kill)
+    _cleanup_container(container_name)
+
+    if timed_out:
+        error = "DFIR-O365RC timed out. Possible causes: (1) Exchange Online inactive/blocked on this tenant (2) Certificate not uploaded to App Registration (3) Missing Exchange.ManageAsApp permission or View-only audit logs role"
+        log(error, "warning")
+        shutil.rmtree(output_dir, ignore_errors=True)
+        return {'success': False, 'records': [], 'error': error}
+
+    if exit_code != 0:
+        log(f"DFIR-O365RC exited with code {exit_code}", "warning")
+        shutil.rmtree(output_dir, ignore_errors=True)
+        return {'success': False, 'records': [], 'error': f'DFIR-O365RC failed (exit code {exit_code}). Check logs above for details.'}
 
     # Parse JSON output files
     records = []
@@ -170,8 +409,304 @@ def collect_unified_audit_log(
     # Cleanup temp directory
     shutil.rmtree(output_dir, ignore_errors=True)
 
-    log(f"Collected {len(records)} Unified Audit Log records", "success")
-    return {'success': True, 'records': records, 'error': None}
+    log(f"Collected {len(records)} raw Unified Audit Log records", "success")
+
+    # Filter noise and add severity scoring (security-relevant events only)
+    filter_result = filter_and_score_ual_records(records, min_severity='low')
+    stats = filter_result['stats']
+    log(f"After filtering: {stats['filtered_count']} security-relevant events "
+        f"(removed {stats['noise_filtered']} noise, "
+        f"{stats['unknown_operations']} unknown ops)", "info")
+
+    if stats['by_severity']:
+        sev_summary = ", ".join(f"{k}={v}" for k, v in stats['by_severity'].items() if v > 0)
+        log(f"  Severity distribution: {sev_summary}", "info")
+    if stats['by_category']:
+        cat_summary = ", ".join(f"{k}={v}" for k, v in sorted(stats['by_category'].items(), key=lambda x: -x[1])[:5])
+        log(f"  Top categories: {cat_summary}", "info")
+
+    return {'success': True, 'records': filter_result['filtered'], 'error': None, 'stats': stats}
+
+
+def _run_dfir_command(
+    ps_cmd: str,
+    timestamp: int,
+    timeout_seconds: int = 300,
+    logger=None
+) -> Dict:
+    """Run a DFIR-O365RC PowerShell command in a Docker container.
+
+    Generic helper for running any DFIR-O365RC command. Returns dict with
+    'success', 'records' (list of parsed JSON), 'error', and 'output_dir'.
+    """
+    log = logger or (lambda msg, level="info": print(f"[DFIR-O365RC] [{level}] {msg}"))
+
+    output_dir = f"/app/data/tmp/dfir-o365rc-{timestamp}"
+    os.makedirs(output_dir, exist_ok=True)
+
+    host_output_dir = f"{HOST_PATH}/data/tmp/dfir-o365rc-{timestamp}"
+    host_data_dir = f"{HOST_PATH}/data"
+    container_name = f"dfir_o365rc_{timestamp}"
+
+    try:
+        start_result = subprocess.run(
+            f'docker run -d --name {container_name} '
+            f'-v {host_output_dir}:/mnt/host/output '
+            f'-v {host_data_dir}:/mnt/cert:ro '
+            f'{DOCKER_IMAGE} '
+            f'pwsh -NonInteractive -Command "{ps_cmd}"',
+            shell=True, capture_output=True, text=True, timeout=30
+        )
+
+        if start_result.returncode != 0:
+            error = start_result.stderr[:300]
+            _cleanup_container(container_name)
+            shutil.rmtree(output_dir, ignore_errors=True)
+            return {'success': False, 'records': [], 'error': f'Container start failed: {error}'}
+
+        # Wait for container to finish (with timeout)
+        start_time = time.time()
+        timed_out = False
+
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > timeout_seconds:
+                timed_out = True
+                subprocess.run(f"docker kill {container_name}", shell=True, capture_output=True)
+                break
+
+            inspect = subprocess.run(
+                f"docker inspect -f '{{{{.State.Running}}}}' {container_name}",
+                shell=True, capture_output=True, text=True
+            )
+            if inspect.stdout.strip() != 'true':
+                break
+            time.sleep(2)
+
+        # Get exit code
+        if not timed_out:
+            inspect_exit = subprocess.run(
+                f"docker inspect -f '{{{{.State.ExitCode}}}}' {container_name}",
+                shell=True, capture_output=True, text=True
+            )
+            exit_code = int(inspect_exit.stdout.strip()) if inspect_exit.stdout.strip().isdigit() else -1
+        else:
+            exit_code = -1
+
+        # Get container logs for diagnostics
+        logs_result = subprocess.run(
+            f"docker logs {container_name}",
+            shell=True, capture_output=True, text=True
+        )
+        container_logs = (logs_result.stdout or '') + (logs_result.stderr or '')
+
+    except Exception as e:
+        _cleanup_container(container_name)
+        shutil.rmtree(output_dir, ignore_errors=True)
+        return {'success': False, 'records': [], 'error': str(e)}
+
+    _cleanup_container(container_name)
+
+    if timed_out:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        return {'success': False, 'records': [], 'error': f'Command timed out after {timeout_seconds}s'}
+
+    if exit_code != 0:
+        # Extract meaningful error from logs
+        error_lines = [l for l in container_logs.split('\n') if 'error' in l.lower() or 'exception' in l.lower()]
+        error_msg = error_lines[0][:300] if error_lines else f'Exit code {exit_code}'
+        shutil.rmtree(output_dir, ignore_errors=True)
+        return {'success': False, 'records': [], 'error': error_msg}
+
+    # Parse JSON output files
+    records = []
+    json_files = glob.glob(f"{output_dir}/**/*.json", recursive=True)
+
+    for json_file in json_files:
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    records.extend(data)
+                elif isinstance(data, dict):
+                    records.append(data)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass
+
+    shutil.rmtree(output_dir, ignore_errors=True)
+    return {'success': True, 'records': records, 'error': None, 'files_count': len(json_files)}
+
+
+def collect_azure_activity_logs(
+    tenant: str,
+    app_id: str,
+    start_date: str,
+    end_date: str,
+    logger=None
+) -> Dict:
+    """Collect Azure Resource Manager activity logs via DFIR-O365RC.
+
+    This works WITHOUT Exchange Online - only requires the certificate
+    and Azure RM permissions on the App Registration.
+    """
+    log = logger or (lambda msg, level="info": print(f"[DFIR-O365RC] [{level}] {msg}"))
+
+    status = is_available()
+    if not status['available']:
+        return {'success': False, 'records': [], 'error': status['message']}
+
+    timestamp = int(time.time())
+    ps_start = _format_date_for_powershell(start_date)
+    ps_end = _format_date_for_powershell(end_date)
+
+    ps_cmd = (
+        f"cd /mnt/host/output; "
+        f"Get-AzRMActivityLogs "
+        f"-startDate '{ps_start}' "
+        f"-endDate '{ps_end}' "
+        f"-appId '{app_id}' "
+        f"-tenant '{tenant}' "
+        f"-certificatePath '/mnt/cert/azure_cert.pfx'"
+    )
+
+    log("Collecting Azure RM Activity Logs via DFIR-O365RC...", "info")
+    result = _run_dfir_command(ps_cmd, timestamp, timeout_seconds=300, logger=log)
+
+    if result['success']:
+        log(f"Collected {len(result['records'])} Azure RM Activity Log records", "success")
+    else:
+        log(f"Azure RM Activity Logs failed: {result['error']}", "warning")
+
+    return result
+
+
+# =============================================================================
+# UAL Event Filtering & Severity Scoring
+# =============================================================================
+
+# Operations that are noise (audit searches, page views, etc.)
+UAL_NOISE_OPERATIONS = {
+    'AuditSearchCreated', 'AuditSearchCompleted', 'AuditSearchStarted',
+    'PageViewed', 'ListViewed', 'FilePreviewed', 'FolderModified',
+    'FileSyncDownloadedFull', 'FileSyncUploadedFull',
+    'SearchQueryPerformed', 'ListItemViewed',
+}
+
+# Operations with security severity scoring
+# Format: { 'Operation': ('severity', 'category', 'description') }
+UAL_SECURITY_OPERATIONS = {
+    # === CRITICAL: Privileged actions ===
+    'Add member to role.': ('high', 'privilege_escalation', 'User added to admin role'),
+    'Remove member from role.': ('medium', 'privilege_change', 'User removed from admin role'),
+    'Add eligible member to role.': ('high', 'privilege_escalation', 'PIM eligible role assignment'),
+    'Add user.': ('medium', 'account_management', 'New user created'),
+    'Delete user.': ('high', 'account_management', 'User deleted'),
+    'Reset user password.': ('medium', 'credential_access', 'User password reset'),
+    'Change user password.': ('medium', 'credential_access', 'Password changed'),
+    'Set force change user password.': ('medium', 'credential_access', 'Forced password change'),
+
+    # === CRITICAL: MFA / Auth changes ===
+    'Disable Strong Authentication.': ('critical', 'defense_evasion', 'MFA disabled for user'),
+    'Disable account.': ('high', 'account_management', 'Account disabled'),
+    'Enable account.': ('medium', 'account_management', 'Account enabled'),
+    'Update StsRefreshTokenValidFrom Timestamp.': ('high', 'persistence', 'Token validity reset'),
+
+    # === HIGH: App / Permission changes ===
+    'Add application.': ('high', 'persistence', 'New application registered'),
+    'Add service principal.': ('high', 'persistence', 'New service principal'),
+    'Add service principal credentials.': ('critical', 'persistence', 'Service principal secret added'),
+    'Update application – Certificates and secrets management ': ('high', 'persistence', 'App credentials updated'),
+    'Add app role assignment to service principal.': ('high', 'privilege_escalation', 'App permission granted'),
+    'Add app role assignment grant to user.': ('medium', 'privilege_escalation', 'User granted app role'),
+    'Consent to application.': ('high', 'initial_access', 'OAuth consent granted'),
+    'Add OAuth2PermissionGrant.': ('high', 'persistence', 'OAuth permission grant added'),
+    'Add delegated permission grant.': ('high', 'persistence', 'Delegated permission added'),
+    'Remove delegated permission grant.': ('medium', 'defense_evasion', 'Delegated permission removed'),
+
+    # === HIGH: Federation / Domain changes ===
+    'Set federation settings on domain.': ('critical', 'persistence', 'Federation settings modified (golden SAML risk)'),
+    'Set domain authentication.': ('high', 'persistence', 'Domain auth changed'),
+    'Add domain to company.': ('high', 'persistence', 'New domain added'),
+    'Remove domain from company.': ('high', 'defense_evasion', 'Domain removed'),
+
+    # === HIGH: Mailbox / Exchange ===
+    'Set-Mailbox': ('medium', 'collection', 'Mailbox settings modified'),
+    'Add-MailboxPermission': ('high', 'collection', 'Mailbox permission added'),
+    'Set-InboxRule': ('high', 'collection', 'Inbox rule created (forwarding risk)'),
+    'New-InboxRule': ('high', 'collection', 'New inbox rule (forwarding risk)'),
+    'Set-TransportRule': ('high', 'collection', 'Transport rule changed'),
+    'New-TransportRule': ('high', 'collection', 'New transport rule'),
+    'MailItemsAccessed': ('low', 'collection', 'Mail items accessed'),
+
+    # === MEDIUM: File / Sharing ===
+    'FileDownloaded': ('low', 'collection', 'File downloaded'),
+    'FileSyncDownloadedFull': ('low', 'collection', 'File synced'),
+    'SharingSet': ('medium', 'lateral_movement', 'Sharing permission set'),
+    'AnonymousLinkCreated': ('high', 'exfiltration', 'Anonymous link created'),
+    'AnonymousLinkUsed': ('medium', 'lateral_movement', 'Anonymous link used'),
+    'CompanyLinkCreated': ('low', 'collection', 'Company link created'),
+    'AddedToSecureLink': ('medium', 'lateral_movement', 'Added to secure link'),
+
+    # === LOGIN ===
+    'UserLoggedIn': ('informational', 'authentication', 'User login'),
+    'UserLoginFailed': ('low', 'authentication', 'Login failed'),
+    'UserStrongAuthClientAuthNRequired': ('informational', 'authentication', 'MFA required'),
+}
+
+
+def filter_and_score_ual_records(records: List[Dict], min_severity: str = 'low') -> Dict:
+    """Filter UAL records to remove noise and add severity scoring.
+
+    Args:
+        records: Raw UAL records from DFIR-O365RC
+        min_severity: Minimum severity to include ('informational', 'low', 'medium', 'high', 'critical')
+
+    Returns dict with 'filtered' (security-relevant records) and 'stats' (counts).
+    """
+    severity_order = {'informational': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
+    min_level = severity_order.get(min_severity, 1)
+
+    filtered = []
+    stats = {
+        'total': len(records),
+        'noise_filtered': 0,
+        'unknown_operations': 0,
+        'by_severity': {'critical': 0, 'high': 0, 'medium': 0, 'low': 0, 'informational': 0},
+        'by_category': {},
+    }
+
+    for record in records:
+        operation = record.get('Operation', '')
+
+        # Skip noise
+        if operation in UAL_NOISE_OPERATIONS:
+            stats['noise_filtered'] += 1
+            continue
+
+        # Lookup security info
+        sec_info = UAL_SECURITY_OPERATIONS.get(operation)
+        if not sec_info:
+            stats['unknown_operations'] += 1
+            # Include unknown operations as 'low' severity (better visibility)
+            severity, category, description = 'low', 'unknown', f'Unknown operation: {operation}'
+        else:
+            severity, category, description = sec_info
+
+        # Apply severity filter
+        if severity_order.get(severity, 0) < min_level:
+            continue
+
+        # Enrich record with security metadata
+        record['_severity'] = severity
+        record['_category'] = category
+        record['_description'] = description
+        filtered.append(record)
+
+        stats['by_severity'][severity] = stats['by_severity'].get(severity, 0) + 1
+        stats['by_category'][category] = stats['by_category'].get(category, 0) + 1
+
+    stats['filtered_count'] = len(filtered)
+    return {'filtered': filtered, 'stats': stats}
 
 
 def _format_date_for_powershell(date_str: str) -> str:
