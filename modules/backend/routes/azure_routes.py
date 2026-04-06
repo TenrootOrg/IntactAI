@@ -143,9 +143,15 @@ def start_scan():
     data = request.json or {}
     blueprint_id = data.get('blueprint', 'azure_quick_triage')
 
+    # Build a clean display name (blueprint can be a string ID or a custom dict)
+    if isinstance(blueprint_id, dict):
+        blueprint_display = blueprint_id.get('name') or blueprint_id.get('id') or 'Custom'
+    else:
+        blueprint_display = str(blueprint_id)
+
     run_id = create_automation_run(
         automation_type="azure_scan",
-        name=f"Azure Scan: {blueprint_id}",
+        name=f"Azure Scan: {blueprint_display}",
         details={
             "trigger": "manual",
             "blueprint": blueprint_id,
