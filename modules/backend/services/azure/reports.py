@@ -270,14 +270,100 @@ The per-rule analyses have ALREADY been done. Your job is to write a SHORT, accu
 
     try:
         tech_body = call_llm(tech_prompt, AZURE_REPORT_SYSTEM_PROMPT, llm_config)
-        reports['technical'] = header + tech_body
+        appendix = _build_artifact_appendix(analysis_results)
+        reports['technical'] = header + tech_body + appendix
         add_log_to_run(run_id, "[Report] Azure Technical Report complete", "success")
     except Exception as e:
         add_log_to_run(run_id, f"[Report] Technical Report failed: {e}", "error")
         # Fallback: include the artifact briefs directly so the user still sees something
-        reports['technical'] = header + f"Synthesis generation failed: {e}\n\n## Per-Rule Findings\n\n{artifact_briefs_text}"
+        appendix = _build_artifact_appendix(analysis_results)
+        reports['technical'] = header + f"Synthesis generation failed: {e}\n" + appendix
 
     return reports
+
+
+def _build_artifact_appendix(analysis_results: dict) -> str:
+    """Build the per-rule findings appendix from structured LLM output.
+
+    Each LLM call returned `{json findings block}` + brief prose. We render
+    the JSON findings as readable markdown so users can see every detection
+    with its evidence, severity, and recommended action — without exposing
+    raw JSON.
+    """
+    if not analysis_results:
+        return ""
+
+    parts = ["\n\n---\n\n# Detailed Findings\n",
+             "*Per-rule analysis with evidence, severity, and recommended actions.*\n"]
+
+    for artifact, summary in analysis_results.items():
+        parts.append(f"\n## {artifact}\n")
+        text = str(summary)
+
+        # Try to parse the JSON block
+        findings_data = None
+        if '```json' in text:
+            try:
+                json_part = text.split('```json', 1)[1].split('```', 1)[0]
+                findings_data = json.loads(json_part)
+            except (json.JSONDecodeError, IndexError):
+                findings_data = None
+
+        if findings_data:
+            # Render the structured findings as readable markdown
+            if findings_data.get('summary'):
+                parts.append(f"**Summary:** {findings_data['summary']}\n")
+            if findings_data.get('scan_scope_acknowledged'):
+                parts.append(f"\n*Scope: {findings_data['scan_scope_acknowledged']}*\n")
+
+            findings_list = findings_data.get('findings', [])
+            if findings_list:
+                parts.append(f"\n### Findings ({len(findings_list)})\n")
+                for f in findings_list:
+                    sev = f.get('severity', '?').upper()
+                    conf = f.get('confidence', '?')
+                    sev_emoji = {'CRITICAL': '🔴', 'HIGH': '🟠', 'MEDIUM': '🟡', 'LOW': '🔵', 'INFORMATIONAL': '⚪'}.get(sev, '•')
+                    parts.append(f"\n#### {sev_emoji} {f.get('id', '')} — {f.get('title', 'Untitled')}")
+                    parts.append(f"\n- **Severity:** {sev} (confidence: {conf})")
+                    if f.get('evidence_count'):
+                        parts.append(f"\n- **Evidence count:** {f['evidence_count']}")
+                    if f.get('evidence'):
+                        parts.append(f"\n- **Evidence (FACT):** {f['evidence']}")
+                    if f.get('interpretation'):
+                        parts.append(f"\n- **Interpretation (INFERENCE):** {f['interpretation']}")
+                    if f.get('false_positive_check'):
+                        parts.append(f"\n- **False positive check:** {f['false_positive_check']}")
+                    if f.get('sample_users'):
+                        parts.append(f"\n- **Users:** `{', '.join(f['sample_users'])}`")
+                    if f.get('sample_ips'):
+                        parts.append(f"\n- **IPs:** `{', '.join(f['sample_ips'])}`")
+                    if f.get('sample_timestamps'):
+                        parts.append(f"\n- **Sample timestamps:** `{', '.join(f['sample_timestamps'][:3])}`")
+                    if f.get('mitre'):
+                        parts.append(f"\n- **MITRE:** {', '.join(f['mitre'])}")
+                    if f.get('recommended_action'):
+                        parts.append(f"\n- **Recommended action:** {f['recommended_action']}")
+                    parts.append("\n")
+
+            iocs = findings_data.get('iocs', {})
+            if any(iocs.values()):
+                parts.append("\n### IOCs\n")
+                for k, v in iocs.items():
+                    if v:
+                        parts.append(f"- **{k}:** `{', '.join(v)}`\n")
+
+            # Append the prose part (after the JSON block) if present
+            if '```' in text:
+                after_json = text.split('```json', 1)[1].split('```', 1)
+                if len(after_json) > 1 and after_json[1].strip():
+                    parts.append(f"\n**Analyst note:**\n{after_json[1].strip()}\n")
+        else:
+            # No structured JSON — fall back to raw text (older LLM responses)
+            parts.append(f"\n{text}\n")
+
+        parts.append("\n---\n")
+
+    return "".join(parts)
 
 
 def save_azure_report(run_id, reports):
