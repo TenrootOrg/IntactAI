@@ -155,10 +155,20 @@ def _compute_data_scope(rows):
 
     timestamps.sort()
     distinct_dates = sorted({t[:10] for t in timestamps if len(t) >= 10})
-    time_range = (
-        f"{timestamps[0]} → {timestamps[-1]} ({len(distinct_dates)} distinct day(s))"
-        if timestamps else 'unknown'
+
+    # Detect state snapshot: no records have timestamps, or every record is marked as one
+    is_state_snapshot = (not timestamps) or all(
+        (r.get('_state_snapshot') if isinstance(r, dict) else False)
+        for r in rows
     )
+
+    if is_state_snapshot:
+        time_range = '(state snapshot — no event time range)'
+    else:
+        time_range = (
+            f"{timestamps[0]} → {timestamps[-1]} ({len(distinct_dates)} distinct day(s))"
+            if timestamps else 'unknown'
+        )
 
     return {
         'total_count': len(rows),
@@ -167,6 +177,7 @@ def _compute_data_scope(rows):
         'unique_users': sorted(users)[:50],
         'unique_ips': sorted(ips)[:50],
         'unique_operations': sorted(operations)[:50],
+        'is_state_snapshot': is_state_snapshot,
     }
 
 
@@ -220,14 +231,26 @@ def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None, finding
             f"**MITRE:** {', '.join(t.get('id') or t.get('name', '') for t in finding_meta.get('mitre_attack', []))}" if finding_meta.get('mitre_attack') else None,
         ]))
 
-    scope_block = (
-        f"**Total records:** {scope['total_count']}\n"
-        f"**Time range:** {scope['time_range']}\n"
-        f"**Distinct dates:** {', '.join(scope['distinct_dates']) or '(none)'}\n"
-        f"**Unique users (up to 50):** {', '.join(scope['unique_users']) or '(none)'}\n"
-        f"**Unique IPs (up to 50):** {', '.join(scope['unique_ips']) or '(none)'}\n"
-        f"**Unique operations (up to 50):** {', '.join(scope['unique_operations']) or '(none)'}"
-    )
+    is_state = scope.get('is_state_snapshot', False)
+
+    if is_state:
+        scope_block = (
+            f"**Data type:** STATE SNAPSHOT (current configuration, NOT a timeline of events)\n"
+            f"**Total items:** {scope['total_count']}\n"
+            f"**Time range:** {scope['time_range']}\n"
+            f"**Note:** Do NOT describe a timeline. Identify outliers, misconfigurations, "
+            f"and items that look anomalous compared to a healthy baseline."
+        )
+    else:
+        scope_block = (
+            f"**Data type:** EVENT LOG (timeline of things that happened)\n"
+            f"**Total records:** {scope['total_count']}\n"
+            f"**Time range:** {scope['time_range']}\n"
+            f"**Distinct dates:** {', '.join(scope['distinct_dates']) or '(none)'}\n"
+            f"**Unique users (up to 50):** {', '.join(scope['unique_users']) or '(none)'}\n"
+            f"**Unique IPs (up to 50):** {', '.join(scope['unique_ips']) or '(none)'}\n"
+            f"**Unique operations (up to 50):** {', '.join(scope['unique_operations']) or '(none)'}"
+        )
 
     sample_note = (
         f"\n\nNote: Showing {len(sampled_rows)} of {scope['total_count']} records (first/middle/last sample)."

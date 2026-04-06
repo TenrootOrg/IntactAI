@@ -51,6 +51,19 @@ GRAPH_ENDPOINTS = {
         'user_field': None,
         'ip_field': None,
     },
+    # State-snapshot sources (no time_field — current state, not events)
+    'ca_policies': {
+        'endpoint': '/identity/conditionalAccess/policies',
+        'time_field': None,  # state snapshot
+        'user_field': None,
+        'ip_field': None,
+    },
+    'federation': {
+        'endpoint': '/domains',
+        'time_field': None,  # state snapshot
+        'user_field': None,
+        'ip_field': None,
+    },
 }
 
 # Log source types with their license requirements and tier
@@ -99,6 +112,21 @@ LOG_SOURCES = {
         'license': 'free',
         'sigma_prefix': 'Azure.Activity',
         'tier': 3
+    },
+    # Tier 4: State / posture snapshots (no event timeline; analyzed for outliers)
+    'ca_policies': {
+        'name': 'Conditional Access Policies',
+        'license': 'p1',
+        'sigma_prefix': 'Azure.CAPolicy',
+        'tier': 4,
+        'is_state': True,
+    },
+    'federation': {
+        'name': 'Federation / Domain Settings',
+        'license': 'free',
+        'sigma_prefix': 'Azure.Federation',
+        'tier': 4,
+        'is_state': True,
     }
 }
 
@@ -392,6 +420,30 @@ def collect_azure_logs(
 
         log(f"Collecting {source_name}...", "info")
 
+        # State-snapshot sources (current configuration, not events)
+        if source_info.get('is_state'):
+            try:
+                if source == 'ca_policies':
+                    records = collect_ca_policies(token, log)
+                elif source == 'federation':
+                    records = collect_federation(token, log)
+                else:
+                    records = []
+
+                if records:
+                    # Tag with severity per-record (state sources don't go through SIGMA)
+                    scored = _score_state_records(source, records)
+                    normalized = normalize_logs(scored, source_info.get('sigma_prefix', source))
+                    collected_data[source_info['sigma_prefix']] = normalized
+                    log(f"Collected {len(normalized)} {source_name} (current state)", "success")
+                else:
+                    log(f"No {source_name} found", "info")
+            except Exception as e:
+                error_msg = f"Failed to collect {source_name}: {str(e)}"
+                status['errors'].append(error_msg)
+                log(f"{error_msg}", "error")
+            continue
+
         try:
             odata_filter = build_odata_filter(
                 time_field=graph_info['time_field'],
@@ -410,6 +462,28 @@ def collect_azure_logs(
                 log(f"Skipped {source_name}: {fix}", "warning")
                 status['errors'].append(f"{source_name}: {fix}")
                 continue
+
+            # For signin_logs, ALSO query the non-default sign-in event types
+            # (servicePrincipal, managedIdentity, nonInteractiveUser) — these are
+            # major blind spots otherwise (refresh tokens, app-to-app, etc.)
+            if source == 'signin_logs' and data is not None:
+                for sign_type in ('servicePrincipal', 'managedIdentity', 'nonInteractiveUser'):
+                    try:
+                        type_filter = f"signInEventTypes/any(t: t eq '{sign_type}')"
+                        # Combine with the existing odata filter if any
+                        combined = f"({odata_filter}) and {type_filter}" if odata_filter else type_filter
+                        extra = collect_with_pagination(token, graph_info['endpoint'], combined)
+                        if extra:
+                            for r in extra:
+                                r['_signin_type'] = sign_type
+                            data.extend(extra)
+                            log(f"  +{len(extra)} {sign_type} sign-ins", "info")
+                    except Exception as ext_err:
+                        log(f"  Failed to fetch {sign_type} sign-ins: {str(ext_err)[:120]}", "warning")
+                # Tag interactive ones for completeness
+                for r in data:
+                    if '_signin_type' not in r:
+                        r['_signin_type'] = 'interactiveUser'
 
             if data:
                 normalized = normalize_logs(data, source_info.get('sigma_prefix', source))
@@ -687,3 +761,200 @@ def extract_timestamp(record: Dict) -> Optional[str]:
                     return str(value)
 
     return None
+
+
+# =============================================================================
+# State-snapshot collectors (current configuration, not events)
+# =============================================================================
+
+def collect_ca_policies(token: str, log_func) -> List[Dict]:
+    """Fetch all Conditional Access policies as a state snapshot.
+
+    Returns a list of policy dicts with the relevant fields kept.
+    Filters out noise (only the fields the analyst cares about).
+    """
+    try:
+        resp = graph_request(token, '/identity/conditionalAccess/policies')
+    except Exception as e:
+        log_func(f"  CA policies request failed: {e}", "warning")
+        return []
+
+    if resp.status_code != 200:
+        try:
+            err = resp.json().get('error', {}).get('message', resp.text[:200])
+        except Exception:
+            err = resp.text[:200]
+        log_func(f"  CA policies query failed (HTTP {resp.status_code}): {err}", "warning")
+        return []
+
+    policies = resp.json().get('value', [])
+    cleaned = []
+    for p in policies:
+        cleaned.append({
+            'id': p.get('id'),
+            'displayName': p.get('displayName'),
+            'state': p.get('state'),  # enabled / disabled / enabledForReportingButNotEnforced
+            'createdDateTime': p.get('createdDateTime'),
+            'modifiedDateTime': p.get('modifiedDateTime'),
+            'conditions': {
+                'users': (p.get('conditions') or {}).get('users') or {},
+                'applications': (p.get('conditions') or {}).get('applications') or {},
+                'platforms': (p.get('conditions') or {}).get('platforms') or {},
+                'locations': (p.get('conditions') or {}).get('locations') or {},
+                'clientAppTypes': (p.get('conditions') or {}).get('clientAppTypes') or [],
+            },
+            'grantControls': p.get('grantControls') or {},
+            'sessionControls': p.get('sessionControls') or {},
+        })
+    return cleaned
+
+
+def collect_federation(token: str, log_func) -> List[Dict]:
+    """Fetch all domains and their federation configuration.
+
+    Returns a list of domain dicts. For federated domains, also includes
+    the federationConfiguration (issuer, signing cert, etc).
+    """
+    try:
+        resp = graph_request(token, '/domains')
+    except Exception as e:
+        log_func(f"  Domains request failed: {e}", "warning")
+        return []
+
+    if resp.status_code != 200:
+        try:
+            err = resp.json().get('error', {}).get('message', resp.text[:200])
+        except Exception:
+            err = resp.text[:200]
+        log_func(f"  Domains query failed (HTTP {resp.status_code}): {err}", "warning")
+        return []
+
+    domains = resp.json().get('value', [])
+    out = []
+    for d in domains:
+        entry = {
+            'id': d.get('id'),  # the domain name
+            'authenticationType': d.get('authenticationType'),  # Managed | Federated
+            'isVerified': d.get('isVerified'),
+            'isDefault': d.get('isDefault'),
+            'isInitial': d.get('isInitial'),
+            'supportedServices': d.get('supportedServices') or [],
+        }
+        # If federated, fetch the federation configuration
+        if d.get('authenticationType') == 'Federated':
+            try:
+                fed_resp = graph_request(token, f"/domains/{d.get('id')}/federationConfiguration")
+                if fed_resp.status_code == 200:
+                    fed_list = fed_resp.json().get('value', [])
+                    if fed_list:
+                        f = fed_list[0]
+                        entry['federationConfiguration'] = {
+                            'issuerUri': f.get('issuerUri'),
+                            'passiveSignInUri': f.get('passiveSignInUri'),
+                            'activeSignInUri': f.get('activeSignInUri'),
+                            'metadataExchangeUri': f.get('metadataExchangeUri'),
+                            'preferredAuthenticationProtocol': f.get('preferredAuthenticationProtocol'),
+                            'signingCertificate': (f.get('signingCertificate') or '')[:60] + '...' if f.get('signingCertificate') else None,
+                            'nextSigningCertificate': (f.get('nextSigningCertificate') or '')[:60] + '...' if f.get('nextSigningCertificate') else None,
+                        }
+            except Exception as fed_err:
+                entry['federationConfigurationError'] = str(fed_err)[:200]
+        out.append(entry)
+    return out
+
+
+def _score_state_records(source: str, records: List[Dict]) -> List[Dict]:
+    """Tag state-snapshot records with severity / category.
+
+    Mirrors the pattern in dfir_o365rc.filter_and_score_ual_records but for
+    inventory data: each item gets a `_severity`, `_category`, `_description`
+    so the analyzer can group/filter via the same severity ladder used for
+    UAL events. The same `min_severity` UI filter applies.
+    """
+    out = []
+
+    if source == 'ca_policies':
+        # Find which CA policies cover admin roles
+        for p in records:
+            state = p.get('state')
+            name = p.get('displayName', '?')
+            grant = p.get('grantControls') or {}
+            built_in_controls = grant.get('builtInControls') or []
+            users = (p.get('conditions') or {}).get('users') or {}
+            include_roles = users.get('includeRoles') or []
+            include_users = users.get('includeUsers') or []
+            include_groups = users.get('includeGroups') or []
+
+            # Defaults
+            severity = 'low'
+            category = 'compliance'
+            description = f'CA policy "{name}" — {state}'
+
+            # Disabled policies are findings
+            if state == 'disabled':
+                severity = 'medium'
+                description = f'CA policy "{name}" is DISABLED'
+                # Disabled and targeting admins → high
+                if include_roles or 'All' in include_users:
+                    severity = 'high'
+                    description = f'CA policy "{name}" is DISABLED — was targeting admins/all users'
+            elif state == 'enabledForReportingButNotEnforced':
+                severity = 'medium'
+                description = f'CA policy "{name}" is in REPORT-ONLY mode (not enforced)'
+                if include_roles or 'All' in include_users:
+                    severity = 'high'
+                    description = f'CA policy "{name}" is REPORT-ONLY — was targeting admins/all users'
+            elif state == 'enabled':
+                # Enabled = healthy unless missing key controls
+                if not built_in_controls:
+                    severity = 'medium'
+                    description = f'CA policy "{name}" is ENABLED but has no grant controls (allows all)'
+                elif 'mfa' in [c.lower() for c in built_in_controls]:
+                    severity = 'informational'
+                    description = f'CA policy "{name}" enforces MFA'
+
+            p['_severity'] = severity
+            p['_category'] = category
+            p['_description'] = description
+            out.append(p)
+        return out
+
+    if source == 'federation':
+        for d in records:
+            name = d.get('id', '?')
+            auth_type = d.get('authenticationType')
+            is_verified = d.get('isVerified')
+
+            severity = 'informational'
+            category = 'identity_trust'
+            description = f'Domain {name} ({auth_type})'
+
+            if auth_type == 'Federated':
+                severity = 'medium'  # Federation is always worth noting
+                fed_cfg = d.get('federationConfiguration') or {}
+                issuer = fed_cfg.get('issuerUri', '')
+                description = f'Federated domain {name} → {issuer or "unknown issuer"}'
+                # Broken federation = high
+                if d.get('federationConfigurationError') or not fed_cfg:
+                    severity = 'high'
+                    description = f'Federated domain {name} but federation config is missing/unreadable'
+                # Unverified federated = critical
+                if not is_verified:
+                    severity = 'high'
+                    description = f'UNVERIFIED federated domain {name} → {issuer or "unknown"}'
+            elif auth_type == 'Managed':
+                # Managed domains are normal — only flag if unverified
+                if not is_verified:
+                    severity = 'low'
+                    description = f'Unverified managed domain {name}'
+                else:
+                    severity = 'informational'
+                    description = f'Managed domain {name} (verified)'
+
+            d['_severity'] = severity
+            d['_category'] = category
+            d['_description'] = description
+            out.append(d)
+        return out
+
+    return records
