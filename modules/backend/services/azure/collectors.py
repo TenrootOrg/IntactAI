@@ -357,7 +357,7 @@ def collect_azure_logs(
     if start_date_str:
         start_date = start_date_str
     else:
-        start_date = (datetime.utcnow() - timedelta(days=time_range_days)).strftime('%Y-%m-%dT00:00:00Z')
+        start_date = (datetime.utcnow() - timedelta(days=time_range_days)).strftime('%Y-%m-%dT%H:%M:%SZ')
     end_date = end_date_str  # None = now
 
     if target_users:
