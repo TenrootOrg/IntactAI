@@ -216,27 +216,41 @@ def collect_unified_audit_log(
     log_file = f"/mnt/host/output/{session_name}.log"
     output_file = f"/mnt/host/output/{session_name}.json"
 
-    # Build PowerShell script: load cert, then call Get-UnifiedAuditLogPurview
-    # Escape $ as \$ so bash doesn't interpret it as a shell variable
-    cert_load = (
-        "\\$cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new('/mnt/cert/azure_cert.pfx', '', 'Exportable,PersistKeySet'); "
+    # Build the PowerShell command to run in the container.
+    # We run the cmdlet in a background job and use Get-Content -Wait to stream
+    # the log file to stdout in real-time. This ensures docker logs -f captures
+    # everything immediately.
+    ps_cmd = (
+        f"\\$log = '{log_file}'; "
+        f"\\$job = Start-Job -ScriptBlock {{ "
+        f"  try {{ "
+        f"    Import-Module DFIR-O365RC; "
+        f"    \\$cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new('/mnt/cert/azure_cert.pfx', '', 'Exportable,PersistKeySet'); "
+        f"    Get-UnifiedAuditLogPurview -requestType Unfiltered -sessionName '{session_name}' -startDate '{ps_start}' -endDate '{ps_end}' -certificate \\$cert -appId '{app_id}' -tenant '{tenant}' -logFile \\$args[0] -outputFile '{output_file}' "
+        f"  }} catch {{ "
+        f"    Write-Host \"[FATAL ERROR] \$_ \"; "
+        f"    throw \$_; "
+        f"  }} "
+        f"}} -ArgumentList \\$log; "
+        f"\\$jobId = \\$job.Id; "
+        f"\\$lastLine = 0; "
+        f"while ((Get-Job -Id \\$jobId).State -eq 'Running') {{ "
+        f"  if (Test-Path \\$log) {{ "
+        f"    \\$lines = @(Get-Content -Path \\$log -ErrorAction SilentlyContinue); "
+        f"    if (\\$lines.Count -gt \\$lastLine) {{ "
+        f"      \\$lines | Select-Object -Skip \\$lastLine | ForEach-Object {{ \$_ }}; "
+        f"      \\$lastLine = \\$lines.Count; "
+        f"    }} "
+        f"  }} "
+        f"  Start-Sleep -Seconds 1; "
+        f"}}; "
+        f"if (Test-Path \\$log) {{ "
+        f"  \\$lines = @(Get-Content -Path \\$log -ErrorAction SilentlyContinue); "
+        f"  if (\\$lines.Count -gt \\$lastLine) {{ \\$lines | Select-Object -Skip \\$lastLine | ForEach-Object {{ \$_ }} }} "
+        f"}}; "
+        f"Receive-Job -Id \\$jobId"
     )
 
-    # NOTE: We always use requestType=Unfiltered which is much faster than UserIds
-    # filtering. If target_users is set, we filter client-side after collection.
-    ps_cmd = (
-        cert_load +
-        f"Get-UnifiedAuditLogPurview "
-        f"-requestType Unfiltered "
-        f"-sessionName '{session_name}' "
-        f"-startDate '{ps_start}' "
-        f"-endDate '{ps_end}' "
-        f"-certificate \\$cert "
-        f"-appId '{app_id}' "
-        f"-tenant '{tenant}' "
-        f"-logFile '{log_file}' "
-        f"-outputFile '{output_file}'"
-    )
     if target_users:
         log(f"Collecting UAL (all events, will filter for {', '.join(target_users)} client-side)", "info")
     else:
@@ -305,8 +319,11 @@ def collect_unified_audit_log(
             'The remote certificate is invalid',
             'Forbidden',
             'application is not authorized',
+            'TooManyRequests',
+            '429',
         )
         fatal_error_seen = False
+        fatal_error_message = None  # Stores the exact container line that triggered the fatal error
 
         while True:
             elapsed = time.time() - start_time
@@ -325,7 +342,7 @@ def collect_unified_audit_log(
             )
             container_running = inspect.stdout.strip() == 'true'
 
-            # Read available output (non-blocking)
+            # Read available output (non-blocking) - log EVERY line from the container
             try:
                 ready, _, _ = select.select([log_process.stdout], [], [], 1.0)
                 if ready:
@@ -335,14 +352,14 @@ def collect_unified_audit_log(
                             line = line.strip()
                             if not line:
                                 continue
-                            if 'error' in line.lower() or 'AADSTS' in line or 'fail' in line.lower():
-                                log(f"  {line}", "error")
-                            elif 'warning' in line.lower():
-                                log(f"  {line}", "warning")
-                            elif line.startswith('{') or line.startswith('['):
-                                pass  # Skip raw JSON
+                            # Determine log level based on content
+                            if 'error' in line.lower() or 'AADSTS' in line or 'fail' in line.lower() or 'exception' in line.lower():
+                                log(f"[CONTAINER] {line}", "error")
+                            elif 'warning' in line.lower() or 'warn' in line.lower():
+                                log(f"[CONTAINER] {line}", "warning")
                             else:
-                                log(f"  {line}", "info")
+                                # Log everything including raw JSON - nothing is skipped
+                                log(f"[CONTAINER] {line}", "info")
                             last_log_time = time.time()
 
                             # Detect fatal errors and kill immediately
@@ -350,8 +367,9 @@ def collect_unified_audit_log(
                                 for pattern in FATAL_ERROR_PATTERNS:
                                     if pattern in line:
                                         fatal_error_seen = True
+                                        fatal_error_message = line  # Save the exact error line
                                         log(
-                                            f"Fatal error detected ({pattern}) — killing container "
+                                            f"[CONTAINER] Fatal error detected ({pattern}) — killing container "
                                             f"immediately to skip the rest of the timeout",
                                             "error",
                                         )
@@ -368,15 +386,21 @@ def collect_unified_audit_log(
                 break
 
             if not container_running:
-                # Read any remaining output
+                # Read any remaining output - log every line
                 time.sleep(0.5)
                 try:
                     remaining = log_process.stdout.read()
                     if remaining:
                         for line in remaining.strip().split('\n'):
                             line = line.strip()
-                            if line and not line.startswith('{') and not line.startswith('['):
-                                log(f"  {line}", "info")
+                            if not line:
+                                continue
+                            if 'error' in line.lower() or 'fail' in line.lower() or 'exception' in line.lower():
+                                log(f"[CONTAINER] {line}", "error")
+                            elif 'warning' in line.lower():
+                                log(f"[CONTAINER] {line}", "warning")
+                            else:
+                                log(f"[CONTAINER] {line}", "info")
                 except (IOError, OSError):
                     pass
                 break
@@ -406,6 +430,12 @@ def collect_unified_audit_log(
 
     # Always cleanup container (in case --rm didn't work due to kill)
     _cleanup_container(container_name)
+
+    if fatal_error_seen and fatal_error_message:
+        error = f"DFIR-O365RC fatal error — {fatal_error_message}"
+        log(error, "error")
+        shutil.rmtree(output_dir, ignore_errors=True)
+        return {'success': False, 'records': [], 'error': error}
 
     if timed_out:
         error = "DFIR-O365RC timed out. Possible causes: (1) Exchange Online inactive/blocked on this tenant (2) Certificate not uploaded to App Registration (3) Missing Exchange.ManageAsApp permission or View-only audit logs role"
