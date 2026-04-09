@@ -481,40 +481,66 @@ def collect_azure_logs(
                 status['errors'].append(f"{source_name}: {fix}")
                 continue
 
-            # For signin_logs, ALSO query the non-default sign-in event types
-            # (servicePrincipal, managedIdentity, nonInteractiveUser) — these are
-            # major blind spots otherwise (refresh tokens, app-to-app, etc.)
+            # For signin_logs, ALSO query FAILED service principal sign-ins.
             #
-            # Filtering on `signInEventTypes` requires Microsoft Graph BETA endpoint
-            # plus advanced query mode (ConsistencyLevel: eventual + $count=true).
-            # The v1.0 endpoint does NOT expose signInEventTypes as a filterable
-            # property as of 2026.
+            # We deliberately do NOT collect:
+            #   - successful SP sign-ins (mostly Microsoft first-party app token
+            #     refreshes — 99% noise; would add 8000+ records on a typical tenant)
+            #   - managed identity sign-ins (almost always Azure RM internal noise)
+            #   - non-interactive user sign-ins (token refreshes; the rare attack
+            #     case is already covered by risk_detections / risky_signins via
+            #     Identity Protection)
+            #
+            # FAILED service principal sign-ins are the high-signal subset:
+            #   - SP credential brute-force / stuffing attempts
+            #   - Misconfigured automation (operationally interesting)
+            #   - Tiny volume (~0-20 per healthy tenant)
+            #
+            # Filtering on signInEventTypes requires the Microsoft Graph BETA
+            # endpoint + advanced query mode (ConsistencyLevel: eventual +
+            # $count=true). The v1.0 endpoint does not expose this property.
             if source == 'signin_logs' and data is not None:
                 advanced_headers = {'ConsistencyLevel': 'eventual'}
                 advanced_params = {'$count': 'true'}
-                # Build a beta-endpoint version of the same path
                 beta_endpoint = graph_info['endpoint']  # e.g. /auditLogs/signIns
-                for sign_type in ('servicePrincipal', 'managedIdentity', 'nonInteractiveUser'):
-                    try:
-                        type_filter = f"signInEventTypes/any(t:t eq '{sign_type}')"
-                        combined = f"({odata_filter}) and {type_filter}" if odata_filter else type_filter
-                        # Use beta API for signInEventTypes filter (v1.0 doesn't support it)
-                        beta_url = f'https://graph.microsoft.com/beta{beta_endpoint}'
-                        extra = collect_with_pagination(
-                            token,
-                            beta_url,  # full URL — collect_with_pagination prepends only if relative
-                            combined,
-                            extra_headers=advanced_headers,
-                            extra_params=advanced_params,
-                        )
-                        if extra:
-                            for r in extra:
-                                r['_signin_type'] = sign_type
-                            data.extend(extra)
-                            log(f"  +{len(extra)} {sign_type} sign-ins", "info")
-                    except Exception as ext_err:
-                        log(f"  Failed to fetch {sign_type} sign-ins: {str(ext_err)[:120]}", "warning")
-                # Tag interactive ones for completeness
+                try:
+                    # SP sign-ins are TENANT-WIDE events (no user). Strip the
+                    # target_users clause from the filter — we only want the time
+                    # window. SPs don't have userPrincipalName, so combining the
+                    # user filter would return 0 results.
+                    sp_time_filter = build_odata_filter(
+                        time_field=graph_info['time_field'],
+                        start_date=start_date,
+                        end_date=end_date,
+                        user_field=None,        # NOT filtered by user
+                        target_users=None,
+                        ip_field=None,
+                        target_ips=None,
+                    )
+                    sp_filter = (
+                        "signInEventTypes/any(t:t eq 'servicePrincipal') "
+                        "and status/errorCode ne 0"
+                    )
+                    combined = f"({sp_time_filter}) and {sp_filter}" if sp_time_filter else sp_filter
+                    beta_url = f'https://graph.microsoft.com/beta{beta_endpoint}'
+                    extra = collect_with_pagination(
+                        token,
+                        beta_url,
+                        combined,
+                        extra_headers=advanced_headers,
+                        extra_params=advanced_params,
+                    )
+                    if extra:
+                        for r in extra:
+                            r['_signin_type'] = 'servicePrincipal_failed'
+                        data.extend(extra)
+                        log(f"  +{len(extra)} failed service principal sign-ins", "info")
+                    else:
+                        log("  No failed service principal sign-ins", "info")
+                except Exception as ext_err:
+                    log(f"  Failed to fetch SP sign-ins: {str(ext_err)[:120]}", "warning")
+
+                # Tag the existing interactive sign-ins for clarity
                 for r in data:
                     if '_signin_type' not in r:
                         r['_signin_type'] = 'interactiveUser'

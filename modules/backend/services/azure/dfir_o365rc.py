@@ -286,6 +286,28 @@ def collect_unified_audit_log(
         flags = fcntl.fcntl(fd, fcntl.F_GETFL)
         fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
+        # Fatal error patterns — when we see these in container output, the
+        # operation will NEVER recover (auth failure, access denied, etc.).
+        # Kill immediately instead of waiting for the full timeout.
+        FATAL_ERROR_PATTERNS = (
+            'AADSTS',                          # Azure AD auth failure
+            'unauthorized_client',
+            'invalid_client',
+            'ErrorAccessDenied',
+            'access_denied',
+            'MsalServiceException',
+            'MsalClientException',
+            'is not a valid application identifier',
+            'Cannot validate argument',
+            'MissingGraphAuthenticationType',
+            'AuthenticationFailedException',
+            'No connection could be made',
+            'The remote certificate is invalid',
+            'Forbidden',
+            'application is not authorized',
+        )
+        fatal_error_seen = False
+
         while True:
             elapsed = time.time() - start_time
 
@@ -322,8 +344,28 @@ def collect_unified_audit_log(
                             else:
                                 log(f"  {line}", "info")
                             last_log_time = time.time()
+
+                            # Detect fatal errors and kill immediately
+                            if not fatal_error_seen:
+                                for pattern in FATAL_ERROR_PATTERNS:
+                                    if pattern in line:
+                                        fatal_error_seen = True
+                                        log(
+                                            f"Fatal error detected ({pattern}) — killing container "
+                                            f"immediately to skip the rest of the timeout",
+                                            "error",
+                                        )
+                                        subprocess.run(
+                                            f"docker kill {container_name}",
+                                            shell=True, capture_output=True,
+                                        )
+                                        break
             except (IOError, OSError):
                 pass
+
+            # If we killed on a fatal error, exit the wait loop
+            if fatal_error_seen:
+                break
 
             if not container_running:
                 # Read any remaining output
@@ -487,15 +529,52 @@ def _run_dfir_command(
             shutil.rmtree(output_dir, ignore_errors=True)
             return {'success': False, 'records': [], 'error': f'Container start failed: {error}'}
 
-        # Wait for container to finish (with timeout)
+        # Wait for container to finish (with timeout AND fatal-error early-exit).
+        # Same fatal patterns as collect_unified_audit_log — auth failures and
+        # permission errors will never recover, so we kill immediately instead
+        # of waiting for the full timeout.
+        FATAL_ERROR_PATTERNS = (
+            'AADSTS', 'unauthorized_client', 'invalid_client', 'ErrorAccessDenied',
+            'access_denied', 'MsalServiceException', 'MsalClientException',
+            'is not a valid application identifier', 'Cannot validate argument',
+            'MissingGraphAuthenticationType', 'AuthenticationFailedException',
+            'No connection could be made', 'The remote certificate is invalid',
+            'Forbidden', 'application is not authorized',
+        )
         start_time = time.time()
         timed_out = False
+        fatal_error_seen = False
 
         while True:
             elapsed = time.time() - start_time
             if elapsed > timeout_seconds:
                 timed_out = True
                 subprocess.run(f"docker kill {container_name}", shell=True, capture_output=True)
+                break
+
+            # Peek at container logs to detect fatal errors early
+            try:
+                peek = subprocess.run(
+                    f"docker logs --tail 50 {container_name}",
+                    shell=True, capture_output=True, text=True, timeout=5,
+                )
+                peek_text = (peek.stdout or '') + (peek.stderr or '')
+                for pattern in FATAL_ERROR_PATTERNS:
+                    if pattern in peek_text:
+                        fatal_error_seen = True
+                        log(
+                            f"Fatal error detected in DFIR output ({pattern}) — "
+                            f"killing container immediately",
+                            "error",
+                        )
+                        subprocess.run(
+                            f"docker kill {container_name}",
+                            shell=True, capture_output=True,
+                        )
+                        break
+            except Exception:
+                pass
+            if fatal_error_seen:
                 break
 
             inspect = subprocess.run(
