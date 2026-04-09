@@ -238,7 +238,14 @@ def collect_unified_audit_log(
         f"  if (Test-Path \\$log) {{ "
         f"    \\$lines = @(Get-Content -Path \\$log -ErrorAction SilentlyContinue); "
         f"    if (\\$lines.Count -gt \\$lastLine) {{ "
-        f"      \\$lines | Select-Object -Skip \\$lastLine | ForEach-Object {{ \$_ }}; "
+        f"      \\$lines | Select-Object -Skip \\$lastLine | ForEach-Object {{ "
+        f"        \\$l = \$_; "
+        f"        if (\\$l -like '*status \"notStarted\"*' -and \\$notStartedTip -ne \\$true) {{ "
+        f"           Write-Host '[AZURE] [TIP] Microsoft is queuing the query. This \"notStarted\" phase can take 5-15 minutes.'; "
+        f"           \\$notStartedTip = \\$true; "
+        f"        }} "
+        f"        \\$l "
+        f"      }}; "
         f"      \\$lastLine = \\$lines.Count; "
         f"    }} "
         f"  }} "
@@ -259,7 +266,7 @@ def collect_unified_audit_log(
     # Run DFIR-O365RC in Docker container with live log streaming
     host_data_dir = f"{HOST_PATH}/data"
     container_name = f"dfir_o365rc_{timestamp}"
-    timeout_seconds = 600  # 10 minutes - Purview audit log queries can take time
+    timeout_seconds = 1800  # 30 minutes - Purview audit log queries can take significant time to cold-start
 
     log("Starting DFIR-O365RC container...", "info")
 
