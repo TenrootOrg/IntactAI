@@ -10,7 +10,7 @@ Supports both online (live API) and offline (uploaded logs) modes.
 import os
 import json
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
@@ -226,12 +226,18 @@ def run_azure_pipeline(
                 end_date_str = time_filter.get('end')
             elif time_filter.get('type') == 'relative':
                 val = time_filter.get('value', '7d')
-                days = int(val.replace('d', '').replace('h', '')) if 'd' in val else 1
-                if 'h' in val:
-                    hours = int(val.replace('h', ''))
-                    start_date_str = (datetime.utcnow() - timedelta(hours=hours)).strftime('%Y-%m-%dT%H:%M:%SZ')
-                else:
-                    time_range_days = days
+                try:
+                    if 'h' in val:
+                        hours = int(val.replace('h', ''))
+                        start_date_str = (datetime.utcnow() - timedelta(hours=hours)).strftime('%Y-%m-%dT%H:%M:%SZ')
+                    else:
+                        days = int(val.replace('d', ''))
+                        start_date_str = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+                        time_range_days = days
+                except (ValueError, TypeError):
+                    add_log_to_run(run_id, f"[AZURE] Invalid relative time format: {val}, defaulting to 7d", "warning")
+                    start_date_str = (datetime.utcnow() - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+                    time_range_days = 7
 
         if target_users:
             add_log_to_run(run_id, f"[AZURE] Target users: {', '.join(target_users)}", "info")

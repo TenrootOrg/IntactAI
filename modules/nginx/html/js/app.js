@@ -81,29 +81,39 @@ document.addEventListener('alpine:init', () => {
         onlineClients: [],
 
         async checkAll() {
-            for (const serviceId in window.services) {
-                await this.checkService(serviceId);
+            try {
+                const response = await fetch('/api/system/containers');
+                if (response.ok) {
+                    const containerStatuses = await response.json();
+                    
+                    // Update statuses based on backend container info
+                    for (const serviceId in containerStatuses) {
+                        this.statuses[serviceId] = containerStatuses[serviceId];
+                    }
+                    
+                    // Ensure any service not in container list (if it was added elsewhere) is handled
+                    for (const serviceId in window.services) {
+                        if (!(serviceId in containerStatuses)) {
+                            // Fallback to offline if not managed by docker ps check
+                            this.statuses[serviceId] = this.statuses[serviceId] || 'offline';
+                        }
+                    }
+                } else {
+                    console.error('Failed to fetch system container status');
+                }
+            } catch (e) {
+                console.error('Error checking service status:', e);
+                // Mark all as checking/offline if backend is unreachable
+                for (const serviceId in window.services) {
+                    this.statuses[serviceId] = 'offline';
+                }
             }
             this.updateStats();
         },
 
         async checkService(serviceId) {
-            const service = window.services[serviceId];
-            this.statuses[serviceId] = 'checking';
-
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 3000);
-                const url = service.path
-                    ? `${service.protocol}://${window.baseHost}${service.path}`
-                    : `${service.protocol}://${window.baseHost}:${service.port}/`;
-
-                await fetch(url, { method: 'HEAD', signal: controller.signal, mode: 'no-cors', credentials: 'omit' });
-                clearTimeout(timeoutId);
-                this.statuses[serviceId] = 'online';
-            } catch {
-                this.statuses[serviceId] = 'offline';
-            }
+            // Service-specific checks now handled by checkAll bulk update
+            await this.checkAll();
         },
 
         updateStats() {
