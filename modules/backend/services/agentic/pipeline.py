@@ -89,7 +89,16 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
             settings['time_filter'] = time_filter
             mode = time_filter.get('mode', 'relative')
             if mode == 'relative':
-                add_log_to_run(run_id, f"[Pipeline] Time filter: relative ({time_filter.get('relative_range', '7d')})", "info")
+                from datetime import timedelta
+                range_str = time_filter.get('relative_range', '7d')
+                now = datetime.now()
+                if range_str.endswith('h'):
+                    start = now - timedelta(hours=int(range_str[:-1]))
+                elif range_str.endswith('d'):
+                    start = now - timedelta(days=int(range_str[:-1]))
+                else:
+                    start = now - timedelta(days=7)
+                add_log_to_run(run_id, f"[Pipeline] Time filter: last {range_str} ({start.strftime('%Y-%m-%d %H:%M')} to {now.strftime('%Y-%m-%d %H:%M')})", "info")
             else:
                 add_log_to_run(run_id, f"[Pipeline] Time filter: between ({time_filter.get('start_datetime')} to {time_filter.get('end_datetime', 'now')})", "info")
 
