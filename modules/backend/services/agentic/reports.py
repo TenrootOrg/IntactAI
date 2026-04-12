@@ -199,7 +199,7 @@ NEVER skip or summarize away detection hits. If something was flagged by a rule,
 ### 1. Critical Findings (TOP OF REPORT)
 List the most dangerous findings FIRST, even if timestamps are unknown.
 Format:
-- **[YYYY-MM-DD HH:MM:SS UTC or "Time Unknown"]** What was found
+- **[YYYY-MM-DD HH:MM:SS or "Time Unknown"]** What was found
 - **Why Critical**: One sentence on why this matters
 - **Evidence**: Source artifact/rule that detected it
 
@@ -214,7 +214,7 @@ Tell the STORY of the attack in chronological order:
 - What was their apparent objective?
 
 Connect related events. If event A at 2026-04-12 10:00 leads to event B at 2026-04-12 10:05, explain that relationship.
-ALWAYS use full date+time format (YYYY-MM-DD HH:MM:SS UTC) for ALL timestamps throughout the report - never use time-only format.
+ALWAYS use full date+time format (YYYY-MM-DD HH:MM:SS) for ALL timestamps throughout the report - never use time-only format.
 For events without timestamps, group them logically in a "Time Unknown" section but still integrate them into the narrative.
 
 ### 4. Indicators of Compromise
@@ -272,7 +272,7 @@ CRITICAL RULES:
 - Detection hits are the most important findings - NEVER skip them
 - Tell the story, don't just list findings
 - Critical items go at the TOP regardless of timestamp
-- ALWAYS use full datetime format (YYYY-MM-DD HH:MM:SS UTC) everywhere - NEVER use time-only (e.g. "12:10:33") without the date
+- ALWAYS use full datetime format (YYYY-MM-DD HH:MM:SS) everywhere - NEVER use time-only (e.g. "12:10:33") without the date
 - Be specific in the action plan - use actual hostnames, accounts, IOCs from the data
 - If data is ambiguous, say so - don't fabricate details
 - Do NOT include or invent a "Collection Platform Version" or any tool version numbers - only use the metadata provided"""
