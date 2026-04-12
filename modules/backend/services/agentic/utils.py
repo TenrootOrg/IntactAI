@@ -19,10 +19,11 @@ from datetime import datetime
 TIMESTAMP_FIELDS = [
     # ─── PRIORITY 1: CREATION TIMESTAMPS (when artifacts were created) ───
     # Best for: Finding NEW attacker artifacts - malware dropped, persistence created
-    'Created', 'CreateTime', 'CreationTime', 'CreationTimeUTC',
+    'Created', 'CreateTime', 'CreatedTime', 'CreationTime', 'CreationTimeUTC',
     'ProcessCreateTime', 'Created0x10', 'Created0x30',
     'SourceCreated', 'InstallDate', 'FirstSeen', 'Firstseen',
     'CopiedOnTimestamp', 'ZipTimestamp', 'RegistrationDate', 'RegistrationTime',
+    'LastLoginDate', 'PasswordResetDate',
 
     # ─── PRIORITY 2: EVENT TIMESTAMPS (when activity occurred) ───
     # Best for: Hayabusa, EventLogs, Detections - "When did this happen?"
@@ -38,7 +39,7 @@ TIMESTAMP_FIELDS = [
     # ─── PRIORITY 3: MODIFICATION TIMESTAMPS (when things changed) ───
     # Best for: TaskScheduler, config files, registry - "When was this modified?"
     'Modified', 'ModifiedTime', 'ModificationTime', 'ModTime',
-    'Mtime', 'mtime', 'MTime', 'FileMtime',
+    'Mtime', 'mtime', 'MTime', 'FileMtime', 'KeyMTime',
     'LastModified', 'LastMod', 'LastModified0x10', 'LastModified0x30',
     'SourceModified', 'LastWriteTime', 'KeyLastWriteTimestamp',
     'LastRecordChange0x10', 'LastRecordChange0x30',
@@ -756,7 +757,7 @@ def filter_results_by_time(all_results, time_filter, run_id=None):
     total_removed = total_before - total_after
 
     # Log header
-    mode_str = f"last {time_filter.get('relative_range', '7d')}" if mode == 'relative' else f"{start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')}"
+    mode_str = f"last {time_filter.get('relative_range', '7d')} ({start_time.strftime('%Y-%m-%d %H:%M')} to {end_time.strftime('%Y-%m-%d %H:%M')})" if mode == 'relative' else f"{start_time.strftime('%Y-%m-%d %H:%M')} to {end_time.strftime('%Y-%m-%d %H:%M')}"
     log(f"[Filter] Time filter: {mode_str}", "info")
     log(f"[Filter] ─────────────────────────────────────────────", "info")
 

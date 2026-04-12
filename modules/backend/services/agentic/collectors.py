@@ -785,10 +785,8 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
     artifacts = []
     client_info = {}
 
-    # Calculate time range for VQL filtering
+    # Calculate time range (used for post-processing filter, not VQL)
     start_iso, end_iso = calculate_time_range(time_filter)
-    if start_iso or end_iso:
-        add_log_to_run(run_id, f"[Velociraptor] VQL time filter: {start_iso} to {end_iso}", "info")
 
     channel = setup_velociraptor_connection()
     if not channel:
