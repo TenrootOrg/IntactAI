@@ -13,20 +13,26 @@ class ClientManager {
     constructor(containerId, checkboxClass, options = {}) {
         this.containerId = containerId;
         this.checkboxClass = checkboxClass;
-        this.cache = [];
-        this.autoSelectOnline = options.autoSelectOnline !== false; // Default true
-        this.onlineThreshold = options.onlineThreshold || 600; // 10 minutes
+        this.autoSelectOnline = options.autoSelectOnline !== false;
+        this.onlineThreshold = options.onlineThreshold || 600;
+        this.limit = options.limit || 20;
+        this.totalClients = 0;
+        this.filteredCount = 0;
+        this._searchTimeout = null;
     }
 
     /**
-     * Load clients from API and render
+     * Load clients from API with optional search and render
      */
-    async load() {
+    async load(search = '') {
         const container = document.getElementById(this.containerId);
         if (!container) return;
 
         try {
-            const response = await fetch('/api/clients');
+            let url = `/api/clients?limit=${this.limit}`;
+            if (search) url += `&search=${encodeURIComponent(search)}`;
+
+            const response = await fetch(url);
             if (!response.ok) {
                 container.innerHTML = '<p class="text-sm text-red-400">Failed to load clients</p>';
                 return;
@@ -34,15 +40,19 @@ class ClientManager {
 
             const data = await response.json();
             const clients = data.items || [];
+            this.totalClients = data.total || 0;
+            this.filteredCount = data.filtered || clients.length;
 
             if (clients.length === 0) {
-                container.innerHTML = '<p class="text-sm text-gray-500">No clients found</p>';
+                container.innerHTML = search
+                    ? '<p class="text-sm text-gray-500">No clients match your search</p>'
+                    : '<p class="text-sm text-gray-500">No clients found</p>';
                 return;
             }
 
             // Sort: online first, then alphabetically
             const now = Date.now() / 1000;
-            this.cache = clients.sort((a, b) => {
+            clients.sort((a, b) => {
                 const aOnline = this._isOnline(a, now);
                 const bOnline = this._isOnline(b, now);
                 if (aOnline && !bOnline) return -1;
@@ -50,7 +60,7 @@ class ClientManager {
                 return (a.hostname || '').localeCompare(b.hostname || '');
             });
 
-            this.render(this.cache);
+            this.render(clients, search);
         } catch (error) {
             container.innerHTML = `<p class="text-sm text-red-400">Error: ${error.message}</p>`;
         }
@@ -59,27 +69,17 @@ class ClientManager {
     /**
      * Render clients to container
      */
-    render(clients, filter = '') {
+    render(clients, search = '') {
         const container = document.getElementById(this.containerId);
         if (!container) return;
 
         const now = Date.now() / 1000;
         const selectedIds = this.getSelected();
 
-        // Filter by hostname if provided
-        const filtered = filter
-            ? clients.filter(c => (c.hostname || '').toLowerCase().includes(filter.toLowerCase()))
-            : clients;
-
-        if (filtered.length === 0) {
-            container.innerHTML = '<p class="text-sm text-gray-500">No clients match filter</p>';
-            return;
-        }
-
-        container.innerHTML = filtered.map(client => {
+        let html = clients.map(client => {
             const isOnline = this._isOnline(client, now);
             const wasSelected = selectedIds.includes(client.client_id);
-            const shouldCheck = wasSelected || (this.autoSelectOnline && isOnline && !filter);
+            const shouldCheck = wasSelected || (this.autoSelectOnline && isOnline && !search);
             const dot = isOnline
                 ? '<span class="inline-block w-2 h-2 bg-green-400 rounded-full"></span>'
                 : '<span class="inline-block w-2 h-2 bg-gray-500 rounded-full"></span>';
@@ -96,13 +96,22 @@ class ClientManager {
                 </label>
             `;
         }).join('');
+
+        // Show "more results" hint if there are more than displayed
+        if (this.filteredCount > clients.length) {
+            const more = this.filteredCount - clients.length;
+            html += `<p class="text-xs text-gray-500 text-center py-2">${more} more — refine your search</p>`;
+        }
+
+        container.innerHTML = html;
     }
 
     /**
-     * Filter clients by search term
+     * Filter clients by search term (debounced API call)
      */
     filter(searchTerm) {
-        this.render(this.cache, searchTerm);
+        clearTimeout(this._searchTimeout);
+        this._searchTimeout = setTimeout(() => this.load(searchTerm), 300);
     }
 
     /**
@@ -120,13 +129,6 @@ class ClientManager {
     }
 
     /**
-     * Get cached clients
-     */
-    getCache() {
-        return this.cache;
-    }
-
-    /**
      * Check if client is online
      */
     _isOnline(client, now) {
@@ -135,5 +137,4 @@ class ClientManager {
     }
 }
 
-// Export for use in other modules
 window.ClientManager = ClientManager;

@@ -239,35 +239,16 @@
                         </div>
                     </div>
 
-                    <div class="stat-card rounded-lg p-6 text-white client-count-container relative cursor-help" style="border-color: var(--blue);">
+                    <div class="stat-card rounded-lg p-6 text-white" style="border-color: var(--blue);">
                         <div class="flex justify-between items-start">
                             <div>
                                 <p class="text-sm text-gray-400">Velociraptor Clients</p>
                                 <p class="text-4xl font-bold mt-2 text-white" x-text="$store.services.clientCount || '-'"></p>
-                                <p class="text-xs text-gray-500 mt-2" x-text="$store.services.onlineClients.length + ' online / ' + $store.services.clientCount + ' total'"></p>
+                                <p class="text-xs text-gray-500 mt-2" x-text="$store.services.onlineClientCount + ' online / ' + $store.services.clientCount + ' total'"></p>
                             </div>
                             <svg class="w-10 h-10 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
                             </svg>
-                        </div>
-                        <!-- Tooltip -->
-                        <div class="client-tooltip">
-                            <h4 class="font-semibold text-white mb-3">Connected Clients</h4>
-                            <div class="text-xs space-y-2">
-                                <template x-if="$store.services.clients.length === 0">
-                                    <p class="text-gray-400">No clients connected</p>
-                                </template>
-                                <template x-for="client in $store.services.clients" :key="client.client_id">
-                                    <div class="flex items-start gap-2 p-2 bg-gray-800 rounded">
-                                        <span class="inline-block w-2 h-2 rounded-full mt-1" :class="$store.services.isClientOnline(client) ? 'bg-green-400' : 'bg-gray-500'"></span>
-                                        <div class="flex-1 min-w-0">
-                                            <div class="font-semibold text-white truncate" x-text="client.hostname || 'Unknown'"></div>
-                                            <div class="text-gray-400 text-xs" x-text="client.os || 'Unknown'"></div>
-                                            <div class="text-gray-500 text-xs truncate" x-text="client.client_id"></div>
-                                        </div>
-                                    </div>
-                                </template>
-                            </div>
                         </div>
                     </div>
 
@@ -298,7 +279,7 @@
                         <div class="space-y-2 mb-4">
                             <div class="flex justify-between text-sm">
                                 <span class="text-gray-400">Clients:</span>
-                                <span class="font-mono" x-text="$store.services.onlineClients.length + ' / ' + $store.services.clientCount"></span>
+                                <span class="font-mono" x-text="$store.services.onlineClientCount + ' / ' + $store.services.clientCount"></span>
                             </div>
                             <div class="flex justify-between text-sm">
                                 <span class="text-gray-400">Port:</span>
