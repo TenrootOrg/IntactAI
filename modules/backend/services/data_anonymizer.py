@@ -275,10 +275,7 @@ class DataAnonymizer:
         r'xoxb-[0-9]+-[0-9]+-[a-zA-Z0-9]+|'        # Slack bot token
         r'xoxp-[0-9]+-[0-9]+-[a-zA-Z0-9]+|'        # Slack user token
         r'AKIA[0-9A-Z]{16}|'                        # AWS access key (AKIA + exactly 16 uppercase alphanum)
-        r'AIzaSy[a-zA-Z0-9_-]{20,}|'                 # Google API key (AIzaSy + 20+ chars)
-        r'[0-9a-fA-F]{40}|'                         # SHA1 hash (40 hex)
-        r'[0-9a-fA-F]{64}|'                         # SHA256 hash (64 hex)
-        r'[0-9a-fA-F]{128}'                         # SHA512 hash (128 hex)
+        r'AIzaSy[a-zA-Z0-9_-]{20,}'                  # Google API key (AIzaSy + 20+ chars)
         r')$'
     )
 
