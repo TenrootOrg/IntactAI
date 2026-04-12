@@ -30,7 +30,8 @@ SAFE_IPS = {
 SYSTEM_ACCOUNTS = {
     "SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE", "NT AUTHORITY",
     "NT SERVICE", "ANONYMOUS LOGON", "Everyone", "Administrators",
-    "Users", "Guests", "DnsAdmins", "Domain Admins", "Domain Users"
+    "Users", "Guests", "DnsAdmins", "Domain Admins", "Domain Users",
+    "WINDOW MANAGER", "FONT DRIVER HOST", "UMFD", "DWM",
 }
 
 SAFE_PATHS = {
@@ -41,44 +42,108 @@ SAFE_PATHS = {
     r"C:\Program Files (x86)",
 }
 
-# Field name patterns for detection
+# Field name patterns for detection (specific to avoid false positives on forensic field names)
 IP_FIELD_PATTERNS = re.compile(
-    r"(ip|addr|address|remote|local|source|dest|src|dst|raddr|laddr)",
+    r"(ip.?addr|^ip$|ip.?address|source.?ip|dest.?ip|src.?ip|dst.?ip|"
+    r"remote.?addr|local.?addr|client.?ip|raddr|laddr|source.?address|dest.?address)",
     re.IGNORECASE
 )
 
 USER_FIELD_PATTERNS = re.compile(
-    r"(user|account|name|subject|target|owner|creator|sid)",
+    r"(^user$|username|user.?name|account.?name|subject.?user|target.?user|"
+    r"owner|creator|domain.?name|principal.?name|display.?name)",
     re.IGNORECASE
 )
 
 HOST_FIELD_PATTERNS = re.compile(
-    r"(computer|host|machine|server|workstation|client|device)",
+    r"(computer|computer.?name|host.?name|^hostname$|machine.?name|"
+    r"workstation|workstation.?name|server.?name|client.?machine)",
     re.IGNORECASE
 )
 
 PATH_FIELD_PATTERNS = re.compile(
-    r"(path|file|directory|folder|image|command|cmd|exe|binary|location)",
+    r"(path|file.?path|directory|folder|command.?line|^cmd$|^image$|"
+    r"parent.?image|target.?image|source.?image|working.?dir|current.?dir)",
     re.IGNORECASE
 )
 
 EMAIL_FIELD_PATTERNS = re.compile(
-    r"(email|mail|address|recipient|sender|from|to)",
+    r"(email|e.?mail|mail.?address|recipient|sender)",
     re.IGNORECASE
 )
 
 CREDENTIAL_FIELD_PATTERNS = re.compile(
-    r"(password|passwd|pwd|secret|key|token|credential|auth|api.?key|bearer)",
+    r"(password|passwd|pwd|secret|credential|api.?key|bearer|"
+    r"^token$|access.?token|refresh.?token|secret.?key|private.?key)",
     re.IGNORECASE
 )
+
+# Fields that contain misleading keywords but should never be masked
+SAFE_FIELDS = {
+    'eventid', 'eventname', 'eventrecordid', 'eventtype',
+    'ruletitle', 'rulelevel', 'rulename', 'rule', 'ruleid', 'ruletitle', 'ruledescription',
+    'rule_title', 'rule_id', 'rule_description',
+    'severity', 'level', 'criticality', 'priority',
+    'detection', 'alert', 'finding', 'match', 'hit',
+    'threatname', 'categoryname', 'category', 'categoryid',
+    'mitreattack', 'mitre', 'technique', 'mitre_attack',
+    'tokenelevationtype', 'tokeniselevated',
+    'processtokenelevationtype', 'processtokeniselevated',
+    'processid', 'pid', 'parentprocessid', 'ppid',
+    'logontype', 'logonid', 'subjectlogonid', 'targetlogonid', 'logonidhex',
+    'authenticationlevel', 'authenticationservice',
+    'authenticationpackage', 'authenticationpackagename',
+    'keypath', 'registrykey', 'keylastwritetimestamp', 'keylastwritetime',
+    'targetobject', 'targetfilename',
+    'status', 'substatus',
+    'processname', 'name', 'imagename', 'procname', 'appname',
+    'displayname', 'pipename', 'rulename', 'appdomainname',
+    'description', 'product', 'company', 'originalfilename',
+    'falsepositives',
+    'useragent',
+    'accounttype', '_accounttype', 'accountdescription',
+    'hostprevalence', 'hostinstanceid', 'hostid',
+}
+
+# Exact field names containing identity data (normalized: lowercase, no separators)
+# Derived from all 53 Velociraptor artifact definitions across all blueprints
+IDENTITY_FIELDS = {
+    # Usernames -> mask as "user"
+    'username': 'user',
+    'user': 'user',
+    '_user': 'user',
+    'subjectusername': 'user',
+    'targetusername': 'user',
+    'attempteduser': 'user',
+    'initiatinguser': 'user',
+    'initiatingeffectiveuser': 'user',
+    'fullname': 'user',
+    'creator': 'user',
+    'accountname': 'user',
+    '_accountname': 'user',
+    'account': 'user',
+    '_account': 'user',
+    # User IDs (can contain readable names in Azure/M365)
+    'userid': 'user',
+    'uid': 'user',
+    'accountid': 'user',
+    '_accountid': 'user',
+    # Domains -> mask as "domain"
+    'domainname': 'domain',
+    'domain': 'domain',
+    'subjectdomainname': 'domain',
+    'targetdomainname': 'domain',
+    'accountdomain': 'domain',
+}
 
 
 class DataAnonymizer:
     """Masks sensitive data before LLM, reverts after."""
 
     def __init__(self, custom_patterns: list[str] = None):
-        self.mapping: dict[str, str] = {}  # original -> masked
+        self.mapping: dict[str, str] = {}  # original -> masked (all, including composite)
         self.reverse_mapping: dict[str, str] = {}  # masked -> original
+        self._atomic_mappings: dict[str, tuple[str, str]] = {}  # original -> (masked, category) - only individual values
         self.counters = {
             "ip_ext": 0,
             "ip_int": 0,
@@ -181,6 +246,7 @@ class DataAnonymizer:
 
         self.mapping[original] = pseudo
         self.reverse_mapping[pseudo] = original
+        self._atomic_mappings[original] = (pseudo, category)
         return pseudo
 
     def _is_ip(self, value: str) -> bool:
@@ -194,6 +260,33 @@ class DataAnonymizer:
     def _is_email(self, value: str) -> bool:
         """Check if value looks like an email."""
         return bool(re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', value))
+
+    # Full regex patterns for known credential formats (prefix + length/structure validated)
+    _CREDENTIAL_PATTERNS = re.compile(
+        r'^('
+        r'sk-ant-[a-zA-Z0-9_-]{20,}|'              # Anthropic API key
+        r'sk-[a-zA-Z0-9]{20,}|'                     # OpenAI API key
+        r'ghp_[a-zA-Z0-9]{36,}|'                    # GitHub PAT (classic)
+        r'gho_[a-zA-Z0-9]{36,}|'                    # GitHub OAuth
+        r'ghu_[a-zA-Z0-9]{36,}|'                    # GitHub user-to-server
+        r'ghs_[a-zA-Z0-9]{36,}|'                    # GitHub server-to-server
+        r'github_pat_[a-zA-Z0-9_]{22,}|'            # GitHub fine-grained PAT
+        r'glpat-[a-zA-Z0-9_-]{20,}|'                # GitLab PAT
+        r'xoxb-[0-9]+-[0-9]+-[a-zA-Z0-9]+|'        # Slack bot token
+        r'xoxp-[0-9]+-[0-9]+-[a-zA-Z0-9]+|'        # Slack user token
+        r'AKIA[0-9A-Z]{16}|'                        # AWS access key (AKIA + exactly 16 uppercase alphanum)
+        r'AIzaSy[a-zA-Z0-9_-]{20,}|'                 # Google API key (AIzaSy + 20+ chars)
+        r'[0-9a-fA-F]{40}|'                         # SHA1 hash (40 hex)
+        r'[0-9a-fA-F]{64}|'                         # SHA256 hash (64 hex)
+        r'[0-9a-fA-F]{128}'                         # SHA512 hash (128 hex)
+        r')$'
+    )
+
+    def _is_credential(self, value: str) -> bool:
+        """Check if value matches known API key, token, or hash formats."""
+        if len(value) < 20:
+            return False
+        return bool(self._CREDENTIAL_PATTERNS.match(value))
 
     def _extract_domain_user(self, value: str) -> tuple[str, str] | None:
         """Extract domain and user from DOMAIN\\user format."""
@@ -327,31 +420,43 @@ class DataAnonymizer:
         if not value_str.strip():
             return value
 
+        # Skip boolean-like and trivial values
+        if value_str.lower() in ('true', 'false', 'none', 'null', 'n/a', 'unknown', '0', '1'):
+            return value
+
+        # Skip known-safe fields (forensic metadata that contains misleading keywords)
+        normalized_field = field_name.lower().replace('_', '').replace('.', '').replace(' ', '')
+        if normalized_field in SAFE_FIELDS:
+            return value
+
+        # Check explicit identity fields (exact field name match from artifact definitions)
+        identity_category = IDENTITY_FIELDS.get(normalized_field)
+        if identity_category:
+            if identity_category == 'domain':
+                return self._get_or_create_pseudo(value_str, "domain")
+            return self._mask_user(value_str)
+
         # Check custom patterns first
         if self._matches_custom_pattern(value_str):
             return self._get_or_create_pseudo(value_str, "user")
 
-        # Credential fields - use pseudo credentials (reversible)
-        if CREDENTIAL_FIELD_PATTERNS.search(field_name):
+        # Detect credentials by value pattern (known API key/token/hash formats)
+        if self._is_credential(value_str):
             return self._get_or_create_pseudo(value_str, "credential")
 
-        # IP fields
+        # IP fields (value must match IP regex)
         if IP_FIELD_PATTERNS.search(field_name) and self._is_ip(value_str):
             return self._mask_ip(value_str)
 
-        # Email fields
+        # Email fields (value must match email regex)
         if EMAIL_FIELD_PATTERNS.search(field_name) and self._is_email(value_str):
             return self._mask_email(value_str)
 
-        # User fields
-        if USER_FIELD_PATTERNS.search(field_name):
-            return self._mask_user(value_str)
-
-        # Host fields
+        # Host fields (field names are specific enough: Computer, Hostname, etc.)
         if HOST_FIELD_PATTERNS.search(field_name):
             return self._mask_host(value_str)
 
-        # Path/Command fields
+        # Path/Command fields - only mask embedded user profile paths
         if PATH_FIELD_PATTERNS.search(field_name):
             if "command" in field_name.lower() or "cmd" in field_name.lower():
                 return self._mask_commandline(value_str)
@@ -412,3 +517,34 @@ class DataAnonymizer:
             "counters": self.counters,
             "sample_mappings": dict(list(self.mapping.items())[:10])
         }
+
+    def get_masking_log_lines(self) -> list[str]:
+        """Return detailed log lines showing only atomic masked values (individual IPs, users, etc.), grouped by category."""
+        if not self._atomic_mappings:
+            return ["[Masking] No values were masked"]
+
+        CATEGORY_LABELS = {
+            "ip_ext": "External IPs",
+            "ip_int": "Internal IPs",
+            "email": "Emails",
+            "user": "Users",
+            "host": "Hosts",
+            "domain": "Domains",
+            "credential": "Credentials",
+        }
+
+        # Group by category
+        grouped: dict[str, list[tuple[str, str]]] = {}
+        for original, (masked, category) in self._atomic_mappings.items():
+            label = CATEGORY_LABELS.get(category, category)
+            grouped.setdefault(label, []).append((original, masked))
+
+        lines = ["[Masking] === Data Masking Summary ==="]
+        for label, mappings in grouped.items():
+            lines.append(f"[Masking] {label} ({len(mappings)}):")
+            for original, masked in mappings:
+                lines.append(f"[Masking]   {original} -> {masked}")
+
+        total = len(self._atomic_mappings)
+        lines.append(f"[Masking] Total: {total} values masked across {len(grouped)} categories")
+        return lines
