@@ -140,7 +140,8 @@ STYLE NOTES:
 - Use tables for structured data - executives appreciate scannable formats
 - Include specific numbers (e.g., "147 failed login attempts" not "many failed logins")
 - Reference artifact names (e.g., "Windows Event Logs", "Browser History") so readers understand data sources
-- Avoid raw IOCs, but do mention categories (e.g., "3 suspicious external IP addresses identified")"""
+- Avoid raw IOCs, but do mention categories (e.g., "3 suspicious external IP addresses identified")
+- Do NOT include or invent a "Collection Platform Version" or any tool version numbers - only use the metadata provided"""
 
         exec_prompt = f"""Create an EXECUTIVE FORENSICS REPORT based on this investigation data:
 
@@ -271,7 +272,8 @@ CRITICAL RULES:
 - Tell the story, don't just list findings
 - Critical items go at the TOP regardless of timestamp
 - Be specific in the action plan - use actual hostnames, accounts, IOCs from the data
-- If data is ambiguous, say so - don't fabricate details"""
+- If data is ambiguous, say so - don't fabricate details
+- Do NOT include or invent a "Collection Platform Version" or any tool version numbers - only use the metadata provided"""
 
         tech_prompt = f"""Create a TECHNICAL FORENSICS REPORT for a DFIR team leader.
 
