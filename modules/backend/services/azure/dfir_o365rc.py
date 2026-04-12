@@ -172,7 +172,8 @@ def collect_unified_audit_log(
     end_date: str,
     target_users: Optional[List[str]] = None,
     logger=None,
-    azure_config: Optional[Dict[str, str]] = None
+    azure_config: Optional[Dict[str, str]] = None,
+    run_id: str = None
 ) -> Dict:
     """
     Collect Unified Audit Log via DFIR-O365RC Docker container.
@@ -288,6 +289,11 @@ def collect_unified_audit_log(
             _cleanup_container(container_name)
             shutil.rmtree(output_dir, ignore_errors=True)
             return {'success': False, 'records': [], 'error': f'Container start failed: {error}'}
+
+        # Register cleanup so stop can kill the container
+        if run_id:
+            from services.workflow_service import register_cleanup
+            register_cleanup(run_id, lambda: _cleanup_container(container_name))
 
         # Stream logs with timeout using a separate thread for reading
         start_time = time.time()

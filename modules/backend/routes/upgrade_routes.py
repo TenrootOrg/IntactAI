@@ -142,6 +142,9 @@ def start_offline_upgrade():
         add_log_to_run(run_id, f"Package: {package_path}", "info")
         update_run_status(run_id, "running", progress=5)
 
+        from services.workflow_service import register_cancel_event, unregister_cancel
+        cancel_event = register_cancel_event(run_id)
+
         # Track completed modules for progress
         completed_modules = [0]
 
@@ -184,6 +187,8 @@ def start_offline_upgrade():
                 update_run_status(run_id, "failed", progress=0, error=str(e))
                 import traceback
                 traceback.print_exc()
+            finally:
+                unregister_cancel(run_id)
 
         # Start background thread
         thread = threading.Thread(target=run_offline_upgrade, daemon=True)
@@ -249,6 +254,9 @@ def prepare_upgrade_package():
         total_steps = sum(steps_per_module.get(m, 1) for m in modules.keys()) + 2  # +2 for manifest and archive
         completed_steps = [0]
 
+        from services.workflow_service import register_cancel_event, unregister_cancel
+        cancel_event_prep = register_cancel_event(run_id)
+
         # Run package preparation in background
         def run_prepare():
             try:
@@ -299,6 +307,8 @@ def prepare_upgrade_package():
                 update_run_status(run_id, "failed", progress=0, error=str(e))
                 import traceback
                 traceback.print_exc()
+            finally:
+                unregister_cancel(run_id)
 
         # Start background thread
         thread = threading.Thread(target=run_prepare, daemon=True)

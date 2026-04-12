@@ -300,8 +300,26 @@ document.addEventListener('alpine:init', () => {
             this.currentRunId = null;
         },
 
+        async stopWorkflow(runId) {
+            if (!confirm('Stop this workflow? Running operations will be cancelled.')) return;
+            try {
+                const response = await fetch(`/api/dashboard/automation/${runId}/stop`, { method: 'POST' });
+                if (response.ok) {
+                    this.load();
+                    if (this.selectedRun && this.selectedRun.id === runId) {
+                        this.selectedRun.status = 'cancelled';
+                    }
+                } else {
+                    const data = await response.json();
+                    alert('Failed to stop: ' + (data.error || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Error stopping workflow: ' + e.message);
+            }
+        },
+
         getStatusColor(status) {
-            const colors = { running: 'bg-blue-600', completed: 'bg-green-600', failed: 'bg-red-600' };
+            const colors = { running: 'bg-blue-600', completed: 'bg-green-600', failed: 'bg-red-600', cancelled: 'bg-orange-600' };
             return colors[status] || 'bg-gray-600';
         },
 

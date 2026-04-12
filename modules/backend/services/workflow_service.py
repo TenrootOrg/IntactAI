@@ -4,6 +4,7 @@ Workflow Service - Centralized workflow and job tracking with SQLite + Elasticse
 """
 
 import time
+import threading
 from datetime import datetime
 from services.file_storage_service import (
     save_workflow,
@@ -24,6 +25,65 @@ except ImportError:
 
 # Enhanced job tracking with detailed logs
 jobs = {}
+
+# Cancel/stop infrastructure
+_cancel_events: dict[str, threading.Event] = {}
+_cleanup_callbacks: dict[str, list] = {}
+_cancel_lock = threading.Lock()
+
+
+def register_cancel_event(run_id) -> threading.Event:
+    """Register a cancel event for a workflow run. Returns the Event to check in the pipeline."""
+    with _cancel_lock:
+        event = threading.Event()
+        _cancel_events[run_id] = event
+        _cleanup_callbacks[run_id] = []
+        return event
+
+
+def register_cleanup(run_id, callback):
+    """Register a cleanup callback for a workflow run. Called when stop is requested."""
+    with _cancel_lock:
+        if run_id in _cleanup_callbacks:
+            _cleanup_callbacks[run_id].append(callback)
+
+
+def is_cancelled(run_id) -> bool:
+    """Check if a workflow run has been cancelled."""
+    event = _cancel_events.get(run_id)
+    return event.is_set() if event else False
+
+
+def request_stop(run_id):
+    """Stop a running workflow: set cancel event, run cleanup callbacks, update status."""
+    with _cancel_lock:
+        event = _cancel_events.get(run_id)
+        callbacks = list(_cleanup_callbacks.get(run_id, []))
+
+    if event:
+        event.set()
+
+    # Run all cleanup callbacks (outside lock to avoid deadlocks)
+    for cb in callbacks:
+        try:
+            cb()
+        except Exception as e:
+            print(f"[WORKFLOW] Cleanup callback error for {run_id}: {e}", flush=True)
+
+    add_log_to_run(run_id, "[Pipeline] Stop requested by user", "warning")
+    update_run_status(run_id, "cancelled")
+
+    # Clean up registry
+    with _cancel_lock:
+        _cancel_events.pop(run_id, None)
+        _cleanup_callbacks.pop(run_id, None)
+
+
+def unregister_cancel(run_id):
+    """Remove cancel registration when a workflow completes naturally."""
+    with _cancel_lock:
+        _cancel_events.pop(run_id, None)
+        _cleanup_callbacks.pop(run_id, None)
 
 # Initialize file storage on module load
 print("[WORKFLOW] Using SQLite + Elasticsearch storage for workflows", flush=True)

@@ -164,13 +164,17 @@ def start_agentic_run():
         external_info = f", external_files={len(external_files)}" if external_files else ""
         print(f"[AGENTIC] Starting pipeline: run_id={run_id}, reports={report_types}{severity_info}{anonymize_info}{iris_info}{time_filter_info}{external_info}", flush=True)
 
+        # Register cancel event for stop support
+        from services.workflow_service import register_cancel_event
+        cancel_event = register_cancel_event(run_id)
+
         # Start pipeline in background thread
         time_filter_arg = time_filter if time_filter.get('enabled') else None
         thread = threading.Thread(
             target=run_agentic_pipeline,
             args=(run_id, blueprint_id, client_ids, collection_minutes, llm_config, report_types,
                   anonymize_data, custom_patterns, import_to_iris, iris_case_name, time_filter_arg, min_severity,
-                  external_files),
+                  external_files, cancel_event),
             daemon=True
         )
         thread.start()
@@ -261,13 +265,17 @@ def analyze_existing_collection():
         external_info = f", external_files={len(external_files)}" if external_files else ""
         print(f"[AGENTIC] Starting analysis on existing {collection_type}: {collection_id}, run_id={run_id}{severity_info}{time_filter_info}{external_info}", flush=True)
 
+        # Register cancel event for stop support
+        from services.workflow_service import register_cancel_event
+        cancel_event = register_cancel_event(run_id)
+
         # Start pipeline in background thread
         time_filter_arg = time_filter if time_filter.get('enabled') else None
         thread = threading.Thread(
             target=run_agentic_on_existing,
             args=(run_id, flow_id, hunt_id, llm_config, report_types,
                   anonymize_data, custom_patterns, import_to_iris, iris_case_name, time_filter_arg, min_severity,
-                  external_files),
+                  external_files, cancel_event),
             daemon=True
         )
         thread.start()

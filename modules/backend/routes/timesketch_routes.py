@@ -221,6 +221,9 @@ def run_timesketch_import():
                 workflow_logger("✓ KAPE collection completed successfully", "success")
                 update_run_status(run_id, "running", progress=40)
 
+                if cancel_event and cancel_event.is_set():
+                    return
+
                 # Phase 2: Process with Plaso
                 update_job(flow_id, {'phase': 'Processing with Plaso'})
                 workflow_logger("=== PHASE 2: Processing with Plaso ===", "info")
@@ -241,7 +244,8 @@ def run_timesketch_import():
                     parser=plaso_parser,
                     workers=plaso_workers,
                     hasher=plaso_hasher,
-                    hasher_file_size_mb=plaso_hasher_size_mb
+                    hasher_file_size_mb=plaso_hasher_size_mb,
+                    run_id=run_id
                 )
 
                 if not plaso_file:
@@ -285,6 +289,9 @@ def run_timesketch_import():
                     workflow_logger("⚠ Could not verify Plaso file with pinfo, continuing anyway...", "warning")
 
                 update_run_status(run_id, "running", progress=70)
+
+                if cancel_event and cancel_event.is_set():
+                    return
 
                 # Phase 3: Import to Timesketch
                 update_job(flow_id, {'phase': 'Importing to Timesketch'})
@@ -335,6 +342,9 @@ def run_timesketch_import():
                     print(f"[WORKFLOW] ✗ Pipeline failed: Timesketch import failed", flush=True)
 
             except Exception as e:
+                from services.workflow_service import is_cancelled
+                if is_cancelled(run_id):
+                    return
                 error_detail = traceback.format_exc()
                 update_job(flow_id, {
                     'status': 'failed',
@@ -355,6 +365,13 @@ def run_timesketch_import():
                         print(f"[WORKFLOW] Cleaned up plaso file: {plaso_file}", flush=True)
                     except:
                         pass
+            finally:
+                from services.workflow_service import unregister_cancel
+                unregister_cancel(run_id)
+
+        # Register cancel event for stop support
+        from services.workflow_service import register_cancel_event
+        cancel_event = register_cancel_event(run_id)
 
         # Start workflow in background thread
         workflow_thread = threading.Thread(target=timesketch_workflow, daemon=True)

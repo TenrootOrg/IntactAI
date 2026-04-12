@@ -8,7 +8,9 @@ from datetime import datetime
 
 from services.workflow_service import (
     add_log_to_run,
-    update_run_status
+    update_run_status,
+    is_cancelled,
+    unregister_cancel
 )
 from services.file_storage_service import get_agentic_blueprint, get_workflow, save_workflow
 from services.data_anonymizer import DataAnonymizer
@@ -31,7 +33,7 @@ from services.agentic.utils import extract_timeline_events, filter_malicious_eve
 def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, llm_config,
                          report_types=None, anonymize_data=False, custom_patterns=None,
                          import_to_iris=False, iris_case_name=None, time_filter=None,
-                         min_severity='informational', external_files=None):
+                         min_severity='informational', external_files=None, cancel_event=None):
     """Background thread: full agentic forensics pipeline
     Args:
         report_types: List of report types to generate: ['technical'], or None for both
@@ -104,6 +106,9 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         add_log_to_run(run_id, "[Velociraptor] Creating collections on selected clients...", "info")
         _update_phase(run_id, "creating_collections", 5)
 
+        if cancel_event and cancel_event.is_set():
+            return
+
         collection_results = create_collections(run_id, artifacts, settings, client_ids)
         success_collections = [c for c in collection_results if c['flow_id']]
         add_log_to_run(run_id, f"[Velociraptor] Created {len(success_collections)}/{len(client_ids)} collections ({len(artifacts)} artifacts each)", "info")
@@ -113,13 +118,16 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
             update_run_status(run_id, "failed", progress=0, error="Failed to create any collections")
             return
 
+        if cancel_event and cancel_event.is_set():
+            return
+
         # 3. Stream collect and analyze - monitors flows, retrieves results as available, runs LLM in parallel
         add_log_to_run(run_id, f"[Velociraptor] Collecting data for up to {collection_minutes} minutes (streaming analysis)...", "info")
         if min_severity != 'informational':
             add_log_to_run(run_id, f"[Pipeline] Severity filter active: {min_severity}+ only", "info")
         _update_phase(run_id, "collecting", 10)
         all_results, artifact_summaries, timed_out, total_rows_before_filter = stream_collect_and_analyze(
-            run_id, success_collections, artifacts, collection_minutes, llm_config, anonymizer, _update_phase, min_severity, time_filter
+            run_id, success_collections, artifacts, collection_minutes, llm_config, anonymizer, _update_phase, min_severity, time_filter, cancel_event
         )
 
         # 4. Cancel any remaining collections ONLY if we timed out
@@ -131,6 +139,11 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
 
         total_rows = sum(len(rows) for rows in all_results.values())
         add_log_to_run(run_id, f"[Pipeline] Collection complete: {total_rows} total rows across {len(all_results)} artifacts", "success")
+
+        # Log masking summary before report generation
+        if anonymizer:
+            for line in anonymizer.get_masking_log_lines():
+                add_log_to_run(run_id, line, "info")
 
         # 5. Load external log files (if provided)
         if external_files:
@@ -174,6 +187,9 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
             return
 
         # 7. Generate report(s) - skip if no report types selected
+        if cancel_event and cancel_event.is_set():
+            return
+
         report_content = {}
         multi_reports = None
         zip_path = None
@@ -249,6 +265,9 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
             _update_phase(run_id, "skipping_report", 85)
 
         # 9. Import to IRIS (if enabled)
+        if cancel_event and cancel_event.is_set():
+            return
+
         iris_result = None
         if import_to_iris:
             add_log_to_run(run_id, "[IRIS] Starting IRIS import...", "info")
@@ -316,15 +335,20 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
 
         _update_phase(run_id, "completed", 100)
         add_log_to_run(run_id, "[Pipeline] Analysis complete! Report ready for download.", "success")
-        update_run_status(run_id, "completed", progress=100)
+        if not is_cancelled(run_id):
+            update_run_status(run_id, "completed", progress=100)
 
     except Exception as e:
+        if is_cancelled(run_id):
+            return  # Stop was requested, don't overwrite cancelled status
         error_msg = f"[Pipeline] Error: {str(e)}"
         print(f"[AGENTIC] {error_msg}", flush=True)
         traceback.print_exc()
         add_log_to_run(run_id, error_msg, "error")
         add_log_to_run(run_id, traceback.format_exc(), "error")
         update_run_status(run_id, "failed", error=str(e))
+    finally:
+        unregister_cancel(run_id)
 
 
 def _update_phase(run_id, phase, progress):
@@ -339,7 +363,7 @@ def _update_phase(run_id, phase, progress):
 def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                              report_types=None, anonymize_data=False, custom_patterns=None,
                              import_to_iris=False, iris_case_name=None, time_filter=None,
-                             min_severity='informational', external_files=None):
+                             min_severity='informational', external_files=None, cancel_event=None):
     """Run AI analysis on an existing Velociraptor flow or hunt (skip collection step)
 
     Args:
@@ -490,6 +514,9 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
             return
 
         # Run LLM analysis on the results
+        if cancel_event and cancel_event.is_set():
+            return
+
         add_log_to_run(run_id, "[LLM] Starting artifact analysis...", "info")
         _update_phase(run_id, "analyzing", 20)
         from services.agentic.analyzers import analyze_artifacts
@@ -497,7 +524,15 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         add_log_to_run(run_id, f"[LLM] Analysis complete: {len(artifact_summaries)} artifact summaries", "success")
         _update_phase(run_id, "analyzing", 80)
 
+        # Log masking summary before report generation
+        if anonymizer:
+            for line in anonymizer.get_masking_log_lines():
+                add_log_to_run(run_id, line, "info")
+
         # Generate reports
+        if cancel_event and cancel_event.is_set():
+            return
+
         report_content = {}
         if report_types:
             add_log_to_run(run_id, f"[Report] Generating {' + '.join(report_types)} report(s)...", "info")
@@ -587,11 +622,16 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
 
         _update_phase(run_id, "completed", 100)
         add_log_to_run(run_id, "[Pipeline] Analysis complete! Report ready.", "success")
-        update_run_status(run_id, "completed", progress=100)
+        if not is_cancelled(run_id):
+            update_run_status(run_id, "completed", progress=100)
 
     except Exception as e:
+        if is_cancelled(run_id):
+            return
         error_msg = f"[Pipeline] Error: {str(e)}"
         print(f"[AGENTIC] {error_msg}", flush=True)
         traceback.print_exc()
         add_log_to_run(run_id, error_msg, "error")
         update_run_status(run_id, "failed", error=str(e))
+    finally:
+        unregister_cancel(run_id)

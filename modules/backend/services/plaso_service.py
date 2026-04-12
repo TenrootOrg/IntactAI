@@ -284,7 +284,7 @@ def run_pinfo(plaso_file, logger=None):
         return None
 
 
-def process_with_plaso(client_id, flow_id, client_name, logger=None, parser=None, workers=None, hasher=None, hasher_file_size_mb=None):
+def process_with_plaso(client_id, flow_id, client_name, logger=None, parser=None, workers=None, hasher=None, hasher_file_size_mb=None, run_id=None):
     """Process collected files with Plaso (log2timeline)
 
     Args:
@@ -508,6 +508,11 @@ def process_with_plaso(client_id, flow_id, client_name, logger=None, parser=None
             text=True,
             bufsize=1
         )
+
+        # Register cleanup so stop can kill the Plaso process
+        if run_id:
+            from services.workflow_service import register_cleanup
+            register_cleanup(run_id, lambda: process.kill() if process.poll() is None else None)
 
         # Stream output - log important lines to Elasticsearch
         output_lines = []
