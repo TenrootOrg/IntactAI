@@ -397,7 +397,7 @@ def filter_by_severity(rows, severity_level):
     return filtered
 
 
-def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes, llm_config, anonymizer=None, update_phase_func=None, min_severity='informational', time_filter=None):
+def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes, llm_config, anonymizer=None, update_phase_func=None, min_severity='informational', time_filter=None, cancel_event=None):
     """Monitor collection, poll artifact sources for data, analyze as data becomes available.
     Returns (all_results dict, summaries dict, timed_out bool).
     If anonymizer is provided, data is masked before LLM analysis.
@@ -453,6 +453,11 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
     # Thread pool for parallel LLM analysis
     executor = ThreadPoolExecutor(max_workers=max_concurrent)
 
+    # Register cleanup callbacks for stop support
+    from services.workflow_service import register_cleanup
+    register_cleanup(run_id, lambda: executor.shutdown(wait=False, cancel_futures=True))
+    register_cleanup(run_id, lambda: cancel_collections(run_id, active_flows))
+
     def submit_for_analysis(artifact_name, rows):
         """Submit artifact for LLM analysis if not already submitted."""
         if artifact_name in analyzed_artifacts:
@@ -486,6 +491,11 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
 
     try:
         while elapsed < total_seconds:
+            # Check for cancellation
+            if cancel_event and cancel_event.is_set():
+                add_log_to_run(run_id, "[Velociraptor] Collection cancelled by user", "warning")
+                break
+
             # Poll each flow for available data
             for col in active_flows:
                 client_id = col.get('client_id')
@@ -636,7 +646,11 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                 f"[Pipeline] {remaining_min}m {remaining_sec}s | Collected: {artifacts_found}/{total_sources} sources | Analyzing: {analyzing_count} | Done: {analyzed_count}",
                 "info")
 
-            time.sleep(min(interval, remaining))
+            sleep_time = min(interval, remaining)
+            if cancel_event:
+                cancel_event.wait(timeout=sleep_time)
+            else:
+                time.sleep(sleep_time)
             elapsed += interval
 
         # Collection phase done - do one final poll

@@ -162,6 +162,10 @@ def start_scan():
     )
     update_run_status(run_id, "running", progress=5)
 
+    # Register cancel event for stop support
+    from services.workflow_service import register_cancel_event, unregister_cancel, is_cancelled
+    cancel_event = register_cancel_event(run_id)
+
     # Run everything in background thread - all errors go to workflow log
     import threading
     def run_scan():
@@ -218,6 +222,10 @@ def start_scan():
                 blueprint=blueprint,
                 options=options
             )
+
+            if is_cancelled(run_id):
+                return
+
             _azure_runs[run_id] = result
 
             # Persist raw data to disk so it survives backend restart
@@ -232,12 +240,17 @@ def start_scan():
             if result.get('status') == 'failed':
                 update_run_status(run_id, "failed", error=result.get('error', 'Unknown error'))
             else:
-                update_run_status(run_id, "completed", progress=100, details={'has_report': bool(result.get('has_report'))})
+                if not is_cancelled(run_id):
+                    update_run_status(run_id, "completed", progress=100, details={'has_report': bool(result.get('has_report'))})
 
         except Exception as e:
+            if is_cancelled(run_id):
+                return
             add_log_to_run(run_id, f"[AZURE] Scan failed: {str(e)}", "error")
             update_run_status(run_id, "failed", error=str(e))
             traceback.print_exc()
+        finally:
+            unregister_cancel(run_id)
 
     thread = threading.Thread(target=run_scan, daemon=True)
     thread.start()

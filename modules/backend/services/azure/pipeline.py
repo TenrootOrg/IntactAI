@@ -282,7 +282,8 @@ def run_azure_pipeline(
             target_users=target_users,
             target_ips=target_ips,
             pivot_mode=pivot_mode,
-            logger=collection_logger
+            logger=collection_logger,
+            run_id=run_id
         )
 
         result['phases']['collection'] = {
@@ -317,6 +318,10 @@ def run_azure_pipeline(
             result['message'] = 'No data collected'
             return result
 
+        from services.workflow_service import is_cancelled
+        if is_cancelled(run_id):
+            return result
+
         # =====================================================================
         # Phase 3: Time Filtering (if enabled)
         # =====================================================================
@@ -332,6 +337,9 @@ def run_azure_pipeline(
         # Store collected data for API access
         result['collected_data'] = collected_data
         _set_progress(run_id, 60)
+
+        if is_cancelled(run_id):
+            return result
 
         # =====================================================================
         # Phase 4: SIGMA Detection
@@ -464,6 +472,9 @@ def run_azure_pipeline(
 
         _set_progress(run_id, 70)
 
+        if is_cancelled(run_id):
+            return result
+
         # =====================================================================
         # Phase 5: LLM Analysis (if enabled)
         # =====================================================================
@@ -499,6 +510,9 @@ def run_azure_pipeline(
 
         result['analysis'] = analysis_results
         _set_progress(run_id, 90)
+
+        if is_cancelled(run_id):
+            return result
 
         # =====================================================================
         # Phase 6: Report Generation (always, even without LLM)

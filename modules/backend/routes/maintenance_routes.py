@@ -30,6 +30,9 @@ def run_system_maintenance():
         add_log_to_run(run_id, "Tasks: Artifact Import (Exchange + DetectRaptor + TenRoot) → Tool Download → Health Check", "info")
         update_run_status(run_id, "running", progress=5)
 
+        from services.workflow_service import register_cancel_event, unregister_cancel
+        cancel_event = register_cancel_event(run_id)
+
         # Run maintenance in background
         def run_maintenance():
             try:
@@ -165,6 +168,8 @@ def run_system_maintenance():
             except Exception as e:
                 add_log_to_run(run_id, f"✗ Maintenance failed: {str(e)}", "error")
                 update_run_status(run_id, "failed", progress=0, error=str(e))
+            finally:
+                unregister_cancel(run_id)
 
         # Start background thread
         thread = threading.Thread(target=run_maintenance, daemon=True)
@@ -313,6 +318,9 @@ def run_system_purge():
     )
     update_run_status(run_id, "running", progress=5)
     add_log_to_run(run_id, "Starting system purge...", "info")
+
+    from services.workflow_service import register_cancel_event, unregister_cancel
+    cancel_event = register_cancel_event(run_id)
 
     def run_purge():
         import os
@@ -602,6 +610,8 @@ def run_system_purge():
         except Exception as e:
             add_log_to_run(run_id, f"Purge failed: {str(e)}", "error")
             update_run_status(run_id, "failed", error=str(e))
+        finally:
+            unregister_cancel(run_id)
 
     thread = threading.Thread(target=run_purge, daemon=True)
     thread.start()

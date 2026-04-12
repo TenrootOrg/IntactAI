@@ -147,6 +147,9 @@ def generate_offline_collector():
         add_log_to_run(run_id, f"Target OS: {os_type}", "info")
         update_run_status(run_id, "running", progress=10)
 
+        from services.workflow_service import register_cancel_event, unregister_cancel
+        cancel_event = register_cancel_event(run_id)
+
         print(f"[OFFLINE] Generate request: config={config_id}, os={os_type}, run_id={run_id}", flush=True)
 
         # Run generation in background thread
@@ -183,6 +186,8 @@ def generate_offline_collector():
                 traceback.print_exc()
                 add_log_to_run(run_id, f"Generation failed: {error_msg}", "error")
                 update_run_status(run_id, "failed", progress=0, error=error_msg)
+            finally:
+                unregister_cancel(run_id)
 
         thread = threading.Thread(target=do_generate, daemon=True)
         thread.start()

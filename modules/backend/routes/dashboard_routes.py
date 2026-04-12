@@ -50,6 +50,20 @@ def get_automation_details(run_id):
 
     return jsonify({"error": f"Automation run {run_id} not found"}), 404
 
+@dashboard_bp.route('/api/dashboard/automation/<run_id>/stop', methods=['POST'])
+def stop_automation(run_id):
+    """Stop a running workflow and clean up its resources"""
+    from services.workflow_service import request_stop
+    run = get_automation_run(run_id)
+    if not run:
+        return jsonify({"error": f"Automation run {run_id} not found"}), 404
+    if run.get('status') not in ('running', 'pending'):
+        return jsonify({"error": f"Cannot stop workflow in '{run.get('status')}' state"}), 400
+
+    request_stop(run_id)
+    return jsonify({"status": "cancelled", "run_id": run_id})
+
+
 @dashboard_bp.route('/api/dashboard/automation/<run_id>/logs')
 def get_automation_logs(run_id):
     """Get logs for a specific automation run"""

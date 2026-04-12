@@ -306,7 +306,8 @@ def collect_azure_logs(
     target_ips: Optional[List[str]] = None,
     pivot_mode: bool = False,
     output_dir: Optional[str] = None,
-    logger=None
+    logger=None,
+    run_id: str = None
 ) -> Tuple[Dict[str, List[Dict]], Dict[str, str]]:
     """
     Collect Azure/M365 logs from Microsoft Graph API with identity filters.
@@ -385,7 +386,8 @@ def collect_azure_logs(
                             end_date=end_date or datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
                             target_users=target_users,
                             logger=log,
-                            azure_config=azure_config
+                            azure_config=azure_config,
+                            run_id=run_id
                         )
                         if ual_result.get('skipped'):
                             log(f"{source_name} skipped: {ual_result.get('reason', 'Exchange Online not available')}", "info")
