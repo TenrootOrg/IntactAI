@@ -403,6 +403,23 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         collection_type = "flow" if flow_id else "hunt"
         add_log_to_run(run_id, f"[Pipeline] Analyzing existing {collection_type}: {collection_id}", "info")
 
+        # Log time filter summary
+        if time_filter and time_filter.get('enabled'):
+            mode = time_filter.get('mode', 'relative')
+            if mode == 'relative':
+                from datetime import timedelta
+                range_str = time_filter.get('relative_range', '7d')
+                now = datetime.now()
+                if range_str.endswith('h'):
+                    start = now - timedelta(hours=int(range_str[:-1]))
+                elif range_str.endswith('d'):
+                    start = now - timedelta(days=int(range_str[:-1]))
+                else:
+                    start = now - timedelta(days=7)
+                add_log_to_run(run_id, f"[Pipeline] Time filter: last {range_str} ({start.strftime('%Y-%m-%d %H:%M')} to {now.strftime('%Y-%m-%d %H:%M')})", "info")
+            else:
+                add_log_to_run(run_id, f"[Pipeline] Time filter: {time_filter.get('start_datetime')} to {time_filter.get('end_datetime', 'now')}", "info")
+
         # Validate LLM configuration before starting
         from services.agentic.analyzers import validate_llm_config
         try:
