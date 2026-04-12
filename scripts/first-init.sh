@@ -172,19 +172,15 @@ generate_certificates() {
         log_info "  IRIS Root CA exists, skipping"
     fi
 
-    # IRIS Web Cert
+    # IRIS Web Cert — shared with Nginx (same cert, copied to IRIS path)
     local iris_web="$SCRIPT_DIR/modules/iris/config/certificates/web_certificates"
     mkdir -p "$iris_web"
-    if [[ ! -f "$iris_web/iris_dev_cert.pem" ]]; then
-        log_info "  Generating IRIS web certificate..."
-        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout "$iris_web/iris_dev_key.pem" \
-            -out "$iris_web/iris_dev_cert.pem" \
-            -subj "/CN=$DOMAIN/O=MSSP/C=US" 2>/dev/null
+    if [[ -f "$nginx_ssl/nginx-cert.crt" ]]; then
+        log_info "  Copying shared TLS certificate to IRIS..."
+        cp "$nginx_ssl/nginx-cert.crt" "$iris_web/iris_dev_cert.pem"
+        cp "$nginx_ssl/nginx-cert.key" "$iris_web/iris_dev_key.pem"
         chmod 644 "$iris_web"/*.pem
-        log_success "  IRIS web certificate generated"
-    else
-        log_info "  IRIS web certificate exists, skipping"
+        log_success "  IRIS web certificate synced with Nginx certificate"
     fi
 }
 
