@@ -75,10 +75,9 @@ document.addEventListener('alpine:init', () => {
     // Services status store
     Alpine.store('services', {
         statuses: {},
-        clients: [],
         clientCount: 0,
         onlineCount: 0,
-        onlineClients: [],
+        onlineClientCount: 0,
 
         async checkAll() {
             try {
@@ -130,33 +129,18 @@ document.addEventListener('alpine:init', () => {
                 const response = await fetch('/api/clients');
                 if (response.ok) {
                     const data = await response.json();
-                    this.clients = data.items || [];
-                    this.clientCount = this.clients.length;
+                    const clients = data.items || [];
+                    this.clientCount = data.total || clients.length;
 
                     const now = Date.now() / 1000;
-                    this.onlineClients = this.clients.filter(c => {
+                    this.onlineClientCount = clients.filter(c => {
                         const lastSeen = c.last_seen_at ? c.last_seen_at / 1000000 : 0;
                         return (now - lastSeen) < 600;
-                    });
-
-                    // Sort clients by online status
-                    this.clients.sort((a, b) => {
-                        const aOnline = (now - (a.last_seen_at ? a.last_seen_at / 1000000 : 0)) < 600;
-                        const bOnline = (now - (b.last_seen_at ? b.last_seen_at / 1000000 : 0)) < 600;
-                        if (aOnline && !bOnline) return -1;
-                        if (!aOnline && bOnline) return 1;
-                        return 0;
-                    });
+                    }).length;
                 }
             } catch (e) {
                 console.error('Failed to load clients:', e);
             }
-        },
-
-        isClientOnline(client) {
-            const now = Date.now() / 1000;
-            const lastSeen = client.last_seen_at ? client.last_seen_at / 1000000 : 0;
-            return (now - lastSeen) < 600;
         },
 
         getHealthStatus() {

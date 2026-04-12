@@ -4,7 +4,7 @@ Client Routes - Client endpoints
 """
 
 import os
-from flask import Blueprint, jsonify, send_file
+from flask import Blueprint, jsonify, send_file, request
 import traceback
 
 from services import get_clients_from_snapshot
@@ -14,13 +14,32 @@ client_bp = Blueprint('client', __name__)
 
 @client_bp.route('/api/clients')
 def get_clients():
-    """Get all Velociraptor clients from snapshot file"""
+    """Get Velociraptor clients with optional search and limit.
+
+    Query params:
+        search: filter by hostname (case-insensitive contains)
+        limit: max number of clients to return (default: all)
+    """
     try:
         clients = get_clients_from_snapshot()
+        total = len(clients)
+
+        # Filter by hostname search
+        search = request.args.get('search', '').strip().lower()
+        if search:
+            clients = [c for c in clients if search in (c.get('hostname') or '').lower()]
+
+        filtered = len(clients)
+
+        # Apply limit
+        limit = request.args.get('limit', type=int)
+        if limit and limit > 0:
+            clients = clients[:limit]
 
         return jsonify({
             "items": clients,
-            "total": len(clients)
+            "total": total,
+            "filtered": filtered
         })
 
     except Exception as e:

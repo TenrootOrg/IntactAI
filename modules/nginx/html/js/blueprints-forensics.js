@@ -61,17 +61,23 @@ function setForensicsDefaultBlueprint(mode, blueprints = null) {
     }
 }
 
-async function loadForensicsClients() {
+async function loadForensicsClients(search = '') {
     try {
-        const response = await fetch('/api/clients');
+        let url = '/api/clients?limit=20';
+        if (search) url += `&search=${encodeURIComponent(search)}`;
+        const response = await fetch(url);
         const data = await response.json();
-        // API returns 'items' not 'clients'
-        const clients = data.items || data.clients || [];
-        if (clients.length > 0) {
-            forensicsClientsCache = clients;
-            renderForensicsClients(clients);
-        } else {
-            renderForensicsClients([]);
+        const clients = data.items || [];
+        forensicsClientsCache = clients;
+        renderForensicsClients(clients);
+
+        // Show "more results" hint
+        const filtered = data.filtered || clients.length;
+        if (filtered > clients.length) {
+            const container = document.getElementById('forensics-client-list');
+            if (container) {
+                container.innerHTML += `<p class="text-xs text-gray-500 text-center py-2">${filtered - clients.length} more — refine your search</p>`;
+            }
         }
     } catch (error) {
         console.error('[Forensics] Error loading clients:', error);
@@ -122,12 +128,10 @@ function selectAllForensicsClients(select) {
     renderForensicsClients(forensicsClientsCache);
 }
 
+let _forensicsSearchTimeout = null;
 function filterForensicsClients(query) {
-    const filtered = forensicsClientsCache.filter(c =>
-        (c.hostname || '').toLowerCase().includes(query.toLowerCase()) ||
-        (c.os || '').toLowerCase().includes(query.toLowerCase())
-    );
-    renderForensicsClients(filtered);
+    clearTimeout(_forensicsSearchTimeout);
+    _forensicsSearchTimeout = setTimeout(() => loadForensicsClients(query), 300);
 }
 
 async function onForensicsBlueprintChange(blueprintId) {
