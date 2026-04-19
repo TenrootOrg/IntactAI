@@ -163,6 +163,10 @@ def run_timesketch_import():
                         }
                     )
 
+                # Register cancel event for stop support (now that run_id is known)
+                from services.workflow_service import register_cancel_event
+                cancel_event = register_cancel_event(run_id)
+
                 # Create a logger callback that writes to Elasticsearch
                 def workflow_logger(message, level="info"):
                     """Callback to log messages to Elasticsearch workflow run"""
@@ -369,11 +373,7 @@ def run_timesketch_import():
                 from services.workflow_service import unregister_cancel
                 unregister_cancel(run_id)
 
-        # Register cancel event for stop support
-        from services.workflow_service import register_cancel_event
-        cancel_event = register_cancel_event(run_id)
-
-        # Start workflow in background thread
+        # Start workflow in background thread (cancel event is registered inside the thread once run_id is known)
         workflow_thread = threading.Thread(target=timesketch_workflow, daemon=True)
         workflow_thread.start()
 
