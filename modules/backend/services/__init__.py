@@ -27,7 +27,6 @@ from services.kape_service import (
 )
 
 from services.plaso_service import (
-    process_with_plaso,
     run_pinfo
 )
 
@@ -69,7 +68,6 @@ __all__ = [
     'create_velociraptor_hunt',
     'run_kape_collection_grpc',
     'monitor_flow_completion',
-    'process_with_plaso',
     'run_pinfo',
     'import_to_timesketch',
     'initialize_velociraptor_artifacts',
