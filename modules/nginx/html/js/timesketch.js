@@ -50,7 +50,7 @@ function onTimesketchBlueprintChange() {
     const blueprint = window.timesketchBlueprintsCache.find(bp => bp.id === blueprintId);
 
     if (blueprint && blueprint.settings) {
-        kapeSpan.textContent = `KAPE: ${blueprint.settings.kape_target || 'N/A'}`;
+        kapeSpan.textContent = `Triage: ${blueprint.settings.kape_target || 'N/A'}`;
         plasoSpan.textContent = `Plaso: ${blueprint.settings.plaso_parser || 'N/A'}`;
         infoDiv.classList.remove('hidden');
     } else {
@@ -156,7 +156,7 @@ async function runTimeSketchWorkflow() {
 
     const blueprintName = document.getElementById('timesketch-blueprint-select').selectedOptions[0]?.text || 'Unknown';
 
-    if (!confirm(`Start KAPE collection and TimeSketch import for ${selectedClients.length} client(s)?\n\nBlueprint: ${blueprintName}\nClients: ${hostnames}\nKAPE Target: ${kapeTarget}\nPlaso Parser: ${plasoParser}\nCollection Timeout: ${timeoutSeconds}s\nCPU Limit: ${cpuLimit}%\nSketch: ${sketchName}\n\nNote: If sketch already exists, timelines will be added to it.`)) {
+    if (!confirm(`Start triage collection and TimeSketch import for ${selectedClients.length} client(s)?\n\nBlueprint: ${blueprintName}\nClients: ${hostnames}\nTriage Target: ${kapeTarget}\nPlaso Parser: ${plasoParser}\nCollection Timeout: ${timeoutSeconds}s\nCPU Limit: ${cpuLimit}%\nSketch: ${sketchName}\n\nNote: If sketch already exists, timelines will be added to it.`)) {
         return;
     }
 
@@ -166,7 +166,7 @@ async function runTimeSketchWorkflow() {
             const clientId = clientIds[i];
             const hostname = selectedClients[i].dataset.hostname;
 
-            // Step 1: Start KAPE collection
+            // Step 1: Start triage collection
             const blueprintId = document.getElementById('timesketch-blueprint-select').value;
             const kapeResponse = await fetch('/api/velociraptor/timesketch', {
                 method: 'POST',
@@ -212,7 +212,7 @@ async function runTimeSketchWorkflow() {
             }
         }
 
-        alert(`✓ Timesketch pipeline started for ${successCount} client(s)!\n\nSketch: ${sketchName}\nBlueprint: ${blueprintName}\nKAPE Target: ${kapeTarget}\n\nCheck the Workflows tab to monitor progress.`);
+        alert(`✓ Timesketch pipeline started for ${successCount} client(s)!\n\nSketch: ${sketchName}\nBlueprint: ${blueprintName}\nTriage Target: ${kapeTarget}\n\nCheck the Workflows tab to monitor progress.`);
 
         switchTab('workflows');
 
@@ -307,10 +307,10 @@ function handleTimesketchFileSelect(file) {
     dropzoneText.innerHTML = `<span class="text-purple-400 font-medium">${file.name}</span><br><span class="text-xs">${sizeStr}</span>`;
 }
 
-// Upload KAPE file using tus protocol
+// Upload triage file using tus protocol
 function uploadKapeToTimesketch() {
     if (!tsSelectedFile) {
-        alert('Please select a KAPE collection file');
+        alert('Please select a triage collection file');
         return;
     }
 
