@@ -319,6 +319,14 @@ deploy_timesketch() {
         # Ensure user is enabled
         docker exec mssp_timesketch_web tsctl enable-user "${ts_user}" >/dev/null 2>&1 || true
         log_success "  TimeSketch user '${ts_user}' ready"
+
+        # Enable DFIQ after successful deployment (requires db migration for schema)
+        log_info "  Enabling DFIQ..."
+        docker exec mssp_timesketch_web tsctl db upgrade 2>/dev/null || true
+        sed -i 's/DFIQ_ENABLED = False/DFIQ_ENABLED = True/' "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf"
+        docker restart mssp_timesketch_web >/dev/null 2>&1
+        log_success "  DFIQ enabled"
+
         track_module_success "TimeSketch"
     else
         log_error "  TimeSketch user creation failed: ${ts_error}"
