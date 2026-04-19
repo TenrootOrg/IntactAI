@@ -324,8 +324,22 @@ deploy_timesketch() {
         log_info "  Enabling DFIQ..."
         docker exec mssp_timesketch_web tsctl db upgrade 2>/dev/null || true
         sed -i 's/DFIQ_ENABLED = False/DFIQ_ENABLED = True/' "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf"
-        docker restart mssp_timesketch_web >/dev/null 2>&1
         log_success "  DFIQ enabled"
+
+        # Raise OpenSearch / import timeouts so large .plaso imports don't false-fail
+        # (upstream defaults are 10s and 180s — too aggressive under disk/memory pressure)
+        log_info "  Raising Timesketch OpenSearch/import timeouts..."
+        local ts_conf="${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf"
+        sed -i 's/^OPENSEARCH_TIMEOUT = 10$/OPENSEARCH_TIMEOUT = 300/'                    "$ts_conf"
+        sed -i 's/^OPENSEARCH_FLUSH_INTERVAL = 5000$/OPENSEARCH_FLUSH_INTERVAL = 10000/'  "$ts_conf"
+        sed -i 's/^OPENSEARCH_INDEX_WAIT_TIMEOUT = 10$/OPENSEARCH_INDEX_WAIT_TIMEOUT = 300/' "$ts_conf"
+        sed -i 's/^TIMEOUT_FOR_EVENT_IMPORT = 180$/TIMEOUT_FOR_EVENT_IMPORT = 600/'       "$ts_conf"
+        log_success "  Timeouts raised (OpenSearch 10->300s, event import 180->600s)"
+
+        # Restart the Timesketch containers that bind-mount timesketch.conf so both
+        # DFIQ and the timeout bumps take effect. Worker + web_legacy matter too —
+        # without this, indexing runs with the old timeouts until next reboot.
+        docker restart mssp_timesketch_web mssp_timesketch_worker mssp_timesketch_web_legacy >/dev/null 2>&1
 
         track_module_success "TimeSketch"
     else
