@@ -13,7 +13,7 @@ import subprocess
 import shutil
 from datetime import datetime
 
-from config import TIMESKETCH_CONFIG, VELOCIRAPTOR_CONTAINER, PLASO_IMAGE
+from config import TIMESKETCH_CONFIG, VELOCIRAPTOR_CONTAINER, PLASO_IMAGE, PLASO_OUTPUT_DIR
 from services import (
     get_job,
     update_job,
@@ -21,11 +21,12 @@ from services import (
     add_log_to_run,
     update_run_status,
     monitor_flow_completion,
-    process_with_plaso,
     run_pinfo,
     import_to_timesketch,
     get_jobs
 )
+from services.velociraptor_service import export_flow_to_zip, cleanup_flow_export
+from services.kape_upload_service import process_kape_upload
 
 timesketch_bp = Blueprint('timesketch', __name__)
 
@@ -128,9 +129,8 @@ def run_timesketch_import():
 
         # Run the complete workflow in a background thread
         def timesketch_workflow():
-            """Complete Timesketch workflow: Monitor -> Plaso -> Import"""
+            """Complete Timesketch workflow: Monitor flow -> Export ZIP -> process_kape_upload (Plaso + Timesketch)"""
             run_id = None
-            plaso_file = None  # Track for cleanup
             try:
                 # Get job info and check if run_id already exists
                 job_info = get_job(flow_id)
@@ -228,85 +228,68 @@ def run_timesketch_import():
                 if cancel_event and cancel_event.is_set():
                     return
 
-                # Phase 2: Process with Plaso
-                update_job(flow_id, {'phase': 'Processing with Plaso'})
-                workflow_logger("=== PHASE 2: Processing with Plaso ===", "info")
-                if plaso_parser:
-                    workflow_logger(f"Parser preset: {plaso_parser}", "info")
-                workflow_logger(f"Workers: {plaso_workers}", "info")
-                if plaso_hasher:
-                    hasher_info = f"Hasher: {plaso_hasher}"
-                    if plaso_hasher_size_mb > 0:
-                        hasher_info += f" (files < {plaso_hasher_size_mb}MB)"
-                    workflow_logger(hasher_info, "info")
-                print(f"\n[WORKFLOW] === PHASE 2: Processing with Plaso ===\n", flush=True)
+                # Phase 2: Export flow as ZIP and process it through the same pipeline
+                # that the Upload Existing path uses. This avoids the 1 MiB chunk-
+                # truncation bug in the previous live-filesystem read and gives the
+                # automation identical forensic coverage to a manual upload.
+                update_job(flow_id, {'phase': 'Exporting flow as ZIP'})
+                workflow_logger("=== PHASE 2: Exporting Velociraptor flow as ZIP ===", "info")
+                print(f"\n[WORKFLOW] === PHASE 2: Exporting Velociraptor flow as ZIP ===\n", flush=True)
 
-                # Pass logger to Plaso for detailed logging
-                plaso_file = process_with_plaso(
-                    client_id, flow_id, client_name,
-                    logger=workflow_logger,
-                    parser=plaso_parser,
-                    workers=plaso_workers,
-                    hasher=plaso_hasher,
-                    hasher_file_size_mb=plaso_hasher_size_mb,
-                    run_id=run_id
-                )
-
-                if not plaso_file:
+                zip_path = os.path.join(PLASO_OUTPUT_DIR, f"flow_{flow_id}_{run_id}.zip")
+                export_ok = export_flow_to_zip(client_id, flow_id, zip_path, logger=workflow_logger)
+                if not export_ok:
                     update_job(flow_id, {
                         'status': 'failed',
-                        'phase': 'Plaso processing failed',
-                        'error': 'Failed to process files with Plaso'
+                        'phase': 'Velociraptor ZIP export failed',
+                        'error': 'Could not export flow as ZIP'
                     })
-                    workflow_logger("Pipeline failed: Plaso processing failed", "error")
-                    workflow_logger("Check the detailed logs above for error information", "error")
-                    update_run_status(run_id, "failed", progress=0, error="Failed to process files with Plaso")
-                    print(f"[WORKFLOW] ✗ Pipeline failed: Plaso processing failed", flush=True)
+                    workflow_logger("Pipeline failed: Velociraptor ZIP export failed", "error")
+                    update_run_status(run_id, "failed", progress=0, error="Could not export flow as ZIP")
+                    # Still try to remove any partial ZIP left on Velociraptor's side
+                    cleanup_flow_export(client_id, flow_id, logger=workflow_logger)
                     return
 
-                workflow_logger(f"✓ Plaso processing completed: {plaso_file}", "success")
-                update_run_status(run_id, "running", progress=60)
-
-                # Phase 2.5: Run pinfo to verify Plaso file
-                update_job(flow_id, {'phase': 'Verifying Plaso storage'})
-                workflow_logger("=== PHASE 2.5: Verifying Plaso Storage (pinfo) ===", "info")
-                print(f"\n[WORKFLOW] === PHASE 2.5: Verifying Plaso Storage ===\n", flush=True)
-
-                pinfo_result = run_pinfo(plaso_file, logger=workflow_logger)
-
-                if pinfo_result:
-                    event_count = pinfo_result.get('event_count', 0)
-                    if event_count == 0:
-                        update_job(flow_id, {
-                            'status': 'completed',
-                            'phase': 'Completed - No events to import',
-                            'error': None
-                        })
-                        workflow_logger("No events matched the selected parser - skipping Timesketch import", "warning")
-                        workflow_logger("Tip: Try using 'Auto (All Parsers)' or a broader parser preset", "info")
-                        update_run_status(run_id, "completed", progress=100)
-                        print(f"[WORKFLOW] Completed - No events to import (parser mismatch)", flush=True)
-                        return
-
-                    workflow_logger(f"✓ Plaso file verified: {event_count} events ready for import", "success")
-                else:
-                    workflow_logger("⚠ Could not verify Plaso file with pinfo, continuing anyway...", "warning")
-
-                update_run_status(run_id, "running", progress=70)
+                update_run_status(run_id, "running", progress=50)
 
                 if cancel_event and cancel_event.is_set():
+                    # Clean up the local export and the Velociraptor-side copy
+                    if os.path.exists(zip_path):
+                        try:
+                            os.remove(zip_path)
+                        except Exception:
+                            pass
+                    cleanup_flow_export(client_id, flow_id, logger=workflow_logger)
                     return
 
-                # Phase 3: Import to Timesketch
-                update_job(flow_id, {'phase': 'Importing to Timesketch'})
-                workflow_logger("=== PHASE 3: Importing to Timesketch ===", "info")
-                print(f"\n[WORKFLOW] === PHASE 3: Importing to Timesketch ===\n", flush=True)
+                # Phase 3: Process ZIP via the shared Upload Existing code path
+                update_job(flow_id, {'phase': 'Processing with Plaso + Timesketch import'})
+                workflow_logger("=== PHASE 3: Processing ZIP with Plaso + Timesketch ===", "info")
+                print(f"\n[WORKFLOW] === PHASE 3: Processing ZIP ===\n", flush=True)
 
-                # Pass logger to Timesketch for detailed logging
-                # If sketch_id provided, add to existing sketch; otherwise create new one
-                result = import_to_timesketch(plaso_file, sketch_name, timeline_name, timesketch_config, logger=workflow_logger, sketch_id=sketch_id)
+                settings = {
+                    'sketch_name': sketch_name,
+                    'timeline_name': timeline_name,
+                    'sketch_id': sketch_id,
+                    'client_name': client_name,  # we already know the real hostname
+                    'plaso_parser': plaso_parser,
+                    'plaso_workers': plaso_workers,
+                    'plaso_hasher': plaso_hasher,
+                    'plaso_hasher_size': plaso_hasher_size_mb,
+                }
 
-                if result:
+                result = process_kape_upload(
+                    zip_path=zip_path,
+                    original_filename=os.path.basename(zip_path),
+                    settings=settings,
+                    run_id=run_id,
+                    cleanup_zip=True,  # we own this ZIP, delete after processing
+                )
+
+                # Clean up the Velociraptor-side exported ZIP regardless of Plaso/Timesketch outcome
+                cleanup_flow_export(client_id, flow_id, logger=workflow_logger)
+
+                if result and result.get('status') == 'completed':
                     update_job(flow_id, {
                         'status': 'completed',
                         'phase': 'Completed successfully',
@@ -319,31 +302,28 @@ def run_timesketch_import():
                     workflow_logger(f"Sketch: {sketch_name} (ID: {result.get('sketch_id')})", "success")
                     workflow_logger(f"Timeline: {timeline_name} (ID: {result.get('timeline_id')})", "success")
 
-                    # Cleanup plaso file after successful import
-                    if plaso_file and os.path.exists(plaso_file):
-                        try:
-                            os.remove(plaso_file)
-                            workflow_logger("Plaso file cleaned up", "info")
-                        except Exception as cleanup_err:
-                            workflow_logger(f"Warning: Could not clean up plaso file: {cleanup_err}", "warning")
-
-                    update_run_status(run_id, "completed", progress=100)
-
                     print(f"\n{'='*80}", flush=True)
                     print(f"[WORKFLOW] ✓✓✓ PIPELINE COMPLETED SUCCESSFULLY ✓✓✓", flush=True)
                     print(f"[WORKFLOW] Sketch: {sketch_name} (ID: {result.get('sketch_id')})", flush=True)
                     print(f"[WORKFLOW] Timeline: {timeline_name} (ID: {result.get('timeline_id')})", flush=True)
                     print(f"{'='*80}\n", flush=True)
+                elif result and result.get('status') == 'no_events':
+                    update_job(flow_id, {
+                        'status': 'completed',
+                        'phase': 'Completed - No events to import',
+                        'error': None
+                    })
+                    # process_kape_upload already logged the warning; no further action
                 else:
+                    err = (result or {}).get('error', 'Unknown error')
                     update_job(flow_id, {
                         'status': 'failed',
-                        'phase': 'Timesketch import failed',
-                        'error': 'Failed to import to Timesketch'
+                        'phase': 'Plaso/Timesketch processing failed',
+                        'error': err
                     })
-                    workflow_logger("Pipeline failed: Timesketch import failed", "error")
-                    workflow_logger("Check the detailed logs above for error information", "error")
-                    update_run_status(run_id, "failed", progress=0, error="Failed to import to Timesketch")
-                    print(f"[WORKFLOW] ✗ Pipeline failed: Timesketch import failed", flush=True)
+                    workflow_logger(f"Pipeline failed: {err}", "error")
+                    # process_kape_upload sets the run status to failed already; don't double-set
+                    print(f"[WORKFLOW] ✗ Pipeline failed: {err}", flush=True)
 
             except Exception as e:
                 from services.workflow_service import is_cancelled
@@ -361,14 +341,6 @@ def run_timesketch_import():
                     update_run_status(run_id, "failed", progress=0, error=str(e))
                 print(f"[WORKFLOW] ✗ Pipeline failed with exception: {e}", flush=True)
                 traceback.print_exc()
-
-                # Cleanup plaso file on failure too
-                if plaso_file and os.path.exists(plaso_file):
-                    try:
-                        os.remove(plaso_file)
-                        print(f"[WORKFLOW] Cleaned up plaso file: {plaso_file}", flush=True)
-                    except:
-                        pass
             finally:
                 from services.workflow_service import unregister_cancel
                 unregister_cancel(run_id)

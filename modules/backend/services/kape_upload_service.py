@@ -324,16 +324,22 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
         return None
 
 
-def process_kape_upload(zip_path, original_filename, settings, run_id=None):
+def process_kape_upload(zip_path, original_filename, settings, run_id=None, cleanup_zip=True):
     """Process uploaded KAPE file through Plaso and import to Timesketch
 
-    Main entry point called by upload webhook handler.
+    Main entry point called by upload webhook handler and by the Timesketch
+    automation flow (which exports the collection as a ZIP via Velociraptor
+    first, then feeds it here to use the same code path).
 
     Args:
-        zip_path: Path to the uploaded ZIP file
-        original_filename: Original filename of the upload
-        settings: Dict with plaso_parser, plaso_workers, sketch_name, etc.
-        run_id: Optional workflow run_id (created in pre-create hook)
+        zip_path: Path to the ZIP file (user upload or Velociraptor export)
+        original_filename: Display filename (used for logging + client_name fallback)
+        settings: Dict with plaso_parser, plaso_workers, plaso_hasher,
+            plaso_hasher_size, sketch_name, timeline_name, sketch_id
+        run_id: Optional workflow run_id (pre-created by caller). If not
+            provided a new 'timesketch_kape_upload' run is created.
+        cleanup_zip: If True, delete the source ZIP after processing.
+            Set to False when the caller manages the ZIP lifecycle.
 
     Returns:
         Dict with result info or None on failure
@@ -368,8 +374,9 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None):
         if format_type == 'unknown':
             raise Exception("Unknown file format - not a valid KAPE or Velociraptor collection")
 
-        # Extract client info (pass original_filename for fallback since zip_path is a hash)
-        client_name = extract_client_info(zip_path, format_type, original_filename)
+        # Extract client info (pass original_filename for fallback since zip_path is a hash).
+        # Automation callers can pre-populate settings['client_name'] to skip the heuristic.
+        client_name = settings.get('client_name') or extract_client_info(zip_path, format_type, original_filename)
         add_log_to_run(run_id, f"Client hostname: {client_name}")
         update_run_status(run_id, "running", progress=10)
 
@@ -461,12 +468,14 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None):
         # Import to Timesketch
         add_log_to_run(run_id, "=== Importing to Timesketch ===")
         sketch_name = settings.get('sketch_name', f'Investigation-{client_name}')
-        timeline_name = f"{client_name}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        timeline_name = settings.get('timeline_name') or f"{client_name}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        sketch_id = settings.get('sketch_id')
 
         result = import_to_timesketch(
             plaso_file, sketch_name, timeline_name,
             TIMESKETCH_CONFIG,
-            logger=lambda msg, lvl: add_log_to_run(run_id, msg, lvl)
+            logger=lambda msg, lvl: add_log_to_run(run_id, msg, lvl),
+            sketch_id=sketch_id
         )
 
         if result:
@@ -506,8 +515,8 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None):
             except:
                 pass
 
-        # Cleanup uploaded file
-        if zip_path and os.path.exists(zip_path):
+        # Cleanup source ZIP (skip when caller manages its own lifecycle)
+        if cleanup_zip and zip_path and os.path.exists(zip_path):
             try:
                 os.remove(zip_path)
                 print(f"[KAPE] Cleaned up uploaded file: {zip_path}", flush=True)

@@ -221,12 +221,12 @@ def run_timesketch_pipeline(job_meta: dict, client_ids: list):
     This runs KAPE collection followed by Plaso processing and TimeSketch import.
     """
     from services.kape_service import run_kape_collection_grpc, monitor_flow_completion
-    from services.plaso_service import process_with_plaso, run_pinfo
-    from services.timesketch_service import import_to_timesketch
+    from services.velociraptor_service import get_client_info, export_flow_to_zip, cleanup_flow_export
+    from services.kape_upload_service import process_kape_upload
     from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
-    from services.velociraptor_service import get_client_info
     from services.file_storage_service import get_timesketch_blueprint
-    from config import TIMESKETCH_CONFIG
+    from config import PLASO_OUTPUT_DIR
+    import os
 
     job_name = job_meta.get('name', 'Scheduled Timesketch')
     blueprint_id = job_meta.get('blueprint_id', '')
@@ -302,60 +302,53 @@ def run_timesketch_pipeline(job_meta: dict, client_ids: list):
             workflow_logger("KAPE collection completed successfully", "success")
             update_run_status(run_id, "running", progress=40)
 
-            # Step 3: Process with Plaso
-            workflow_logger("=== PHASE 3: Processing with Plaso ===")
-            plaso_file = process_with_plaso(
-                client_id=client_id,
-                flow_id=flow_id,
-                client_name=client_name,
-                logger=workflow_logger
-            )
-
-            if not plaso_file:
-                workflow_logger("Plaso processing failed", "error")
+            # Step 3: Export flow as ZIP, then process via shared upload path.
+            # This avoids the live-filesystem 1 MiB chunk-truncation bug.
+            workflow_logger("=== PHASE 3: Exporting Velociraptor flow as ZIP ===")
+            zip_path = os.path.join(PLASO_OUTPUT_DIR, f"flow_{flow_id}_{run_id}.zip")
+            export_ok = export_flow_to_zip(client_id, flow_id, zip_path, logger=workflow_logger)
+            if not export_ok:
+                workflow_logger("Velociraptor ZIP export failed", "error")
                 update_run_status(run_id, "failed")
+                cleanup_flow_export(client_id, flow_id, logger=workflow_logger)
                 continue
 
-            workflow_logger(f"Plaso processing completed: {plaso_file}", "success")
             update_run_status(run_id, "running", progress=55)
 
-            # Step 3.5: Verify Plaso file with pinfo
-            workflow_logger("=== PHASE 3.5: Verifying Plaso Storage (pinfo) ===")
-            pinfo_result = run_pinfo(plaso_file, logger=workflow_logger)
-
-            if pinfo_result:
-                event_count = pinfo_result.get('event_count', 0)
-                if event_count == 0:
-                    workflow_logger("No events matched the selected parser - skipping Timesketch import", "warning")
-                    workflow_logger("Tip: Try using 'Auto (All Parsers)' or a broader parser preset", "info")
-                    update_run_status(run_id, "completed", progress=100)
-                    continue
-                workflow_logger(f"Plaso file verified: {event_count} events ready for import", "success")
-            else:
-                workflow_logger("Could not verify Plaso file, continuing anyway...", "warning")
-
-            update_run_status(run_id, "running", progress=70)
-
-            # Step 4: Import to Timesketch
-            workflow_logger("=== PHASE 4: Importing to Timesketch ===")
+            # Step 4: Process ZIP via the same pipeline as Upload Existing
+            workflow_logger("=== PHASE 4: Processing ZIP with Plaso + Timesketch ===")
             timeline_name = f"{client_name}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
 
-            result = import_to_timesketch(
-                plaso_file=plaso_file,
-                sketch_name=sketch_name,
-                timeline_name=timeline_name,
-                timesketch_config=TIMESKETCH_CONFIG,
-                logger=workflow_logger
+            result = process_kape_upload(
+                zip_path=zip_path,
+                original_filename=os.path.basename(zip_path),
+                settings={
+                    'sketch_name': sketch_name,
+                    'timeline_name': timeline_name,
+                    'client_name': client_name,  # we already know the real hostname
+                    'plaso_parser': settings.get('plaso_parser'),
+                    'plaso_workers': settings.get('plaso_workers', 2),
+                    'plaso_hasher': settings.get('plaso_hasher'),
+                    'plaso_hasher_size': settings.get('plaso_hasher_size', 100),
+                },
+                run_id=run_id,
+                cleanup_zip=True,
             )
 
-            if result:
+            # Clean up the Velociraptor-side export dir regardless of outcome
+            cleanup_flow_export(client_id, flow_id, logger=workflow_logger)
+
+            if result and result.get('status') == 'completed':
                 workflow_logger("Timesketch import completed successfully", "success")
                 workflow_logger(f"Sketch ID: {result.get('sketch_id')}", "success")
                 workflow_logger(f"Timeline ID: {result.get('timeline_id')}", "success")
-                update_run_status(run_id, "completed", progress=100)
+            elif result and result.get('status') == 'no_events':
+                workflow_logger("No events to import (parser mismatch)", "warning")
+                # process_kape_upload already set status to completed
             else:
-                workflow_logger("Timesketch import failed", "error")
-                update_run_status(run_id, "failed")
+                err = (result or {}).get('error', 'Unknown error')
+                workflow_logger(f"Pipeline failed: {err}", "error")
+                # process_kape_upload already set status to failed
 
         except Exception as e:
             print(f"[SCHEDULER] Timesketch pipeline error for {client_id}: {e}", flush=True)

@@ -676,3 +676,150 @@ def get_tools_inventory_config():
             summary["total_disabled"] += 1
 
     return summary
+
+
+def export_flow_to_zip(client_id: str, flow_id: str, out_path: str, logger=None, timeout: int = 900) -> bool:
+    """Ask Velociraptor to package a finished flow as a ZIP and copy it to out_path.
+
+    Velociraptor stores uploaded files as 1MB zlib-compressed chunks and only
+    reassembles them into whole files when a flow is exported via this API.
+    Reading live from /var./clients/.../uploads/ returns truncated first-chunk
+    data, which is why that path was producing 6x fewer Plaso events than
+    running Plaso against an exported ZIP.
+
+    Args:
+        client_id: Velociraptor client id (C.xxxxx)
+        flow_id: Velociraptor flow id (F.xxxxx)
+        out_path: absolute path on the backend host/container where the ZIP
+            should end up
+        logger: optional callable(msg, level) for progress logging
+        timeout: seconds to wait for packaging to complete
+
+    Returns:
+        True on success, False on any failure (logs the reason via logger).
+    """
+    def log(msg, level="info"):
+        if logger:
+            logger(msg, level)
+        else:
+            print(f"[VELO-EXPORT] [{level}] {msg}", flush=True)
+
+    channel = setup_velociraptor_connection()
+    if not channel:
+        log("Failed to connect to Velociraptor gRPC", "error")
+        return False
+
+    try:
+        stub = api_pb2_grpc.APIStub(channel)
+
+        vql = (
+            "SELECT create_flow_download("
+            f"client_id='{client_id}', flow_id='{flow_id}', "
+            "wait=TRUE, type='full') AS download_path FROM scope()"
+        )
+
+        log(f"Requesting ZIP export for {flow_id} on {client_id} (may take a few minutes)...")
+
+        request = api_pb2.VQLCollectorArgs(
+            max_wait=timeout,
+            max_row=10,
+            Query=[api_pb2.VQLRequest(VQL=vql)]
+        )
+
+        success = False
+        for response in stub.Query(request, timeout=timeout + 60):
+            if response.Response:
+                try:
+                    rows = json.loads(response.Response)
+                    if rows:
+                        log(f"Velociraptor finished packaging ZIP for {flow_id}")
+                        success = True
+                except json.JSONDecodeError:
+                    pass
+    except Exception as e:
+        log(f"VQL error while requesting export: {e}", "error")
+        return False
+    finally:
+        try:
+            channel.close()
+        except Exception:
+            pass
+
+    if not success:
+        log("Velociraptor did not return a successful download path", "warning")
+        # Proceed anyway — the ZIP might still be on disk from a previous run.
+
+    # The ZIP lives inside the Velociraptor container. Pull it out via a throwaway helper container
+    # that has the Velociraptor volumes mounted.
+    out_dir = os.path.dirname(out_path) or "/tmp"
+    out_file = os.path.basename(out_path)
+    os.makedirs(out_dir, exist_ok=True)
+
+    copy_script = (
+        "set -e; "
+        f"src_dir=/var./downloads/{client_id}/{flow_id}; "
+        "zip_src=$(ls -1 ${src_dir}/*.zip 2>/dev/null | head -1); "
+        "if [ -z \"$zip_src\" ]; then echo 'No ZIP found in '${src_dir} >&2; exit 1; fi; "
+        f"cp \"$zip_src\" /out/{out_file}; "
+        f"chmod 644 /out/{out_file}"
+    )
+
+    try:
+        result = subprocess.run(
+            [
+                "docker", "run", "--rm",
+                "--volumes-from", VELOCIRAPTOR_CONTAINER,
+                "-v", f"{out_dir}:/out",
+                "alpine", "sh", "-c", copy_script,
+            ],
+            capture_output=True, text=True, timeout=180
+        )
+        if result.returncode != 0:
+            log(f"Failed to copy ZIP out of Velociraptor container: {result.stderr.strip()}", "error")
+            return False
+    except subprocess.TimeoutExpired:
+        log("Timed out copying ZIP from Velociraptor container", "error")
+        return False
+    except Exception as e:
+        log(f"docker run failed copying ZIP: {e}", "error")
+        return False
+
+    if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+        log(f"Export completed but output file missing or empty: {out_path}", "error")
+        return False
+
+    size_mb = os.path.getsize(out_path) / (1024 * 1024)
+    log(f"ZIP export ready at {out_path} ({size_mb:.1f} MB)", "success")
+    return True
+
+
+def cleanup_flow_export(client_id: str, flow_id: str, logger=None) -> None:
+    """Remove the server-side ZIP Velociraptor created for a flow export.
+
+    After `export_flow_to_zip()` has copied the ZIP out to the backend's
+    workspace and it's been processed, we no longer need the original
+    sitting in Velociraptor's `/var./downloads/{client_id}/{flow_id}/`
+    directory taking up disk space. Best-effort — failures are logged
+    but never raise.
+    """
+    def log(msg, level="info"):
+        if logger:
+            logger(msg, level)
+        else:
+            print(f"[VELO-EXPORT] [{level}] {msg}", flush=True)
+
+    script = (
+        f"rm -rf /var./downloads/{client_id}/{flow_id} 2>/dev/null || true"
+    )
+    try:
+        subprocess.run(
+            [
+                "docker", "run", "--rm",
+                "--volumes-from", VELOCIRAPTOR_CONTAINER,
+                "alpine", "sh", "-c", script,
+            ],
+            capture_output=True, text=True, timeout=60
+        )
+        log(f"Removed Velociraptor-side export dir for flow {flow_id}")
+    except Exception as e:
+        log(f"Could not remove Velociraptor-side export dir: {e}", "warning")
