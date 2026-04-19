@@ -422,7 +422,7 @@ async function saveScheduleFromModal() {
         return;
     }
     if (!blueprintId) {
-        alert('Please select a blueprint' + (blueprintType === 'timesketch' ? ' (KAPE target)' : ''));
+        alert('Please select a blueprint' + (blueprintType === 'timesketch' ? ' (triage target)' : ''));
         return;
     }
     if (clientIds.length === 0) {

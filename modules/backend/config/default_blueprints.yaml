@@ -208,7 +208,7 @@ timesketch:
 
   - id: timesketch_full_triage
     name: "Full Triage"
-    description: "Comprehensive KAPE triage collection with full Windows parsing"
+    description: "Comprehensive triage collection with full Windows parsing"
     is_default: true
     settings:
       kape_target: "_KapeTriage"

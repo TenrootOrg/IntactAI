@@ -243,7 +243,7 @@ function renderBlueprintCard(bp) {
         const kape = bp.settings?.kape_target || '_KapeTriage';
         const plaso = bp.settings?.plaso_parser || 'win7';
         settingsHtml = `
-            <span>KAPE: ${kape}</span>
+            <span>Triage: ${kape}</span>
             <span>Plaso: ${plaso}</span>
         `;
     } else {

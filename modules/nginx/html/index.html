@@ -651,10 +651,7 @@
                             <h4 class="text-lg font-semibold text-blue-400 mb-2">Windows</h4>
                             <div class="bg-gray-900 p-4 rounded-lg">
                                 <pre class="text-white text-sm overflow-x-auto"><code># Run MSI as Administrator
-msiexec /i velociraptor.msi
-
-# Or silent install
-msiexec /i velociraptor.msi /qn</code></pre>
+msiexec /i velociraptor.msi</code></pre>
                             </div>
                         </div>
                         <div>
@@ -1154,7 +1151,7 @@ sudo ./velociraptor service start</code></pre>
 
                 <!-- Mode Selection -->
                 <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
-                    <h3 class="text-2xl font-semibold text-white mb-4">KAPE Collection & Timeline Import</h3>
+                    <h3 class="text-2xl font-semibold text-white mb-4">Triage Collection & Timeline Import</h3>
 
                     <!-- Mode Toggle -->
                     <div class="mb-6">
@@ -1167,11 +1164,11 @@ sudo ./velociraptor service start</code></pre>
                             </label>
                             <label class="flex items-center gap-2 cursor-pointer">
                                 <input type="radio" name="ts-mode" value="upload" onchange="toggleTimesketchMode()" class="w-4 h-4 text-purple-500 bg-gray-900 border-gray-600 focus:ring-purple-500">
-                                <span class="text-white">Upload KAPE</span>
+                                <span class="text-white">Upload Triage</span>
                                 <span class="text-xs text-gray-500">(External collection)</span>
                             </label>
                         </div>
-                        <p class="text-xs text-gray-500 mt-2">Full Automation: Run KAPE hunt on connected clients | Upload: Process an existing KAPE/Velociraptor collection</p>
+                        <p class="text-xs text-gray-500 mt-2">Full Automation: Run triage hunt on connected clients | Upload: Process an existing triage/Velociraptor collection</p>
                     </div>
 
                     <!-- Blueprint Selection (shared) -->
@@ -1180,7 +1177,7 @@ sudo ./velociraptor service start</code></pre>
                         <select id="timesketch-blueprint-select" onchange="onTimesketchBlueprintChange()" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none">
                             <option value="">Loading blueprints...</option>
                         </select>
-                        <p class="text-xs text-gray-500 mt-1">Select a blueprint to configure KAPE target and Plaso processing settings</p>
+                        <p class="text-xs text-gray-500 mt-1">Select a blueprint to configure triage target and Plaso processing settings</p>
                         <div id="timesketch-blueprint-info" class="mt-2 text-xs text-gray-400 hidden">
                             <span id="ts-blueprint-kape" class="inline-block bg-gray-700 px-2 py-1 rounded mr-2"></span>
                             <span id="ts-blueprint-plaso" class="inline-block bg-gray-700 px-2 py-1 rounded"></span>
@@ -1209,7 +1206,8 @@ sudo ./velociraptor service start</code></pre>
                         <!-- Sketch Name -->
                         <div class="mb-6">
                             <label class="block text-sm font-medium text-gray-300 mb-2">Sketch Name:</label>
-                            <input type="text" id="sketch-name" placeholder="Investigation-2025-12-14" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm">
+                            <input type="text" id="sketch-name" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm"
+                                x-data x-init="$el.placeholder = 'Investigation-' + new Date().toISOString().split('T')[0]">
                             <p class="text-xs text-gray-500 mt-1">If a sketch with this name exists, timelines will be added to it. Otherwise a new sketch is created.</p>
                         </div>
 
@@ -1228,14 +1226,14 @@ sudo ./velociraptor service start</code></pre>
                     <div id="ts-upload-section" class="hidden">
                         <!-- File Upload with Drag & Drop -->
                         <div class="mb-6">
-                            <label class="block text-sm font-medium text-gray-300 mb-2">KAPE Collection File:</label>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Triage Collection File:</label>
                             <div id="ts-upload-dropzone" class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center cursor-pointer hover:border-purple-500 transition-colors">
                                 <input type="file" id="ts-kape-file" accept=".zip" class="hidden">
                                 <svg class="w-12 h-12 mx-auto mb-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
                                 </svg>
                                 <p id="ts-dropzone-text" class="text-gray-400">Drag & drop ZIP file or click to browse</p>
-                                <p class="text-xs text-gray-500 mt-2">Supports: Velociraptor offline collection, KAPE output (any size, resumable)</p>
+                                <p class="text-xs text-gray-500 mt-2">Supports: Velociraptor offline collection, triage output (any size, resumable)</p>
                             </div>
 
                             <!-- Upload Progress -->
@@ -1254,7 +1252,8 @@ sudo ./velociraptor service start</code></pre>
                         <!-- Sketch Name (Upload mode) -->
                         <div class="mb-6">
                             <label class="block text-sm font-medium text-gray-300 mb-2">Sketch Name:</label>
-                            <input type="text" id="ts-upload-sketch" placeholder="Investigation-2025-03-09" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm">
+                            <input type="text" id="ts-upload-sketch" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm"
+                                x-data x-init="$el.placeholder = 'Investigation-' + new Date().toISOString().split('T')[0]">
                             <p class="text-xs text-gray-500 mt-1">Timeline will be named from the hostname in the collection.</p>
                         </div>
 
@@ -1309,7 +1308,7 @@ sudo ./velociraptor service start</code></pre>
                                 <label class="block text-sm font-medium text-gray-300 mb-1">Type</label>
                                 <select id="blueprint-type" onchange="onBlueprintTypeChange()" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
                                     <option value="velociraptor">Velociraptor (Hunts & AI Analysis)</option>
-                                    <option value="timesketch">Timesketch (KAPE + Timeline)</option>
+                                    <option value="timesketch">Timesketch (Triage + Timeline)</option>
                                 </select>
                             </div>
 
@@ -1341,9 +1340,9 @@ sudo ./velociraptor service start</code></pre>
                             <!-- Timesketch Settings -->
                             <div id="blueprint-timesketch-settings" class="hidden grid grid-cols-2 gap-3">
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-300 mb-1">KAPE Target</label>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Triage Target</label>
                                     <select id="blueprint-ts-kape" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
-                                        <option value="_KapeTriage">_KapeTriage (Full triage)</option>
+                                        <option value="_KapeTriage">Full Triage</option>
                                         <option value="_SANS_Triage">_SANS_Triage (SANS triage)</option>
                                         <option value="_BasicCollection">_BasicCollection (Basic artifacts)</option>
                                         <option value="EventLogs">EventLogs (Event logs only)</option>
@@ -1486,7 +1485,7 @@ sudo ./velociraptor service start</code></pre>
                                 <select id="schedule-blueprint-type" onchange="onScheduleBlueprintTypeChange()" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
                                     <option value="velociraptor">Velociraptor</option>
                                     <option value="agentic">Agentic (LLM Analysis)</option>
-                                    <option value="timesketch">Timesketch (KAPE + Timeline)</option>
+                                    <option value="timesketch">Timesketch (Triage + Timeline)</option>
                                 </select>
                             </div>
                             <div>
@@ -1626,9 +1625,9 @@ sudo ./velociraptor service start</code></pre>
                         <div id="schedule-timesketch-options" class="hidden space-y-4 border-t border-gray-700 pt-4">
                             <div class="text-sm text-gray-400">Timesketch Options</div>
                             <div>
-                                <label class="block text-sm text-gray-400 mb-1">KAPE Target</label>
+                                <label class="block text-sm text-gray-400 mb-1">Triage Target</label>
                                 <select id="schedule-kape-target" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
-                                    <option value="_KapeTriage">_KapeTriage (Full triage)</option>
+                                    <option value="_KapeTriage">Full Triage</option>
                                     <option value="_SANS_Triage">_SANS_Triage (SANS triage)</option>
                                     <option value="_BasicCollection">_BasicCollection (Basic artifacts)</option>
                                     <option value="EventLogs">EventLogs (Event logs only)</option>
@@ -1641,7 +1640,8 @@ sudo ./velociraptor service start</code></pre>
                             </div>
                             <div>
                                 <label class="block text-sm text-gray-400 mb-1">Sketch Name (for Timesketch)</label>
-                                <input type="text" id="schedule-sketch-name" placeholder="Investigation_YYYYMMDD (auto-generated if empty)" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
+                                <input type="text" id="schedule-sketch-name" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2"
+                                    x-data x-init="$el.placeholder = 'Investigation-' + new Date().toISOString().split('T')[0]">
                                 <p class="text-xs text-gray-500 mt-1">Leave empty to auto-generate based on date</p>
                             </div>
                         </div>
