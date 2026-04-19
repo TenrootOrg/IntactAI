@@ -150,23 +150,6 @@ print_summary() {
     echo -e "  Kibana:        ${BLUE}http://${domain}:5601${NC}"
     echo -e "  Portainer:     ${BLUE}https://${domain}:9443${NC}"
     echo ""
-    echo "Storage Configuration:"
-    echo "  - SQLite database: ${SCRIPT_DIR}/data/mssp.db"
-    echo "  - Export/Import API: /api/db/export, /api/db/import"
-    echo "  - Backup: cp ${SCRIPT_DIR}/data/mssp.db <backup-path>"
-    echo "  - Elasticsearch used only for ELK/Kibana"
-    echo ""
-
-    # Show IRIS credentials if available
-    local iris_pass_file="${SCRIPT_DIR}/modules/iris/secrets/IRIS_ADM_PASSWORD"
-    if [[ -f "$iris_pass_file" ]]; then
-        local iris_pass=$(cat "$iris_pass_file" 2>/dev/null)
-        echo "IRIS Credentials:"
-        echo "  Username: administrator"
-        echo "  Password: $iris_pass"
-        echo ""
-    fi
-
     echo "Next steps:"
     echo "  1. Access the dashboard to verify all services"
     echo "  2. Check backend logs: sudo docker logs mssp_backend"
