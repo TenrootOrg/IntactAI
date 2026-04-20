@@ -18,7 +18,7 @@ from services import (
 upgrade_bp = Blueprint('upgrade', __name__)
 
 # Fixed package path (only keep one package, overwrite each time)
-PACKAGE_PATH = "/data/upgrade_packages/mssp-upgrade-latest.tar.gz"
+PACKAGE_PATH = "/data/upgrade_packages/intact-upgrade-latest.tar.gz"
 PACKAGE_INFO_FILE = "/data/db/prepared_package.json"
 
 

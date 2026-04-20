@@ -183,7 +183,7 @@ clean_logs() {
     safe_remove_glob "$SCRIPT_DIR/first-init_*.log" "First-init logs"
     safe_remove "/tmp/plaso" "Plaso temp files"
     safe_remove "$SCRIPT_DIR/modules/backend/logs" "Backend logs"
-    safe_remove "/etc/mssp-initialized" "Initialization marker"
+    safe_remove "/etc/intact-initialized" "Initialization marker"
 }
 
 clean_certs() {

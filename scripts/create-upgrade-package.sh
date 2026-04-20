@@ -29,7 +29,7 @@ INCLUDE_SOURCE="${INCLUDE_SOURCE:-true}"
 
 # Package directory
 DATE_STAMP=$(date +%Y%m%d_%H%M%S)
-PACKAGE_NAME="mssp-upgrade-${DATE_STAMP}"
+PACKAGE_NAME="intact-upgrade-${DATE_STAMP}"
 PACKAGE_DIR="/tmp/${PACKAGE_NAME}"
 OUTPUT_FILE="${PWD}/${PACKAGE_NAME}.tar.gz"
 

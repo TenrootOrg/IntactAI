@@ -269,7 +269,7 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
     # Use /app/data/tmp/ (mounted from host's data/) for persistence across container restarts
     # This is critical for Phase 2 to find the extracted files after backend restarts
     os.makedirs("/app/data/tmp", exist_ok=True)
-    extract_dir = f"/app/data/tmp/mssp-upgrade-{int(time.time())}"
+    extract_dir = f"/app/data/tmp/intact-upgrade-{int(time.time())}"
     os.makedirs(extract_dir, exist_ok=True)
 
     try:

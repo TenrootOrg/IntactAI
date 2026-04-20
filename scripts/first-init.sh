@@ -18,7 +18,7 @@
 # Go up one level from scripts/ to project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/config.yaml"
-MARKER_FILE="/etc/mssp-initialized"
+MARKER_FILE="/etc/intact-initialized"
 LOG_FILE="$SCRIPT_DIR/first-init_$(date +%Y%m%d_%H%M%S).log"
 
 # Colors
@@ -262,7 +262,7 @@ start_services() {
 
             # Build backend only if image doesn't exist (air-gap friendly)
             if [[ "$module" == "backend" ]]; then
-                if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "mssp-backend"; then
+                if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "intact-backend"; then
                     log_info "  Backend image not found, building..."
                     (cd "$module_dir" && docker compose build >> "$LOG_FILE" 2>&1) || true
                 else

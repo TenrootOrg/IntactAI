@@ -441,7 +441,7 @@ def run_system_purge():
             for temp_dir in ["/app/data/tmp", "/data/tmp", "/tmp/plaso", "/tmp/azure_uploads"]:
                 d_freed, _ = purge_dir(temp_dir)
                 freed += d_freed
-            for d in glob.glob("/app/data/tmp/mssp-upgrade-*") + glob.glob("/tmp/mssp-upgrade-*"):
+            for d in glob.glob("/app/data/tmp/intact-upgrade-*") + glob.glob("/tmp/intact-upgrade-*"):
                 freed += get_dir_size(d)
                 shutil.rmtree(d, ignore_errors=True)
             total_freed += freed

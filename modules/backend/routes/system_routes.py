@@ -33,7 +33,7 @@ def test_endpoint():
 @system_bp.route('/api/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    return jsonify({"status": "healthy", "service": "mssp-backend"})
+    return jsonify({"status": "healthy", "service": "intact-backend"})
 
 @system_bp.route('/api/system/containers', methods=['GET'])
 def get_container_status():
