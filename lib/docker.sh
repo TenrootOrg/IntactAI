@@ -41,6 +41,7 @@ install_dependencies() {
         python3-yaml \
         openssl \
         jq \
+        dnsutils \
         2>> "$LOG_FILE"; then
         log_error "Failed to install some dependencies"
         return 1
@@ -68,27 +69,66 @@ install_docker_online() {
     install -m 0755 -d /etc/apt/keyrings
 
     # Add Docker's official GPG key (using modern location).
-    # Retry 3x with backoff — a fresh install often loses a single DNS
-    # lookup to download.docker.com (we've seen the reachability pre-check
-    # pass and the real curl fail ~30s later with "Could not resolve host").
+    # Retry 3x with backoff + IPv4 force — a fresh install often loses a
+    # single DNS lookup to download.docker.com (we've seen the reachability
+    # pre-check pass and the real curl fail ~30s later with "Could not
+    # resolve host"). IPv4-only sidesteps IPv6 AAAA resolution bugs; the
+    # final fallback resolves via public DNS and passes the IP explicitly
+    # via --resolve, so a broken local resolver doesn't kill the install.
     log_info "Adding Docker GPG key..."
+
+    # Log what the local resolver thinks, so the file shows a smoking gun if DNS is the cause.
+    local current_ip
+    current_ip=$(getent hosts download.docker.com 2>/dev/null | awk '{print $1; exit}')
+    if [[ -n "$current_ip" ]]; then
+        log_info "  Local DNS resolves download.docker.com -> $current_ip"
+    else
+        log_warn "  Local DNS could not resolve download.docker.com (will try public DNS fallback)"
+    fi
+
+    local gpg_url='https://download.docker.com/linux/ubuntu/gpg'
+    local gpg_out=/etc/apt/keyrings/docker.asc
     local gpg_ok=false
     for attempt in 1 2 3; do
-        if curl -fsSL --retry 2 --retry-delay 3 --connect-timeout 15 --max-time 60 \
-                https://download.docker.com/linux/ubuntu/gpg \
-                -o /etc/apt/keyrings/docker.asc 2>> "$LOG_FILE"; then
+        if curl -fsSL -4 --retry 2 --retry-delay 3 --connect-timeout 15 --max-time 60 \
+                "$gpg_url" -o "$gpg_out" 2>> "$LOG_FILE"; then
             gpg_ok=true
             break
         fi
         log_warn "  GPG download attempt $attempt/3 failed, retrying in 5s..."
         sleep 5
     done
+
+    # Fallback: if all 3 attempts failed and local DNS is the likely culprit,
+    # resolve via Cloudflare / Google DNS and pass the IP via --resolve.
     if [[ "$gpg_ok" != "true" ]]; then
-        log_error "Failed to download Docker GPG key after 3 attempts"
-        log_error "  Host download.docker.com could not be reached — check DNS/firewall"
+        log_warn "  Trying public DNS fallback (system resolver failed)..."
+        local public_ip=""
+        for resolver in 1.1.1.1 8.8.8.8; do
+            public_ip=$(nslookup -q=A download.docker.com "$resolver" 2>/dev/null \
+                        | awk '/^Address: / { print $2; exit }')
+            if [[ -n "$public_ip" && "$public_ip" != "0.0.0.0" ]]; then
+                log_info "  Public resolver $resolver -> $public_ip"
+                break
+            fi
+        done
+        if [[ -n "$public_ip" ]]; then
+            if curl -fsSL -4 --connect-timeout 15 --max-time 60 \
+                    --resolve "download.docker.com:443:$public_ip" \
+                    "$gpg_url" -o "$gpg_out" 2>> "$LOG_FILE"; then
+                gpg_ok=true
+                log_success "  GPG downloaded via public DNS fallback"
+            fi
+        fi
+    fi
+
+    if [[ "$gpg_ok" != "true" ]]; then
+        log_error "Failed to download Docker GPG key after 3 attempts + public DNS fallback"
+        log_error "  Check DNS config (/etc/resolv.conf), firewall egress on :443,"
+        log_error "  or any outbound proxy/captive portal between this host and download.docker.com"
         return 1
     fi
-    chmod a+r /etc/apt/keyrings/docker.asc
+    chmod a+r "$gpg_out"
 
     # Set up the repository (using modern format)
     log_info "Adding Docker repository..."
