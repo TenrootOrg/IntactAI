@@ -558,7 +558,7 @@ document.addEventListener('alpine:init', () => {
             { id: 'plaso', name: 'Plaso (Timeline)', targetVersion: '', enabled: false, fallback: '20240308' },
             { id: 'iris', name: 'IRIS', targetVersion: '', enabled: false, fallback: 'v2.4.19' },
             { id: 'velociraptor', name: 'Velociraptor', targetVersion: '', enabled: false, fallback: '0.73.4' },
-            { id: 'risx', name: 'RISX Source Code', targetVersion: '1.0.0', enabled: false, fallback: '1.0.0' },
+            { id: 'risx', name: 'Intact.AI Source Code', targetVersion: '1.0.0', enabled: false, fallback: '1.0.0' },
         ],
 
         async openPreparePackageModal() {
