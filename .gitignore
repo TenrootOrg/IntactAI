@@ -29,6 +29,10 @@ install_*.log
 modules/iris/secrets/*
 !modules/iris/secrets/.gitkeep
 
+# Portainer admin password file (generated on install)
+modules/portainer/secrets/*
+!modules/portainer/secrets/.gitkeep
+
 # Certificates (generated on install)
 modules/iris/config/certificates/rootCA/*
 modules/iris/config/certificates/web_certificates/*

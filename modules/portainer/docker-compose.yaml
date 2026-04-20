@@ -16,9 +16,25 @@ services:
   portainer:
     container_name: mssp_portainer
     image: portainer/portainer-ce:${PORTAINER_VERSION:-2.27.0}
-    command: -H tcp://portainer-agent:9001 --tlsskipverify
+    # Serve the UI with the shared Nginx TLS cert so Portainer presents the
+    # same certificate as the rest of the stack on :443, instead of the
+    # self-signed cert Portainer generates internally on first run.
+    # --tlsskipverify refers to trust for the portainer-agent connection
+    # (unrelated to the UI cert flags below).
+    # --admin-password-file seeds the admin account on first boot so the
+    # install doesn't hit Portainer's 5-minute "initial setup" timeout; the
+    # password file is produced by generate_portainer_secrets() in lib/modules.sh.
+    command: >-
+      -H tcp://portainer-agent:9001
+      --tlsskipverify
+      --tlscert /certs/cert.pem
+      --tlskey /certs/key.pem
+      --admin-password-file /run/secrets/portainer_admin_password
     volumes:
       - portainer_data:/data
+      - ../nginx/ssl/nginx-cert.crt:/certs/cert.pem:ro
+      - ../nginx/ssl/nginx-cert.key:/certs/key.pem:ro
+      - ./secrets/admin_password:/run/secrets/portainer_admin_password:ro
     ports:
       - "9443:9443"
     restart: unless-stopped
