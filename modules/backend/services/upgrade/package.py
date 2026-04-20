@@ -191,7 +191,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
     log("", "info")
 
     try:
-        # Create directory structure (source dirs created only when RISX selected)
+        # Create directory structure (source dirs created only when Intact.AI selected)
         log("Creating package directory structure...", "info")
         os.makedirs(f"{package_dir}/images", exist_ok=True)
         os.makedirs(f"{package_dir}/binaries", exist_ok=True)
@@ -199,7 +199,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
         manifest = {
             "package_version": "1.0",
             "created": datetime.now().isoformat(),
-            "created_by": "risx-prepare-package",
+            "created_by": "intact-prepare-package",
             "run_id": run_id,
             "versions": {},
             "contents": {
@@ -217,11 +217,11 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
             log("", "info")
             log(f"=== {module.upper()} ({version}) ===", "info")
 
-            if module == 'risx':
+            if module == 'intact':
                 # Copy source files from local machine
                 # TODO: Future - pull from GitHub like other modules (currently private repo)
                 # Should work like: download specific version/tag from repo
-                log("Copying RISX source files...", "info")
+                log("Copying Intact.AI source files...", "info")
 
                 backend_src = os.path.join(WORKDIR, 'modules', 'backend')
                 frontend_src = os.path.join(WORKDIR, 'modules', 'nginx', 'html')
@@ -249,7 +249,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                 else:
                     log(f"  Frontend source not found at {frontend_src}", "warning")
 
-                manifest["versions"]["risx"] = version
+                manifest["versions"]["intact"] = version
                 manifest["contents"]["include_source"] = True
 
             elif module == 'velociraptor':

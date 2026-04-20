@@ -8,9 +8,9 @@ client_installers/
 # Data directory - exclude actual data but keep directory structure
 data/*.json
 data/*.json.migrated
-data/mssp.db
-data/mssp.db-shm
-data/mssp.db-wal
+data/intact.db
+data/intact.db-shm
+data/intact.db-wal
 data/reports/
 data/scheduler_jobs.db
 

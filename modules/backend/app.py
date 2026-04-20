@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple backend API for MSSP Dashboard
+Simple backend API for Intact.AI Dashboard
 Main Flask application with modular structure
 """
 

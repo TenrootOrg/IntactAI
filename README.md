@@ -16,11 +16,11 @@ A comprehensive security platform integrating Velociraptor EDR, ELK Stack, TimeS
 # 1. Install unzip
 sudo apt update && sudo apt install -y unzip
 
-# 2. Extract the project (assuming risx.zip is already transferred to server)
-unzip risx.zip
+# 2. Extract the project (assuming intact.zip is already transferred to server)
+unzip intact.zip
 
 # 3. Enter directory
-cd risx
+cd intact
 
 # 4. Edit configuration (set your IP/domain and passwords)
 nano config.yaml
@@ -110,7 +110,7 @@ Available modules: `elk`, `timesketch`, `velociraptor`, `iris`, `portainer`, `ba
 
 ### Clean/Uninstall
 
-To remove MSSP components (containers, volumes, data):
+To remove Intact.AI components (containers, volumes, data):
 
 ```bash
 # Interactive mode - choose what to remove
@@ -138,7 +138,7 @@ Available options:
 
 ## VM Image Distribution
 
-For distributing MSSP as a pre-configured VM image (OVA) to clients, including air-gapped environments.
+For distributing Intact.AI as a pre-configured VM image (OVA) to clients, including air-gapped environments.
 
 ### Prepare Image for Export
 

@@ -3,14 +3,14 @@
 
 services:
   iris-rabbitmq:
-    container_name: mssp_iris_rabbitmq
+    container_name: intact_iris_rabbitmq
     image: rabbitmq:${RABBITMQ_VERSION:-3-management-alpine}
     restart: unless-stopped
     networks:
       - iris_internal
 
   iris-db:
-    container_name: mssp_iris_db
+    container_name: intact_iris_db
     image: ghcr.io/dfir-iris/iriswebapp_db:${IRIS_VERSION:-v2.4.25}
     entrypoint: /bin/bash
     command:
@@ -28,7 +28,7 @@ services:
       - iris_internal
 
   iris-app:
-    container_name: mssp_iris_app
+    container_name: intact_iris_app
     image: ghcr.io/dfir-iris/iriswebapp_app:${IRIS_VERSION:-v2.4.25}
     entrypoint: /bin/bash
     command:
@@ -55,10 +55,10 @@ services:
       - iris-db
     networks:
       - iris_internal
-      - mssp_network
+      - intact_network
 
   iris-worker:
-    container_name: mssp_iris_worker
+    container_name: intact_iris_worker
     image: ghcr.io/dfir-iris/iriswebapp_app:${IRIS_VERSION:-v2.4.25}
     entrypoint: /bin/bash
     command:
@@ -87,7 +87,7 @@ services:
       - iris_internal
 
   iris-nginx:
-    container_name: mssp_iris_nginx
+    container_name: intact_iris_nginx
     image: ghcr.io/dfir-iris/iriswebapp_nginx:${IRIS_VERSION:-v2.4.25}
     env_file:
       - .env
@@ -100,7 +100,7 @@ services:
       - iris-app
     networks:
       - iris_internal
-      - mssp_network
+      - intact_network
 
 volumes:
   iris_db_data:
@@ -123,5 +123,5 @@ secrets:
 networks:
   iris_internal:
     name: iris_internal
-  mssp_network:
+  intact_network:
     external: true

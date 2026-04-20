@@ -17,11 +17,11 @@ import subprocess
 
 # Service ID to Container Name mapping
 SERVICE_CONTAINERS = {
-    'velociraptor': 'mssp_velociraptor',
-    'timesketch': 'mssp_timesketch_web',
-    'kibana': 'mssp_kibana',
-    'iris': 'mssp_iris_app',
-    'portainer': 'mssp_portainer'
+    'velociraptor': 'intact_velociraptor',
+    'timesketch': 'intact_timesketch_web',
+    'kibana': 'intact_kibana',
+    'iris': 'intact_iris_app',
+    'portainer': 'intact_portainer'
 }
 
 @system_bp.route('/api/test', methods=['GET', 'POST'])
@@ -41,7 +41,7 @@ def get_container_status():
     results = {}
     try:
         # Run docker ps to get running container names
-        # Note: mssp_backend has /var/run/docker.sock mounted
+        # Note: intact_backend has /var/run/docker.sock mounted
         cmd = ["docker", "ps", "--format", "{{.Names}}"]
         output = subprocess.check_output(cmd, text=True)
         running_containers = [n.strip() for n in output.strip().split('\n') if n.strip()]

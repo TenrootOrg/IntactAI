@@ -1,5 +1,5 @@
 /**
- * API Client - Reusable fetch wrappers for MSSP Dashboard
+ * API Client - Reusable fetch wrappers for Intact.AI Dashboard
  *
  * This module provides simple helper functions to reduce code duplication
  * in API calls. Existing code can gradually adopt these helpers.

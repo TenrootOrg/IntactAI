@@ -51,7 +51,7 @@ def _get_iris_api_key(iris_config: dict, logger: Callable = None) -> Optional[st
     try:
         import subprocess
         result = subprocess.run(
-            ['docker', 'exec', 'mssp_iris_db', 'psql', '-U', 'iris', '-d', 'iris_db', '-t', '-c',
+            ['docker', 'exec', 'intact_iris_db', 'psql', '-U', 'iris', '-d', 'iris_db', '-t', '-c',
              "SELECT api_key FROM \"user\" WHERE name='administrator';"],
             capture_output=True, text=True, timeout=10
         )
@@ -91,7 +91,7 @@ def _make_iris_request(method: str, endpoint: str, iris_config: dict, api_key: s
 
     try:
         # Use HTTP for internal container communication
-        host = iris_config.get('host', 'http://mssp_iris_app:8000')
+        host = iris_config.get('host', 'http://intact_iris_app:8000')
         # Convert https to http for internal calls
         if host.startswith('https://'):
             host = host.replace('https://', 'http://')
@@ -149,7 +149,7 @@ def create_iris_case(case_name: str, case_description: str, iris_config: dict,
     log(f"Creating IRIS case: {case_name}")
 
     # Generate SOC ID from timestamp
-    soc_id = f"MSSP-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    soc_id = f"Intact.AI-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
     case_data = {
         "case_name": case_name,
@@ -1314,7 +1314,7 @@ def import_to_iris(run_id: str, case_name: str, timeline_events: List[dict],
 - **IOCs Identified:** {len(iocs)}
 
 ### Data Sources
-This case was automatically created by the MSSP Agentic Analysis module using Velociraptor forensic collection.
+This case was automatically created by the Intact.AI Agentic Analysis module using Velociraptor forensic collection.
 
 ---
 *For detailed findings, see the attached forensic reports.*

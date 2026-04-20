@@ -3,7 +3,7 @@
 
 services:
   timesketch-postgres:
-    container_name: mssp_timesketch_postgres
+    container_name: intact_timesketch_postgres
     image: postgres:${POSTGRES_VERSION:-15}
     environment:
       - POSTGRES_USER=timesketch
@@ -13,7 +13,7 @@ services:
       - timesketch_postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
     networks:
-      - mssp_network
+      - intact_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U timesketch"]
       interval: 10s
@@ -21,7 +21,7 @@ services:
       retries: 5
 
   timesketch-opensearch:
-    container_name: mssp_timesketch_opensearch
+    container_name: intact_timesketch_opensearch
     image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-2.11.0}
     environment:
       - discovery.type=single-node
@@ -39,7 +39,7 @@ services:
       - timesketch_opensearch_data:/usr/share/opensearch/data
     restart: unless-stopped
     networks:
-      - mssp_network
+      - intact_network
     healthcheck:
       test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
       interval: 30s
@@ -47,12 +47,12 @@ services:
       retries: 5
 
   timesketch-redis:
-    container_name: mssp_timesketch_redis
+    container_name: intact_timesketch_redis
     image: redis:${REDIS_VERSION:-7-alpine}
     command: redis-server
     restart: unless-stopped
     networks:
-      - mssp_network
+      - intact_network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -60,7 +60,7 @@ services:
       retries: 5
 
   timesketch-web:
-    container_name: mssp_timesketch_web
+    container_name: intact_timesketch_web
     image: us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:${TIMESKETCH_VERSION:-latest}
     entrypoint: ["/bin/bash", "-c"]
     command:
@@ -82,10 +82,10 @@ services:
       timesketch-redis:
         condition: service_healthy
     networks:
-      - mssp_network
+      - intact_network
 
   timesketch-web-legacy:
-    container_name: mssp_timesketch_web_legacy
+    container_name: intact_timesketch_web_legacy
     image: us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:${TIMESKETCH_VERSION:-latest}
     entrypoint: ["/docker-entrypoint.sh"]
     command: ["timesketch-web-legacy"]
@@ -101,10 +101,10 @@ services:
     depends_on:
       - timesketch-web
     networks:
-      - mssp_network
+      - intact_network
 
   timesketch-nginx:
-    container_name: mssp_timesketch_nginx
+    container_name: intact_timesketch_nginx
     image: nginx:alpine
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
@@ -115,10 +115,10 @@ services:
       - timesketch-web
       - timesketch-web-legacy
     networks:
-      - mssp_network
+      - intact_network
 
   timesketch-worker:
-    container_name: mssp_timesketch_worker
+    container_name: intact_timesketch_worker
     image: us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:${TIMESKETCH_VERSION:-latest}
     entrypoint: ["/bin/bash", "-c"]
     command:
@@ -135,7 +135,7 @@ services:
     depends_on:
       - timesketch-web
     networks:
-      - mssp_network
+      - intact_network
 
 volumes:
   timesketch_postgres_data:
@@ -144,5 +144,5 @@ volumes:
   timesketch_logs:
 
 networks:
-  mssp_network:
+  intact_network:
     external: true

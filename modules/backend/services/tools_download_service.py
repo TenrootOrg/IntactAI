@@ -112,7 +112,7 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
         # Stream download
         response = requests.get(url, stream=True, timeout=timeout,
                                 allow_redirects=True,
-                                headers={'User-Agent': 'MSSP-Tools-Downloader/1.0'})
+                                headers={'User-Agent': 'Intact.AI-Tools-Downloader/1.0'})
         response.raise_for_status()
 
         # Get filename from content-disposition if available
@@ -602,7 +602,7 @@ def download_and_configure_tools(logger: Callable = None) -> Dict:
     settings = config.get('settings', {})
 
     # Tools directory - persistent storage in data folder
-    # Host path: /home/tenroot/risx/data/tools (or /app/data/tools in container)
+    # Host path: /home/tenroot/intact/data/tools (or /app/data/tools in container)
     # Mapped to /tools in Velociraptor container
     host_tools_dir = os.environ.get('HOST_TOOLS_PATH', '/app/data/tools')
     container_tools_dir = settings.get('tools_directory', '/tools')

@@ -6,7 +6,7 @@ Sets up proper package structure for relative imports.
 import sys
 import os
 
-backend_path = '/home/tenroot/risx/modules/backend'
+backend_path = '/home/tenroot/intact/modules/backend'
 sys.path.insert(0, backend_path)
 
 # Create minimal mock for services package to avoid loading grpc-dependent modules
@@ -98,7 +98,7 @@ except Exception as e:
 # Test 3: Test read_env_file
 print("\n[TEST 3] Test read_env_file()...")
 try:
-    env_path = '/home/tenroot/risx/modules/backend/.env'
+    env_path = '/home/tenroot/intact/modules/backend/.env'
     env_vars = read_env_file(env_path)
     print(f"  ✓ Read {len(env_vars)} env variables")
 except Exception as e:

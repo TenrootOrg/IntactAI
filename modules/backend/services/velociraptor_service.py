@@ -291,7 +291,7 @@ def create_velociraptor_hunt(artifact_name, description="", cpu_limit=90):
         stub = api_pb2_grpc.APIStub(channel)
 
         # Build VQL query to create hunt
-        # Using default parameters similar to risx-mssp-python
+        # Using default parameters similar to intact-mssp-python
         expire_seconds = 86400  # 24 hours
         timeout_seconds = 600   # 10 minutes
         max_rows = 1000000
@@ -299,7 +299,7 @@ def create_velociraptor_hunt(artifact_name, description="", cpu_limit=90):
 
         vql_query = f"""
 LET collection = hunt(
-    description='MSSP Hunt: {description}',
+    description='Intact.AI Hunt: {description}',
     artifacts='{artifact_name}',
     spec=dict(`{artifact_name}`=dict()),
     expires=now() + {expire_seconds},

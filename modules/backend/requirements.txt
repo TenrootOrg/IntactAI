@@ -1,4 +1,4 @@
-# MSSP Backend - Core Dependencies (always installed)
+# Intact.AI Backend - Core Dependencies (always installed)
 # Module-specific dependencies are in requirements-{module}.txt
 
 # Web Framework

@@ -95,7 +95,7 @@ def main():
     try:
         import requests
 
-        kibana_url = "http://mssp_kibana:5601"
+        kibana_url = "http://intact_kibana:5601"
         headers = {"kbn-xsrf": "true", "Content-Type": "application/json"}
 
         # Check if Kibana is reachable
@@ -170,7 +170,7 @@ def main():
     # Check Elasticsearch
     try:
         import requests
-        es_response = requests.get("http://mssp_elasticsearch:9200/_cluster/health", timeout=5)
+        es_response = requests.get("http://intact_elasticsearch:9200/_cluster/health", timeout=5)
         if es_response.status_code == 200:
             status = es_response.json().get('status', 'unknown')
             log(f"  Elasticsearch: {status}",

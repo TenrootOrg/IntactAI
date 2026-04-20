@@ -1,5 +1,5 @@
 #!/bin/bash
-# MSSP Platform Installer - Docker Functions
+# Intact.AI Platform Installer - Docker Functions
 # Docker installation and network setup
 
 # ============================================================================
@@ -175,7 +175,7 @@ EOF
 # ============================================================================
 
 create_network() {
-    local network_name="mssp_network"
+    local network_name="intact_network"
 
     if docker network inspect "$network_name" &> /dev/null; then
         log_info "Docker network '$network_name' already exists"
@@ -437,7 +437,7 @@ generate_azure_certificate() {
     # Generate self-signed cert (RSA 2048, valid 2 years)
     openssl req -x509 -newkey rsa:2048 \
         -keyout /tmp/azure_key.pem -out /tmp/azure_cert.pem \
-        -days 730 -nodes -subj "/CN=RISX-MSSP-DFIR" 2>> "$LOG_FILE"
+        -days 730 -nodes -subj "/CN=Intact.AI-Intact.AI-DFIR" 2>> "$LOG_FILE"
 
     # Create PFX (no password)
     openssl pkcs12 -export -out "$pfx_path" \

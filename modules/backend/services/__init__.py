@@ -1,5 +1,5 @@
 """
-Services package for MSSP Dashboard Backend
+Services package for Intact.AI Dashboard Backend
 """
 
 from services.workflow_service import (

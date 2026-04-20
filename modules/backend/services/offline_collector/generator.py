@@ -500,7 +500,7 @@ def create_collection_script(config, file_id, os_type, output_path):
         binary_found = False
 
         # Try 1: Copy from nginx container
-        copy_cmd = f"docker cp mssp_nginx:{velo_src} {velo_dest}"
+        copy_cmd = f"docker cp intact_nginx:{velo_src} {velo_dest}"
         result = subprocess.run(copy_cmd, shell=True, capture_output=True, text=True)
         if result.returncode == 0 and os.path.exists(velo_dest) and os.path.getsize(velo_dest) > 1000000:
             binary_found = True
@@ -685,7 +685,7 @@ if [ -f "$ZIP_FILE" ]; then
     echo "Output file: $ZIP_FILE"
     echo "Size: $SIZE"
     echo ""
-    echo "Transfer this ZIP file back to your MSSP platform"
+    echo "Transfer this ZIP file back to your Intact.AI platform"
     echo "and use 'Import Results' to analyze the data."
 else
     echo "[-] Collection may have failed. Check errors above."

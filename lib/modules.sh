@@ -1,5 +1,5 @@
 #!/bin/bash
-# MSSP Platform Installer - Module Deployment Functions
+# Intact.AI Platform Installer - Module Deployment Functions
 # Service startup and module management
 
 # ============================================================================
@@ -116,7 +116,7 @@ generate_certificates() {
         openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
             -keyout "$nginx_ssl/nginx-cert.key" \
             -out "$nginx_ssl/nginx-cert.crt" \
-            -subj "/CN=$domain/O=MSSP/C=US" 2>/dev/null
+            -subj "/CN=$domain/O=Intact.AI/C=US" 2>/dev/null
         log_success "  Generated Nginx SSL certificate"
     else
         log_info "  Nginx SSL certificate exists, skipping"
@@ -130,7 +130,7 @@ generate_certificates() {
         openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
             -keyout "$iris_ca/irisRootCAKey.pem" \
             -out "$iris_ca/irisRootCACert.pem" \
-            -subj "/CN=IRIS Root CA/O=MSSP/C=US" 2>/dev/null
+            -subj "/CN=IRIS Root CA/O=Intact.AI/C=US" 2>/dev/null
         log_success "  Generated IRIS Root CA"
     else
         log_info "  IRIS Root CA exists, skipping"
@@ -227,8 +227,8 @@ deploy_elk() {
     fi
 
     # Show container status
-    show_container_status "mssp_elasticsearch"
-    show_container_status "mssp_kibana"
+    show_container_status "intact_elasticsearch"
+    show_container_status "intact_kibana"
 
     # Wait for Elasticsearch to be ready
     log_info "  Waiting for Elasticsearch API (http://localhost:9200)..."
@@ -275,15 +275,15 @@ deploy_timesketch() {
     fi
 
     # Show container status
-    show_container_status "mssp_timesketch_web"
-    show_container_status "mssp_timesketch_worker"
-    show_container_status "mssp_timesketch_postgres"
-    show_container_status "mssp_timesketch_redis"
-    show_container_status "mssp_timesketch_opensearch"
+    show_container_status "intact_timesketch_web"
+    show_container_status "intact_timesketch_worker"
+    show_container_status "intact_timesketch_postgres"
+    show_container_status "intact_timesketch_redis"
+    show_container_status "intact_timesketch_opensearch"
 
     # Wait for TimeSketch web container to be ready
     log_info "  Waiting for TimeSketch container..."
-    if ! wait_for_container "mssp_timesketch_web" 60; then
+    if ! wait_for_container "intact_timesketch_web" 60; then
         log_error "  TimeSketch web container failed to start"
         track_module_failure "TimeSketch"
         return 1
@@ -309,7 +309,7 @@ deploy_timesketch() {
 
     if [[ "$ts_ready" != "true" ]]; then
         log_warn "  TimeSketch API not responding after ${ts_max_wait}s"
-        log_info "  Check logs: docker logs mssp_timesketch_web"
+        log_info "  Check logs: docker logs intact_timesketch_web"
     fi
 
     # Create user
@@ -324,7 +324,7 @@ deploy_timesketch() {
     local ts_max_retry=5
 
     while [[ $ts_retry -lt $ts_max_retry ]]; do
-        local ts_error=$(docker exec mssp_timesketch_web tsctl create-user "${ts_user}" --password "${ts_pass}" 2>&1)
+        local ts_error=$(docker exec intact_timesketch_web tsctl create-user "${ts_user}" --password "${ts_pass}" 2>&1)
         local ts_exit_code=$?
 
         if [[ $ts_exit_code -eq 0 ]]; then
@@ -335,7 +335,7 @@ deploy_timesketch() {
         if echo "$ts_error" | grep -qi "already exists"; then
             log_info "  TimeSketch user '${ts_user}' already exists"
             # Enable user in case it was disabled
-            docker exec mssp_timesketch_web tsctl enable-user "${ts_user}" >/dev/null 2>&1 || true
+            docker exec intact_timesketch_web tsctl enable-user "${ts_user}" >/dev/null 2>&1 || true
             ts_user_created=true
             break
         fi
@@ -349,12 +349,12 @@ deploy_timesketch() {
 
     if [[ "$ts_user_created" == "true" ]]; then
         # Ensure user is enabled
-        docker exec mssp_timesketch_web tsctl enable-user "${ts_user}" >/dev/null 2>&1 || true
+        docker exec intact_timesketch_web tsctl enable-user "${ts_user}" >/dev/null 2>&1 || true
         log_success "  TimeSketch user '${ts_user}' ready"
 
         # Enable DFIQ after successful deployment (requires db migration for schema)
         log_info "  Enabling DFIQ..."
-        docker exec mssp_timesketch_web tsctl db upgrade 2>/dev/null || true
+        docker exec intact_timesketch_web tsctl db upgrade 2>/dev/null || true
         sed -i 's/DFIQ_ENABLED = False/DFIQ_ENABLED = True/' "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf"
         log_success "  DFIQ enabled"
 
@@ -393,7 +393,7 @@ deploy_timesketch() {
         # Restart the Timesketch containers that bind-mount timesketch.conf so both
         # DFIQ and the timeout bumps take effect. Worker + web_legacy matter too —
         # without this, indexing runs with the old timeouts until next reboot.
-        docker restart mssp_timesketch_web mssp_timesketch_worker mssp_timesketch_web_legacy >/dev/null 2>&1
+        docker restart intact_timesketch_web intact_timesketch_worker intact_timesketch_web_legacy >/dev/null 2>&1
 
         track_module_success "TimeSketch"
     else
@@ -428,11 +428,11 @@ deploy_velociraptor() {
     fi
 
     # Show container status
-    show_container_status "mssp_velociraptor"
+    show_container_status "intact_velociraptor"
 
     # Wait for container to be ready
     log_info "  Waiting for Velociraptor container..."
-    if ! wait_for_container "mssp_velociraptor" 60; then
+    if ! wait_for_container "intact_velociraptor" 60; then
         log_warn "  Velociraptor container may not be fully ready"
     fi
 
@@ -440,7 +440,7 @@ deploy_velociraptor() {
     log_info "  Waiting for Velociraptor configuration..."
     local velo_config_wait=0
     while [[ $velo_config_wait -lt 90 ]]; do
-        if docker exec mssp_velociraptor test -f /velociraptor/client.config.yaml 2>/dev/null; then
+        if docker exec intact_velociraptor test -f /velociraptor/client.config.yaml 2>/dev/null; then
             log_success "  Velociraptor configuration ready (${velo_config_wait}s)"
             break
         fi
@@ -498,18 +498,18 @@ deploy_iris() {
     fi
 
     # Show container status (including nginx which serves port 8443)
-    show_container_status "mssp_iris_db"
-    show_container_status "mssp_iris_rabbitmq"
-    show_container_status "mssp_iris_app"
-    show_container_status "mssp_iris_worker"
-    show_container_status "mssp_iris_nginx"
+    show_container_status "intact_iris_db"
+    show_container_status "intact_iris_rabbitmq"
+    show_container_status "intact_iris_app"
+    show_container_status "intact_iris_worker"
+    show_container_status "intact_iris_nginx"
 
     # Wait for database first
     log_info "  Waiting for IRIS database (PostgreSQL)..."
     local db_wait=0
     local db_max_wait=90
     while [[ $db_wait -lt $db_max_wait ]]; do
-        if docker exec mssp_iris_db pg_isready -U postgres > /dev/null 2>&1; then
+        if docker exec intact_iris_db pg_isready -U postgres > /dev/null 2>&1; then
             log_success "  IRIS database is ready (${db_wait}s)"
             break
         fi
@@ -523,7 +523,7 @@ deploy_iris() {
     local mq_wait=0
     local mq_max_wait=60
     while [[ $mq_wait -lt $mq_max_wait ]]; do
-        if docker exec mssp_iris_rabbitmq rabbitmqctl status > /dev/null 2>&1; then
+        if docker exec intact_iris_rabbitmq rabbitmqctl status > /dev/null 2>&1; then
             log_success "  RabbitMQ is ready (${mq_wait}s)"
             break
         fi
@@ -534,7 +534,7 @@ deploy_iris() {
 
     # Wait for IRIS app container
     log_info "  Waiting for IRIS app container..."
-    if ! wait_for_container "mssp_iris_app" 90; then
+    if ! wait_for_container "intact_iris_app" 90; then
         log_warn "  IRIS app container not ready after 90s"
     fi
 
@@ -562,7 +562,7 @@ deploy_iris() {
         fi
 
         # Show initialization progress by checking app logs
-        local current_status=$(docker logs mssp_iris_app 2>&1 | tail -1 | grep -oP '(?<=:: )[^:]+(?= ::)' | tail -1)
+        local current_status=$(docker logs intact_iris_app 2>&1 | tail -1 | grep -oP '(?<=:: )[^:]+(?= ::)' | tail -1)
         if [[ -n "$current_status" && "$current_status" != "$last_status" ]]; then
             log_info "  IRIS status: $current_status"
             last_status="$current_status"
@@ -581,7 +581,7 @@ deploy_iris() {
     else
         log_warn "  IRIS web interface not responding after ${iris_max_wait}s"
         log_info "  This may be normal for first-time installation"
-        log_info "  Check logs: docker logs mssp_iris_app"
+        log_info "  Check logs: docker logs intact_iris_app"
         log_info "  IRIS should be accessible at https://localhost:8443 once ready"
         track_module_success "IRIS"
     fi
@@ -635,11 +635,11 @@ deploy_portainer() {
     fi
 
     # Show container status
-    show_container_status "mssp_portainer"
+    show_container_status "intact_portainer"
 
     # Wait for Portainer container
     log_info "  Waiting for Portainer container..."
-    if wait_for_container "mssp_portainer" 30; then
+    if wait_for_container "intact_portainer" 30; then
         log_success "  Portainer is ready"
         track_module_success "Portainer"
     else
@@ -675,7 +675,7 @@ deploy_backend() {
     fi
 
     # Show container status
-    show_container_status "mssp_backend"
+    show_container_status "intact_backend"
 
     # Wait for backend health endpoint
     log_info "  Waiting for Backend API health check (http://localhost:5001/api/health)..."
@@ -712,11 +712,11 @@ deploy_nginx() {
     fi
 
     # Show container status
-    show_container_status "mssp_nginx"
+    show_container_status "intact_nginx"
 
     # Wait for Nginx
     log_info "  Waiting for Nginx container..."
-    if wait_for_container "mssp_nginx" 30; then
+    if wait_for_container "intact_nginx" 30; then
         log_success "  Nginx is ready"
         track_module_success "Nginx"
     else
@@ -731,7 +731,7 @@ deploy_nginx() {
 
 start_services() {
     log_info "=========================================="
-    log_info "Starting MSSP Services"
+    log_info "Starting Intact.AI Services"
     log_info "=========================================="
     echo ""
 
@@ -768,8 +768,8 @@ start_services() {
 
     # Show all running containers
     echo ""
-    log_info "Running MSSP containers:"
-    docker ps --filter "name=mssp_" --format "  {{.Names}}: {{.Status}}" 2>/dev/null
+    log_info "Running Intact.AI containers:"
+    docker ps --filter "name=intact_" --format "  {{.Names}}: {{.Status}}" 2>/dev/null
 
     cd "${SCRIPT_DIR}"
 }

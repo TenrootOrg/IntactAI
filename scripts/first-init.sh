@@ -1,5 +1,5 @@
 #!/bin/bash
-# MSSP Platform - First Time Initialization Script
+# Intact.AI Platform - First Time Initialization Script
 # Run this after editing config.yaml with your IP/domain and passwords
 #
 # Usage: sudo bash first-init.sh
@@ -55,7 +55,7 @@ preflight_checks() {
 
     # Check if already initialized
     if [[ -f "$MARKER_FILE" ]]; then
-        log_warn "MSSP Platform has already been initialized!"
+        log_warn "Intact.AI Platform has already been initialized!"
         log_info "Marker file exists: $MARKER_FILE"
         echo ""
         read -p "Re-initialize? This will regenerate certificates and restart services. (y/N) " -n 1 -r
@@ -152,7 +152,7 @@ generate_certificates() {
         openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
             -keyout "$nginx_ssl/nginx-cert.key" \
             -out "$nginx_ssl/nginx-cert.crt" \
-            -subj "/CN=$DOMAIN/O=MSSP/C=US" 2>/dev/null
+            -subj "/CN=$DOMAIN/O=Intact.AI/C=US" 2>/dev/null
         log_success "  Nginx SSL certificate generated"
     else
         log_info "  Nginx SSL certificate exists, skipping"
@@ -166,7 +166,7 @@ generate_certificates() {
         openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
             -keyout "$iris_ca/irisRootCAKey.pem" \
             -out "$iris_ca/irisRootCACert.pem" \
-            -subj "/CN=IRIS Root CA/O=MSSP/C=US" 2>/dev/null
+            -subj "/CN=IRIS Root CA/O=Intact.AI/C=US" 2>/dev/null
         log_success "  IRIS Root CA generated"
     else
         log_info "  IRIS Root CA exists, skipping"
@@ -247,7 +247,7 @@ generate_iris_secrets() {
 # ============================================================================
 
 start_services() {
-    log_info "Starting MSSP services..."
+    log_info "Starting Intact.AI services..."
 
     local modules=("elk" "timesketch" "velociraptor" "iris" "portainer" "backend" "nginx")
     local total=${#modules[@]}
@@ -308,7 +308,7 @@ wait_for_services() {
     log_info "  Waiting for Velociraptor..."
     local velo_wait=0
     while [[ $velo_wait -lt 90 ]]; do
-        if docker exec mssp_velociraptor test -f /velociraptor/client.config.yaml 2>/dev/null; then
+        if docker exec intact_velociraptor test -f /velociraptor/client.config.yaml 2>/dev/null; then
             log_success "  Velociraptor is ready (${velo_wait}s)"
             break
         fi
@@ -345,7 +345,7 @@ wait_for_services() {
     log_info "  Waiting for Timesketch database..."
     local db_wait=0
     while [[ $db_wait -lt 60 ]]; do
-        if docker exec mssp_timesketch_web tsctl list-users >/dev/null 2>&1; then
+        if docker exec intact_timesketch_web tsctl list-users >/dev/null 2>&1; then
             log_success "  Timesketch database is ready (${db_wait}s)"
             break
         fi
@@ -361,10 +361,10 @@ wait_for_services() {
     local ts_retry=0
     local ts_created=false
     while [[ $ts_retry -lt 5 ]]; do
-        local result=$(docker exec mssp_timesketch_web tsctl create-user "$ts_user" --password "$ts_pass" 2>&1)
+        local result=$(docker exec intact_timesketch_web tsctl create-user "$ts_user" --password "$ts_pass" 2>&1)
         if [[ "$result" == *"created/updated"* ]]; then
             # Ensure user is enabled (in case it was previously disabled)
-            docker exec mssp_timesketch_web tsctl enable-user "$ts_user" >/dev/null 2>&1 || true
+            docker exec intact_timesketch_web tsctl enable-user "$ts_user" >/dev/null 2>&1 || true
             log_success "  Timesketch user '$ts_user' created"
             ts_created=true
             break
@@ -376,7 +376,7 @@ wait_for_services() {
 
     if [[ "$ts_created" != "true" ]]; then
         log_warn "  Failed to create Timesketch user after 5 attempts"
-        log_warn "  Manual creation: docker exec mssp_timesketch_web tsctl create-user $ts_user --password <password>"
+        log_warn "  Manual creation: docker exec intact_timesketch_web tsctl create-user $ts_user --password <password>"
     fi
 
     # Nginx
@@ -398,7 +398,7 @@ wait_for_services() {
 
 restore_velociraptor_data() {
     local backup_dir="$SCRIPT_DIR/data/velociraptor_backup"
-    local container="mssp_velociraptor"
+    local container="intact_velociraptor"
 
     # Check if backup exists
     if [[ ! -d "$backup_dir" ]] || [[ ! -f "$backup_dir/.backup_timestamp" ]]; then
@@ -532,7 +532,7 @@ generate_client_installers() {
 # ============================================================================
 
 create_marker() {
-    echo "MSSP Platform initialized on $(date)" > "$MARKER_FILE"
+    echo "Intact.AI Platform initialized on $(date)" > "$MARKER_FILE"
     echo "Domain: $DOMAIN" >> "$MARKER_FILE"
     log_info "Created initialization marker: $MARKER_FILE"
 }
@@ -544,7 +544,7 @@ create_marker() {
 print_summary() {
     echo ""
     echo "=============================================="
-    echo -e "${GREEN}  MSSP Platform Initialization Complete!${NC}"
+    echo -e "${GREEN}  Intact.AI Platform Initialization Complete!${NC}"
     echo "=============================================="
     echo ""
     echo "Access your services at:"
@@ -583,7 +583,7 @@ main() {
 
     echo ""
     echo "=============================================="
-    echo "  MSSP Platform - First Time Initialization"
+    echo "  Intact.AI Platform - First Time Initialization"
     echo "=============================================="
     echo ""
     echo "Log file: $LOG_FILE"

@@ -27,7 +27,7 @@ def init_elasticsearch(host='elasticsearch', port=9200):
             print(f"[ELASTICSEARCH] ✓ Connected to Elasticsearch at {host}:{port}", flush=True)
 
             # Create index if it doesn't exist
-            index_name = 'mssp_workflow_runs'
+            index_name = 'intact_workflow_runs'
             if not es_client.indices.exists(index=index_name):
                 # Define index mapping
                 mapping = {
@@ -87,7 +87,7 @@ def create_workflow_run(run_id, automation_type, name, details=None):
         }
 
         es_client.index(
-            index='mssp_workflow_runs',
+            index='intact_workflow_runs',
             id=run_id,
             document=document
         )
@@ -116,7 +116,7 @@ def add_log_to_workflow(run_id, log_message, log_level="info"):
         # Use update API with script to atomically append to logs array
         # This is more efficient and thread-safe than read-modify-write
         es_client.update(
-            index='mssp_workflow_runs',
+            index='intact_workflow_runs',
             id=run_id,
             body={
                 "script": {
@@ -135,7 +135,7 @@ def add_log_to_workflow(run_id, log_message, log_level="info"):
     except Exception as e:
         # If scripted update fails, fall back to full document update
         try:
-            result = es_client.get(index='mssp_workflow_runs', id=run_id)
+            result = es_client.get(index='intact_workflow_runs', id=run_id)
             doc = result['_source']
             doc['logs'].append({
                 "timestamp": datetime.now().isoformat(),
@@ -143,7 +143,7 @@ def add_log_to_workflow(run_id, log_message, log_level="info"):
                 "message": log_message
             })
             es_client.index(
-                index='mssp_workflow_runs',
+                index='intact_workflow_runs',
                 id=run_id,
                 document=doc
             )
@@ -169,7 +169,7 @@ def update_workflow_status(run_id, status, progress=None, error=None):
 
         # Use partial update for efficiency
         es_client.update(
-            index='mssp_workflow_runs',
+            index='intact_workflow_runs',
             id=run_id,
             body={"doc": update_doc},
             retry_on_conflict=3
@@ -189,7 +189,7 @@ def get_all_workflow_runs(size=100):
 
     try:
         result = es_client.search(
-            index='mssp_workflow_runs',
+            index='intact_workflow_runs',
             body={
                 "query": {"match_all": {}},
                 "sort": [{"started_at": {"order": "desc"}}],
@@ -210,7 +210,7 @@ def get_workflow_run(run_id):
         return None
 
     try:
-        result = es_client.get(index='mssp_workflow_runs', id=run_id)
+        result = es_client.get(index='intact_workflow_runs', id=run_id)
         return result['_source']
 
     except Exception as e:
@@ -224,7 +224,7 @@ def search_workflow_runs(query, size=50):
 
     try:
         result = es_client.search(
-            index='mssp_workflow_runs',
+            index='intact_workflow_runs',
             body={
                 "query": {
                     "multi_match": {
@@ -255,7 +255,7 @@ def delete_old_workflow_runs(days=30):
         cutoff = datetime.now() - timedelta(days=days)
 
         result = es_client.delete_by_query(
-            index='mssp_workflow_runs',
+            index='intact_workflow_runs',
             body={
                 "query": {
                     "range": {
@@ -282,7 +282,7 @@ def get_workflow_stats():
 
     try:
         result = es_client.search(
-            index='mssp_workflow_runs',
+            index='intact_workflow_runs',
             body={
                 "size": 0,
                 "aggs": {

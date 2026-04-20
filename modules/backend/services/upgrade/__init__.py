@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Upgrade Service Package - Module upgrade functions for MSSP platform.
+Upgrade Service Package - Module upgrade functions for Intact.AI platform.
 Supports upgrading: ELK, Timesketch, IRIS, Velociraptor, Backend, Frontend
 
 Two-Phase Upgrade Support:
-- Phase 1: Upgrades RISX (backend code), saves state, triggers restart
+- Phase 1: Upgrades Intact.AI (backend code), saves state, triggers restart
 - Phase 2: Resumes after restart, upgrades remaining modules
 """
 
@@ -33,7 +33,7 @@ from .elk import upgrade_elk, upgrade_elk_offline
 from .timesketch import upgrade_timesketch, upgrade_timesketch_offline
 from .iris import upgrade_iris, upgrade_iris_offline
 from .velociraptor import upgrade_velociraptor, upgrade_velociraptor_offline
-from .risx import upgrade_risx, upgrade_risx_offline
+from .intact import upgrade_intact, upgrade_intact_offline
 from .plaso import upgrade_plaso, upgrade_plaso_offline
 
 # Storage functions for two-phase upgrade state
@@ -127,7 +127,7 @@ def recreate_timesketch_user(logger: Callable = None) -> bool:
 
     # Create user
     result = run_command(
-        f'docker exec mssp_timesketch_web tsctl create-user "{ts_user}" --password "{ts_pass}"',
+        f'docker exec intact_timesketch_web tsctl create-user "{ts_user}" --password "{ts_pass}"',
         logger=log
     )
     if not result.get('success'):
@@ -136,7 +136,7 @@ def recreate_timesketch_user(logger: Callable = None) -> bool:
 
     # Make admin
     result = run_command(
-        f'docker exec mssp_timesketch_web tsctl make-admin "{ts_user}"',
+        f'docker exec intact_timesketch_web tsctl make-admin "{ts_user}"',
         logger=log
     )
     if not result.get('success'):
@@ -149,7 +149,7 @@ def recreate_timesketch_user(logger: Callable = None) -> bool:
 def schedule_backend_restart():
     """Schedule backend restart after short delay using detached process."""
     subprocess.Popen(
-        ['sh', '-c', 'sleep 3 && docker restart mssp_backend mssp_tusd'],
+        ['sh', '-c', 'sleep 3 && docker restart intact_backend intact_tusd'],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True
@@ -160,7 +160,7 @@ def restart_nginx(log: Callable) -> bool:
     """Restart nginx container."""
     log("Restarting nginx to refresh DNS resolution...", "info")
     try:
-        nginx_result = run_command("docker restart mssp_nginx", logger=log)
+        nginx_result = run_command("docker restart intact_nginx", logger=log)
         if nginx_result.get('success'):
             log("Nginx restarted successfully", "success")
             return True
@@ -177,7 +177,7 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
     """Run upgrade workflow for selected modules with two-phase support.
 
     Two-Phase Upgrade:
-    - If RISX is in modules, it's upgraded first (Phase 1)
+    - If Intact.AI is in modules, it's upgraded first (Phase 1)
     - State is saved, backend restarts
     - On startup, Phase 2 resumes with remaining modules
 
@@ -194,15 +194,15 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     db_overwrite = db_overwrite or {}
 
-    # RISX must be first so backend code is updated before modules
-    upgrade_order = ['risx', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor']
+    # Intact.AI must be first so backend code is updated before modules
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor']
     upgrade_functions = {
         'elk': upgrade_elk,
         'timesketch': upgrade_timesketch,
         'plaso': upgrade_plaso,
         'iris': upgrade_iris,
         'velociraptor': upgrade_velociraptor,
-        'risx': upgrade_risx,
+        'intact': upgrade_intact,
     }
 
     results = {}
@@ -252,7 +252,7 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                 continue
 
             try:
-                if module_name == 'risx':
+                if module_name == 'intact':
                     result = upgrade_fn(logger=log)
                 else:
                     result = upgrade_fn(target_version, logger=log)
@@ -268,14 +268,14 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                     if module_name == 'timesketch' and db_overwrite.get('timesketch', False):
                         recreate_timesketch_user(logger=log)
 
-                    # Special handling for RISX - trigger Phase 2
-                    if module_name == 'risx' and run_id:
+                    # Special handling for Intact.AI - trigger Phase 2
+                    if module_name == 'intact' and run_id:
                         # Check if there are more modules to upgrade
                         remaining = [m for m in upgrade_order if m in modules and m not in completed_modules]
                         if remaining:
                             log("", "info")
                             log(f"{'='*50}", "info")
-                            log("PHASE 1 COMPLETE - RISX upgraded", "info")
+                            log("PHASE 1 COMPLETE - Intact.AI upgraded", "info")
                             log(f"Remaining modules for Phase 2: {', '.join(remaining)}", "info")
                             log(f"{'='*50}", "info")
 
@@ -419,7 +419,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             package_dir = package_dir_raw
             extract_dir = package_dir_raw
 
-    upgrade_order = ['risx', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor']
 
     # Use online or offline functions based on mode
     if mode == 'offline':
@@ -429,7 +429,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'plaso': lambda v, **kw: upgrade_plaso_offline(package_dir, v, **kw),
             'iris': lambda v, **kw: upgrade_iris_offline(package_dir, v, **kw),
             'velociraptor': lambda v, **kw: upgrade_velociraptor_offline(package_dir, v, **kw),
-            'risx': lambda **kw: upgrade_risx_offline(package_dir, **kw),
+            'intact': lambda **kw: upgrade_intact_offline(package_dir, **kw),
         }
     else:
         upgrade_functions = {
@@ -438,7 +438,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'plaso': upgrade_plaso,
             'iris': upgrade_iris,
             'velociraptor': upgrade_velociraptor,
-            'risx': upgrade_risx,
+            'intact': upgrade_intact,
         }
 
     results = {}
@@ -477,7 +477,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                 continue
 
             try:
-                if module_name == 'risx':
+                if module_name == 'intact':
                     result = upgrade_fn(logger=log)
                 else:
                     result = upgrade_fn(target_version, logger=log)
@@ -561,7 +561,7 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
     """Run offline upgrade workflow from an uploaded package with two-phase support.
 
     Two-Phase Upgrade:
-    - If RISX source is in package, it's upgraded first (Phase 1)
+    - If Intact.AI source is in package, it's upgraded first (Phase 1)
     - State is saved, backend restarts
     - On startup, Phase 2 resumes with remaining modules
 
@@ -625,11 +625,11 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
         'plaso': upgrade_plaso_offline,
         'iris': upgrade_iris_offline,
         'velociraptor': upgrade_velociraptor_offline,
-        'risx': upgrade_risx_offline,
+        'intact': upgrade_intact_offline,
     }
 
-    # RISX must be first so backend code is updated before modules
-    upgrade_order = ['risx', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor']
+    # Intact.AI must be first so backend code is updated before modules
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor']
 
     results = {}
     total = 0
@@ -641,14 +641,14 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
 
     # Build modules dict for state tracking
     modules_dict = {k: v for k, v in versions.items()}
-    if 'risx' not in modules_dict:
-        # Check if risx source exists in package (not just empty dirs)
+    if 'intact' not in modules_dict:
+        # Check if intact source exists in package (not just empty dirs)
         backend_source = os.path.join(package_dir, 'source', 'backend')
         frontend_source = os.path.join(package_dir, 'source', 'frontend')
         has_backend = os.path.exists(backend_source) and os.listdir(backend_source)
         has_frontend = os.path.exists(frontend_source) and os.listdir(frontend_source)
         if has_backend or has_frontend:
-            modules_dict['risx'] = 'from_package'
+            modules_dict['intact'] = 'from_package'
 
     for module in upgrade_order:
         if module in modules_dict:
@@ -664,8 +664,8 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
         for module_name in upgrade_order:
             version = versions.get(module_name)
 
-            # For risx, check if source exists
-            if module_name == 'risx':
+            # For intact, check if source exists
+            if module_name == 'intact':
                 backend_source = os.path.join(package_dir, 'source', 'backend')
                 frontend_source = os.path.join(package_dir, 'source', 'frontend')
                 if not os.path.exists(backend_source) and not os.path.exists(frontend_source):
@@ -690,7 +690,7 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
                 continue
 
             try:
-                if module_name == 'risx':
+                if module_name == 'intact':
                     result = upgrade_fn(package_dir, logger=log)
                 else:
                     # Note: Plaso is handled as its own module, not bundled with Timesketch
@@ -708,13 +708,13 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
                     if module_name == 'timesketch' and db_overwrite.get('timesketch', False):
                         recreate_timesketch_user(logger=log)
 
-                    # Special handling for RISX - trigger Phase 2
-                    if module_name == 'risx' and run_id and not result.get('skipped'):
+                    # Special handling for Intact.AI - trigger Phase 2
+                    if module_name == 'intact' and run_id and not result.get('skipped'):
                         remaining = [m for m in upgrade_order if m in modules_dict and m not in completed_modules]
                         if remaining:
                             log("", "info")
                             log(f"{'='*50}", "info")
-                            log("PHASE 1 COMPLETE - RISX upgraded", "info")
+                            log("PHASE 1 COMPLETE - Intact.AI upgraded", "info")
                             log(f"Remaining modules for Phase 2: {', '.join(remaining)}", "info")
                             log(f"{'='*50}", "info")
 
@@ -843,14 +843,14 @@ __all__ = [
     'upgrade_plaso',
     'upgrade_iris',
     'upgrade_velociraptor',
-    'upgrade_risx',
+    'upgrade_intact',
     # Offline upgrade functions
     'upgrade_elk_offline',
     'upgrade_timesketch_offline',
     'upgrade_plaso_offline',
     'upgrade_iris_offline',
     'upgrade_velociraptor_offline',
-    'upgrade_risx_offline',
+    'upgrade_intact_offline',
     # Workflow functions
     'run_upgrade_workflow',
     'run_offline_upgrade_workflow',

@@ -8,7 +8,7 @@ import time
 
 # Constants
 COLLECTOR_OUTPUT_DIR = "/tmp/offline_collectors"
-VELOCIRAPTOR_CONTAINER = "mssp_velociraptor"
+VELOCIRAPTOR_CONTAINER = "intact_velociraptor"
 
 # Velociraptor client binary paths (static in nginx/html/downloads)
 # NOTE: v0.74.x required for Generic Collector (v0.75+ broke the -- pseudo-flag)

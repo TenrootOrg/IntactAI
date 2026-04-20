@@ -80,7 +80,7 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
         for i in range(24):  # 24 * 5s = 120s max
             log(f"  Checking Elasticsearch container... ({i*5}s)", "info")
             check_result = run_command(
-                "docker exec mssp_elasticsearch curl -sf --max-time 5 http://localhost:9200/_cluster/health",
+                "docker exec intact_elasticsearch curl -sf --max-time 5 http://localhost:9200/_cluster/health",
                 logger=None
             )
             if check_result['success']:
@@ -96,7 +96,7 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
             log("Elasticsearch health check: PASSED", "success")
         else:
             # Check if containers are crash-looping
-            check_result = run_command("docker ps -a --filter name=mssp_elasticsearch --format '{{.Status}}'", logger=log)
+            check_result = run_command("docker ps -a --filter name=intact_elasticsearch --format '{{.Status}}'", logger=log)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"Elasticsearch failed to start - container status: {container_status}")
@@ -181,7 +181,7 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None)
         for i in range(24):  # 24 * 5s = 120s max
             log(f"  Checking Elasticsearch container... ({i*5}s)", "info")
             check_result = run_command(
-                "docker exec mssp_elasticsearch curl -sf --max-time 5 http://localhost:9200/_cluster/health",
+                "docker exec intact_elasticsearch curl -sf --max-time 5 http://localhost:9200/_cluster/health",
                 logger=None
             )
             if check_result['success']:
@@ -197,7 +197,7 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None)
             log("Elasticsearch health check: PASSED", "success")
         else:
             # Check if containers are crash-looping
-            check_result = run_command("docker ps -a --filter name=mssp_elasticsearch --format '{{.Status}}'", logger=log)
+            check_result = run_command("docker ps -a --filter name=intact_elasticsearch --format '{{.Status}}'", logger=log)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"Elasticsearch failed to start - container status: {container_status}")
