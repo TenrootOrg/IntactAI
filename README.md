@@ -1,4 +1,4 @@
-# Risx Security Platform
+# Intact.AI Security Platform
 
 A comprehensive security platform integrating Velociraptor EDR, ELK Stack, TimeSketch, IRIS, and custom management tools.
 
