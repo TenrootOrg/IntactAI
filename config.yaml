@@ -22,7 +22,7 @@ modules:
   portainer:
     enabled: true
     id: admin
-    password: '123123' #Need to setup anyway post installation
+    password: '1234qwer!@#$' # Portainer requires >=12 chars; shorter values fall back to the same built-in default
   timesketch:
     enabled: true
     id: tenroot

@@ -72,6 +72,38 @@ generate_iris_secrets() {
     fi
 }
 
+generate_portainer_secrets() {
+    # Portainer CE locks itself after a 5-minute "initial setup" window if no
+    # admin account is created. Seed the admin account via --admin-password-file
+    # so the very first container boot skips the interactive setup entirely
+    # and the install works unattended.
+    log_info "Generating Portainer secrets..."
+    local secrets_dir="${SCRIPT_DIR}/modules/portainer/secrets"
+    mkdir -p "$secrets_dir"
+
+    if [[ ! -s "$secrets_dir/admin_password" ]]; then
+        local portainer_password
+        portainer_password=$(read_config "['modules']['portainer']['password']")
+        # Portainer enforces a 12-character minimum even when the password is
+        # seeded via --admin-password-file. Short values silently cause the
+        # admin user to never be created and the UI falls back to the
+        # timed-out "initial setup" state — exactly what we're trying to avoid.
+        if [[ -z "$portainer_password" || "$portainer_password" == "None" || ${#portainer_password} -lt 12 ]]; then
+            log_warn "  Portainer password missing or < 12 chars in config.yaml; using built-in default '1234qwer!@#\$'"
+            log_warn "  Change it from the Portainer UI after first login (Settings -> Users)"
+            portainer_password='1234qwer!@#$'
+        fi
+        printf '%s' "$portainer_password" > "$secrets_dir/admin_password"
+        chmod 600 "$secrets_dir/admin_password"
+        sync
+        log_info "  Created Portainer admin password file"
+    else
+        log_info "  Portainer admin password file exists, skipping"
+    fi
+
+    log_success "Portainer secrets ready"
+}
+
 generate_certificates() {
     log_info "Generating SSL certificates..."
     local domain="${DOMAIN:-localhost}"
@@ -570,6 +602,29 @@ deploy_portainer() {
     log_info "  Directory: ${SCRIPT_DIR}/modules/portainer"
     cd "${SCRIPT_DIR}/modules/portainer"
 
+    # Portainer mounts the shared Nginx TLS cert via --tlscert/--tlskey so the
+    # UI on :9443 presents the same certificate as the rest of the stack.
+    # generate_certificates() runs before this step, so the cert should exist —
+    # but bail out loud if it doesn't rather than letting Docker create empty
+    # bind-mount dirs and Portainer fail to start with an unhelpful error.
+    local nginx_ssl="${SCRIPT_DIR}/modules/nginx/ssl"
+    if [[ ! -f "$nginx_ssl/nginx-cert.crt" ]] || [[ ! -f "$nginx_ssl/nginx-cert.key" ]]; then
+        log_error "  Shared Nginx TLS cert not found at $nginx_ssl/"
+        log_error "  Expected generate_certificates() to run before deploy_portainer()"
+        track_module_failure "Portainer"
+        return 1
+    fi
+
+    # Admin password file must exist; without it the first boot falls into the
+    # 5-minute initial-setup window and times out before anyone can click.
+    local portainer_secret="${SCRIPT_DIR}/modules/portainer/secrets/admin_password"
+    if [[ ! -s "$portainer_secret" ]]; then
+        log_error "  Portainer admin password file missing at $portainer_secret"
+        log_error "  Expected generate_portainer_secrets() to run before deploy_portainer()"
+        track_module_failure "Portainer"
+        return 1
+    fi
+
     local portainer_version=$(read_config "['versions']['portainer']")
     log_info "  Portainer version: ${portainer_version:-latest}"
 
@@ -684,6 +739,8 @@ start_services() {
 
     # Generate secrets and certificates before starting services
     generate_iris_secrets
+    echo ""
+    generate_portainer_secrets
     echo ""
     generate_certificates
     echo ""
