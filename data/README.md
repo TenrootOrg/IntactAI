@@ -1,14 +1,14 @@
 # Data Directory
 
-This directory contains the SQLite database for the MSSP platform.
+This directory contains the SQLite database for the Intact.AI platform.
 
 ## Contents
 
-- `mssp.db` - SQLite database (workflows, blueprints, offline collectors, reports, frontend config)
+- `intact.db` - SQLite database (workflows, blueprints, offline collectors, reports, frontend config)
 
 ## Storage Model
 
-The MSSP platform uses **SQLite** for all persistent data. This provides:
+The Intact.AI platform uses **SQLite** for all persistent data. This provides:
 
 - **Persistence**: Data survives container restarts and rebuilds
 - **Concurrency**: WAL mode for safe concurrent reads/writes
@@ -32,7 +32,7 @@ But NOT for:
 ## Initialization
 
 On first startup, the backend automatically:
-1. Creates `mssp.db` with all required tables
+1. Creates `intact.db` with all required tables
 2. Migrates any existing JSON files (from previous versions)
 3. Seeds default blueprints and offline collector templates
 
@@ -40,12 +40,12 @@ On first startup, the backend automatically:
 
 To backup your database:
 ```bash
-cp data/mssp.db data/mssp.db.backup
+cp data/intact.db data/intact.db.backup
 ```
 
 To restore:
 ```bash
-cp data/mssp.db.backup data/mssp.db
+cp data/intact.db.backup data/intact.db
 ```
 
 Or use the API:
@@ -57,5 +57,5 @@ curl http://localhost:5001/api/db/export > backup.json
 curl -X POST -H "Content-Type: application/json" -d @backup.json http://localhost:5001/api/db/import
 
 # Download raw .db file
-curl http://localhost:5001/api/db/backup > mssp.db
+curl http://localhost:5001/api/db/backup > intact.db
 ```

@@ -4,7 +4,7 @@
 
 // Artifact mapping
 const artifactNames = {
-    'bestpractice': 'Custom.MSSP.BestPractice'
+    'bestpractice': 'Custom.Intact.AI.BestPractice'
 };
 
 // Run artifact hunt

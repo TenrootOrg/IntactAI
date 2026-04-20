@@ -110,7 +110,7 @@ def _upload_plaso_direct(api, sketch, plaso_file_path, timeline_name, logger=Non
             streamer.set_sketch(sketch)
             streamer.set_timeline_name(timeline_name)
             streamer.set_data_label('plaso')  # CRITICAL: Tells Timesketch this is a plaso file
-            streamer.set_upload_context(f'Uploaded via MSSP automation at {datetime.now().isoformat()}')
+            streamer.set_upload_context(f'Uploaded via Intact.AI automation at {datetime.now().isoformat()}')
 
             log("Uploading .plaso file (this transfers the file to Timesketch)...")
             streamer.add_file(plaso_file_path)

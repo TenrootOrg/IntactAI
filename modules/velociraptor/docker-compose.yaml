@@ -3,7 +3,7 @@
 
 services:
   velociraptor:
-    container_name: mssp_velociraptor
+    container_name: intact_velociraptor
     image: velociraptor-server:${VELOCIRAPTOR_VERSION:-0.75}
     build:
       context: ./
@@ -28,7 +28,7 @@ services:
       - "8001:8001"   # gRPC API
     restart: unless-stopped
     networks:
-      - mssp_network
+      - intact_network
 
 volumes:
   velociraptor_data:
@@ -36,5 +36,5 @@ volumes:
   velociraptor_tmp:
 
 networks:
-  mssp_network:
+  intact_network:
     external: true

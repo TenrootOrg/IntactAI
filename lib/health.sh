@@ -1,5 +1,5 @@
 #!/bin/bash
-# MSSP Platform Installer - Health Check Functions
+# Intact.AI Platform Installer - Health Check Functions
 # Verification, summary, and reporting
 
 # ============================================================================
@@ -33,7 +33,7 @@ run_post_install_init() {
     log_info "This may take a few minutes..."
 
     # Run the maintenance script inside the backend container
-    if docker exec mssp_backend python /app/scripts/run_maintenance.py 2>&1 | while IFS= read -r line; do
+    if docker exec intact_backend python /app/scripts/run_maintenance.py 2>&1 | while IFS= read -r line; do
         echo "  $line"
         echo "  $line" >> "$LOG_FILE"
     done; then
@@ -58,7 +58,7 @@ verify_installation() {
 
     echo ""
     echo "Container Status:"
-    docker ps --filter "name=mssp_*" --format "table {{.Names}}\t{{.Status}}" | head -20
+    docker ps --filter "name=intact_*" --format "table {{.Names}}\t{{.Status}}" | head -20
 
     echo ""
     log_info "Testing services..."
@@ -109,7 +109,7 @@ verify_installation() {
             log_success "IRIS: Running (HTTP $iris_http_code)"
         else
             # Check if containers are at least running
-            if docker ps --filter "name=mssp_iris_nginx" --filter "status=running" --format "{{.Names}}" | grep -q "mssp_iris_nginx"; then
+            if docker ps --filter "name=intact_iris_nginx" --filter "status=running" --format "{{.Names}}" | grep -q "intact_iris_nginx"; then
                 if [[ "$iris_http_code" == "000" ]]; then
                     log_warn "IRIS: Container running, web interface initializing..."
                 else
@@ -131,7 +131,7 @@ verify_installation() {
 print_summary() {
     echo ""
     echo "=============================================="
-    echo -e "${GREEN}MSSP Platform Installation Complete${NC}"
+    echo -e "${GREEN}Intact.AI Platform Installation Complete${NC}"
     echo "=============================================="
     echo ""
 
@@ -152,7 +152,7 @@ print_summary() {
     echo ""
     echo "Next steps:"
     echo "  1. Access the dashboard to verify all services"
-    echo "  2. Check backend logs: sudo docker logs mssp_backend"
+    echo "  2. Check backend logs: sudo docker logs intact_backend"
     echo "  3. Download Velociraptor clients from: http://${domain}/velociraptor/"
     echo ""
     echo "Note: IRIS may take 2-5 minutes on first startup for database initialization."
@@ -160,7 +160,7 @@ print_summary() {
 
     # Log completion message (appears in both terminal and log file)
     log_success "=============================================="
-    log_success "MSSP Platform Installation Complete!"
+    log_success "Intact.AI Platform Installation Complete!"
     log_success "=============================================="
 }
 

@@ -37,7 +37,7 @@ def _clear_timesketch_pip_cache(logger: Callable = None):
     # Run pip uninstall in a temporary container with the volume mounted
     for package in conflicting_packages:
         result = run_command(
-            f"docker run --rm -v mssp_timesketch_venv:/opt/venv "
+            f"docker run --rm -v intact_timesketch_venv:/opt/venv "
             f"us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:latest "
             f"pip uninstall -y {package} 2>/dev/null || true",
             logger=lambda msg, level="info": None  # Silent
@@ -106,7 +106,7 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
             log(f"  Checking Timesketch container... ({i*5}s)", "info")
             # Check if gunicorn process is running in the container
             check_result = run_command(
-                "docker exec mssp_timesketch_web pgrep -f gunicorn",
+                "docker exec intact_timesketch_web pgrep -f gunicorn",
                 logger=None
             )
             if check_result['success']:
@@ -122,7 +122,7 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
             log("Timesketch health check: PASSED", "success")
         else:
             # Check if containers are crash-looping
-            check_result = run_command("docker ps -a --filter name=mssp_timesketch --format '{{.Status}}'", logger=log)
+            check_result = run_command("docker ps -a --filter name=intact_timesketch --format '{{.Status}}'", logger=log)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"Timesketch failed to start - container status: {container_status}")
@@ -228,7 +228,7 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
             log(f"  Checking Timesketch container... ({i*5}s)", "info")
             # Check if gunicorn process is running in the container
             check_result = run_command(
-                "docker exec mssp_timesketch_web pgrep -f gunicorn",
+                "docker exec intact_timesketch_web pgrep -f gunicorn",
                 logger=None
             )
             if check_result['success']:
@@ -244,7 +244,7 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
             log("Timesketch health check: PASSED", "success")
         else:
             # Check if containers are crash-looping
-            check_result = run_command("docker ps -a --filter name=mssp_timesketch --format '{{.Status}}'", logger=log)
+            check_result = run_command("docker ps -a --filter name=intact_timesketch --format '{{.Status}}'", logger=log)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"Timesketch failed to start - container status: {container_status}")

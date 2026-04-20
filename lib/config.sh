@@ -1,5 +1,5 @@
 #!/bin/bash
-# MSSP Platform Installer - Configuration Functions
+# Intact.AI Platform Installer - Configuration Functions
 # Config reading, validation, and env file updates
 
 # ============================================================================

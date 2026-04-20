@@ -1,7 +1,7 @@
 #!/bin/bash
-# Create MSSP Offline Upgrade Package
+# Create Intact.AI Offline Upgrade Package
 # Run this script on a machine WITH internet to create an upgrade package
-# that can be transferred to an air-gapped MSSP installation.
+# that can be transferred to an air-gapped Intact.AI installation.
 #
 # Usage: ./create-upgrade-package.sh [OPTIONS]
 #
@@ -34,7 +34,7 @@ PACKAGE_DIR="/tmp/${PACKAGE_NAME}"
 OUTPUT_FILE="${PWD}/${PACKAGE_NAME}.tar.gz"
 
 echo "=============================================="
-echo "  MSSP Offline Upgrade Package Creator"
+echo "  Intact.AI Offline Upgrade Package Creator"
 echo "=============================================="
 echo ""
 echo "Target versions:"
@@ -143,7 +143,7 @@ if [ "${INCLUDE_SOURCE}" = "true" ]; then
     echo ""
     echo "=== Copying Source Files ==="
 
-    # Find the MSSP repo directory
+    # Find the Intact.AI repo directory
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     REPO_DIR="$(dirname "${SCRIPT_DIR}")"
 

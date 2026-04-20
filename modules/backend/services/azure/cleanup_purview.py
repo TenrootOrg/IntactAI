@@ -19,7 +19,7 @@ def get_token(tenant, cid, secret):
 def main():
     print("[CLEANUP] Connecting to database...")
     try:
-        conn = sqlite3.connect('/app/data/mssp.db')
+        conn = sqlite3.connect('/app/data/intact.db')
         row = conn.cursor().execute("SELECT value FROM frontend_config WHERE key='cloud'").fetchone()
         if not row:
             print("[ERROR] Cloud config not found in database.")

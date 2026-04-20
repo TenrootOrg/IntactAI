@@ -1,9 +1,9 @@
-# MSSP Backend API
+# Intact.AI Backend API
 # Port: 5001
 
 services:
   backend:
-    container_name: mssp_backend
+    container_name: intact_backend
     image: mssp-backend:${BACKEND_VERSION:-1.0.0}
     build:
       context: ../..
@@ -20,7 +20,7 @@ services:
       - VELO_CONFIG_PATH=${VELO_CONFIG_PATH}
       - CONFIG_PATH=${CONFIG_PATH}
       # Host path for upgrade operations (Docker needs host paths for volume mounts)
-      - MSSP_HOST_PATH=${MSSP_HOST_PATH:-/home/tenroot/risx}
+      - INTACT_HOST_PATH=${INTACT_HOST_PATH:-/home/tenroot/intact}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:rw  # Docker socket for container access (rw for upgrades)
       - /tmp/plaso:/tmp/plaso  # Plaso output directory for Timesketch import
@@ -28,7 +28,7 @@ services:
       - ../timesketch/config:/app/config/timesketch:rw  # Timesketch config (writable for LLM settings)
       - ../../config.yaml:/app/config.yaml:ro  # Main config file
       - ../../client_installers:/app/client_installers:rw  # Client installers (writable for MSI generation)
-      - ../../data:/app/data  # SQLite database (mssp.db) for workflows, configs, and reports
+      - ../../data:/app/data  # SQLite database (intact.db) for workflows, configs, and reports
       - ../nginx/html/downloads:/app/downloads:rw  # Velociraptor binaries for offline collectors
       - ./app.py:/app/app.py:ro  # Mount app.py for live code updates
       - ./config.py:/app/config.py:ro  # Mount config.py for live code updates
@@ -37,15 +37,15 @@ services:
       - ./config/default_blueprints.yaml:/app/config/default_blueprints.yaml:ro  # Live blueprint updates
       - /app/logs  # Logs directory
       - upload_data:/data/uploads  # Shared volume for tus uploads
-      - ../..:/app/workdir:rw  # MSSP root for upgrade operations
+      - ../..:/app/workdir:rw  # Intact.AI root for upgrade operations
       # Also mount at host path for docker compose --project-directory to work
-      - /home/tenroot/risx:/home/tenroot/risx:rw
+      - /home/tenroot/intact:/home/tenroot/intact:rw
       - /opt/sigma-rules:/opt/sigma-rules:ro  # SIGMA detection rules for Azure automation
     ports:
       - "5001:5001"
     restart: unless-stopped
     networks:
-      - mssp_network
+      - intact_network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/api/health"]
       interval: 30s
@@ -55,19 +55,19 @@ services:
 
   # tusd - Resumable upload server (tus protocol)
   tusd:
-    container_name: mssp_tusd
+    container_name: intact_tusd
     image: tusproject/tusd:latest
     restart: unless-stopped
     user: root  # Run as root to write to shared volume
     command:
       - -upload-dir=/data/uploads
-      - -hooks-http=http://mssp_backend:5001/api/uploads/hook
+      - -hooks-http=http://intact_backend:5001/api/uploads/hook
       - -hooks-enabled-events=pre-create,post-create,post-receive,post-finish
       - -behind-proxy
     volumes:
       - upload_data:/data/uploads
     networks:
-      - mssp_network
+      - intact_network
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/metrics"]
       interval: 30s
@@ -79,5 +79,5 @@ volumes:
     driver: local
 
 networks:
-  mssp_network:
+  intact_network:
     external: true

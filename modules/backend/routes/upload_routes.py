@@ -319,7 +319,7 @@ def handle_tus_hook():
                                 # Track progress based on module completion messages
                                 if level == "success" and " upgrade completed" in msg:
                                     first_word = msg.split()[0] if msg else ""
-                                    if first_word.isupper() and first_word in ["ELK", "TIMESKETCH", "PLASO", "IRIS", "VELOCIRAPTOR", "RISX"]:
+                                    if first_word.isupper() and first_word in ["ELK", "TIMESKETCH", "PLASO", "IRIS", "VELOCIRAPTOR", "Intact.AI"]:
                                         completed_modules[0] += 1
                                         # Progress from 15% (upload done) to 95%
                                         progress = 15 + min(completed_modules[0] * 13, 80)

@@ -1,4 +1,4 @@
-# MSSP Dashboard Backend (Refactored)
+# Intact.AI Dashboard Backend (Refactored)
 
 ## Quick Start
 
@@ -66,11 +66,11 @@ backend/
 ## Quick Deploy
 
 ```bash
-cd /home/tenroot/risx/modules/backend
-docker stop mssp_backend && docker rm mssp_backend
+cd /home/tenroot/intact/modules/backend
+docker stop intact_backend && docker rm intact_backend
 docker compose build
 docker compose up -d
-docker logs -f mssp_backend
+docker logs -f intact_backend
 ```
 
 ## Quick Test
@@ -89,7 +89,7 @@ curl http://localhost:5001/api/test
 ## Rollback (If Needed)
 
 ```bash
-cd /home/tenroot/risx/modules/backend
+cd /home/tenroot/intact/modules/backend
 mv app.py app_new.py
 mv app_old.py app.py
 docker compose build && docker compose up -d
@@ -141,7 +141,7 @@ docker compose build && docker compose up -d
 
 For questions or issues:
 1. Check documentation in this directory
-2. Review container logs: `docker logs mssp_backend`
+2. Review container logs: `docker logs intact_backend`
 3. Follow TESTING_GUIDE.md for troubleshooting
 4. Use rollback procedure if needed
 
@@ -154,6 +154,6 @@ For questions or issues:
 
 ---
 
-**Location**: `/home/tenroot/risx/modules/backend/`
+**Location**: `/home/tenroot/intact/modules/backend/`
 **Status**: ✅ Complete and ready for deployment
 **Version**: Refactored (December 2024)

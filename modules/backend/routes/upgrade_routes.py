@@ -68,7 +68,7 @@ def get_upgrade_status():
         latest = get_latest_versions()
 
         versions = {}
-        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'risx']:
+        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'intact']:
             versions[module] = {
                 'latest': latest.get(module, 'unknown')
             }
@@ -159,7 +159,7 @@ def start_offline_upgrade():
                     # Track progress based on module completion messages
                     if level == "success" and " upgrade completed" in msg:
                         first_word = msg.split()[0] if msg else ""
-                        if first_word.isupper() and first_word in ["ELK", "TIMESKETCH", "PLASO", "IRIS", "VELOCIRAPTOR", "RISX"]:
+                        if first_word.isupper() and first_word in ["ELK", "TIMESKETCH", "PLASO", "IRIS", "VELOCIRAPTOR", "Intact.AI"]:
                             completed_modules[0] += 1
                             # Estimate 6 modules max, progress from 5% to 95%
                             progress = 5 + min(completed_modules[0] * 15, 90)
@@ -241,7 +241,7 @@ def prepare_upgrade_package():
         # - Plaso: 1 image
         # - IRIS: 2 images (app, nginx)
         # - Velociraptor: 1 binary download
-        # - RISX: 2 source copies (backend, frontend)
+        # - Intact.AI: 2 source copies (backend, frontend)
         # Plus: manifest (1) + archive (1)
         steps_per_module = {
             'elk': 3,
@@ -249,7 +249,7 @@ def prepare_upgrade_package():
             'plaso': 1,
             'iris': 2,
             'velociraptor': 1,
-            'risx': 2
+            'intact': 2
         }
         total_steps = sum(steps_per_module.get(m, 1) for m in modules.keys()) + 2  # +2 for manifest and archive
         completed_steps = [0]
@@ -270,7 +270,7 @@ def prepare_upgrade_package():
                         # Image saved or binary downloaded
                         if msg.strip().startswith("Done (") or msg.strip().startswith("Downloaded ("):
                             completed_steps[0] += 1
-                        # RISX source copies
+                        # Intact.AI source copies
                         elif "source copied" in msg:
                             completed_steps[0] += 1
                         # Manifest created

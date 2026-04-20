@@ -1,0 +1,139 @@
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    # Use Docker's internal DNS server to re-resolve container IPs after restarts
+    # valid=30s means re-check DNS every 30 seconds
+    # ipv6=off because Docker internal network is IPv4 only
+    resolver 127.0.0.11 valid=30s ipv6=off;
+    resolver_timeout 5s;
+
+    # Increase upload limit for offline collectors (importer.py limit is 500MB)
+    client_max_body_size 500M;
+
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log /var/log/nginx/access.log main;
+
+    sendfile on;
+    keepalive_timeout 65;
+
+    server {
+        listen 80;
+        listen 8080;
+        listen 443 ssl;
+        server_name _;
+
+        ssl_certificate /etc/nginx/cert.crt;
+        ssl_certificate_key /etc/nginx/cert.key;
+
+        # Velociraptor GUI proxy
+        location /velociraptor/ {
+            # Using a variable forces Nginx to use the resolver for DNS
+            # Note: with variable proxy_pass, must explicitly pass the URI
+            set $velociraptor_upstream "mssp_velociraptor:8889";
+            proxy_pass http://$velociraptor_upstream$request_uri;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            # WebSocket support
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+
+            # Note: proxy_redirect default cannot be used with variable proxy_pass
+        }
+
+        # tus upload endpoint - proxy to tusd server for resumable uploads
+        location /api/uploads/ {
+            # Using a variable forces Nginx to use the resolver for DNS
+            # Rewrite /api/uploads/* to /files/* for tusd
+            set $tusd_upstream "mssp_tusd:8080";
+            rewrite ^/api/uploads/(.*)$ /files/$1 break;
+            proxy_pass http://$tusd_upstream;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            # Rewrite Location header from tusd (/files/) to our public path (/api/uploads/)
+            proxy_redirect ~^(https?://[^/]+)/files/(.*)$ $1/api/uploads/$2;
+
+            # tus protocol headers - pass through
+            proxy_set_header Tus-Resumable $http_tus_resumable;
+            proxy_set_header Upload-Length $http_upload_length;
+            proxy_set_header Upload-Offset $http_upload_offset;
+            proxy_set_header Upload-Metadata $http_upload_metadata;
+            proxy_set_header Content-Type $http_content_type;
+
+            # Expose tus headers to client
+            proxy_hide_header Access-Control-Allow-Origin;
+            add_header Access-Control-Allow-Origin '*' always;
+            add_header Access-Control-Allow-Methods 'POST, GET, HEAD, PATCH, DELETE, OPTIONS' always;
+            add_header Access-Control-Allow-Headers 'Tus-Resumable, Upload-Length, Upload-Offset, Upload-Metadata, Content-Type, X-HTTP-Method-Override' always;
+            add_header Access-Control-Expose-Headers 'Tus-Resumable, Upload-Length, Upload-Offset, Location, Upload-Metadata' always;
+
+            # No size limit for tus (chunked uploads)
+            client_max_body_size 0;
+
+            # Increase timeouts for large uploads
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+            proxy_connect_timeout 60s;
+
+            if ($request_method = 'OPTIONS') {
+                return 204;
+            }
+        }
+
+        # Backend API proxy (uses velociraptor CLI)
+        location /api/ {
+            # Using a variable forces Nginx to use the resolver for DNS
+            # Note: with variable proxy_pass, must explicitly pass the URI
+            set $backend_upstream "mssp_backend:5001";
+            proxy_pass http://$backend_upstream$request_uri;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            # Increase timeout for long-running artifact operations
+            proxy_read_timeout 300s;
+            proxy_connect_timeout 30s;
+            proxy_send_timeout 30s;
+
+            # CORS headers
+            add_header 'Access-Control-Allow-Origin' '*' always;
+            add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS' always;
+            add_header 'Access-Control-Allow-Headers' 'Content-Type' always;
+
+            if ($request_method = 'OPTIONS') {
+                return 204;
+            }
+        }
+
+        # Root - serve dashboard
+        location / {
+            root /usr/share/nginx/html;
+            index index.html;
+            try_files $uri $uri/ /index.html;
+
+            # Disable caching for HTML files
+            add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";
+            add_header Pragma "no-cache";
+            add_header Expires "0";
+        }
+    }
+}

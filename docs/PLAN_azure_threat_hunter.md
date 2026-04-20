@@ -49,7 +49,7 @@ Instead of PowerShell tools (Sparrow/Hawk) that require Windows dependencies, we
 ## Architecture
 
 ```
-                              MSSP Backend Container (Ubuntu)
+                              Intact.AI Backend Container (Ubuntu)
                                            │
                       ┌────────────────────┴────────────────────┐
                       │         azure_threat_hunter.py           │

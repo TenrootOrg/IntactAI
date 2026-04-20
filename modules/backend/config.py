@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Configuration settings for MSSP Dashboard Backend
+Configuration settings for Intact.AI Dashboard Backend
 """
 
 import os
@@ -12,7 +12,7 @@ def load_main_config():
     config_paths = [
         '/app/config.yaml',  # Mounted in Docker
         os.path.join(os.path.dirname(__file__), '../../config.yaml'),  # Development
-        '/home/tenroot/risx/config.yaml'  # Fallback
+        '/home/tenroot/intact/config.yaml'  # Fallback
     ]
 
     for path in config_paths:
@@ -61,14 +61,14 @@ ARTIFACTS = {
 }
 
 # Velociraptor configuration
-VELOCIRAPTOR_CONTAINER = "mssp_velociraptor"
+VELOCIRAPTOR_CONTAINER = "intact_velociraptor"
 VELOCIRAPTOR_API_CONFIG_PATH = "/velociraptor/api.config.yaml"
 VELOCIRAPTOR_SNAPSHOT_PATH = "/var./client_info/snapshot.json"
 
 # Timesketch configuration (from environment variables)
-# Note: mssp_timesketch_web is the container name in Docker network
+# Note: intact_timesketch_web is the container name in Docker network
 TIMESKETCH_CONFIG = {
-    'host': os.environ.get('TIMESKETCH_HOST', 'http://mssp_timesketch_web:5000'),
+    'host': os.environ.get('TIMESKETCH_HOST', 'http://intact_timesketch_web:5000'),
     'username': os.environ.get('TIMESKETCH_USER', 'nof'),
     'password': os.environ.get('TIMESKETCH_PASS', '123123')
 }
@@ -110,9 +110,9 @@ ELASTICSEARCH_CONFIG = {
 }
 
 # IRIS configuration (DFIR-IRIS case management)
-# Note: mssp_iris_app is the container name in Docker network
+# Note: intact_iris_app is the container name in Docker network
 IRIS_CONFIG = {
-    'host': os.environ.get('IRIS_HOST', 'https://mssp_iris_app:8000'),
+    'host': os.environ.get('IRIS_HOST', 'https://intact_iris_app:8000'),
     'external_host': os.environ.get('IRIS_EXTERNAL_HOST', 'https://localhost:8443'),
     'username': os.environ.get('IRIS_USER', 'administrator'),
     'password': os.environ.get('IRIS_PASS', '123123')

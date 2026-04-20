@@ -13,7 +13,7 @@ from typing import Dict, List, Any, Optional
 
 # Storage paths
 STORAGE_BASE = "/app/data"
-DB_PATH = os.path.join(STORAGE_BASE, "mssp.db")
+DB_PATH = os.path.join(STORAGE_BASE, "intact.db")
 REPORTS_DIR = os.path.join(STORAGE_BASE, "reports")
 
 # Legacy JSON file paths (for migration)

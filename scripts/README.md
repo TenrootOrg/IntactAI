@@ -6,7 +6,7 @@
 Generates Velociraptor client installers. Called automatically by `install.sh`.
 
 ### repair_modules.sh
-Checks and repairs failed MSSP modules.
+Checks and repairs failed Intact.AI modules.
 
 ```bash
 # Check status of all modules
@@ -24,7 +24,7 @@ Available modules: `elk`, `timesketch`, `velociraptor`, `iris`, `portainer`, `ba
 Generates log file: `repair_YYYYMMDD_HHMMSS.log`
 
 ### clean.sh
-Removes MSSP components (containers, volumes, data). Use with caution!
+Removes Intact.AI components (containers, volumes, data). Use with caution!
 
 ```bash
 # Interactive mode

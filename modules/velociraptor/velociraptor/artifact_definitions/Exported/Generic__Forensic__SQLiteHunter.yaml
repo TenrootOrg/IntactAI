@@ -1,0 +1,2114 @@
+name: Generic.Forensic.SQLiteHunter
+description: |
+  Hunt for SQLite files.
+
+  SQLite has become the de-facto standard for storing application data,
+  in many types of applications:
+
+  - Web Browsers
+  - Operating Systems
+  - Various applications, such as iMessage, TCC etc
+
+  This artifact can hunt for these artifacts in a mostly automated way.
+  More info at https://github.com/Velocidex/SQLiteHunter
+
+  NOTE: If you want to use this artifact on just a bunch of files already
+  collected (for example the files collected using the
+  Windows.KapeFiles.Targets artifact) you can use the CustomGlob parameter
+  (for example set it to "/tmp/unpacked/**" to consider all files in the
+  unpacked directory).
+
+column_types:
+- name: Image
+  type: preview_upload
+- name: Payload
+  type: preview_upload
+
+export: |
+  LET SPEC <= "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"
+  LET Specs <= parse_json(data=gunzip(string=base64decode(string=SPEC)))
+  LET CheckHeader(OSPath) = read_file(filename=OSPath, length=12) = "SQLite forma"
+  LET Bool(Value) = if(condition=Value, then="Yes", else="No")
+
+  -- In fast mode we check the filename, then the header then run the sqlite precondition
+  LET matchFilename(SourceName, OSPath) = OSPath =~ get(item=Specs.sources, field=SourceName).filename
+    AND CheckHeader(OSPath=OSPath)
+    AND Identify(SourceName= SourceName, OSPath= OSPath)
+    AND log(message=format(format="%v matched by filename %v",
+            args=[OSPath, get(item=Specs.sources, field=SourceName).filename]))
+
+  -- If the user wanted to also upload the file, do so now
+  LET MaybeUpload(OSPath) = if(condition=AlsoUpload, then=upload(file=OSPath)) OR TRUE
+
+  LET Identify(SourceName, OSPath) = SELECT if(
+    condition=CheckHeader(OSPath=OSPath),
+    then={
+      SELECT *
+      FROM sqlite(file=OSPath, query=get(item=Specs.sources, field=SourceName).id_query)
+    }) AS Hits
+  FROM scope()
+  WHERE if(condition=Hits[0].Check = get(item=Specs.sources, field=SourceName).id_value,
+    then= log(message="%v was identified as %v",
+            args=[OSPath, get(item=Specs.sources, field=SourceName).Name]),
+    else=log(message="%v was not identified as %v (got %v, wanted %v)",
+             args=[OSPath, get(item=Specs.sources, field=SourceName).Name, str(str=Hits),
+                   get(item=Specs.sources, field=SourceName).id_value]) AND FALSE)
+
+  LET ApplyFile(SourceName) = SELECT * FROM foreach(row={
+     SELECT OSPath FROM AllFiles
+     WHERE if(condition=MatchFilename,  then=matchFilename(SourceName=SourceName, OSPath=OSPath),
+      else=Identify(SourceName= SourceName, OSPath= OSPath))
+
+  }, query={
+     SELECT *, OSPath FROM sqlite(
+        file=OSPath, query=get(item=Specs.sources, field=SourceName).SQL)
+  })
+
+  -- Filter for matching files without sqlite checks.
+  LET FilterFile(SourceName) =
+     SELECT OSPath FROM AllFiles
+     WHERE if(condition=MatchFilename,
+              then=OSPath =~ get(item=Specs.sources, field=SourceName).filename)
+
+  -- Build a regex for all enabled categories.
+  LET all_categories = SELECT if(condition=_value = "All", then=".", else=_value) AS _value
+  FROM foreach(row=["All","MacOS","Browser","Chrome","Edge","Firefox","Google","Cloud","SyncClient","InternetExplorer","Windows"])
+  WHERE get(field=_value)
+
+parameters:
+- name: RuleFilter
+  type: regex
+  description: Only collect rules matching this regex filter.
+  default: "."
+
+- name: Rules
+  type: multichoice
+  description: Only collect these rules
+  default: '[]'
+  choices:
+  - "Chromium Browser Autofill"
+  - "Chromium Browser Bookmarks"
+  - "Chromium Browser Cookies"
+  - "Chromium Browser Extensions"
+  - "Chromium Browser Favicons"
+  - "Chromium Browser History"
+  - "Chromium Browser Media"
+  - "Chromium Browser Network"
+  - "Chromium Browser Notifications"
+  - "Chromium Browser Shortcuts"
+  - "Chromium Browser Top Sites"
+  - "Chromium Sessions"
+  - "Edge Browser Autofill"
+  - "Edge Browser Collections"
+  - "Edge Browser History Screenshots"
+  - "Edge Browser Navigation History"
+  - "Firefox Cookies"
+  - "Firefox Downloads"
+  - "Firefox Favicons"
+  - "Firefox Form History"
+  - "Firefox Places"
+  - "Firefox Places History"
+  - "Firefox Places History Legacy"
+  - "Google Drive Metadata"
+  - "Google Drive Mirrored Files"
+  - "Google Drive Mirrored Metadata Files"
+  - "Google Drive Sync Roots"
+  - "IE or Edge WebCacheV01"
+  - "IntelligencePlatform"
+  - "MacOS Applications Cache"
+  - "MacOS NetworkUsage"
+  - "MacOS Notes"
+  - "MacOS XProtect Detections"
+  - "Safari Browser History"
+  - "Windows Activities Cache"
+  - "Windows Search Service"
+  - "Windows WPNDatabase - Notifications"
+  - "iMessage"
+
+- name: MatchFilename
+  description: |
+    If set we use the filename to detect the type of sqlite file.
+    When unset we use heuristics (slower)
+  type: bool
+  default: Y
+
+- name: CustomGlob
+  description: Specify this glob to select other files
+
+- name: DateAfter
+  description: Timebox output to rows after this time.
+  type: timestamp
+  default: "1970-01-01T00:00:00Z"
+
+- name: DateBefore
+  description: Timebox output to rows after this time.
+  type: timestamp
+  default: "2100-01-01T00:00:00Z"
+
+- name: FilterRegex
+  description: Filter critical rows by this regex
+  type: regex
+  default: .
+
+- name: All
+  description: Select all targets
+  type: bool
+  default: Y
+
+- name: MacOS
+  description: Select targets with category MacOS
+  type: bool
+  default: N
+
+- name: Browser
+  description: Select targets with category Browser
+  type: bool
+  default: N
+
+- name: Chrome
+  description: Select targets with category Chrome
+  type: bool
+  default: N
+
+- name: Edge
+  description: Select targets with category Edge
+  type: bool
+  default: N
+
+- name: Firefox
+  description: Select targets with category Firefox
+  type: bool
+  default: N
+
+- name: Google
+  description: Select targets with category Google
+  type: bool
+  default: N
+
+- name: Cloud
+  description: Select targets with category Cloud
+  type: bool
+  default: N
+
+- name: SyncClient
+  description: Select targets with category SyncClient
+  type: bool
+  default: N
+
+- name: InternetExplorer
+  description: Select targets with category InternetExplorer
+  type: bool
+  default: N
+
+- name: Windows
+  description: Select targets with category Windows
+  type: bool
+  default: N
+
+- name: SQLITE_ALWAYS_MAKE_TEMPFILE
+  type: bool
+  default: Y
+
+- name: AlsoUpload
+  description: If specified we also upload the identified file.
+  type: bool
+
+sources:
+- name: AllFiles
+  notebook:
+   - type: vql
+     template: |
+       // This cell generates other cells to preview the collected
+       // data.  DO NOT recalculate this cell - each time new cells
+       // will be added. Instead delete the notebook and allow
+       // Velociraptor to recreate the entire notebook.
+       LET ArtifactsWithResults <=
+         SELECT pathspec(accessor="fs", parse=Data.VFSPath)[4] AS Artifact ,
+           pathspec(accessor="fs", parse=Data.VFSPath)[-1][:-5] AS Source ,
+           stat(accessor="fs", filename=Data.VFSPath + ".index").Size / 8 AS Records
+         FROM enumerate_flow(client_id=ClientId, flow_id=FlowId)
+         WHERE Type =~ "Result" AND Records > 0
+
+       LET _ <= SELECT notebook_update_cell(notebook_id=NotebookId, type="vql",
+       input=format(format='''
+       /*
+       # Results From %v
+       */
+       SELECT * FROM source(source=%q)
+       ''', args=[Source, Source]),
+       output=format(format='''
+       <i>Recalculate</i> to show Results from <b>%v</b> with <b>%v</b> rows
+       ''', args=[Source, Records])) AS NotebookModification
+       FROM ArtifactsWithResults
+
+       /*
+       # Results Overview
+       */
+       SELECT Source, Records FROM ArtifactsWithResults ORDER BY Source
+
+  query: |
+    LET category_regex <= join(sep="|", array=all_categories._value)
+
+    LET RuleFilter <= if(condition=Rules,
+                         then=join(array=Rules, sep="|"),
+                         else=RuleFilter)
+
+    LET _ <= log(level="DEBUG", message="Rule Filter is %v", args=RuleFilter)
+
+    LET AllGlobs <= filter(list=Specs.globs,
+      condition="x=> x.tags =~ category_regex AND x.rule =~ RuleFilter")
+
+    LET _ <= log(message="Globs for category %v is %v",
+       args=[category_regex, CustomGlob || AllGlobs.glob])
+
+    LET AllFiles <= SELECT OSPath FROM glob(globs=CustomGlob || AllGlobs.glob)
+    WHERE NOT IsDir AND MaybeUpload(OSPath=OSPath)
+
+    SELECT * FROM AllFiles
+
+
+
+  
+- name: "IntelligencePlatform_Wifi"
+  notebook:
+    - type: none
+      output: "IntelligencePlatform_Wifi - Recalculate to view results"
+      template: |
+        /*
+        # IntelligencePlatform_Wifi
+        */
+        SELECT * FROM source(source="IntelligencePlatform_Wifi")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="IntelligencePlatform_Wifi")
+
+    
+
+    LET Output = SELECT timestamp(cocoatime=timestamp) AS Timestamp,
+           behaviorType,
+           split(string=behaviorIdentifier, sep=':')[0] AS event,
+           split(string=behaviorIdentifier, sep=':')[1] AS network,
+           OSPath[1] AS User
+    FROM Rows
+
+    SELECT * FROM
+    if(condition="IntelligencePlatform_Wifi" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Safari Browser History_Visits"
+  notebook:
+    - type: none
+      output: "Safari Browser History_Visits - Recalculate to view results"
+      template: |
+        /*
+        # Safari Browser History_Visits
+        */
+        SELECT * FROM source(source="Safari Browser History_Visits")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Safari Browser History_Visits")
+
+    
+
+    LET Output = SELECT ID,
+       timestamp(epoch=visit_time + 978307200) AS VisitTime,
+       URL, Title, VisitCount, DomainExpansion,
+       if(condition=Origin = 0,
+          then="Local",
+          else="iCloud Sync") AS Origin,
+       Bool(Value=LoadSuccessful) AS LoadSuccessful,
+       Bool(Value=HttpNonGet) AS HttpNonGet,
+       RedirectSource, RedirectDestination, OSPath
+    FROM Rows
+    WHERE VisitTime > DateAfter AND VisitTime < DateBefore
+      AND (URL, Title) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Safari Browser History_Visits" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "iMessage_Profiles"
+  notebook:
+    - type: none
+      output: "iMessage_Profiles - Recalculate to view results"
+      template: |
+        /*
+        # iMessage_Profiles
+        */
+        SELECT * FROM source(source="iMessage_Profiles")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="iMessage_Profiles")
+
+    
+
+    LET Output = SELECT timestamp(epoch=date / 1000000000 + 978307200) AS Timestamp, *
+    FROM Rows
+    WHERE Timestamp > DateAfter AND Timestamp < DateBefore
+      AND (MessageText, RoomName) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="iMessage_Profiles" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Chromium Browser Autofill_Profiles"
+  notebook:
+    - type: none
+      output: "Chromium Browser Autofill_Profiles - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Autofill_Profiles
+        */
+        SELECT * FROM source(source="Chromium Browser Autofill_Profiles")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Chromium Browser Autofill_Profiles")
+
+    
+
+    LET Output = SELECT GUID,
+      timestamp(epoch= date_modified) AS DateModified,
+      timestamp(epoch= use_date) AS UseDate,
+      FirstName, MiddleName, LastName, EmailAddress,
+      PhoneNumber, CompanyName, StreetAddress,
+      City, State, ZipCode, UseCount, OSPath
+    FROM Rows
+    WHERE UseDate > DateAfter AND UseDate < DateBefore
+      AND (FirstName, MiddleName, LastName, EmailAddress, CompanyName, StreetAddress) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Chromium Browser Autofill_Profiles" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Chromium Browser Autofill_Masked Credit Cards"
+  notebook:
+    - type: none
+      output: "Chromium Browser Autofill_Masked Credit Cards - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Autofill_Masked Credit Cards
+        */
+        SELECT * FROM source(source="Chromium Browser Autofill_Masked Credit Cards")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Chromium Browser Autofill_Masked Credit Cards")
+
+    
+
+    LET Output = SELECT * FROM Rows
+
+    SELECT * FROM
+    if(condition="Chromium Browser Autofill_Masked Credit Cards" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+- name: "Chromium Browser Bookmarks"
+  notebook:
+    - type: none
+      output: "Chromium Browser Bookmarks - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Bookmarks
+        */
+        SELECT * FROM source(source="Chromium Browser Bookmarks")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM FilterFile(SourceName="Chromium Browser Bookmarks")
+
+    -- Recursive function to report the details of a folder
+    LET ReportFolder(Data, BaseName) = SELECT * FROM chain(a={
+      -- First row emit the data about the actual folder
+      SELECT BaseName + " | " + Data.name AS Name,
+             timestamp(winfiletime=int(int=Data.date_added) * 10) AS DateAdded,
+             timestamp(winfiletime=int(int=Data.date_last_used) * 10) AS DateLastUsed,
+             Data.type AS Type,
+             Data.url || ""  AS URL
+      FROM scope()
+    },
+    b={
+       -- If this folder has children recurse into it
+       SELECT * FROM foreach(row={
+          SELECT _value FROM items(item=Data.children)
+       },  query={
+          SELECT * FROM ReportFolder(Data=_value, BaseName=BaseName + " | " + Data.name)
+       })
+    })
+    
+    LET MatchingFiles = SELECT OSPath, parse_json(data=read_file(filename=OSPath)) AS Data
+    FROM Rows
+
+    LET Output = SELECT * FROM foreach(row=MatchingFiles, query={
+      SELECT * FROM chain(
+      a={
+        SELECT OSPath, *, "bookmark_bar" AS Type
+        FROM ReportFolder(Data=Data.roots.bookmark_bar, BaseName="")
+      },
+      b={
+        SELECT OSPath, *, "other" AS Type
+        FROM ReportFolder(Data=Data.roots.other, BaseName="")
+      },
+      c={
+        SELECT OSPath, *, "synced" AS Type
+        FROM ReportFolder(Data=Data.roots.synced, BaseName="")
+      })
+    })
+
+    SELECT * FROM
+    if(condition="Chromium Browser Bookmarks" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Chromium Browser Cookies_Cookies"
+  notebook:
+    - type: none
+      output: "Chromium Browser Cookies_Cookies - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Cookies_Cookies
+        */
+        SELECT * FROM source(source="Chromium Browser Cookies_Cookies")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Chromium Browser Cookies_Cookies")
+
+    
+
+    LET Output = SELECT timestamp(winfiletime=(creation_utc * 10) || 0) AS CreationUTC,
+           timestamp(winfiletime=(expires_utc * 10) || 0) AS ExpiresUTC,
+           timestamp(winfiletime=(last_access_utc * 10) || 0) AS LastAccessUTC,
+           HostKey, Name, Path,
+           Bool(Value=is_secure) AS IsSecure,
+           Bool(Value=is_httponly) AS IsHttpOnly,
+           Bool(Value=has_expires) AS HasExpiration,
+           Bool(Value=is_persistent) AS IsPersistent,
+           Priority, SourcePort, OSPath
+    FROM Rows
+    WHERE LastAccessUTC > DateAfter AND LastAccessUTC < DateBefore
+      AND (Name, Path) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Chromium Browser Cookies_Cookies" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+- name: "Chromium Browser Extensions"
+  notebook:
+    - type: none
+      output: "Chromium Browser Extensions - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Extensions
+        */
+        SELECT * FROM source(source="Chromium Browser Extensions")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM FilterFile(SourceName="Chromium Browser Extensions")
+
+    -- Resolve the message string against the Locale dict
+    LET ResolveName(Message, Locale) = get(item=Locale,
+          field=lowcase(string=parse_string_with_regex(regex="^__MSG_(.+)__$", string=Message).g1),
+          default=Message).message || Message
+    
+    -- Read the manifest files
+    LET ManifestData = SELECT OSPath, parse_json(data=read_file(filename=OSPath)) AS Manifest
+    FROM Rows
+    
+    -- Find the Locale file to help with.
+    LET LocaleData = SELECT *, if(condition=Manifest.default_locale, else=dict(),
+         then=parse_json(data=read_file(
+            filename=OSPath.Dirname + "_locales" + Manifest.default_locale + "messages.json"))) AS Locale
+    FROM ManifestData
+    
+    LET GetIcon(Manifest) = Manifest.icons.`128` || Manifest.icons.`64` || Manifest.icons.`32` || Manifest.icons.`16`
+
+    LET Output = SELECT OSPath, Manifest.author.email AS Email,
+      ResolveName(Message = Manifest.name, Locale=Locale) AS name,
+      ResolveName(Message = Manifest.description, Locale=Locale) AS description,
+      Manifest.oauth2.scopes as Scopes,
+      Manifest.permissions as Permissions,
+      Manifest.key as Key, if(condition=GetIcon(Manifest=Manifest),
+                then=upload(file=OSPath.Dirname + GetIcon(Manifest=Manifest))) AS Image,
+      Manifest AS _Manifest
+    FROM LocaleData
+    WHERE (name, description) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Chromium Browser Extensions" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Chromium Browser Favicons"
+  notebook:
+    - type: none
+      output: "Chromium Browser Favicons - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Favicons
+        */
+        SELECT * FROM source(source="Chromium Browser Favicons")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Chromium Browser Favicons")
+
+    
+
+    LET Output = SELECT ID, IconID,
+      timestamp(winfiletime= (LastUpdated * 10) || 0) AS LastUpdated,
+      PageURL, FaviconURL,
+      upload(accessor="data",
+         file=_image,
+         name=format(format="Image%v.png", args=ID)) AS Image,
+      OSPath as _OSPath
+    FROM Rows
+    WHERE LastUpdated > DateAfter AND LastUpdated < DateBefore
+
+    SELECT * FROM
+    if(condition="Chromium Browser Favicons" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Chromium Browser History_Visits"
+  notebook:
+    - type: none
+      output: "Chromium Browser History_Visits - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser History_Visits
+        */
+        SELECT * FROM source(source="Chromium Browser History_Visits")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Chromium Browser History_Visits")
+
+    
+
+    LET Output = SELECT ID,
+       timestamp(winfiletime=(visit_time * 10) || 0) AS VisitTime,
+       timestamp(winfiletime=(last_visit_time * 10) || 0) AS LastVisitedTime,
+       URLTitle, URL, VisitCount, TypedCount,
+       if(condition=hidden =~ '1', then="Yes", else="No") AS Hidden,
+       VisitID, FromVisitID,
+       visit_duration / 1000000 AS VisitDurationInSeconds,
+       OSPath
+    FROM Rows
+    WHERE VisitTime > DateAfter
+      AND VisitTime < DateBefore
+      AND (URLTitle, URL) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Chromium Browser History_Visits" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Chromium Browser History_Downloads"
+  notebook:
+    - type: none
+      output: "Chromium Browser History_Downloads - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser History_Downloads
+        */
+        SELECT * FROM source(source="Chromium Browser History_Downloads")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Chromium Browser History_Downloads")
+
+    LET StateLookup <= dict(`0`='In Progress', `1`='Complete', `2`="Cancelled", `3`="Interrupted", `4`="Interrupted")
+    LET DangerType <= dict(`0`='Not Dangerous', `1`="Dangerous", `2`='Dangerous URL', `3`='Dangerous Content',
+        `4`='Content May Be Malicious', `5`='Uncommon Content', `6`='Dangerous But User Validated',
+        `7`='Dangerous Host', `8`='Potentially Unwanted', `9`='Whitelisted by Policy',
+        `10`='Download Pending Detailed Verdict', `11`='Blocked By Policy Password Protected', `12`='Blocked By Policy Download Too Large',
+        `13`='Sensitive Content Warning', `14`='Sensitive Content Blocked', `15`='Deep Scanned Safe',
+        `16`='Deep Scanned Dangerous But Opened By User', `17`='Prompt For Deep Scanning', `18`='Blocked Unsupported Filetype',
+        `19`='Dangerous Associated With Account Compromise', `20`='Deep Scan Failed', `21`='Encrypted Archive Prompt for Local Password Scanning',
+        `22`='Encrypted Archive Prompt for Local Password Scanning Pending Detailed Verdict', `23`='Blocked by Policy Scan Failed')
+    LET InterruptReason <= dict(`0`= 'No Interrupt', `1`= 'File Error', `2`='Access Denied', `3`='Disk Full',
+      `5`='Path Too Long',`6`='File Too Large', `7`='Virus', `10`='Temporary Problem', `11`='Blocked',
+      `12`='Security Check Failed', `13`='Resume Error File Too Short', `14`='File Hash Mismatch', `15`='File Same As Source',
+      `20`='Network Error', `21`='Operation Timed Out', `22`='Connection Lost', `23`='Server Down',
+      `24`='Network Request Invalid', `30`='Server Error', `31`='Range Request Error',
+      `32`='Server Precondition Error', `33`='Unable to get file', `34`='Server Unauthorized',
+      `35`='Server Certificate Problem', `36`='Server Access Forbidden', `37`='Server Unreachable',
+      `38`='Content Length Mismatch', `39`='Cross Origin Redirect', `40`='Cancelled', `41`='Browser Shutdown',
+      `50`='Browser Crashed')
+
+    LET Output = SELECT ID, GUID, CurrentPath, TargetPath, OriginalMIMEType, ReceivedBytes, TotalBytes,
+      timestamp(winfiletime=(start_time * 10) || 0) AS StartTime,
+      timestamp(winfiletime=(end_time * 10) || 0) AS EndTime,
+      timestamp(winfiletime=(opened * 10) || 0) AS Opened,
+      timestamp(winfiletime=(last_access_time * 10) || 0) AS LastAccessTime,
+      timestamp(epoch=last_modified) AS LastModified,
+      get(item=StateLookup, field=str(str=state), default="Unknown") AS State,
+      get(item=DangerType, field=str(str=danger_type), default="Unknown") AS DangerType,
+      get(item=InterruptReason, field=str(str=interrupt_reason), default="Unknown") AS InterruptReason,
+      ReferrerURL, SiteURL, TabURL, TabReferrerURL, DownloadURL, OSPath
+    FROM Rows
+    WHERE LastAccessTime > DateAfter AND LastAccessTime < DateBefore
+      AND (SiteURL, DownloadURL, TabURL, TabReferrerURL, ReferrerURL, DownloadURL) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Chromium Browser History_Downloads" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Chromium Browser History_Keywords"
+  notebook:
+    - type: none
+      output: "Chromium Browser History_Keywords - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser History_Keywords
+        */
+        SELECT * FROM source(source="Chromium Browser History_Keywords")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Chromium Browser History_Keywords")
+
+    
+
+    LET Output = SELECT KeywordID, URLID,
+       timestamp(winfiletime=(last_visit_time * 10) || 0) AS LastVisitedTime,
+       KeywordSearchTerm, Title, URL, OSPath
+    FROM Rows
+    WHERE LastVisitedTime > DateAfter AND LastVisitedTime < DateBefore
+      AND (Title, KeywordSearchTerm, URL) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Chromium Browser History_Keywords" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Chromium Browser Media_History"
+  notebook:
+    - type: none
+      output: "Chromium Browser Media_History - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Media_History
+        */
+        SELECT * FROM source(source="Chromium Browser Media_History")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Chromium Browser Media_History")
+
+    
+
+    LET Output = SELECT ID, URL, WatchTimeSeconds,
+       Bool(Value=has_video) AS HasVideo,
+       Bool(Value=has_audio) AS HasAudio,
+       timestamp(winfiletime=last_updated_time_s || 0) AS LastUpdated,
+       OriginID, OSPath
+    FROM Rows
+    WHERE LastUpdated > DateAfter AND LastUpdated < DateBefore
+      AND URL =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Chromium Browser Media_History" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Chromium Browser Media_Playback Session"
+  notebook:
+    - type: none
+      output: "Chromium Browser Media_Playback Session - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Media_Playback Session
+        */
+        SELECT * FROM source(source="Chromium Browser Media_Playback Session")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Chromium Browser Media_Playback Session")
+
+    
+
+    LET Output = SELECT ID,
+      timestamp(winfiletime=last_updated_time_s || 0) AS LastUpdated, URL,
+      duration_ms / 1000 AS DurationInSeconds,
+      position_ms / 1000 AS PositionInSeconds,
+      Title, Artist, Album, SourceTitle, OriginID, OSPath
+    FROM Rows
+    WHERE LastUpdated > DateAfter AND LastUpdated < DateBefore
+      AND URL =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Chromium Browser Media_Playback Session" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Chromium Browser Network_Predictor"
+  notebook:
+    - type: none
+      output: "Chromium Browser Network_Predictor - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Network_Predictor
+        */
+        SELECT * FROM source(source="Chromium Browser Network_Predictor")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Chromium Browser Network_Predictor")
+
+    
+
+    LET Output = SELECT * FROM Rows
+    WHERE UserText =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Chromium Browser Network_Predictor" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+- name: "Chromium Browser Notifications_Site Engagements"
+  notebook:
+    - type: none
+      output: "Chromium Browser Notifications_Site Engagements - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Notifications_Site Engagements
+        */
+        SELECT * FROM source(source="Chromium Browser Notifications_Site Engagements")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM FilterFile(SourceName="Chromium Browser Notifications_Site Engagements")
+
+    LET JSON = SELECT parse_json(data=read_file(filename=OSPath)) AS Data, OSPath FROM Rows
+
+    LET Output = SELECT * FROM foreach(row={
+      SELECT OSPath, Data.profile.content_settings.exceptions AS exceptions FROM JSON
+    },  query={
+      SELECT _key AS Site,
+         timestamp(winfiletime=int(int=_value.last_modified) * 10 || 0) AS LastModified,
+         timestamp(winfiletime=int(int=_value.setting.lastEngagementTime) * 10 || 0) AS LastEngagementTime,
+         OSPath
+      FROM items(item=exceptions.site_engagement)
+    })
+
+    SELECT * FROM
+    if(condition="Chromium Browser Notifications_Site Engagements" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+- name: "Chromium Browser Notifications_App Banners"
+  notebook:
+    - type: none
+      output: "Chromium Browser Notifications_App Banners - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Notifications_App Banners
+        */
+        SELECT * FROM source(source="Chromium Browser Notifications_App Banners")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM FilterFile(SourceName="Chromium Browser Notifications_App Banners")
+
+    LET JSON = SELECT parse_json(data=read_file(filename=OSPath)) AS Data, OSPath FROM Rows
+
+    LET Output = SELECT * FROM foreach(row={
+      SELECT OSPath, Data.profile.content_settings.exceptions AS exceptions FROM JSON
+    },  query={
+      SELECT _key AS Site,
+         timestamp(winfiletime=int(int=_value.last_modified) * 10 || 0) AS LastModified,
+         {
+           SELECT _key AS Site,
+              timestamp(winfiletime=int(int=_value.couldShowBannerEvents) * 10 || 0) AS CouldShowBannerEvents,
+              timestamp(winfiletime=int(int=_value.next_install_text_animation.last_shown) * 10 || 0) AS LastShown
+           FROM items(item=_value.setting)
+         } AS Setting,
+         OSPath
+      FROM items(item=exceptions.app_banner)
+    })
+
+    SELECT * FROM
+    if(condition="Chromium Browser Notifications_App Banners" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+- name: "Chromium Browser Notifications_Notification Preferences"
+  notebook:
+    - type: none
+      output: "Chromium Browser Notifications_Notification Preferences - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Notifications_Notification Preferences
+        */
+        SELECT * FROM source(source="Chromium Browser Notifications_Notification Preferences")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM FilterFile(SourceName="Chromium Browser Notifications_Notification Preferences")
+
+    LET ContentSettings <= array(`0`="Default",`1`="Allow",`2`="Block",`3`="Ask",`4`="Session Only",`5`="Detect Important Content")
+    
+    LET JSON = SELECT parse_json(data=read_file(filename=OSPath)) AS Data, OSPath FROM Rows
+
+    LET Output = SELECT * FROM foreach(row={
+      SELECT OSPath, Data.profile.content_settings.exceptions AS exceptions FROM JSON
+    },  query={
+      SELECT _key AS Site,
+        timestamp(winfiletime=int(int=_value.last_modified) * 10 || 0) AS LastModified,
+        ContentSettings[_value.setting] AS Setting,
+        OSPath
+      FROM items(item=exceptions.notifications)
+    })
+
+    SELECT * FROM
+    if(condition="Chromium Browser Notifications_Notification Preferences" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+- name: "Chromium Browser Notifications_Notification Interactions"
+  notebook:
+    - type: none
+      output: "Chromium Browser Notifications_Notification Interactions - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Notifications_Notification Interactions
+        */
+        SELECT * FROM source(source="Chromium Browser Notifications_Notification Interactions")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM FilterFile(SourceName="Chromium Browser Notifications_Notification Interactions")
+
+    LET JSON = SELECT parse_json(data=read_file(filename=OSPath)) AS Data, OSPath FROM Rows
+    LET S = scope()
+
+    LET Output = SELECT * FROM foreach(row={
+      SELECT OSPath, Data.profile.content_settings.exceptions AS exceptions FROM JSON
+    },  query={
+      SELECT _key AS URL,
+        timestamp(winfiletime=int(int=_value.last_modified) * 10 || 0) AS LastModified,
+        _value.display_count as DisplayCount,
+        _value.click_count as ClickCount,
+        OSPath
+      FROM items(item=S.notification_interactions || dict())
+    })
+
+    SELECT * FROM
+    if(condition="Chromium Browser Notifications_Notification Interactions" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Chromium Browser Shortcuts"
+  notebook:
+    - type: none
+      output: "Chromium Browser Shortcuts - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Shortcuts
+        */
+        SELECT * FROM source(source="Chromium Browser Shortcuts")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Chromium Browser Shortcuts")
+
+    
+
+    LET Output = SELECT ID,
+      timestamp(winfiletime= (last_access_time * 10) || 0) AS LastAccessTime,
+      TextTyped, FillIntoEdit, URL, Contents,
+      Description, Type, Keyword, TimesSelectedByUser, OSPath
+    FROM Rows
+    WHERE LastAccessTime > DateAfter AND LastAccessTime < DateBefore
+      AND (Contents, Description) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Chromium Browser Shortcuts" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Chromium Sessions_Sessions"
+  notebook:
+    - type: none
+      output: "Chromium Sessions_Sessions - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Sessions_Sessions
+        */
+        SELECT * FROM source(source="Chromium Sessions_Sessions")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Chromium Sessions_Sessions")
+
+    
+
+    LET Output = SELECT timestamp(winfiletime=(creation_utc * 10) || 0) AS CreationUTC,
+           timestamp(winfiletime=(expires_utc * 10) || 0) AS ExpiresUTC,
+           timestamp(winfiletime=(last_access_utc * 10) || 0) AS LastAccessUTC,
+           HostKey, Name, Path,
+           Bool(Value=is_secure) AS IsSecure,
+           Bool(Value=is_httponly) AS IsHttpOnly,
+           Bool(Value=has_expires) AS HasExpiration,
+           Bool(Value=is_persistent) AS IsPersistent,
+           Priority, SourcePort, OSPath
+    FROM Rows
+    WHERE LastAccessUTC > DateAfter AND LastAccessUTC < DateBefore
+      AND (Name, Path) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Chromium Sessions_Sessions" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Chromium Browser Top Sites"
+  notebook:
+    - type: none
+      output: "Chromium Browser Top Sites - Recalculate to view results"
+      template: |
+        /*
+        # Chromium Browser Top Sites
+        */
+        SELECT * FROM source(source="Chromium Browser Top Sites")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Chromium Browser Top Sites")
+
+    
+
+    LET Output = SELECT * FROM Rows
+    WHERE ( URL =~ FilterRegex OR Title =~ FilterRegex )
+
+    SELECT * FROM
+    if(condition="Chromium Browser Top Sites" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Edge Browser Autofill_CombinedAutofill"
+  notebook:
+    - type: none
+      output: "Edge Browser Autofill_CombinedAutofill - Recalculate to view results"
+      template: |
+        /*
+        # Edge Browser Autofill_CombinedAutofill
+        */
+        SELECT * FROM source(source="Edge Browser Autofill_CombinedAutofill")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Edge Browser Autofill_CombinedAutofill")
+
+    
+
+    LET Output = SELECT timestamp(epoch=date_last_used) AS DateLastUsed, *
+    FROM Rows
+    WHERE DateLastUsed > DateAfter AND DateLastUsed < DateBefore
+
+    SELECT * FROM
+    if(condition="Edge Browser Autofill_CombinedAutofill" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Edge Browser Collections_Collections, Items, and Comments"
+  notebook:
+    - type: none
+      output: "Edge Browser Collections_Collections, Items, and Comments - Recalculate to view results"
+      template: |
+        /*
+        # Edge Browser Collections_Collections, Items, and Comments
+        */
+        SELECT * FROM source(source="Edge Browser Collections_Collections, Items, and Comments")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Edge Browser Collections_Collections, Items, and Comments")
+
+    LET ExtractImage(Data) = base64decode(
+      string=split(string=parse_json(data=Data).image, sep=",")[1])
+
+    LET Output = SELECT *,
+       timestamp(epoch=Collection_CreationUTC) AS Collection_CreationUTC,
+       timestamp(epoch=Collection_ModifiedUTC) AS Collection_ModifiedUTC,
+       timestamp(epoch=ColletionSync_DateLastSynced) AS ColletionSync_DateLastSynced,
+       timestamp(epoch=Item_CreationUTC) AS Item_CreationUTC,
+       timestamp(epoch=Item_ModifiedUTC) AS Item_ModifiedUTC,
+       parse_json(data= Item_Source) AS Item_Source,
+       upload(accessor="data",
+              file=ExtractImage(Data=Image),
+              name=format(format="Screenshot_%v.png", args=item_id)) AS Image,
+       timestamp(epoch=ItemSync_DaeLastSynced) AS ItemSync_DaeLastSynced
+    FROM Rows
+
+    SELECT * FROM
+    if(condition="Edge Browser Collections_Collections, Items, and Comments" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Edge Browser Navigation History_Navigation History"
+  notebook:
+    - type: none
+      output: "Edge Browser Navigation History_Navigation History - Recalculate to view results"
+      template: |
+        /*
+        # Edge Browser Navigation History_Navigation History
+        */
+        SELECT * FROM source(source="Edge Browser Navigation History_Navigation History")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Edge Browser Navigation History_Navigation History")
+
+    
+
+    LET Output = SELECT ID,
+       timestamp(epoch=`Last Visited Time`) AS `Last Visited Time`,
+       Title, URL, VisitCount, OSPath
+    FROM Rows
+    WHERE `Last Visited Time` > DateAfter
+      AND `Last Visited Time` < DateBefore
+      AND (Title, URL) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Edge Browser Navigation History_Navigation History" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Edge Browser History Screenshots_Screenshots"
+  notebook:
+    - type: none
+      output: "Edge Browser History Screenshots_Screenshots - Recalculate to view results"
+      template: |
+        /*
+        # Edge Browser History Screenshots_Screenshots
+        */
+        SELECT * FROM source(source="Edge Browser History Screenshots_Screenshots")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Edge Browser History Screenshots_Screenshots")
+
+    
+
+    LET Output = SELECT *,
+           timestamp(winfiletime=VisitTime * 10) AS VisitTime,
+           VisitTime AS VisitTimeInt,
+           upload(accessor="data",
+             file=Image,
+             name=format(format="Screenshot_%v.png", args=VisitID)) AS Image
+    FROM Rows
+
+    SELECT * FROM
+    if(condition="Edge Browser History Screenshots_Screenshots" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Firefox Places_Bookmarks"
+  notebook:
+    - type: none
+      output: "Firefox Places_Bookmarks - Recalculate to view results"
+      template: |
+        /*
+        # Firefox Places_Bookmarks
+        */
+        SELECT * FROM source(source="Firefox Places_Bookmarks")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Firefox Places_Bookmarks")
+
+    LET BookmarkTypes <= dict(`1`='URL', `2`='Folder', `3`='Separator')
+
+    LET Output = SELECT ID, ParentID,
+       get(item= BookmarkTypes, field=str(str=type), default="Unknown") AS Type,
+       timestamp(epoch=dateAdded) AS DateAdded,
+       timestamp(epoch=lastModified) AS LastModified,
+       Position, Title, URL, ForeignKey, OSPath
+    FROM Rows
+    WHERE LastModified > DateAfter AND LastModified < DateBefore
+      AND (Title, URL) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Firefox Places_Bookmarks" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Firefox Places_Downloads"
+  notebook:
+    - type: none
+      output: "Firefox Places_Downloads - Recalculate to view results"
+      template: |
+        /*
+        # Firefox Places_Downloads
+        */
+        SELECT * FROM source(source="Firefox Places_Downloads")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Firefox Places_Downloads")
+
+    LET DownloadTypes <= dict(`downloads/destinationFileURI`='FileURI', `downloads/destinationFileName`='Filename', `downloads/metaData`='Metadata')
+
+    LET Output = SELECT PlaceID, URL, Content,
+       get(item= DownloadTypes, field=str(str=name), default="Unknown") AS Type,
+       timestamp(epoch=dateAdded) AS DateAdded,
+       timestamp(epoch=lastModified) AS LastModified,
+       OSPath
+    FROM Rows
+    WHERE LastModified > DateAfter AND LastModified < DateBefore
+      AND (URL, Content) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Firefox Places_Downloads" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Firefox Cookies"
+  notebook:
+    - type: none
+      output: "Firefox Cookies - Recalculate to view results"
+      template: |
+        /*
+        # Firefox Cookies
+        */
+        SELECT * FROM source(source="Firefox Cookies")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Firefox Cookies")
+
+    
+
+    LET Output = SELECT ID, Host, Name, Value,
+       timestamp(epoch= creationTime) AS CreationTime,
+       timestamp(epoch= lastAccessed) AS LastAccessedTime,
+       timestamp(epoch= expiry) AS Expiration,
+       Bool(Value= isSecure) AS IsSecure,
+       Bool(Value= isHttpOnly) AS IsHTTPOnly, OSPath
+    FROM Rows
+    WHERE LastAccessedTime > DateAfter
+      AND LastAccessedTime < DateBefore
+      AND ( Name =~ FilterRegex OR Value =~ FilterRegex )
+
+    SELECT * FROM
+    if(condition="Firefox Cookies" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Firefox Downloads"
+  notebook:
+    - type: none
+      output: "Firefox Downloads - Recalculate to view results"
+      template: |
+        /*
+        # Firefox Downloads
+        */
+        SELECT * FROM source(source="Firefox Downloads")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Firefox Downloads")
+
+    
+
+    LET Output = SELECT ID, Name, MIMEType, Source, Target,
+       timestamp(epoch= startTime) AS StartTime,
+       timestamp(epoch= endTime) AS EndTime,
+       timestamp(epoch= expiry) AS Expiration,
+       CurrentBytes, MaxBytes, OSPath
+    FROM Rows
+    WHERE StartTime > DateAfter
+      AND StartTime < DateBefore
+      AND Name =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Firefox Downloads" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Firefox Favicons"
+  notebook:
+    - type: none
+      output: "Firefox Favicons - Recalculate to view results"
+      template: |
+        /*
+        # Firefox Favicons
+        */
+        SELECT * FROM source(source="Firefox Favicons")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Firefox Favicons")
+
+    
+
+    LET Output = SELECT ID, PageURL, FaviconURL,
+       timestamp(epoch= expire_ms) AS Expiration,
+       OSPath
+    FROM Rows
+
+    SELECT * FROM
+    if(condition="Firefox Favicons" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Firefox Form History"
+  notebook:
+    - type: none
+      output: "Firefox Form History - Recalculate to view results"
+      template: |
+        /*
+        # Firefox Form History
+        */
+        SELECT * FROM source(source="Firefox Form History")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Firefox Form History")
+
+    
+
+    LET Output = SELECT ID, FieldName, Value, TimesUsed,
+       timestamp(epoch= firstUsed) AS FirstUsed,
+       timestamp(epoch= lastUsed) AS LastUsed,
+       GUID, OSPath
+    FROM Rows
+    WHERE LastUsed > DateAfter AND LastUsed < DateBefore
+      AND ( FieldName =~ FilterRegex OR Value =~ FilterRegex )
+
+    SELECT * FROM
+    if(condition="Firefox Form History" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Firefox Places History"
+  notebook:
+    - type: none
+      output: "Firefox Places History - Recalculate to view results"
+      template: |
+        /*
+        # Firefox Places History
+        */
+        SELECT * FROM source(source="Firefox Places History")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Firefox Places History")
+
+    LET VisitType <= dict(`1`='TRANSITION_LINK', `2`='TRANSITION_TYPED', `3`='TRANSITION_BOOKMARK',
+      `4`='TRANSITION_EMBED', `5`= 'TRANSITION_REDIRECT_PERMANENT', `6`='TRANSITION_REDIRECT_TEMPORARY',
+      `7`='TRANSITION_DOWNLOAD', `8`='TRANSITION_FRAMED_LINK', `9`='TRANSITION_RELOAD')
+
+    LET Output = SELECT VisitID, FromVisitID,
+       timestamp(epoch= visit_date) AS VisitDate,
+       timestamp(epoch= last_visit_date) AS LastVisitDate,
+       VisitCount, URL, Title, Description,
+       get(item= VisitType, field=str(str=visit_type), default="Unknown") AS VisitType,
+       Bool(Value=hidden) AS Hidden,
+       Bool(Value=typed) AS Typed,
+       Frecency, PreviewImageURL, OSPath
+    FROM Rows
+    WHERE VisitDate > DateAfter AND VisitDate < DateBefore
+      AND (Title, URL, Description) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Firefox Places History" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Firefox Places History Legacy"
+  notebook:
+    - type: none
+      output: "Firefox Places History Legacy - Recalculate to view results"
+      template: |
+        /*
+        # Firefox Places History Legacy
+        */
+        SELECT * FROM source(source="Firefox Places History Legacy")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Firefox Places History Legacy")
+
+    LET VisitType <= dict(`1`='TRANSITION_LINK', `2`='TRANSITION_TYPED', `3`='TRANSITION_BOOKMARK',
+      `4`='TRANSITION_EMBED', `5`= 'TRANSITION_REDIRECT_PERMANENT', `6`='TRANSITION_REDIRECT_TEMPORARY',
+      `7`='TRANSITION_DOWNLOAD', `8`='TRANSITION_FRAMED_LINK', `9`='TRANSITION_RELOAD')
+
+    LET Output = SELECT VisitID, FromVisitID,
+       timestamp(epoch= visit_date) AS VisitDate,
+       timestamp(epoch= last_visit_date) AS LastVisitDate,
+       VisitCount, URL, Title,
+       get(item= VisitType, field=str(str=visit_type), default="Unknown") AS VisitType,
+       Bool(Value=hidden) AS Hidden,
+       Bool(Value=typed) AS Typed,
+       Frecency, OSPath
+    FROM Rows
+    WHERE VisitDate > DateAfter AND VisitDate < DateBefore
+      AND (Title, URL) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Firefox Places History Legacy" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Google Drive Metadata_File Metadata"
+  notebook:
+    - type: none
+      output: "Google Drive Metadata_File Metadata - Recalculate to view results"
+      template: |
+        /*
+        # Google Drive Metadata_File Metadata
+        */
+        SELECT * FROM source(source="Google Drive Metadata_File Metadata")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Google Drive Metadata_File Metadata")
+
+    
+
+    LET Output = SELECT timestamp(epoch=modified_date ) AS Timestamp, *
+    FROM Rows
+    WHERE
+      if(condition=DateAfter, then=Timestamp > DateAfter, else=TRUE) AND
+      if(condition=DateBefore, then=Timestamp < DateBefore, else=TRUE) AND
+      (local_title, mime_type) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Google Drive Metadata_File Metadata" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Google Drive Metadata_Deleted Items"
+  notebook:
+    - type: none
+      output: "Google Drive Metadata_Deleted Items - Recalculate to view results"
+      template: |
+        /*
+        # Google Drive Metadata_Deleted Items
+        */
+        SELECT * FROM source(source="Google Drive Metadata_Deleted Items")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Google Drive Metadata_Deleted Items")
+
+    
+
+    LET Output = SELECT * FROM Rows
+
+    SELECT * FROM
+    if(condition="Google Drive Metadata_Deleted Items" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Google Drive Mirrored Files_Mirrored Items"
+  notebook:
+    - type: none
+      output: "Google Drive Mirrored Files_Mirrored Items - Recalculate to view results"
+      template: |
+        /*
+        # Google Drive Mirrored Files_Mirrored Items
+        */
+        SELECT * FROM source(source="Google Drive Mirrored Files_Mirrored Items")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Google Drive Mirrored Files_Mirrored Items")
+
+    
+
+    LET Output = SELECT timestamp(epoch=local_mtime_ms ) AS Timestamp, *
+    FROM Rows
+    WHERE
+      if(condition=DateAfter, then=Timestamp > DateAfter, else=TRUE) AND
+      if(condition=DateBefore, then=Timestamp < DateBefore, else=TRUE) AND
+      (local_filename, cloud_filename, volume) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Google Drive Mirrored Files_Mirrored Items" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Google Drive Mirrored Metadata Files_Mirrored Metadata Items"
+  notebook:
+    - type: none
+      output: "Google Drive Mirrored Metadata Files_Mirrored Metadata Items - Recalculate to view results"
+      template: |
+        /*
+        # Google Drive Mirrored Metadata Files_Mirrored Metadata Items
+        */
+        SELECT * FROM source(source="Google Drive Mirrored Metadata Files_Mirrored Metadata Items")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Google Drive Mirrored Metadata Files_Mirrored Metadata Items")
+
+    
+
+    LET Output = SELECT timestamp(epoch=modified_date ) AS Timestamp, *
+    FROM Rows
+    WHERE
+      if(condition=DateAfter, then=Timestamp > DateAfter, else=TRUE) AND
+      if(condition=DateBefore, then=Timestamp < DateBefore, else=TRUE) AND
+      (local_title, mime_type) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Google Drive Mirrored Metadata Files_Mirrored Metadata Items" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Google Drive Sync Roots_Sync Folders"
+  notebook:
+    - type: none
+      output: "Google Drive Sync Roots_Sync Folders - Recalculate to view results"
+      template: |
+        /*
+        # Google Drive Sync Roots_Sync Folders
+        */
+        SELECT * FROM source(source="Google Drive Sync Roots_Sync Folders")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Google Drive Sync Roots_Sync Folders")
+
+    
+
+    LET Output = SELECT *
+    FROM Rows
+    WHERE (root_path, title, media_id) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Google Drive Sync Roots_Sync Folders" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+- name: "IE or Edge WebCacheV01_All Data"
+  notebook:
+    - type: none
+      output: "IE or Edge WebCacheV01_All Data - Recalculate to view results"
+      template: |
+        /*
+        # IE or Edge WebCacheV01_All Data
+        */
+        SELECT * FROM source(source="IE or Edge WebCacheV01_All Data")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM FilterFile(SourceName="IE or Edge WebCacheV01_All Data")
+
+    LET MatchingFiles = SELECT OSPath FROM Rows
+    LET S = scope()
+    
+    LET Containers(OSPath) = SELECT Table
+    FROM parse_ese_catalog(file=OSPath)
+    WHERE Table =~ "Container_"
+    GROUP BY Table
+    
+    LET AllHits(OSPath) = SELECT * FROM foreach(row={
+        SELECT * FROM Containers(OSPath=OSPath)
+    }, query={
+       SELECT timestamp(winfiletime=ExpiryTime) AS ExpiryTime,
+          timestamp(winfiletime=ModifiedTime) AS ModifiedTime,
+          timestamp(winfiletime=AccessedTime) AS AccessedTime,
+          S.Url AS Url, *
+       FROM parse_ese(file=OSPath, table=Table)
+    })
+
+    LET Output = SELECT * FROM foreach(row=MatchingFiles, query={
+      SELECT * FROM AllHits(OSPath=OSPath)
+    })
+    WHERE AccessedTime > DateAfter AND AccessedTime < DateBefore
+      AND Url =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="IE or Edge WebCacheV01_All Data" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+- name: "IE or Edge WebCacheV01_Highlights"
+  notebook:
+    - type: none
+      output: "IE or Edge WebCacheV01_Highlights - Recalculate to view results"
+      template: |
+        /*
+        # IE or Edge WebCacheV01_Highlights
+        */
+        SELECT * FROM source(source="IE or Edge WebCacheV01_Highlights")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM FilterFile(SourceName="IE or Edge WebCacheV01_Highlights")
+
+    
+
+    LET Output = SELECT * FROM foreach(row=MatchingFiles, query={
+      SELECT AccessedTime, ModifiedTime, ExpiryTime, Url
+      FROM AllHits(OSPath=OSPath)
+    })
+    WHERE AccessedTime > DateAfter AND AccessedTime < DateBefore
+      AND Url =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="IE or Edge WebCacheV01_Highlights" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "MacOS Applications Cache"
+  notebook:
+    - type: none
+      output: "MacOS Applications Cache - Recalculate to view results"
+      template: |
+        /*
+        # MacOS Applications Cache
+        */
+        SELECT * FROM source(source="MacOS Applications Cache")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="MacOS Applications Cache")
+
+    
+
+    LET Output = SELECT
+       time_stamp AS Timestamp,
+       OSPath.Base AS Application,
+       entry_ID AS EntryID,
+       version AS Version,
+       hash_value AS Hash,
+       storage_policy AS StoragePolicy,
+       request_key AS URL,
+       plist(file=request_object, accessor="data") AS Request,
+       plist(file=response_object, accessor="data") AS Response,
+       partition AS Partition,
+       OSPath
+    FROM Rows
+    WHERE Timestamp > DateAfter AND Timestamp < DateBefore
+      AND Application =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="MacOS Applications Cache" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "MacOS NetworkUsage"
+  notebook:
+    - type: none
+      output: "MacOS NetworkUsage - Recalculate to view results"
+      template: |
+        /*
+        # MacOS NetworkUsage
+        */
+        SELECT * FROM source(source="MacOS NetworkUsage")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="MacOS NetworkUsage")
+
+    
+
+    LET Output = SELECT timestamp(epoch= ZTIMESTAMP + 978307200) AS Timestamp,
+      timestamp(epoch= ZFIRSTTIMESTAMP + 978307200) AS FirstTimestamp,
+      timestamp(epoch= LIVE_USAGE_TIMESTAMP + 978307200) AS LiveUsageTimestamp,
+      ZBUNDLENAME AS BundleID,
+      ZPROCNAME AS ProcessName,
+      ZWIFIIN AS WifiIn,
+      ZWIFIOUT AS WifiOut,
+      ZWWANIN AS WanIn,
+      ZWWANOUT AS WandOut,
+      ZWIREDIN AS WiredIn,
+      ZWIREDOUT AS WiredOut,
+      ZXIN AS _XIn,
+      ZXOUT AS _XOut,
+      Z_PK AS LiveUsageTableID
+    FROM Rows
+
+    SELECT * FROM
+    if(condition="MacOS NetworkUsage" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "MacOS Notes"
+  notebook:
+    - type: none
+      output: "MacOS Notes - Recalculate to view results"
+      template: |
+        /*
+        # MacOS Notes
+        */
+        SELECT * FROM source(source="MacOS Notes")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="MacOS Notes")
+
+    
+
+    LET Output = SELECT Key AS _Key,
+     OSPath[1] AS User,
+     Note,
+     Title,
+     Snippet,
+     NoteID AS _NoteID,
+     timestamp(cocoatime=CreatedTS) AS CreatedTime,
+     timestamp(cocoatime=LastOpenedDate) AS LastOpenedTime,
+     timestamp(cocoatime=DirModificationDate) AS LastDirModifcation,
+     Account AS _Account,
+     Directory,
+     DirectoryID,
+     AttachmentName,
+     AttachmentSize,
+     AttachmentUUID,
+     if(condition=AttachmentUUID,
+        then=OSPath[:2] + '/Library/Group Containers/group.com.apple.notes/Accounts/LocalAccount/Media/' + AttachmentUUID + '/' + AttachmentName) AS AttachmentLocation,
+     AccountName AS _AccountName,
+     AccountID AS _AccountID,
+     AccountType AS _AccountType,
+     gunzip(string=Data) AS Data,
+     OSPath
+    FROM Rows
+    WHERE LastOpenedTime > DateAfter AND LastOpenedTime < DateBefore
+      AND ( Title =~ FilterRegex OR Data =~ FilterRegex )
+
+    SELECT * FROM
+    if(condition="MacOS Notes" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "MacOS XProtect Detections"
+  notebook:
+    - type: none
+      output: "MacOS XProtect Detections - Recalculate to view results"
+      template: |
+        /*
+        # MacOS XProtect Detections
+        */
+        SELECT * FROM source(source="MacOS XProtect Detections")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="MacOS XProtect Detections")
+
+    
+
+    LET Output = SELECT *
+    FROM Rows
+    WHERE dt > DateAfter
+      AND dt < DateBefore
+      AND (violated_rule, exec_path, responsible_path, responsible_signing_id,
+        exec_cdhash, exec_sha256, responsible_cdhash, responsible_sha256 ) =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="MacOS XProtect Detections" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Windows Activities Cache_ActivityPackageId"
+  notebook:
+    - type: none
+      output: "Windows Activities Cache_ActivityPackageId - Recalculate to view results"
+      template: |
+        /*
+        # Windows Activities Cache_ActivityPackageId
+        */
+        SELECT * FROM source(source="Windows Activities Cache_ActivityPackageId")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Windows Activities Cache_ActivityPackageId")
+
+    
+
+    LET Output = SELECT format(format="%0X-%0X-%0X-%0X-%0X", args=[
+      ActivityId[0:4], ActivityId[4:6], ActivityId[6:8],
+      ActivityId[8:10], ActivityId[10:] ]) AS ActivityId,
+      Platform, PackageName, ExpirationTime, OSPath
+    FROM Rows
+
+    SELECT * FROM
+    if(condition="Windows Activities Cache_ActivityPackageId" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Windows Activities Cache_Clipboard"
+  notebook:
+    - type: none
+      output: "Windows Activities Cache_Clipboard - Recalculate to view results"
+      template: |
+        /*
+        # Windows Activities Cache_Clipboard
+        */
+        SELECT * FROM source(source="Windows Activities Cache_Clipboard")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Windows Activities Cache_Clipboard")
+
+    
+
+    LET Output = SELECT
+      CreatedTime,
+      timestamp(epoch=LastModifiedTime) AS LastModifiedTime,
+      timestamp(epoch=LastModifiedOnClient) AS LastModifiedOnClient,
+      StartTime,
+      EndTime,
+      Payload,
+      OSPath[1] AS User,
+      base64decode(string=parse_json_array(data=ClipboardPayload)[0].content) AS ClipboardPayload,
+      OSPath AS Path,
+      Mtime
+    FROM Rows
+    WHERE StartTime > DateAfter
+      AND StartTime < DateBefore
+      AND ClipboardPayload =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Windows Activities Cache_Clipboard" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+
+  
+- name: "Windows WPNDatabase - Notifications_Notifications"
+  notebook:
+    - type: none
+      output: "Windows WPNDatabase - Notifications_Notifications - Recalculate to view results"
+      template: |
+        /*
+        # Windows WPNDatabase - Notifications_Notifications
+        */
+        SELECT * FROM source(source="Windows WPNDatabase - Notifications_Notifications")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM ApplyFile(SourceName="Windows WPNDatabase - Notifications_Notifications")
+
+    
+
+    LET Output = SELECT *, Parent || "" AS Parent,
+        timestamp(winfiletime= ArrivalTime) AS ArrivalTime,
+        if(condition= ExpirationTime > 0,
+           then=timestamp(winfiletime= ExpirationTime),
+          else='Expired') AS ExpirationTime,
+        format(format="%02x", args=ActivityId) As ActivityId,
+        WNSId || "" AS WNSId,
+    
+        if(condition= WNSCreatedTime > 0,
+           then=timestamp(winfiletime= WNSCreatedTime),
+          else='') AS WNSCreatedTime,
+    
+        if(condition= WNSExpirationTime > 0,
+           then=timestamp(winfiletime= WNSExpirationTime),
+          else='') AS WNSExpirationTime,
+    
+        upload(accessor="data",
+           file=Payload,
+           name=format(format="Payload%v.png", args=ID)) AS Payload
+    
+    FROM Rows
+
+    SELECT * FROM
+    if(condition="Windows WPNDatabase - Notifications_Notifications" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+- name: "Windows Search Service_SystemIndex_Gthr"
+  notebook:
+    - type: none
+      output: "Windows Search Service_SystemIndex_Gthr - Recalculate to view results"
+      template: |
+        /*
+        # Windows Search Service_SystemIndex_Gthr
+        */
+        SELECT * FROM source(source="Windows Search Service_SystemIndex_Gthr")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM FilterFile(SourceName="Windows Search Service_SystemIndex_Gthr")
+
+    LET MatchingFiles = SELECT OSPath FROM Rows
+    
+    LET FormatTimeB(T) = timestamp(winfiletime=parse_binary(
+       filename=T, accessor="data", struct="uint64b"))
+    
+    LET FormatTime(T) = timestamp(winfiletime=parse_binary(
+       filename=T, accessor="data", struct="uint64"))
+    
+    LET FormatSize(T) = parse_binary(
+       filename=T, accessor="data", struct="uint64")
+
+    LET Output = SELECT * FROM foreach(row=MatchingFiles, query={
+       SELECT ScopeID, DocumentID, SDID,
+          FormatTimeB(T=LastModified) AS LastModified,
+          FileName
+       FROM parse_ese(file=OSPath, table= "SystemIndex_Gthr")
+    })
+    WHERE LastModified > DateAfter AND LastModified < DateBefore
+      AND FileName =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Windows Search Service_SystemIndex_Gthr" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+- name: "Windows Search Service_SystemIndex_GthrPth"
+  notebook:
+    - type: none
+      output: "Windows Search Service_SystemIndex_GthrPth - Recalculate to view results"
+      template: |
+        /*
+        # Windows Search Service_SystemIndex_GthrPth
+        */
+        SELECT * FROM source(source="Windows Search Service_SystemIndex_GthrPth")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM FilterFile(SourceName="Windows Search Service_SystemIndex_GthrPth")
+
+    
+
+    LET Output = SELECT * FROM foreach(row=MatchingFiles, query={
+       SELECT Scope, Parent, Name
+       FROM parse_ese(file=OSPath, table= "SystemIndex_GthrPth")
+    })
+    WHERE Name =~ FilterRegex
+
+    SELECT * FROM
+    if(condition="Windows Search Service_SystemIndex_GthrPth" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+- name: "Windows Search Service_SystemIndex_PropertyStore"
+  notebook:
+    - type: none
+      output: "Windows Search Service_SystemIndex_PropertyStore - Recalculate to view results"
+      template: |
+        /*
+        # Windows Search Service_SystemIndex_PropertyStore
+        */
+        SELECT * FROM source(source="Windows Search Service_SystemIndex_PropertyStore")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM FilterFile(SourceName="Windows Search Service_SystemIndex_PropertyStore")
+
+    LET X = scope()
+    
+    -- The PropertyStore columns look like
+    -- <random>-ProperName so we strip the
+    -- random part off to display it properly.
+    LET FilterDict(Dict) = to_dict(item={
+      SELECT split(sep_string="-", string=_key)[1] || _key AS _key, _value
+      FROM items(item=Dict)
+    })
+    
+    LET PropStore(OSPath) = SELECT *,
+       FormatTime(T=X.System_Search_GatherTime) AS System_Search_GatherTime,
+       FormatSize(T=X.System_Size) AS System_Size,
+       FormatTime(T=X.System_DateModified) AS System_DateModified,
+       FormatTime(T=X.System_DateAccessed) AS System_DateAccessed,
+       FormatTime(T=X.System_DateCreated) AS System_DateCreated
+    FROM foreach(row={
+       SELECT *, FilterDict(Dict=_value) AS _value
+       FROM items(item={
+         SELECT * FROM parse_ese(file=OSPath, table="SystemIndex_PropertyStore")
+      })
+    }, column="_value")
+
+    LET Output = SELECT * FROM foreach(row=MatchingFiles, query={
+       SELECT *
+       FROM PropStore(OSPath=OSPath)
+    })
+    WHERE System_DateAccessed > DateAfter AND System_DateAccessed < DateBefore
+
+    SELECT * FROM
+    if(condition="Windows Search Service_SystemIndex_PropertyStore" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+- name: "Windows Search Service_SystemIndex_PropertyStore_Highlights"
+  notebook:
+    - type: none
+      output: "Windows Search Service_SystemIndex_PropertyStore_Highlights - Recalculate to view results"
+      template: |
+        /*
+        # Windows Search Service_SystemIndex_PropertyStore_Highlights
+        */
+        SELECT * FROM source(source="Windows Search Service_SystemIndex_PropertyStore_Highlights")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM FilterFile(SourceName="Windows Search Service_SystemIndex_PropertyStore_Highlights")
+
+    
+
+    LET Output = SELECT * FROM foreach(row=MatchingFiles, query={
+       SELECT WorkID,
+          System_Search_GatherTime,
+          System_Size,
+          System_DateModified,
+          System_DateCreated,
+          X.System_FileOwner AS System_FileOwner,
+          X.System_ItemPathDisplay AS System_ItemPathDisplay,
+          X.System_ItemType AS System_ItemType,
+          X.System_FileAttributes AS System_FileAttributes,
+          X.System_Search_AutoSummary AS System_Search_AutoSummary
+       FROM PropStore(OSPath=OSPath)
+    })
+    WHERE System_DateAccessed > DateAfter AND System_DateAccessed < DateBefore
+
+    SELECT * FROM
+    if(condition="Windows Search Service_SystemIndex_PropertyStore_Highlights" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+- name: "Windows Search Service_BrowsingActivity"
+  notebook:
+    - type: none
+      output: "Windows Search Service_BrowsingActivity - Recalculate to view results"
+      template: |
+        /*
+        # Windows Search Service_BrowsingActivity
+        */
+        SELECT * FROM source(source="Windows Search Service_BrowsingActivity")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM FilterFile(SourceName="Windows Search Service_BrowsingActivity")
+
+    
+
+    LET Output = SELECT * FROM foreach(row=MatchingFiles, query={
+       SELECT X.ItemPathDisplay AS ItemPathDisplay,
+          X.Activity_ContentUri AS Activity_ContentUri,
+          X.Activity_Description AS Activity_Description
+       FROM PropStore(OSPath=OSPath)
+       WHERE Activity_ContentUri
+    })
+
+    SELECT * FROM
+    if(condition="Windows Search Service_BrowsingActivity" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+
+- name: "Windows Search Service_UserActivityLogging"
+  notebook:
+    - type: none
+      output: "Windows Search Service_UserActivityLogging - Recalculate to view results"
+      template: |
+        /*
+        # Windows Search Service_UserActivityLogging
+        */
+        SELECT * FROM source(source="Windows Search Service_UserActivityLogging")
+        LIMIT 50
+  query: |
+    LET Rows = SELECT * FROM FilterFile(SourceName="Windows Search Service_UserActivityLogging")
+
+    
+
+    LET Output = SELECT * FROM foreach(row=MatchingFiles, query={
+       SELECT X.System_ItemPathDisplay AS System_ItemPathDisplay,
+           FormatTime(T=X.ActivityHistory_StartTime) AS ActivityHistory_StartTime,
+           FormatTime(T=X.ActivityHistory_EndTime) AS ActivityHistory_EndTime,
+           X.ActivityHistory_AppId AS ActivityHistory_AppId
+       FROM PropStore(OSPath=OSPath)
+       WHERE ActivityHistory_AppId
+    })
+    WHERE ActivityHistory_StartTime > DateAfter
+      AND ActivityHistory_StartTime < DateBefore
+
+    SELECT * FROM
+    if(condition="Windows Search Service_UserActivityLogging" =~ RuleFilter, then={
+       SELECT * FROM Output
+    })
+
+

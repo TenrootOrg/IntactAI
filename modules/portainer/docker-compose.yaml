@@ -3,7 +3,7 @@
 
 services:
   portainer-agent:
-    container_name: mssp_portainer_agent
+    container_name: intact_portainer_agent
     image: portainer/agent:${PORTAINER_AGENT_VERSION:-2.27.0}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -11,10 +11,10 @@ services:
     restart: unless-stopped
     networks:
       - portainer_internal
-      - mssp_network
+      - intact_network
 
   portainer:
-    container_name: mssp_portainer
+    container_name: intact_portainer
     image: portainer/portainer-ce:${PORTAINER_VERSION:-2.27.0}
     # Serve the UI with the shared Nginx TLS cert so Portainer presents the
     # same certificate as the rest of the stack on :443, instead of the
@@ -42,7 +42,7 @@ services:
       - portainer-agent
     networks:
       - portainer_internal
-      - mssp_network
+      - intact_network
 
 volumes:
   portainer_data:
@@ -50,5 +50,5 @@ volumes:
 networks:
   portainer_internal:
     name: portainer_internal
-  mssp_network:
+  intact_network:
     external: true

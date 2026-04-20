@@ -25,11 +25,11 @@ log_error() {
 
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MSSP_ROOT="$(dirname "$SCRIPT_DIR")"
+INTACT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Output directory - will be mounted to backend container
-OUTPUT_DIR="${MSSP_ROOT}/client_installers"
-VELOCIRAPTOR_CONTAINER="mssp_velociraptor"
+OUTPUT_DIR="${INTACT_ROOT}/client_installers"
+VELOCIRAPTOR_CONTAINER="intact_velociraptor"
 
 # ============================================================================
 # Main Generation Function

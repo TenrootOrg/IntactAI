@@ -58,7 +58,7 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
             log(f"  Checking IRIS container... ({i*5}s)", "info")
             # Check IRIS nginx container - it proxies to the app
             check_result = run_command(
-                "docker exec mssp_iris_nginx curl -sk --max-time 5 https://localhost:8443/ -o /dev/null -w '%{http_code}'",
+                "docker exec intact_iris_nginx curl -sk --max-time 5 https://localhost:8443/ -o /dev/null -w '%{http_code}'",
                 logger=None
             )
             if check_result['success']:
@@ -78,7 +78,7 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
             log("IRIS health check: PASSED", "success")
         else:
             # Check if containers are crash-looping
-            check_result = run_command("docker ps -a --filter name=mssp_iris --format '{{.Status}}'", logger=log)
+            check_result = run_command("docker ps -a --filter name=intact_iris --format '{{.Status}}'", logger=log)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"IRIS failed to start - container status: {container_status}")
@@ -159,7 +159,7 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
             log(f"  Checking IRIS container... ({i*5}s)", "info")
             # Check IRIS nginx container - it proxies to the app
             check_result = run_command(
-                "docker exec mssp_iris_nginx curl -sk --max-time 5 https://localhost:8443/ -o /dev/null -w '%{http_code}'",
+                "docker exec intact_iris_nginx curl -sk --max-time 5 https://localhost:8443/ -o /dev/null -w '%{http_code}'",
                 logger=None
             )
             if check_result['success']:
@@ -178,7 +178,7 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
         if healthy:
             log("IRIS health check: PASSED", "success")
         else:
-            check_result = run_command("docker ps -a --filter name=mssp_iris --format '{{.Status}}'", logger=log)
+            check_result = run_command("docker ps -a --filter name=intact_iris --format '{{.Status}}'", logger=log)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"IRIS failed to start - container status: {container_status}")

@@ -1,0 +1,338 @@
+name: Windows.Sigma.BaseEvents
+description: |
+  This artifact builds the basic set of log sources and field
+  mappings used for Event driven Sigma rules on Windows.
+
+  This artifact was built on 2026-03-03T15:14:36Z
+
+type: CLIENT_EVENT
+
+parameters:
+  - name: ROOT
+    description: The Event Log Directory we use to read all logs
+    default: C:/Windows/System32/WinEvt/Logs/
+
+  - name: Debug
+    type: bool
+    description: Enable full debug trace
+
+  - name: RuleLevel
+    type: choices
+    default: All
+    choices:
+      - "Critical"
+      - "Critical and High"
+      - "Critical, High, and Medium"
+      - "All"
+
+  - name: RuleStatus
+    type: choices
+    default: All Rules
+    choices:
+      - Stable
+      - Stable and Experimental
+      - Stable and Test
+      - All Rules
+
+  - name: RuleTitleFilter
+    type: regex
+    default: .
+    description: Use this to filter only some rules to match
+
+  - name: RuleExclusions
+    type: csv
+    description: |
+      Some rules in the Hayabusa set are extremely noisy, so they
+      are disabled by default.
+    default: |
+      RuleTitleRegex,Reason
+      noisy,All rules marked noisy should be disabled by default.
+
+  - name: SigmaRules
+    description: If provided we use these rules instead of the built in set.
+
+  - name: NTFS_CACHE_TIME
+    type: int
+    description: How often to flush the NTFS cache. (Default is 10 Min).
+    default: "600"
+
+  - name: EVTX_FREQUENCY
+    type: int
+    default: 60
+    description: |
+      How often in seconds to check for event log changes. Lower
+      number means more real time detection but potentially higher
+      CPU utilization.
+export: |
+  -- Add some defaults
+  LET X = scope()
+  LET RuleLevel <= X.RuleLevel || "All"
+  LET RuleStatus <= X.RuleStatus || "All Rules"
+  LET RuleTitleFilter <= X.RuleTitleFilter || "."
+  LET RuleExclusions <= X.RuleExclusions || NULL
+
+  LET ExcludeRegex <= if(condition=RuleExclusions,
+       then=join(array=RuleExclusions.RuleTitleRegex, sep="|"),
+       else="XXXXXXX")
+
+  LET RuleStatusRegex <= get(item=dict(
+       `Stable`="stable",
+       `Stable and Experimental`="stable|experimental",
+       `Stable and Test`="stable|test",
+       `All Rules`="."), member=RuleStatus)
+
+  LET RuleLevelRegex <= get(item=dict(
+       `Critical`="critical",
+       `Critical and High`="critical|high",
+       `Critical, High, and Medium`="critical|high|medium|default",
+       `All`="."), member=RuleLevel)
+
+  LET MandatoryLabelLookup <= dict(
+      `S-1-16-0`= 'UNTRUSTED',
+      `S-1-16-4096`= 'LOW_INTEGRITY',
+      `S-1-16-8192`= 'MEDIUM_INTEGRITY',
+      `S-1-16-8448`= 'MEDIUM_HIGH_INTEGRITY',
+      `S-1-16-12288`= 'HIGH_INTEGRITY',
+      `S-1-16-16384`= 'SYSTEM_INTEGRITY',
+      `S-1-16-20480`= 'PROTECTED_PROCESS')
+
+  LET TokenElevationTypeLookup <= dict(
+      `%%1936`= 'FULL_TOKEN',
+      `%%1937`= 'ELEVATED_TOKEN',
+      `%%1938`= 'LIMITED_TOKEN')
+  LET GetValue(OSPath) = stat(filename=OSPath, accessor="registry").Data.value
+  LET Hostname <= dict(H={ SELECT Hostname FROM info()}).H[0].Hostname
+
+  LET WindowsKernelFile_EIDLookup <= dict(
+       `10`="NameCreate", `11`="NameDelete", `12`="FileOpen",
+       `19`="Rename", `27`="RenamePath",`30`="CreateNewFile")
+
+  LET WindowsKernelFile_Keyword <= 0x1490
+
+  LET WindowsKernelProcess_EIDLookup <= dict(
+    `1`="ProcessStart", `2`="ProcessStop",
+    `5`="ImageLoad", `6`="ImageUnload")
+
+  LET WindowsKernelProcess_Keyword <= 0x50
+
+  LET WindowsKernelRegistry_EIDLookup <= dict(
+    `2`="OpenKey", `1`="CreateKey", `5`="SetValueKey",
+    `6`="DeleteValueKey", `3`="DeleteKey")
+
+  -- SetValueKey | DeleteValueKey | CreateKey | OpenKey | DeleteKey = 0x100 | 0x200 | 0x1000 | 0x2000 | 0x4000
+  LET WindowsKernelRegistry_Keyword <= 0x7300
+
+  
+  LET LogSources <= sigma_log_sources(
+  
+    `*/windows/application`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Application.evtx")
+    },
+    `*/windows/applocker`={
+     SELECT * FROM watch_evtx(accessor='file', filename=[
+       ROOT + "/Microsoft-Windows-AppLocker%4MSI and Script.evtx",
+       ROOT + "/Microsoft-Windows-AppLocker%4EXE and DLL.evtx",
+       ROOT + "/Microsoft-Windows-AppLocker%4Packaged app-Deployment.evtx",
+       ROOT + "/Microsoft-Windows-AppLocker%4Packaged app-Execution.evtx",
+     ])
+    },
+    `*/windows/appmodel-runtime`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-AppModel-Runtime%4Admin.evtx")
+    },
+    `*/windows/appxdeployment-server`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-AppxPackaging%4Operational.evtx")
+    },
+    `*/windows/appxpackaging-om`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-AppxPackaging%4Operational.evtx")
+    },
+    `*/windows/bits-client`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-Bits-Client%4Operational.evtx")
+    },
+    `*/windows/capi2`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-CAPI2/Operational")
+    },
+    `*/windows/certificateservicesclient-lifecycle-system`={
+     SELECT * FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-CertificateServicesClient-Lifecycle-System/Operational")
+    },
+    `*/windows/codeintegrity-operational`={
+     SELECT * FROM watch_evtx(accessor="file",
+        filename=ROOT + "/Microsoft-Windows-CodeIntegrity%4Operational.evtx")
+    },
+    `*/windows/diagnosis-scripted`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-Diagnosis-Scripted%4Operational.evtx")
+    },
+    `*/windows/dns-client`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-DNS Client Events%4Operational.evtx")
+    },
+    `*/windows/dns-server`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/DNS Server.evtx")
+    },
+    `*/windows/dns-server-analytic`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-DNS-Server%4Analytical.evtx")
+    },
+    `*/windows/driver-framework`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-DriverFrameworks-UserMode%4Operational.evtx")
+    },
+    `*/windows/firewall-as`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-Windows Firewall With Advanced Security%4Firewall.evtx")
+    },
+    `*/windows/ldap_debug`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-LDAP-Client%4Debug.evtx")
+    },
+    `*/windows/lsa-server`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-LSA%4Operational.evtx")
+    },
+    `*/windows/microsoft-servicebus-client`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-ServiceBus-Client.evtx")
+    },
+    `*/windows/msexchange-management`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/MSExchange Management.evtx")
+    },
+    `*/windows/ntlm`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-NTLM%4Operational.evtx")
+    },
+    `*/windows/openssh`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/OpenSSH%4Operational.evtx")
+    },
+    `*/windows/powershell`={
+     SELECT * FROM watch_evtx(accessor='file', filename=[
+        ROOT + "/Microsoft-Windows-PowerShell%4Operational.evtx",
+        ROOT + "/PowerShellCore%4Operational.evtx",
+     ])
+    },
+    `*/windows/powershell-classic`={
+     SELECT *, EventData + dict(
+        Data=EventData.Data[2],
+        HostApplication=parse_string_with_regex(
+          regex="HostApplication=([^\\r\\n]+)",
+          string=EventData.Data[2]).g1) AS EventData
+     FROM watch_evtx(accessor='file', filename=ROOT + "/Windows PowerShell.evtx")
+    },
+    `*/windows/security`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Security.evtx")
+    },
+    `*/windows/security-mitigations`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-Security-Mitigations.evtx")
+    },
+    `*/windows/shell-core`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-Shell-Core%4Operational.evtx")
+    },
+    `*/windows/smbclient-security`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-SmbClient%4Security.evtx")
+    },
+    `*/windows/sysmon`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-Sysmon%4Operational.evtx")
+    },
+    `*/windows/system`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/System.evtx")
+    },
+    `*/windows/taskscheduler`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-TaskScheduler%4Operational.evtx")
+    },
+    `*/windows/terminalservices-localsessionmanager`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-TerminalServices-LocalSessionManager%4Operational.evtx")
+    },
+    `*/windows/vhdmp`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-VHDMP%4Operational.evtx")
+    },
+    `*/windows/windefend`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-Windows Defender%4Operational.evtx")
+    },
+    `*/windows/wmi`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-WMI-Activity%4Operational.evtx")
+    },
+    `process_creation/windows/*`={
+     SELECT * FROM watch_evtx(accessor='file', filename=[
+        ROOT + "/Microsoft-Windows-Sysmon%4Operational.evtx",
+        ROOT + "/System.evtx"
+     ])
+     WHERE System.EventID.Value = 1 OR System.EventID.Value = 4688
+    },
+    `ps_classic_provider_start/windows/*`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Windows PowerShell.evtx")
+     WHERE System.EventID.Value = 600
+    },
+    `ps_classic_start/windows/*`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Windows PowerShell.evtx")
+     WHERE System.EventID.Value = 400
+    },
+    `ps_module/windows/*`={
+     SELECT * FROM watch_evtx(accessor='file', filename=[
+        ROOT + "/Microsoft-Windows-PowerShell%4Operational.evtx",
+        ROOT + "/PowerShellCore%4Operational.evtx"
+     ])
+     WHERE System.EventID.Value = 4103
+    },
+    `ps_script/windows/*`={
+     SELECT * FROM watch_evtx(accessor='file', filename=[
+        ROOT + "/Microsoft-Windows-PowerShell%4Operational.evtx",
+        ROOT + "/PowerShellCore%4Operational.evtx"
+     ])
+     WHERE System.EventID.Value = 4104
+    },
+    `registry_add/windows/*`={
+     SELECT * FROM watch_evtx(accessor='file', filename=[
+        ROOT + "/Microsoft-Windows-Sysmon%4Operational.evtx",
+        ROOT + "/Security.evtx"
+     ])
+     WHERE System.EventID.Value = 12 OR System.EventID.Value = 4657
+    },
+    `registry_event/windows/*`={
+     SELECT * FROM watch_evtx(accessor='file', filename=[
+        ROOT + "/Microsoft-Windows-Sysmon%4Operational.evtx",
+        ROOT + "/Security.evtx"
+     ])
+     WHERE System.EventID.Value IN (12, 13, 14) OR System.EventID.Value = 4657
+    },
+    `registry_set/windows/*`={
+     SELECT * FROM watch_evtx(accessor='file', filename=[
+        ROOT + "/Microsoft-Windows-Sysmon%4Operational.evtx",
+        ROOT + "/Security.evtx"
+     ])
+     WHERE System.EventID.Value = 13 OR System.EventID.Value = 4657
+    },
+    `antivirus/windows/windefend`={
+     SELECT * FROM watch_evtx(accessor='file', filename=ROOT + "/Microsoft-Windows-Windows Defender%4Operational.evtx")
+    },`velociraptor/info/*`={ SELECT * FROM info() })
+  
+
+  LET FieldMapping <= parse_json(data=gunzip(string=base64decode(string="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")))
+
+  LET DefaultDetails <= parse_json(data=gunzip(string=base64decode(string="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")))
+
+  LET DefaultDetailsLambda = '''x=>get(item=DefaultDetails,
+       member=format(format="%v/%v",
+          args=[x.System.Provider.Name, x.System.EventID.Value])
+      ) || x.Message || x.UserData || x.EventData'''
+  LET RuleFilterLambda = '''x=>x.Level =~ RuleLevelRegex AND x.Status =~ RuleStatusRegex AND x.Title =~ RuleTitleFilter AND NOT x.Title =~ ExcludeRegex'''
+sources:
+- query: |
+   LET Result = SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp,
+         System.Computer AS Computer,
+         System.Channel AS Channel,
+         System.EventID.Value AS EID,
+         _Rule.Level AS Level,
+         _Rule.Title AS Title,
+         System.EventRecordID AS RecordID,
+         Details,
+         dict(System=System,
+              EventData=X.EventData || X.UserData,
+              Message=X.Message) AS _Event,
+         *
+   FROM sigma(
+     rules=split(string= Rules, sep="\n---+\r?\n"),
+     log_sources= LogSources, debug=Debug,
+     default_details='''x=>get(item=DefaultDetails,
+       member=format(format="%v/%v",
+          args=[x.System.Provider.Name, x.System.EventID.Value])
+      ) || x.Message || x.UserData || x.EventData''',
+     rule_filter="x=>x.Level =~ RuleLevelRegex AND x.Status =~ RuleStatusRegex AND x.Title =~ RuleTitleFilter AND NOT x.Title =~ ExcludeRegex",
+     field_mapping= FieldMapping)
+
+   SELECT * FROM if(condition=Debug, then={
+     SELECT * FROM Result
+   }, else={
+     SELECT Timestamp, Computer, Channel , EID,
+            Level, Title, RecordID, Details, _Event
+     FROM Result
+   })

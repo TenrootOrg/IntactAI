@@ -22,7 +22,7 @@ def export_database():
             json_str,
             mimetype='application/json',
             headers={
-                'Content-Disposition': 'attachment; filename="mssp_db_export.json"'
+                'Content-Disposition': 'attachment; filename="intact_db_export.json"'
             }
         )
     except Exception as e:
@@ -57,7 +57,7 @@ def backup_database():
             DB_PATH,
             mimetype='application/x-sqlite3',
             as_attachment=True,
-            download_name='mssp.db'
+            download_name='intact.db'
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500

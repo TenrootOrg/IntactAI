@@ -135,7 +135,7 @@ def run_system_maintenance():
                 # Check Elasticsearch
                 try:
                     import requests
-                    es_response = requests.get("http://mssp_elasticsearch:9200/_cluster/health", timeout=5)
+                    es_response = requests.get("http://intact_elasticsearch:9200/_cluster/health", timeout=5)
                     if es_response.status_code == 200:
                         es_health = es_response.json()
                         status = es_health.get('status', 'unknown')
@@ -378,7 +378,7 @@ def run_system_purge():
             update_run_status(run_id, "running", progress=10)
 
             try:
-                db_path = "/app/data/mssp.db"
+                db_path = "/app/data/intact.db"
                 db_size_before = os.path.getsize(db_path) if os.path.exists(db_path) else 0
                 conn = sqlite3.connect(db_path)
                 c = conn.cursor()
@@ -468,14 +468,14 @@ def run_system_purge():
 
                 # Velociraptor datastore is at /var./ (configured in server.config.yaml)
                 # Measure before (exclude /var./public/ which contains forensic tools)
-                du_before = run_command("docker exec mssp_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'", logger=None)
+                du_before = run_command("docker exec intact_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'", logger=None)
                 size_before = int(du_before.get('stdout', '0').split()[0]) if du_before.get('success') else 0
                 add_log_to_run(run_id, f"  Datastore size: {fmt(size_before)}", "info")
 
                 # Delete all hunts via VQL
                 add_log_to_run(run_id, "  Deleting hunts...", "info")
                 list_result = run_command(
-                    'docker exec mssp_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
+                    'docker exec intact_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
                     '"SELECT hunt_id, state FROM hunts()"',
                     logger=None
                 )
@@ -487,7 +487,7 @@ def run_system_purge():
                             hunt_id = hunt.get('hunt_id', '')
                             if hunt_id:
                                 run_command(
-                                    f'docker exec mssp_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
+                                    f'docker exec intact_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
                                     f'"SELECT * FROM hunt_delete(hunt_id=\'{hunt_id}\', really_do_it=true)"',
                                     logger=None
                                 )
@@ -498,21 +498,21 @@ def run_system_purge():
 
                 # Clean client collection data (flows/uploads)
                 add_log_to_run(run_id, "  Cleaning client collections & uploads...", "info")
-                run_command("docker exec mssp_velociraptor sh -c 'rm -rf /var./clients/*/collections/ /var./clients/*/uploads/ 2>/dev/null; true'", logger=None)
+                run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./clients/*/collections/ /var./clients/*/uploads/ 2>/dev/null; true'", logger=None)
 
                 # Clean downloads
                 add_log_to_run(run_id, "  Cleaning downloads...", "info")
-                run_command("docker exec mssp_velociraptor sh -c 'rm -rf /var./downloads/* 2>/dev/null; true'", logger=None)
+                run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./downloads/* 2>/dev/null; true'", logger=None)
 
                 # Clean notebooks
                 add_log_to_run(run_id, "  Cleaning notebooks...", "info")
-                run_command("docker exec mssp_velociraptor sh -c 'rm -rf /var./notebooks/* 2>/dev/null; true'", logger=None)
+                run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./notebooks/* 2>/dev/null; true'", logger=None)
 
                 # Clean server artifact logs and server artifacts
-                run_command("docker exec mssp_velociraptor sh -c 'rm -rf /var./server_artifact_logs/* /var./server_artifacts/* 2>/dev/null; true'", logger=None)
+                run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./server_artifact_logs/* /var./server_artifacts/* 2>/dev/null; true'", logger=None)
 
                 # Measure after (exclude /var./public/ which contains forensic tools)
-                du_after = run_command("docker exec mssp_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'", logger=None)
+                du_after = run_command("docker exec intact_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'", logger=None)
                 size_after = int(du_after.get('stdout', '0').split()[0]) if du_after.get('success') else 0
                 freed = max(0, size_before - size_after)
                 total_freed += freed
@@ -529,7 +529,7 @@ def run_system_purge():
             try:
                 import requests as req
                 # Get size before
-                es_resp = req.get("http://mssp_elasticsearch:9200/_cat/indices?h=index,store.size&bytes=b", timeout=5)
+                es_resp = req.get("http://intact_elasticsearch:9200/_cat/indices?h=index,store.size&bytes=b", timeout=5)
                 es_size_before = 0
                 es_index_count = 0
                 if es_resp.status_code == 200:
@@ -547,7 +547,7 @@ def run_system_purge():
                     for line in es_resp.text.strip().split('\n'):
                         parts = line.split()
                         if len(parts) >= 2 and parts[0].startswith('artifact_'):
-                            del_resp = req.delete(f"http://mssp_elasticsearch:9200/{parts[0]}", timeout=10)
+                            del_resp = req.delete(f"http://intact_elasticsearch:9200/{parts[0]}", timeout=10)
                             if del_resp.status_code == 200:
                                 deleted += 1
                     add_log_to_run(run_id, f"  Deleted {deleted}/{es_index_count} indices", "info")
@@ -566,7 +566,7 @@ def run_system_purge():
             try:
                 # Get OpenSearch size before (exclude system indices starting with .)
                 os_resp = run_command(
-                    "docker exec mssp_timesketch_opensearch curl -s 'http://localhost:9200/_cat/indices?h=index,store.size&bytes=b'",
+                    "docker exec intact_timesketch_opensearch curl -s 'http://localhost:9200/_cat/indices?h=index,store.size&bytes=b'",
                     logger=None
                 )
                 os_size_before = 0
@@ -586,12 +586,12 @@ def run_system_purge():
                 if os_index_count > 0:
                     # Delete timeline indices from OpenSearch
                     run_command(
-                        "docker exec mssp_timesketch_opensearch curl -s -X DELETE 'http://localhost:9200/*,-.*'",
+                        "docker exec intact_timesketch_opensearch curl -s -X DELETE 'http://localhost:9200/*,-.*'",
                         logger=None
                     )
                     # Clear PostgreSQL timeline data
                     run_command(
-                        "docker exec mssp_timesketch_postgres psql -U timesketch -d timesketch -c 'DELETE FROM timeline; DELETE FROM searchindex;'",
+                        "docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c 'DELETE FROM timeline; DELETE FROM searchindex;'",
                         logger=None
                     )
                     add_log_to_run(run_id, f"  Deleted {os_index_count} indices and cleared timeline database", "info")

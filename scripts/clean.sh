@@ -1,8 +1,8 @@
 #!/bin/bash
 # ============================================================================
-# MSSP Clean/Uninstall Script
+# Intact.AI Clean/Uninstall Script
 # ============================================================================
-# Removes all MSSP containers, volumes, networks, and optionally data.
+# Removes all Intact.AI containers, volumes, networks, and optionally data.
 # Use with caution - this is destructive!
 #
 # Usage: sudo bash scripts/clean.sh [options]
@@ -34,9 +34,9 @@ check_root() {
     fi
 }
 
-# Stop all MSSP containers
+# Stop all Intact.AI containers
 stop_containers() {
-    log_info "Stopping all MSSP containers..."
+    log_info "Stopping all Intact.AI containers..."
 
     local modules=("elk" "timesketch" "velociraptor" "iris" "portainer" "backend" "nginx")
 
@@ -52,24 +52,24 @@ stop_containers() {
     log_success "All containers stopped"
 }
 
-# Remove all MSSP containers
+# Remove all Intact.AI containers
 remove_containers() {
-    log_info "Removing all MSSP containers..."
+    log_info "Removing all Intact.AI containers..."
 
     # Remove by name pattern
-    local containers=$(docker ps -a --filter "name=mssp_" --filter "name=velociraptor" --filter "name=iriswebapp" --filter "name=portainer" -q 2>/dev/null)
+    local containers=$(docker ps -a --filter "name=intact_" --filter "name=velociraptor" --filter "name=iriswebapp" --filter "name=portainer" -q 2>/dev/null)
 
     if [[ -n "$containers" ]]; then
         docker rm -f $containers 2>/dev/null || true
         log_success "Containers removed"
     else
-        log_info "  No MSSP containers found"
+        log_info "  No Intact.AI containers found"
     fi
 }
 
-# Remove all MSSP volumes
+# Remove all Intact.AI volumes
 remove_volumes() {
-    log_info "Removing all MSSP Docker volumes..."
+    log_info "Removing all Intact.AI Docker volumes..."
 
     # List of volume prefixes to remove
     local volume_patterns=(
@@ -80,7 +80,7 @@ remove_volumes() {
         "portainer_"
         "backend_"
         "nginx_"
-        "mssp_"
+        "intact_"
     )
 
     local removed=0
@@ -96,29 +96,29 @@ remove_volumes() {
     if [[ $removed -gt 0 ]]; then
         log_success "Removed $removed volumes"
     else
-        log_info "  No MSSP volumes found"
+        log_info "  No Intact.AI volumes found"
     fi
 }
 
-# Remove MSSP network
+# Remove Intact.AI network
 remove_network() {
-    log_info "Removing MSSP network..."
+    log_info "Removing Intact.AI network..."
 
-    if docker network inspect mssp_network &>/dev/null; then
-        docker network rm mssp_network 2>/dev/null || true
+    if docker network inspect intact_network &>/dev/null; then
+        docker network rm intact_network 2>/dev/null || true
         log_success "Network removed"
     else
         log_info "  Network not found"
     fi
 }
 
-# Remove MSSP images
+# Remove Intact.AI images
 remove_images() {
-    log_info "Removing MSSP Docker images..."
+    log_info "Removing Intact.AI Docker images..."
 
     local image_patterns=(
         "velociraptor-server"
-        "mssp_"
+        "intact_"
         "mssp-"
     )
 
@@ -135,7 +135,7 @@ remove_images() {
     if [[ $removed -gt 0 ]]; then
         log_success "Removed $removed images"
     else
-        log_info "  No MSSP images found"
+        log_info "  No Intact.AI images found"
     fi
 }
 
@@ -180,10 +180,10 @@ remove_logs() {
 # Full cleanup
 clean_all() {
     echo ""
-    log_warn "This will remove ALL MSSP components:"
+    log_warn "This will remove ALL Intact.AI components:"
     echo "  - All containers"
     echo "  - All Docker volumes (DATA WILL BE LOST)"
-    echo "  - MSSP network"
+    echo "  - Intact.AI network"
     echo "  - Docker images"
     echo "  - Client installers"
     echo "  - Log files"
@@ -210,7 +210,7 @@ clean_all() {
 
     echo ""
     log_success "=============================================="
-    log_success "  MSSP cleanup completed"
+    log_success "  Intact.AI cleanup completed"
     log_success "=============================================="
     echo ""
     echo "To reinstall, run: sudo bash install.sh"
@@ -227,7 +227,7 @@ clean_containers_only() {
 
 # Show usage
 show_usage() {
-    echo "MSSP Clean/Uninstall Script"
+    echo "Intact.AI Clean/Uninstall Script"
     echo ""
     echo "Usage: sudo bash scripts/clean.sh [options]"
     echo ""
@@ -252,7 +252,7 @@ show_usage() {
 interactive_mode() {
     echo ""
     echo "=============================================="
-    echo "       MSSP Clean/Uninstall Script"
+    echo "       Intact.AI Clean/Uninstall Script"
     echo "=============================================="
     echo ""
     echo "What would you like to remove?"

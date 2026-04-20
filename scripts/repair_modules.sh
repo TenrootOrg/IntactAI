@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# MSSP Module Repair Script
+# Intact.AI Module Repair Script
 # ============================================================================
 # Checks for failed/missing modules and attempts to repair them.
 #
@@ -80,11 +80,11 @@ repair_module() {
     case $module in
         elk)
             module_dir="${SCRIPT_DIR}/modules/elk"
-            container_prefix="mssp_elasticsearch\|mssp_kibana\|mssp_logstash"
+            container_prefix="intact_elasticsearch\|intact_kibana\|intact_logstash"
             ;;
         timesketch)
             module_dir="${SCRIPT_DIR}/modules/timesketch"
-            container_prefix="mssp_timesketch"
+            container_prefix="intact_timesketch"
             ;;
         velociraptor)
             module_dir="${SCRIPT_DIR}/modules/velociraptor"
@@ -100,11 +100,11 @@ repair_module() {
             ;;
         backend)
             module_dir="${SCRIPT_DIR}/modules/backend"
-            container_prefix="mssp_backend"
+            container_prefix="intact_backend"
             ;;
         nginx)
             module_dir="${SCRIPT_DIR}/modules/nginx"
-            container_prefix="mssp_nginx"
+            container_prefix="intact_nginx"
             ;;
         *)
             log_error "Unknown module: $module"
@@ -145,12 +145,12 @@ repair_module() {
 check_all_modules() {
     echo ""
     echo "=============================================="
-    echo "          MSSP Module Status Check"
+    echo "          Intact.AI Module Status Check"
     echo "=============================================="
     echo ""
 
     local modules=("elk" "timesketch" "velociraptor" "iris" "portainer" "backend" "nginx")
-    local prefixes=("mssp_elasticsearch" "mssp_timesketch" "velociraptor" "iriswebapp" "portainer" "mssp_backend" "mssp_nginx")
+    local prefixes=("intact_elasticsearch" "intact_timesketch" "velociraptor" "iriswebapp" "portainer" "intact_backend" "intact_nginx")
     local failed_modules=()
 
     for i in "${!modules[@]}"; do
@@ -234,7 +234,7 @@ repair_failed_modules() {
 
 # Show usage
 show_usage() {
-    echo "MSSP Module Repair Script"
+    echo "Intact.AI Module Repair Script"
     echo ""
     echo "Usage:"
     echo "  sudo bash scripts/repair_modules.sh              # Check module status"

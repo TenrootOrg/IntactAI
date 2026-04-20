@@ -75,7 +75,7 @@ echo "Generating API config for backend..."
 if [ -f api.config.yaml ] && [ -s api.config.yaml ]; then
     # Check if it's a valid config file (not an error message)
     if grep -q "api_connection_string" api.config.yaml 2>/dev/null; then
-        sed -i 's/api_connection_string: .*/api_connection_string: mssp_velociraptor:8001/' api.config.yaml
+        sed -i 's/api_connection_string: .*/api_connection_string: intact_velociraptor:8001/' api.config.yaml
         echo "API config generated successfully at api.config.yaml"
     fi
 fi

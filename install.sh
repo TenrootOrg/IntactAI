@@ -1,8 +1,8 @@
 #!/bin/bash
-# MSSP Platform Installer
+# Intact.AI Platform Installer
 # For Ubuntu 24.04
 #
-# This script installs and configures the MSSP platform.
+# This script installs and configures the Intact.AI platform.
 #
 # Usage: sudo bash install.sh
 
@@ -33,13 +33,13 @@ source "${SCRIPT_DIR}/lib/health.sh"
 main() {
     echo ""
     echo "=============================================="
-    echo "       MSSP Platform Installer"
+    echo "       Intact.AI Platform Installer"
     echo "=============================================="
     echo ""
     echo "Log file: $LOG_FILE"
     echo ""
 
-    log_info "Starting MSSP installation..."
+    log_info "Starting Intact.AI installation..."
 
     # -------------------------------------------------------------------------
     # Prerequisites

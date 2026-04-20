@@ -3,7 +3,7 @@
 
 services:
   nginx:
-    container_name: mssp_nginx
+    container_name: intact_nginx
     image: nginx:${NGINX_VERSION:-alpine}
     volumes:
       - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
@@ -16,7 +16,7 @@ services:
       - "443:443"
     restart: unless-stopped
     networks:
-      - mssp_network
+      - intact_network
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/"]
       interval: 30s
@@ -25,5 +25,5 @@ services:
       start_period: 10s
 
 networks:
-  mssp_network:
+  intact_network:
     external: true

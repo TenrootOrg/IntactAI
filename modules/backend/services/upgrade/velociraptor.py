@@ -60,7 +60,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
     work_dir = os.path.join(WORKDIR, 'modules', 'velociraptor')
     velo_data = os.path.join(work_dir, 'velociraptor')
     env_file = os.path.join(work_dir, '.env')
-    container_name = 'mssp_velociraptor'
+    container_name = 'intact_velociraptor'
 
     log("Starting Velociraptor upgrade...", "info")
 
@@ -188,7 +188,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
             time.sleep(2)
 
         if not healthy:
-            check_result = run_command("docker ps -a --filter name=mssp_velociraptor --format '{{.Status}}'", logger=None)
+            check_result = run_command("docker ps -a --filter name=intact_velociraptor --format '{{.Status}}'", logger=None)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"Velociraptor failed to start - container status: {container_status}")
@@ -238,7 +238,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
     work_dir = os.path.join(WORKDIR, 'modules', 'velociraptor')
     velo_data = os.path.join(work_dir, 'velociraptor')
     env_file = os.path.join(work_dir, '.env')
-    container_name = 'mssp_velociraptor'
+    container_name = 'intact_velociraptor'
     binaries_dir = os.path.join(package_dir, 'binaries')
 
     log("Starting Velociraptor offline upgrade...", "info")
@@ -404,7 +404,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
             time.sleep(2)
 
         if not healthy:
-            check_result = run_command("docker ps -a --filter name=mssp_velociraptor --format '{{.Status}}'", logger=None)
+            check_result = run_command("docker ps -a --filter name=intact_velociraptor --format '{{.Status}}'", logger=None)
             container_status = check_result.get('stdout', '').strip()
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"Velociraptor failed to start - container status: {container_status}")

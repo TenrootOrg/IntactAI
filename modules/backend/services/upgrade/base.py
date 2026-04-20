@@ -13,8 +13,8 @@ import tarfile
 from typing import Dict, Callable, Optional
 
 # Base paths
-WORKDIR = os.environ.get('MSSP_PATH', '/app/workdir')
-HOST_PATH = os.environ.get('MSSP_HOST_PATH', WORKDIR)
+WORKDIR = os.environ.get('INTACT_PATH', '/app/workdir')
+HOST_PATH = os.environ.get('INTACT_HOST_PATH', WORKDIR)
 MODULES_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -201,7 +201,7 @@ def get_current_versions() -> Dict:
         'env_file': velo_env
     }
 
-    # RISX Platform - use git describe or fallback
+    # Intact.AI Platform - use git describe or fallback
     try:
         result = subprocess.run(
             ['git', 'describe', '--tags', '--always'],
@@ -209,10 +209,10 @@ def get_current_versions() -> Dict:
             capture_output=True,
             text=True
         )
-        risx_version = result.stdout.strip() if result.returncode == 0 else 'unknown'
+        intact_version = result.stdout.strip() if result.returncode == 0 else 'unknown'
     except:
-        risx_version = 'unknown'
-    versions['risx'] = {'current': risx_version}
+        intact_version = 'unknown'
+    versions['intact'] = {'current': intact_version}
 
     return versions
 
@@ -228,7 +228,7 @@ def get_latest_versions() -> Dict:
         'plaso': '20260119',
         'iris': 'v2.4.27',
         'velociraptor': '0.75.6',
-        'risx': '1.0.0',
+        'intact': '1.0.0',
     }
 
 

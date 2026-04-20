@@ -213,7 +213,7 @@ def collect_unified_audit_log(
 
     # Use Get-UnifiedAuditLogPurview which uses the modern Graph Audit Log Query API
     # (requires AuditLogsQuery.Read.All permission - no Exchange Online needed!)
-    session_name = f"mssp_session_{timestamp}"
+    session_name = f"intact_session_{timestamp}"
     log_file = f"/mnt/host/output/{session_name}.log"
     output_file = f"/mnt/host/output/{session_name}.json"
 

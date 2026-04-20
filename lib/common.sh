@@ -1,5 +1,5 @@
 #!/bin/bash
-# MSSP Platform Installer - Common Functions
+# Intact.AI Platform Installer - Common Functions
 # Logging, tracking, and utility functions
 
 # Colors for output
@@ -171,7 +171,7 @@ check_network_connectivity() {
 check_initialization_marker() {
     local marker="/etc/mssp-initialized"
     if [[ -f "$marker" ]]; then
-        log_warn "MSSP was previously initialized on this system"
+        log_warn "Intact.AI was previously initialized on this system"
         cat "$marker"
         echo ""
         read -p "Re-initialize? This will reconfigure services. (y/N): " confirm
@@ -185,7 +185,7 @@ check_initialization_marker() {
 create_initialization_marker() {
     local marker="/etc/mssp-initialized"
     local domain=$(read_config "['domain']")
-    echo "MSSP Platform initialized on $(date)" > "$marker"
+    echo "Intact.AI Platform initialized on $(date)" > "$marker"
     echo "Domain: $domain" >> "$marker"
     log_info "Created initialization marker: $marker"
 }

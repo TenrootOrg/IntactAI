@@ -1,0 +1,834 @@
+name: Windows.KapeFiles.Targets
+description: |
+  A backwards compatibility stub for Windows.Triage.Targets
+
+  NOTE: This artifact is Deprecated and had been replaced by
+  Windows.Triage.Targets. See that for detailed description.
+
+  Commit 0ead1ac on 2026-03-01T01:11:36Z
+
+parameters:
+  - name: HighLevelTargets
+    description: A shorter list of Meta-Targets
+    type: multichoice
+    default: "[]"
+    choices:
+    - _BasicCollection
+    - _KapeTriage
+    - _Live
+    - _SANS_Triage
+
+  - name: Targets
+    type: multichoice
+    description: All targets available
+    default: "[]"
+    choices:
+    - _BasicCollection
+    - _KapeTriage
+    - _Live
+    - _SANS_Triage
+    - 1Password
+    - 360SecureBrowser
+    - 4KVideoDownloader
+    - AVG
+    - AceText
+    - AcronisTrueImage
+    - Action1
+    - ActiveDirectoryNTDS
+    - ActiveDirectorySysvol
+    - AdaptiveScheduledTasks
+    - AdaptiveServices
+    - AdvancedIPScanner
+    - AdvancedPortScanner
+    - AgentRansack
+    - Amcache
+    - Ammyy
+    - Antivirus
+    - AnyDesk
+    - ApacheAccessLog
+    - AppCompatPCA
+    - AppData
+    - AppXPackages
+    - ApplicationEvents
+    - Arc
+    - AsperaConnect
+    - AteraAgent
+    - Avast
+    - AviraAVLogs
+    - BCD
+    - BITS
+    - BitTorrent
+    - Bitdefender
+    - Bitmap
+    - Boot
+    - BoxDrive_Metadata
+    - BoxDrive_UserFiles
+    - BraveBrowser
+    - BrowserCache
+    - CapabilityAccessManager
+    - CertUtil
+    - ChatGPT
+    - Chrome
+    - ChromeBeta
+    - ChromeDev
+    - ChromeExtension_Metadata
+    - ChromeExtensions
+    - ChromeFileSystem
+    - ChromeSxS
+    - Chromium
+    - CiscoJabber
+    - ClipboardMaster
+    - CloudStorage_All
+    - CloudStorage_Metadata
+    - CloudStorage_OneDriveExplorer
+    - CocCoc
+    - CombinedLogs
+    - Combofix
+    - ConfluenceLogs
+    - CrowdStrikeFalcon
+    - Cybereason
+    - Cylance
+    - DC_
+    - DWAgent
+    - Debian
+    - DirectoryOpus
+    - DirectoryTraversal_AudioFiles
+    - DirectoryTraversal_ExcelDocuments
+    - DirectoryTraversal_PDFDocuments
+    - DirectoryTraversal_PictureFiles
+    - DirectoryTraversal_SQLiteDatabases
+    - DirectoryTraversal_VideoFiles
+    - DirectoryTraversal_WildCardExample
+    - DirectoryTraversal_WordDocuments
+    - Discord
+    - DoubleCommander
+    - Drivers
+    - Dropbox_Metadata
+    - Dropbox_UserFiles
+    - EFCommander
+    - ESET
+    - Edge
+    - EdgeBetaChromium
+    - EdgeChromium
+    - EdgeChromiumExtensions
+    - EdgeDevChromium
+    - EdgeFileSystem
+    - EdgeSxSChromium
+    - Emsisoft
+    - EncapsulationLogging
+    - EventLogs
+    - EventLogs_RDP
+    - EventTraceLogs
+    - EventTranscriptDB
+    - Evernote
+    - Everything_VoidTools_
+    - EvidenceOfExecution
+    - Exchange
+    - ExchangeClientAccess
+    - ExchangeCve_2021_26855
+    - ExchangeSetupLog
+    - ExchangeTransport
+    - FSecure
+    - FTPClients
+    - FastStoneImageViewer
+    - Fences
+    - FileExplorerReplacements
+    - FileSystem
+    - FileZillaClient
+    - FileZillaServer
+    - Firefox
+    - FortiClientVPN
+    - FreeCommander
+    - FreeDownloadManager
+    - FreeFileSync
+    - Freenet
+    - FrostWire
+    - Gigatribe
+    - GoogleDrive_Metadata
+    - GoogleDriveBackupSync_UserFiles
+    - GoogleEarth
+    - GroupPolicy
+    - HeidiSQL
+    - HexChat
+    - HitmanPro
+    - HostsFile
+    - IDrive
+    - IISConfiguration
+    - IISLogFiles
+    - IRCClients
+    - ISLOnline
+    - ITarian
+    - IceChat
+    - IconCacheDB
+    - ImgBurn
+    - InternetExplorer
+    - IrfanView
+    - J
+    - JDownloader2
+    - JavaWebCache
+    - JumpLists
+    - Kali
+    - KapeTriage
+    - Kaseya
+    - Keepass
+    - KeepassXC
+    - LNKFilesAndJumpLists
+    - Level
+    - LinuxOnWindowsProfileFiles
+    - LiveUserFiles
+    - LnkTargets
+    - LogFile
+    - LogFiles
+    - LogMeIn
+    - MFT
+    - MFTMirr
+    - MOF
+    - MSSQLErrorLog
+    - MacriumReflect
+    - Malwarebytes
+    - ManageEngineLogs
+    - Mattermost
+    - McAfee
+    - McAfee_ePO
+    - MediaMonkey
+    - Megasync
+    - MemoryFiles
+    - MeshAgent
+    - MessagingClients
+    - MicrosoftAzureCopy
+    - MicrosoftOfficeBackstage
+    - MicrosoftOneNote
+    - MicrosoftSafetyScanner
+    - MicrosoftStickyNotes
+    - MicrosoftTeams
+    - MicrosoftToDo
+    - MidnightCommander
+    - MiniTimelineCollection
+    - MobaXTerm
+    - MongoDBLogs
+    - MouseWithoutBorders
+    - MstyDatabase
+    - MultiCommander
+    - NETCLRUsageLogs
+    - NGINXLogs
+    - NZBGet
+    - Nessus
+    - NetMonitorforEmployeesProfessional
+    - Netstat
+    - NetworkScanner
+    - NewsbinPro
+    - Newsleecher
+    - Nicotine_
+    - Notepad
+    - Notepad_
+    - Notion
+    - OfficeAutosave
+    - OfficeDiagnostics
+    - OfficeDocumentCache
+    - OneCommander
+    - OneDrive_Metadata
+    - OneDrive_UserFiles
+    - OpenSSHClient
+    - OpenSSHServer
+    - OpenVPNClient
+    - Opera
+    - OutlookPSTOST
+    - P2PClients
+    - PDQDeploy
+    - PaloAlto
+    - PeaZip
+    - PerfLogs
+    - PowerShell7Config
+    - PowerShellConsole
+    - PowerShellTranscripts
+    - Prefetch
+    - PrefetchBinaries
+    - PrismaAccessBrowser
+    - ProgramData
+    - ProgramExecution
+    - ProtonVPN
+    - PsList
+    - PuffinSecureBrowser
+    - PulseSecure
+    - PushNotification
+    - Q_Dir
+    - QFinderPro_QNAP_
+    - QQBrowser
+    - QlikSense
+    - QuickAssist
+    - RDCMan
+    - RDPCache
+    - RDPJumplist
+    - RDPLogs
+    - Radmin
+    - RcloneConf
+    - RecentFileCache
+    - RecentFolders
+    - RecycleBin
+    - RecycleBin_DataFiles
+    - RecycleBin_InfoFiles
+    - RegistryHives
+    - RegistryHivesMSIXApps
+    - RegistryHivesOther
+    - RegistryHivesSystem
+    - RegistryHivesUser
+    - Remcos
+    - RemoteAdmin
+    - RemoteDesktopManager
+    - RemoteUtilities_app
+    - RoamingProfile
+    - Robo_FTP
+    - RogueKiller
+    - RustDesk
+    - SABnbzd
+    - SCCMClientLogs
+    - SDB
+    - SDS
+    - SOFELK
+    - SQLiteDatabases
+    - SRUM
+    - SUM
+    - SUPERAntiSpyware
+    - SUSELinuxEnterpriseServer
+    - ScheduledTasks
+    - ScreenConnect
+    - SecureAge
+    - SentinelOne
+    - ServerTriage
+    - Session
+    - ShareX
+    - Shareaza
+    - SiemensTIA
+    - Signal
+    - SignatureCatalog
+    - SimpleHelp
+    - Skype
+    - Slack
+    - Snagit
+    - SnipAndSketch
+    - SnippingTool
+    - SoftPerfectNetscan
+    - Sophos
+    - Soulseek
+    - SpeedCommander
+    - Splashtop
+    - StartupFolders
+    - StartupInfo
+    - Steam
+    - SublimeText
+    - SugarSync
+    - SumatraPDF
+    - Supermium
+    - SupremoRemoteDesktop
+    - Symantec_AV_Logs
+    - Syncthing
+    - Syscache
+    - T
+    - TablacusExplorer
+    - TeamViewerLogs
+    - Telegram
+    - TeraCopy
+    - ThumbCache
+    - Thunderbird
+    - TorrentClients
+    - Torrents
+    - TotalAV
+    - TotalCommander
+    - TreeSize
+    - TrendMicro
+    - UCBrowser
+    - UEMS
+    - USBDetective
+    - USBDevicesLogs
+    - Ubuntu
+    - Ultraviewer
+    - Usenet
+    - UsenetClients
+    - UsersFolders
+    - VIPRE
+    - VLC_Media_Player
+    - VMware
+    - VMwareInventory
+    - VMwareMemory
+    - VNCLogs
+    - VPNClients
+    - Viber
+    - VirtualBox
+    - VirtualBoxConfig
+    - VirtualBoxLogs
+    - VirtualBoxMemory
+    - VirtualDisks
+    - VisualStudioCode
+    - Vivaldi
+    - WBEM
+    - WER
+    - WSL
+    - WaveBrowser
+    - WebBrowsers
+    - WebServers
+    - Webroot
+    - WhatsApp
+    - WhatsApp_Media
+    - WinDefendDetectionHist
+    - WinSCP
+    - WindowsApp
+    - WindowsCopilotRecall
+    - WindowsDefender
+    - WindowsFirewall
+    - WindowsHello
+    - WindowsIndexSearch
+    - WindowsNetwork
+    - WindowsNotificationsDB
+    - WindowsOSUpgradeArtifacts
+    - WindowsPowerDiagnostics
+    - WindowsServerDNSAndDHCP
+    - WindowsSubsystemforAndroid
+    - WindowsTelemetryDiagnosticsLegacy
+    - WindowsTimeline
+    - WindowsUpdate
+    - WindowsYourPhone
+    - XPRestorePoints
+    - XYplorer
+    - Xeox
+    - Yandex
+    - ZScaler
+    - ZohoAssist
+    - Zoom
+    - eMule
+    - iTunesBackup
+    - mIRC
+    - mRemoteNG
+    - openSUSE
+    - pCloudDatabase
+    - qBittorrent
+    - uTorrent
+
+  - name: Devices
+    type: json_array
+    description: |
+      Name of the drive letter to search. You can add multiple drives
+      separated with a comma.
+    default: '["C:"]'
+
+  - name: CollectionPolicy
+    type: choices
+    choices:
+      - ExcludeSigned
+      - HashOnly
+      - AllFiles
+    default: ExcludeSigned
+
+  - name: DropVerySlowRules
+    type: bool
+    default: Y
+    description: Ignore inefficient targets
+
+  - name: TrustedPathRegex
+    type: regex
+    default: ^C:\\\\Windows\\\\
+    description: |
+      Do not hash or upload any adaptive files matching this regex.
+
+  - name: MaxFileSize
+    type: int
+    description: |
+      The max size in bytes of the individual files to collect
+      (Default 100Mb).
+
+  - name: MaxHashSize
+    type: int
+    default: "100000000"
+    description: |
+      The max size in bytes of the individual files to hash.
+
+  - name: UPLOAD_IS_RESUMABLE
+    type: bool
+    default: Y
+    description: |
+      If set the uploads can be resumed if the flow times out or
+      errors.
+
+  - name: VSS_MAX_AGE_DAYS
+    type: int
+    default: 0
+    description: |
+      If larger than zero we analyze VSS within this many days
+      ago. (e.g 7 will analyze all VSS within the last week).  Note
+      that when using VSS analysis we have to use the ntfs accessor
+      for everything which will be much slower.
+
+  - name: Verbose
+    type: bool
+    description: |
+      Add Verbose debugging logs
+
+  - name: WORKERS
+    type: int
+    default: "5"
+    description: |
+      Number of concurrent workers to use for parsing and compressing.
+
+  - name: SlowGlobRegex
+    type: hidden
+    default: "^\\*\\*"
+    description: A regex to eliminate slow globs.
+
+imports:
+  - Windows.Triage.Targets
+
+sources:
+- name: SearchGlobs
+  notebook:
+    - type: none
+  query: |
+
+    // Work around bug in the artifact compiler failing to detect deps in export section
+
+    LET _ = SELECT * FROM Artifact.Windows.Forensics.Lnk()
+
+    LET _ = SELECT * FROM Artifact.Windows.Forensics.Prefetch()
+
+    LET _ = SELECT * FROM Artifact.Windows.System.Services()
+
+    LET _ = SELECT * FROM Artifact.Windows.System.TaskScheduler()
+
+
+    LET Targets <= to_dict(item={
+      SELECT _value AS _key, TRUE AS _value
+      FROM foreach(row=Targets + HighLevelTargets)
+    })
+
+    LET AllCollections <= Collections(Targets=Targets)
+
+    LET GlobLookup <= memoize(query=AllCollections, key="Glob")
+
+    LET _ <= MaxFileSize > 0 && MaybeLOG(
+      Message="Limiting file acquisition to MaxFileSize %v bytes (%v)",
+      Args=[MaxFileSize, humanize(bytes=MaxFileSize)])
+
+    SELECT * FROM AllCollections
+    --WHERE Glob
+
+- name: All Matches Metadata
+  query: |
+    LET GlobLookup <= memoize(query=AllCollections, key="Glob")
+    LET NTFSGlobs = SELECT * FROM AllCollections
+       WHERE Glob AND Glob =~ "[:$]" AND NOT Glob =~ "\\$Recycle.Bin"
+    LET AutoGlobs = SELECT * FROM AllCollections
+       WHERE Glob AND ( Glob =~ "\\$Recycle.Bin" OR NOT Glob =~ "[:$]" )
+
+    LET _ <= MaxFileSize > 0 && MaybeLOG(
+      Message="Limiting file acquisition to MaxFileSize %v bytes (%v)",
+      Args=[MaxFileSize, humanize(bytes=MaxFileSize)])
+
+    LET PreferredAccessor <= if(
+       condition=VSS_MAX_AGE_DAYS > 0,
+       then="ntfs_vss", else="auto")
+
+    LET AllGlobs = SELECT *
+    FROM foreach(row={
+        SELECT _value AS Device FROM foreach(row=Devices)
+    }, query={
+      SELECT * FROM chain(
+      GlobNTFS={
+        SELECT *,
+               get(item=GlobLookup, field=Globs[0]).Rule AS Rule,
+               "ntfs" AS Accessor,
+               dict(Globs=Globs) AS Data,
+               "Glob" AS Type
+        FROM glob(globs=NTFSGlobs.Glob, accessor="ntfs", root=Device)
+      },
+      GlobAuto={
+        SELECT *,
+               get(item=GlobLookup, field=Globs[0]).Rule AS Rule,
+               PreferredAccessor AS Accessor,
+               dict(Globs=Globs) AS Data,
+               "Glob" AS Type
+        FROM glob(globs=AutoGlobs.Glob,
+                  accessor=PreferredAccessor,
+                  root=Device)
+      })
+    })
+    WHERE NOT IsDir
+
+    LET AllResults <= SELECT Type,
+                             OSPath AS SourceFile,
+                             Size,
+                             Btime AS Created,
+                             Ctime AS Changed,
+                             Mtime AS Modified,
+                             Atime AS LastAccessed,
+                             Accessor,
+                             Data
+    FROM chain(async=WORKERS > 0,
+      AdaptiveScheduledTasks_Commands={
+        SELECT * FROM if(condition={
+          SELECT * FROM AllCollections
+          WHERE Rule = "AdaptiveScheduledTasks/Commands"
+            AND MaybeLOG(
+              Message="Collecting Custom VQL Rule %s",
+              Args="AdaptiveScheduledTasks/Commands")
+        }, then={
+          SELECT "AdaptiveScheduledTasks/Commands" AS Type,
+                 "AdaptiveScheduledTasks/Commands" AS Rule,
+                 *
+          FROM CollectAdaptiveScheduledTasks_Commands
+        })
+      },AdaptiveServices_Executables={
+        SELECT * FROM if(condition={
+          SELECT * FROM AllCollections
+          WHERE Rule = "AdaptiveServices/Executables"
+            AND MaybeLOG(
+              Message="Collecting Custom VQL Rule %s",
+              Args="AdaptiveServices/Executables")
+        }, then={
+          SELECT "AdaptiveServices/Executables" AS Type,
+                 "AdaptiveServices/Executables" AS Rule,
+                 *
+          FROM CollectAdaptiveServices_Executables
+        })
+      },LnkTargets_Targets={
+        SELECT * FROM if(condition={
+          SELECT * FROM AllCollections
+          WHERE Rule = "LnkTargets/Targets"
+            AND MaybeLOG(
+              Message="Collecting Custom VQL Rule %s",
+              Args="LnkTargets/Targets")
+        }, then={
+          SELECT "LnkTargets/Targets" AS Type,
+                 "LnkTargets/Targets" AS Rule,
+                 *
+          FROM CollectLnkTargets_Targets
+        })
+      },Netstat_NetstatEnriched={
+        SELECT * FROM if(condition={
+          SELECT * FROM AllCollections
+          WHERE Rule = "Netstat/NetstatEnriched"
+            AND MaybeLOG(
+              Message="Collecting Custom VQL Rule %s",
+              Args="Netstat/NetstatEnriched")
+        }, then={
+          SELECT "Netstat/NetstatEnriched" AS Type,
+                 "Netstat/NetstatEnriched" AS Rule,
+                 *
+          FROM CollectNetstat_NetstatEnriched
+        })
+      },PrefetchBinaries_Executables={
+        SELECT * FROM if(condition={
+          SELECT * FROM AllCollections
+          WHERE Rule = "PrefetchBinaries/Executables"
+            AND MaybeLOG(
+              Message="Collecting Custom VQL Rule %s",
+              Args="PrefetchBinaries/Executables")
+        }, then={
+          SELECT "PrefetchBinaries/Executables" AS Type,
+                 "PrefetchBinaries/Executables" AS Rule,
+                 *
+          FROM CollectPrefetchBinaries_Executables
+        })
+      },PsList_From_Pslist={
+        SELECT * FROM if(condition={
+          SELECT * FROM AllCollections
+          WHERE Rule = "PsList/From_Pslist"
+            AND MaybeLOG(
+              Message="Collecting Custom VQL Rule %s",
+              Args="PsList/From_Pslist")
+        }, then={
+          SELECT "PsList/From_Pslist" AS Type,
+                 "PsList/From_Pslist" AS Rule,
+                 *
+          FROM CollectPsList_From_Pslist
+        })
+      },
+      Globs=AllGlobs
+    )
+    WHERE log(level="INFO", message="Found %v for rule %v", args=[
+              SourceFile, Rule], dedup=10)
+
+    SELECT * FROM AllResults
+
+
+- name: AdaptiveScheduledTasks_Commands
+  notebook:
+    - type: none
+  query: |
+    SELECT * FROM foreach(row={
+      SELECT dict(SourceFile=SourceFile, Size=Size, Modified=Modified) + Data AS Data
+      FROM AllResults
+      WHERE Type = "AdaptiveScheduledTasks/Commands"
+    }, column="Data")
+- name: AdaptiveServices_Executables
+  notebook:
+    - type: none
+  query: |
+    SELECT * FROM foreach(row={
+      SELECT dict(SourceFile=SourceFile, Size=Size, Modified=Modified) + Data AS Data
+      FROM AllResults
+      WHERE Type = "AdaptiveServices/Executables"
+    }, column="Data")
+- name: LnkTargets_Targets
+  notebook:
+    - type: none
+  query: |
+    SELECT * FROM foreach(row={
+      SELECT dict(SourceFile=SourceFile, Size=Size, Modified=Modified) + Data AS Data
+      FROM AllResults
+      WHERE Type = "LnkTargets/Targets"
+    }, column="Data")
+- name: Netstat_NetstatEnriched
+  notebook:
+    - type: none
+  query: |
+    SELECT * FROM foreach(row={
+      SELECT dict(SourceFile=SourceFile, Size=Size, Modified=Modified) + Data AS Data
+      FROM AllResults
+      WHERE Type = "Netstat/NetstatEnriched"
+    }, column="Data")
+- name: PrefetchBinaries_Executables
+  notebook:
+    - type: none
+  query: |
+    SELECT * FROM foreach(row={
+      SELECT dict(SourceFile=SourceFile, Size=Size, Modified=Modified) + Data AS Data
+      FROM AllResults
+      WHERE Type = "PrefetchBinaries/Executables"
+    }, column="Data")
+- name: PsList_From_Pslist
+  notebook:
+    - type: none
+  query: |
+    SELECT * FROM foreach(row={
+      SELECT dict(SourceFile=SourceFile, Size=Size, Modified=Modified) + Data AS Data
+      FROM AllResults
+      WHERE Type = "PsList/From_Pslist"
+    }, column="Data")
+
+- name: Uploads
+  notebook:
+    - type: vql
+      template: |
+       // This cell generates other cells to preview the collected
+       // data.  DO NOT recalculate this cell - each time new cells
+       // will be added. Instead delete the notebook and allow
+       // Velociraptor to recreate the entire notebook.
+       LET ArtifactsWithResults <=
+         SELECT pathspec(accessor="fs", parse=Data.VFSPath)[4] AS Artifact ,
+           pathspec(accessor="fs", parse=Data.VFSPath)[-1][:-5] AS Source ,
+           stat(accessor="fs", filename=Data.VFSPath + ".index").Size / 8 AS Records
+         FROM enumerate_flow(client_id=ClientId, flow_id=FlowId)
+         WHERE Type =~ "Result" AND Records > 0
+
+       LET _ <= SELECT notebook_update_cell(notebook_id=NotebookId, type="vql",
+       input=format(format='''
+       /*
+       # Results From %v
+       */
+       SELECT * FROM source(source=%q)
+       ''', args=[Source, Source]),
+       output=format(format='''
+       <i>Recalculate</i> to show Results from <b>%v</b> with <b>%v</b> rows
+       ''', args=[Source, Records])) AS NotebookModification
+       FROM ArtifactsWithResults
+
+       /*
+       # Results Overview
+       */
+       SELECT Source, Records FROM ArtifactsWithResults ORDER BY Source
+
+    - type: vql_suggestion
+      name: Post process collection
+      template: |
+        /*
+
+        # Post process this collection.
+
+        Uncomment the following and evaluate the cell to create new
+        collections based on the files collected from this artifact.
+
+        The below VQL will apply remapping so standard artifacts will
+        see the KapeFiles.Targets collection below as a virtual
+        Windows Client. The artifacts will be collected to a temporary
+        container and then re-imported as new collections into this
+        client.
+
+        NOTE: This is only a stop gap in case the proper artifacts
+        were not collected in the first place. Parsing artifacts
+        through a remapped collection is not as accurate as parsing
+        directly on the endpoint. See
+        https://docs.velociraptor.app/training/playbooks/preservation/
+        for more info.
+
+        */
+        LET _ <= import(artifact="Windows.KapeFiles.Remapping")
+
+        LET tmp <= tempfile()
+
+        LET Results = SELECT import_collection(filename=Container, client_id=ClientId) AS Import
+        FROM collect(artifacts=[
+                       "Windows.Forensics.Usn",
+                       "Windows.NTFS.MFT",
+                     ],
+                     args=dict(`Windows.Forensics.Usn`=dict(),
+                               `Windows.NTFS.MFT`=dict()),
+                     output=tmp,
+                     remapping=GetRemapping(FlowId=FlowId, ClientId=ClientId))
+
+        // SELECT * FROM Results
+
+  query: |
+    -- Upload the files. Split into workers so the files are uploaded
+    -- in parallel.
+    LET uploaded_files = SELECT *
+    FROM foreach(row={
+       SELECT *
+       FROM AllResults
+       WHERE Size > 0
+       GROUP BY SourceFile
+       },
+          workers=WORKERS,
+
+          // Do the heavy lifting in a thread
+          query={
+            SELECT * FROM foreach(row={
+              SELECT GetDetails(OSPath=SourceFile) AS Details
+              FROM scope()
+            }, query={
+              SELECT timestamp(epoch=now()) AS CopiedOnTimestamp,
+                     Created,
+                     Changed,
+                     LastAccessed,
+                     Modified,
+                     SourceFile,
+                     Size,
+                     Details,
+                     if(condition=Details.ShouldUpload,
+                        then=upload(file=SourceFile,
+                                    accessor=Accessor,
+                                    mtime=Modified)) AS Upload
+              FROM scope()
+          })
+      })
+
+    -- Separate the hashes into their own column.
+    SELECT CopiedOnTimestamp,
+           SourceFile,
+           Upload.Path AS DestinationFile,
+           Size AS FileSize,
+           Details.Hash.SHA256 AS SourceFileSha256,
+           Created,
+           Changed,
+           Modified,
+           LastAccessed,
+           Details,
+           Upload
+    FROM uploaded_files
+
+
+column_types:
+- name: CopiedOnTimestamp
+  type: timestamp
+- name: Data
+  type: json/1
+- name: Details
+  type: json/1
+

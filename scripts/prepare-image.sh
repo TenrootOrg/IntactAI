@@ -1,5 +1,5 @@
 #!/bin/bash
-# MSSP Platform - VM Image Preparation Script
+# Intact.AI Platform - VM Image Preparation Script
 # Cleans all development artifacts before exporting VM for distribution
 #
 # Usage: sudo bash prepare-image.sh [--dry-run] [--keep-claude] [--keep-git]
@@ -110,7 +110,7 @@ clean_containers() {
     log_info "Removing Docker containers..."
 
     # Get container count first
-    local count=$(docker ps -aq --filter "name=mssp_" 2>/dev/null | wc -l)
+    local count=$(docker ps -aq --filter "name=intact_" 2>/dev/null | wc -l)
 
     if [[ $count -gt 0 ]]; then
         if [[ "$DRY_RUN" == true ]]; then
@@ -118,7 +118,7 @@ clean_containers() {
         else
             log_info "  Found $count containers, removing one by one..."
             local removed=0
-            for container in $(docker ps -aq --filter "name=mssp_" 2>/dev/null); do
+            for container in $(docker ps -aq --filter "name=intact_" 2>/dev/null); do
                 docker rm -f "$container" >/dev/null 2>&1 || true
                 ((removed++)) || true
                 # Show progress every 10 containers
@@ -144,7 +144,7 @@ clean_volumes() {
         "portainer_data" "elasticsearch_data"
     )
 
-    local prefixes=("" "modules_" "mssp_" "iris_" "timesketch_" "velociraptor_" "elk_" "portainer_")
+    local prefixes=("" "modules_" "intact_" "iris_" "timesketch_" "velociraptor_" "elk_" "portainer_")
 
     for prefix in "${prefixes[@]}"; do
         for vol in "${volumes[@]}"; do
@@ -165,9 +165,9 @@ clean_volumes() {
 clean_databases() {
     log_info "Removing databases and reports..."
 
-    safe_remove "$SCRIPT_DIR/data/mssp.db" "Main database"
-    safe_remove "$SCRIPT_DIR/data/mssp.db-shm" "Database shm"
-    safe_remove "$SCRIPT_DIR/data/mssp.db-wal" "Database wal"
+    safe_remove "$SCRIPT_DIR/data/intact.db" "Main database"
+    safe_remove "$SCRIPT_DIR/data/intact.db-shm" "Database shm"
+    safe_remove "$SCRIPT_DIR/data/intact.db-wal" "Database wal"
     safe_remove "$SCRIPT_DIR/data/scheduler_jobs.db" "Scheduler database"
     safe_remove "$SCRIPT_DIR/data/frontend_data.db" "Frontend database"
     safe_remove "$SCRIPT_DIR/data/reports" "Reports directory"
@@ -275,7 +275,7 @@ backup_velociraptor_data() {
     log_info "Backing up Velociraptor artifacts and tools..."
 
     local backup_dir="$SCRIPT_DIR/data/velociraptor_backup"
-    local container="mssp_velociraptor"
+    local container="intact_velociraptor"
 
     # Check if container exists and is running
     if ! docker ps -q -f name="$container" | grep -q .; then
@@ -477,7 +477,7 @@ main() {
     # Header
     echo ""
     echo "=============================================="
-    echo "  MSSP Platform - Image Preparation"
+    echo "  Intact.AI Platform - Image Preparation"
     echo "=============================================="
     echo ""
 

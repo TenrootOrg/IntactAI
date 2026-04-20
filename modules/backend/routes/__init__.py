@@ -1,5 +1,5 @@
 """
-Routes package for MSSP Dashboard Backend
+Routes package for Intact.AI Dashboard Backend
 """
 
 from routes.client_routes import client_bp

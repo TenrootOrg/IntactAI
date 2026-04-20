@@ -153,7 +153,7 @@ def _run_timesketch_settings_workflow(run_id, config_data):
 
         # Phase 4: Restart containers
         update_run_status(run_id, "running", progress=40)
-        containers = ['mssp_timesketch_web', 'mssp_timesketch_worker']
+        containers = ['intact_timesketch_web', 'intact_timesketch_worker']
 
         for i, container in enumerate(containers):
             add_log_to_run(run_id, f"Restarting container: {container}...")
@@ -215,7 +215,7 @@ def _run_timesketch_settings_workflow(run_id, config_data):
                 # Verify Timesketch is responding
                 try:
                     import urllib.request
-                    req = urllib.request.urlopen('http://mssp_timesketch_web:5000/', timeout=5)
+                    req = urllib.request.urlopen('http://intact_timesketch_web:5000/', timeout=5)
                     if req.status in [200, 302]:
                         add_log_to_run(run_id, "Timesketch web interface is responding", "success")
                         break
@@ -245,7 +245,7 @@ def _run_timesketch_settings_workflow(run_id, config_data):
         ts_accessible = False
         try:
             import urllib.request
-            req = urllib.request.urlopen('http://mssp_timesketch_web:5000/', timeout=10)
+            req = urllib.request.urlopen('http://intact_timesketch_web:5000/', timeout=10)
             if req.status in [200, 302]:
                 ts_accessible = True
                 add_log_to_run(run_id, "Timesketch web interface verified accessible", "success")
