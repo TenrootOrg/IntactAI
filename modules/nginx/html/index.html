@@ -2362,13 +2362,23 @@ sudo ./velociraptor service start</code></pre>
                                     <label class="block text-xs text-gray-400 mb-1">API Key</label>
                                     <input type="password" x-model="$store.settings.config.timesketch.google_ai_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="AIza...">
                                 </div>
-                                <div>
+                                <div x-data="{ presets: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-pro'] }">
                                     <label class="block text-xs text-gray-400 mb-1">Model</label>
-                                    <select x-model="$store.settings.config.timesketch.google_ai_model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    <select
+                                        :value="presets.includes($store.settings.config.timesketch.google_ai_model) ? $store.settings.config.timesketch.google_ai_model : '__custom'"
+                                        @change="$store.settings.config.timesketch.google_ai_model = $event.target.value === '__custom' ? '' : $event.target.value"
+                                        class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
                                         <option value="gemini-2.5-flash">gemini-2.5-flash</option>
                                         <option value="gemini-2.5-pro">gemini-2.5-pro</option>
                                         <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+                                        <option value="__custom">Custom…</option>
                                     </select>
+                                    <input
+                                        x-show="!presets.includes($store.settings.config.timesketch.google_ai_model)"
+                                        type="text"
+                                        x-model="$store.settings.config.timesketch.google_ai_model"
+                                        placeholder="e.g. gemini-3.0-flash"
+                                        class="mt-2 w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
                                 </div>
                             </div>
                         </div>
