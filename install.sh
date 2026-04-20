@@ -63,7 +63,24 @@ main() {
     # Core Dependencies
     # -------------------------------------------------------------------------
     install_dependencies
-    install_docker
+    if ! install_docker; then
+        log_error "=============================================="
+        log_error "Docker installation failed — aborting install."
+        log_error ""
+        log_error "Fix the underlying issue (DNS, firewall, apt, etc.),"
+        log_error "then re-run this script. Nothing below this point will"
+        log_error "work without a functional docker daemon."
+        log_error "=============================================="
+        exit 1
+    fi
+    # Defensive: install_docker can log success for an unhealthy daemon if
+    # something exotic happens mid-install. Gate the rest of the flow on a
+    # real `docker version` call so we don't cascade through 'command not
+    # found' errors for every module if Docker isn't actually usable.
+    if ! command -v docker &>/dev/null || ! docker version &>/dev/null; then
+        log_error "Docker reports installed but 'docker version' fails — aborting"
+        exit 1
+    fi
     create_network
 
     # -------------------------------------------------------------------------

@@ -67,10 +67,25 @@ install_docker_online() {
     # Create keyrings directory if it doesn't exist
     install -m 0755 -d /etc/apt/keyrings
 
-    # Add Docker's official GPG key (using modern location)
+    # Add Docker's official GPG key (using modern location).
+    # Retry 3x with backoff — a fresh install often loses a single DNS
+    # lookup to download.docker.com (we've seen the reachability pre-check
+    # pass and the real curl fail ~30s later with "Could not resolve host").
     log_info "Adding Docker GPG key..."
-    if ! curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc 2>> "$LOG_FILE"; then
-        log_error "Failed to download Docker GPG key"
+    local gpg_ok=false
+    for attempt in 1 2 3; do
+        if curl -fsSL --retry 2 --retry-delay 3 --connect-timeout 15 --max-time 60 \
+                https://download.docker.com/linux/ubuntu/gpg \
+                -o /etc/apt/keyrings/docker.asc 2>> "$LOG_FILE"; then
+            gpg_ok=true
+            break
+        fi
+        log_warn "  GPG download attempt $attempt/3 failed, retrying in 5s..."
+        sleep 5
+    done
+    if [[ "$gpg_ok" != "true" ]]; then
+        log_error "Failed to download Docker GPG key after 3 attempts"
+        log_error "  Host download.docker.com could not be reached — check DNS/firewall"
         return 1
     fi
     chmod a+r /etc/apt/keyrings/docker.asc
