@@ -276,10 +276,10 @@
                             </div>
                             <div :class="$store.services.getStatusClass('velociraptor')"></div>
                         </div>
-                        <div class="space-y-2 mb-4">
+                        <div class="space-y-2 mb-4 invisible" aria-hidden="true">
                             <div class="flex justify-between text-sm">
                                 <span class="text-gray-400">Port:</span>
-                                <span class="font-mono">8000 (TLS)</span>
+                                <span class="font-mono">-</span>
                             </div>
                         </div>
                         <button onclick="openService('velociraptor')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
