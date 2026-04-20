@@ -169,7 +169,7 @@ check_network_connectivity() {
 # ============================================================================
 
 check_initialization_marker() {
-    local marker="/etc/mssp-initialized"
+    local marker="/etc/intact-initialized"
     if [[ -f "$marker" ]]; then
         log_warn "Intact.AI was previously initialized on this system"
         cat "$marker"
@@ -183,7 +183,7 @@ check_initialization_marker() {
 }
 
 create_initialization_marker() {
-    local marker="/etc/mssp-initialized"
+    local marker="/etc/intact-initialized"
     local domain=$(read_config "['domain']")
     echo "Intact.AI Platform initialized on $(date)" > "$marker"
     echo "Domain: $domain" >> "$marker"

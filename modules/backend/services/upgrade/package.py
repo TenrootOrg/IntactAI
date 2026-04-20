@@ -62,7 +62,7 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
 
     Args:
         source_dir: Parent directory containing source_name (e.g., /tmp)
-        source_name: Name of directory to compress (e.g., mssp-upgrade-20260323)
+        source_name: Name of directory to compress (e.g., intact-upgrade-20260323)
         output_file: Output tar.gz path
         logger: Logging function
         progress_interval: Seconds between progress updates
@@ -166,7 +166,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    package_name = f"mssp-upgrade-{timestamp}"
+    package_name = f"intact-upgrade-{timestamp}"
     package_dir = f"/tmp/{package_name}"  # Temp work directory
 
     # Store final package in persistent location (always use same filename - overwrite previous)
@@ -179,7 +179,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
         if os.path.isfile(old_path):
             os.remove(old_path)
 
-    output_file = f"{packages_dir}/mssp-upgrade-latest.tar.gz"
+    output_file = f"{packages_dir}/intact-upgrade-latest.tar.gz"
 
     log("=" * 50, "info")
     log("PREPARING UPGRADE PACKAGE", "info")

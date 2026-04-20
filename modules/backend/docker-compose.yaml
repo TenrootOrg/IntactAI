@@ -4,7 +4,7 @@
 services:
   backend:
     container_name: intact_backend
-    image: mssp-backend:${BACKEND_VERSION:-1.0.0}
+    image: intact-backend:${BACKEND_VERSION:-1.0.0}
     build:
       context: ../..
       dockerfile: modules/backend/Dockerfile

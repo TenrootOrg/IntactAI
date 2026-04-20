@@ -33,6 +33,9 @@ modules/iris/secrets/*
 modules/portainer/secrets/*
 !modules/portainer/secrets/.gitkeep
 
+# Per-module .env overrides (local-only; see each docker-compose.yaml for defaults)
+modules/*/.env
+
 # Certificates (generated on install)
 modules/iris/config/certificates/rootCA/*
 modules/iris/config/certificates/web_certificates/*
@@ -53,4 +56,17 @@ modules/nginx/html/downloads/
 data/frontend_data.db
 
 # Upgrade packages (created by scripts/create-upgrade-package.sh)
-mssp-upgrade-*.tar.gz
+intact-upgrade-*.tar.gz
+
+# Velociraptor binary + shipped artifact definitions (gitignored — large files)
+modules/velociraptor/velociraptor/
+
+# Azure app-auth cert (generated at install)
+data/azure_cert.pfx
+data/azure_cert_public.pem
+
+# Azure scan results (runtime data)
+data/azure_runs/
+
+# DFIR-O365RC temp output
+data/tmp/

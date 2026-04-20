@@ -583,7 +583,7 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
 
     # Cleanup any previous installation remnants
     import glob
-    old_dirs = glob.glob('/app/data/tmp/mssp-upgrade-*') + glob.glob('/data/tmp/mssp-upgrade-*') + glob.glob('/tmp/mssp-upgrade-*')
+    old_dirs = glob.glob('/app/data/tmp/intact-upgrade-*') + glob.glob('/data/tmp/intact-upgrade-*') + glob.glob('/tmp/intact-upgrade-*')
     if old_dirs:
         log("Cleaning up previous installation remnants...", "info")
         for old_dir in old_dirs:
