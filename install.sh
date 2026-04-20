@@ -16,6 +16,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/config.yaml"
 LOG_FILE="${SCRIPT_DIR}/install_$(date +%Y%m%d_%H%M%S).log"
 
+# Export the real install path so each module's docker-compose.yaml can bind
+# mount from the correct host location even when the user extracts the
+# project outside the default /home/tenroot/intact (the backend compose
+# reads ${INTACT_HOST_PATH:-...}).
+export INTACT_HOST_PATH="$SCRIPT_DIR"
+
 # ============================================================================
 # Load Library Modules
 # ============================================================================

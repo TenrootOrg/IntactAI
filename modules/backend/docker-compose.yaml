@@ -38,8 +38,11 @@ services:
       - /app/logs  # Logs directory
       - upload_data:/data/uploads  # Shared volume for tus uploads
       - ../..:/app/workdir:rw  # Intact.AI root for upgrade operations
-      # Also mount at host path for docker compose --project-directory to work
-      - /home/tenroot/intact:/home/tenroot/intact:rw
+      # Also mount at the install's real host path so `docker run -v ${host}:...`
+      # calls issued from inside the backend (Plaso, DFIR-O365RC, etc.) resolve
+      # correctly. install.sh exports INTACT_HOST_PATH=$SCRIPT_DIR so this works
+      # from any install location, not just /home/tenroot/intact.
+      - ${INTACT_HOST_PATH:-/home/tenroot/intact}:${INTACT_HOST_PATH:-/home/tenroot/intact}:rw
       - /opt/sigma-rules:/opt/sigma-rules:ro  # SIGMA detection rules for Azure automation
     ports:
       - "5001:5001"

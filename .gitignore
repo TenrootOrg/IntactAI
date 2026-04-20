@@ -70,3 +70,7 @@ data/azure_runs/
 
 # DFIR-O365RC temp output
 data/tmp/
+
+# Misc artefacts that must never be committed
+*.bak
+*.corrupt
