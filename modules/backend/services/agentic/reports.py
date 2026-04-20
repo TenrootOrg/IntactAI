@@ -4,6 +4,8 @@ Agentic Reports - Report generation functions for forensic analysis
 """
 
 import json
+import re
+import textwrap
 import zipfile
 import os
 from datetime import datetime
@@ -12,6 +14,82 @@ from services.workflow_service import add_log_to_run
 from services.file_storage_service import save_report, get_report
 from services.agentic.analyzers import call_llm
 from services.agentic.utils import extract_timeline_events
+
+
+_LIST_MARKER_RE = re.compile(r'^(\s*)([-*+]|\d+\.)\s+')
+
+
+def wrap_markdown_paragraphs(text: str, width: int = 100) -> str:
+    """Hard-wrap paragraph text in a markdown string so raw .md files read
+    sanely in editors without soft-wrap, without breaking structural
+    markdown (headings, code fences, tables, list items, front-matter).
+
+    The LLM-written report body arrives as one very long logical line per
+    paragraph. Renderers handle this fine, but editors without word-wrap
+    show each paragraph as a single off-screen line. Wrapping here keeps
+    the rendered output identical while making the raw file readable.
+    """
+    if not text:
+        return text
+
+    lines = text.split('\n')
+    out = []
+    in_fence = False
+    fence_marker = None
+    in_frontmatter = False
+    saw_frontmatter_open = False
+
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+
+        # YAML front-matter (first-line --- only)
+        if not saw_frontmatter_open and idx == 0 and stripped == '---':
+            in_frontmatter = True
+            saw_frontmatter_open = True
+            out.append(line)
+            continue
+        if in_frontmatter:
+            out.append(line)
+            if stripped == '---':
+                in_frontmatter = False
+            continue
+
+        # fenced code block
+        if not in_fence and (stripped.startswith('```') or stripped.startswith('~~~')):
+            in_fence = True
+            fence_marker = stripped[:3]
+            out.append(line)
+            continue
+        if in_fence:
+            out.append(line)
+            if stripped.startswith(fence_marker):
+                in_fence = False
+                fence_marker = None
+            continue
+
+        # Structural lines that must never be wrapped: headings, tables,
+        # blockquotes, list items, blank lines, horizontal rules.
+        if (not stripped
+                or stripped.startswith('#')
+                or stripped.startswith('|')
+                or stripped.startswith('>')
+                or _LIST_MARKER_RE.match(line)
+                or set(stripped) <= {'-', '='}):
+            out.append(line)
+            continue
+
+        # Regular paragraph line -> wrap. break_long_words=False and
+        # break_on_hyphens=False keep URLs, filepaths, and hashes intact.
+        out.append(textwrap.fill(
+            line,
+            width=width,
+            break_long_words=False,
+            break_on_hyphens=False,
+            replace_whitespace=False,
+            drop_whitespace=False,
+        ))
+
+    return '\n'.join(out)
 
 
 def filter_results_by_client(all_results, client_id):
@@ -344,6 +422,12 @@ Generate the report now:"""
             reports['technical'] = anonymizer.unmask_text(reports['technical'])
         mapping_summary = anonymizer.get_mapping_summary()
         add_log_to_run(run_id, f"[Report] Restored {mapping_summary['total_mappings']} masked values", "info")
+
+    # Hard-wrap paragraph text so the saved .md is readable in raw editors
+    # (the LLM returns paragraphs as single very long logical lines).
+    for _key in ('executive', 'technical'):
+        if _key in reports and reports[_key]:
+            reports[_key] = wrap_markdown_paragraphs(reports[_key], width=100)
 
     return reports
 
@@ -719,6 +803,13 @@ def generate_multi_client_reports(run_id, blueprint, client_ids, collection_minu
         macro_report = anonymizer.unmask_text(macro_report)
         for client_id in per_client_reports:
             per_client_reports[client_id] = anonymizer.unmask_text(per_client_reports[client_id])
+
+    # Hard-wrap paragraph text so the saved .md is readable in raw editors.
+    if macro_report:
+        macro_report = wrap_markdown_paragraphs(macro_report, width=100)
+    for _cid in per_client_reports:
+        if per_client_reports[_cid]:
+            per_client_reports[_cid] = wrap_markdown_paragraphs(per_client_reports[_cid], width=100)
 
     add_log_to_run(run_id, f"[Report] Generated {len(per_client_reports)} client reports + 1 summary", "success")
 
