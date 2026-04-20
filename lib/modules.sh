@@ -336,6 +336,28 @@ deploy_timesketch() {
         sed -i 's/^TIMEOUT_FOR_EVENT_IMPORT = 180$/TIMEOUT_FOR_EVENT_IMPORT = 600/'       "$ts_conf"
         log_success "  Timeouts raised (OpenSearch 10->300s, event import 180->600s)"
 
+        # NL2Q defaults to vertexai with an empty project_id, which makes the
+        # "AI generated queries" toggle in the sketch settings sit greyed-out
+        # as "requires LLM provider". Swap it to aistudio and reuse the Gemini
+        # api_key already wired into the llm_summarize block so it works on a
+        # fresh install without manual editing. Idempotent — re-running on an
+        # already-converted block is a no-op.
+        log_info "  Wiring Timesketch nl2q to Gemini AI Studio..."
+        local gemini_key
+        gemini_key=$(awk "/'llm_summarize':/,/},/" "$ts_conf" \
+            | grep -oE "'api_key': '[^']+'" \
+            | head -1 \
+            | sed -E "s/'api_key': '([^']+)'/\1/")
+        if [[ -n "$gemini_key" ]]; then
+            sed -i "/    'nl2q': {/,/    },/ {
+                s/'vertexai':/'aistudio':/
+                s|'project_id': ''|'api_key': '$gemini_key'|
+            }" "$ts_conf"
+            log_success "  nl2q wired to aistudio"
+        else
+            log_warning "  Could not read Gemini api_key from llm_summarize; nl2q left as-is"
+        fi
+
         # Restart the Timesketch containers that bind-mount timesketch.conf so both
         # DFIQ and the timeout bumps take effect. Worker + web_legacy matter too —
         # without this, indexing runs with the old timeouts until next reboot.
