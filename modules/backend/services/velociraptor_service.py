@@ -213,26 +213,25 @@ def load_velociraptor_api_config():
 def setup_velociraptor_connection():
     """Setup gRPC connection to Velociraptor API"""
     try:
-        # Copy API config from Velociraptor container to local path
+        # Always re-copy the API config from the Velociraptor container rather
+        # than caching. The old cached-file check bit us during the mssp ->
+        # intact container rename: once /tmp/api.config.yaml was populated
+        # with the pre-rename hostname, every subsequent gRPC call used the
+        # stale file and DNS-resolution failed even after the source was
+        # fixed. The copy is a cheap `docker exec cat` of a small YAML.
         config_path = "/tmp/api.config.yaml"
+        print("[GRPC] Copying API config from Velociraptor container...", flush=True)
+        result = subprocess.run([
+            "docker", "exec", VELOCIRAPTOR_CONTAINER,
+            "cat", VELOCIRAPTOR_API_CONFIG_PATH
+        ], capture_output=True, text=True, timeout=5)
 
-        # Check if we need to copy the config
-        if not os.path.exists(config_path):
-            print("[GRPC] Copying API config from Velociraptor container...", flush=True)
-            result = subprocess.run([
-                "docker", "exec", VELOCIRAPTOR_CONTAINER,
-                "cat", VELOCIRAPTOR_API_CONFIG_PATH
-            ], capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            print(f"[GRPC] Failed to copy config: {result.stderr}", flush=True)
+            return None
 
-            if result.returncode == 0:
-                with open(config_path, 'w') as f:
-                    f.write(result.stdout)
-                print("[GRPC] API config copied successfully", flush=True)
-            else:
-                print(f"[GRPC] Failed to copy config: {result.stderr}", flush=True)
-                return None
-        else:
-            print("[GRPC] Using existing API config", flush=True)
+        with open(config_path, 'w') as f:
+            f.write(result.stdout)
 
         # Load the YAML configuration
         with open(config_path, "r") as f:
