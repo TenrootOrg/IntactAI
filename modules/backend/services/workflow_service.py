@@ -110,21 +110,48 @@ def create_automation_run(automation_type, name, details=None):
 
     return run_id
 
+# Per-run mutex registry. add_log_to_run does load-modify-save against the
+# workflow row; without serialization, parallel worker threads (e.g. the
+# ThreadPoolExecutor in agentic.analyzers) race and silently lose log
+# entries — observed in run agentic_1777379525079 where 4 of 9 [Skill] /
+# "Analysis complete" lines vanished.  Per-run granularity (not a global
+# lock) lets independent runs continue writing in parallel.
+_RUN_LOG_LOCKS: dict = {}
+_RUN_LOG_LOCKS_GUARD = threading.Lock()
+
+
+def _get_run_log_lock(run_id):
+    """Return the per-run lock, creating it on first use. The guard lock
+    only protects the dict-creation, never held during the actual log write.
+    """
+    with _RUN_LOG_LOCKS_GUARD:
+        lock = _RUN_LOG_LOCKS.get(run_id)
+        if lock is None:
+            lock = threading.Lock()
+            _RUN_LOG_LOCKS[run_id] = lock
+        return lock
+
+
 def add_log_to_run(run_id, log_message, log_level="info"):
-    """Add a log entry to an automation run"""
-    workflow = file_get_workflow(run_id)
-    if workflow:
-        if "logs" not in workflow:
-            workflow["logs"] = []
+    """Add a log entry to an automation run.
 
-        workflow["logs"].append({
-            "timestamp": datetime.now().isoformat(),
-            "level": log_level,
-            "message": log_message
-        })
-        workflow["updated_at"] = datetime.now().isoformat()
+    Thread-safe per run_id: load-modify-save is serialized so concurrent
+    worker threads do not silently overwrite each other's log appends.
+    """
+    with _get_run_log_lock(run_id):
+        workflow = file_get_workflow(run_id)
+        if workflow:
+            if "logs" not in workflow:
+                workflow["logs"] = []
 
-        save_workflow(workflow)
+            workflow["logs"].append({
+                "timestamp": datetime.now().isoformat(),
+                "level": log_level,
+                "message": log_message
+            })
+            workflow["updated_at"] = datetime.now().isoformat()
+
+            save_workflow(workflow)
 
 def update_run_status(run_id, status, progress=None, error=None, details=None):
     """Update automation run status and optionally merge additional details"""
