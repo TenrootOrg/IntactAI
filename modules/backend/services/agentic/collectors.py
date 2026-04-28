@@ -488,13 +488,41 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
     register_cleanup(run_id, lambda: executor.shutdown(wait=False, cancel_futures=True))
     register_cleanup(run_id, lambda: cancel_collections(run_id, active_flows))
 
+    def _wf_log(msg, level="info"):
+        """Workflow-log callback passed into the per-artifact analyzer so the
+        atomic [Skill] / "no match" line shows up in this run's log too —
+        the existing-flow path already does this; the streaming path was
+        missing it."""
+        add_log_to_run(run_id, msg, level)
+
     def submit_for_analysis(artifact_name, rows):
         """Submit artifact for LLM analysis if not already submitted."""
         if artifact_name in analyzed_artifacts:
             return
         analyzed_artifacts.add(artifact_name)
         add_log_to_run(run_id, f"[LLM] Starting analysis: {artifact_name} ({len(rows)} rows)", "info")
-        future = executor.submit(analyze_single_artifact, artifact_name, rows, llm_config, anonymizer)
+
+        # Mirror the existing-flow path: lift SIGMA-rule / MITRE metadata off
+        # the first row so the analyzer gets `finding_meta` (drives skill
+        # selection via mitre_attack and surfaces the rule context in the
+        # prompt). Without this, the streaming path's skills fall back to
+        # artifact-name fuzzy match alone.
+        finding_meta = None
+        if rows and isinstance(rows[0], dict):
+            first = rows[0]
+            finding_meta = {
+                'rule_title': first.get('rule_title') or artifact_name,
+                'rule_id': first.get('rule_id', ''),
+                'rule_description': first.get('rule_description') or first.get('_description', ''),
+                'severity': first.get('severity') or first.get('_severity', 'unknown'),
+                'falsepositives': first.get('falsepositives', []),
+                'mitre_attack': first.get('mitre_attack', []),
+            }
+
+        future = executor.submit(
+            analyze_single_artifact, artifact_name, rows, llm_config,
+            anonymizer, finding_meta, _wf_log,
+        )
         llm_futures[future] = artifact_name
 
     def check_completed_analyses():
