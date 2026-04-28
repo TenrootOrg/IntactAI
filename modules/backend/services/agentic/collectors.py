@@ -969,6 +969,21 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
             # Get results from a hunt (multiple clients)
             add_log_to_run(run_id, f"[Velociraptor] Fetching results from hunt: {hunt_id}", "info")
 
+            # Velociraptor's hunt_flows() VQL plugin only accepts the actual
+            # hunt ID (`H.<base>`); it returns nothing if you pass it the
+            # hunt-DERIVED flow ID (`F.<base>.H`). Normalize here so an
+            # operator pasting either format works. Examples:
+            #   F.D7OB0S115JUTS.H  →  H.D7OB0S115JUTS
+            #   H.D7OB0S115JUTS    →  H.D7OB0S115JUTS  (no change)
+            velo_hunt_id = hunt_id
+            if hunt_id.startswith('F.') and hunt_id.endswith('.H') and len(hunt_id) > 4:
+                velo_hunt_id = 'H.' + hunt_id[2:-2]
+                add_log_to_run(
+                    run_id,
+                    f"[Velociraptor] Hunt-derived flow ID detected — querying as {velo_hunt_id}",
+                    "info",
+                )
+
             # First, get all flows in this hunt using hunt_flows().
             # If the analyst picked specific clients, push a WHERE filter
             # into VQL so we never enumerate flows for clients we'll just
@@ -978,7 +993,7 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                 # still single-quote each one to keep the f-string safe.
                 quoted = ", ".join(f"'{cid}'" for cid in client_ids)
                 flows_query = (
-                    f"SELECT ClientId, FlowId FROM hunt_flows(hunt_id='{hunt_id}') "
+                    f"SELECT ClientId, FlowId FROM hunt_flows(hunt_id='{velo_hunt_id}') "
                     f"WHERE ClientId IN ({quoted})"
                 )
                 add_log_to_run(
@@ -987,7 +1002,7 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                     "info",
                 )
             else:
-                flows_query = f"SELECT ClientId, FlowId FROM hunt_flows(hunt_id='{hunt_id}')"
+                flows_query = f"SELECT ClientId, FlowId FROM hunt_flows(hunt_id='{velo_hunt_id}')"
             request_obj = api_pb2.VQLCollectorArgs(
                 max_wait=60,
                 max_row=1000,
