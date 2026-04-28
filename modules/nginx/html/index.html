@@ -743,9 +743,12 @@ sudo ./velociraptor service start</code></pre>
                             </div>
 
                             <!-- Clients picker — shown for new collections AND for existing
-                                 hunt-derived flows (IDs ending with `.H`), where the analyst
-                                 must scope the analysis to one or more clients in the hunt. -->
-                            <div x-show="forensicsMode === 'ai' && (collectionSource === 'new' || (collectionSource === 'existing' && existingId.endsWith('.H')))">
+                                 hunt-derived flows (`F.<base>.H`), where the analyst must
+                                 scope the analysis to one or more clients in the hunt.
+                                 Tightened to require BOTH F. prefix AND .H suffix so a
+                                 stale `existingId` like `H.xxx.H` doesn't keep the picker
+                                 visible after the user clears their input. -->
+                            <div x-show="forensicsMode === 'ai' && (collectionSource === 'new' || (collectionSource === 'existing' && existingId.startsWith('F.') && existingId.endsWith('.H')))">
                                 <div class="flex items-center justify-between mb-2">
                                     <label class="block text-sm font-medium text-gray-300">Clients</label>
                                     <div class="flex gap-2">
@@ -759,15 +762,19 @@ sudo ./velociraptor service start</code></pre>
                                 <div id="forensics-client-list" class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
                                     <p class="text-sm text-gray-500">Loading clients...</p>
                                 </div>
-                                <p x-show="collectionSource === 'existing' && existingId.endsWith('.H')" class="text-xs text-purple-400 mt-1">
-                                    Hunt-derived flow detected (ends with .H) — pick the clients you want analyzed from this hunt.
+                                <p x-show="collectionSource === 'existing' && existingId.startsWith('F.') && existingId.endsWith('.H')" class="text-xs text-purple-400 mt-1">
+                                    Hunt-derived flow detected (F.xxx.H) — pick the clients you want analyzed from this hunt.
                                 </p>
                             </div>
 
                             <!-- Existing Flow ID (AI mode, existing flow only) -->
                             <div x-show="forensicsMode === 'ai' && collectionSource === 'existing'">
                                 <label class="block text-sm font-medium text-gray-300 mb-1">Flow or Hunt ID</label>
+                                <!-- @input clears any stale client selection so changing the
+                                     ID (e.g. from F.xxx.H → H.xxx) doesn't carry the previous
+                                     picker selection into the next run. -->
                                 <input type="text" id="forensics-existing-id" x-model="existingId"
+                                    @input="onExistingIdChange($event.target.value)"
                                     placeholder="F.C1234567890, H.ABC123..., or F.xxx.H (hunt-derived flow)"
                                     class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-purple-500 focus:outline-none">
                                 <p class="text-xs text-gray-500 mt-1">Flow ID (<code>F.xxx</code>), Hunt ID (<code>H.xxx</code>), or hunt-derived flow (<code>F.xxx.H</code>) from a previous collection.</p>

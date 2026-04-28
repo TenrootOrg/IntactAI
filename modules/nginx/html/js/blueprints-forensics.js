@@ -585,6 +585,30 @@ async function startForensicsCollection() {
     }
 }
 
+// Called from index.html's existing-id input @input handler.
+// Whenever the analyst edits the Flow/Hunt ID, drop any client selection
+// that was held over from the previous picker view. Without this the
+// `forensicsSelectedClients` Set persists globally — a single client
+// picked for a `F.xxx.H` run would silently leak into the next submission
+// (visible as "Hunt scoped to 1 selected client(s)" in the workflow log
+// even after the user thought they'd switched to a standalone hunt).
+//
+// Always clear on change. The picker re-renders with no checks; if the
+// new ID re-shows the picker, the analyst makes a fresh selection. Tiny
+// UX cost, eliminates a class of state-leak bugs.
+let _lastExistingId = '';
+function onExistingIdChange(newValue) {
+    if (newValue === _lastExistingId) return;
+    _lastExistingId = newValue;
+    if (forensicsSelectedClients.size > 0) {
+        forensicsSelectedClients.clear();
+        // Re-render so any visible checkboxes uncheck.
+        if (typeof renderForensicsClients === 'function') {
+            renderForensicsClients(forensicsClientsCache || []);
+        }
+    }
+}
+
 async function analyzeExistingCollection() {
     const existingId = document.getElementById('forensics-existing-id')?.value?.trim();
     if (!existingId) {
