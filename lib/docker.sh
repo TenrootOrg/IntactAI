@@ -105,8 +105,16 @@ install_docker_online() {
         log_warn "  Trying public DNS fallback (system resolver failed)..."
         local public_ip=""
         for resolver in 1.1.1.1 8.8.8.8; do
+            # Real nslookup output:
+            #   Address:\t1.1.1.1#53          ← resolver header, must skip
+            #   Address: 18.155.68.92         ← actual answer
+            # Different distros' nslookup variants use space vs tab inconsistently,
+            # so don't rely on the delimiter — match any "Address" line, drop
+            # anything containing '#' (resolver header), take the first answer.
             public_ip=$(nslookup -q=A download.docker.com "$resolver" 2>/dev/null \
-                        | awk '/^Address: / { print $2; exit }')
+                        | awk '/^Address/ { print $2 }' \
+                        | grep -v '#' \
+                        | head -1)
             if [[ -n "$public_ip" && "$public_ip" != "0.0.0.0" ]]; then
                 log_info "  Public resolver $resolver -> $public_ip"
                 break
