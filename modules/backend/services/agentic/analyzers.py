@@ -200,6 +200,32 @@ def _sample_records_for_llm(rows, max_count=90):
     return first + middle + last, True
 
 
+# Opaque Velociraptor identifiers that bloat every row's token cost without
+# giving the LLM any analytical leverage. Both the canonical Velociraptor
+# casings (ClientId, FlowId) and the underscore variants we add in the hunt
+# branch (_client_id) are stripped. Per-host attribution for multi-client
+# hunts is preserved at the pipeline / synthesis layer, not in the per-row
+# data the analyzer LLM sees.
+_LLM_DROP_KEYS = frozenset({
+    "ClientId", "client_id", "_client_id",
+    "FlowId", "flow_id", "_flow_id",
+})
+
+
+def _strip_metadata_fields(rows):
+    """Remove ClientId / FlowId metadata from rows before LLM serialization.
+    No-op when the keys aren't present (single-flow path) or rows aren't dicts."""
+    if not rows:
+        return rows
+    out = []
+    for r in rows:
+        if isinstance(r, dict):
+            out.append({k: v for k, v in r.items() if k not in _LLM_DROP_KEYS})
+        else:
+            out.append(r)
+    return out
+
+
 def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None, finding_meta=None, log_func=None):
     """Analyze a single artifact with LLM. Returns (artifact, summary, error) tuple.
 
@@ -220,6 +246,9 @@ def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None, finding
     # Pre-compute factual scope from the FULL set, before sampling
     scope = _compute_data_scope(rows)
     sampled_rows, was_sampled = _sample_records_for_llm(rows, max_count=90)
+    # Drop opaque ClientId / FlowId metadata — pure token waste in the
+    # per-record JSON the analyzer sends to the LLM.
+    sampled_rows = _strip_metadata_fields(sampled_rows)
 
     data_str = json.dumps(sampled_rows, indent=2, default=str)
     if len(data_str) > TRUNCATE_TOKEN_LIMIT:
