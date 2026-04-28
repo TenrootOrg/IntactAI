@@ -2082,13 +2082,27 @@ sudo ./velociraptor service start</code></pre>
                             <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
                                 <div>
                                     <h4 class="text-white font-medium">System Maintenance</h4>
-                                    <p class="text-gray-400 text-sm">Update tool inventory and sync configurations</p>
+                                    <p class="text-gray-400 text-sm">Re-import Velociraptor artifacts, refresh tool inventory, refresh DFIR skills, and run a health check.</p>
                                 </div>
                                 <button @click="$store.settings.runMaintenance()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
                                     </svg>
                                     <span x-text="$store.settings.saving ? 'Running...' : 'Maintenance'"></span>
+                                </button>
+                            </div>
+
+                            <!-- Refresh DFIR Skills (standalone, faster than full maintenance) -->
+                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div>
+                                    <h4 class="text-white font-medium">Refresh DFIR Skills</h4>
+                                    <p class="text-gray-400 text-sm">Re-download agentic DFIR skill markdown files from upstream (Anthropic Cybersecurity Skills, Apache-2.0). Skills improve over time upstream.</p>
+                                </div>
+                                <button @click="$store.settings.runRefreshSkills()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                                    </svg>
+                                    <span x-text="$store.settings.saving ? 'Running...' : 'Refresh Skills'"></span>
                                 </button>
                             </div>
 

@@ -1,0 +1,18 @@
+Intact.AI agentic DFIR skills
+
+This subdirectory bundles 30 SKILL.md files copied verbatim from the upstream
+"Anthropic Cybersecurity Skills" repository:
+
+    Project:   Anthropic Cybersecurity Skills
+    Source:    https://github.com/mukul975/Anthropic-Cybersecurity-Skills
+    License:   Apache License 2.0 (see LICENSE)
+    Authors:   Mahipal and contributors
+
+The skills are used at runtime by `services.agentic.skills.compose_system_prompt`
+to inject domain-specific guidance into the analyzer's system prompt. They are
+not modified — only the surrounding loader code in this project is original.
+
+Per Apache-2.0 §4(c), the original copyright and attribution notices in each
+SKILL.md file (frontmatter `author`, `license`) are preserved unchanged.
+
+If you redistribute Intact.AI, retain this NOTICE alongside the LICENSE file.

@@ -24,10 +24,10 @@ def run_system_maintenance():
         run_id = create_automation_run(
             automation_type="maintenance",
             name="System Maintenance",
-            details={"trigger": "manual", "tasks": ["artifact_import", "tool_download", "health_check"]}
+            details={"trigger": "manual", "tasks": ["artifact_import", "tool_download", "skills_refresh", "health_check"]}
         )
         add_log_to_run(run_id, "Starting system maintenance", "info")
-        add_log_to_run(run_id, "Tasks: Artifact Import (Exchange + DetectRaptor + TenRoot) → Tool Download → Health Check", "info")
+        add_log_to_run(run_id, "Tasks: Artifact Import (Exchange + DetectRaptor + TenRoot) → Tool Download → Refresh Skills → Health Check", "info")
         update_run_status(run_id, "running", progress=5)
 
         from services.workflow_service import register_cancel_event, unregister_cancel
@@ -104,13 +104,47 @@ def run_system_maintenance():
                     import traceback
                     traceback.print_exc()
 
+                update_run_status(run_id, "running", progress=60)
+
+                # =========================================================
+                # Task 3: Refresh DFIR/agentic skills (10%)
+                # =========================================================
+                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
+                add_log_to_run(run_id, "TASK 3/4: Refresh DFIR Skills", "info")
+                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
+                update_run_status(run_id, "running", progress=62)
+
+                try:
+                    from services.skills_download_service import refresh_skills
+                    skills_result = refresh_skills(
+                        logger_fn=lambda msg, level="info": add_log_to_run(run_id, msg, level),
+                    )
+                    if skills_result.get("success"):
+                        add_log_to_run(
+                            run_id,
+                            f"Skills refresh: {len(skills_result['updated'])} updated, "
+                            f"{len(skills_result['unchanged'])} unchanged, "
+                            f"{len(skills_result['failed'])} failed",
+                            "success" if not skills_result['failed'] else "warning",
+                        )
+                    else:
+                        add_log_to_run(
+                            run_id,
+                            f"Skills refresh had issues: {skills_result.get('error', 'unknown')}",
+                            "warning",
+                        )
+                except Exception as e:
+                    add_log_to_run(run_id, f"Skills refresh error: {str(e)}", "warning")
+                    import traceback
+                    traceback.print_exc()
+
                 update_run_status(run_id, "running", progress=70)
 
                 # =========================================================
-                # Task 3: System health check (20%)
+                # Task 4: System health check (20%)
                 # =========================================================
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                add_log_to_run(run_id, "TASK 3/3: System Health Check", "info")
+                add_log_to_run(run_id, "TASK 4/4: System Health Check", "info")
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
                 update_run_status(run_id, "running", progress=75)
 
@@ -181,6 +215,59 @@ def run_system_maintenance():
             "message": "System maintenance started"
         })
 
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@maintenance_bp.route('/api/maintenance/refresh-skills', methods=['POST'])
+def refresh_dfir_skills():
+    """Re-download DFIR / agentic skill markdown files from the upstream
+    Anthropic Cybersecurity Skills repository. Skill files are bundled with
+    the install but improve over time upstream — this endpoint pulls the
+    latest versions atomically and reloads the in-memory skill index.
+    """
+    try:
+        from services.skills_download_service import refresh_skills
+
+        run_id = create_automation_run(
+            automation_type="maintenance",
+            name="Refresh DFIR skills",
+            details={"trigger": "manual", "tasks": ["skills_refresh"]},
+        )
+        add_log_to_run(run_id, "Starting DFIR skill refresh from upstream", "info")
+        update_run_status(run_id, "running", progress=10)
+
+        def run_refresh():
+            try:
+                result = refresh_skills(
+                    logger_fn=lambda msg, level="info": add_log_to_run(run_id, msg, level),
+                )
+                if result.get("success"):
+                    summary = (
+                        f"Skills refreshed: {len(result['updated'])} updated, "
+                        f"{len(result['unchanged'])} unchanged, "
+                        f"{len(result['failed'])} failed of {result['total']}"
+                    )
+                    add_log_to_run(run_id, summary, "success")
+                    update_run_status(run_id, "completed", progress=100)
+                else:
+                    err = result.get("error", "unknown")
+                    add_log_to_run(run_id, f"Skills refresh failed: {err}", "error")
+                    update_run_status(run_id, "failed", progress=0, error=err)
+            except Exception as e:
+                add_log_to_run(run_id, f"Skills refresh error: {str(e)}", "error")
+                update_run_status(run_id, "failed", progress=0, error=str(e))
+                import traceback
+                traceback.print_exc()
+
+        thread = threading.Thread(target=run_refresh, daemon=True)
+        thread.start()
+
+        return jsonify({
+            "success": True,
+            "run_id": run_id,
+            "message": "Skills refresh started",
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

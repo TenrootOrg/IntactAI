@@ -6,6 +6,19 @@ This module provides the main agentic forensics pipeline functionality.
 Re-exports all public functions for backward compatibility.
 """
 
+# Load DFIR skill index once at module import. Threads in analyze_artifacts
+# share this read-only index; the loader is idempotent so re-import is cheap.
+# Failure is non-fatal — the analyzer falls back to the base prompt.
+try:
+    from services.agentic.skills import load_skill_index_at_boot
+    load_skill_index_at_boot()
+except Exception as _skill_load_err:  # noqa: BLE001
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "[Skills] index load failed at boot: %s — analyzer will use base prompt only",
+        _skill_load_err,
+    )
+
 # Main pipeline functions
 from services.agentic.pipeline import run_agentic_pipeline, run_agentic_on_existing
 
