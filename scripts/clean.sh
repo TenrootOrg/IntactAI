@@ -110,6 +110,14 @@ remove_network() {
     else
         log_info "  Network not found"
     fi
+
+    # iris_internal is created by IRIS's compose. `docker compose down` should
+    # remove it, but clean it up here too in case compose-down was skipped or
+    # interrupted, leaving an orphan that blocks the next install.
+    if docker network inspect iris_internal &>/dev/null; then
+        docker network rm iris_internal 2>/dev/null || true
+        log_success "iris_internal network removed"
+    fi
 }
 
 # Remove Intact.AI images
