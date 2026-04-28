@@ -4,6 +4,8 @@ Agentic Collectors - Velociraptor artifact collection logic
 """
 
 import json
+import logging
+import os
 import time
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,10 +16,22 @@ from pyvelociraptor import api_pb2_grpc
 from services.velociraptor_service import setup_velociraptor_connection
 from services.workflow_service import add_log_to_run
 
+logger = logging.getLogger(__name__)
+
 
 # Note: VQL-level time filtering was removed - each artifact uses different timestamp fields
 # (EventTime, Timestamp, Created, etc.) making a universal VQL filter impractical.
 # Time filtering is done post-query in Python using find_field_recursive() and TIMESTAMP_FIELDS.
+
+# Maximum rows fetched per artifact result query. Replaces a hard-coded
+# 5000-row VQL LIMIT that was silently truncating any artifact whose
+# source produced more rows — wrong analysis, no warning. The new
+# ceiling is generous (200K rows fits ~99% of real hunts inside ~200MB
+# memory) but still finite, and the loader logs a clear warning if a
+# real hunt hits it. Override via env if a deployment routinely runs
+# bigger hunts.
+VELO_MAX_ROWS_PER_ARTIFACT = int(os.environ.get("VELO_MAX_ROWS_PER_ARTIFACT", "200000"))
+VELO_QUERY_TIMEOUT_SECONDS = int(os.environ.get("VELO_QUERY_TIMEOUT_SECONDS", "300"))
 
 
 def check_flow_status(stub, client_id, flow_id):
@@ -322,25 +336,41 @@ def query_artifact_results(stub, client_id, flow_id, artifact, start_iso=None, e
         List of rows or empty list
     """
     try:
-        # Time filtering done in Python post-query (see filter_row_by_time)
-        query = f"""
-SELECT * FROM source(client_id='{client_id}', flow_id='{flow_id}', artifact='{artifact}')
-LIMIT 5000
-"""
+        # No VQL LIMIT — the previous 5000-row cap silently truncated big
+        # hunts and produced "complete" reports based on partial data.
+        # gRPC streams responses in chunks; we cap server-side via
+        # VELO_MAX_ROWS_PER_ARTIFACT and warn loudly on overflow.
+        # Time filtering is still done client-side post-fetch.
+        query = (
+            f"SELECT * FROM source("
+            f"client_id='{client_id}', "
+            f"flow_id='{flow_id}', "
+            f"artifact='{artifact}')"
+        )
         request_obj = api_pb2.VQLCollectorArgs(
             max_wait=10,
-            max_row=5000,
-            Query=[api_pb2.VQLRequest(VQL=query)]
+            max_row=VELO_MAX_ROWS_PER_ARTIFACT,
+            Query=[api_pb2.VQLRequest(VQL=query)],
         )
         rows = []
-        for response in stub.Query(request_obj, timeout=30):
+        truncated = False
+        for response in stub.Query(request_obj, timeout=VELO_QUERY_TIMEOUT_SECONDS):
             if response.Response:
                 try:
                     resp_data = json.loads(response.Response)
                     if isinstance(resp_data, list):
                         rows.extend(resp_data)
+                        if len(rows) >= VELO_MAX_ROWS_PER_ARTIFACT:
+                            truncated = True
+                            break
                 except Exception:
                     pass
+        if truncated:
+            logger.warning(
+                "[Velociraptor] %s/%s rows hit ceiling (%d) — analysis on "
+                "partial data; raise VELO_MAX_ROWS_PER_ARTIFACT to capture more",
+                artifact, flow_id, VELO_MAX_ROWS_PER_ARTIFACT,
+            )
         return rows
     except Exception:
         return []
