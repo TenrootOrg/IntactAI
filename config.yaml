@@ -35,10 +35,10 @@ modules:
     password: '123123'
 project_name: mssp
 versions:
-  elk: 9.3.0
-  iris: v2.4.25
+  elk: 9.3.3
+  iris: v2.4.27
   plaso: '20260119'
-  portainer: 2.33.6
-  timesketch: '20260311'
-  velociraptor: '0.76.2'
+  portainer: 2.39.1
+  timesketch: '20260326'
+  velociraptor: '0.76.3'
   backend: '1.0.0'
