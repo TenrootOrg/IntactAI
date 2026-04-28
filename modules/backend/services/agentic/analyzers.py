@@ -10,7 +10,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from services.agentic.constants import (
     TRUNCATE_TOKEN_LIMIT, MAX_LLM_TOKENS,
-    OLLAMA_CONTEXT_SIZE, OLLAMA_TIMEOUT_SECONDS
+    OLLAMA_CONTEXT_SIZE, OLLAMA_TIMEOUT_SECONDS,
+    ONLINE_LLM_TIMEOUT_SECONDS,
 )
 
 # =============================================================================
@@ -610,59 +611,78 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens):
     if not api_key:
         raise ValueError("Online LLM API key not configured. Set it in Settings.")
 
+    # Big report-generation prompts (~30-50K input tokens) routinely exceed
+    # the SDK default 60s HTTP timeout. When that happens upstream of
+    # OpenRouter, Cloudflare returns an HTML timeout page and the OpenAI
+    # SDK fails with a confusing json.JSONDecodeError. Catch that
+    # specifically and surface a clearer message; bump every client's
+    # timeout to ONLINE_LLM_TIMEOUT_SECONDS (default 600s).
+    def _wrap_decode_errors(provider_name, fn):
+        try:
+            return fn()
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"{provider_name} returned non-JSON response (likely upstream "
+                f"timeout on a large prompt; the proxy returned an HTML error "
+                f"page). Try a shorter prompt or raise ONLINE_LLM_TIMEOUT_SECONDS. "
+                f"Original parse error: {e}"
+            ) from e
+
     if provider == 'claude':
         import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        client = anthropic.Anthropic(api_key=api_key, timeout=ONLINE_LLM_TIMEOUT_SECONDS)
+        response = _wrap_decode_errors('Claude', lambda: client.messages.create(
             model=model,
             max_tokens=max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": prompt}]
-        )
+        ))
         return response.content[0].text
     elif provider == 'openai':
         import openai
-        client = openai.OpenAI(api_key=api_key)
+        client = openai.OpenAI(api_key=api_key, timeout=ONLINE_LLM_TIMEOUT_SECONDS)
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        response = client.chat.completions.create(
+        response = _wrap_decode_errors('OpenAI', lambda: client.chat.completions.create(
             model=model,
             messages=messages,
             max_tokens=max_tokens,
             temperature=0.1
-        )
+        ))
         return response.choices[0].message.content
     elif provider == 'openrouter':
         import openai
         client = openai.OpenAI(
             api_key=api_key,
-            base_url="https://openrouter.ai/api/v1"
+            base_url="https://openrouter.ai/api/v1",
+            timeout=ONLINE_LLM_TIMEOUT_SECONDS,
         )
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        response = client.chat.completions.create(
+        response = _wrap_decode_errors('OpenRouter', lambda: client.chat.completions.create(
             model=model,
             messages=messages,
             max_tokens=max_tokens,
             temperature=0.1
-        )
+        ))
         return response.choices[0].message.content
     elif provider == 'gemini':
         import google.generativeai as genai
         genai.configure(api_key=api_key)
         gemini_model = genai.GenerativeModel(model)
         full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
-        response = gemini_model.generate_content(
+        response = _wrap_decode_errors('Gemini', lambda: gemini_model.generate_content(
             full_prompt,
             generation_config=genai.types.GenerationConfig(
                 max_output_tokens=max_tokens,
                 temperature=0.1
-            )
-        )
+            ),
+            request_options={'timeout': ONLINE_LLM_TIMEOUT_SECONDS},
+        ))
         return response.text
     else:
         raise ValueError(f"Unsupported online provider: {provider}")
