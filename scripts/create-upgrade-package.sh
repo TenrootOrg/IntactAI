@@ -5,27 +5,47 @@
 #
 # Usage: ./create-upgrade-package.sh [OPTIONS]
 #
-# Options (or set as environment variables):
-#   ELK_VERSION     - Elasticsearch/Kibana/Logstash version (default: 9.2.3)
-#   TS_VERSION      - Timesketch version (default: 20260209)
-#   PLASO_VERSION   - Plaso version (default: 20260119)
-#   IRIS_VERSION    - IRIS version (default: v2.4.25)
-#   VELO_VERSION    - Velociraptor version - FULL version required (default: 0.75.6)
-#   INCLUDE_SOURCE  - Include backend/frontend source (default: true)
+# By default, all versions are read from ../config.yaml (the single source of
+# truth). Set any of these env vars to override on the command line:
 #
-# Example:
-#   ELK_VERSION=9.3.0 ./create-upgrade-package.sh
-#   ./create-upgrade-package.sh  # Uses defaults
+#   ELK_VERSION, TS_VERSION, PLASO_VERSION, IRIS_VERSION, VELO_VERSION,
+#   INCLUDE_SOURCE (default: true), CONFIG_YAML (default: ../config.yaml)
+#
+# Examples:
+#   ./create-upgrade-package.sh                   # use config.yaml versions
+#   VELO_VERSION=0.77.0 ./create-upgrade-package.sh   # override one
 
 set -e
 
-# Default versions (can be overridden via environment variables)
-ELK_VERSION="${ELK_VERSION:-9.2.3}"
-TS_VERSION="${TS_VERSION:-20260209}"
-PLASO_VERSION="${PLASO_VERSION:-20260119}"
-IRIS_VERSION="${IRIS_VERSION:-v2.4.25}"
-VELO_VERSION="${VELO_VERSION:-0.75.6}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_YAML="${CONFIG_YAML:-${SCRIPT_DIR}/../config.yaml}"
+
+# Read a versions.* value from config.yaml. Same python3+yaml pattern as lib/config.sh.
+read_config_version() {
+    local key="$1"
+    if [[ ! -f "$CONFIG_YAML" ]]; then
+        echo ""
+        return 1
+    fi
+    python3 -c "import yaml; v = yaml.safe_load(open('${CONFIG_YAML}'))['versions'].get('${key}', ''); print(v if v is not None else '')" 2>/dev/null || echo ""
+}
+
+# Defaults come from config.yaml; env vars still override.
+ELK_VERSION="${ELK_VERSION:-$(read_config_version elk)}"
+TS_VERSION="${TS_VERSION:-$(read_config_version timesketch)}"
+PLASO_VERSION="${PLASO_VERSION:-$(read_config_version plaso)}"
+IRIS_VERSION="${IRIS_VERSION:-$(read_config_version iris)}"
+VELO_VERSION="${VELO_VERSION:-$(read_config_version velociraptor)}"
 INCLUDE_SOURCE="${INCLUDE_SOURCE:-true}"
+
+# Fail fast if any version is empty — that means config.yaml is missing,
+# unparseable, or the key is absent. We never want to package an empty version.
+for v in ELK_VERSION TS_VERSION PLASO_VERSION IRIS_VERSION VELO_VERSION; do
+    if [[ -z "${!v}" ]]; then
+        echo "ERROR: $v is empty. Set it via env var or fix ${CONFIG_YAML}." >&2
+        exit 1
+    fi
+done
 
 # Package directory
 DATE_STAMP=$(date +%Y%m%d_%H%M%S)
@@ -123,7 +143,7 @@ echo "  Release tag: ${VELO_RELEASE_TAG}"
 echo "  Binary: ${VELO_BINARY}"
 echo "  Downloading from: ${VELO_URL}"
 
-curl -L -f -o "${PACKAGE_DIR}/binaries/${VELO_BINARY}" "${VELO_URL}" || {
+curl -fL --retry 5 --retry-delay 5 --retry-max-time 120 -o "${PACKAGE_DIR}/binaries/${VELO_BINARY}" "${VELO_URL}" || {
     echo "ERROR: Failed to download Velociraptor binary"
     echo "URL: ${VELO_URL}"
     echo "Make sure version ${VELO_VERSION} exists at https://github.com/Velocidex/velociraptor/releases"

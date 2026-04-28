@@ -145,7 +145,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
         log(f"Downloading Velociraptor {actual_version}...", "info")
         log(f"  URL: {download_url}", "info")
 
-        result = run_command(f"curl -L -o {velo_bin} {download_url}", logger=log, timeout=300)
+        result = run_command(f"curl -fL --retry 5 --retry-delay 5 --retry-max-time 120 -o {velo_bin} {download_url}", logger=log, timeout=300)
         if not result['success']:
             raise Exception("Failed to download new binary")
 
