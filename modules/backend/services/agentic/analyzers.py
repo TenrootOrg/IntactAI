@@ -4,6 +4,7 @@ Agentic Analyzers - LLM analysis functions for forensic data
 """
 
 import json
+import re
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -305,6 +306,20 @@ Return your response in two parts:
 A short narrative the analyst can paste into a ticket. NO recap of every finding — just the top 1-3 issues and what to check first.
 """
 
+    # Inject one DFIR domain-knowledge skill if any matches the artifact +
+    # MITRE techniques on this finding. No-op if no skill clears the score
+    # threshold or the skills index is empty.
+    try:
+        from services.agentic.skills import select_skills, compose_system_prompt
+        mitre_ids = [
+            t.get('id') for t in (finding_meta or {}).get('mitre_attack', [])
+            if isinstance(t, dict) and t.get('id')
+        ]
+        selected = select_skills(artifact, mitre_ids)
+        system_prompt = compose_system_prompt(system_prompt, selected)
+    except Exception:  # noqa: BLE001 — skills must never block analysis
+        pass
+
     user_prompt = f"""## ARTIFACT
 {artifact}
 
@@ -324,6 +339,125 @@ Now produce the JSON findings + brief prose summary, following all HARD RULES ab
         return (artifact, summary, None)
     except Exception as e:
         return (artifact, f"Analysis failed: {str(e)}", str(e))
+
+
+def _extract_findings_from_summary(summary_text: str) -> dict:
+    """Pull the JSON block out of a per-artifact summary string (the format
+    that analyze_single_artifact returns: a fenced ```json``` block followed
+    by a prose paragraph). Returns the parsed dict, or {} if extraction fails.
+    """
+    if not isinstance(summary_text, str) or not summary_text:
+        return {}
+    # Match ```json ... ``` (with optional language tag).
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", summary_text, flags=re.DOTALL)
+    if not m:
+        return {}
+    try:
+        return json.loads(m.group(1))
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+
+def synthesize_findings(run_id, summaries, llm_config, log_func=None):
+    """Cross-artifact synthesis pass: take the per-artifact summaries from the
+    atomic phase, pick one macro DFIR playbook via skills.select_macro_skill(),
+    and produce a unified narrative + prioritized next-actions.
+
+    Returns the synthesis text (string), or None if synthesis was skipped
+    (e.g., no findings, no macros loaded, or LLM call failed). Never raises —
+    synthesis is best-effort and must not break the pipeline.
+    """
+    if not summaries:
+        return None
+
+    def log(msg, level="info"):
+        try:
+            from services.workflow_service import add_log_to_run
+            add_log_to_run(run_id, msg, level)
+        except Exception:  # noqa: BLE001
+            pass
+        if log_func:
+            log_func(msg, level)
+
+    # Aggregate MITRE techniques + severity counts + per-artifact title lines.
+    aggregated_mitre = []
+    severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "informational": 0}
+    artifact_names = list(summaries.keys())
+    finding_lines = []
+
+    for artifact, summary in summaries.items():
+        parsed = _extract_findings_from_summary(summary)
+        if not parsed:
+            continue
+        for f in parsed.get("findings", []) or []:
+            sev = (f.get("severity") or "").lower()
+            if sev in severity_counts:
+                severity_counts[sev] += 1
+            for t in f.get("mitre", []) or []:
+                if t:
+                    aggregated_mitre.append(str(t))
+            # One compact line per finding for the synthesis input.
+            finding_lines.append(
+                f"- [{artifact}] [{sev or '?'}] {f.get('title', '?')}: "
+                f"{(f.get('interpretation') or f.get('evidence') or '')[:240]}"
+            )
+
+    if not finding_lines:
+        log("[LLM] Synthesis: no parseable findings across artifacts; skipping.")
+        return None
+
+    # Pick the macro playbook for this run.
+    try:
+        from services.agentic.skills import select_macro_skill, get_macro_body
+    except Exception:  # noqa: BLE001
+        log("[LLM] Synthesis: skills module unavailable; skipping.")
+        return None
+
+    macro_name = select_macro_skill(
+        aggregated_mitre=aggregated_mitre,
+        severity_counts=severity_counts,
+        artifact_names=artifact_names,
+    )
+    if not macro_name:
+        log("[LLM] Synthesis: no macro playbook matched; skipping.")
+        return None
+
+    macro_body = get_macro_body(macro_name) or ""
+
+    log(f"[LLM] Synthesis: using macro '{macro_name}' across {len(artifact_names)} artifacts")
+
+    synthesis_system_prompt = f"""You are a senior DFIR lead writing a cross-artifact investigation summary for a SOC.
+
+You have a list of per-artifact findings already triaged by junior analysts. Your job is to:
+1. Connect the dots — identify whether multiple findings point to one campaign / one root cause / one threat actor pattern, or to independent issues.
+2. Calibrate confidence honestly. A single "high" finding alone is suggestive; three "high" findings spanning persistence + execution + lateral movement is a strong story.
+3. Stay grounded in the FACTS each junior analyst already established. Do NOT invent attacker names, tools, or activity not present in the per-artifact findings.
+4. Prioritize next actions for the SOC: what to escalate, what to contain, what to ignore.
+
+## DOMAIN PLAYBOOK
+{macro_body}
+"""
+
+    synthesis_user_prompt = f"""## RUN CONTEXT
+- Artifacts analyzed: {len(artifact_names)}
+- Severity rollup: {json.dumps(severity_counts)}
+- Distinct MITRE techniques observed: {sorted(set(aggregated_mitre))[:40]}
+
+## PER-ARTIFACT FINDINGS (one line each — distilled from junior-analyst JSON)
+{chr(10).join(finding_lines[:200])}
+
+## YOUR DELIVERABLE
+1. **Executive narrative** (≤200 words): the story across artifacts. What appears to have happened, in plain language. Cite evidence by `[artifact]` reference.
+2. **Confidence**: low / medium / high — one line of justification.
+3. **Top 3 actions for the SOC**: ranked. Each with a single sentence of "why".
+4. **Calibration check**: 1-2 sentences on what would invalidate this narrative.
+"""
+
+    try:
+        return call_llm(synthesis_user_prompt, synthesis_system_prompt, llm_config)
+    except Exception as e:  # noqa: BLE001
+        log(f"[LLM] Synthesis call failed: {e}", "warning")
+        return None
 
 
 def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func=None):
@@ -383,6 +517,15 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
     # If ALL analyses failed, raise an exception so the pipeline knows
     if error_count == len(artifacts_list) and len(artifacts_list) > 0:
         raise RuntimeError(f"All {error_count} LLM analyses failed. Check your LLM configuration (API key or Ollama server).")
+
+    # Synthesis pass: cross-artifact narrative anchored on a macro DFIR
+    # playbook. Best-effort — never breaks the pipeline if it fails.
+    # Stored under a reserved key the report layer can render distinctly.
+    if error_count < len(artifacts_list):
+        synthesis = synthesize_findings(run_id, summaries, llm_config, log_func=log_func)
+        if synthesis:
+            summaries["__synthesis__"] = synthesis
+            log(f"[LLM] Cross-artifact synthesis added ({len(synthesis)} chars)")
 
     return summaries
 

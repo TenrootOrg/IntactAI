@@ -516,6 +516,24 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        async runRefreshSkills() {
+            this.showMessage('Refreshing DFIR skills from upstream...', 'info');
+            try {
+                const response = await fetch('/api/maintenance/refresh-skills', { method: 'POST' });
+                const result = await response.json();
+                if (response.ok && result.success) {
+                    this.showMessage('Skills refresh started - redirecting to Workflows', 'success');
+                    setTimeout(() => {
+                        Alpine.store('app').switchTab('workflows');
+                    }, 500);
+                } else {
+                    this.showMessage('Skills refresh failed: ' + (result.error || 'Unknown error'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Skills refresh error: ' + e.message, 'error');
+            }
+        },
+
         async runPurge() {
             if (!confirm('This will delete ALL workflows, reports, uploads, temp files, and Velociraptor hunt data.\n\nThis cannot be undone. Continue?')) return;
             this.saving = true;

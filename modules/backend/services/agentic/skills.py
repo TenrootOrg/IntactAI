@@ -1,0 +1,446 @@
+#!/usr/bin/env python3
+"""
+DFIR skills loader/selector/composer for the agentic analyzer.
+
+Skills are markdown files with YAML frontmatter (Anthropic Skill format) that
+inject domain-specific guidance into the analyzer's system prompt. They are
+loaded once at boot, indexed in memory, and selected per request based on the
+artifact name and MITRE ATT&CK techniques on the active finding.
+
+Provider-agnostic: the composer returns a plain string, which the existing
+call_llm() dispatch hands to whichever LLM is configured (Claude / OpenAI /
+OpenRouter / Gemini / Ollama).
+"""
+
+import os
+import re
+import logging
+from typing import Dict, List, Optional, Tuple
+
+import yaml
+
+from services.agentic.constants import (
+    SKILL_BODY_HARD_CAP,
+    SKILL_BODY_SOFT_CAP,
+    SKILL_DEFAULT_TOP_K,
+    SKILL_MIN_SCORE,
+    LOG_PREFIX_SKILLS,
+)
+
+logger = logging.getLogger(__name__)
+
+# Module-level immutable indexes. Populated once by load_skill_index_at_boot().
+# Threads share these read-only — analyze_artifacts uses ThreadPoolExecutor.
+#
+# Two packs with distinct purposes:
+#   _SKILL_INDEX  — atomic / per-artifact specifics (loaded from skills/dfir/).
+#                   Selected K=1 per artifact analysis; injected into the
+#                   analyzer's system prompt.
+#   _MACRO_INDEX  — synthesis / cross-artifact playbooks (loaded from
+#                   skills/macros/). One picked per pipeline run after the
+#                   atomic loop completes; framed by aggregated MITRE
+#                   techniques + severity distribution from per-artifact
+#                   findings.
+_SKILL_INDEX: Dict[str, dict] = {}
+_MACRO_INDEX: Dict[str, dict] = {}
+_SKILLS_LOADED = False
+
+# Default skills directory: <agentic>/skills/. Overridable via env var.
+_DEFAULT_SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
+
+
+def _approx_tokens(text: str) -> int:
+    """Rough char/4 token estimate. Good enough for size gating."""
+    return len(text) // 4
+
+
+def _parse_skill_file(path: str) -> Optional[dict]:
+    """Parse a SKILL markdown file with YAML frontmatter.
+
+    Returns dict with frontmatter fields + 'body' + '_path', or None if the
+    file is malformed. Logs a warning on parse failure.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        logger.warning("%s could not read %s: %s", LOG_PREFIX_SKILLS, path, e)
+        return None
+
+    if not text.startswith("---"):
+        logger.warning("%s missing frontmatter: %s", LOG_PREFIX_SKILLS, path)
+        return None
+
+    # Split on the second --- to extract frontmatter + body.
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        logger.warning("%s malformed frontmatter: %s", LOG_PREFIX_SKILLS, path)
+        return None
+
+    try:
+        meta = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError as e:
+        logger.warning("%s YAML parse error in %s: %s", LOG_PREFIX_SKILLS, path, e)
+        return None
+
+    if not isinstance(meta, dict) or not meta.get("name"):
+        logger.warning("%s missing 'name' in frontmatter: %s", LOG_PREFIX_SKILLS, path)
+        return None
+
+    body = parts[2].lstrip("\n")
+    body_tokens = _approx_tokens(body)
+    if body_tokens > SKILL_BODY_HARD_CAP:
+        logger.warning(
+            "%s body too large (%d tok > %d hard cap), skipping: %s",
+            LOG_PREFIX_SKILLS, body_tokens, SKILL_BODY_HARD_CAP, path
+        )
+        return None
+    if body_tokens > SKILL_BODY_SOFT_CAP:
+        logger.info(
+            "%s body large (%d tok > %d soft cap): %s",
+            LOG_PREFIX_SKILLS, body_tokens, SKILL_BODY_SOFT_CAP, path
+        )
+
+    meta["body"] = body
+    meta["_path"] = path
+    meta["_body_tokens"] = body_tokens
+    return meta
+
+
+def _load_subdir_into(target_index: Dict[str, dict], subdir: str, label: str) -> Tuple[int, int]:
+    """Walk a single skills subdirectory (e.g. .../skills/dfir or .../skills/macros)
+    parsing every *.md and inserting into `target_index`. Returns (loaded, skipped).
+    """
+    if not os.path.isdir(subdir):
+        logger.info("%s no %s dir at %s", LOG_PREFIX_SKILLS, label, subdir)
+        return 0, 0
+
+    loaded = 0
+    skipped = 0
+    for root, _dirs, files in os.walk(subdir):
+        for fname in files:
+            if not fname.endswith(".md"):
+                continue
+            # Skip top-level docs (README/INDEX/LICENSING/NOTICE) — they live
+            # alongside skills but aren't themselves skills.
+            if fname in ("README.md", "INDEX.md", "LICENSING.md", "NOTICE.md"):
+                continue
+            meta = _parse_skill_file(os.path.join(root, fname))
+            if meta is None:
+                skipped += 1
+                continue
+            name = meta["name"]
+            if name in target_index:
+                logger.warning(
+                    "%s duplicate %s skill %r — keeping first (%s), ignoring %s",
+                    LOG_PREFIX_SKILLS, label, name,
+                    target_index[name]["_path"], meta["_path"]
+                )
+                skipped += 1
+                continue
+            target_index[name] = meta
+            loaded += 1
+    return loaded, skipped
+
+
+def load_skill_index_at_boot(skills_dir: Optional[str] = None) -> Dict[str, dict]:
+    """Walk the skills directory once at boot, parse every *.md file, build
+    immutable in-memory indexes keyed by frontmatter `name`.
+
+    Two indexes are populated:
+      * _SKILL_INDEX from skills_dir/dfir/   (atomic / per-artifact specifics)
+      * _MACRO_INDEX from skills_dir/macros/ (cross-artifact synthesis playbooks)
+
+    Files at the top level of skills_dir (LICENSE, NOTICE, README.md, INDEX.md)
+    are ignored. If `dfir/` and `macros/` are absent, the loader falls back to
+    walking skills_dir directly (backwards-compat with the old flat layout).
+
+    Idempotent — calling twice is a no-op. Returns the atomic index for legacy
+    callers; macro index is exposed via get_macro_index().
+
+    Designed to be called from agentic/__init__.py at module import.
+    """
+    global _SKILL_INDEX, _MACRO_INDEX, _SKILLS_LOADED
+
+    if _SKILLS_LOADED:
+        return _SKILL_INDEX
+
+    skills_dir = skills_dir or os.environ.get("AGENTIC_SKILLS_DIR") or _DEFAULT_SKILLS_DIR
+
+    if not os.path.isdir(skills_dir):
+        logger.info("%s no skills dir at %s — skills disabled", LOG_PREFIX_SKILLS, skills_dir)
+        _SKILLS_LOADED = True
+        return _SKILL_INDEX
+
+    dfir_dir = os.path.join(skills_dir, "dfir")
+    macros_dir = os.path.join(skills_dir, "macros")
+
+    if os.path.isdir(dfir_dir) or os.path.isdir(macros_dir):
+        # New layout: dfir/ + macros/ as siblings.
+        atomic_loaded, atomic_skipped = _load_subdir_into(_SKILL_INDEX, dfir_dir, "atomic")
+        macro_loaded, macro_skipped = _load_subdir_into(_MACRO_INDEX, macros_dir, "macro")
+        logger.info(
+            "%s loaded %d atomic + %d macro skills from %s (%d skipped)",
+            LOG_PREFIX_SKILLS, atomic_loaded, macro_loaded, skills_dir,
+            atomic_skipped + macro_skipped,
+        )
+    else:
+        # Legacy flat layout: everything is atomic.
+        atomic_loaded, atomic_skipped = _load_subdir_into(_SKILL_INDEX, skills_dir, "atomic")
+        logger.info(
+            "%s loaded %d atomic skills from %s (%d skipped) [flat layout]",
+            LOG_PREFIX_SKILLS, atomic_loaded, skills_dir, atomic_skipped,
+        )
+
+    _SKILLS_LOADED = True
+    return _SKILL_INDEX
+
+
+def reset_skill_index_for_reload() -> None:
+    """Clear the in-memory indexes so the next call to load_skill_index_at_boot()
+    re-scans the disk. Used by the maintenance "Re-download skills" path after
+    new files have been swapped onto disk. Not for general use.
+    """
+    global _SKILLS_LOADED
+    _SKILL_INDEX.clear()
+    _MACRO_INDEX.clear()
+    _SKILLS_LOADED = False
+
+
+def _tokenize_artifact(name: str) -> List[str]:
+    """Velociraptor artifact names are dot-separated CamelCase paths, e.g.
+    'Windows.System.PSReadline' -> ['windows', 'system', 'psreadline',
+    'powershell', 'history'].
+
+    We split on dots, then on inner CamelCase boundaries, lowercase, and dedupe.
+    No fancy NLP — just enough to give the selector keyword surface area.
+    """
+    if not name:
+        return []
+    parts = re.split(r"[.\s/_-]+", name)
+    tokens = []
+    for p in parts:
+        # Split CamelCase boundaries: PSReadline -> ['PS', 'Readline'].
+        for sub in re.findall(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+", p):
+            tokens.append(sub.lower())
+    # Dedupe, preserve order.
+    seen = set()
+    return [t for t in tokens if not (t in seen or seen.add(t))]
+
+
+_MITRE_ID_RE = re.compile(r"^T\d{4}(\.\d{3})?$", re.IGNORECASE)
+
+
+def _extract_mitre_ids(skill: dict) -> set:
+    """Pull canonical-cased MITRE technique IDs from a skill's frontmatter.
+
+    Handles two conventions seen in the upstream corpus:
+      * `mitre_attack: [T1059.001, ...]` (Anthropic Skills canonical)
+      * `tags: [t1558, T1557.001, ...]` (mukul975 sometimes lists IDs as tags)
+    """
+    out: set = set()
+    for source_key in ("mitre_attack", "tags"):
+        vals = skill.get(source_key) or []
+        if not isinstance(vals, list):
+            continue
+        for x in vals:
+            s = str(x).strip()
+            if _MITRE_ID_RE.fullmatch(s):
+                out.add(s.upper())
+    return out
+
+
+def _count_mitre_matches(skill_ids: set, query_ids: List[str]) -> int:
+    """Count how many query technique IDs match the skill, where 'match' is
+    either exact (T1558.003 == T1558.003) or parent (T1558.003 against a skill
+    tagged with the parent T1558). Used so a fine-grained query still hits a
+    coarse-grained skill, which is the common upstream tagging style.
+    """
+    matched = 0
+    for q in query_ids:
+        q_up = str(q).strip().upper()
+        if q_up in skill_ids:
+            matched += 1
+            continue
+        parent = q_up.split(".", 1)[0]
+        if parent in skill_ids:
+            matched += 1
+    return matched
+
+
+def _score_skill(skill: dict, artifact_tokens: List[str], mitre_ids: List[str]) -> int:
+    """Score a single skill against an artifact analysis context.
+
+    Weights (deliberately simple — keyword match on a 30-skill corpus is plenty,
+    we can swap in embeddings later if/when the corpus grows):
+      +5 per matching MITRE technique ID (with parent-fallback)
+      +2 per matching tag word against artifact tokens
+      +1 per artifact token found in the skill description
+    """
+    score = 0
+
+    # MITRE ATT&CK IDs — exact or parent match.
+    if mitre_ids:
+        skill_mitre = _extract_mitre_ids(skill)
+        if skill_mitre:
+            score += 5 * _count_mitre_matches(skill_mitre, mitre_ids)
+
+    # Tag keyword overlap (excluding tags that are already matched as MITRE IDs).
+    tags = skill.get("tags") or []
+    if isinstance(tags, list) and artifact_tokens:
+        tag_words: set = set()
+        for t in tags:
+            s = str(t).strip()
+            if _MITRE_ID_RE.fullmatch(s):
+                continue  # MITRE-shaped, already credited above
+            for w in re.split(r"[\s\-_]+", s.lower()):
+                if w:
+                    tag_words.add(w)
+        score += 2 * len(set(artifact_tokens) & tag_words)
+
+    # Description keyword overlap.
+    desc = (skill.get("description") or "").lower()
+    if desc and artifact_tokens:
+        score += sum(1 for t in artifact_tokens if t in desc)
+
+    return score
+
+
+def select_skills(
+    artifact_name: str,
+    mitre_techniques: Optional[List[str]] = None,
+    top_k: int = SKILL_DEFAULT_TOP_K,
+) -> List[str]:
+    """Return up to top_k skill names ranked by relevance to (artifact_name,
+    mitre_techniques). Returns [] if the index is empty or no skill clears
+    SKILL_MIN_SCORE — caller falls back to the base prompt unchanged.
+    """
+    if not _SKILL_INDEX:
+        return []
+
+    artifact_tokens = _tokenize_artifact(artifact_name)
+    mitre_ids = list(mitre_techniques or [])
+
+    if not artifact_tokens and not mitre_ids:
+        return []
+
+    scored: List[Tuple[int, str]] = []
+    for name, skill in _SKILL_INDEX.items():
+        s = _score_skill(skill, artifact_tokens, mitre_ids)
+        if s >= SKILL_MIN_SCORE:
+            scored.append((s, name))
+
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [n for _, n in scored[:top_k]]
+
+
+def compose_system_prompt(base_prompt: str, skill_names: List[str]) -> str:
+    """Append the bodies of `skill_names` to `base_prompt`, separated by a
+    section header. If `skill_names` is empty, `base_prompt` is returned
+    unchanged (callers do not need to special-case the no-skill path).
+    """
+    if not skill_names:
+        return base_prompt
+
+    bodies = []
+    for name in skill_names:
+        skill = _SKILL_INDEX.get(name)
+        if not skill:
+            continue
+        body = skill.get("body", "")
+        if not body:
+            continue
+        bodies.append(f"<!-- skill: {name} -->\n{body.strip()}")
+
+    if not bodies:
+        return base_prompt
+
+    return (
+        base_prompt
+        + "\n\n## DOMAIN KNOWLEDGE (skill cards)\n\n"
+        + "\n\n---\n\n".join(bodies)
+    )
+
+
+def get_skill_index() -> Dict[str, dict]:
+    """Read-only accessor for tests/diagnostics. Do not mutate."""
+    return _SKILL_INDEX
+
+
+def get_macro_index() -> Dict[str, dict]:
+    """Read-only accessor for the macro (synthesis-phase) index."""
+    return _MACRO_INDEX
+
+
+# ----------------------------------------------------------------------------
+# Synthesis (macro) phase: select ONE macro skill given the aggregated context
+# from every per-artifact analysis in a pipeline run.
+# ----------------------------------------------------------------------------
+
+def select_macro_skill(
+    aggregated_mitre: Optional[List[str]] = None,
+    severity_counts: Optional[Dict[str, int]] = None,
+    artifact_names: Optional[List[str]] = None,
+) -> Optional[str]:
+    """Pick the single best macro playbook for the synthesis pass.
+
+    Inputs are the cross-artifact aggregate from the atomic phase:
+      * `aggregated_mitre`  — flat list of MITRE technique IDs collected
+        across every per-artifact finding.
+      * `severity_counts`   — dict like {"critical": 2, "high": 5, ...}
+        used to weight playbook choice (lots of "critical" severity hits
+        push toward incident-response playbooks; many "low" with patterns
+        of forensic interest push toward forensics-investigation).
+      * `artifact_names`    — flat list of every artifact name analyzed,
+        for keyword fallback signals.
+
+    Returns the macro skill name to inject, or None if the macro index is
+    empty / no macro clears SKILL_MIN_SCORE (caller falls back to base).
+    """
+    if not _MACRO_INDEX:
+        return None
+
+    aggregated_mitre = list(aggregated_mitre or [])
+    severity_counts = dict(severity_counts or {})
+    artifact_names = list(artifact_names or [])
+
+    # Build a flat pool of "context tokens" to score against macro tags +
+    # description: artifact name tokens + severity-driven keywords.
+    context_tokens: List[str] = []
+    for art in artifact_names:
+        context_tokens.extend(_tokenize_artifact(art))
+    if severity_counts.get("critical", 0) >= 1:
+        context_tokens.extend(["incident", "ransomware", "breach"])
+    if severity_counts.get("high", 0) >= 3:
+        context_tokens.extend(["malware", "investigation"])
+    # Dedupe.
+    seen = set()
+    context_tokens = [t for t in context_tokens if not (t in seen or seen.add(t))]
+
+    scored: List[Tuple[int, str]] = []
+    for name, macro in _MACRO_INDEX.items():
+        s = _score_skill(macro, context_tokens, aggregated_mitre)
+        if s >= SKILL_MIN_SCORE:
+            scored.append((s, name))
+
+    if not scored:
+        # Fallback: if NO macro scores above threshold but the run produced
+        # any high-severity hits, use the broadest endpoint-investigation
+        # playbook. Better than no synthesis at all.
+        if severity_counts.get("critical", 0) + severity_counts.get("high", 0) >= 1:
+            for fallback in (
+                "performing-endpoint-forensics-investigation",
+                "performing-malware-triage-with-yara",
+            ):
+                if fallback in _MACRO_INDEX:
+                    return fallback
+        return None
+
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return scored[0][1]
+
+
+def get_macro_body(name: str) -> Optional[str]:
+    """Return the body text of a macro skill by name, or None if absent."""
+    macro = _MACRO_INDEX.get(name)
+    return macro.get("body") if macro else None

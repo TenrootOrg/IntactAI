@@ -18,3 +18,16 @@ LOG_PREFIX_VELOCIRAPTOR = "[Velociraptor]"
 LOG_PREFIX_LLM = "[LLM]"
 LOG_PREFIX_PIPELINE = "[Pipeline]"
 LOG_PREFIX_TIME_FILTER = "[TIME-FILTER]"
+LOG_PREFIX_SKILLS = "[Skills]"
+
+# Skills (DFIR domain knowledge injected per-artifact into the system prompt).
+# Selected from upstream Anthropic Cybersecurity Skills (Apache-2.0). Each skill
+# is a markdown body of ~2-5K tokens; we load top-K per artifact analysis.
+SKILL_BODY_HARD_CAP = 8000     # tokens — reject skills above this on load
+SKILL_BODY_SOFT_CAP = 5000     # tokens — warn (still loaded) above this
+SKILL_DEFAULT_TOP_K = 1        # how many skills to inject per artifact
+SKILL_MIN_SCORE = 3            # minimum selector score; below this we inject
+                               # nothing (better to fall back to the base
+                               # prompt than ship a tangentially-relevant
+                               # skill — single-keyword matches score 1-2
+                               # and are noise; meaningful matches cross 3).
