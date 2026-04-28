@@ -199,8 +199,12 @@ def _sample_records_for_llm(rows, max_count=90):
     return first + middle + last, True
 
 
-def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None, finding_meta=None):
+def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None, finding_meta=None, log_func=None):
     """Analyze a single artifact with LLM. Returns (artifact, summary, error) tuple.
+
+    `log_func` is the workflow-log callback `(msg, level)` from the
+    orchestrator; if provided, the atomic skill pick (if any) is logged so
+    the operator can see which DFIR skill drove each artifact analysis.
 
     Anti-hallucination guards:
     - Pre-computes data scope (timestamps, users, IPs) and pins it in the prompt
@@ -308,15 +312,26 @@ A short narrative the analyst can paste into a ticket. NO recap of every finding
 
     # Inject one DFIR domain-knowledge skill if any matches the artifact +
     # MITRE techniques on this finding. No-op if no skill clears the score
-    # threshold or the skills index is empty.
+    # threshold or the skills index is empty. Logs the chosen skill (and
+    # whether it came from the pinned artifact_map or runtime fuzzy match)
+    # to the workflow log so the operator can see which guidance drove
+    # each per-artifact analysis.
     try:
-        from services.agentic.skills import select_skills, compose_system_prompt
+        from services.agentic.skills import (
+            select_skills, compose_system_prompt, _lookup_artifact_map,
+        )
         mitre_ids = [
             t.get('id') for t in (finding_meta or {}).get('mitre_attack', [])
             if isinstance(t, dict) and t.get('id')
         ]
         selected = select_skills(artifact, mitre_ids)
-        system_prompt = compose_system_prompt(system_prompt, selected)
+        if selected:
+            system_prompt = compose_system_prompt(system_prompt, selected)
+            if log_func:
+                source = "pinned" if _lookup_artifact_map(artifact) else "fuzzy"
+                log_func(f"[Skill] {artifact} → {selected[0]} ({source})", "info")
+        elif log_func:
+            log_func(f"[Skill] {artifact} → no match (using base prompt only)", "info")
     except Exception:  # noqa: BLE001 — skills must never block analysis
         pass
 
@@ -497,7 +512,10 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
                     'mitre_attack': first.get('mitre_attack', []),
                 }
             log(f"[LLM] Queued {artifact} ({len(rows)} rows) for analysis")
-            future = executor.submit(analyze_single_artifact, artifact, rows, llm_config, anonymizer, finding_meta)
+            future = executor.submit(
+                analyze_single_artifact, artifact, rows, llm_config,
+                anonymizer, finding_meta, log,
+            )
             futures[future] = artifact
 
         # Collect results as they complete
