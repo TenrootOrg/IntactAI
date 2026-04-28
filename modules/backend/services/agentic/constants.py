@@ -9,6 +9,14 @@ MAX_LLM_TOKENS = 16384  # Max response tokens for online LLMs (increased for det
 OLLAMA_CONTEXT_SIZE = 65536  # Context window for Ollama (increased for detailed reports)
 OLLAMA_TIMEOUT_SECONDS = 600  # Request timeout for Ollama (10 min for detailed reports)
 
+# Online LLM HTTP timeout. Default 60s in the openai/anthropic SDKs is too
+# short for big report-generation prompts (~30-50K input tokens) — Cloudflare
+# in front of OpenRouter starts timing out at ~100s and returns an HTML
+# error page that the SDK then can't parse as JSON, surfacing as a cryptic
+# "Expecting value: line 405 column 1" json.JSONDecodeError. 600s is
+# generous; long-running reports finish well under it.
+ONLINE_LLM_TIMEOUT_SECONDS = 600
+
 # Collection Configuration
 COLLECTION_POLL_INTERVAL = 30  # Seconds between polling for results
 ROWS_PER_QUERY = 5000  # Max rows per VQL query
