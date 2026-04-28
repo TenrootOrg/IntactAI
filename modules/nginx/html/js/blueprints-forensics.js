@@ -592,12 +592,23 @@ async function analyzeExistingCollection() {
         return;
     }
 
-    // Determine if it's a flow or hunt
-    const isFlow = existingId.startsWith('F.');
-    const isHunt = existingId.startsWith('H.');
+    // Determine the ID kind. Three accepted shapes:
+    //   F.xxx       single-client flow (no client picker)
+    //   H.xxx       standalone hunt    (no client picker — analyzes all clients)
+    //   F.xxx.H     hunt-derived flow  (REQUIRES client picker — combined data)
+    const endsWithH = existingId.endsWith('.H');
+    const isFlow = existingId.startsWith('F.') && !endsWithH;
+    const isHunt = existingId.startsWith('H.') || endsWithH;
 
     if (!isFlow && !isHunt) {
-        alert('Invalid ID format. Flow IDs start with "F." and Hunt IDs start with "H."');
+        alert('Invalid ID format. Flow IDs start with "F.", Hunt IDs start with "H.", and hunt-derived flow IDs end with ".H".');
+        return;
+    }
+
+    // For hunt-derived flows (F.xxx.H), the analyst must pick at least one
+    // client — otherwise the VQL filter would have nothing to scope to.
+    if (endsWithH && forensicsSelectedClients.size === 0) {
+        alert('This is a hunt-derived flow (ends with .H). Please select at least one client to analyze from the picker above.');
         return;
     }
 
@@ -636,6 +647,10 @@ async function analyzeExistingCollection() {
             body: JSON.stringify({
                 flow_id: isFlow ? existingId : null,
                 hunt_id: isHunt ? existingId : null,
+                // Only send client_ids on the hunt-derived-flow path
+                // (`F.xxx.H`). Standalone `H.xxx` keeps the historical
+                // "all clients" semantic by omitting the field.
+                client_ids: endsWithH ? Array.from(forensicsSelectedClients) : undefined,
                 report_types: reportTypes,
                 anonymize_data: anonymizeData,
                 custom_patterns: customPatterns,

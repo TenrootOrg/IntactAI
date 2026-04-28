@@ -372,13 +372,14 @@ def _update_phase(run_id, phase, progress):
 def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                              report_types=None, anonymize_data=False, custom_patterns=None,
                              import_to_iris=False, iris_case_name=None, time_filter=None,
-                             min_severity='informational', external_files=None, cancel_event=None):
+                             min_severity='informational', external_files=None, cancel_event=None,
+                             client_ids=None):
     """Run AI analysis on an existing Velociraptor flow or hunt (skip collection step)
 
     Args:
         run_id: Workflow run ID for tracking
         flow_id: Existing flow ID (F.xxx) - for single client collection
-        hunt_id: Existing hunt ID (H.xxx) - for multi-client hunt
+        hunt_id: Existing hunt ID (H.xxx OR F.xxx.H) - for multi-client hunt
         llm_config: LLM configuration dictionary
         report_types: List of report types to generate
         anonymize_data: If True, mask sensitive data before LLM analysis
@@ -388,6 +389,9 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         time_filter: Optional time filter for post-collection filtering
         min_severity: Minimum severity level to send to LLM (informational, low, medium, high, critical)
         external_files: Optional list of external log files [{upload_id, filename}, ...]
+        client_ids: Optional list of Velociraptor client IDs. When provided
+            on a hunt-mode run, the hunt enumeration is scoped to those
+            clients only (VQL-level WHERE filter). Ignored for single-flow.
     """
     if report_types is None:
         report_types = ['technical']
@@ -434,7 +438,7 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         # Fetch all results from existing flow/hunt
         from services.agentic.collectors import get_existing_collection_results
         all_results, artifacts, client_info = get_existing_collection_results(
-            run_id, flow_id, hunt_id, time_filter
+            run_id, flow_id, hunt_id, time_filter, client_ids=client_ids
         )
 
         if not all_results:
