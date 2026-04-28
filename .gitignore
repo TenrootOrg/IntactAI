@@ -33,9 +33,6 @@ modules/iris/secrets/*
 modules/portainer/secrets/*
 !modules/portainer/secrets/.gitkeep
 
-# Per-module .env overrides (local-only; see each docker-compose.yaml for defaults)
-modules/*/.env
-
 # Certificates (generated on install)
 modules/iris/config/certificates/rootCA/*
 modules/iris/config/certificates/web_certificates/*

@@ -214,11 +214,9 @@ def setup_velociraptor_connection():
     """Setup gRPC connection to Velociraptor API"""
     try:
         # Always re-copy the API config from the Velociraptor container rather
-        # than caching. The old cached-file check bit us during the mssp ->
-        # intact container rename: once /tmp/api.config.yaml was populated
-        # with the pre-rename hostname, every subsequent gRPC call used the
-        # stale file and DNS-resolution failed even after the source was
-        # fixed. The copy is a cheap `docker exec cat` of a small YAML.
+        # than caching: a stale /tmp/api.config.yaml with an out-of-date hostname
+        # breaks every subsequent gRPC call. The copy is a cheap `docker exec
+        # cat` of a small YAML.
         config_path = "/tmp/api.config.yaml"
         print("[GRPC] Copying API config from Velociraptor container...", flush=True)
         result = subprocess.run([

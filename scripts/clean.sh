@@ -119,7 +119,6 @@ remove_images() {
     local image_patterns=(
         "velociraptor-server"
         "intact_"
-        "mssp-"
     )
 
     local removed=0
