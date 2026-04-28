@@ -19,9 +19,15 @@ def get_clients():
     Query params:
         search: filter by hostname (case-insensitive contains)
         limit: max number of clients to return (default: all)
+        include_offline: 'true' to include clients not seen in the last
+            10 minutes. Default is online-only (current behavior). The
+            existing-flow analyzer flips this on for hunt-derived flows
+            where data is already collected and offline endpoints are
+            valid analysis targets.
     """
     try:
-        clients = get_clients_from_snapshot()
+        include_offline = request.args.get('include_offline', '').lower() in ('true', '1', 'yes')
+        clients = get_clients_from_snapshot(include_offline=include_offline)
         total = len(clients)
 
         # Filter by hostname search

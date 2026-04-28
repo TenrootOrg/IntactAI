@@ -61,10 +61,17 @@ function setForensicsDefaultBlueprint(mode, blueprints = null) {
     }
 }
 
-async function loadForensicsClients(search = '') {
+async function loadForensicsClients(search = '', includeOffline = false) {
     try {
-        let url = '/api/clients?limit=20';
+        // Online-only by default (correct for new-collection mode where
+        // offline endpoints can't receive a hunt). Existing-flow mode
+        // bumps the limit + sends include_offline=true since the data
+        // is already collected and offline endpoints are still valid
+        // analysis targets.
+        const limit = includeOffline ? 200 : 20;
+        let url = `/api/clients?limit=${limit}`;
         if (search) url += `&search=${encodeURIComponent(search)}`;
+        if (includeOffline) url += '&include_offline=true';
         const response = await fetch(url);
         const data = await response.json();
         const clients = data.items || [];
@@ -597,6 +604,7 @@ async function startForensicsCollection() {
 // new ID re-shows the picker, the analyst makes a fresh selection. Tiny
 // UX cost, eliminates a class of state-leak bugs.
 let _lastExistingId = '';
+let _pickerLoadedWithOffline = false;
 function onExistingIdChange(newValue) {
     if (newValue === _lastExistingId) return;
     _lastExistingId = newValue;
@@ -606,6 +614,17 @@ function onExistingIdChange(newValue) {
         if (typeof renderForensicsClients === 'function') {
             renderForensicsClients(forensicsClientsCache || []);
         }
+    }
+    // Hunt-derived flow (`F.xxx.H`) — reload picker including offline
+    // clients (data already collected, liveness irrelevant). Cache the
+    // mode so we don't refetch on every keystroke.
+    const isHuntDerived = newValue.startsWith('F.') && newValue.endsWith('.H');
+    if (isHuntDerived && !_pickerLoadedWithOffline) {
+        loadForensicsClients('', true);
+        _pickerLoadedWithOffline = true;
+    } else if (!isHuntDerived && _pickerLoadedWithOffline) {
+        // User left the F.xxx.H state — reset to online-only on next load.
+        _pickerLoadedWithOffline = false;
     }
 }
 
