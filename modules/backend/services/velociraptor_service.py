@@ -19,10 +19,19 @@ from config import VELOCIRAPTOR_CONTAINER, VELOCIRAPTOR_API_CONFIG_PATH, VELOCIR
 # Cached API configuration
 velociraptor_api_config = None
 
-def get_clients_from_snapshot():
-    """Get clients directly from Velociraptor API using VQL query (real-time data)"""
+def get_clients_from_snapshot(include_offline=False):
+    """Get clients directly from Velociraptor API using VQL query (real-time data).
+
+    Args:
+        include_offline: When False (default), filter to clients seen in
+            the last 10 minutes — appropriate for new-collection mode where
+            offline endpoints cannot receive a hunt. When True, return all
+            enrolled clients regardless of last-seen time — needed for
+            existing-flow analysis where the data is already collected and
+            client liveness is irrelevant.
+    """
     try:
-        print("[CLIENT-LIST] Querying clients via VQL API (real-time)...", flush=True)
+        print(f"[CLIENT-LIST] Querying clients via VQL API (real-time, include_offline={include_offline})...", flush=True)
 
         # Setup gRPC connection
         channel = setup_velociraptor_connection()
@@ -32,9 +41,12 @@ def get_clients_from_snapshot():
 
         stub = api_pb2_grpc.APIStub(channel)
 
-        # VQL query to get all clients with their info
-        # Only include clients seen in the last 10 minutes (600 seconds)
-        vql_query = """
+        # VQL query to get clients with their info. Online filter only
+        # applied when include_offline=False — for existing-flow analysis
+        # we want every enrolled client visible since the data was
+        # collected previously.
+        liveness_clause = "" if include_offline else "  AND last_seen_at > now() - 600"
+        vql_query = f"""
         SELECT client_id,
                os_info.hostname AS hostname,
                os_info.system AS os,
@@ -43,8 +55,7 @@ def get_clients_from_snapshot():
                last_ip,
                timestamp(epoch=now()) AS current_time
         FROM clients()
-        WHERE client_id != 'server'
-          AND last_seen_at > now() - 600
+        WHERE client_id != 'server'{liveness_clause}
         """
 
         request = api_pb2.VQLCollectorArgs(
