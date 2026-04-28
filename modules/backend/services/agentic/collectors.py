@@ -796,14 +796,18 @@ def cancel_collections(run_id, collection_results):
     add_log_to_run(run_id, f"[Velociraptor] Cancelled {cancelled} collection(s)", "info")
 
 
-def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_filter=None):
+def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_filter=None, client_ids=None):
     """Fetch results from an existing Velociraptor flow or hunt with optional time filtering.
 
     Args:
         run_id: Workflow run ID for logging
         flow_id: Flow ID (F.xxx) for single client collection
-        hunt_id: Hunt ID (H.xxx) for multi-client hunt
+        hunt_id: Hunt ID (H.xxx OR F.xxx.H) for multi-client hunt
         time_filter: Optional time filter config for VQL-level filtering
+        client_ids: Optional list of Velociraptor client IDs to scope a hunt
+            to. When non-empty, the hunt-flows enumeration query gets a
+            ``WHERE ClientId IN (...)`` filter so only those clients' rows
+            reach analysis. Ignored on the single-flow path.
 
     Returns:
         (all_results, artifacts, client_info)
@@ -965,8 +969,25 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
             # Get results from a hunt (multiple clients)
             add_log_to_run(run_id, f"[Velociraptor] Fetching results from hunt: {hunt_id}", "info")
 
-            # First, get all flows in this hunt using hunt_flows()
-            flows_query = f"SELECT ClientId, FlowId FROM hunt_flows(hunt_id='{hunt_id}')"
+            # First, get all flows in this hunt using hunt_flows().
+            # If the analyst picked specific clients, push a WHERE filter
+            # into VQL so we never enumerate flows for clients we'll just
+            # discard later — saves both bandwidth and analysis cost.
+            if client_ids:
+                # Velociraptor client IDs are alphanumerics + dot ('C.ABC123');
+                # still single-quote each one to keep the f-string safe.
+                quoted = ", ".join(f"'{cid}'" for cid in client_ids)
+                flows_query = (
+                    f"SELECT ClientId, FlowId FROM hunt_flows(hunt_id='{hunt_id}') "
+                    f"WHERE ClientId IN ({quoted})"
+                )
+                add_log_to_run(
+                    run_id,
+                    f"[Velociraptor] Hunt scoped to {len(client_ids)} selected client(s)",
+                    "info",
+                )
+            else:
+                flows_query = f"SELECT ClientId, FlowId FROM hunt_flows(hunt_id='{hunt_id}')"
             request_obj = api_pb2.VQLCollectorArgs(
                 max_wait=60,
                 max_row=1000,

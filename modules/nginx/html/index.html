@@ -700,7 +700,7 @@ sudo ./velociraptor service start</code></pre>
                     </div>
                     <p class="text-gray-400 mb-6 text-sm" x-text="forensicsMode === 'raw' ? 'Run artifact hunts and collect raw data from clients' : 'Run artifact hunts with AI-powered analysis and report generation'"></p>
                     <!-- Collection Section -->
-                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4" x-data="{ collectionSource: 'new' }">
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4" x-data="{ collectionSource: 'new', existingId: '' }">
                         <!-- Collection Source Radio (AI mode only) -->
                         <div x-show="forensicsMode === 'ai'" class="mb-4">
                             <label class="block text-sm font-medium text-gray-300 mb-2">Collection Source</label>
@@ -742,8 +742,10 @@ sudo ./velociraptor service start</code></pre>
                                 </div>
                             </div>
 
-                            <!-- Clients (AI mode, new collection only) -->
-                            <div x-show="forensicsMode === 'ai' && collectionSource === 'new'">
+                            <!-- Clients picker — shown for new collections AND for existing
+                                 hunt-derived flows (IDs ending with `.H`), where the analyst
+                                 must scope the analysis to one or more clients in the hunt. -->
+                            <div x-show="forensicsMode === 'ai' && (collectionSource === 'new' || (collectionSource === 'existing' && existingId.endsWith('.H')))">
                                 <div class="flex items-center justify-between mb-2">
                                     <label class="block text-sm font-medium text-gray-300">Clients</label>
                                     <div class="flex gap-2">
@@ -757,14 +759,18 @@ sudo ./velociraptor service start</code></pre>
                                 <div id="forensics-client-list" class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
                                     <p class="text-sm text-gray-500">Loading clients...</p>
                                 </div>
+                                <p x-show="collectionSource === 'existing' && existingId.endsWith('.H')" class="text-xs text-purple-400 mt-1">
+                                    Hunt-derived flow detected (ends with .H) — pick the clients you want analyzed from this hunt.
+                                </p>
                             </div>
 
                             <!-- Existing Flow ID (AI mode, existing flow only) -->
                             <div x-show="forensicsMode === 'ai' && collectionSource === 'existing'">
                                 <label class="block text-sm font-medium text-gray-300 mb-1">Flow or Hunt ID</label>
-                                <input type="text" id="forensics-existing-id" placeholder="F.C1234567890 or H.ABC123..."
+                                <input type="text" id="forensics-existing-id" x-model="existingId"
+                                    placeholder="F.C1234567890, H.ABC123..., or F.xxx.H (hunt-derived flow)"
                                     class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-purple-500 focus:outline-none">
-                                <p class="text-xs text-gray-500 mt-1">Enter the Flow ID (F.xxx) or Hunt ID (H.xxx) from a previous collection</p>
+                                <p class="text-xs text-gray-500 mt-1">Flow ID (<code>F.xxx</code>), Hunt ID (<code>H.xxx</code>), or hunt-derived flow (<code>F.xxx.H</code>) from a previous collection.</p>
                             </div>
 
                             <!-- Hunt Info (Raw mode only) -->

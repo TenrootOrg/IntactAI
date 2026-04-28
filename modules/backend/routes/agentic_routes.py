@@ -217,9 +217,26 @@ def analyze_existing_collection():
         # External log files (optional)
         external_files = data.get('external_files', [])
 
+        # Optional client scoping for hunt mode. When the analyst pastes a
+        # hunt-derived flow ID (`F.xxx.H`) the frontend opens the multi-
+        # client picker and sends the selection here so the collector can
+        # push a `WHERE ClientId IN (...)` filter into the hunt-flows
+        # enumeration. Ignored on single-flow runs.
+        client_ids = data.get('client_ids') or []
+        if not isinstance(client_ids, list):
+            return jsonify({"error": "client_ids must be a list of client ID strings"}), 400
+        client_ids = [str(c) for c in client_ids if c]
+
         # Validate - need either flow_id or hunt_id
         if not flow_id and not hunt_id:
             return jsonify({"error": "Either flow_id or hunt_id is required"}), 400
+
+        # If a hunt is being analyzed and the picker was offered, require
+        # at least one client. (Frontend should also enforce — defence in
+        # depth.) For standalone H.<id> runs without picker we keep the
+        # current "all clients" behavior, so empty client_ids is allowed.
+        # The frontend signals "picker was offered" by sending client_ids
+        # explicitly; if it's missing entirely we treat as "all clients".
 
         # Validate report_types
         valid_types = ['technical']
@@ -276,6 +293,7 @@ def analyze_existing_collection():
             args=(run_id, flow_id, hunt_id, llm_config, report_types,
                   anonymize_data, custom_patterns, import_to_iris, iris_case_name, time_filter_arg, min_severity,
                   external_files, cancel_event),
+            kwargs={'client_ids': client_ids or None},
             daemon=True
         )
         thread.start()
