@@ -4,13 +4,13 @@
 services:
   velociraptor:
     container_name: intact_velociraptor
-    image: velociraptor-server:${VELOCIRAPTOR_VERSION:-0.75}
+    image: velociraptor-server:${VELOCIRAPTOR_VERSION}
     build:
       context: ./
       dockerfile: Dockerfile
       args:
-        - VELOCIRAPTOR_TAG=${VELOCIRAPTOR_TAG:-0.75}
-        - VELOCIRAPTOR_VERSION=${VELOCIRAPTOR_VERSION:-0.75.6}
+        - VELOCIRAPTOR_TAG=${VELOCIRAPTOR_TAG}
+        - VELOCIRAPTOR_VERSION=${VELOCIRAPTOR_VERSION}
     env_file:
       - .env
     environment:

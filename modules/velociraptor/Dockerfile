@@ -16,14 +16,14 @@ RUN apt-get update && \
     mkdir -p /opt/velociraptor/mac && \
     mkdir -p /opt/velociraptor/windows && \
     # Download Velociraptor binaries using direct URLs (no API rate limits)
-    curl -s -L -o /opt/velociraptor/linux/velociraptor \
+    curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 120 -o /opt/velociraptor/linux/velociraptor \
       "https://github.com/Velocidex/velociraptor/releases/download/v${VELOCIRAPTOR_TAG}/velociraptor-v${VELOCIRAPTOR_VERSION}-linux-amd64" && \
     chmod +x /opt/velociraptor/linux/velociraptor && \
-    curl -s -L -o /opt/velociraptor/mac/velociraptor_client \
+    curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 120 -o /opt/velociraptor/mac/velociraptor_client \
       "https://github.com/Velocidex/velociraptor/releases/download/v${VELOCIRAPTOR_TAG}/velociraptor-v${VELOCIRAPTOR_VERSION}-darwin-amd64" && \
-    curl -s -L -o /opt/velociraptor/windows/velociraptor_client.exe \
+    curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 120 -o /opt/velociraptor/windows/velociraptor_client.exe \
       "https://github.com/Velocidex/velociraptor/releases/download/v${VELOCIRAPTOR_TAG}/velociraptor-v${VELOCIRAPTOR_VERSION}-windows-amd64.exe" && \
-    curl -s -L -o /opt/velociraptor/windows/velociraptor_client.msi \
+    curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 120 -o /opt/velociraptor/windows/velociraptor_client.msi \
       "https://github.com/Velocidex/velociraptor/releases/download/v${VELOCIRAPTOR_TAG}/velociraptor-v${VELOCIRAPTOR_VERSION}-windows-amd64.msi" && \
     # Cleanup
     apt-get clean && \

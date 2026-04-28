@@ -95,6 +95,13 @@ main() {
     # -------------------------------------------------------------------------
     download_offline_collector_binaries
     create_velociraptor_collector
+    pull_velociraptor_base_image
+
+    # -------------------------------------------------------------------------
+    # IRIS — pre-pull all runtime images so compose up doesn't depend on the
+    # registry being reachable mid-deploy.
+    # -------------------------------------------------------------------------
+    pull_iris_images
 
     # -------------------------------------------------------------------------
     # Azure Security Tools (SIGMA Rules + DFIR-O365RC)
