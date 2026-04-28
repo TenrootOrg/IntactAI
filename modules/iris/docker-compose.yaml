@@ -11,7 +11,7 @@ services:
 
   iris-db:
     container_name: intact_iris_db
-    image: ghcr.io/dfir-iris/iriswebapp_db:${IRIS_VERSION:-v2.4.25}
+    image: ghcr.io/dfir-iris/iriswebapp_db:${IRIS_VERSION}
     entrypoint: /bin/bash
     command:
       - /postgres_start_with_secrets.sh
@@ -29,7 +29,7 @@ services:
 
   iris-app:
     container_name: intact_iris_app
-    image: ghcr.io/dfir-iris/iriswebapp_app:${IRIS_VERSION:-v2.4.25}
+    image: ghcr.io/dfir-iris/iriswebapp_app:${IRIS_VERSION}
     entrypoint: /bin/bash
     command:
       - /iriswebapp_start_with_secrets.sh
@@ -59,7 +59,7 @@ services:
 
   iris-worker:
     container_name: intact_iris_worker
-    image: ghcr.io/dfir-iris/iriswebapp_app:${IRIS_VERSION:-v2.4.25}
+    image: ghcr.io/dfir-iris/iriswebapp_app:${IRIS_VERSION}
     entrypoint: /bin/bash
     command:
       - /worker_start_with_secrets.sh
@@ -88,7 +88,7 @@ services:
 
   iris-nginx:
     container_name: intact_iris_nginx
-    image: ghcr.io/dfir-iris/iriswebapp_nginx:${IRIS_VERSION:-v2.4.25}
+    image: ghcr.io/dfir-iris/iriswebapp_nginx:${IRIS_VERSION}
     env_file:
       - .env
     volumes:

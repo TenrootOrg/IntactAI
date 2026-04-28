@@ -256,6 +256,29 @@ create_network() {
 # Pre-pull Required Images
 # ============================================================================
 
+# Generic image pull with retry. Backoff: 5s, 15s, 45s.
+# Returns 0 if the image is local after the call (already present, or pulled);
+# non-zero if every attempt failed.
+_pull_image_with_retry() {
+    local image="$1"
+    local max_attempts=3
+    local delay=5
+    local attempt=1
+
+    while (( attempt <= max_attempts )); do
+        if docker pull "$image" 2>> "$LOG_FILE"; then
+            return 0
+        fi
+        if (( attempt < max_attempts )); then
+            log_warn "  Pull failed for $image (attempt $attempt/$max_attempts); retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$(( delay * 3 ))
+        fi
+        ((attempt++))
+    done
+    return 1
+}
+
 pull_plaso_image() {
     local plaso_version=$(read_config "['versions']['plaso']")
     local plaso_image="log2timeline/plaso:${plaso_version:-20260119}"
@@ -473,6 +496,77 @@ pull_dfir_o365rc_image() {
         log_warn "Failed to pull DFIR-O365RC image - Unified Audit Log collection will not be available"
         return 1
     fi
+}
+
+
+pull_velociraptor_base_image() {
+    # Velociraptor's Dockerfile builds FROM ubuntu:22.04. Pre-pulling the base
+    # image on the host with retry keeps a transient Docker Hub DNS hiccup at
+    # "compose build" time from killing the whole module install.
+    local velo_enabled
+    velo_enabled=$(read_config "['modules']['velociraptor']['enabled']")
+    if ! is_enabled "$velo_enabled"; then
+        return 0
+    fi
+
+    local image="ubuntu:22.04"
+    log_info "Pulling Ubuntu base image for Velociraptor build..."
+
+    if docker image inspect "$image" > /dev/null 2>&1; then
+        log_info "  $image already exists"
+        return 0
+    fi
+
+    if _pull_image_with_retry "$image"; then
+        log_success "  $image pulled successfully"
+    else
+        log_warn "  Failed to pull $image after retries — Velociraptor build will likely fail"
+        return 1
+    fi
+}
+
+pull_iris_images() {
+    # Pre-pull every image IRIS needs at runtime (rabbitmq + dfir-iris stack)
+    # so "compose up" doesn't have to talk to Docker Hub / GHCR. A single
+    # registry blip in the middle of "compose up" otherwise interrupts the
+    # whole stack — which is exactly what happened in install_20260428_072205.
+    local iris_enabled
+    iris_enabled=$(read_config "['modules']['iris']['enabled']")
+    if ! is_enabled "$iris_enabled"; then
+        return 0
+    fi
+
+    local iris_version
+    iris_version=$(read_config "['versions']['iris']")
+    if [[ -z "$iris_version" || "$iris_version" == "None" ]]; then
+        log_warn "  IRIS version missing from config.yaml; skipping IRIS image pre-pull"
+        return 1
+    fi
+
+    log_info "Pre-pulling IRIS images..."
+
+    local images=(
+        "rabbitmq:3-management-alpine"
+        "ghcr.io/dfir-iris/iriswebapp_db:${iris_version}"
+        "ghcr.io/dfir-iris/iriswebapp_app:${iris_version}"
+        "ghcr.io/dfir-iris/iriswebapp_nginx:${iris_version}"
+    )
+
+    local rc=0
+    for image in "${images[@]}"; do
+        if docker image inspect "$image" > /dev/null 2>&1; then
+            log_info "  $image already exists"
+            continue
+        fi
+        log_info "  Pulling $image..."
+        if _pull_image_with_retry "$image"; then
+            log_success "  Pulled $image"
+        else
+            log_warn "  Failed to pull $image after retries — IRIS deployment may fail"
+            rc=1
+        fi
+    done
+    return "$rc"
 }
 
 
