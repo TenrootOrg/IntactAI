@@ -63,6 +63,7 @@ main() {
     # Core Dependencies
     # -------------------------------------------------------------------------
     install_dependencies
+    prefer_ipv4_dns
     if ! install_docker; then
         log_error "=============================================="
         log_error "Docker installation failed — aborting install."
@@ -81,6 +82,7 @@ main() {
         log_error "Docker reports installed but 'docker version' fails — aborting"
         exit 1
     fi
+    configure_docker_resolver
     create_network
 
     # -------------------------------------------------------------------------
@@ -176,8 +178,12 @@ touch "$LOG_FILE"
 # Run main installation
 main "$@"
 
-# Exit with appropriate code
-if [[ ${#FAILED_MODULES[@]} -gt 0 ]]; then
+# Exit with appropriate code. Non-zero on either:
+#   - any module's deploy step failed (FAILED_MODULES) — same as before, OR
+#   - any deployed module didn't pass its end-to-end health probe
+#     (UNHEALTHY_MODULES). Previously the script exited 0 in that case,
+#     which lied about the actual state of the platform.
+if [[ ${#FAILED_MODULES[@]} -gt 0 ]] || [[ ${#UNHEALTHY_MODULES[@]} -gt 0 ]]; then
     exit 1
 fi
 exit 0

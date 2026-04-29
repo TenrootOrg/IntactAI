@@ -68,6 +68,7 @@ verify_installation() {
         log_success "Backend API: Running"
     else
         log_warn "Backend API: Not responding (may still be starting)"
+        UNHEALTHY_MODULES+=("Backend API")
     fi
 
     # Test nginx (with timeout)
@@ -75,6 +76,7 @@ verify_installation() {
         log_success "Nginx: Running"
     else
         log_warn "Nginx: Not responding"
+        UNHEALTHY_MODULES+=("Nginx")
     fi
 
     # Test elasticsearch (with timeout) - check if ELK module is enabled
@@ -84,6 +86,7 @@ verify_installation() {
             log_success "Elasticsearch: Running"
         else
             log_warn "Elasticsearch: Not responding"
+            UNHEALTHY_MODULES+=("ELK Stack")
         fi
     else
         log_info "Elasticsearch: Not installed (disabled in config)"
@@ -96,6 +99,7 @@ verify_installation() {
             log_success "TimeSketch: Running"
         else
             log_warn "TimeSketch: Not responding"
+            UNHEALTHY_MODULES+=("TimeSketch")
         fi
     else
         log_info "TimeSketch: Not installed (disabled in config)"
@@ -111,6 +115,10 @@ verify_installation() {
             # Check if containers are at least running
             if docker ps --filter "name=intact_iris_nginx" --filter "status=running" --format "{{.Names}}" | grep -q "intact_iris_nginx"; then
                 if [[ "$iris_http_code" == "000" ]]; then
+                    # Initializing is a soft state — give it room before
+                    # marking as unhealthy. We still mark it though, because
+                    # if it's still 000 by the time the install ends, the
+                    # operator deserves a clear "not yet up" signal.
                     log_warn "IRIS: Container running, web interface initializing..."
                 else
                     log_warn "IRIS: Unexpected response (HTTP $iris_http_code)"
@@ -118,6 +126,7 @@ verify_installation() {
             else
                 log_warn "IRIS: Not responding (container may be starting)"
             fi
+            UNHEALTHY_MODULES+=("IRIS")
         fi
     else
         log_info "IRIS: Not installed (disabled in config)"
@@ -171,8 +180,13 @@ print_summary() {
 print_installation_report() {
     echo ""
     echo "=============================================="
-    if [[ ${#FAILED_MODULES[@]} -eq 0 ]]; then
+    if [[ ${#FAILED_MODULES[@]} -eq 0 && ${#UNHEALTHY_MODULES[@]} -eq 0 ]]; then
         echo -e "${GREEN}Installation Completed Successfully${NC}"
+    elif [[ ${#FAILED_MODULES[@]} -eq 0 ]]; then
+        # Deploy succeeded across the board, but at least one module didn't
+        # pass its end-to-end health check. Operator needs to know — the
+        # "Successfully" headline used to hide this.
+        echo -e "${YELLOW}Deploy Succeeded — Health Checks Pending${NC}"
     else
         echo -e "${YELLOW}Installation Completed with Errors${NC}"
     fi
@@ -201,6 +215,24 @@ print_installation_report() {
         echo "  sudo bash scripts/repair_modules.sh"
         echo ""
         echo -e "${YELLOW}Check log file for details: $LOG_FILE${NC}"
+        echo ""
+    fi
+
+    # Show modules whose deploy succeeded but health check didn't pass.
+    # These are commonly transient (still warming up) but never were before
+    # — silence here used to mean "everything's fine" when nothing was
+    # actually responding. Now the operator sees the list and can decide.
+    if [[ ${#UNHEALTHY_MODULES[@]} -gt 0 ]]; then
+        echo -e "${YELLOW}Deployed but not responding to health probes (${#UNHEALTHY_MODULES[@]}):${NC}"
+        for mod in "${UNHEALTHY_MODULES[@]}"; do
+            echo "  ! $mod"
+        done
+        echo ""
+        echo -e "${YELLOW}These modules' containers are running but their endpoints"
+        echo -e "didn't answer within the verification window. Re-check in a"
+        echo -e "minute or two — many services finish initialization after"
+        echo -e "the install script returns. If still down, see logs:${NC}"
+        echo "  sudo docker logs <container_name>"
         echo ""
     fi
 }

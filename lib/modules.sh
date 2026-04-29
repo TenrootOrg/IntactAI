@@ -160,31 +160,86 @@ generate_certificates() {
 run_docker_compose() {
     local action="$1"
     local module_name="$2"
+    # Allow callers to override the build timeout per module (Backend ships
+    # with 900s default; Velociraptor's smaller surface gets 600s passed in).
+    local build_timeout="${3:-900}"
 
     log_info "  Running: docker compose $action"
 
     # Run docker compose with cleaner output (filter out noisy progress)
     if [[ "$action" == "build" ]]; then
-        docker compose build 2>&1 | tee -a "$LOG_FILE" | while IFS= read -r line; do
-            # Only show key build events, skip noisy progress
-            if echo "$line" | grep -qE "^(Step [0-9]+|Successfully|Building|CACHED|\[.*/.*\])"; then
-                echo "    $line"
-            fi
-        done
-        return ${PIPESTATUS[0]}
+        # Wrap with heartbeat + hard timeout. Catches the silent-stop failure
+        # mode where a build hangs with no log output and the operator can't
+        # tell whether the script froze or is making progress.
+        local cwd="$PWD"
+        run_with_heartbeat "${module_name} image build" "$build_timeout" \
+            bash -c '
+                cd "$1" || exit 2
+                docker compose build 2>&1 | tee -a "$2" | while IFS= read -r line; do
+                    if echo "$line" | grep -qE "^(Step [0-9]+|Successfully|Building|CACHED|\[.*/.*\])"; then
+                        echo "    $line"
+                    fi
+                done
+                exit "${PIPESTATUS[0]}"
+            ' _ "$cwd" "$LOG_FILE"
+        return $?
     else
         # For 'up -d': Filter repetitive download/extract progress, show key events
         # Keep: Image pulling, Container creating/starting, errors/warnings
         # Filter: "abc123 Downloading 4.194MB", "abc123 Extracting", "Download complete", etc.
-        docker compose up -d 2>&1 | tee -a "$LOG_FILE" | \
-            grep -vE "^\s*[0-9a-f]{12} (Downloading|Extracting|Waiting|Download complete|Pull complete|Pulling fs layer) " | \
-            while IFS= read -r line; do
-                if [[ -n "$line" ]]; then
-                    echo "    $line"
-                fi
-            done
-        return ${PIPESTATUS[0]}
+        # Wrap in heartbeat too — Velociraptor's `up -d` triggers a local
+        # build (image not on registry), and IRIS first-time DB init can
+        # take 5+ min. Without heartbeat, those minutes look like a hang.
+        local up_cwd="$PWD"
+        run_with_heartbeat "${module_name} compose up" "$build_timeout" \
+            bash -c '
+                cd "$1" || exit 2
+                docker compose up -d 2>&1 | tee -a "$2" | \
+                    grep -vE "^\s*[0-9a-f]{12} (Downloading|Extracting|Waiting|Download complete|Pull complete|Pulling fs layer) " | \
+                    while IFS= read -r line; do
+                        if [[ -n "$line" ]]; then
+                            echo "    $line"
+                        fi
+                    done
+                exit "${PIPESTATUS[0]}"
+            ' _ "$up_cwd" "$LOG_FILE"
+        return $?
     fi
+}
+
+# Pull a module's compose images with retry/backoff, separated from `up -d`.
+# Pulls are by far the most common transient-failure point on real networks
+# (registry rate-limits, IPv6 race on IPv4-only hosts, brief CDN hiccups).
+# Doing the pull as a discrete, retryable step means a single bad DNS roll or
+# 503 doesn't doom the whole module deploy. Subsequent `up -d` runs from
+# run_docker_compose() find images locally and don't repeat the network risk.
+# Same exponential-backoff cadence as _pull_image_with_retry() in docker.sh.
+pull_compose_with_retry() {
+    local module_name="$1"
+    local max_attempts=3
+    local delays=(5 15 45)
+    local attempt=1
+
+    while [[ $attempt -le $max_attempts ]]; do
+        log_info "  Pulling images for ${module_name} (attempt ${attempt}/${max_attempts})..."
+        if docker compose pull 2>&1 | tee -a "$LOG_FILE" | \
+                grep -vE "^\s*[0-9a-f]{12} (Downloading|Extracting|Waiting|Download complete|Pull complete|Pulling fs layer) " >/dev/null; then
+            # PIPESTATUS[0] is docker compose pull's exit code
+            if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+                return 0
+            fi
+        fi
+
+        if [[ $attempt -lt $max_attempts ]]; then
+            local delay=${delays[$((attempt - 1))]}
+            log_warn "  ${module_name} pull attempt ${attempt} failed; retrying in ${delay}s..."
+            sleep "$delay"
+        fi
+        ((attempt++))
+    done
+
+    log_error "  ${module_name} pull failed after ${max_attempts} attempts"
+    return 1
 }
 
 # ============================================================================
@@ -220,6 +275,10 @@ deploy_elk() {
     local elk_version=$(read_config "['versions']['elk']")
     log_info "  Elasticsearch version: ${elk_version:-8.x}"
 
+    if ! pull_compose_with_retry "ELK Stack"; then
+        track_module_failure "ELK Stack"
+        return 1
+    fi
     if ! run_docker_compose "up -d" "ELK"; then
         log_error "  Docker compose failed!"
         track_module_failure "ELK Stack"
@@ -268,6 +327,10 @@ deploy_timesketch() {
     local ts_version=$(read_config "['versions']['timesketch']")
     log_info "  TimeSketch version: ${ts_version:-latest}"
 
+    if ! pull_compose_with_retry "TimeSketch"; then
+        track_module_failure "TimeSketch"
+        return 1
+    fi
     if ! run_docker_compose "up -d" "TimeSketch"; then
         log_error "  Docker compose failed!"
         track_module_failure "TimeSketch"
@@ -491,6 +554,10 @@ deploy_iris() {
         log_info "  Fresh IRIS installation detected (first-time setup will take longer)"
     fi
 
+    if ! pull_compose_with_retry "IRIS"; then
+        track_module_failure "IRIS"
+        return 1
+    fi
     if ! run_docker_compose "up -d" "IRIS"; then
         log_error "  Docker compose failed!"
         track_module_failure "IRIS"
@@ -628,6 +695,10 @@ deploy_portainer() {
     local portainer_version=$(read_config "['versions']['portainer']")
     log_info "  Portainer version: ${portainer_version:-latest}"
 
+    if ! pull_compose_with_retry "Portainer"; then
+        track_module_failure "Portainer"
+        return 1
+    fi
     if ! run_docker_compose "up -d" "Portainer"; then
         log_error "  Docker compose failed!"
         track_module_failure "Portainer"
@@ -705,6 +776,10 @@ deploy_nginx() {
     log_info "  Directory: ${SCRIPT_DIR}/modules/nginx"
     cd "${SCRIPT_DIR}/modules/nginx"
 
+    if ! pull_compose_with_retry "Nginx"; then
+        track_module_failure "Nginx"
+        return 1
+    fi
     if ! run_docker_compose "up -d" "Nginx"; then
         log_error "  Docker compose failed!"
         track_module_failure "Nginx"

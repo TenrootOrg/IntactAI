@@ -50,6 +50,78 @@ install_dependencies() {
     log_success "System dependencies installed"
 }
 
+# Bias getaddrinfo() to return IPv4 addresses before IPv6 ones so Docker pulls
+# (and apt, curl, wget) try IPv4 first. IPv6 still works as fallback if the
+# IPv4 endpoint fails — we just don't try it first. Avoids the common failure
+# mode on IPv4-only networks (e.g. most ISPs in Israel) where Docker Hub's
+# AAAA records resolve to IPv6 addresses the host can't route to, which
+# manifests as "dial tcp [v6...]:443: connect: network is unreachable" mid-pull.
+prefer_ipv4_dns() {
+    local gai=/etc/gai.conf
+    local rule='precedence ::ffff:0:0/96  100'
+
+    # Idempotent: only add the rule if no uncommented `precedence ::ffff:0:0/96`
+    # line is already present. We deliberately don't touch other gai.conf lines.
+    if grep -qE '^[[:space:]]*precedence[[:space:]]+::ffff:0:0/96' "$gai" 2>/dev/null; then
+        log_info "DNS preference: IPv4-first already configured in $gai"
+        return 0
+    fi
+
+    log_info "Configuring DNS to prefer IPv4 over IPv6 (with IPv6 fallback)..."
+    {
+        echo ""
+        echo "# Added by Intact.AI installer: prefer IPv4 in DNS resolution."
+        echo "# IPv6 still works as fallback — this only changes the order."
+        echo "$rule"
+    } >> "$gai" 2>> "$LOG_FILE" || {
+        log_warn "Could not write to $gai (continuing anyway)"
+        return 0
+    }
+
+    log_success "DNS prefers IPv4 (IPv6 retained as fallback)"
+}
+
+# Force the Docker daemon to use glibc's getaddrinfo() for DNS resolution
+# instead of Go's pure-Go resolver. The pure-Go resolver does not read
+# /etc/gai.conf, so prefer_ipv4_dns() above doesn't reach Docker's image-pull
+# code path on its own. With GODEBUG=netdns=cgo, Docker's resolver delegates
+# to glibc, which respects gai.conf and (on IPv4-only hosts where there's no
+# global IPv6 address) naturally prefers IPv4 anyway under default RFC 6724.
+# Pair with prefer_ipv4_dns() — they're complementary, not redundant.
+configure_docker_resolver() {
+    local override_dir=/etc/systemd/system/docker.service.d
+    local override_file="${override_dir}/intact-cgo-resolver.conf"
+    local desired_content='[Service]
+Environment="GODEBUG=netdns=cgo"'
+
+    # Idempotent: skip the file write + daemon restart if the override is
+    # already in place exactly as we want it.
+    if [[ -f "$override_file" ]] && [[ "$(cat "$override_file")" == "$desired_content" ]]; then
+        log_info "Docker resolver: cgo override already in place"
+        return 0
+    fi
+
+    log_info "Configuring Docker daemon to use cgo DNS resolver (forces gai.conf compliance)..."
+    if ! mkdir -p "$override_dir" 2>> "$LOG_FILE"; then
+        log_warn "Could not create $override_dir (continuing without resolver override)"
+        return 0
+    fi
+    if ! printf '%s\n' "$desired_content" > "$override_file" 2>> "$LOG_FILE"; then
+        log_warn "Could not write $override_file (continuing without resolver override)"
+        return 0
+    fi
+    if ! systemctl daemon-reload 2>> "$LOG_FILE"; then
+        log_warn "systemctl daemon-reload failed (continuing — override may not take effect until next reboot)"
+        return 0
+    fi
+    if ! systemctl restart docker 2>> "$LOG_FILE"; then
+        log_warn "Docker restart failed (override is on disk but not active until next restart)"
+        return 0
+    fi
+
+    log_success "Docker daemon now using cgo resolver"
+}
+
 # ============================================================================
 # Docker Installation
 # ============================================================================
