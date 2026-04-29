@@ -12,6 +12,12 @@ NC='\033[0m' # No Color
 # Module tracking arrays
 FAILED_MODULES=()
 SUCCEEDED_MODULES=()
+# Modules whose containers came up but failed end-to-end health probes after
+# deploy. Populated by verify_installation() in lib/health.sh. Distinct from
+# FAILED_MODULES because the deploy step succeeded — only the runtime check
+# didn't. Lets the final summary distinguish "compose up failed" from
+# "compose up succeeded but the service isn't actually serving requests".
+UNHEALTHY_MODULES=()
 
 # ============================================================================
 # Logging Functions
@@ -115,6 +121,56 @@ wait_for_http() {
 
     wait_for_condition "HTTP endpoint ${url}" "$timeout" \
         "curl -sf --max-time 5 '${url}'"
+}
+
+# Run a command (e.g. `docker compose build`) with heartbeat logging and a
+# hard timeout. Catches the failure mode we hit on 2026-04-29 where install.sh
+# stopped writing to the log mid-Backend-build at 08:39 with no error and no
+# timeout — operator had no visibility into whether the build was alive.
+#
+# Usage: run_with_heartbeat <description> <timeout_seconds> <command...>
+# Behavior:
+#   - Runs <command...> in the foreground; output streams to the log as normal.
+#   - Spawns a background heartbeat that emits "[INFO] still <description>
+#     (<elapsed>s elapsed)" every 60s, so silence in the build output doesn't
+#     look like the script froze.
+#   - If the command runs longer than <timeout_seconds>, kills it (and its
+#     process group) and returns 124, matching the convention in coreutils
+#     `timeout(1)`.
+#   - Otherwise returns the command's own exit code.
+run_with_heartbeat() {
+    local description="$1"
+    local timeout_secs="$2"
+    shift 2
+
+    local start_ts=$SECONDS
+    local heartbeat_interval=60
+
+    # Background heartbeat loop. Exits when its parent (the wrapping shell
+    # function) goes away, but we also explicitly kill it on completion.
+    (
+        while sleep "$heartbeat_interval"; do
+            local elapsed=$((SECONDS - start_ts))
+            log_info "  ... still ${description} (${elapsed}s elapsed)"
+        done
+    ) &
+    local heartbeat_pid=$!
+    # Make sure the heartbeat dies even if we're killed/interrupted.
+    # shellcheck disable=SC2064
+    trap "kill ${heartbeat_pid} 2>/dev/null; trap - RETURN INT TERM" RETURN INT TERM
+
+    # `timeout` from coreutils handles the hard kill cleanly, including the
+    # process group via --foreground when invoked from a non-tty context.
+    timeout --foreground "${timeout_secs}" "$@"
+    local rc=$?
+
+    kill "${heartbeat_pid}" 2>/dev/null
+    wait "${heartbeat_pid}" 2>/dev/null
+
+    if [[ $rc -eq 124 ]]; then
+        log_error "  ${description} exceeded ${timeout_secs}s timeout — killed"
+    fi
+    return $rc
 }
 
 # ============================================================================
