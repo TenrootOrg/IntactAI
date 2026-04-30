@@ -42,6 +42,28 @@ def run_timesketch_collection():
         if not client_id:
             return jsonify({"error": "client_id is required"}), 400
 
+        # If a blueprint was provided, load its settings so this manual-run
+        # path uses the same ceilings as the scheduled path. Without this,
+        # a manual "Run TimeSketch now" click would still hit Velociraptor's
+        # 1 GiB hardcoded upload cap.
+        kape_max_file_size       = 10737418240
+        kape_max_hash_size       = 0
+        kape_collection_policy   = 'ExcludeSigned'
+        flow_max_rows            = 10000000
+        flow_max_logs            = 1000000
+        flow_max_upload_mb       = 51200
+        if blueprint_id:
+            from services.file_storage_service import get_timesketch_blueprint
+            bp = get_timesketch_blueprint(blueprint_id)
+            if bp:
+                bp_settings = bp.get('settings', {}) or {}
+                kape_max_file_size     = bp_settings.get('kape_max_file_size', kape_max_file_size)
+                kape_max_hash_size     = bp_settings.get('kape_max_hash_size', kape_max_hash_size)
+                kape_collection_policy = bp_settings.get('kape_collection_policy', kape_collection_policy)
+                flow_max_rows          = bp_settings.get('flow_max_rows', flow_max_rows)
+                flow_max_logs          = bp_settings.get('flow_max_logs', flow_max_logs)
+                flow_max_upload_mb     = bp_settings.get('flow_max_upload_mb', flow_max_upload_mb)
+
         print(f"\n{'='*80}", flush=True)
         print(f"[API] Timesketch collection request received", flush=True)
         print(f"[API] Client ID: {client_id}", flush=True)
@@ -50,8 +72,16 @@ def run_timesketch_collection():
         print(f"[API] Timeout: {timeout_seconds}s, CPU Limit: {cpu_limit}%", flush=True)
         print(f"{'='*80}\n", flush=True)
 
-        # Run KAPE collection via gRPC
-        flow_id = run_kape_collection_grpc(client_id, kape_target, timeout_seconds, cpu_limit)
+        # Run KAPE collection via gRPC (resource caps + artifact env from blueprint)
+        flow_id = run_kape_collection_grpc(
+            client_id, kape_target, timeout_seconds, cpu_limit,
+            max_rows=flow_max_rows,
+            max_logs=flow_max_logs,
+            max_upload_mb=flow_max_upload_mb,
+            max_file_size=kape_max_file_size,
+            max_hash_size=kape_max_hash_size,
+            collection_policy=kape_collection_policy,
+        )
 
         if not flow_id:
             print(f"[API] ✗ Failed to start KAPE collection", flush=True)
@@ -125,6 +155,27 @@ def run_bestpractice_hunts():
         expire_minutes = data.get('expire_minutes', 120)
         timeout_seconds = data.get('timeout_seconds', 10000)
         cpu_limit = data.get('cpu_limit', 80)
+        # Optional blueprint_id lets us pull resource caps from the stored
+        # blueprint settings (instead of inheriting old hardcoded defaults).
+        # When absent, the request body can override directly via flow_max_*
+        # keys, otherwise we apply the new conservative defaults.
+        blueprint_id = data.get('blueprint_id')
+        flow_max_rows      = 10000000
+        flow_max_logs      = 1000000
+        flow_max_upload_mb = 51200
+        if blueprint_id:
+            from services.file_storage_service import get_velociraptor_blueprint
+            bp = get_velociraptor_blueprint(blueprint_id)
+            if bp:
+                bps = bp.get('settings', {}) or {}
+                flow_max_rows      = bps.get('flow_max_rows', flow_max_rows)
+                flow_max_logs      = bps.get('flow_max_logs', flow_max_logs)
+                flow_max_upload_mb = bps.get('flow_max_upload_mb', flow_max_upload_mb)
+        # Caller-supplied values take final priority
+        flow_max_rows      = data.get('flow_max_rows', flow_max_rows)
+        flow_max_logs      = data.get('flow_max_logs', flow_max_logs)
+        flow_max_upload_mb = data.get('flow_max_upload_mb', flow_max_upload_mb)
+        flow_max_bytes     = int(flow_max_upload_mb) * 1024 * 1024
 
         if not artifacts:
             return jsonify({"error": "artifacts list is required"}), 400
@@ -159,6 +210,9 @@ def run_bestpractice_hunts():
         artifacts_list = json.dumps(artifacts)
         spec_parts = ", ".join([f'`{a}`=dict()' for a in artifacts])
 
+        # hunt() rejects max_logs (collect_client-only arg), so we omit it.
+        # flow_max_logs is still honored on the TimeSketch / collect_client path.
+        _ = flow_max_logs  # intentionally unused here
         # Create single bulk hunt with all artifacts
         query = f"""
 LET collection = hunt(
@@ -167,6 +221,8 @@ LET collection = hunt(
     spec=dict({spec_parts}),
     expires=now() + {expire_seconds},
     timeout={timeout_seconds},
+    max_rows={flow_max_rows},
+    max_bytes={flow_max_bytes},
     cpu_limit={cpu_limit}
 )
 SELECT HuntId FROM collection

@@ -21,6 +21,12 @@ velociraptor:
       hunt_expiry: 120
       timeout: 600
       cpu_limit: 90
+      # Flow-level resource limits (passed into the hunt's VQL `hunt(...)`).
+      # Override the historical 1 GiB / 1 M-row hardcoded defaults from
+      # velociraptor_service.py so big collections don't get cancelled.
+      flow_max_rows: 10000000              # 10 M rows
+      flow_max_logs: 1000000               # 1 M log lines
+      flow_max_upload_mb: 51200            # 50 GiB total upload per flow
     artifacts:
       - DetectRaptor.Windows.Detection.Amcache
       - DetectRaptor.Windows.Detection.NamedPipes
@@ -43,6 +49,10 @@ velociraptor:
       hunt_expiry: 120
       timeout: 3600
       cpu_limit: 90
+      # Flow-level resource limits — see velociraptor_quick_scan for notes.
+      flow_max_rows: 10000000
+      flow_max_logs: 1000000
+      flow_max_upload_mb: 51200
     artifacts:
       - Generic.Forensic.SQLiteHunter
       - Windows.Analysis.EvidenceOfDownload
@@ -84,6 +94,10 @@ velociraptor:
       hunt_expiry: 180
       timeout: 7200
       cpu_limit: 90
+      # Flow-level resource limits — see velociraptor_quick_scan for notes.
+      flow_max_rows: 10000000
+      flow_max_logs: 1000000
+      flow_max_upload_mb: 51200
     artifacts:
       # Detection
       - DetectRaptor.Windows.Detection.Amcache
@@ -159,6 +173,10 @@ velociraptor:
       hunt_expiry: 120
       timeout: 600
       cpu_limit: 90
+      # Flow-level resource limits — see velociraptor_quick_scan for notes.
+      flow_max_rows: 10000000
+      flow_max_logs: 1000000
+      flow_max_upload_mb: 51200
     artifacts:
       - Windows.Hayabusa.Rules
       - Windows.Detection.Malfind
@@ -180,6 +198,10 @@ velociraptor:
       hunt_expiry: 120
       timeout: 600
       cpu_limit: 90
+      # Flow-level resource limits — see velociraptor_quick_scan for notes.
+      flow_max_rows: 10000000
+      flow_max_logs: 1000000
+      flow_max_upload_mb: 51200
     artifacts:
       # Core Detection
       - Windows.Hayabusa.Rules
@@ -218,6 +240,23 @@ timesketch:
       plaso_hasher_size: 100
       collection_timeout: 10000
       cpu_limit: 80
+      # KAPE artifact parameters (passed to env=dict() in collect_client VQL).
+      # Defaults are deliberately permissive on size + endpoint-friendly on
+      # hashing; override per-blueprint if a workflow needs different behavior.
+      kape_max_file_size: 10737418240      # 10 GiB — fixes the 100 MB default
+                                           # that silently dropped big files
+      kape_max_hash_size: 0                # 0 = hash NOTHING on the endpoint
+                                           # (matches plaso_hasher: "none").
+                                           # Bump to e.g. 104857600 for hashing
+                                           # under 100 MB.
+      kape_collection_policy: "ExcludeSigned"   # Skip files with valid trusted
+                                                # signatures — typical 5-20×
+                                                # collection size reduction.
+      # Flow-level resource limits (passed as collect_client args). Overrides
+      # the historical 1 GiB / 1 M-row hardcoded ceilings that bit us today.
+      flow_max_rows: 10000000              # 10 M rows
+      flow_max_logs: 1000000               # 1 M log lines
+      flow_max_upload_mb: 51200            # 50 GiB total upload per flow
 
   - id: timesketch_event_logs
     name: "Event Logs Only"
@@ -231,6 +270,14 @@ timesketch:
       plaso_hasher_size: 100
       collection_timeout: 10000
       cpu_limit: 80
+      # KAPE artifact parameters — see timesketch_full_triage above for notes.
+      kape_max_file_size: 10737418240
+      kape_max_hash_size: 0
+      kape_collection_policy: "ExcludeSigned"
+      # Flow-level resource limits.
+      flow_max_rows: 10000000
+      flow_max_logs: 1000000
+      flow_max_upload_mb: 51200
 
   - id: timesketch_basic_collection
     name: "Basic Collection"
@@ -244,6 +291,14 @@ timesketch:
       plaso_hasher_size: 100
       collection_timeout: 10000
       cpu_limit: 80
+      # KAPE artifact parameters — see timesketch_full_triage above for notes.
+      kape_max_file_size: 10737418240
+      kape_max_hash_size: 0
+      kape_collection_policy: "ExcludeSigned"
+      # Flow-level resource limits.
+      flow_max_rows: 10000000
+      flow_max_logs: 1000000
+      flow_max_upload_mb: 51200
 
 # ============================================================================
 # Azure Security Blueprints

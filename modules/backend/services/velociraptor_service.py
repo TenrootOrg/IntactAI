@@ -274,19 +274,38 @@ def setup_velociraptor_connection():
         sys.stderr.flush()
         return None
 
-def create_velociraptor_hunt(artifact_name, description="", cpu_limit=90):
+def create_velociraptor_hunt(
+    artifact_name,
+    description="",
+    cpu_limit=90,
+    # Hunt resource limits — replace what used to be hardcoded right below.
+    # Defaults match the historical hardcoded values so callers that don't
+    # pass anything see identical pre-patch behavior.
+    expire_seconds=86400,
+    timeout_seconds=600,
+    max_rows=1000000,
+    max_bytes=1048576000,   # ~1 GiB
+    max_logs=100000,
+):
     """Create a real hunt in Velociraptor using gRPC API
 
     Args:
         artifact_name: Name of the artifact to hunt
         description: Hunt description
         cpu_limit: CPU limit percentage (default 90%)
+        expire_seconds: Seconds until the hunt expires (default 86400 = 24h)
+        timeout_seconds: Seconds before the hunt's per-client collection times out
+        max_rows: Hard cap on rows the hunt may collect across all clients
+        max_bytes: Hard cap on bytes uploaded across all clients
+        max_logs: Hard cap on log lines emitted across all clients
     """
     sys.stdout.flush()
     print("=" * 80, flush=True)
     print(f"[HUNT] Creating hunt for artifact: {artifact_name}", flush=True)
     print(f"[HUNT] Description: {description}", flush=True)
     print(f"[HUNT] CPU Limit: {cpu_limit}%", flush=True)
+    print(f"[HUNT] Resource caps: max_rows={max_rows}, max_logs={max_logs}, "
+          f"max_bytes={max_bytes}", flush=True)
     print("=" * 80, flush=True)
 
     try:
@@ -298,13 +317,13 @@ def create_velociraptor_hunt(artifact_name, description="", cpu_limit=90):
 
         stub = api_pb2_grpc.APIStub(channel)
 
-        # Build VQL query to create hunt
-        # Using default parameters similar to the previous Intact.AI Python implementation
-        expire_seconds = 86400  # 24 hours
-        timeout_seconds = 600   # 10 minutes
-        max_rows = 1000000
-        max_bytes = 1048576000  # ~1GB
+        # Build VQL query to create hunt. The resource limits used to be
+        # hardcoded right here; now they're parameters from the blueprint.
 
+        # Note: hunt() accepts max_rows + max_bytes but NOT max_logs (that's a
+        # collect_client-only arg). max_logs in the blueprint is honored on
+        # the TimeSketch / collect_client path; here we just skip it.
+        _ = max_logs  # intentionally unused for hunt VQL
         vql_query = f"""
 LET collection = hunt(
     description='Intact.AI Hunt: {description}',
