@@ -13,7 +13,24 @@ from pyvelociraptor import api_pb2_grpc
 
 from services.velociraptor_service import setup_velociraptor_connection
 
-def run_kape_collection_grpc(client_id, kape_target="KapeTriage", timeout_seconds=10000, cpu_limit=80):
+def run_kape_collection_grpc(
+    client_id,
+    kape_target="KapeTriage",
+    timeout_seconds=10000,
+    cpu_limit=80,
+    # Flow-level resource limits (passed to collect_client). Defaults match
+    # the historical Velociraptor server defaults so callers that don't pass
+    # these see identical pre-patch behavior.
+    max_rows=1000000,
+    max_logs=100000,
+    max_upload_mb=1024,
+    # KAPE artifact env parameters (passed to collect_client(env=dict(...))).
+    # Defaults intentionally permissive on size + endpoint-friendly on hashing
+    # for the "fast triage" workflow that's our default.
+    max_file_size=10737418240,         # 10 GiB
+    max_hash_size=0,                   # 0 = hashing disabled on endpoint
+    collection_policy="ExcludeSigned",
+):
     """Run KAPE collection on a client using gRPC API
 
     Args:
@@ -21,6 +38,13 @@ def run_kape_collection_grpc(client_id, kape_target="KapeTriage", timeout_second
         kape_target: KAPE target (e.g., '_KapeTriage', '_SANS_Triage', '_J')
         timeout_seconds: Collection timeout in seconds (default 10000 = ~2.8 hours)
         cpu_limit: CPU limit percentage on endpoint (default 80%)
+        max_rows: Max rows the flow may produce (Velociraptor default: 1,000,000)
+        max_logs: Max log lines the flow may produce (Velociraptor default: 100,000)
+        max_upload_mb: Max megabytes the flow may upload (Velociraptor default: 1024)
+        max_file_size: Per-file upload size cap in bytes for the kape artifact
+        max_hash_size: Per-file hash size cap in bytes (0 disables hashing)
+        collection_policy: ExcludeSigned | ExcludeMicrosoft | Default (filename
+            filtering policy applied by the kape collection artifact itself)
     """
     sys.stdout.flush()
     print("=" * 80, flush=True)
@@ -28,6 +52,11 @@ def run_kape_collection_grpc(client_id, kape_target="KapeTriage", timeout_second
     print(f"[KAPE] Client ID: {client_id}", flush=True)
     print(f"[KAPE] Target: {kape_target}", flush=True)
     print(f"[KAPE] Timeout: {timeout_seconds}s, CPU Limit: {cpu_limit}%", flush=True)
+    print(f"[KAPE] Flow caps: max_rows={max_rows}, max_logs={max_logs}, "
+          f"max_upload_mb={max_upload_mb}", flush=True)
+    print(f"[KAPE] Artifact env: MaxFileSize={max_file_size}, "
+          f"MaxHashSize={max_hash_size}, CollectionPolicy={collection_policy}",
+          flush=True)
     print("=" * 80, flush=True)
 
     try:
@@ -45,19 +74,31 @@ def run_kape_collection_grpc(client_id, kape_target="KapeTriage", timeout_second
         print("[KAPE] Step 2/4: Building VQL query...", flush=True)
         artifact_name = 'Windows.Triage.Targets'
         timeout_ms = timeout_seconds * 1000  # Convert to milliseconds
+        max_upload_bytes = int(max_upload_mb) * 1024 * 1024
 
         # Use env parameter with JSON-encoded arrays (same as Velociraptor UI)
         # Targets must be JSON string: "[\"AnyDesk\"]"
         import json
         targets_json = json.dumps([kape_target])
 
+        # Note: this Velociraptor version's `collect_client()` rejects
+        # `max_logs` ("Unexpected arg max_logs"). The blueprint still carries
+        # `flow_max_logs` for forward-compat, but we don't pass it into the VQL.
+        _ = max_logs  # intentionally unused
         vql_query = f"""
 LET collection <= collect_client(
     client_id='{client_id}',
     artifacts='{artifact_name}',
     timeout={timeout_ms},
     cpu_limit={cpu_limit},
-    env=dict(Targets='''{targets_json}''')
+    max_rows={max_rows},
+    max_bytes={max_upload_bytes},
+    env=dict(
+        Targets='''{targets_json}''',
+        MaxFileSize='{max_file_size}',
+        MaxHashSize='{max_hash_size}',
+        CollectionPolicy='{collection_policy}'
+    )
 )
 SELECT * FROM collection
 """
