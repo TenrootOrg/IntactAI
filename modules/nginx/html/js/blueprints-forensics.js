@@ -101,8 +101,35 @@ function renderForensicsClients(clients) {
         return;
     }
 
-    container.innerHTML = clients.map(client => {
-        // last_seen_at is in microseconds, convert to milliseconds
+    // Same OS-grouping logic as ClientManager.render() — kept inline here
+    // because this picker has its own rendering pipeline (selection model
+    // is a Set, not derived from DOM checkbox state).
+    const osKey = (os) => {
+        if (!os) return 'Unknown';
+        const s = String(os).trim().toLowerCase();
+        if (!s) return 'Unknown';
+        if (s === 'windows' || s.startsWith('win')) return 'Windows';
+        if (s === 'linux') return 'Linux';
+        if (s === 'darwin' || s === 'macos' || s === 'osx' || s === 'mac') return 'macOS';
+        return s.charAt(0).toUpperCase() + s.slice(1);
+    };
+
+    const groups = {};
+    for (const c of clients) {
+        const k = osKey(c.os);
+        (groups[k] = groups[k] || []).push(c);
+    }
+    const preferred = ['Windows', 'Linux', 'macOS'];
+    const others = Object.keys(groups)
+        .filter(k => !preferred.includes(k) && k !== 'Unknown')
+        .sort();
+    const orderedKeys = [
+        ...preferred.filter(k => groups[k] && groups[k].length),
+        ...others,
+        ...(groups['Unknown'] && groups['Unknown'].length ? ['Unknown'] : []),
+    ];
+
+    const renderClient = (client) => {
         const lastSeenMs = client.last_seen_at ? client.last_seen_at / 1000 : 0;
         const isOnline = lastSeenMs && (Date.now() - lastSeenMs) < 300000; // 5 minutes
         const checked = forensicsSelectedClients.has(client.client_id) ? 'checked' : '';
@@ -116,6 +143,17 @@ function renderForensicsClients(clients) {
                 <span class="text-xs text-gray-500">${client.os || ''}</span>
             </label>
         `;
+    };
+
+    container.innerHTML = orderedKeys.map(key => {
+        const groupClients = groups[key];
+        const heading = `
+            <div class="flex items-center gap-2 px-2 pt-2 pb-1 mt-1 border-t border-gray-800 first:border-t-0 first:mt-0 first:pt-0">
+                <span class="text-xs uppercase tracking-wide text-gray-400 font-semibold">${key}</span>
+                <span class="text-xs text-gray-600">(${groupClients.length})</span>
+            </div>
+        `;
+        return heading + groupClients.map(renderClient).join('');
     }).join('');
 }
 
