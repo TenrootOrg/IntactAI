@@ -215,6 +215,17 @@ def create_collections(run_id, artifacts, settings, client_ids):
     stub = api_pb2_grpc.APIStub(channel)
     timeout_seconds = settings.get('timeout', 3600)
     cpu_limit = settings.get('cpu_limit', 80)
+    # Flow-level resource limits — without these the agentic per-client
+    # collection inherits Velociraptor's daemon defaults (1 GiB upload, 1M rows)
+    # and can be cancelled mid-flow on a real KAPE-class collection. Defaults
+    # match the conservative ceilings shipped in default_blueprints.yaml.
+    flow_max_rows      = settings.get('flow_max_rows', 10000000)
+    flow_max_upload_mb = settings.get('flow_max_upload_mb', 51200)
+    flow_max_bytes     = int(flow_max_upload_mb) * 1024 * 1024
+    # `flow_max_logs` is in the blueprint for forward-compat but the current
+    # Velociraptor `collect_client` rejects it ("Unexpected arg max_logs"),
+    # so we deliberately don't pass it into the VQL.
+    _ = settings.get('flow_max_logs', 1000000)
 
     # Get hostname mapping for all clients
     client_hostnames = get_client_hostnames(stub, client_ids)
@@ -238,7 +249,9 @@ LET collection = collect_client(
     artifacts={artifacts_list},
     spec=dict({spec_str}),
     timeout={timeout_seconds},
-    cpu_limit={cpu_limit}
+    cpu_limit={cpu_limit},
+    max_rows={flow_max_rows},
+    max_bytes={flow_max_bytes}
 )
 SELECT * FROM collection
 """
