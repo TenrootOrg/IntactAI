@@ -1331,18 +1331,38 @@ sudo ./velociraptor service start</code></pre>
                             </div>
 
                             <!-- Hunt Settings (Velociraptor/Agentic) -->
-                            <div id="blueprint-hunt-settings" class="grid grid-cols-3 gap-3">
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-300 mb-1">Hunt Expiry (min)</label>
-                                    <input type="number" id="blueprint-expiry" value="120" min="10" max="10080" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                            <div id="blueprint-hunt-settings">
+                                <div class="grid grid-cols-3 gap-3">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1">Hunt Expiry (min)</label>
+                                        <input type="number" id="blueprint-expiry" value="120" min="10" max="10080" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1">Timeout (sec)</label>
+                                        <input type="number" id="blueprint-timeout" value="3600" min="60" max="86400" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1">CPU Limit (%)</label>
+                                        <input type="number" id="blueprint-cpu" value="50" min="10" max="100" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
                                 </div>
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-300 mb-1">Timeout (sec)</label>
-                                    <input type="number" id="blueprint-timeout" value="3600" min="60" max="86400" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
-                                </div>
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-300 mb-1">CPU Limit (%)</label>
-                                    <input type="number" id="blueprint-cpu" value="50" min="10" max="100" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                <!-- Flow resource limits — bumped from Velociraptor's 1 GiB / 1 M-row defaults so KAPE-class collections don't get cancelled mid-upload. -->
+                                <div class="mt-3 border-t border-gray-700 pt-3">
+                                    <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">Flow resource limits</p>
+                                    <div class="grid grid-cols-3 gap-3">
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-300 mb-1" title="Hard cap on rows the hunt may collect across all clients">Max Rows</label>
+                                            <input type="number" id="blueprint-flow-max-rows" value="10000000" min="1000" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-300 mb-1" title="Hard cap on log lines (saved on blueprint; current Velociraptor hunt() VQL ignores it)">Max Logs</label>
+                                            <input type="number" id="blueprint-flow-max-logs" value="1000000" min="1000" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-300 mb-1" title="Hard cap on uploaded bytes per flow, in megabytes (50 GiB = 51200)">Max Upload (MB)</label>
+                                            <input type="number" id="blueprint-flow-max-upload-mb" value="51200" min="100" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
@@ -1393,8 +1413,50 @@ sudo ./velociraptor service start</code></pre>
                                     </select>
                                 </div>
                                 <div id="blueprint-ts-maxsize-container" class="hidden">
-                                    <label class="block text-sm font-medium text-gray-300 mb-1">Max File Size (MB)</label>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Plaso Hasher Size (MB)</label>
                                     <input type="number" id="blueprint-ts-maxsize" value="100" min="1" max="10000" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                </div>
+                            </div>
+
+                            <!-- Timesketch: flow-level resource limits (collect_client max_rows / max_bytes) -->
+                            <div id="blueprint-timesketch-flow-limits" class="hidden border-t border-gray-700 pt-3 mt-3">
+                                <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">Flow resource limits</p>
+                                <div class="grid grid-cols-3 gap-3">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Hard cap on rows the collection may emit">Max Rows</label>
+                                        <input type="number" id="blueprint-ts-flow-max-rows" value="10000000" min="1000" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Hard cap on log lines (kept for forward-compat; current Velociraptor collect_client ignores it)">Max Logs</label>
+                                        <input type="number" id="blueprint-ts-flow-max-logs" value="1000000" min="1000" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Hard cap on uploaded bytes per flow (50 GiB = 51200 MB)">Max Upload (MB)</label>
+                                        <input type="number" id="blueprint-ts-flow-max-upload-mb" value="51200" min="100" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Timesketch: KAPE artifact env (env=dict() in collect_client). Not present on Velociraptor blueprints. -->
+                            <div id="blueprint-timesketch-kape-env" class="hidden border-t border-gray-700 pt-3 mt-3">
+                                <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">KAPE artifact parameters</p>
+                                <div class="grid grid-cols-3 gap-3">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Per-file collection size cap, in BYTES. Default 10 GiB = 10737418240. Files over this are skipped entirely.">MaxFileSize (bytes)</label>
+                                        <input type="number" id="blueprint-ts-kape-max-file-size" value="10737418240" min="1048576" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Per-file hash size cap, in BYTES. 0 = endpoint-side hashing DISABLED (matches plaso_hasher: none for fast triage).">MaxHashSize (bytes)</label>
+                                        <input type="number" id="blueprint-ts-kape-max-hash-size" value="0" min="0" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Filter applied by the kape collection artifact. ExcludeSigned drops validly-signed binaries — typical 5–20× collection size reduction.">Collection Policy</label>
+                                        <select id="blueprint-ts-kape-collection-policy" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                            <option value="ExcludeSigned">ExcludeSigned (Recommended)</option>
+                                            <option value="ExcludeMicrosoft">ExcludeMicrosoft</option>
+                                            <option value="Default">Default (collect everything)</option>
+                                        </select>
+                                    </div>
                                 </div>
                             </div>
 

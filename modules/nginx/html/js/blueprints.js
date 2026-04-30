@@ -315,15 +315,22 @@ function showNewBlueprintModal() {
 function showSettingsForType(type) {
     const huntSettings = document.getElementById('blueprint-hunt-settings');
     const timesketchSettings = document.getElementById('blueprint-timesketch-settings');
+    // Two new TS-only sections introduced for KAPE upload-cap fix.
+    const tsFlowLimits = document.getElementById('blueprint-timesketch-flow-limits');
+    const tsKapeEnv = document.getElementById('blueprint-timesketch-kape-env');
     const artifactsSection = document.getElementById('blueprint-artifacts-section');
 
     // Hide all first
     if (huntSettings) huntSettings.classList.add('hidden');
     if (timesketchSettings) timesketchSettings.classList.add('hidden');
+    if (tsFlowLimits) tsFlowLimits.classList.add('hidden');
+    if (tsKapeEnv) tsKapeEnv.classList.add('hidden');
     if (artifactsSection) artifactsSection.classList.remove('hidden');
 
     if (type === 'timesketch') {
         if (timesketchSettings) timesketchSettings.classList.remove('hidden');
+        if (tsFlowLimits) tsFlowLimits.classList.remove('hidden');
+        if (tsKapeEnv) tsKapeEnv.classList.remove('hidden');
         if (artifactsSection) artifactsSection.classList.add('hidden'); // No artifacts for timesketch
     } else {
         if (huntSettings) huntSettings.classList.remove('hidden');
@@ -372,11 +379,24 @@ async function editBlueprint(blueprintId, type) {
         document.getElementById('blueprint-ts-cpu').value = bp.settings?.cpu_limit || 80;
         document.getElementById('blueprint-ts-hasher').value = bp.settings?.plaso_hasher || 'none';
         document.getElementById('blueprint-ts-maxsize').value = bp.settings?.plaso_hasher_size || 100;
+        // Flow resource limits (TS path uses collect_client). Defaults match the
+        // backend's settings.get(...) fallbacks so the UI surfaces the real values.
+        document.getElementById('blueprint-ts-flow-max-rows').value = bp.settings?.flow_max_rows ?? 10000000;
+        document.getElementById('blueprint-ts-flow-max-logs').value = bp.settings?.flow_max_logs ?? 1000000;
+        document.getElementById('blueprint-ts-flow-max-upload-mb').value = bp.settings?.flow_max_upload_mb ?? 51200;
+        // KAPE artifact env params (env=dict() in the VQL).
+        document.getElementById('blueprint-ts-kape-max-file-size').value = bp.settings?.kape_max_file_size ?? 10737418240;
+        document.getElementById('blueprint-ts-kape-max-hash-size').value = bp.settings?.kape_max_hash_size ?? 0;
+        document.getElementById('blueprint-ts-kape-collection-policy').value = bp.settings?.kape_collection_policy || 'ExcludeSigned';
         toggleHasherSize();
     } else {
         document.getElementById('blueprint-expiry').value = bp.settings?.hunt_expiry || 120;
         document.getElementById('blueprint-timeout').value = bp.settings?.timeout || 3600;
         document.getElementById('blueprint-cpu').value = bp.settings?.cpu_limit || 90;
+        // Flow resource limits (Velociraptor / Agentic — applied to hunt() VQL).
+        document.getElementById('blueprint-flow-max-rows').value = bp.settings?.flow_max_rows ?? 10000000;
+        document.getElementById('blueprint-flow-max-logs').value = bp.settings?.flow_max_logs ?? 1000000;
+        document.getElementById('blueprint-flow-max-upload-mb').value = bp.settings?.flow_max_upload_mb ?? 51200;
     }
 
     populateModalArtifacts(bp.artifacts || []);
@@ -482,7 +502,16 @@ async function saveBlueprintFromModal() {
             collection_timeout: parseInt(document.getElementById('blueprint-ts-timeout').value) || 10000,
             cpu_limit: parseInt(document.getElementById('blueprint-ts-cpu').value) || 80,
             plaso_hasher: hasher,
-            plaso_hasher_size: hasher !== 'none' ? parseInt(document.getElementById('blueprint-ts-maxsize').value) || 100 : null
+            plaso_hasher_size: hasher !== 'none' ? parseInt(document.getElementById('blueprint-ts-maxsize').value) || 100 : null,
+            // Flow resource limits — backend reads these via settings.get(...) in
+            // run_kape_collection_grpc / executor.run_timesketch_pipeline.
+            flow_max_rows: parseInt(document.getElementById('blueprint-ts-flow-max-rows').value) || 10000000,
+            flow_max_logs: parseInt(document.getElementById('blueprint-ts-flow-max-logs').value) || 1000000,
+            flow_max_upload_mb: parseInt(document.getElementById('blueprint-ts-flow-max-upload-mb').value) || 51200,
+            // KAPE artifact env params (env=dict()).
+            kape_max_file_size: parseInt(document.getElementById('blueprint-ts-kape-max-file-size').value) || 10737418240,
+            kape_max_hash_size: parseInt(document.getElementById('blueprint-ts-kape-max-hash-size').value) || 0,
+            kape_collection_policy: document.getElementById('blueprint-ts-kape-collection-policy').value || 'ExcludeSigned'
         };
         data = { name, description, settings };  // No artifacts for timesketch
     } else {
@@ -491,7 +520,12 @@ async function saveBlueprintFromModal() {
         settings = {
             hunt_expiry: parseInt(document.getElementById('blueprint-expiry').value) || 120,
             timeout: parseInt(document.getElementById('blueprint-timeout').value) || 3600,
-            cpu_limit: parseInt(document.getElementById('blueprint-cpu').value) || 50
+            cpu_limit: parseInt(document.getElementById('blueprint-cpu').value) || 50,
+            // Flow resource limits — backend reads these via settings.get(...) in
+            // executor.run_velociraptor_hunt and routes/velociraptor_routes.run_bestpractice_hunts.
+            flow_max_rows: parseInt(document.getElementById('blueprint-flow-max-rows').value) || 10000000,
+            flow_max_logs: parseInt(document.getElementById('blueprint-flow-max-logs').value) || 1000000,
+            flow_max_upload_mb: parseInt(document.getElementById('blueprint-flow-max-upload-mb').value) || 51200
         };
         data = { name, description, artifacts, settings };
     }
