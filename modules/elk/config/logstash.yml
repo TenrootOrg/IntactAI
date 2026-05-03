@@ -1,2 +1,21 @@
-http.host: "0.0.0.0"
-xpack.monitoring.elasticsearch.hosts: ["http://elasticsearch:9200"]
+# Logstash 9.x setting names. The 8.x equivalents (http.host,
+# xpack.monitoring.elasticsearch.hosts) were removed in 9.0 and cause a
+# fatal "Setting X doesn't exist" on startup → restart loop that burns a
+# full CPU core. Keep these in sync with the Logstash version pinned in
+# elk/.env (currently 9.3.3).
+api.http.host: "0.0.0.0"
+api.http.port: 9600
+
+# X-Pack monitoring shipped via Elastic Agent / Metricbeat in 9.x; the
+# in-process xpack.monitoring.elasticsearch.* keys were removed.
+monitoring.enabled: false
+
+# Default pipeline.workers = number of host CPUs (4 on this VM). Each
+# worker busy-spins on its input queue even when no events are flowing,
+# so an idle Logstash can sit at 200%+ CPU and starve other containers
+# (notably TimeSketch's psort.py). 1 worker is plenty for the volumes
+# we ship through here; bump only if Beats/TCP throughput becomes the
+# bottleneck.
+pipeline.workers: 1
+pipeline.batch.size: 125
+pipeline.batch.delay: 50
