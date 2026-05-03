@@ -96,6 +96,10 @@ def run_timesketch_import():
         plaso_workers = data.get('plaso_workers', 2)  # Number of parallel workers
         plaso_hasher = data.get('plaso_hasher', '')  # Hasher (md5, sha1, sha256, all)
         plaso_hasher_size_mb = data.get('plaso_hasher_size_mb', 0)  # Max file size to hash in MB (0 = no limit)
+        # Wall-clock cap on the Timesketch indexing wait (default 3 days). Big
+        # collections can take many hours to index; the old 10000s cap killed
+        # otherwise-fine uploads. Mirrors the per-blueprint key.
+        timesketch_processing_timeout = data.get('timesketch_processing_timeout', 259200)
 
         # Use Timesketch configuration from config
         timesketch_config = TIMESKETCH_CONFIG
@@ -276,6 +280,7 @@ def run_timesketch_import():
                     'plaso_workers': plaso_workers,
                     'plaso_hasher': plaso_hasher,
                     'plaso_hasher_size': plaso_hasher_size_mb,
+                    'timesketch_processing_timeout': timesketch_processing_timeout,
                 }
 
                 result = process_kape_upload(

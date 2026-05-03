@@ -238,7 +238,7 @@ timesketch:
       plaso_workers: 2
       plaso_hasher: "none"
       plaso_hasher_size: 100
-      collection_timeout: 10000
+      collection_timeout: 100000
       cpu_limit: 80
       # KAPE artifact parameters (passed to env=dict() in collect_client VQL).
       # Defaults are deliberately permissive on size + endpoint-friendly on
@@ -257,6 +257,11 @@ timesketch:
       flow_max_rows: 10000000              # 10 M rows
       flow_max_logs: 1000000               # 1 M log lines
       flow_max_upload_mb: 51200            # 50 GiB total upload per flow
+      # How long to wait for Timesketch to finish indexing the .plaso file
+      # after upload completes. Old hardcoded 10000s (~2.8 h) was way too
+      # tight for big collections. 3 days covers a 50 GB KAPE collection
+      # being indexed on a busy OpenSearch instance with room to spare.
+      timesketch_processing_timeout: 259200   # 3 days, in seconds
 
   - id: timesketch_event_logs
     name: "Event Logs Only"
@@ -268,7 +273,7 @@ timesketch:
       plaso_workers: 2
       plaso_hasher: "none"
       plaso_hasher_size: 100
-      collection_timeout: 10000
+      collection_timeout: 100000
       cpu_limit: 80
       # KAPE artifact parameters — see timesketch_full_triage above for notes.
       kape_max_file_size: 10737418240
@@ -278,6 +283,8 @@ timesketch:
       flow_max_rows: 10000000
       flow_max_logs: 1000000
       flow_max_upload_mb: 51200
+      # See timesketch_full_triage above.
+      timesketch_processing_timeout: 259200   # 3 days
 
   - id: timesketch_basic_collection
     name: "Basic Collection"
@@ -289,7 +296,7 @@ timesketch:
       plaso_workers: 2
       plaso_hasher: "none"
       plaso_hasher_size: 100
-      collection_timeout: 10000
+      collection_timeout: 100000
       cpu_limit: 80
       # KAPE artifact parameters — see timesketch_full_triage above for notes.
       kape_max_file_size: 10737418240
@@ -299,6 +306,8 @@ timesketch:
       flow_max_rows: 10000000
       flow_max_logs: 1000000
       flow_max_upload_mb: 51200
+      # See timesketch_full_triage above.
+      timesketch_processing_timeout: 259200   # 3 days
 
 # ============================================================================
 # Azure Security Blueprints

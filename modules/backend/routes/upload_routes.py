@@ -269,6 +269,9 @@ def handle_tus_hook():
                     'plaso_workers': int(metadata.get('plaso_workers', '2')),
                     'plaso_hasher': metadata.get('plaso_hasher', ''),
                     'plaso_hasher_size': int(metadata.get('plaso_hasher_size', '100')),
+                    # 3-day cap on the Timesketch indexing wait; big collections
+                    # routinely exceed the old 10000s default.
+                    'timesketch_processing_timeout': int(metadata.get('timesketch_processing_timeout', '259200')),
                 }
 
                 print(f"[TUS HOOK] Settings: {settings}", flush=True)

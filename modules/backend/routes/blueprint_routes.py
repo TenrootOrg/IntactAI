@@ -108,9 +108,28 @@ def seed_default_blueprints():
             if not existing:
                 save_timesketch_blueprint(bp)
                 print(f"[BLUEPRINTS] Re-seeded missing timesketch default: {bp['id']}", flush=True)
-            elif existing.get('is_default') and not existing.get('settings', {}).get('collection_timeout'):
-                existing['settings'] = existing.get('settings', {})
-                existing['settings']['collection_timeout'] = 10000
+                continue
+            if not existing.get('is_default'):
+                continue
+            # Backfill any missing keys we've added to default TS blueprints
+            # over time. Only touches defaults; user-customised blueprints stay
+            # untouched.
+            settings = existing.get('settings') or {}
+            changed = False
+            # Default jumped from 10000 → 100000 (~28h); the old value was
+            # killing legitimate long KAPE collections. Only bump rows that
+            # are still at the old default — anything else is user choice.
+            if not settings.get('collection_timeout') or settings.get('collection_timeout') == 10000:
+                settings['collection_timeout'] = 100000
+                changed = True
+            if not settings.get('timesketch_processing_timeout'):
+                # 3 days. The old 10000s default killed long uploads while
+                # Timesketch was still happily indexing — see
+                # services/timesketch_service.py wait_timeout flow.
+                settings['timesketch_processing_timeout'] = 259200
+                changed = True
+            if changed:
+                existing['settings'] = settings
                 save_timesketch_blueprint(existing)
                 print(f"[BLUEPRINTS] Updated timesketch default: {bp['id']}", flush=True)
 
