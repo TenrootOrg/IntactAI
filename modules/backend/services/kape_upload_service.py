@@ -471,11 +471,17 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
         timeline_name = settings.get('timeline_name') or f"{client_name}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
         sketch_id = settings.get('sketch_id')
 
+        # Wall-clock cap on the Timesketch indexing wait. Default 3 days;
+        # the per-blueprint setting flows in via process_kape_upload's
+        # settings dict (executor / routes / TUS hook all propagate it).
+        ts_wait_timeout = settings.get('timesketch_processing_timeout', 259200)
+
         result = import_to_timesketch(
             plaso_file, sketch_name, timeline_name,
             TIMESKETCH_CONFIG,
             logger=lambda msg, lvl: add_log_to_run(run_id, msg, lvl),
-            sketch_id=sketch_id
+            sketch_id=sketch_id,
+            wait_timeout=ts_wait_timeout,
         )
 
         if result:

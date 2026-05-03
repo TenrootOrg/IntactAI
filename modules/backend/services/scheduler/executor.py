@@ -359,6 +359,11 @@ def run_timesketch_pipeline(job_meta: dict, client_ids: list):
                     'plaso_workers': settings.get('plaso_workers', 2),
                     'plaso_hasher': settings.get('plaso_hasher'),
                     'plaso_hasher_size': settings.get('plaso_hasher_size', 100),
+                    # Propagate the per-blueprint TS-processing wait timeout so
+                    # big collections aren't capped by the old hardcoded ~3 h.
+                    'timesketch_processing_timeout': settings.get(
+                        'timesketch_processing_timeout', 259200
+                    ),
                 },
                 run_id=run_id,
                 cleanup_zip=True,
