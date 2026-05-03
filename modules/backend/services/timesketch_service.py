@@ -137,7 +137,7 @@ def _upload_plaso_direct(api, sketch, plaso_file_path, timeline_name, logger=Non
         return None
 
 
-def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=10000, poll_interval=30, logger=None):
+def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=10000, poll_interval=30, logger=None, timesketch_config=None):
     """Wait for timeline processing to complete with progress updates.
 
     Args:
@@ -147,6 +147,10 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
         timeout_seconds: Maximum wait time (default ~2.8 hours)
         poll_interval: Seconds between status checks
         logger: Optional callback function(message, level) to log progress
+        timesketch_config: Optional config dict (host/username/password) used
+            to mint a fresh client if the existing session expires mid-poll.
+            Without this, the polling loop will loop forever on a dead cookie
+            until the timeout fires.
 
     Returns:
         tuple (success: bool, final_status: str, timeline_id: int or None)
@@ -161,6 +165,7 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
 
     start_time = time.time()
     sketch = api.get_sketch(sketch_id)
+    consecutive_errors = 0
 
     log(f"Waiting for timeline '{timeline_name}' to be ready...")
     log(f"Timeout: {timeout_seconds}s, Poll interval: {poll_interval}s")
@@ -176,6 +181,7 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
         # Get all timelines and find ours by name
         try:
             timelines = sketch.list_timelines()
+            consecutive_errors = 0  # any successful call resets the counter
             timeline = None
             for tl in timelines:
                 if tl.name == timeline_name:
@@ -203,6 +209,28 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
                 time.sleep(poll_interval)
 
         except Exception as e:
+            consecutive_errors += 1
+            err = str(e).lower()
+            # Heuristic: anything that smells like the session-expired symptom
+            # gets a re-auth attempt. Cheap, idempotent — over-trigger is fine.
+            looks_auth_expired = (
+                "json" in err or "decode" in err or "login" in err
+                or "401" in err or "unauthorized" in err
+                or consecutive_errors >= 2
+            )
+            if looks_auth_expired and timesketch_config:
+                log("Session likely expired — re-authenticating to TimeSketch...", "warning")
+                new_api = _connect_timesketch_api(timesketch_config, logger=logger)
+                if new_api:
+                    api = new_api
+                    try:
+                        sketch = api.get_sketch(sketch_id)  # rebind to new session
+                        consecutive_errors = 0
+                        log("✓ Re-authenticated successfully", "success")
+                    except Exception as rebind_err:
+                        log(f"Sketch rebind after re-auth failed: {rebind_err}", "warning")
+                else:
+                    log("Re-auth attempt failed; will retry next cycle", "warning")
             log(f"⚠ Error checking timeline status: {e}, retrying...", "warning")
             time.sleep(poll_interval)
 
@@ -370,7 +398,11 @@ def import_to_timesketch(plaso_file, sketch_name, timeline_name, timesketch_conf
             timeline_name=timeline_name,
             timeout_seconds=wait_timeout,
             poll_interval=30,
-            logger=logger
+            logger=logger,
+            # Pass config so the polling loop can re-mint the session if the
+            # current cookie expires (e.g. on uploads that cross the 1-week
+            # PERMANENT_SESSION_LIFETIME).
+            timesketch_config=timesketch_config,
         )
 
         if not success:
