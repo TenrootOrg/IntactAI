@@ -9,14 +9,17 @@ import re
 import ipaddress
 from typing import Any
 
-# Pseudo-value pools (RFC 5737 TEST-NET-3 for external IPs)
-PSEUDO_EXTERNAL_IPS = [f"203.0.113.{i}" for i in range(1, 255)]
-PSEUDO_INTERNAL_IPS = [f"10.0.0.{i}" for i in range(101, 255)]
-PSEUDO_USERS = [f"user{i}" for i in range(1, 100)] + [f"admin{i}" for i in range(1, 20)] + [f"svc_account{i}" for i in range(1, 20)]
-PSEUDO_HOSTS = [f"HOST-{i:03d}" for i in range(1, 100)] + [f"SERVER-{i:03d}" for i in range(1, 50)] + [f"DC-{i:03d}" for i in range(1, 10)]
-PSEUDO_EMAILS = [f"user{i}@example.org" for i in range(1, 100)]
-PSEUDO_DOMAINS = ["YOURORG", "yourorg.local", "yourorg.internal"]
-PSEUDO_CREDENTIALS = [f"SecretPass{i}!" for i in range(1, 100)] + [f"ApiKey_{i:08x}" for i in range(1, 50)] + [f"Token_{i:012x}" for i in range(1, 50)]
+# Pseudo-value pools — indexed labels for visual consistency.
+# Same original -> same label across all artifacts in one run, guaranteed
+# by the self.mapping dedup dict in DataAnonymizer.__init__.
+PSEUDO_EXTERNAL_IPS = [f"ExternalIP{i}" for i in range(1, 1000)]
+PSEUDO_INTERNAL_IPS = [f"InternalIP{i}" for i in range(1, 1000)]
+PSEUDO_USERS        = [f"Username{i}"   for i in range(1, 1000)]
+PSEUDO_HOSTS        = [f"Hostname{i}"   for i in range(1, 1000)]
+PSEUDO_EMAILS       = [f"Email{i}"      for i in range(1, 1000)]
+PSEUDO_DOMAINS      = [f"Domain{i}"     for i in range(1, 1000)]
+PSEUDO_GUIDS        = [f"GUID{i}"       for i in range(1, 1000)]
+PSEUDO_CREDENTIALS  = [f"Credential{i}" for i in range(1, 1000)]
 
 # Safe values that should NOT be masked
 SAFE_IPS = {
@@ -33,6 +36,42 @@ SYSTEM_ACCOUNTS = {
     "Users", "Guests", "DnsAdmins", "Domain Admins", "Domain Users",
     "WINDOW MANAGER", "FONT DRIVER HOST", "UMFD", "DWM",
 }
+
+# Service / system identifiers that are NOT real domains or users. Seen
+# in *DomainName fields on Azure-joined and Hyper-V hosts. SYSTEM_ACCOUNTS
+# only covers the user-mask path; this set covers any field type.
+SAFE_IDENTIFIER_VALUES = {
+    "AzureAD", "MicrosoftAccount", "Microsoft Account",
+    "NT VIRTUAL MACHINE", "NT AUTHORITY", "NT SERVICE",
+    "Window Manager", "Font Driver Host", "DWM",
+    "ANONYMOUS LOGON", "LOCAL SERVICE", "NETWORK SERVICE", "SYSTEM",
+}
+_SAFE_IDENTIFIER_VALUES_UPPER = {v.upper() for v in SAFE_IDENTIFIER_VALUES}
+
+# Single-char and similar placeholders Windows logs use when a field
+# doesn't apply. Extends the in-line trivial-value skip in _mask_value.
+_TRIVIAL_VALUES = {
+    'true', 'false', 'none', 'null', 'n/a', 'unknown', '0', '1',
+    '-', '_', '--', '---'
+}
+
+# Windows SID (MS-DTYP 2.4.2): S-<rev>-<authority>[-<RID>]{0..9}.
+# Detection only — SIDs pass through, no pseudo pool needed.
+_SID_PATTERN = re.compile(r'^S-1-\d+(?:-\d+){0,8}$')
+
+# RFC 4122 UUID (8-4-4-4-12 hex). Azure ObjectIds, sub claims, etc.
+_GUID_PATTERN = re.compile(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
+    r'[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+)
+
+# Detect NetBIOS workstation names that Windows puts in *DomainName
+# fields during local logons (no AD domain). Real DNS domains have dots;
+# workstations don't and start with a recognisable prefix.
+_WORKSTATION_PREFIX = re.compile(
+    r'^(DESKTOP|LAPTOP|WORKSTATION|PC|WIN|MAC|MACBOOK|IMAC)[-_]',
+    re.IGNORECASE
+)
 
 SAFE_PATHS = {
     r"C:\Windows",
@@ -151,6 +190,7 @@ class DataAnonymizer:
             "user": 0,
             "host": 0,
             "domain": 0,
+            "guid": 0,
             "credential": 0,
         }
         self.custom_patterns = custom_patterns or []
@@ -237,6 +277,10 @@ class DataAnonymizer:
             idx = self.counters["domain"] % len(PSEUDO_DOMAINS)
             pseudo = PSEUDO_DOMAINS[idx]
             self.counters["domain"] += 1
+        elif category == "guid":
+            idx = self.counters["guid"] % len(PSEUDO_GUIDS)
+            pseudo = PSEUDO_GUIDS[idx]
+            self.counters["guid"] += 1
         elif category == "credential":
             idx = self.counters["credential"] % len(PSEUDO_CREDENTIALS)
             pseudo = PSEUDO_CREDENTIALS[idx]
@@ -285,6 +329,29 @@ class DataAnonymizer:
             return False
         return bool(self._CREDENTIAL_PATTERNS.match(value))
 
+    def _is_sid(self, value: str) -> bool:
+        """Windows SID? S-1-<authority>-<RID>... per MS-DTYP 2.4.2."""
+        return bool(_SID_PATTERN.match(value))
+
+    def _is_guid(self, value: str) -> bool:
+        """RFC 4122 UUID? Used for Azure ObjectIds, sub claims, etc."""
+        return bool(_GUID_PATTERN.match(value))
+
+    def _is_safe_identifier(self, value: str) -> bool:
+        """Service / system strings that should pass through any field type."""
+        return value in SAFE_IDENTIFIER_VALUES or value.upper() in _SAFE_IDENTIFIER_VALUES_UPPER
+
+    def _looks_like_workstation_name(self, value: str) -> bool:
+        """Detect NetBIOS workstation names placed in *DomainName fields.
+
+        Windows local logons (no AD domain) populate SubjectDomainName with
+        the workstation name. Real DNS domains have dots; workstations don't
+        and start with a recognisable prefix.
+        """
+        if '.' in value:
+            return False
+        return bool(_WORKSTATION_PREFIX.match(value))
+
     def _extract_domain_user(self, value: str) -> tuple[str, str] | None:
         """Extract domain and user from DOMAIN\\user format."""
         if '\\' in value:
@@ -311,6 +378,17 @@ class DataAnonymizer:
         for sys_acct in SYSTEM_ACCOUNTS:
             if sys_acct in upper:
                 return user
+
+        # Defensive value-shape re-checks. _mask_value runs these before
+        # routing here, but custom_patterns and other call sites can land
+        # us here with an opaque identifier or email — keep the right
+        # treatment regardless of how we got called.
+        if self._is_sid(user):
+            return user
+        if self._is_guid(user):
+            return self._get_or_create_pseudo(user, "guid")
+        if self._is_email(user):
+            return self._mask_email(user)
 
         # Handle DOMAIN\user format
         domain_user = self._extract_domain_user(user)
@@ -407,7 +485,19 @@ class DataAnonymizer:
         return masked
 
     def _mask_value(self, field_name: str, value: Any) -> Any:
-        """Mask a single value based on field name and value content."""
+        """Mask a single value based on field name and value content.
+
+        Detection chain (in order):
+          1. Skip empty / trivial / SAFE_FIELDS values.
+          2. Value-based pre-checks (regardless of field name): safe
+             identifier passthrough, SID passthrough, GUID, email,
+             credential. Catches identifiers that travel through
+             user/domain fields when Windows can't resolve them.
+          3. Field-name-based identity routing (with workstation-name
+             reroute on the domain branch).
+          4. Field-name patterns for IP / email / host / path.
+          5. Last-resort auto-detect for unlabeled fields.
+        """
         if value is None:
             return None
 
@@ -417,8 +507,8 @@ class DataAnonymizer:
         if not value_str.strip():
             return value
 
-        # Skip boolean-like and trivial values
-        if value_str.lower() in ('true', 'false', 'none', 'null', 'n/a', 'unknown', '0', '1'):
+        # Skip boolean-like and trivial values (now incl. "-", "_", "--", "---")
+        if value_str.lower() in _TRIVIAL_VALUES:
             return value
 
         # Skip known-safe fields (forensic metadata that contains misleading keywords)
@@ -426,26 +516,55 @@ class DataAnonymizer:
         if normalized_field in SAFE_FIELDS:
             return value
 
+        # ---- Value-based pre-checks ----
+        # AzureAD, NT VIRTUAL MACHINE, etc. — service strings that often
+        # appear in *DomainName fields and should never get a Domain1 label.
+        if self._is_safe_identifier(value_str):
+            return value
+        # SIDs (well-known and per-user) pass through unchanged.
+        if self._is_sid(value_str):
+            return value
+        # GUID anywhere — Azure ObjectIds in userid fields, etc.
+        if self._is_guid(value_str):
+            return self._get_or_create_pseudo(value_str, "guid")
+        # Email anywhere — caught here so an email value in a username
+        # field still goes to the email pool, not user pool.
+        if self._is_email(value_str):
+            return self._mask_email(value_str)
+        # Detect credentials by value pattern (known API key/token formats)
+        if self._is_credential(value_str):
+            return self._get_or_create_pseudo(value_str, "credential")
+
         # Check explicit identity fields (exact field name match from artifact definitions)
         identity_category = IDENTITY_FIELDS.get(normalized_field)
         if identity_category:
             if identity_category == 'domain':
-                return self._get_or_create_pseudo(value_str, "domain")
+                # Domain values pass through to preserve LLM context
+                # (which CDN, which SaaS, which org domain). Two
+                # exceptions:
+                #   1. Workstation name landed here (Windows local logon
+                #      with no AD domain) -> route to host pool.
+                #   2. Bare IP landed here (rare but seen in some logs)
+                #      -> route to IP masking.
+                # Service strings (AzureAD, NT VIRTUAL MACHINE) and SIDs
+                # are already handled by the pre-checks above.
+                if self._looks_like_workstation_name(value_str):
+                    return self._mask_host(value_str)
+                if self._is_ip(value_str):
+                    return self._mask_ip(value_str)
+                return value
             return self._mask_user(value_str)
 
-        # Check custom patterns first
+        # Check custom patterns
         if self._matches_custom_pattern(value_str):
             return self._get_or_create_pseudo(value_str, "user")
-
-        # Detect credentials by value pattern (known API key/token/hash formats)
-        if self._is_credential(value_str):
-            return self._get_or_create_pseudo(value_str, "credential")
 
         # IP fields (value must match IP regex)
         if IP_FIELD_PATTERNS.search(field_name) and self._is_ip(value_str):
             return self._mask_ip(value_str)
 
-        # Email fields (value must match email regex)
+        # Email fields — already handled by the value-based pre-check above,
+        # but keep for symmetry / explicit field-driven detection.
         if EMAIL_FIELD_PATTERNS.search(field_name) and self._is_email(value_str):
             return self._mask_email(value_str)
 
@@ -459,11 +578,10 @@ class DataAnonymizer:
                 return self._mask_commandline(value_str)
             return self._mask_path(value_str)
 
-        # Auto-detect by value content (for unlabeled fields)
+        # Auto-detect by value content (for unlabeled fields). Email already
+        # handled above, only IP left.
         if self._is_ip(value_str):
             return self._mask_ip(value_str)
-        if self._is_email(value_str):
-            return self._mask_email(value_str)
 
         return value
 
@@ -527,6 +645,7 @@ class DataAnonymizer:
             "user": "Users",
             "host": "Hosts",
             "domain": "Domains",
+            "guid": "GUIDs",
             "credential": "Credentials",
         }
 
