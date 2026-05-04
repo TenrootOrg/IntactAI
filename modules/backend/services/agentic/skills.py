@@ -462,6 +462,7 @@ def select_macro_skill(
     aggregated_mitre: Optional[List[str]] = None,
     severity_counts: Optional[Dict[str, int]] = None,
     artifact_names: Optional[List[str]] = None,
+    exclude: Optional[set] = None,
 ) -> Optional[str]:
     """Pick the single best macro playbook for the synthesis pass.
 
@@ -474,6 +475,12 @@ def select_macro_skill(
         of forensic interest push toward forensics-investigation).
       * `artifact_names`    — flat list of every artifact name analyzed,
         for keyword fallback signals.
+      * `exclude`           — optional set of macro names to skip during
+        scoring AND fallback. The technical-report writer uses this to
+        keep tooling-focused macros (e.g. building-incident-timeline-
+        with-timesketch) out of its system prompt — those describe how
+        to operate a piece of software, not how to think about a cyber
+        investigation, so they distract the report writer.
 
     Returns the macro skill name to inject, or None if the macro index is
     empty / no macro clears SKILL_MIN_SCORE (caller falls back to base).
@@ -484,6 +491,7 @@ def select_macro_skill(
     aggregated_mitre = list(aggregated_mitre or [])
     severity_counts = dict(severity_counts or {})
     artifact_names = list(artifact_names or [])
+    exclude = set(exclude or ())
 
     # Build a flat pool of "context tokens" to score against macro tags +
     # description: artifact name tokens + severity-driven keywords.
@@ -500,6 +508,8 @@ def select_macro_skill(
 
     scored: List[Tuple[int, str]] = []
     for name, macro in _MACRO_INDEX.items():
+        if name in exclude:
+            continue
         s = _score_skill(macro, context_tokens, aggregated_mitre)
         if s >= SKILL_MIN_SCORE:
             scored.append((s, name))
@@ -512,8 +522,9 @@ def select_macro_skill(
             for fallback in (
                 "performing-endpoint-forensics-investigation",
                 "performing-malware-triage-with-yara",
+                "conducting-malware-incident-response",
             ):
-                if fallback in _MACRO_INDEX:
+                if fallback in _MACRO_INDEX and fallback not in exclude:
                     return fallback
         return None
 

@@ -249,6 +249,27 @@ Generate the executive forensics report with all required sections. Be specific 
     # Generate Technical Report (Forensics team)
     if 'technical' in report_types:
         add_log_to_run(run_id, "[Report] Generating Technical Report (forensics detail)...", "info")
+
+        # Single fixed macro for the report writer: a DFIR investigation
+        # playbook that explicitly covers timeline reconstruction. Selection
+        # logic was deliberately removed — the report writer's job is the
+        # same shape every run (look at it as a DFIR professional, build a
+        # timeline), so a stable macro is preferable to dynamic scoring
+        # that sometimes picked tooling-reference playbooks (timesketch,
+        # YARA triage) over investigation methodology.
+        _REPORT_MACRO = "performing-endpoint-forensics-investigation"
+        macro_preamble = ""
+        try:
+            from services.agentic.skills import get_macro_body
+            body = get_macro_body(_REPORT_MACRO) or ""
+            if body:
+                macro_preamble = f"\n\n## DOMAIN PLAYBOOK ({_REPORT_MACRO})\n{body.strip()}\n"
+                add_log_to_run(run_id, f"[Skill] Technical report -> {_REPORT_MACRO}", "info")
+            else:
+                add_log_to_run(run_id, f"[Skill] Technical report -> macro '{_REPORT_MACRO}' has no body (using base prompt only)", "warning")
+        except Exception as _skill_err:  # noqa: BLE001 — never block report generation
+            add_log_to_run(run_id, f"[Skill] Technical report macro load skipped: {_skill_err}", "warning")
+
         tech_system = """You are a senior DFIR analyst creating a TECHNICAL FORENSICS REPORT.
 
 YOUR MISSION: A DFIR team leader will read this report and must understand 80% of what happened, what's critical, and what to do next.
@@ -268,9 +289,32 @@ PRIORITIZE BY THREAT LEVEL:
 4. Persistence mechanisms (registry, tasks, services, WMI) = HIGH
 5. Defense evasion (renamed binaries, encoded commands) = HIGH
 6. Suspicious network activity (C2 patterns, unusual DNS) = HIGH
-7. Normal system activity = LOW (mention briefly for context)
+7. Normal system activity = OMIT — see REPORT-WIDE DISCIPLINE below.
 
 NEVER skip or summarize away detection hits. If something was flagged by a rule, it MUST be in your report.
+
+## REPORT-WIDE DISCIPLINE
+
+This report is for a DFIR team leader who will ACT on what's in it. Every section
+must answer "is this attacker activity, with high confidence?" — if not, drop it.
+
+- Section 1 (Critical Findings): ONLY high-severity, high-confidence threats. If the
+  data has none, write "No high-confidence attacker activity identified in the analyzed
+  window." DO NOT lower the bar to fill the section.
+- Section 3 (Attack Narrative): ONLY the chain of suspicious actions. Skip normal
+  user activity, vendor RMM the org uses, default scheduled tasks, expected logons —
+  even when chronologically interesting.
+- Section 4 (IOCs): see per-section rules below. EXCLUDE vendor/SaaS brand domains
+  unless there's specific attacker abuse evidence. EXCLUDE authentication providers
+  (AzureAD, NT AUTHORITY) and internal hostnames (DESKTOP-*) entirely.
+- Section 5 (MITRE Mapping): map a technique only when the records show evidence
+  *specific to attacker use* of that technique. "PowerShell observed" is not T1059.001
+  unless the PowerShell was suspicious (encoded, downloads, lateral movement).
+- Section 7 (DFIR Action Plan): every action must tie to a finding in section 1.
+  No action items for benign activity.
+
+A SHORT, HONEST report is correct when the data is benign. Padding with normal-activity
+prose to fill sections is failure mode — it dilutes signal and erodes SOC trust.
 
 ## REPORT STRUCTURE
 
@@ -300,19 +344,41 @@ For events without timestamps, group them in a "Time Unknown" section.
 IOCs are artifacts that can be searched for or blocked across systems. Organize by type:
 
 #### 4.1 Files & Executables
-| File | Path | SHA256 | MITRE | Classification |
-|------|------|--------|-------|----------------|
-(Only include malicious/suspicious files found in the data. Include hash if available, leave empty if not.)
+| File | Path | Hash | MITRE | Classification |
+|------|------|------|-------|----------------|
+(Hash cell MUST be type-prefixed: "SHA256:<hex>", "MD5:<hex>", "SHA1:<hex>".
+ Multiple hash types for the same file: join with "; " — e.g. "MD5:abc; SHA256:def".
+ Use "Not provided" only when no hash exists in the source data.
+ Only include malicious/suspicious files found in the data — not benign software.
+
+ IMPORTANT: ANY file with a hash (or where one would meaningfully apply) goes
+ here, even if the activity is "registry-related" or "configuration tampering"
+ (e.g., a tampered Sysmon config). The entity's identity is still a file —
+ put it in 4.1 so it can be hash-searched. Section 4.3 is for registry KEYS,
+ scheduled TASKS, services, and WMI subscriptions — NOT for files.)
 
 #### 4.2 Network Indicators
 | Type | Value | Context | Classification |
 |------|-------|---------|----------------|
-(IPs, domains, URLs observed in malicious activity. Skip if none found.)
+(Only domains / IPs / URLs observed in ATTACKER activity:
+ C2 communication, exfiltration, staging downloads, malicious tooling fetched, detection-rule hits.
+ EXCLUDE these even if they appear in the data — they are NOT IOCs:
+ - Vendor / SaaS brand domains (anydesk.com, crowdstrike.com, openai.com, github.com, gmail.com,
+   facebook.com, splashtop.com, microsoft.com, googleusercontent.com, cloudflare.com, etc.)
+   unless there is SPECIFIC evidence of attacker abuse of that service.
+ - Authentication-provider names (AzureAD, NT AUTHORITY, NT VIRTUAL MACHINE) — these are not domains.
+ - Internal hostnames or local resource names (DESKTOP-*, local-*, *.local, *.lan, *.corp).
+   Those belong in section 6 Affected Assets.
+ If a value is in your data but doesn't meet the bar above, omit it. Skip the section entirely
+ if no IOCs qualify.)
 
 #### 4.3 Registry & Persistence
 | Key/Path | Value | MITRE | Classification |
 |----------|-------|-------|----------------|
-(Registry modifications, scheduled tasks, WMI subscriptions. Skip if none found.)
+(Registry KEYS (HKLM\..., HKCU\...), scheduled TASKS, SERVICES, WMI event
+ subscriptions ONLY. Do NOT put files in this section — even tampered config
+ files / config XML / .reg files belong in 4.1 (so they get a hash IOC).
+ Skip the section entirely if no registry/task/service/WMI items qualify.)
 
 IOC RULES:
 - Only include items you can search for or block: files, hashes, IPs, domains, URLs, registry keys
@@ -393,7 +459,7 @@ IMPORTANT REMINDERS:
 Generate the report now:"""
 
         try:
-            tech_body = call_llm(tech_prompt, tech_system, llm_config)
+            tech_body = call_llm(tech_prompt, tech_system + macro_preamble, llm_config)
             # Append artifact findings as appendix with clear formatting
             artifact_findings_section = f"""
 
