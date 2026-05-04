@@ -111,9 +111,24 @@ ELASTICSEARCH_CONFIG = {
 
 # IRIS configuration (DFIR-IRIS case management)
 # Note: intact_iris_app is the container name in Docker network
+def _load_iris_api_key():
+    """Read modules.iris.api_key from config.yaml.
+
+    The installer's deploy_iris step populates this once IRIS first-init
+    finishes generating the administrator user's key. When present, the
+    iris_service uses it directly and avoids the runtime `docker exec`
+    fallback into intact_iris_db. When absent, iris_service falls back
+    to the DB lookup (which works for upgrade-from-old installs).
+    """
+    cfg = load_main_config() or {}
+    val = cfg.get('modules', {}).get('iris', {}).get('api_key')
+    return val if val else None
+
+
 IRIS_CONFIG = {
     'host': os.environ.get('IRIS_HOST', 'https://intact_iris_app:8000'),
     'external_host': os.environ.get('IRIS_EXTERNAL_HOST', 'https://localhost:8443'),
     'username': os.environ.get('IRIS_USER', 'administrator'),
-    'password': os.environ.get('IRIS_PASS', '123123')
+    'password': os.environ.get('IRIS_PASS', '123123'),
+    'api_key': _load_iris_api_key(),
 }
