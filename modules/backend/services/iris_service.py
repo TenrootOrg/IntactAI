@@ -24,14 +24,20 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def _get_iris_api_key(iris_config: dict, logger: Callable = None) -> Optional[str]:
-    """Get IRIS API key from config or database.
+    """Get IRIS API key. Three-tier resolution.
 
-    Args:
-        iris_config: Configuration dict with api_key or database connection
-        logger: Optional callback function(message, level) to log progress
+    1. iris_config['api_key'] — typically populated at backend import time
+       by config.py:_load_iris_api_key from the secrets DB.
+    2. Fresh secrets-table read — handles the case where install.sh wrote
+       the key AFTER the backend started, so the import-time snapshot is
+       stale and a backend restart wasn't done. We pick it up live.
+       Also self-heals: if we successfully fetch from the iris-db
+       fallback (step 3), we persist it back to the secrets table so the
+       next call uses the fast path.
+    3. docker-exec fallback into intact_iris_db — final safety net if
+       nothing else has it.
 
-    Returns:
-        API key string or None if not available
+    Returns the api_key string, or None if every path failed.
     """
     def log(message, level="info"):
         print(f"[IRIS] {message}", flush=True)
@@ -41,13 +47,24 @@ def _get_iris_api_key(iris_config: dict, logger: Callable = None) -> Optional[st
             except:
                 pass
 
-    # First check if API key is directly in config
+    # 1. Snapshot from backend startup
     api_key = iris_config.get('api_key')
     if api_key:
         log("Using API key from configuration")
         return api_key
 
-    # Try to get API key from IRIS database
+    # 2. Fresh DB read — handles "install.sh wrote after backend started"
+    try:
+        from services.storage.secret_store import get_secret
+        api_key = get_secret('iris.administrator.api_key')
+        if api_key:
+            log("Using API key from secrets table (fresh read)")
+            iris_config['api_key'] = api_key  # cache on the config dict
+            return api_key
+    except Exception as e:
+        log(f"Secret store unavailable: {e}", "warning")
+
+    # 3. Last resort: docker-exec into the IRIS Postgres container
     try:
         import subprocess
         result = subprocess.run(
@@ -57,10 +74,18 @@ def _get_iris_api_key(iris_config: dict, logger: Callable = None) -> Optional[st
         )
         if result.returncode == 0 and result.stdout.strip():
             api_key = result.stdout.strip()
-            log("Retrieved API key from IRIS database")
+            log("Retrieved API key from IRIS database (docker-exec fallback)")
+            # Self-heal: persist to secrets table so next call hits step 2
+            try:
+                from services.storage.secret_store import set_secret
+                set_secret('iris.administrator.api_key', api_key)
+                iris_config['api_key'] = api_key
+                log("Cached API key in secrets table for future calls")
+            except Exception:
+                pass
             return api_key
     except Exception as e:
-        log(f"Could not retrieve API key from database: {e}", "warning")
+        log(f"Could not retrieve API key via docker-exec: {e}", "warning")
 
     log("No API key available", "error")
     return None

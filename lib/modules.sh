@@ -653,30 +653,37 @@ deploy_iris() {
         track_module_success "IRIS"
     fi
 
-    # Persist the IRIS administrator's API key into config.yaml so the
-    # backend's IRIS automation doesn't have to docker-exec into iris-db
-    # at runtime to fetch it (which fails when the container name drifts,
-    # docker.sock isn't mounted, or the iris-db is briefly unhealthy).
+    # Persist the IRIS administrator's API key into the backend's secrets
+    # table so IRIS automation doesn't have to docker-exec into iris-db
+    # at runtime (which fails when the container name drifts, docker.sock
+    # isn't mounted, or the iris-db is briefly unhealthy). The key is
+    # never written to config.yaml or any export — it lives only in the
+    # backend's SQLite secrets table.
     bootstrap_iris_api_key
 }
 
 bootstrap_iris_api_key() {
-    local config_file="${SCRIPT_DIR}/config.yaml"
-
-    # Idempotent: skip if already populated. Treat 'None' (Python None
-    # printed by read_config when the key is missing) as "not set".
+    # Idempotent: skip if the secret is already in the backend DB. Doing
+    # the check via the backend container guarantees we use the same
+    # storage layer the runtime uses. If intact_backend isn't up yet we
+    # fall through to the bootstrap (the secret simply doesn't exist).
     local existing
-    existing=$(read_config "['modules']['iris']['api_key']" 2>/dev/null || true)
-    if [[ -n "$existing" && "$existing" != "None" ]]; then
-        log_info "  IRIS API key already in config.yaml — skipping bootstrap"
+    existing=$(docker exec intact_backend python3 -c "
+import sys; sys.path.insert(0, '/app')
+from services.storage.secret_store import get_secret
+v = get_secret('iris.administrator.api_key')
+sys.stdout.write(v or '')
+" 2>/dev/null || true)
+    if [[ -n "$existing" ]]; then
+        log_info "  IRIS API key already in backend secrets DB — skipping bootstrap"
         return 0
     fi
 
-    log_info "  Bootstrapping IRIS API key into config.yaml..."
+    log_info "  Bootstrapping IRIS API key into backend secrets DB..."
 
-    # Wait for IRIS first-init to actually create the administrator row
-    # with a non-NULL api_key. Up to 5 minutes; the DB itself comes up
-    # in seconds but the IRIS web app populates the user table only after
+    # Wait for IRIS first-init to create the administrator row with a
+    # non-NULL api_key. Up to 5 minutes; the DB itself comes up in
+    # seconds but the IRIS web app populates the user table only after
     # alembic migrations + seed data finish.
     local api_key=""
     local attempts=0
@@ -696,55 +703,32 @@ bootstrap_iris_api_key() {
 
     if [[ -z "$api_key" ]]; then
         log_warn "  Could not retrieve IRIS API key from intact_iris_db after 5 minutes"
-        log_warn "  Backend will fall back to the runtime DB lookup. If that also fails,"
-        log_warn "  set modules.iris.api_key manually in config.yaml after IRIS finishes init."
+        log_warn "  Backend will fall back to the runtime docker-exec lookup."
+        log_warn "  If that also fails, run this manually after IRIS is up:"
+        log_warn "    docker exec intact_iris_db psql -U iris -d iris_db -tAc \\"
+        log_warn "      \"SELECT api_key FROM \\\"user\\\" WHERE name='administrator';\""
+        log_warn "  then store it via:"
+        log_warn "    docker exec intact_backend python3 -c \"from services.storage.secret_store import set_secret; set_secret('iris.administrator.api_key', '<key>')\""
         return 0
     fi
 
-    # Insert "    api_key: '<key>'" into config.yaml right after the iris
-    # block's "password:" line. Surgical so we preserve YAML comments
-    # (e.g. the "id: administrator #Cant be changed" hint) instead of
-    # round-tripping through PyYAML which drops them.
-    if ! python3 - "$config_file" "$api_key" <<'PYEOF'
-import re, sys
-cfg_path, api_key = sys.argv[1], sys.argv[2]
-with open(cfg_path) as f:
-    text = f.read()
-
-# Match the iris block (continues until a line de-indents back to 2 spaces
-# or fewer — i.e. the next sibling key like "portainer:").
-iris_block_re = re.compile(
-    r'(?ms)(^  iris:\n(?:    [^\n]*\n)+)'
-)
-m = iris_block_re.search(text)
-if not m:
-    sys.stderr.write("iris block not found in config.yaml\n")
-    sys.exit(1)
-block = m.group(1)
-if re.search(r'^    api_key:\s*\S', block, re.MULTILINE):
-    sys.exit(0)  # already there, idempotent
-
-# Insert after the "password:" line within the iris block. If no
-# password line exists, append to end of block.
-new_block, n = re.subn(
-    r'(    password:[^\n]*\n)',
-    rf"\1    api_key: '{api_key}'\n",
-    block,
-    count=1,
-)
-if n == 0:
-    new_block = block.rstrip('\n') + f"\n    api_key: '{api_key}'\n"
-
-text = text[:m.start()] + new_block + text[m.end():]
-with open(cfg_path, 'w') as f:
-    f.write(text)
-PYEOF
+    # Write to the backend's secrets table. The backend doesn't need to be
+    # restarted — config.py reads on startup, but iris_service does its own
+    # secret lookup on each call too. Worst case: a backend that started
+    # before this writes will pick up the secret on the next IRIS request.
+    if ! docker exec intact_backend python3 -c "
+import sys; sys.path.insert(0, '/app')
+from services.storage.secret_store import set_secret
+ok = set_secret('iris.administrator.api_key', '$api_key')
+sys.exit(0 if ok else 1)
+" 2>/dev/null
     then
-        log_warn "  Failed to write api_key into config.yaml"
+        log_warn "  Failed to write IRIS api_key into backend secrets DB"
+        log_warn "  Backend will fall back to the runtime docker-exec lookup."
         return 0
     fi
 
-    log_success "  IRIS API key persisted to config.yaml (modules.iris.api_key)"
+    log_success "  IRIS API key persisted to backend secrets table (iris.administrator.api_key)"
 }
 
 # ============================================================================
