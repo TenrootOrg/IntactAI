@@ -279,14 +279,29 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
                 return f"File Accessed: {filename[:45]}"
             return "Recent File Access"
         elif 'Hayabusa' in artifact:
-            level = extract_str(row.get('Level')) or extract_str(row.get('RuleLevel')) or 'INFO'
+            # Title only — severity belongs in the Why-it-matters body, not
+            # in the event name. Keeps timeline names clean and consistent
+            # with the other artifact branches.
             title = extract_str(row.get('RuleTitle')) or extract_str(row.get('Title')) or 'Detection'
-            return f"[{level.upper()}] {title[:50]}"
+            return title[:60]
         elif 'Persistence' in artifact or 'PersistenceSniper' in artifact:
             technique = extract_str(row.get('Technique')) or extract_str(row.get('Name')) or 'Unknown'
             return f"Persistence: {technique[:45]}"
         elif 'Detection' in artifact:
-            name = extract_str(row.get('Name')) or extract_str(row.get('Detection')) or 'Alert'
+            detection = row.get('Detection') if isinstance(row.get('Detection'), dict) else None
+            name = extract_str((detection or {}).get('Name')) or extract_str(row.get('Name')) or 'Alert'
+            # Add the affected file/path so multiple detections of the same
+            # rule on different files render as distinct events (the IRIS
+            # timeline was showing four identical "Detection: Credential
+            # Theft" rows in a row because only `name` was used).
+            target = (extract_str(row.get('FullPath'))
+                      or extract_str(row.get('FilePath'))
+                      or extract_str(row.get('Path'))
+                      or extract_str(row.get('FileName'))
+                      or extract_str(row.get('Source')))
+            target_short = get_filename(target) if target else None
+            if target_short and target_short != name:
+                return f"Detection: {str(name)[:32]} — {target_short[:28]}"
             return f"Detection: {name[:50]}"
         else:
             # Generic - extract first meaningful field
@@ -420,23 +435,121 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
                 why = "LNK file records user/attacker file access. Useful for reconstructing activity timeline."
 
         elif 'Hayabusa' in artifact:
-            level = row.get('Level') or row.get('RuleLevel', 'Unknown')
-            title = row.get('RuleTitle') or row.get('Title') or row.get('Message', 'Detection')
+            level = safe_str(row.get('Level') or row.get('RuleLevel', 'Unknown'))
+            title = safe_str(row.get('RuleTitle') or row.get('Title') or row.get('Message', 'Detection'))
             details = safe_str(row.get('Details')) or ''
             mitre = safe_str(row.get('MitreAttack')) or safe_str(row.get('MITRE')) or ''
-            finding = f"{title}"
+            channel = safe_str(row.get('Channel'))
+            eid = safe_str(row.get('EID')) or safe_str(row.get('EventID'))
+
+            # Parse the pipe-separated Details field that Hayabusa emits
+            # ("Threat: ... | Severity: ... | User: ... | Path: ... | Proc: ...")
+            # so we can weave specific fields into the Why text.
+            detail_fields = {}
             if details:
-                finding += f" - {clean_multiline_details(details)}"
+                for piece in details.split('|'):
+                    if ':' in piece:
+                        k, _, v = piece.partition(':')
+                        detail_fields[k.strip().lower()] = v.strip()
+
+            user = detail_fields.get('user') or safe_str(row.get('Username'))
+            path = detail_fields.get('path') or safe_str(row.get('OSPath'))
+            proc = detail_fields.get('proc') or detail_fields.get('process')
+            threat = detail_fields.get('threat')
+
+            finding = title
+            if threat:
+                finding += f" — {threat}"
+            elif details:
+                finding += f" — {clean_multiline_details(details)}"
             if mitre:
                 finding += f" [MITRE: {mitre}]"
-            # Make why more specific based on level
-            level_upper = str(level).upper()
-            if level_upper in ['CRITICAL', 'HIGH']:
-                why = f"{level_upper} PRIORITY: This detection indicates likely malicious activity. Correlate with other events and investigate immediately."
-            elif level_upper == 'MEDIUM':
-                why = f"{level_upper}: Suspicious activity that warrants investigation. May be benign but requires verification."
+
+            # Build a concrete Why grounded in the Sigma rule title +
+            # the actual user / path / process / threat fields. Keyword
+            # matching on title catches the common attack-chain stages.
+            sev_prefix = f"{level}-severity. " if level and level.lower() not in ('unknown', 'info', 'informational') else ""
+            text = f"{title} {threat or ''} {channel} {details}".lower()
+            target_clip = (path[:160] + "…") if path and len(path) > 160 else (path or "")
+
+            if 'log' in text and ('clear' in text or 'cleared' in text):
+                why = (sev_prefix +
+                       f"Windows event log was cleared"
+                       + (f" — channel: {channel}" if channel else "")
+                       + (f", initiated by {user}" if user else "")
+                       + ". Log clearance is a defense-evasion TTP (T1070.001) "
+                       "— attacker may be hiding earlier activity. Restore "
+                       "from backups if possible and audit what executed "
+                       "before the clearance.")
+            elif 'defender' in text and ('disabled' in text or 'turned off' in text or 'tamper' in text):
+                why = (sev_prefix +
+                       f"Windows Defender was disabled or tampered with"
+                       + (f" by {user}" if user else "")
+                       + ". Adversary likely staging follow-on activity "
+                       "(T1562.001). Re-enable AV immediately and check "
+                       "what executed during the disabled window.")
+            elif 'hosts' in text and ('hijack' in text or 'modif' in text):
+                why = (sev_prefix +
+                       f"Hosts file modification detected"
+                       + (f" at {target_clip}" if target_clip else "")
+                       + (f" by {user}" if user else "")
+                       + ". Adversaries edit the hosts file to redirect DNS "
+                       "for credential harvesting, ad-block bypass, or C2 "
+                       "indirection (T1557.002 / T1565.001). Inspect current "
+                       "hosts contents for added entries and identify the "
+                       "process that wrote it.")
+            elif 'lsass' in text or 'credential' in text or 'mimikatz' in text:
+                why = (sev_prefix +
+                       f"Credential-access activity"
+                       + (f" — {threat}" if threat else "")
+                       + (f" — process: {proc}" if proc else "")
+                       + ". Likely credential dumping (T1003). Isolate the "
+                       "host, identify parent process, rotate any account "
+                       "whose hash may have been read.")
+            elif 'powershell' in text or 'script' in text or 'encoded' in text:
+                why = (sev_prefix +
+                       f"Suspicious PowerShell / script activity"
+                       + (f" by {user}" if user else "")
+                       + ". Review command line, parent process, and "
+                       "downstream behaviour. Encoded / downloaded scripts "
+                       "are common loaders (T1059.001).")
+            elif ('persistence' in text or 'autorun' in text
+                  or 'scheduled' in text or 'service creation' in text):
+                why = (sev_prefix +
+                       f"Persistence mechanism detected"
+                       + (f" at {target_clip}" if target_clip else "")
+                       + (f" by {user}" if user else "")
+                       + ". Attacker is configuring the host to re-establish "
+                       "access. Verify legitimacy and remove if unauthorised "
+                       "(T1547 / T1053 / T1543).")
+            elif 'rdp' in text or 'lateral' in text or 'remote' in text and 'logon' in text:
+                why = (sev_prefix +
+                       f"Lateral-movement / remote-logon signal"
+                       + (f" — user {user}" if user else "")
+                       + ". Review source/destination accounts and isolate "
+                       "affected systems (T1021).")
+            elif 'process injection' in text or 'hollow' in text or 'inject' in text:
+                why = (sev_prefix +
+                       f"Process-injection / hollowing detected"
+                       + (f" — {threat}" if threat else "")
+                       + ". In-memory tradecraft used to evade AV and run "
+                       "code in trusted process context (T1055). Capture a "
+                       "memory dump before reboot.")
+            elif details:
+                # Fallback: surface the threat/details verbatim so the
+                # analyst at least sees the rule's own description.
+                why = (sev_prefix +
+                       f"Sigma rule fired: {title}"
+                       + (f" — {threat or details[:200]}")
+                       + (f" — user {user}" if user else "")
+                       + (f" — path {target_clip}" if target_clip else "")
+                       + ". Investigate the triggering activity and correlate "
+                       "with surrounding events.")
             else:
-                why = f"{level_upper}: Lower priority but adds context to the investigation. Review in conjunction with other findings."
+                why = (sev_prefix +
+                       f"Sigma rule '{title}' fired"
+                       + (f" on event {eid}/{channel}" if eid or channel else "")
+                       + ". Investigate the triggering activity.")
 
         elif 'Persistence' in artifact or 'PersistenceSniper' in artifact:
             technique = row.get('Technique') or row.get('Name', 'Unknown')
@@ -458,48 +571,368 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
             else:
                 why = "Persistence mechanism detected - allows attacker to maintain access after reboot. Verify legitimacy."
 
+        elif 'BinaryRename' in artifact:
+            # Detection fires when current filename != PE OriginalFilename.
+            # Embed both names + the file description from PE metadata so
+            # the analyst sees exactly what tool is masquerading as what.
+            current = safe_str(row.get('Name')) or safe_str(row.get('OSPath'))
+            path = safe_str(row.get('OSPath'))
+            ver = row.get('VersionInformation') or {}
+            original = safe_str(ver.get('OriginalFilename'))
+            description = safe_str(ver.get('FileDescription'))
+            company = safe_str(ver.get('CompanyName'))
+            sha256 = safe_str((row.get('Hash') or {}).get('SHA256')) if isinstance(row.get('Hash'), dict) else ''
+
+            finding = f"{current} (renamed)"
+            if original and original.lower() not in current.lower():
+                finding += f" — original: {original}"
+            if path:
+                finding += f" at {path[:120]}"
+
+            # Concrete Why citing the actual binary identity
+            tool_hint = ""
+            tool_lower = (original or current or "").lower()
+            if 'procdump' in tool_lower:
+                tool_hint = " ProcDump is commonly abused to dump LSASS memory for credential theft (T1003.001)."
+            elif 'mimikatz' in tool_lower:
+                tool_hint = " Mimikatz is a credential-dumping toolkit (T1003)."
+            elif 'psexec' in tool_lower:
+                tool_hint = " PsExec is commonly used for lateral movement (T1021.002)."
+            elif 'nmap' in tool_lower or 'masscan' in tool_lower:
+                tool_hint = " Network scanner — possible lateral-movement reconnaissance (T1046)."
+            why = (
+                f"Binary on disk has been renamed: file is named '{current}' but "
+                f"the embedded PE OriginalFilename says '{original or 'unknown'}'"
+                + (f" ({description})" if description else "")
+                + (f", signed/published by {company}" if company else "")
+                + ".{tool_hint} Adversaries rename tools to defeat name-based "
+                "detection (T1036.005). Hash this file (SHA256: "
+                f"{sha256 or 'n/a'}), check execution events tied to this path, "
+                "and verify business legitimacy."
+            ).format(tool_hint=tool_hint)
+
         elif 'Detection' in artifact:
             # Handle nested Detection dict (DetectRaptor artifacts)
             detection = row.get('Detection', {})
             if isinstance(detection, dict):
                 name = detection.get('Name') or row.get('Name', 'Unknown')
                 severity = detection.get('Criticality') or detection.get('Severity') or row.get('Level', '')
+                reason = (detection.get('Reason') or row.get('Reason')
+                          or row.get('Message', ''))
+                string_hit = detection.get('StringHit') or ''
+                keyword_regex = detection.get('KeywordRegex') or ''
             else:
-                name = row.get('Name') or str(detection) if detection else 'Unknown'
+                name = row.get('Name') or (str(detection) if detection else 'Unknown')
                 severity = row.get('Severity') or row.get('Level', '')
-            reason = row.get('Reason') or row.get('Message', '')
-            finding = str(name)
+                reason = row.get('Reason') or row.get('Message', '')
+                string_hit = ''
+                keyword_regex = ''
+
+            # Affected target — file/path/event-id/event-message
+            target = (row.get('OSPath') or row.get('FullPath') or row.get('FilePath')
+                      or row.get('Path') or row.get('FileName')
+                      or row.get('Source'))
+            if isinstance(target, dict):
+                target = target.get('Path') or target.get('Name') or target.get('Value')
+            event_id = row.get('EventID') or row.get('EventId') or ''
+            channel = safe_str(row.get('Channel'))
+            user = safe_str(row.get('Username')) or safe_str(row.get('User'))
+            msg = safe_str(row.get('Message'))
+
+            finding_bits = [str(name)]
+            if string_hit:
+                finding_bits.append(f"matched: {string_hit}")
+            if target:
+                finding_bits.append(f"on {str(target)[:200]}")
+            if event_id:
+                finding_bits.append(f"EID {event_id}" + (f" / {channel}" if channel else ""))
+            if user:
+                finding_bits.append(f"user {user}")
             if reason and isinstance(reason, str):
-                # Clean up multiline content (e.g., PowerShell script blocks)
-                finding += f" - {clean_multiline_details(reason)}"
-            # Make why more specific
-            if severity:
-                why = f"Detection triggered ({severity} severity). Review detection context and correlate with timeline."
+                finding_bits.append(clean_multiline_details(reason)[:240])
+            finding = " — ".join(finding_bits)
+
+            # Build a concrete Why that cites the actual finding's data.
+            # Combine artifact name (e.g., "BinaryRename", "Evtx") + detection
+            # name keyword matching so the analyst gets attack-chain context
+            # tied to THIS row, not boilerplate.
+            search_text = f"{artifact} {name}".lower()
+            sev_prefix = f"{severity}-severity. " if severity else ""
+            target_clip = (str(target)[:120] + "…") if target and len(str(target)) > 120 else (target or "")
+
+            if 'credential' in search_text or 'mimikatz' in search_text or 'lsass' in search_text:
+                why = (sev_prefix +
+                       f"Credential-access activity detected"
+                       + (f" on {target_clip}" if target_clip else "")
+                       + (f" by user {user}" if user else "")
+                       + ". Likely credential dumping (LSASS, SAM, browser stores) — "
+                       "T1003. Isolate the host, identify the parent process, and "
+                       "rotate any account whose hash may have been exposed.")
+            elif ('persistence' in search_text or 'autorun' in search_text
+                  or 'scheduledtask' in search_text or 'wmi' in search_text):
+                why = (sev_prefix +
+                       f"Persistence mechanism detected"
+                       + (f" at {target_clip}" if target_clip else "")
+                       + ". Attacker is configuring this host to re-establish access "
+                       "after reboot/logoff. Verify legitimacy of the entry and "
+                       "remove if unauthorised (T1547 / T1053 / T1546).")
+            elif 'lateral' in search_text or 'rdp' in search_text or 'smb' in search_text:
+                why = (sev_prefix +
+                       "Lateral-movement signal — adversary may be pivoting between "
+                       "hosts (T1021). Review source/destination accounts, network "
+                       "logs, and isolate affected systems.")
+            elif ('defender' in search_text or 'evasion' in search_text
+                  or 'tamper' in search_text or 'disable' in search_text
+                  or 'log file cleared' in search_text or 'cleared' in search_text):
+                why = (sev_prefix +
+                       f"Defense-evasion event"
+                       + (f" affecting {target_clip}" if target_clip else "")
+                       + (f" — initiated by {user}" if user else "")
+                       + ". Adversary is disabling monitoring or wiping evidence "
+                       "(T1562 / T1070). Restore the disabled control immediately "
+                       "and audit what activity occurred during the blind window.")
+            elif ('rename' in search_text or 'masquerad' in search_text
+                  or 'binaryrename' in search_text):
+                why = (sev_prefix +
+                       f"Renamed/masquerading binary detected"
+                       + (f" at {target_clip}" if target_clip else "")
+                       + ". Adversary disguised a tool as a legitimate binary "
+                       "(T1036.005). Hash the file, check the PE OriginalFilename, "
+                       "and look for execution events tied to this path.")
+            elif ('powershell' in search_text or 'script' in search_text
+                  or 'execution' in search_text or 'cmdline' in search_text):
+                why = (sev_prefix +
+                       f"Suspicious script/process execution"
+                       + (f" — {target_clip}" if target_clip else "")
+                       + (f" by {user}" if user else "")
+                       + ". Review command line, parent process, and downstream "
+                       "behaviour for credential access, lateral movement, or C2 "
+                       "(T1059).")
+            elif ('rmm' in search_text or 'remote' in search_text and 'support' in search_text):
+                why = (sev_prefix +
+                       f"RMM tool detected"
+                       + (f" — {target_clip}" if target_clip else "")
+                       + ". Remote-management software is commonly abused for "
+                       "lateral movement and persistence (T1219). Verify business "
+                       "legitimacy and review remote-session activity.")
+            elif 'cloud' in search_text or 'transfer' in search_text or 'onedrive' in search_text or 'dropbox' in search_text:
+                why = (sev_prefix +
+                       f"Cloud-sync application observed"
+                       + (f" — {target_clip}" if target_clip else "")
+                       + ". Cloud-storage clients can be abused for exfiltration "
+                       "(T1567.002). Verify business need and check synced data "
+                       "volume / destination account.")
+            elif 'archive' in search_text:
+                why = (sev_prefix +
+                       f"Archive utility observed"
+                       + (f" — {target_clip}" if target_clip else "")
+                       + ". Adversaries stage data into archives prior to "
+                       "exfiltration (T1560). Review what files were compressed "
+                       "and where the archive went next.")
+            elif msg and len(msg) < 250:
+                # No keyword match but we have a message — surface it directly
+                why = (sev_prefix +
+                       f"Detection '{name}' fired"
+                       + (f" on {target_clip}" if target_clip else "")
+                       + (f" — {msg}" if msg else "")
+                       + ". Investigate the triggering activity and correlate "
+                       "with surrounding events.")
+            elif severity:
+                why = (f"{severity}-severity detection '{name}'"
+                       + (f" on {target_clip}" if target_clip else "")
+                       + (f" by {user}" if user else "")
+                       + ". Investigate triggering activity, correlate with "
+                       "surrounding events, and assess scope.")
             else:
-                why = "Security detection fired. Investigate the triggering activity and related events."
+                why = (f"Detection '{name}' fired"
+                       + (f" on {target_clip}" if target_clip else "")
+                       + ". Investigate the triggering activity and related events.")
+
+        elif 'SAM/Parsed' in artifact or 'SAM/CreateTimes' in artifact or 'SAM' in artifact:
+            user = safe_str(row.get('Username')) or safe_str(row.get('Name'))
+            created = safe_str(row.get('CreatedTime'))
+            key = safe_str(row.get('Key'))
+            finding_bits = []
+            if user:
+                finding_bits.append(f"user {user}")
+            if created:
+                finding_bits.append(f"created {created}")
+            if key:
+                finding_bits.append(f"key {key[:80]}")
+            finding = " — ".join(finding_bits) or "SAM hive entry"
+            why = (
+                f"SAM hive entry"
+                + (f" for local account '{user}'" if user else "")
+                + (f", account created at {created}" if created else "")
+                + ". Review whether the account was authorised; adversaries "
+                "create local accounts for persistence (T1136.001) and the "
+                "SAM hive itself can be exfiltrated for offline credential "
+                "cracking (T1003.002)."
+            )
+
+        elif 'UntrustedBinaries' in artifact:
+            filename = safe_str(row.get('Filename'))
+            issuer = safe_str(row.get('Issuer'))
+            subject = safe_str(row.get('Subject'))
+            trusted = safe_str(row.get('Trusted'))
+            finding = f"{filename} [{trusted or 'unknown trust'}]"
+            if trusted and trusted.lower() == 'trusted':
+                why = (
+                    f"Trusted binary {filename}"
+                    + (f" signed by {subject[:120]}" if subject else "")
+                    + ". Listed for completeness — typically benign. Useful as "
+                    "context only when correlating with anomalous execution."
+                )
+            else:
+                why = (
+                    f"Binary {filename} has an UNTRUSTED or missing code "
+                    "signature"
+                    + (f" (issuer: {issuer[:120]})" if issuer else "")
+                    + ". Adversaries replace signed binaries with malware to "
+                    "evade signature-based defences (T1553). Hash-compare "
+                    "against a known-good copy and treat as suspicious until "
+                    "verified."
+                )
+
+        elif 'Pstree' in artifact or 'Process' in artifact:
+            proc_name = safe_str(row.get('Name'))
+            pid = safe_str(row.get('Pid'))
+            ppid = safe_str(row.get('Ppid'))
+            user = safe_str(row.get('Username'))
+            cmdline = safe_str(row.get('CommandLine'))
+            exe = safe_str(row.get('Exe'))
+            call_chain = safe_str(row.get('CallChain'))
+            finding = f"{proc_name} (PID {pid}, parent {ppid})"
+            if exe:
+                finding += f" — {exe[:140]}"
+            if cmdline and cmdline != exe:
+                finding += f" cmd: {cmdline[:200]}"
+            if call_chain:
+                finding += f" — chain: {call_chain[:120]}"
+            cmd_lower = cmdline.lower()
+            proc_lower = proc_name.lower()
+            if 'powershell' in proc_lower or 'powershell' in cmd_lower:
+                why = (
+                    f"PowerShell process running as {user or 'unknown'}"
+                    + (f" (call chain: {call_chain})" if call_chain else "")
+                    + f". Command: {cmdline[:240] or '(none)'}. Review for "
+                    "encoded payloads, downloads, AMSI bypass, or LOLBin "
+                    "abuse (T1059.001)."
+                )
+            elif any(x in proc_lower for x in ('cmd.exe', 'wscript', 'cscript', 'mshta')):
+                why = (
+                    f"Scripting host process {proc_name} as "
+                    f"{user or 'unknown'}, parent PID {ppid}. Scripting hosts "
+                    "are common LOLBins (T1059). Review the parent process "
+                    "and the command line for suspicious arguments."
+                )
+            elif 'svchost' in proc_lower or 'services' in proc_lower:
+                why = (
+                    f"Service-host process {proc_name} (PID {pid}, parent "
+                    f"{ppid}) running as {user or 'SYSTEM'}. Usually "
+                    "legitimate; verify the -k group / parent and look for "
+                    "anomalous DLLs or non-system parents."
+                )
+            elif user and user.lower() not in ('system', 'nt authority\\system', 'local service', 'network service'):
+                why = (
+                    f"User-context process {proc_name} (PID {pid}) by "
+                    f"{user}. Verify the executable path is expected and the "
+                    "command line looks normal for that user."
+                )
+            else:
+                why = (
+                    f"Process {proc_name} (PID {pid}, parent {ppid}) — "
+                    f"{exe or '(no exe)'}. Review parent lineage and command "
+                    "line for unusual patterns."
+                )
+
+        elif 'Detection.Applications' in artifact or 'Applications' in artifact:
+            display_name = safe_str(row.get('DisplayName')) or safe_str(row.get('KeyName'))
+            version = safe_str(row.get('DisplayVersion'))
+            publisher = safe_str(row.get('Publisher'))
+            category = safe_str(row.get('Category'))
+            install_loc = safe_str(row.get('InstallLocation')) or safe_str(row.get('InstallSource'))
+            finding = f"{display_name} {version}".strip()
+            if publisher:
+                finding += f" by {publisher}"
+            if category:
+                finding += f" ({category})"
+            why = (
+                f"Installed application '{display_name}'"
+                + (f" v{version}" if version else "")
+                + (f" by {publisher}" if publisher else "")
+                + (f" — category: {category}" if category else "")
+                + ". Cataloged for context. If the category is data-transfer / "
+                "RMM / archive / scripting, verify business legitimacy and "
+                "review related file/network activity."
+            )
 
         else:
-            # Generic - try to provide more context based on common fields
-            finding_parts = []
-            for field in ['Name', 'FullPath', 'Message', 'CommandLine', 'Description']:
-                if field in row and row[field]:
-                    # Clean up multiline content before adding
-                    finding_parts.append(clean_multiline_details(str(row[field])))
-                    if len(finding_parts) >= 2:
-                        break
-            finding = " | ".join(finding_parts) if finding_parts else "See raw data"
-            # Try to provide artifact-specific why
+            # Generic - surface ALL meaningful fields by name=value pairs so
+            # the analyst sees the actual data rather than "See raw data".
+            field_priority = ['Name', 'FullPath', 'OSPath', 'FilePath', 'Path',
+                              'CommandLine', 'Exe', 'Message', 'Description',
+                              'Username', 'User', 'Computer', 'Hostname',
+                              'EventID', 'Channel', 'Title']
+            field_bits = []
+            for field in field_priority:
+                v = row.get(field)
+                if v in (None, '', [], {}):
+                    continue
+                v_str = clean_multiline_details(str(v)) if isinstance(v, str) else str(v)
+                if v_str:
+                    field_bits.append(f"{field}={v_str[:140]}")
+                if len(field_bits) >= 4:
+                    break
+            finding = " | ".join(field_bits) if field_bits else "See raw data"
+
             artifact_lower = artifact.lower()
+            short = artifact.split('.')[-1]
             if 'event' in artifact_lower or 'evtx' in artifact_lower:
-                why = "Windows Event Log entry - provides audit trail of system/security events. Correlate with timeline."
+                eid = safe_str(row.get('EventID')) or safe_str(row.get('EventId'))
+                channel = safe_str(row.get('Channel'))
+                user = safe_str(row.get('Username')) or safe_str(row.get('User'))
+                why = (
+                    f"Windows Event"
+                    + (f" {eid}" if eid else "")
+                    + (f" on {channel}" if channel else "")
+                    + (f" by {user}" if user else "")
+                    + ". Audit-trail entry — correlate timestamps with "
+                    "surrounding events, especially execution / logon / "
+                    "policy changes."
+                )
             elif 'registry' in artifact_lower:
-                why = "Registry artifact - may indicate configuration changes, persistence, or malware traces."
+                key = safe_str(row.get('Key')) or safe_str(row.get('KeyPath')) or safe_str(row.get('Path'))
+                why = (
+                    f"Registry entry"
+                    + (f" at {key[:160]}" if key else "")
+                    + ". Persistence (Run keys, services), configuration "
+                    "tampering, or malware-trace candidates live here. Verify "
+                    "the value against a known-good baseline."
+                )
             elif 'prefetch' in artifact_lower:
-                why = "Prefetch data shows program execution history. Useful for proving execution even if binary deleted."
+                exe = safe_str(row.get('Executable')) or safe_str(row.get('Name'))
+                why = (
+                    f"Prefetch entry"
+                    + (f" for {exe}" if exe else "")
+                    + ". Proves the binary executed even if it was later "
+                    "deleted (T1059). Useful for reconstructing attacker "
+                    "actions."
+                )
             elif 'browser' in artifact_lower or 'history' in artifact_lower:
-                why = "Browser artifact - may reveal phishing links, download sources, or C2 URLs."
+                url = safe_str(row.get('Url')) or safe_str(row.get('URL'))
+                why = (
+                    f"Browser artifact"
+                    + (f" — visit to {url[:200]}" if url else "")
+                    + ". May reveal phishing landing pages, malware download "
+                    "sources, or C2 panels (T1071.001)."
+                )
             else:
-                why = f"Data from {artifact.split('.')[-1]} artifact. Review for indicators relevant to investigation."
+                why = (
+                    f"Data from {short} artifact — review the highlighted "
+                    "fields above and correlate with surrounding events for "
+                    "investigative context."
+                )
 
         # IRIS has 2000 char limit - ensure "Why it matters" is always included
         artifact_line = f"**Artifact:** {artifact}\n"
@@ -572,6 +1005,38 @@ def extract_timeline_events(all_results, include_no_timestamp=True):
 
     # Sort timestamped events by timestamp
     events.sort(key=lambda x: x['timestamp'])
+
+    # Dedupe: events sharing (source, title) are the same logical detection
+    # firing repeatedly. Keep the earliest, append an occurrence count and
+    # time range to the description so the analyst still sees the volume.
+    # Now that titles include the affected file/path, this only collapses
+    # *true* repeats (same rule on same file at multiple MFT timestamps).
+    deduped: list[dict] = []
+    keys: dict[tuple, dict] = {}
+    for ev in events:
+        key = (ev.get('source'), ev.get('title'))
+        if key in keys:
+            primary = keys[key]
+            primary['_dup_count'] = primary.get('_dup_count', 1) + 1
+            ts = ev.get('timestamp')
+            if ts and (primary.get('_last_ts') is None or ts > primary['_last_ts']):
+                primary['_last_ts'] = ts
+        else:
+            ev['_dup_count'] = 1
+            ev['_last_ts'] = ev.get('timestamp')
+            keys[key] = ev
+            deduped.append(ev)
+
+    for ev in deduped:
+        n = ev.pop('_dup_count', 1)
+        last_ts = ev.pop('_last_ts', None)
+        if n > 1:
+            first = ev.get('timestamp')
+            ev['description'] = (
+                (ev.get('description') or '')
+                + f"\n\n**Occurrences:** {n} firings between {first} and {last_ts}"
+            )
+    events = deduped
 
     # Add no-timestamp events at the beginning (limit per artifact)
     if no_timestamp_events:
