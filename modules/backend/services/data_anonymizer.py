@@ -394,8 +394,8 @@ class DataAnonymizer:
         domain_user = self._extract_domain_user(user)
         if domain_user:
             domain, username = domain_user
-            masked_domain = self._get_or_create_pseudo(domain, "domain")
-            masked_user = self._get_or_create_pseudo(username, "user")
+            masked_domain = self._safe_domain_pseudo(domain)
+            masked_user = self._safe_user_pseudo(username)
             masked = f"{masked_domain}\\{masked_user}"
             # Store full mapping for unmask
             self.mapping[user] = masked
@@ -403,6 +403,50 @@ class DataAnonymizer:
             return masked
 
         return self._get_or_create_pseudo(user, "user")
+
+    def _safe_domain_pseudo(self, name: str) -> str:
+        """Mask `name` as a domain, BUT route to the right pool when it's
+        actually a safe-identifier (AzureAD, NT VIRTUAL MACHINE, etc.) or
+        a workstation name (DESKTOP-XXX) or an IP that landed in a domain
+        slot. Mirrors the policy applied in _classify_value for explicit
+        domain fields, so DOMAIN\\user splits don't bypass it.
+        """
+        if not name:
+            return name
+        if self._is_safe_identifier(name):
+            return name
+        if self._is_sid(name):
+            return name
+        if self._looks_like_workstation_name(name):
+            return self._mask_host(name)
+        if self._is_ip(name):
+            return self._mask_ip(name)
+        # Domain values pass through unchanged (per project policy: don't
+        # mask domain values; the LLM benefits from seeing which CDN /
+        # SaaS / org domain a value points to). Returning the original
+        # name keeps DOMAIN\user composites readable.
+        return name
+
+    def _safe_user_pseudo(self, name: str) -> str:
+        """Mask `name` as a user, BUT route to the right pool when the value
+        is actually a GUID / SID / email / safe-identifier in disguise.
+
+        Several call sites take a path / DOMAIN\\user / commandline and
+        split out a "username" piece — those pieces are not always real
+        usernames. Centralising the type-routing here keeps the GUID and
+        Email pools clean instead of polluting the user pool.
+        """
+        if not name:
+            return name
+        if self._is_safe_identifier(name):
+            return name
+        if self._is_sid(name):
+            return name
+        if self._is_guid(name):
+            return self._get_or_create_pseudo(name, "guid")
+        if self._is_email(name):
+            return self._mask_email(name)
+        return self._get_or_create_pseudo(name, "user")
 
     def _mask_host(self, host: str) -> str:
         """Mask a hostname."""
@@ -432,7 +476,7 @@ class DataAnonymizer:
         )
         if users_match:
             prefix, username, suffix = users_match.groups()
-            masked_user = self._get_or_create_pseudo(username, "user")
+            masked_user = self._safe_user_pseudo(username)
             masked_path = f"{prefix}{masked_user}{suffix or ''}"
             self.mapping[path] = masked_path
             self.reverse_mapping[masked_path] = path
@@ -445,7 +489,7 @@ class DataAnonymizer:
         )
         if home_match:
             prefix, username, suffix = home_match.groups()
-            masked_user = self._get_or_create_pseudo(username, "user")
+            masked_user = self._safe_user_pseudo(username)
             masked_path = f"{prefix}{masked_user}{suffix or ''}"
             self.mapping[path] = masked_path
             self.reverse_mapping[masked_path] = path
@@ -474,7 +518,7 @@ class DataAnonymizer:
         for match in re.finditer(users_pattern, cmd, re.IGNORECASE):
             full_match = match.group(0)
             username = match.group(2)
-            masked_user = self._get_or_create_pseudo(username, "user")
+            masked_user = self._safe_user_pseudo(username)
             masked = masked.replace(full_match, f"{match.group(1)}{masked_user}")
 
         # Store the full command mapping if changed
