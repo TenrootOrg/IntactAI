@@ -241,7 +241,24 @@ def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None, finding
     - Caps record count to a representative sample to avoid context bloat
     """
     if anonymizer:
+        # Snapshot mapping size before/after so we can show what THIS
+        # artifact contributed to the shared dictionary. The summary log
+        # at the end of the pipeline still emits the cumulative table;
+        # this adds a per-artifact timestamp the operator can use to
+        # verify masking ran BEFORE the LLM call for each artifact.
+        before_n = len(anonymizer.mapping)
         rows = anonymizer.mask_data(rows)
+        added = len(anonymizer.mapping) - before_n
+        if log_func:
+            try:
+                log_func(
+                    f"[Masking] {artifact}: masked {len(rows)} rows "
+                    f"(+{added} new values, {len(anonymizer.mapping)} total) "
+                    f"before LLM call",
+                    "info",
+                )
+            except Exception:
+                pass
 
     # Pre-compute factual scope from the FULL set, before sampling
     scope = _compute_data_scope(rows)
@@ -301,6 +318,8 @@ def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None, finding
 4. **Default values are not evidence.** `riskDetail: "hidden"` is the Microsoft default when no risk was detected — it is NOT "suppressed" or "hidden by attacker". Empty `deviceId` is normal for non-AAD-joined devices. `conditionalAccessStatus: "notApplied"` means no policy targeted the sign-in, NOT a bypass.
 5. **Calibrate severity honestly.** Reserve CRITICAL for confirmed compromise. Use HIGH for strong inference. Use MEDIUM for suspicious patterns needing investigation. Use LOW for context. Prefer downgrading when in doubt — false alarms destroy SOC trust.
 6. **Always include a `false_positive_check` for every finding** explaining what would make this benign (e.g., "user is on personal BYOD device", "service principal token refresh", "scheduled background sync").
+7. **Findings emission gate.** A `findings[]` entry exists only when the records show *specific behaviour-level evidence* of attacker intent (detection rule hit, anomalous timing, suspicious chaining of actions, baseline deviation, known TTPs) AND your confidence is high enough that a SOC analyst would act on it (pivot, block, escalate, contain). Default-shaped activity is NOT a finding — even if you could write one for it. Examples that should NOT become findings: normal interactive logons, default Windows scheduled tasks, expected user browsing, vendor RMM tools the org legitimately uses, software-installer mtime changes during normal use. An empty `findings[]` is the correct output when nothing suspicious is in the data. **Do NOT pad with low-confidence findings to make the JSON look fuller.**
+8. **IOC discipline.** A value belongs in `iocs.*` only if an analyst would pivot on it or block it in a SIEM. Brand-name mentions in user activity (browser history, installed-software lists, normal RDP-to-vendor-portal traffic) are NOT IOCs even when "interesting". Authentication providers (AzureAD, NT AUTHORITY, NT VIRTUAL MACHINE) and internal hostnames (DESKTOP-*, local-*) are NEVER IOCs. When in doubt, omit.
 
 ## OUTPUT FORMAT
 Return your response in two parts:
@@ -328,10 +347,16 @@ Return your response in two parts:
     }
   ],
   "iocs": {
-    "ips": [],
-    "users": [],
-    "hashes": [],
-    "domains": []
+    // STRICT: only put values an analyst would pivot on or block. Empty arrays are fine — preferable to false positives.
+    "ips":     [],   // External attacker IPs only. Skip RFC1918 unless specific evidence of attacker pivot.
+    "domains": [],   // ONLY attacker-controlled or attacker-abused domains (C2 / exfil / staging / malicious download).
+                     //  Do NOT list vendor/SaaS brands (anydesk.com, github.com, openai.com, facebook.com, gmail.com,
+                     //  crowdstrike.com, splashtop.com, microsoft.com, etc.) unless there's specific evidence of attacker abuse.
+                     //  Do NOT list authentication providers (AzureAD, NT AUTHORITY, NT VIRTUAL MACHINE).
+                     //  Do NOT list internal hostnames (DESKTOP-*, local-*, *.local, *.lan).
+    "hashes":  [],   // Lower-case hex only — bare value, no "SHA256:" prefix here.
+    "users":   []    // ONLY accounts implicated in attacker activity (created, elevated, target of lateral movement).
+                     //  Don't list every user observed.
   }
 }
 ```
@@ -472,6 +497,13 @@ def synthesize_findings(run_id, summaries, llm_config, log_func=None):
     log(f"[LLM] Synthesis: using macro '{macro_name}' across {len(artifact_names)} artifacts")
 
     synthesis_system_prompt = f"""You are a senior DFIR lead writing a cross-artifact investigation summary for a SOC.
+
+DISCIPLINE: Synthesise only suspicious/malicious activity threading across artifacts.
+If the per-artifact summaries describe normal baseline activity (default Windows tasks,
+expected user browsing, legitimate vendor RMM, routine logons), the right synthesis is
+"no cross-artifact attacker activity identified" — NOT a story about benign behaviour.
+A short, honest synthesis beats a padded one. Mark anything you ARE inferring with
+explicit confidence and what would invalidate it.
 
 You have a list of per-artifact findings already triaged by junior analysts. Your job is to:
 1. Connect the dots — identify whether multiple findings point to one campaign / one root cause / one threat actor pattern, or to independent issues.
