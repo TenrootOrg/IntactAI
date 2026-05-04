@@ -342,11 +342,32 @@ def add_timeline_events(case_id: int, events: List[dict], iris_config: dict,
 
     imported_count = 0
     errors = 0
+    skipped_empty = 0
 
     for i, event in enumerate(events):
         # Skip None or non-dict events
         if not event or not isinstance(event, dict):
             errors += 1
+            continue
+
+        # Skip events that have no real content. The build_rich_description
+        # path can produce "**Finding:** Unknown" + the generic "Why" line
+        # when an artifact's row has neither a recognisable Name field nor
+        # a Detection.Name nested value (commonly seen in
+        # DetectRaptor.Windows.Detection.* artifacts with sparse rows).
+        # Combined with no timestamp, these events pollute the IRIS case
+        # with "[INVESTIGATE] Detection: Alert" entries the analyst can't
+        # act on. Filter them at the gate so they never get pushed.
+        no_timestamp_pre = event.get('no_timestamp', False)
+        desc_pre = event.get('description', '') or ''
+        title_pre = event.get('title', '') or ''
+        looks_empty = (
+            '**Finding:** Unknown' in desc_pre
+            or 'Finding: Unknown' in desc_pre
+        )
+        looks_generic_title = title_pre.strip() in ('', 'Detection: Alert', 'Alert', 'Event')
+        if no_timestamp_pre and looks_empty and looks_generic_title:
+            skipped_empty += 1
             continue
 
         try:
@@ -435,8 +456,11 @@ def add_timeline_events(case_id: int, events: List[dict], iris_config: dict,
             if errors <= 3:  # Only log first few errors
                 log(f"  Error importing event: {e}", "warning")
 
-    log(f"Imported {imported_count}/{len(events)} events ({errors} errors)",
-        "success" if errors == 0 else "warning")
+    summary = f"Imported {imported_count}/{len(events)} events ({errors} errors"
+    if skipped_empty:
+        summary += f", {skipped_empty} empty-finding events skipped"
+    summary += ")"
+    log(summary, "success" if errors == 0 else "warning")
 
     return imported_count
 
@@ -559,7 +583,65 @@ def parse_iocs_from_report(report_content: str) -> List[dict]:
 
     # Skip well-known safe values
     SAFE_IPS = {'127.0.0.1', '0.0.0.0', '8.8.8.8', '1.1.1.1', '255.255.255.255'}
-    SAFE_DOMAINS = {'localhost', 'example.com', 'example.org', 'microsoft.com', 'windows.com'}
+
+    # Public service domains that are NOT indicators of compromise. These
+    # are global SaaS / dev-tool / cloud-vendor domains that show up in
+    # browser history, telemetry, and event logs as routine background
+    # noise. Pushing them to IRIS as IOCs floods the case with
+    # false-positive "evidence" the analyst then has to manually delete.
+    # Subdomain matches included via _is_safe_domain() below.
+    SAFE_DOMAINS = {
+        'localhost', 'example.com', 'example.org', 'example.net',
+        # Microsoft
+        'microsoft.com', 'office.com', 'office365.com', 'live.com',
+        'outlook.com', 'msn.com', 'windows.com', 'azure.com',
+        'azureedge.net', 'azurewebsites.net', 'windowsupdate.com',
+        'msftconnecttest.com', 'msedge.net', 'bing.com',
+        # Google
+        'google.com', 'googleusercontent.com', 'googleapis.com',
+        'gstatic.com', 'youtube.com', 'ytimg.com', 'gmail.com',
+        # Apple
+        'apple.com', 'icloud.com', 'mzstatic.com',
+        # Dev / source control
+        'github.com', 'githubusercontent.com', 'githubassets.com',
+        'gitlab.com', 'bitbucket.org',
+        'stackoverflow.com', 'stackexchange.com',
+        'pypi.org', 'npmjs.com', 'rubygems.org',
+        # Cloud / CDNs
+        'amazonaws.com', 'cloudfront.net', 'cloudflare.com',
+        'cloudflareinsights.com', 'cloudflare-dns.com',
+        'akamaized.net', 'akamai.net', 'fastly.net',
+        # SaaS / collab — these are extremely common in browser history
+        # and consistently produced false-positive IOCs in real runs.
+        'slack.com', 'zoom.us', 'teams.microsoft.com',
+        'canva.com', 'figma.com', 'notion.so', 'linear.app',
+        'atlassian.net', 'atlassian.com', 'trello.com',
+        'asana.com', 'monday.com', 'clickup.com',
+        # Remote access / support — legitimate when authorized; they
+        # need separate context (process executing, install path) to
+        # be flagged as IOCs, not just a domain match.
+        'anydesk.com', 'splashtop.com', 'teamviewer.com',
+        'logmein.com', 'gotomeeting.com', 'rustdesk.com',
+        # File / archive utilities
+        '7-zip.org', 'winzip.com', 'winrar.com', 'rarlab.com',
+        # Cloud storage
+        'dropbox.com', 'box.com', 'onedrive.live.com',
+        # Reference / docs
+        'wikipedia.org', 'wikimedia.org',
+        'reddit.com', 'redditmedia.com',
+        # Adobe
+        'adobe.com', 'adobe.io',
+    }
+
+    def _is_safe_domain(domain: str) -> bool:
+        """Match exact or subdomain (so my.splashtop.com matches splashtop.com)."""
+        d = domain.lower().strip()
+        if d in SAFE_DOMAINS:
+            return True
+        for safe in SAFE_DOMAINS:
+            if d.endswith('.' + safe):
+                return True
+        return False
 
     # IOC type mapping to IRIS type IDs
     TYPE_MAP = {
@@ -661,6 +743,13 @@ def parse_iocs_from_report(report_content: str) -> List[dict]:
                                 'description': '\n'.join(desc_parts)
                             })
                         elif is_domain:
+                            # Skip well-known SaaS / public-service domains
+                            # even when the LLM put them in the IOC table.
+                            # Splashtop, Google, GitHub, etc. surface in
+                            # browser history but are not indicators of
+                            # compromise on their own.
+                            if _is_safe_domain(name):
+                                continue
                             iocs.append({
                                 'type': 'domain',
                                 'type_id': 20,
@@ -826,7 +915,7 @@ def parse_iocs_from_report(report_content: str) -> List[dict]:
     domain_pattern = r'\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+(?:com|net|org|io|ru|cn|tk|xyz|top|info|biz|cc|pw)\b'
     for match in re.finditer(domain_pattern, report_content, re.IGNORECASE):
         domain = match.group().lower()
-        if domain not in seen and domain not in SAFE_DOMAINS:
+        if domain not in seen and not _is_safe_domain(domain):
             seen.add(domain)
             context = extract_ioc_context(report_content, domain, 'domain')
 
