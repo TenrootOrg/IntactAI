@@ -850,3 +850,66 @@ def cleanup_flow_export(client_id: str, flow_id: str, logger=None) -> None:
         log(f"Removed Velociraptor-side export dir for flow {flow_id}")
     except Exception as e:
         log(f"Could not remove Velociraptor-side export dir: {e}", "warning")
+
+
+def cancel_flow(client_id: str, flow_id: str, logger=None) -> bool:
+    """Send Velociraptor a CancelFlow request via VQL — stops a running collection.
+
+    Used by the workflow Stop button across all KAPE / agentic / scheduled
+    paths so the actual collection on the endpoint terminates, not just our
+    local poll. Best-effort: never raises. Returns True on apparent success.
+
+    Mirrors the in-line VQL the agentic pipeline already issues from
+    `agentic.collectors.cancel_collections` — pulled out here so any caller
+    can use it without importing from agentic.
+    """
+    def log(msg, level="info"):
+        if logger:
+            try:
+                logger(msg, level)
+            except Exception:
+                pass
+        else:
+            print(f"[VELO-CANCEL] [{level}] {msg}", flush=True)
+
+    if not client_id or not flow_id:
+        return False
+
+    channel = setup_velociraptor_connection()
+    if not channel:
+        log("Could not connect to Velociraptor to cancel flow", "warning")
+        return False
+
+    try:
+        from pyvelociraptor.api_pb2 import VQLCollectorArgs, VQLRequest
+        from pyvelociraptor.api_pb2_grpc import APIStub
+    except ImportError:
+        # Fall back to the import shape the agentic collectors use.
+        from services.agentic.collectors import api_pb2, api_pb2_grpc  # type: ignore
+        VQLCollectorArgs = api_pb2.VQLCollectorArgs
+        VQLRequest = api_pb2.VQLRequest
+        APIStub = api_pb2_grpc.APIStub
+
+    try:
+        stub = APIStub(channel)
+        query = (
+            f"SELECT cancel_flow(client_id='{client_id}', flow_id='{flow_id}') "
+            f"FROM scope()"
+        )
+        request_obj = VQLCollectorArgs(
+            max_wait=10,
+            max_row=10,
+            Query=[VQLRequest(VQL=query)],
+        )
+        for _ in stub.Query(request_obj, timeout=15):
+            pass
+        log(f"Sent CancelFlow for {flow_id} on {client_id}")
+        return True
+    except Exception as e:
+        log(f"Could not cancel flow {flow_id} on {client_id}: {e}", "warning")
+        return False
+    finally:
+        try:
+            channel.close()
+        except Exception:
+            pass

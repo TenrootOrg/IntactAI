@@ -305,6 +305,13 @@ def collect_unified_audit_log(
             shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
         )
 
+        # Register cleanup for the docker-logs subprocess too. The container
+        # cleanup above kills the actual work; this kills the orphaned log
+        # streamer so it doesn't hang reading from a dead container.
+        if run_id:
+            from services.workflow_service import terminate_subprocess
+            register_cleanup(run_id, lambda p=log_process: terminate_subprocess(p))
+
         import select
         import fcntl
 

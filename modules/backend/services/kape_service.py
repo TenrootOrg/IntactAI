@@ -11,7 +11,8 @@ import sys
 from pyvelociraptor import api_pb2
 from pyvelociraptor import api_pb2_grpc
 
-from services.velociraptor_service import setup_velociraptor_connection
+from services.velociraptor_service import setup_velociraptor_connection, cancel_flow
+from services.workflow_service import get_cancel_event, register_cleanup
 
 def run_kape_collection_grpc(
     client_id,
@@ -169,7 +170,7 @@ SELECT * FROM collection
         return None
 
 
-def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=None):
+def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=None, run_id=None):
     """Monitor flow until completion with progress updates
 
     Args:
@@ -177,6 +178,11 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
         flow_id: Velociraptor flow ID
         timeout_seconds: Maximum time to wait for completion (default 10000 = ~2.8 hours)
         logger: Optional callback function(message, level) to log progress
+        run_id: Optional workflow run_id. When provided, the polling loop
+            respects the workflow Stop button: clicking Stop sends a
+            CancelFlow to the Velociraptor server (so the actual KAPE
+            collection terminates on the endpoint, not just our poll)
+            and returns within ~5s instead of polling for hours.
     """
 
     def log(message, level="info"):
@@ -195,6 +201,18 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
     log(f"Flow ID: {flow_id}")
     log(f"Timeout: {timeout_seconds}s ({timeout_seconds//60} minutes)")
     log("=" * 60)
+
+    cancel_event = get_cancel_event(run_id) if run_id else None
+
+    # Register a cleanup callback that sends CancelFlow to the Velociraptor
+    # server. This fires the moment the user clicks Stop, even if our poll
+    # is mid-sleep — the endpoint stops running KAPE within seconds rather
+    # than waiting for the next poll iteration.
+    if run_id:
+        register_cleanup(
+            run_id,
+            lambda: cancel_flow(client_id, flow_id, logger=logger),
+        )
 
     try:
         # Setup gRPC connection
@@ -215,6 +233,14 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
         while True:
             check_count += 1
             elapsed = int(time.time() - start_time)
+
+            # Stop button: cleanup callback already sent CancelFlow to the
+            # Velociraptor server. Exit our local poll so the workflow ends
+            # promptly without waiting up to 30s for the next sleep cycle.
+            if cancel_event is not None and cancel_event.is_set():
+                log("Stop requested by user — abandoning flow monitor", "warning")
+                channel.close()
+                return "CANCELLED"
 
             # Query flow state
             vql_query = f"LET collection <= get_flow(client_id='{client_id}', flow_id='{flow_id}') SELECT * FROM collection"
@@ -275,7 +301,15 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
             else:
                 wait_time = 30
 
-            time.sleep(wait_time)
+            # cancel_event.wait returns True immediately on Stop — we don't
+            # burn the full sleep window after a click.
+            if cancel_event is not None:
+                if cancel_event.wait(wait_time):
+                    log("Stop requested by user — abandoning flow monitor", "warning")
+                    channel.close()
+                    return "CANCELLED"
+            else:
+                time.sleep(wait_time)
 
     except Exception as e:
         error_detail = traceback.format_exc()

@@ -13,6 +13,8 @@ import traceback
 import ssl
 import warnings
 
+from services.workflow_service import get_cancel_event
+
 # Disable SSL warnings for self-signed certificates
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -137,7 +139,7 @@ def _upload_plaso_direct(api, sketch, plaso_file_path, timeline_name, logger=Non
         return None
 
 
-def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=10000, poll_interval=30, logger=None, timesketch_config=None):
+def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=10000, poll_interval=30, logger=None, timesketch_config=None, cancel_event=None):
     """Wait for timeline processing to complete with progress updates.
 
     Args:
@@ -151,6 +153,9 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
             to mint a fresh client if the existing session expires mid-poll.
             Without this, the polling loop will loop forever on a dead cookie
             until the timeout fires.
+        cancel_event: Optional threading.Event from workflow_service. When
+            set (user clicked Stop), the loop exits within one poll interval
+            with status='cancelled' instead of continuing to poll for hours.
 
     Returns:
         tuple (success: bool, final_status: str, timeline_id: int or None)
@@ -170,8 +175,23 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
     log(f"Waiting for timeline '{timeline_name}' to be ready...")
     log(f"Timeout: {timeout_seconds}s, Poll interval: {poll_interval}s")
 
+    def _wait_or_cancel():
+        """Sleep poll_interval, but exit immediately if Stop is clicked.
+
+        Returns True if cancellation was requested (caller should abort).
+        """
+        if cancel_event is not None:
+            return cancel_event.wait(poll_interval)
+        time.sleep(poll_interval)
+        return False
+
     while True:
         elapsed = int(time.time() - start_time)
+
+        # User-initiated stop: exit promptly without waiting on TS.
+        if cancel_event is not None and cancel_event.is_set():
+            log("Stop requested by user — abandoning indexing wait", "warning")
+            return (False, "cancelled", None)
 
         # Check timeout
         if elapsed > timeout_seconds:
@@ -190,7 +210,9 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
 
             if not timeline:
                 log(f"Timeline '{timeline_name}' not yet visible, waiting... (elapsed: {elapsed}s)")
-                time.sleep(poll_interval)
+                if _wait_or_cancel():
+                    log("Stop requested by user — abandoning indexing wait", "warning")
+                    return (False, "cancelled", None)
                 continue
 
             status = timeline.status
@@ -203,10 +225,14 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
                 log(f"✗ Timeline '{timeline_name}' processing failed", "error")
                 return (False, status, timeline.id)
             elif status in ["processing", "pending"]:
-                time.sleep(poll_interval)
+                if _wait_or_cancel():
+                    log("Stop requested by user — abandoning indexing wait", "warning")
+                    return (False, "cancelled", None)
             else:
                 log(f"⚠ Unknown status: {status}, continuing to wait...", "warning")
-                time.sleep(poll_interval)
+                if _wait_or_cancel():
+                    log("Stop requested by user — abandoning indexing wait", "warning")
+                    return (False, "cancelled", None)
 
         except Exception as e:
             consecutive_errors += 1
@@ -232,7 +258,9 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
                 else:
                     log("Re-auth attempt failed; will retry next cycle", "warning")
             log(f"⚠ Error checking timeline status: {e}, retrying...", "warning")
-            time.sleep(poll_interval)
+            if _wait_or_cancel():
+                log("Stop requested by user — abandoning indexing wait", "warning")
+                return (False, "cancelled", None)
 
     return (False, "unknown", None)
 
@@ -283,7 +311,7 @@ def find_sketch_by_name(sketch_name, timesketch_config, logger=None):
         return None
 
 
-def import_to_timesketch(plaso_file, sketch_name, timeline_name, timesketch_config, logger=None, sketch_id=None, wait_timeout=10000):
+def import_to_timesketch(plaso_file, sketch_name, timeline_name, timesketch_config, logger=None, sketch_id=None, wait_timeout=10000, run_id=None):
     """Import Plaso file to Timesketch using direct Python API.
 
     Uses ImportStreamer with data_label='plaso' which properly triggers
@@ -297,6 +325,10 @@ def import_to_timesketch(plaso_file, sketch_name, timeline_name, timesketch_conf
         logger: Optional callback function(message, level) to log progress
         sketch_id: Optional existing sketch ID to add timeline to (if not provided, will search by name first)
         wait_timeout: Timeout in seconds to wait for timeline processing (default ~2.8 hours)
+        run_id: Optional workflow run_id. When provided, the indexing-wait
+            polling loop respects the workflow Stop button — clicking Stop
+            mid-wait returns within one poll interval (instead of blocking
+            up to wait_timeout, which can be 3 days).
 
     Returns:
         dict with sketch_id, timeline_id, sketch_name, timeline_name or None on failure
@@ -392,6 +424,11 @@ def import_to_timesketch(plaso_file, sketch_name, timeline_name, timesketch_conf
         # Step 5: Wait for Timesketch workers to process the .plaso file
         log("Step 5/5: Waiting for Timesketch to process the .plaso file...")
 
+        # Resolve cancel event from run_id so the indexing-wait polling
+        # loop respects the workflow Stop button. None on legacy callers
+        # that don't pass run_id — wait then behaves as before.
+        cancel_event = get_cancel_event(run_id) if run_id else None
+
         success, final_status, timeline_id = _wait_for_timeline_ready(
             api=api,
             sketch_id=sketch_id,
@@ -403,6 +440,7 @@ def import_to_timesketch(plaso_file, sketch_name, timeline_name, timesketch_conf
             # current cookie expires (e.g. on uploads that cross the 1-week
             # PERMANENT_SESSION_LIFETIME).
             timesketch_config=timesketch_config,
+            cancel_event=cancel_event,
         )
 
         if not success:

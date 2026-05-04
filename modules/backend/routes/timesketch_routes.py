@@ -211,8 +211,20 @@ def run_timesketch_import():
                 workflow_logger("=== PHASE 1: Monitoring KAPE Collection ===", "info")
                 print(f"[WORKFLOW] === PHASE 1: Monitoring KAPE Collection ===\n", flush=True)
 
-                # Pass logger to monitor function for detailed logging
-                flow_state = monitor_flow_completion(client_id, flow_id, timeout_seconds=monitor_timeout, logger=workflow_logger)
+                # Pass run_id so monitor_flow_completion wires its CancelFlow
+                # cleanup and exits promptly when the user clicks Stop while
+                # KAPE is still running on the endpoint.
+                flow_state = monitor_flow_completion(
+                    client_id, flow_id,
+                    timeout_seconds=monitor_timeout,
+                    logger=workflow_logger,
+                    run_id=run_id,
+                )
+
+                if flow_state == "CANCELLED":
+                    workflow_logger("KAPE collection cancelled by user", "warning")
+                    print(f"[WORKFLOW] User cancelled — exiting before Plaso", flush=True)
+                    return
 
                 if flow_state != "FINISHED":
                     update_job(flow_id, {
