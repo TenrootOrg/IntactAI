@@ -27,14 +27,23 @@ import os
 import time
 
 from config import PLASO_OUTPUT_DIR, get_plaso_image, PLASO_CPUS, PLASO_MEMORY
+from services.workflow_service import (
+    get_cancel_event,
+    register_cleanup,
+    terminate_subprocess,
+)
 
 
-def run_pinfo(plaso_file, logger=None):
+def run_pinfo(plaso_file, logger=None, run_id=None):
     """Run pinfo on a Plaso file to get storage information and event count.
 
     Args:
         plaso_file: Path to the .plaso file
         logger: Optional callback function(message, level) to log progress
+        run_id: Optional workflow run_id. When provided, the pinfo subprocess
+            is registered for termination on Stop click; the read loop also
+            checks the cancel event so we don't burn the full PINFO_TIMEOUT
+            after Stop.
 
     Returns:
         Dict with event_count, or None on failure
@@ -66,6 +75,10 @@ def run_pinfo(plaso_file, logger=None):
             text=True,
             bufsize=1
         )
+
+        cancel_event = get_cancel_event(run_id) if run_id else None
+        if run_id:
+            register_cleanup(run_id, lambda p=process: terminate_subprocess(p))
 
         # pinfo does not print a grand total, but it prints a per-parser
         # breakdown in the "Events generated per parser" section:
@@ -118,6 +131,12 @@ def run_pinfo(plaso_file, logger=None):
 
         while True:
             if process.poll() is not None:
+                break
+            if cancel_event is not None and cancel_event.is_set():
+                # Cleanup callback is already terminating the subprocess;
+                # break the read loop so the caller returns to the workflow
+                # runner, which sees the cancelled status.
+                log("Stop requested by user — exiting pinfo read loop", "warning")
                 break
             if time.time() - start_time > PINFO_TIMEOUT:
                 log(f"pinfo timed out after {PINFO_TIMEOUT}s", "warning")

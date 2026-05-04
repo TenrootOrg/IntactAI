@@ -18,7 +18,14 @@ import subprocess
 import traceback
 from datetime import datetime
 
-from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
+from services.workflow_service import (
+    create_automation_run,
+    add_log_to_run,
+    update_run_status,
+    register_cleanup,
+    get_cancel_event,
+    terminate_subprocess,
+)
 from services.plaso_service import run_pinfo
 from services.timesketch_service import import_to_timesketch
 from config import PLASO_OUTPUT_DIR, get_plaso_image, PLASO_CPUS, PLASO_MEMORY, TIMESKETCH_CONFIG
@@ -188,7 +195,7 @@ def decompress_velociraptor_uploads(uploads_dir, dest_dir, logger=None):
     return (file_count > 0, file_count, error_count)
 
 
-def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, workers=2, hasher=None, hasher_file_size_mb=None):
+def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, workers=2, hasher=None, hasher_file_size_mb=None, run_id=None):
     """Process local directory with Plaso (for uploaded files)
 
     Unlike process_with_plaso() in plaso_service.py, this:
@@ -284,9 +291,24 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
             bufsize=1
         )
 
+        # Wire workflow Stop into the Plaso subprocess. The cleanup callback
+        # fires when the user clicks Stop in the dashboard; terminate_subprocess
+        # is idempotent so it's safe even if the process already exited.
+        # The `--rm` flag on the docker run means the container vanishes once
+        # the parent docker CLI is killed.
+        cancel_event = get_cancel_event(run_id) if run_id else None
+        if run_id:
+            register_cleanup(run_id, lambda p=process: terminate_subprocess(p))
+
         # Stream output
         line_count = 0
         for line in process.stdout:
+            # Bail fast if Stop was clicked. The cleanup callback above is
+            # already terminating the subprocess; we just stop reading so
+            # this loop exits and the caller returns to the workflow runner.
+            if cancel_event and cancel_event.is_set():
+                log("Stop requested by user — exiting log2timeline read loop", "warning")
+                break
             line = line.strip()
             if line:
                 line_count += 1
@@ -304,6 +326,9 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
                             pass
 
         return_code = process.wait()
+        if cancel_event and cancel_event.is_set():
+            log("log2timeline aborted by user", "warning")
+            return None
 
         if return_code == 0:
             log("Plaso processing completed successfully", "success")
@@ -440,8 +465,17 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             parser=settings.get('plaso_parser'),
             workers=settings.get('plaso_workers', 2),
             hasher=settings.get('plaso_hasher'),
-            hasher_file_size_mb=settings.get('plaso_hasher_size')
+            hasher_file_size_mb=settings.get('plaso_hasher_size'),
+            run_id=run_id,  # enables Stop-button termination of log2timeline
         )
+
+        # If Stop was clicked mid-Plaso, plaso_file is None — bail out
+        # cleanly without raising, so the workflow ends as 'cancelled'
+        # (already set by request_stop) instead of 'failed'.
+        cancel_event = get_cancel_event(run_id) if run_id else None
+        if cancel_event and cancel_event.is_set():
+            add_log_to_run(run_id, "Plaso stage stopped by user", "warning")
+            return {"run_id": run_id, "status": "cancelled"}
 
         if not plaso_file:
             raise Exception("Plaso processing failed")
@@ -450,8 +484,11 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
 
         # Verify with pinfo
         add_log_to_run(run_id, "=== Verifying Plaso Output ===")
-        pinfo_result = run_pinfo(plaso_file,
-            logger=lambda msg, lvl: add_log_to_run(run_id, msg, lvl))
+        pinfo_result = run_pinfo(
+            plaso_file,
+            logger=lambda msg, lvl: add_log_to_run(run_id, msg, lvl),
+            run_id=run_id,
+        )
 
         if pinfo_result:
             event_count = pinfo_result.get('event_count', 0)
@@ -482,6 +519,7 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             logger=lambda msg, lvl: add_log_to_run(run_id, msg, lvl),
             sketch_id=sketch_id,
             wait_timeout=ts_wait_timeout,
+            run_id=run_id,  # enables Stop-button cancel during upload + indexing-wait
         )
 
         if result:

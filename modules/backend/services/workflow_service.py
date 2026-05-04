@@ -3,6 +3,7 @@
 Workflow Service - Centralized workflow and job tracking with SQLite + Elasticsearch
 """
 
+import subprocess
 import time
 import threading
 from datetime import datetime
@@ -52,6 +53,43 @@ def is_cancelled(run_id) -> bool:
     """Check if a workflow run has been cancelled."""
     event = _cancel_events.get(run_id)
     return event.is_set() if event else False
+
+
+def get_cancel_event(run_id):
+    """Return the cancel Event for a run, or None if no run/registration.
+
+    Useful for downstream callees (subprocess loops, polling waits) that
+    were handed only a run_id and need to poll cancellation. Mirrors the
+    Event returned by register_cancel_event.
+    """
+    return _cancel_events.get(run_id)
+
+
+def terminate_subprocess(process, timeout: float = 5.0) -> None:
+    """SIGTERM a subprocess.Popen, wait briefly, then SIGKILL if still alive.
+
+    Idempotent — safe to call from a cleanup callback even if the process
+    has already exited (returns silently). Best-effort: never raises.
+    Centralised here so every Popen call site uses the same kill cadence
+    instead of copy-pasted try/except blocks.
+    """
+    if not process or process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        try:
+            process.wait(timeout=timeout)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        process.kill()
+        try:
+            process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            pass
+    except Exception:
+        # Process already gone, OS doesn't know it, nothing useful to do.
+        pass
 
 
 def request_stop(run_id):

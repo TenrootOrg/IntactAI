@@ -285,6 +285,14 @@ def run_timesketch_pipeline(job_meta: dict, client_ids: list):
                 }
             )
 
+            # Register a cancel event so the user can Stop a scheduled run
+            # from the dashboard. Without this, the Velociraptor CancelFlow
+            # cleanup we wired into monitor_flow_completion has no event
+            # to attach to, and the run is uninterruptible until KAPE
+            # finishes naturally.
+            from services.workflow_service import register_cancel_event
+            register_cancel_event(run_id)
+
             def workflow_logger(message, level="info"):
                 add_log_to_run(run_id, message, level)
 
@@ -320,8 +328,13 @@ def run_timesketch_pipeline(job_meta: dict, client_ids: list):
                 client_id=client_id,
                 flow_id=flow_id,
                 timeout_seconds=timeout_seconds,
-                logger=workflow_logger
+                logger=workflow_logger,
+                run_id=run_id,  # wire workflow Stop into the Velociraptor CancelFlow
             )
+
+            if flow_state == "CANCELLED":
+                workflow_logger("KAPE collection cancelled by user", "warning")
+                continue
 
             if flow_state != "FINISHED":
                 workflow_logger(f"KAPE collection failed: {flow_state}", "error")
