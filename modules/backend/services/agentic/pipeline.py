@@ -310,6 +310,8 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
 
                 # Import to IRIS - pass unfiltered events for IOC extraction
                 # (Amcache/Prefetch have hashes but are filtered from timeline_events)
+                # Per-artifact LLM summaries are the highest-fidelity IOC
+                # source — see extract_iocs_from_summaries in iris_service.
                 iris_result = iris_import(
                     run_id=run_id,
                     case_name=iris_case_name,
@@ -319,6 +321,8 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                     clients=selected_clients,
                     blueprint_name=blueprint.get('name', 'Agentic Analysis'),
                     all_events_for_iocs=all_events,
+                    artifact_summaries=artifact_summaries,
+                    min_ioc_severity=blueprint.get('min_ioc_severity'),
                     logger=lambda msg, level: add_log_to_run(run_id, msg, level)
                 )
 
@@ -406,6 +410,20 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         collection_id = flow_id or hunt_id
         collection_type = "flow" if flow_id else "hunt"
         add_log_to_run(run_id, f"[Pipeline] Analyzing existing {collection_type}: {collection_id}", "info")
+
+        # Surface masking + IRIS-import gates up front (parity with the
+        # run_agentic_pipeline path) so the operator can see in the
+        # workflow log whether masking will run before each per-artifact
+        # LLM call.
+        if anonymizer:
+            pattern_count = len(custom_patterns) if custom_patterns else 0
+            add_log_to_run(
+                run_id,
+                f"[Pipeline] Data anonymization: ENABLED ({pattern_count} custom patterns)",
+                "info",
+            )
+        if import_to_iris:
+            add_log_to_run(run_id, "[Pipeline] IRIS import: ENABLED", "info")
 
         # Log time filter summary
         if time_filter and time_filter.get('enabled'):
@@ -621,6 +639,10 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                 add_log_to_run(run_id, f"[IRIS] Found {len(list(client_info.values()))} clients to add as assets", "info")
 
                 # Pass unfiltered events for IOC extraction
+                # Per-artifact LLM summaries are the highest-fidelity IOC
+                # source — see extract_iocs_from_summaries in iris_service.
+                # min_ioc_severity stays None on the re-ingest path: if the
+                # user re-ran analysis they want everything the LLM flagged.
                 iris_result = iris_import(
                     run_id=run_id,
                     case_name=iris_case_name,
@@ -630,6 +652,7 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                     clients=list(client_info.values()),
                     blueprint_name=f"Existing {collection_type.title()}",
                     all_events_for_iocs=all_events,
+                    artifact_summaries=artifact_summaries,
                     logger=lambda msg, level: add_log_to_run(run_id, msg, level)
                 )
 
