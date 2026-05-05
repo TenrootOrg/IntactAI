@@ -126,6 +126,14 @@ main() {
     # -------------------------------------------------------------------------
     # Verification & Reports
     # -------------------------------------------------------------------------
+    # Refresh per-module nginx DNS caches BEFORE the health probes — fixes
+    # the stale-upstream race where nginx cached an upstream container's
+    # IP at startup and never noticed the upstream was recreated. Caught
+    # us with TimeSketch on a fresh install (intact_timesketch_nginx
+    # was returning 502 for a perfectly-healthy backend). Restart is
+    # idempotent so this is also a no-op on already-healthy nginxes.
+    refresh_nginx_upstreams
+
     verify_installation
     print_installation_report
     create_initialization_marker
@@ -136,6 +144,11 @@ main() {
     fix_source_permissions
 
     print_summary
+    # Final ATTENTION block listing every warning/error tracked anywhere
+    # during the install. Operators currently miss yellow [WARN] lines
+    # that scrolled past — this surfaces them right after the success
+    # banner so they can't be missed. Pure formatter, no side effects.
+    print_final_issues_report
 }
 
 # ============================================================================

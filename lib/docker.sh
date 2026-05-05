@@ -417,6 +417,14 @@ download_offline_collector_binaries() {
 
     local downloaded=0
     local skipped=0
+    # Minimum credible binary size — kept very permissive (1 MB) so any
+    # legitimate binary, even if upstream slimmed it down, passes. We're
+    # only trying to catch the failure modes that today's empty-but-not-
+    # empty `[[ -s ]]` check misses: HTTP 404 HTML pages (a few KB),
+    # GitHub rate-limit JSON responses (under 1 KB), and badly-aborted
+    # partial transfers. Real binaries are 65-75 MB; anything truly
+    # under 1 MB is broken regardless of version.
+    local min_size=$((1 * 1024 * 1024))   # 1 MB
 
     for binary in "${binaries[@]}"; do
         local dest_path="${downloads_dir}/${binary}"
@@ -425,7 +433,7 @@ download_offline_collector_binaries() {
             log_info "  Already exists: $binary"
             ((skipped++))
         else
-            log_info "  Downloading: $binary"
+            log_info "  Downloading: $binary  (from ${base_url}/${binary})"
             if curl -fsSL "${base_url}/${binary}" -o "$dest_path" 2>> "$LOG_FILE"; then
                 chmod +x "$dest_path" 2>/dev/null || true
                 log_success "  Downloaded: $binary"
@@ -436,11 +444,39 @@ download_offline_collector_binaries() {
         fi
     done
 
+    # Post-condition validation — the function used to exit 0 even when
+    # every download failed (only log_warn on failure, no final check).
+    # The result was a "successful" install with an empty downloads/
+    # directory; the offline-collector path then failed at runtime
+    # weeks later. This block makes the failure loud during install
+    # without turning it into an abort (operator constraint: don't
+    # introduce new failure paths in fresh installs).
+    local missing=0
+    for binary in "${binaries[@]}"; do
+        local p="${downloads_dir}/${binary}"
+        local sz=0
+        [[ -f "$p" ]] && sz=$(stat -c%s "$p" 2>/dev/null || echo 0)
+        if [[ ! -s "$p" ]] || (( sz < min_size )); then
+            log_error "Offline-Collector binary missing or undersized: $binary"
+            log_error "  Expected ≥1 MB at $p — got $sz bytes (real binaries are 65-75 MB)"
+            log_error "  Manual fix: curl -fsSL ${base_url}/${binary} -o $p && chmod +x $p"
+            ((missing++))
+        fi
+    done
+    if (( missing > 0 )); then
+        log_error "Offline-Collector: $missing/${#binaries[@]} binaries unusable. Velociraptor offline-collector generation will fail until fixed (see commands above)."
+    fi
+
     if [[ $downloaded -gt 0 ]]; then
         log_success "Offline Collector binaries: $downloaded downloaded, $skipped already existed"
     else
         log_info "Offline Collector binaries: all $skipped binaries already exist"
     fi
+    # Always return 0 — install flow stays unchanged regardless of outcome.
+    # Loud errors above + the end-of-install ATTENTION report ensure the
+    # operator sees the issue without aborting installs that were already
+    # going to succeed.
+    return 0
 }
 
 create_velociraptor_collector() {

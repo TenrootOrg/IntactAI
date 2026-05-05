@@ -19,6 +19,15 @@ SUCCEEDED_MODULES=()
 # "compose up succeeded but the service isn't actually serving requests".
 UNHEALTHY_MODULES=()
 
+# Process-wide warning / error tracking. Every log_warn / log_error call
+# appends a timestamped entry here so the final installer summary can
+# print a loud "ATTENTION" report listing every issue that surfaced
+# anywhere during the install — without changing any function's exit
+# code. Operators currently miss yellow [WARN] lines that scroll past;
+# this surfaces them at the end where they can't be missed.
+INSTALL_WARNINGS=()
+INSTALL_ERRORS=()
+
 # ============================================================================
 # Logging Functions
 # ============================================================================
@@ -39,12 +48,38 @@ log_warn() {
     local msg="[$(date '+%Y-%m-%d %H:%M:%S')] [WARN] $1"
     echo -e "${YELLOW}[WARN]${NC} $1"
     echo "$msg" >> "$LOG_FILE"
+    # Track for end-of-install ATTENTION report. Caller ${FUNCNAME[1]}
+    # tells the operator which install step produced the warning.
+    INSTALL_WARNINGS+=("$(date '+%H:%M:%S') ${FUNCNAME[1]:-?}: $1")
 }
 
 log_error() {
     local msg="[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $1"
     echo -e "${RED}[ERROR]${NC} $1"
     echo "$msg" >> "$LOG_FILE"
+    INSTALL_ERRORS+=("$(date '+%H:%M:%S') ${FUNCNAME[1]:-?}: $1")
+}
+
+# Append a tail of each named container's logs to INSTALL_ERRORS so the
+# end-of-install ATTENTION report points the operator at the actual
+# failure symptom — not just "X timed out". Skips silently for any
+# container that doesn't exist (some modules have optional containers).
+# Defined here in common.sh (sourced first) so both modules.sh deploy
+# steps AND health.sh post-install probes can call it.
+capture_diagnostic_logs() {
+    local label="$1"
+    shift
+    INSTALL_ERRORS+=("--- ${label} diagnostic; container tails follow ---")
+    local container
+    for container in "$@"; do
+        if docker ps -a --filter "name=^${container}$" --format '{{.Names}}' 2>/dev/null | grep -q .; then
+            INSTALL_ERRORS+=("[$container] last 20 log lines:")
+            local line
+            while IFS= read -r line; do
+                INSTALL_ERRORS+=("  $line")
+            done < <(docker logs --tail 20 "$container" 2>&1)
+        fi
+    done
 }
 
 # ============================================================================

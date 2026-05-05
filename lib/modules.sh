@@ -305,6 +305,7 @@ deploy_elk() {
     done
 
     log_error "  Elasticsearch failed to become ready after ${es_max_wait}s"
+    capture_diagnostic_logs "ELK Stack (deploy timeout)" intact_elasticsearch
     track_module_failure "ELK Stack"
     return 1
 }
@@ -348,6 +349,8 @@ deploy_timesketch() {
     log_info "  Waiting for TimeSketch container..."
     if ! wait_for_container "intact_timesketch_web" 60; then
         log_error "  TimeSketch web container failed to start"
+        capture_diagnostic_logs "TimeSketch web (container start timeout)" \
+            intact_timesketch_web intact_timesketch_postgres intact_timesketch_opensearch
         track_module_failure "TimeSketch"
         return 1
     fi
@@ -373,6 +376,8 @@ deploy_timesketch() {
     if [[ "$ts_ready" != "true" ]]; then
         log_warn "  TimeSketch API not responding after ${ts_max_wait}s"
         log_info "  Check logs: docker logs intact_timesketch_web"
+        capture_diagnostic_logs "TimeSketch API (deploy timeout)" \
+            intact_timesketch_nginx intact_timesketch_web intact_timesketch_worker
     fi
 
     # Create user
@@ -497,6 +502,7 @@ deploy_velociraptor() {
     log_info "  Waiting for Velociraptor container..."
     if ! wait_for_container "intact_velociraptor" 60; then
         log_warn "  Velociraptor container may not be fully ready"
+        capture_diagnostic_logs "Velociraptor (container start timeout)" intact_velociraptor
     fi
 
     # Wait for Velociraptor configuration to be generated
@@ -512,6 +518,7 @@ deploy_velociraptor() {
     done
     if [[ $velo_config_wait -ge 90 ]]; then
         log_warn "  Velociraptor configuration not ready after 90s"
+        capture_diagnostic_logs "Velociraptor (config generation timeout)" intact_velociraptor
     fi
 
     # Generate client installers
@@ -575,34 +582,47 @@ deploy_iris() {
     log_info "  Waiting for IRIS database (PostgreSQL)..."
     local db_wait=0
     local db_max_wait=90
+    local db_ready=false
     while [[ $db_wait -lt $db_max_wait ]]; do
         if docker exec intact_iris_db pg_isready -U postgres > /dev/null 2>&1; then
             log_success "  IRIS database is ready (${db_wait}s)"
+            db_ready=true
             break
         fi
         sleep 5
         ((db_wait+=5))
         log_info "  Waiting for database... (${db_wait}/${db_max_wait}s)"
     done
+    if [[ "$db_ready" != "true" ]]; then
+        log_warn "  IRIS database did not become ready in ${db_max_wait}s"
+        capture_diagnostic_logs "IRIS database (timeout)" intact_iris_db
+    fi
 
     # Wait for RabbitMQ
     log_info "  Waiting for IRIS message queue (RabbitMQ)..."
     local mq_wait=0
     local mq_max_wait=60
+    local mq_ready=false
     while [[ $mq_wait -lt $mq_max_wait ]]; do
         if docker exec intact_iris_rabbitmq rabbitmqctl status > /dev/null 2>&1; then
             log_success "  RabbitMQ is ready (${mq_wait}s)"
+            mq_ready=true
             break
         fi
         sleep 5
         ((mq_wait+=5))
         log_info "  Waiting for RabbitMQ... (${mq_wait}/${mq_max_wait}s)"
     done
+    if [[ "$mq_ready" != "true" ]]; then
+        log_warn "  IRIS RabbitMQ did not become ready in ${mq_max_wait}s"
+        capture_diagnostic_logs "IRIS RabbitMQ (timeout)" intact_iris_rabbitmq
+    fi
 
     # Wait for IRIS app container
     log_info "  Waiting for IRIS app container..."
     if ! wait_for_container "intact_iris_app" 90; then
         log_warn "  IRIS app container not ready after 90s"
+        capture_diagnostic_logs "IRIS app (container timeout)" intact_iris_app intact_iris_db intact_iris_rabbitmq
     fi
 
     # Wait for IRIS API to be accessible (HTTPS on port 8443)
@@ -650,6 +670,8 @@ deploy_iris() {
         log_info "  This may be normal for first-time installation"
         log_info "  Check logs: docker logs intact_iris_app"
         log_info "  IRIS should be accessible at https://localhost:8443 once ready"
+        capture_diagnostic_logs "IRIS web (post-deploy timeout)" \
+            intact_iris_nginx intact_iris_app intact_iris_db intact_iris_rabbitmq
         track_module_success "IRIS"
     fi
 
@@ -792,6 +814,7 @@ deploy_portainer() {
         track_module_success "Portainer"
     else
         log_warn "  Portainer may not be fully ready"
+        capture_diagnostic_logs "Portainer (container timeout)" intact_portainer
         track_module_success "Portainer"
     fi
 }
@@ -841,6 +864,7 @@ deploy_backend() {
     done
 
     log_warn "  Backend API started but health check not responding yet"
+    capture_diagnostic_logs "Backend API (post-deploy timeout)" intact_backend
     track_module_success "Backend API"
 }
 
@@ -873,6 +897,7 @@ deploy_nginx() {
         track_module_success "Nginx"
     else
         log_warn "  Nginx may not be fully ready"
+        capture_diagnostic_logs "Nginx (container timeout)" intact_nginx
         track_module_success "Nginx"
     fi
 }
