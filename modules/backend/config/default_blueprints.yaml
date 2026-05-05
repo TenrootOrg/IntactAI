@@ -142,7 +142,6 @@ velociraptor:
       - Windows.EventLogs.ScheduledTasks
       - Windows.EventLogs.Evtx
       # System
-      - Windows.System.Amcache
       - Windows.System.DNSCache
       - Windows.System.UntrustedBinaries
       - Windows.System.Services
