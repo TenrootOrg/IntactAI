@@ -82,6 +82,37 @@ capture_diagnostic_logs() {
     done
 }
 
+# verify_postgres_row — confirm a state-creation step actually wrote
+# what it claimed. Generic across modules so any install step that
+# creates a DB row can verify the row landed before logging SUCCESS.
+#
+# Why this exists: `tsctl create-user` can return exit code 0 while
+# silently dropping the DB write — caught us when a fresh install
+# reported "[SUCCESS] TimeSketch user 'tenroot' ready" but the
+# postgres "user" table was empty hours later. Trust-but-verify on
+# every state-write that other steps depend on.
+#
+# Usage:
+#   verify_postgres_row intact_timesketch_postgres timesketch user "username='tenroot'"
+#   verify_postgres_row intact_iris_db iris_db user "name='administrator' AND api_key IS NOT NULL"
+#
+# Returns 0 iff the count query yields ≥ 1. Silent — caller logs the
+# outcome. pg_user defaults to the database name (timesketch/iris
+# convention); pass a 5th arg if your container differs.
+verify_postgres_row() {
+    local container="$1"
+    local db="$2"
+    local table="$3"
+    local where="$4"
+    local pg_user="${5:-${db}}"
+
+    local count
+    count=$(docker exec "$container" psql -U "$pg_user" -d "$db" -tAc \
+        "SELECT count(*) FROM \"${table}\" WHERE ${where};" 2>/dev/null \
+        | tr -d '[:space:]')
+    [[ "$count" =~ ^[0-9]+$ ]] && (( count >= 1 ))
+}
+
 # ============================================================================
 # Module Tracking Functions
 # ============================================================================

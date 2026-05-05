@@ -57,7 +57,38 @@ def _connect_timesketch_api(timesketch_config, logger=None):
             verify=False  # Disable SSL certificate verification for self-signed certs
         )
 
-        log("✓ Timesketch API connected", "success")
+        # Verify auth works with a real authenticated probe — the
+        # constructor only sets up an HTTP session and DOES NOT validate
+        # credentials. Without this, the first downstream call (e.g.
+        # list_sketches in import_to_timesketch) silently 302s to
+        # /login/, gets back HTML, and fails 5+ minutes into the
+        # pipeline as a cryptic JSON-decode error. Catch the auth
+        # failure here so the operator gets a clear, actionable message
+        # before any pipeline work runs.
+        try:
+            # Cheapest authenticated GET — list one sketch.
+            _ = list(api.list_sketches())
+        except Exception as auth_err:
+            log(
+                "✗ TimeSketch API session created but credentials were rejected. "
+                f"User '{ts_username}' at {ts_host} cannot authenticate.",
+                "error",
+            )
+            log(
+                "  Check that TIMESKETCH_USER / TIMESKETCH_PASS on intact_backend match "
+                "a real user in the TimeSketch DB. Verify with:",
+                "error",
+            )
+            log(
+                "  docker exec intact_timesketch_postgres psql -U timesketch -d timesketch "
+                "-c 'SELECT id, username, active FROM \"user\";'",
+                "error",
+            )
+            log(f"  Underlying error: {auth_err}", "error")
+            log(traceback.format_exc(), "error")
+            return None
+
+        log("✓ Timesketch API connected (auth verified)", "success")
         return api
 
     except Exception as e:

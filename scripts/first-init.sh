@@ -356,27 +356,63 @@ wait_for_services() {
     # Create Timesketch user with retries
     local ts_user=$(read_config "['modules']['timesketch']['id']")
     local ts_pass=$(read_config "['modules']['timesketch']['password']")
+
+    # Force schema migration FIRST. Mirrors the fix in lib/modules.sh
+    # deploy_timesketch — `tsctl create-user` was racing the schema and
+    # silently failing while reporting success.
+    log_info "  Migrating Timesketch DB schema (tsctl db upgrade)..."
+    docker exec intact_timesketch_web tsctl db upgrade 2>&1 | tee -a "$LOG_FILE" || \
+        log_warn "  tsctl db upgrade returned non-zero — continuing, will verify table exists below"
+
+    # Wait for the postgres "user" table to be visible.
+    log_info "  Waiting for Timesketch 'user' table..."
+    local table_wait=0
+    while (( table_wait < 60 )); do
+        local has_table
+        has_table=$(docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -tAc \
+            "SELECT to_regclass('public.\"user\"');" 2>/dev/null | tr -d '[:space:]')
+        if [[ -n "$has_table" && "$has_table" != "NULL" ]]; then
+            log_success "  Timesketch 'user' table is present (${table_wait}s)"
+            break
+        fi
+        sleep 2
+        ((table_wait+=2))
+    done
+
     log_info "  Creating Timesketch user: $ts_user"
 
     local ts_retry=0
     local ts_created=false
+    local result=""
     while [[ $ts_retry -lt 5 ]]; do
-        local result=$(docker exec intact_timesketch_web tsctl create-user "$ts_user" --password "$ts_pass" 2>&1)
-        if [[ "$result" == *"created/updated"* ]]; then
-            # Ensure user is enabled (in case it was previously disabled)
-            docker exec intact_timesketch_web tsctl enable-user "$ts_user" >/dev/null 2>&1 || true
-            log_success "  Timesketch user '$ts_user' created"
-            ts_created=true
-            break
+        result=$(docker exec intact_timesketch_web tsctl create-user "$ts_user" --password "$ts_pass" 2>&1)
+        local rc=$?
+
+        # Trust tsctl ONLY when the DB row is actually present —
+        # `created/updated` stdout matches were a flaky proxy for DB
+        # state. Use verify_postgres_row from lib/common.sh.
+        if [[ $rc -eq 0 ]] || echo "$result" | grep -qi "already exists" || [[ "$result" == *"created/updated"* ]]; then
+            if verify_postgres_row intact_timesketch_postgres timesketch user "username='$ts_user'"; then
+                docker exec intact_timesketch_web tsctl enable-user "$ts_user" >/dev/null 2>&1 || true
+                log_success "  Timesketch user '$ts_user' created (verified in DB)"
+                ts_created=true
+                break
+            fi
+            log_info "  tsctl reported success but '$ts_user' is not in postgres yet — retrying"
         fi
+
         ((ts_retry++))
         log_info "  Retrying user creation... (attempt $ts_retry/5)"
-        sleep 3
+        sleep 5
     done
 
     if [[ "$ts_created" != "true" ]]; then
-        log_warn "  Failed to create Timesketch user after 5 attempts"
-        log_warn "  Manual creation: docker exec intact_timesketch_web tsctl create-user $ts_user --password <password>"
+        log_error "  Failed to create Timesketch user '$ts_user' — DB row absent after 5 attempts"
+        log_error "  Last tsctl output: $result"
+        log_error "  Manual fix: docker exec intact_timesketch_web tsctl create-user $ts_user --password <password>"
+        log_error "  Then verify:  docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c 'SELECT id, username FROM \"user\";'"
+        capture_diagnostic_logs "Timesketch user creation (first-init)" \
+            intact_timesketch_web intact_timesketch_postgres
     fi
 
     # Nginx

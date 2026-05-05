@@ -384,28 +384,70 @@ deploy_timesketch() {
     local ts_user=$(read_config "['modules']['timesketch']['id']")
     local ts_pass=$(read_config "['modules']['timesketch']['password']")
 
+    # STEP A — Force schema migration BEFORE creating the user.
+    # Background: previously `tsctl db upgrade` ran AFTER create-user,
+    # so the user table didn't fully exist when create-user tried to
+    # INSERT into it. tsctl exits 0 anyway, install reports SUCCESS,
+    # the user-row write is silently dropped. Running db upgrade here
+    # eliminates the race — create-user always sees the migrated
+    # schema. This was the actual root cause of the
+    # "[SUCCESS] TimeSketch user 'tenroot' ready" lie that broke a
+    # fresh install end-to-end.
+    log_info "  Migrating TimeSketch DB schema (tsctl db upgrade) before user creation..."
+    docker exec intact_timesketch_web tsctl db upgrade 2>&1 | tee -a "$LOG_FILE" || \
+        log_warn "  tsctl db upgrade returned non-zero — continuing, will verify table exists below"
+
+    # STEP B — Wait until the postgres "user" table actually exists.
+    # tsctl db upgrade should have created it, but the migration runs
+    # async to postgres' own startup; poll until the table is visible
+    # before any create-user attempts.
+    log_info "  Waiting for TimeSketch postgres 'user' table to materialize..."
+    local table_wait=0
+    local table_ready=false
+    while (( table_wait < 60 )); do
+        local has_table
+        has_table=$(docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -tAc \
+            "SELECT to_regclass('public.\"user\"');" 2>/dev/null | tr -d '[:space:]')
+        # to_regclass returns "user" when the table exists, empty/NULL when it doesn't.
+        if [[ -n "$has_table" && "$has_table" != "NULL" ]]; then
+            table_ready=true
+            log_success "  TimeSketch 'user' table is present (${table_wait}s)"
+            break
+        fi
+        sleep 2
+        ((table_wait+=2))
+    done
+    if [[ "$table_ready" != "true" ]]; then
+        log_error "  TimeSketch postgres 'user' table did not appear after migration"
+        log_error "  Manual diagnosis: docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c \"SELECT to_regclass('public.\\\"user\\\"');\""
+        capture_diagnostic_logs "TimeSketch DB migration" \
+            intact_timesketch_web intact_timesketch_postgres
+    fi
+
     log_info "  Creating TimeSketch user: ${ts_user}"
 
-    # Try user creation with retries
+    # STEP C — Now create the user. With migrations already applied
+    # this is no longer racing the schema. We still verify the row
+    # actually persisted before trusting tsctl's exit code (belt-and-
+    # suspenders — tsctl has been observed exiting 0 even when the
+    # write was rolled back by a transient).
     local ts_user_created=false
     local ts_retry=0
     local ts_max_retry=5
+    local ts_error=""
 
     while [[ $ts_retry -lt $ts_max_retry ]]; do
-        local ts_error=$(docker exec intact_timesketch_web tsctl create-user "${ts_user}" --password "${ts_pass}" 2>&1)
+        ts_error=$(docker exec intact_timesketch_web tsctl create-user "${ts_user}" --password "${ts_pass}" 2>&1)
         local ts_exit_code=$?
 
-        if [[ $ts_exit_code -eq 0 ]]; then
-            ts_user_created=true
-            break
-        fi
-
-        if echo "$ts_error" | grep -qi "already exists"; then
-            log_info "  TimeSketch user '${ts_user}' already exists"
-            # Enable user in case it was disabled
-            docker exec intact_timesketch_web tsctl enable-user "${ts_user}" >/dev/null 2>&1 || true
-            ts_user_created=true
-            break
+        # tsctl said it worked OR said the user already exists — either
+        # way, only believe it if the DB actually has the row.
+        if [[ $ts_exit_code -eq 0 ]] || echo "$ts_error" | grep -qi "already exists"; then
+            if verify_postgres_row intact_timesketch_postgres timesketch user "username='${ts_user}'"; then
+                ts_user_created=true
+                break
+            fi
+            log_info "  tsctl reported success but '${ts_user}' is not in postgres yet — retrying"
         fi
 
         ((ts_retry++))
@@ -416,9 +458,15 @@ deploy_timesketch() {
     done
 
     if [[ "$ts_user_created" == "true" ]]; then
-        # Ensure user is enabled
+        # STEP D — Enable + verify enable. enable-user can also silently
+        # no-op when the row was just written and the cache is stale.
         docker exec intact_timesketch_web tsctl enable-user "${ts_user}" >/dev/null 2>&1 || true
-        log_success "  TimeSketch user '${ts_user}' ready"
+        if verify_postgres_row intact_timesketch_postgres timesketch user "username='${ts_user}' AND active=true"; then
+            log_success "  TimeSketch user '${ts_user}' ready (verified active in DB)"
+        else
+            log_warn "  TimeSketch user '${ts_user}' exists but is not marked active — sketches/uploads may be denied"
+            log_warn "  Manual fix: docker exec intact_timesketch_web tsctl enable-user ${ts_user}"
+        fi
 
         # Enable DFIQ after successful deployment (requires db migration for schema)
         log_info "  Enabling DFIQ..."
@@ -465,7 +513,12 @@ deploy_timesketch() {
 
         track_module_success "TimeSketch"
     else
-        log_error "  TimeSketch user creation failed: ${ts_error}"
+        log_error "  TimeSketch user '${ts_user}' creation FAILED — DB row absent after ${ts_max_retry} attempts"
+        log_error "  Last tsctl output: ${ts_error}"
+        log_error "  Manual fix: docker exec intact_timesketch_web tsctl create-user ${ts_user} --password '<from config.yaml>'"
+        log_error "  Then verify:  docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c 'SELECT id, username FROM \"user\";'"
+        capture_diagnostic_logs "TimeSketch user creation" \
+            intact_timesketch_web intact_timesketch_postgres
         track_module_failure "TimeSketch"
         return 1
     fi
@@ -750,7 +803,26 @@ sys.exit(0 if ok else 1)
         return 0
     fi
 
-    log_success "  IRIS API key persisted to backend secrets table (iris.administrator.api_key)"
+    # Read-back verification — set_secret() can return 0 even when the
+    # write is rolled back (locked SQLite, transient I/O). Re-query
+    # via get_secret to confirm the value actually persisted, so a
+    # silent failure here doesn't surface as a runtime IRIS-API error
+    # weeks later.
+    local persisted
+    persisted=$(docker exec intact_backend python3 -c "
+import sys; sys.path.insert(0, '/app')
+from services.storage.secret_store import get_secret
+v = get_secret('iris.administrator.api_key')
+sys.stdout.write(v if v else '')
+" 2>/dev/null)
+
+    if [[ "$persisted" == "$api_key" ]]; then
+        log_success "  IRIS API key persisted to backend secrets table (iris.administrator.api_key) — verified"
+    else
+        log_error "  IRIS api_key set_secret() returned OK but the read-back didn't match"
+        log_error "  Manual fix: docker exec intact_backend python3 -c \"from services.storage.secret_store import set_secret; set_secret('iris.administrator.api_key', '<key>')\""
+        capture_diagnostic_logs "Backend secret write" intact_backend
+    fi
 }
 
 # ============================================================================
