@@ -19,10 +19,22 @@ A comprehensive security platform integrating Velociraptor EDR, ELK Stack, TimeS
 # 1. Install unzip
 sudo apt update && sudo apt install -y unzip
 
-# 2. Extract the project (assuming intact.zip is already transferred to server)
-unzip intact.zip
+# 2. Get the main branch ZIP from GitHub.
+#    The repo is PRIVATE. Two options:
+#
+#    (a) Download manually in your browser (recommended for most users):
+#        https://github.com/TenrootOrg/IntactAI  →  Code  →  Download ZIP
+#        Transfer IntactAI-main.zip to the server.
+#
+#    (b) Or curl with a GitHub Personal Access Token (PAT) that has
+#        repo-read access:
+#        curl -L -H "Authorization: token <YOUR_GITHUB_PAT>" \
+#          -o IntactAI-main.zip \
+#          https://github.com/TenrootOrg/IntactAI/archive/refs/heads/main.zip
 
-# 3. Enter directory
+# 3. Extract and rename to "intact"
+unzip IntactAI-main.zip
+mv IntactAI-main intact
 cd intact
 
 # 4. Edit configuration (set your IP/domain and passwords)
