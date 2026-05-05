@@ -219,6 +219,11 @@ pull_compose_with_retry() {
     local max_attempts=3
     local delays=(5 15 45)
     local attempt=1
+    # Track whether any earlier attempt failed, so a subsequent
+    # successful attempt can leave a "↳ resolved" breadcrumb in
+    # INSTALL_WARNINGS — operator sees inline that the warning is no
+    # longer actionable, instead of having to reason about it.
+    local had_failure=0
 
     while [[ $attempt -le $max_attempts ]]; do
         log_info "  Pulling images for ${module_name} (attempt ${attempt}/${max_attempts})..."
@@ -226,10 +231,15 @@ pull_compose_with_retry() {
                 grep -vE "^\s*[0-9a-f]{12} (Downloading|Extracting|Waiting|Download complete|Pull complete|Pulling fs layer) " >/dev/null; then
             # PIPESTATUS[0] is docker compose pull's exit code
             if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+                if (( had_failure > 0 )); then
+                    log_success "  ${module_name} pull succeeded on attempt ${attempt} (previous failure was transient)"
+                    INSTALL_WARNINGS+=("  ↳ resolved: ${module_name} pull succeeded on attempt ${attempt}")
+                fi
                 return 0
             fi
         fi
 
+        had_failure=1
         if [[ $attempt -lt $max_attempts ]]; then
             local delay=${delays[$((attempt - 1))]}
             log_warn "  ${module_name} pull attempt ${attempt} failed; retrying in ${delay}s..."
@@ -395,7 +405,7 @@ deploy_timesketch() {
     # fresh install end-to-end.
     log_info "  Migrating TimeSketch DB schema (tsctl db upgrade) before user creation..."
     docker exec intact_timesketch_web tsctl db upgrade 2>&1 | tee -a "$LOG_FILE" || \
-        log_warn "  tsctl db upgrade returned non-zero — continuing, will verify table exists below"
+        log_info "  tsctl db upgrade returned non-zero on first invocation (normal on a fresh schema); the table-exists poll below is authoritative"
 
     # STEP B — Wait until the postgres "user" table actually exists.
     # tsctl db upgrade should have created it, but the migration runs
@@ -728,13 +738,12 @@ deploy_iris() {
         track_module_success "IRIS"
     fi
 
-    # Persist the IRIS administrator's API key into the backend's secrets
-    # table so IRIS automation doesn't have to docker-exec into iris-db
-    # at runtime (which fails when the container name drifts, docker.sock
-    # isn't mounted, or the iris-db is briefly unhealthy). The key is
-    # never written to config.yaml or any export — it lives only in the
-    # backend's SQLite secrets table.
-    bootstrap_iris_api_key
+    # bootstrap_iris_api_key is intentionally NOT called here — it writes
+    # via `docker exec intact_backend …`, but Backend is deployed AFTER
+    # IRIS in start_services. Calling it here meant set_secret failed
+    # 100% of the time on fresh installs ("no such container") and the
+    # backend silently fell back to the slow runtime docker-exec lookup.
+    # The bootstrap now runs from start_services, after deploy_backend.
 }
 
 bootstrap_iris_api_key() {
@@ -1006,6 +1015,15 @@ start_services() {
     deploy_portainer
     echo ""
     deploy_backend
+    echo ""
+    # IRIS api_key bootstrap — runs HERE (not inside deploy_iris) because
+    # it writes into the backend container's SQLite secrets DB via
+    # `docker exec intact_backend …`. Calling it before deploy_backend
+    # meant intact_backend didn't exist yet and set_secret failed 100% of
+    # the time on fresh installs. The IRIS-DB read inside the function
+    # blocks until the admin row is populated, so it's safe to run here
+    # even if IRIS's own migrations are still finishing.
+    bootstrap_iris_api_key
     echo ""
     deploy_nginx
     echo ""

@@ -362,7 +362,7 @@ wait_for_services() {
     # silently failing while reporting success.
     log_info "  Migrating Timesketch DB schema (tsctl db upgrade)..."
     docker exec intact_timesketch_web tsctl db upgrade 2>&1 | tee -a "$LOG_FILE" || \
-        log_warn "  tsctl db upgrade returned non-zero — continuing, will verify table exists below"
+        log_info "  tsctl db upgrade returned non-zero on first invocation (normal on a fresh schema); the table-exists poll below is authoritative"
 
     # Wait for the postgres "user" table to be visible.
     log_info "  Waiting for Timesketch 'user' table..."

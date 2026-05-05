@@ -358,7 +358,19 @@ print_final_issues_report() {
     if (( n_w > 0 )); then
         echo ""
         echo -e "${YELLOW}WARNINGS:${NC}"
+        # Count "↳ resolved: …" breadcrumbs that pull_compose_with_retry
+        # and _pull_image_with_retry leave when a retry attempt succeeds
+        # after an earlier failure. Surface them as a one-line summary so
+        # the operator can tell transient retries apart from real issues
+        # at a glance.
+        local resolved_count=0
         local entry
+        for entry in "${INSTALL_WARNINGS[@]}"; do
+            [[ "$entry" == *"↳ resolved:"* ]] && ((resolved_count++))
+        done
+        if (( resolved_count > 0 )); then
+            echo -e "${YELLOW}  (${resolved_count} of these were transient and already auto-resolved on retry — shown below as ↳ entries)${NC}"
+        fi
         for entry in "${INSTALL_WARNINGS[@]}"; do
             echo "  $entry"
         done

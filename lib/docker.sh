@@ -336,11 +336,20 @@ _pull_image_with_retry() {
     local max_attempts=3
     local delay=5
     local attempt=1
+    # See pull_compose_with_retry — same "↳ resolved" breadcrumb pattern,
+    # so an operator scanning the end-of-install ATTENTION block can tell
+    # transient retries from terminal failures at a glance.
+    local had_failure=0
 
     while (( attempt <= max_attempts )); do
         if docker pull "$image" 2>> "$LOG_FILE"; then
+            if (( had_failure > 0 )); then
+                log_success "  $image pulled on attempt $attempt (previous failure was transient)"
+                INSTALL_WARNINGS+=("  ↳ resolved: $image pull succeeded on attempt $attempt")
+            fi
             return 0
         fi
+        had_failure=1
         if (( attempt < max_attempts )); then
             log_warn "  Pull failed for $image (attempt $attempt/$max_attempts); retrying in ${delay}s..."
             sleep "$delay"
