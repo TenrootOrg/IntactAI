@@ -15,6 +15,16 @@ from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 
 
+# Note: an earlier version of this module had _dedup_ual_aad_events() that
+# dropped UAL records whose RecordType was in {8, 9, 15} (AAD-flavoured),
+# on the theory that those events were redundant with Graph's
+# directoryAudits/signins. That helper hid those events from SIGMA and
+# from the UAL.persistence pre-detector — both of which depend on UAL data
+# to catch app-credential / persistence attacks. Dedup now happens at
+# *prompt-rendering* time inside analyzers._analyze_timeline, keyed on
+# Microsoft's own correlationId. SIGMA always sees the full data.
+
+
 # =============================================================================
 # Constants
 # =============================================================================
@@ -392,6 +402,9 @@ def collect_azure_logs(
                         if ual_result.get('skipped'):
                             log(f"{source_name} skipped: {ual_result.get('reason', 'Exchange Online not available')}", "info")
                         elif ual_result['success'] and ual_result['records']:
+                            # No collector-side dedup; SIGMA needs full data.
+                            # Dedup happens at prompt-rendering time keyed
+                            # on correlationId (analyzers._analyze_timeline).
                             normalized = normalize_logs(ual_result['records'], source_info.get('sigma_prefix', source))
                             collected_data[source_info['sigma_prefix']] = normalized
                             log(f"Collected {len(normalized)} records from {source_name}", "success")
@@ -787,6 +800,72 @@ def detect_source_type(sample_record: Dict) -> Optional[str]:
 # Data Normalization
 # =============================================================================
 
+def _graph_to_sigma_aliases(record: Dict, source_prefix: str) -> None:
+    """Add `properties.*` aliases so the public Sigma corpus matches our Graph data.
+
+    Public Azure Sigma rules (e.g. `azure_app_credential_added.yml`) match
+    fields like `properties.message`, `properties.category`,
+    `properties.identity`. Microsoft Graph's `auditLogs/directoryAudits`
+    and `auditLogs/signIns` endpoints return the same semantic data under
+    different field names (`activityDisplayName`, `category`,
+    `initiatedBy.user.userPrincipalName`, etc.).
+
+    Without this shim, the rules never fire on Graph data — which is
+    exactly the bug we hit on `azure_scan_1778062490900` where four
+    "Update application – Certificates and secrets management" events
+    were collected but no rule matched them.
+
+    This is additive: original fields are kept, only `properties.*` is
+    added. Generic to *any* attack pattern — works for any rule the
+    public corpus has.
+    """
+    if not isinstance(record, dict):
+        return
+
+    # Preserve any existing `properties` (some Graph endpoints already
+    # populate this for richer events).
+    props = dict(record.get('properties') or {})
+
+    if source_prefix == 'Azure.Audit':
+        # Directory audit log shape
+        if record.get('activityDisplayName') and 'message' not in props:
+            props['message'] = record['activityDisplayName']
+            props['operationName'] = record['activityDisplayName']
+        if record.get('category') and 'category' not in props:
+            props['category'] = record['category']
+        if record.get('result') and 'resultStatus' not in props:
+            props['resultStatus'] = record['result']
+        if record.get('operationType') and 'operationType' not in props:
+            props['operationType'] = record['operationType']
+        # Identity — Sigma rules use both `identity` and `initiatingUser`.
+        ib = record.get('initiatedBy') or {}
+        user = ib.get('user') or {}
+        upn = user.get('userPrincipalName')
+        if upn:
+            props.setdefault('identity', upn)
+            props.setdefault('initiatingUser', upn)
+        # Target resources pass-through (some rules walk these)
+        if record.get('targetResources') and 'targetResources' not in props:
+            props['targetResources'] = record['targetResources']
+
+    elif source_prefix == 'Azure.SignIn':
+        # Sign-in log shape — Sigma rules in cloud/azure/signinlogs/
+        for src_key in (
+            'userPrincipalName', 'userId', 'userDisplayName',
+            'appId', 'appDisplayName', 'clientAppUsed',
+            'ipAddress', 'conditionalAccessStatus',
+            'riskLevelDuringSignIn', 'riskState', 'riskLevelAggregated',
+            'status', 'deviceDetail', 'location',
+            'authenticationRequirement', 'authenticationProtocol',
+            'isInteractive', 'tokenIssuerType',
+        ):
+            if record.get(src_key) is not None and src_key not in props:
+                props[src_key] = record[src_key]
+
+    if props:
+        record['properties'] = props
+
+
 def normalize_logs(records: List[Dict], source_prefix: str) -> List[Dict]:
     """Normalize log records to standard format for SIGMA processing."""
     normalized = []
@@ -797,6 +876,11 @@ def normalize_logs(records: List[Dict], source_prefix: str) -> List[Dict]:
             '_original': record.copy()
         }
         norm_record.update(record)
+
+        # Add `properties.*` aliases so public Sigma rules can match Graph
+        # records. Only Azure.Audit and Azure.SignIn currently have
+        # mappings; others are unchanged.
+        _graph_to_sigma_aliases(norm_record, source_prefix)
 
         timestamp = extract_timestamp(record)
         if timestamp:

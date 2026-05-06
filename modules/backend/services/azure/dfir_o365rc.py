@@ -217,6 +217,35 @@ def collect_unified_audit_log(
     log_file = f"/mnt/host/output/{session_name}.log"
     output_file = f"/mnt/host/output/{session_name}.json"
 
+    # Decide cmdlet invocation flags. When the operator scoped the scan to
+    # specific users, push that filter to Microsoft instead of pulling the
+    # whole tenant and discarding most of it client-side.
+    #
+    # Get-UnifiedAuditLogPurview's -requestType is one-of:
+    #   Unfiltered | Operations | RecordTypes | FreeText | IPAddresses | UserIds
+    # Each requestType carries its own scope parameter (e.g. UserIds takes
+    # -UserIds, IPAddresses takes -IPAddresses). You can only pick ONE
+    # dimension per call — there's no combined "Targeted" mode (we tried).
+    # Strategy: prefer user filter when both users and IPs are set; IP filter
+    # otherwise; fall back to Unfiltered when neither is set.
+    target_ips = None
+    if azure_config and azure_config.get('target_ips'):
+        target_ips = azure_config.get('target_ips')
+
+    if target_users:
+        users_arr = ",".join(f"'{u}'" for u in target_users)
+        scope_clause = f"-requestType UserIds -UserIds @({users_arr})"
+        scope_label = f"users={','.join(target_users)}"
+    elif target_ips:
+        ips_arr = ",".join(f"'{ip}'" for ip in target_ips)
+        scope_clause = f"-requestType IPAddresses -IPAddresses @({ips_arr})"
+        scope_label = f"ips={','.join(target_ips)}"
+    else:
+        scope_clause = "-requestType Unfiltered"
+        scope_label = None
+
+    verbose_flag = "" if os.environ.get("INTACT_DFIR_VERBOSE") == "0" else "-Verbose"
+
     # Build the PowerShell command to run in the container.
     # We run the cmdlet in a background job and use Get-Content -Wait to stream
     # the log file to stdout in real-time. This ensures docker logs -f captures
@@ -227,7 +256,7 @@ def collect_unified_audit_log(
         f"  try {{ "
         f"    Import-Module DFIR-O365RC; "
         f"    \\$cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new('/mnt/cert/azure_cert.pfx', '', 'Exportable,PersistKeySet'); "
-        f"    Get-UnifiedAuditLogPurview -requestType Unfiltered -sessionName '{session_name}' -startDate '{ps_start}' -endDate '{ps_end}' -certificate \\$cert -appId '{app_id}' -tenant '{tenant}' -logFile \\$args[0] -outputFile '{output_file}' "
+        f"    Get-UnifiedAuditLogPurview {scope_clause} -sessionName '{session_name}' -startDate '{ps_start}' -endDate '{ps_end}' -certificate \\$cert -appId '{app_id}' -tenant '{tenant}' -logFile \\$args[0] -outputFile '{output_file}' {verbose_flag} *>&1 "
         f"  }} catch {{ "
         f"    Write-Host \"[FATAL ERROR] \$_ \"; "
         f"    throw \$_; "
@@ -259,10 +288,20 @@ def collect_unified_audit_log(
         f"Receive-Job -Id \\$jobId"
     )
 
-    if target_users:
-        log(f"Collecting UAL (all events, will filter for {', '.join(target_users)} client-side)", "info")
+    if scope_label:
+        log(
+            f"Collecting UAL via Purview (server-side filter: {scope_label}) "
+            f"- expected to be much faster than Unfiltered",
+            "info",
+        )
+        if target_users and target_ips:
+            log(
+                "Note: Purview UAL accepts only one filter dimension per call; "
+                "applying user filter (IP filter omitted in this run).",
+                "warning",
+            )
     else:
-        log("Collecting UAL (all events) via Purview API", "info")
+        log("Collecting UAL (all events, no user/IP scope) via Purview API", "info")
 
     # Run DFIR-O365RC in Docker container with live log streaming
     host_data_dir = f"{HOST_PATH}/data"
@@ -345,6 +384,30 @@ def collect_unified_audit_log(
         fatal_error_seen = False
         fatal_error_message = None  # Stores the exact container line that triggered the fatal error
 
+        # Recoverable patterns: errors that DFIR-O365RC's internal retry harness
+        # is allowed to recover from. We track them so we can emit a clear
+        # "↳ retry succeeded" line when the next forward-progress line arrives.
+        # Without this the operator sees ERROR ... ERROR ... and can't tell at
+        # a glance whether the run actually recovered or stayed stuck.
+        RECOVERABLE_ERROR_PATTERNS = (
+            'Authentication needed. Please call Connect-MgGraph',
+            'Query status check failed',
+            'Connection reset by peer',
+            'A task was canceled',
+        )
+        # Forward-progress markers — any of these after a recoverable error
+        # means we recovered. "succeeded" is the Purview job state, "Connected"
+        # is the MgGraph reconnect signal, "Records collected" is the EXO
+        # path's progress line.
+        RECOVERY_PATTERNS = (
+            'status "succeeded"',
+            'Connected to Microsoft Graph',
+            'Connected.',
+            'Records collected',
+            'Successfully retrieved',
+        )
+        last_recoverable_err = None  # the recoverable pattern we last saw
+
         while True:
             elapsed = time.time() - start_time
 
@@ -381,6 +444,26 @@ def collect_unified_audit_log(
                                 # Log everything including raw JSON - nothing is skipped
                                 log(f"[CONTAINER] {line}", "info")
                             last_log_time = time.time()
+
+                            # Recoverable-error / recovery tracking. A
+                            # recoverable error sets the flag; the next
+                            # forward-progress line clears it and announces
+                            # the recovery so the operator sees a clean
+                            # "ERROR -> resolved" pair instead of just ERROR.
+                            for pat in RECOVERABLE_ERROR_PATTERNS:
+                                if pat in line:
+                                    last_recoverable_err = pat
+                                    break
+                            if last_recoverable_err is not None:
+                                for pat in RECOVERY_PATTERNS:
+                                    if pat in line:
+                                        log(
+                                            f"  ↳ resolved: recovered from "
+                                            f"\"{last_recoverable_err}\"",
+                                            "success",
+                                        )
+                                        last_recoverable_err = None
+                                        break
 
                             # Detect fatal errors and kill immediately
                             if not fatal_error_seen:

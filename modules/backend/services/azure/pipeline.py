@@ -40,6 +40,35 @@ def _set_progress(run_id: str, pct: int) -> None:
             pass
 
 
+def _make_phase_timer(run_id: str):
+    """Build phase_start/phase_end helpers bound to a run_id.
+
+    Each phase_end call persists `time.monotonic() - start` onto the workflow
+    row's phase_timings dict. Helpers swallow exceptions so timing never breaks
+    the pipeline. If the same phase name is started twice without an end the
+    first start is silently overwritten — the timing dashboard would show only
+    the second run, but real phases never re-enter.
+    """
+    import time as _time
+
+    starts: Dict[str, float] = {}
+
+    def phase_start(name: str) -> None:
+        starts[name] = _time.monotonic()
+
+    def phase_end(name: str) -> None:
+        t0 = starts.pop(name, None)
+        if t0 is None or not run_id:
+            return
+        try:
+            from services.workflow_service import record_phase_timing
+            record_phase_timing(run_id, name, _time.monotonic() - t0)
+        except Exception as ex:
+            print(f"[PIPELINE] phase timing failed for {name}: {ex}", flush=True)
+
+    return phase_start, phase_end
+
+
 def _build_findings_report(blueprint: Dict, collected_data: Dict, findings: Dict, time_filter: Dict) -> str:
     """Build a structured markdown report listing findings without LLM analysis.
 
@@ -161,10 +190,13 @@ def run_azure_pipeline(
         'phases': {}
     }
 
+    phase_start, phase_end = _make_phase_timer(run_id)
+
     try:
         # =====================================================================
         # Phase 1: Validate Configuration
         # =====================================================================
+        phase_start("validation")
         # Log scan configuration summary
         bp_settings = blueprint.get('settings', {})
         target_users = options.get('target_users', [])
@@ -207,12 +239,14 @@ def run_azure_pipeline(
 
         result['phases']['validation'] = {'status': 'complete'}
         _set_progress(run_id, 10)
+        phase_end("validation")
 
         # =====================================================================
         # Phase 2: Collection
         # =====================================================================
         add_log_to_run(run_id, "[AZURE] Phase 2: Collecting logs from Azure...", "info")
         _set_progress(run_id, 15)
+        phase_start("collection")
 
         sources = bp_settings.get('sources', ['all'])
         time_range_days = bp_settings.get('time_range_days', 7)
@@ -316,7 +350,10 @@ def run_azure_pipeline(
                 add_log_to_run(run_id, "[AZURE] No events found in the selected time range.", "warning")
             result['status'] = 'completed'
             result['message'] = 'No data collected'
+            phase_end("collection")
             return result
+
+        phase_end("collection")
 
         from services.workflow_service import is_cancelled
         if is_cancelled(run_id):
@@ -346,6 +383,7 @@ def run_azure_pipeline(
         # =====================================================================
         add_log_to_run(run_id, "[AZURE] Phase 4: Running SIGMA detection rules...", "info")
         _set_progress(run_id, 65)
+        phase_start("detection")
 
         min_severity = options.get('min_severity') or bp_settings.get('min_severity', 'low')
         add_log_to_run(run_id, f"[AZURE] Minimum severity filter: {min_severity}+", "info")
@@ -358,14 +396,30 @@ def run_azure_pipeline(
             'status': 'complete',
             'rules_executed': detection_status.get('rules_count', 0),
             'total_findings': detection_status.get('total_findings', 0),
-            'findings_by_severity': detection_status.get('matches_by_severity', {})
+            'findings_by_severity': detection_status.get('matches_by_severity', {}),
+            'rule_tally': detection_status.get('rule_tally', {})
         }
+
+        # Persist per-rule tally onto the workflow row so the dashboard can
+        # render "Rule X fired N times" without re-parsing logs.
+        rule_tally = detection_status.get('rule_tally') or {}
+        if rule_tally:
+            try:
+                from services.workflow_service import record_sigma_rule_tally
+                record_sigma_rule_tally(run_id, rule_tally)
+            except Exception as ex:
+                print(f"[PIPELINE] sigma tally persist failed: {ex}", flush=True)
 
         add_log_to_run(
             run_id,
             f"[AZURE] SIGMA detection complete: {detection_status.get('total_findings', 0)} findings",
             "info"
         )
+
+        # One log line per fired rule so the operator sees the shape of
+        # detection without having to look at the raw findings dict.
+        for rname, rcount in sorted(rule_tally.items(), key=lambda kv: -kv[1]):
+            add_log_to_run(run_id, f"[AZURE]   {rname}: {rcount}", "info")
 
         # =====================================================================
         # Phase 4b: UAL Severity-Tagged Events as Pre-Detected Findings
@@ -471,6 +525,7 @@ def run_azure_pipeline(
         result['findings'] = findings
 
         _set_progress(run_id, 70)
+        phase_end("detection")
 
         if is_cancelled(run_id):
             return result
@@ -482,14 +537,19 @@ def run_azure_pipeline(
         if enable_llm and findings:
             add_log_to_run(run_id, "[AZURE] Phase 5: Running LLM analysis...", "info")
             _set_progress(run_id, 75)
+            phase_start("analysis")
 
             try:
-                # Analyze findings (not raw logs)
+                # Analyze findings (not raw logs).
+                # pipeline_kind="azure" enables the single-pass timeline mode
+                # for small runs — events here are chronological log entries,
+                # unlike the on-prem Velociraptor flow which keeps fan-out.
                 analysis_results = analyze_artifacts(
                     run_id=run_id,
                     all_results=findings,
                     llm_config=llm_config,
-                    anonymizer=options.get('anonymizer')
+                    anonymizer=options.get('anonymizer'),
+                    pipeline_kind="azure",
                 )
 
                 result['phases']['analysis'] = {
@@ -505,8 +565,11 @@ def run_azure_pipeline(
             except Exception as e:
                 add_log_to_run(run_id, f"[AZURE] LLM analysis failed: {e}", "error")
                 result['phases']['analysis'] = {'status': 'error', 'error': str(e)}
+            phase_end("analysis")
         else:
-            result['phases']['analysis'] = {'status': 'skipped', 'reason': 'LLM disabled or no findings'}
+            skip_reason = "LLM disabled" if not enable_llm else "no findings"
+            result['phases']['analysis'] = {'status': 'skipped', 'reason': skip_reason}
+            add_log_to_run(run_id, f"[AZURE] LLM analysis skipped: {skip_reason}", "warning")
 
         result['analysis'] = analysis_results
         _set_progress(run_id, 90)
@@ -520,6 +583,7 @@ def run_azure_pipeline(
         if findings:
             add_log_to_run(run_id, "[AZURE] Phase 6: Generating reports...", "info")
             _set_progress(run_id, 95)
+            phase_start("reporting")
 
             try:
                 if enable_llm and analysis_results:
@@ -563,15 +627,32 @@ def run_azure_pipeline(
             except Exception as e:
                 add_log_to_run(run_id, f"[AZURE] Report generation failed: {e}", "error")
                 result['phases']['reporting'] = {'status': 'error', 'error': str(e)}
+            phase_end("reporting")
         else:
-            result['phases']['reporting'] = {'status': 'skipped'}
+            result['phases']['reporting'] = {'status': 'skipped', 'reason': 'no findings'}
+            add_log_to_run(run_id, "[AZURE] Report generation skipped: no findings", "warning")
 
         # =====================================================================
         # Phase 7: IRIS Import (if configured)
         # =====================================================================
         iris_config = options.get('iris_config')
-        if iris_config and iris_config.get('enabled'):
+        # Pinpoint *why* IRIS didn't run so the operator can read the workflow
+        # log and tell at a glance whether they need to fix config, an
+        # unreachable URL, a missing key, or just enable the toggle.
+        if not iris_config:
+            iris_skip_reason = "iris_config not provided in scan payload"
+        elif not iris_config.get('enabled'):
+            iris_skip_reason = "iris_config.enabled is false"
+        elif not iris_config.get('url'):
+            iris_skip_reason = "iris_config.url missing"
+        elif not iris_config.get('api_key'):
+            iris_skip_reason = "iris_config.api_key missing"
+        else:
+            iris_skip_reason = None
+
+        if iris_skip_reason is None:
             add_log_to_run(run_id, "[AZURE] Phase 7: Importing to IRIS...", "info")
+            phase_start("iris")
 
             try:
                 # Extract timeline events for IRIS
@@ -597,8 +678,10 @@ def run_azure_pipeline(
             except Exception as e:
                 add_log_to_run(run_id, f"[AZURE] IRIS import failed: {e}", "error")
                 result['phases']['iris'] = {'status': 'error', 'error': str(e)}
+            phase_end("iris")
         else:
-            result['phases']['iris'] = {'status': 'skipped'}
+            result['phases']['iris'] = {'status': 'skipped', 'reason': iris_skip_reason}
+            add_log_to_run(run_id, f"[AZURE] IRIS import skipped: {iris_skip_reason}", "warning")
 
         # =====================================================================
         # Complete

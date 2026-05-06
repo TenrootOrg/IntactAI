@@ -1763,6 +1763,10 @@ sudo ./velociraptor service start</code></pre>
                      azureTargetUsers: '',
                      azureTargetIPs: '',
                      azurePivotMode: false,
+                     // 'targeted' (default) hunts a known user/IP set with
+                     // server-side filters; 'tenant_wide' pulls every event
+                     // in the time window. Tenant-wide is the slow path.
+                     azureScopeMode: 'targeted',
                      async checkAzureStatus() {
                          try {
                              const res = await fetch('/api/azure/status');
@@ -1788,6 +1792,16 @@ sudo ./velociraptor service start</code></pre>
                              } else {
                                  timeFilter = { type: 'relative', value: this.azureTimeFilter };
                              }
+                             const targetUsers = this.azureTargetUsers.split(',').map(u => u.trim()).filter(u => u);
+                             const targetIps = this.azureTargetIPs.split(',').map(ip => ip.trim()).filter(ip => ip);
+                             // Targeted scope without picks is a no-op the
+                             // backend would reject; surface that here so the
+                             // operator doesn't burn a click + redirect.
+                             if (this.azureScopeMode === 'targeted' && targetUsers.length === 0 && targetIps.length === 0) {
+                                 alert('Targeted scope requires at least one user or IP.\n\nEither fill in Target Users / Target IPs, or switch to Tenant-wide hunt.');
+                                 this.azureRunning = false;
+                                 return;
+                             }
                              const res = await fetch('/api/azure/scan', {
                                  method: 'POST',
                                  headers: { 'Content-Type': 'application/json' },
@@ -1796,8 +1810,9 @@ sudo ./velociraptor service start</code></pre>
                                      time_filter: timeFilter,
                                      enable_llm: this.azureEnableLLM,
                                      min_severity: this.azureMinSeverity,
-                                     target_users: this.azureTargetUsers.split(',').map(u => u.trim()).filter(u => u),
-                                     target_ips: this.azureTargetIPs.split(',').map(ip => ip.trim()).filter(ip => ip),
+                                     scope_mode: this.azureScopeMode,
+                                     target_users: targetUsers,
+                                     target_ips: targetIps,
                                      pivot_mode: this.azurePivotMode
                                  })
                              });
@@ -1919,8 +1934,30 @@ sudo ./velociraptor service start</code></pre>
                             </template>
                         </div>
 
-                        <!-- Identity Filters -->
+                        <!-- Scope Mode (targeted vs tenant-wide) -->
                         <div class="p-4 bg-gray-900/50 rounded-lg border border-gray-700 space-y-3">
+                            <label class="block text-sm font-medium text-blue-400">Scope</label>
+                            <div class="flex gap-6">
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" name="azure-scope" value="targeted" x-model="azureScopeMode" class="text-blue-500">
+                                    <span class="text-white text-sm">Targeted hunt</span>
+                                    <span class="text-xs text-gray-500">(specific users / IPs — fast)</span>
+                                </label>
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" name="azure-scope" value="tenant_wide" x-model="azureScopeMode" class="text-blue-500">
+                                    <span class="text-white text-sm">Tenant-wide hunt</span>
+                                    <span class="text-xs text-gray-500">(everyone in the window)</span>
+                                </label>
+                            </div>
+                            <template x-if="azureScopeMode === 'tenant_wide'">
+                                <div class="text-xs text-yellow-400 leading-relaxed">
+                                    ⚠️ Tenant-wide hunts on a busy tenant may take 15-30 min and produce 10x more events for the analyzer to process. Recommended only for periodic baselines or when an attacker's identity is unknown.
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- Identity Filters (hidden in tenant-wide mode) -->
+                        <div x-show="azureScopeMode === 'targeted'" class="p-4 bg-gray-900/50 rounded-lg border border-gray-700 space-y-3">
                             <label class="block text-sm font-medium text-blue-400">Identity Filters</label>
                             <div>
                                 <label class="block text-xs text-gray-400 mb-1">Target Users <span class="text-gray-600">(comma-separated emails)</span></label>

@@ -209,6 +209,69 @@ def update_run_status(run_id, status, progress=None, error=None, details=None):
 
         save_workflow(workflow)
 
+
+def record_phase_timing(run_id, phase, seconds):
+    """Append a per-phase elapsed time (seconds, float) to the workflow row.
+
+    Stored as a dict {phase: seconds} so the dashboard can render
+    "Collection: 11m, Detection: 3m, Analysis: 5m" without re-parsing logs.
+    """
+    with _get_run_log_lock(run_id):
+        workflow = file_get_workflow(run_id)
+        if not workflow:
+            return
+        timings = workflow.get("phase_timings") or {}
+        if not isinstance(timings, dict):
+            timings = {}
+        # Sum if the phase ran more than once; rare but harmless
+        timings[phase] = round(timings.get(phase, 0.0) + float(seconds), 2)
+        workflow["phase_timings"] = timings
+        workflow["updated_at"] = datetime.now().isoformat()
+        save_workflow(workflow)
+
+
+def record_llm_metrics(run_id, *, calls=0, input_tokens=0, output_tokens=0, cost_usd=0.0, model=None):
+    """Accumulate LLM usage onto the workflow row.
+
+    Each invocation adds to running totals. The analyzer calls this per LLM call
+    (see analyzers.call_llm) so the final totals reflect the whole pipeline.
+    """
+    with _get_run_log_lock(run_id):
+        workflow = file_get_workflow(run_id)
+        if not workflow:
+            return
+        m = workflow.get("llm_metrics") or {}
+        if not isinstance(m, dict):
+            m = {}
+        m["calls"] = m.get("calls", 0) + int(calls)
+        m["input_tokens"] = m.get("input_tokens", 0) + int(input_tokens)
+        m["output_tokens"] = m.get("output_tokens", 0) + int(output_tokens)
+        m["cost_usd"] = round(m.get("cost_usd", 0.0) + float(cost_usd), 6)
+        if model:
+            # Track the most-recently-used model. Pipelines that mix models can
+            # still see the per-call records in logs.
+            m["model"] = model
+        workflow["llm_metrics"] = m
+        workflow["updated_at"] = datetime.now().isoformat()
+        save_workflow(workflow)
+
+
+def record_sigma_rule_tally(run_id, tally):
+    """Set the per-SIGMA-rule hit counts on the workflow row.
+
+    `tally` is a dict {rule_name: hit_count}. Replaces (does not merge) — the
+    SIGMA stage runs once per workflow.
+    """
+    if not isinstance(tally, dict):
+        return
+    with _get_run_log_lock(run_id):
+        workflow = file_get_workflow(run_id)
+        if not workflow:
+            return
+        workflow["sigma_rule_tally"] = tally
+        workflow["updated_at"] = datetime.now().isoformat()
+        save_workflow(workflow)
+
 def cleanup_orphan_workflows():
     """Mark workflows as failed if they've been running for more than 10 hours"""
     now = datetime.now()

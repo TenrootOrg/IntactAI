@@ -121,7 +121,11 @@ def run_sigma_rules(
         'rules_count': len(rules),
         'logs_count': sum(len(v) for v in logs.values()),
         'sources_processed': list(logs.keys()),
-        'matches_by_severity': {'informational': 0, 'low': 0, 'medium': 0, 'high': 0, 'critical': 0}
+        'matches_by_severity': {'informational': 0, 'low': 0, 'medium': 0, 'high': 0, 'critical': 0},
+        # rule_tally maps rule_title -> hit_count. Surfaces "rule X fired N times"
+        # to the dashboard so the operator sees the shape of detection at a
+        # glance instead of just a flat total.
+        'rule_tally': {}
     }
 
     findings = {}
@@ -153,6 +157,8 @@ def run_sigma_rules(
                 finding = create_finding(rule, match)
                 findings[source_key].append(finding)
                 status['matches_by_severity'][rule_level] += 1
+
+            status['rule_tally'][rule_name] = status['rule_tally'].get(rule_name, 0) + len(rule_matches)
 
     status['execution_end'] = datetime.utcnow().isoformat()
     status['total_findings'] = sum(len(v) for v in findings.values())

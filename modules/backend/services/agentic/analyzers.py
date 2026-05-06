@@ -14,6 +14,106 @@ from services.agentic.constants import (
     ONLINE_LLM_TIMEOUT_SECONDS,
 )
 
+
+# =============================================================================
+# LLM cost table (USD per 1M tokens). Approximate; refresh periodically.
+# Lookup is best-effort — unknown models log $0 cost but still record token
+# counts so the operator gets the volume picture at minimum.
+# =============================================================================
+_LLM_COST_PER_MTOK = {
+    # Anthropic (Sonnet 4 / Opus 4 family)
+    "claude-opus": (15.00, 75.00),
+    "claude-sonnet": (3.00, 15.00),
+    "claude-haiku": (0.80, 4.00),
+    "opus": (15.00, 75.00),
+    "sonnet": (3.00, 15.00),
+    "haiku": (0.80, 4.00),
+    # OpenAI
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4.1": (2.00, 8.00),
+    "gpt-4.1-mini": (0.40, 1.60),
+    # Common OpenRouter-style ids (longest-match wins via the helper below)
+    "anthropic/claude-opus": (15.00, 75.00),
+    "anthropic/claude-sonnet": (3.00, 15.00),
+    "anthropic/claude-haiku": (0.80, 4.00),
+    "openai/gpt-4o-mini": (0.15, 0.60),
+    "openai/gpt-4o": (2.50, 10.00),
+    "google/gemini-2.5-pro": (1.25, 10.00),
+    "google/gemini-2.5-flash": (0.075, 0.30),
+}
+
+
+def _estimate_llm_cost(model: str, in_tokens: int, out_tokens: int) -> float:
+    """Approximate USD cost for the given model + token volume.
+
+    Pricing is per-million-tokens. Unknown models return 0.0 (the operator
+    still sees the token volume in the metrics). Picks the longest matching
+    prefix so e.g. `anthropic/claude-sonnet-4-6` resolves to the
+    `anthropic/claude-sonnet` row.
+    """
+    if not model:
+        return 0.0
+    key = model.lower()
+    best = None
+    for k in _LLM_COST_PER_MTOK:
+        if key.startswith(k.lower()) and (best is None or len(k) > len(best)):
+            best = k
+    if best is None:
+        return 0.0
+    cin, cout = _LLM_COST_PER_MTOK[best]
+    return (in_tokens / 1_000_000.0) * cin + (out_tokens / 1_000_000.0) * cout
+
+
+def _record_llm_usage(run_id, provider, model, response):
+    """Extract usage tokens from a provider response and persist to workflow row.
+
+    Each provider exposes usage on a different attribute path; we normalise
+    here. Failures swallowed — telemetry never breaks the pipeline.
+    """
+    if not run_id:
+        return
+    in_tokens = 0
+    out_tokens = 0
+    try:
+        if provider == 'claude':
+            usage = getattr(response, 'usage', None)
+            if usage is not None:
+                in_tokens = int(getattr(usage, 'input_tokens', 0) or 0)
+                out_tokens = int(getattr(usage, 'output_tokens', 0) or 0)
+        elif provider in ('openai', 'openrouter'):
+            usage = getattr(response, 'usage', None)
+            if usage is not None:
+                in_tokens = int(getattr(usage, 'prompt_tokens', 0) or 0)
+                out_tokens = int(getattr(usage, 'completion_tokens', 0) or 0)
+        elif provider == 'gemini':
+            usage = getattr(response, 'usage_metadata', None)
+            if usage is not None:
+                in_tokens = int(getattr(usage, 'prompt_token_count', 0) or 0)
+                out_tokens = int(getattr(usage, 'candidates_token_count', 0) or 0)
+        elif provider == 'ollama':
+            # Ollama returns dicts with prompt_eval_count / eval_count
+            if isinstance(response, dict):
+                in_tokens = int(response.get('prompt_eval_count', 0) or 0)
+                out_tokens = int(response.get('eval_count', 0) or 0)
+    except Exception as ex:
+        print(f"[ANALYZER] usage extraction failed ({provider}): {ex}", flush=True)
+        return
+
+    cost = _estimate_llm_cost(model or '', in_tokens, out_tokens)
+    try:
+        from services.workflow_service import record_llm_metrics
+        record_llm_metrics(
+            run_id,
+            calls=1,
+            input_tokens=in_tokens,
+            output_tokens=out_tokens,
+            cost_usd=cost,
+            model=model,
+        )
+    except Exception as ex:
+        print(f"[ANALYZER] record_llm_metrics failed: {ex}", flush=True)
+
 # =============================================================================
 # Model Aliases - Friendly names that resolve to latest model IDs
 # =============================================================================
@@ -226,7 +326,7 @@ def _strip_metadata_fields(rows):
     return out
 
 
-def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None, finding_meta=None, log_func=None):
+def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None, finding_meta=None, log_func=None, run_id=None):
     """Analyze a single artifact with LLM. Returns (artifact, summary, error) tuple.
 
     `log_func` is the workflow-log callback `(msg, level)` from the
@@ -405,7 +505,7 @@ A short narrative the analyst can paste into a ticket. NO recap of every finding
 Now produce the JSON findings + brief prose summary, following all HARD RULES above."""
 
     try:
-        summary = call_llm(user_prompt, system_prompt, llm_config)
+        summary = call_llm(user_prompt, system_prompt, llm_config, run_id=run_id)
         return (artifact, summary, None)
     except Exception as e:
         return (artifact, f"Analysis failed: {str(e)}", str(e))
@@ -531,14 +631,333 @@ You have a list of per-artifact findings already triaged by junior analysts. You
 """
 
     try:
-        return call_llm(synthesis_user_prompt, synthesis_system_prompt, llm_config)
+        return call_llm(synthesis_user_prompt, synthesis_system_prompt, llm_config, run_id=run_id)
     except Exception as e:  # noqa: BLE001
         log(f"[LLM] Synthesis call failed: {e}", "warning")
         return None
 
 
-def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func=None):
-    """Run LLM analysis on each artifact's results using parallel execution"""
+def _extract_event_timestamp(row):
+    """Best-effort timestamp extraction from a finding row.
+
+    Findings come from heterogeneous sources (SIGMA, UAL pre-detected, state
+    snapshots) and use different keys. Returns ISO string or empty string.
+    State-snapshot rows have no event time and sort first.
+    """
+    if not isinstance(row, dict):
+        return ""
+    for k in ("_timestamp", "_finding_time", "createdDateTime", "activityDateTime",
+              "CreationTime", "TimeGenerated", "@timestamp"):
+        v = row.get(k)
+        if isinstance(v, str) and v:
+            return v
+    inner = row.get("matched_record")
+    if isinstance(inner, dict):
+        for k in ("CreationTime", "createdDateTime", "activityDateTime", "@timestamp"):
+            v = inner.get(k)
+            if isinstance(v, str) and v:
+                return v
+    return ""
+
+
+def _correlation_id(row):
+    """Extract Microsoft's canonical correlation identifier from a row.
+
+    Used for dedup at prompt-rendering time. The Graph and UAL collectors
+    both pass the same logical event through with the same correlationId
+    (Microsoft's own join key) — that's how we drop duplicates without a
+    fragile RecordType / Operation allowlist.
+
+    Returns None if the row carries no correlation field. Such rows are
+    NEVER dropped (we'd rather show duplicates than hide events).
+    """
+    if not isinstance(row, dict):
+        return None
+    inner = row.get("matched_record") if isinstance(row.get("matched_record"), dict) else {}
+    for key in ("correlationId", "CorrelationId", "correlation_id"):
+        v = row.get(key) or inner.get(key)
+        if v:
+            return v
+    return None
+
+
+# When the same correlationId appears in multiple sources, prefer the richer
+# Graph schema (Azure.Audit) over UAL's flatter Office 365 management API
+# shape. Higher number wins.
+_TIMELINE_SOURCE_PRIORITY = {
+    "Azure.Audit": 5,
+    "Azure.SignIn": 4,
+    "Azure.UnifiedAudit": 3,
+    "Azure.SignIn.Pivot": 2,
+}
+
+
+def _row_source(row):
+    """Best-effort source-name extraction (used for dedup priority)."""
+    if not isinstance(row, dict):
+        return ""
+    return (
+        row.get("_source")
+        or (row.get("matched_record") or {}).get("_source")
+        or ""
+    )
+
+
+def _is_state_snapshot(row):
+    """A row is a state snapshot when the pipeline tagged it as such.
+
+    Only the Azure pipeline sets `_state_snapshot=True` (currently for
+    `Azure.CAPolicy` and `Azure.Federation` — their config dumps, not
+    timeline events). Forensic on-prem rows never carry this flag, so the
+    state-vs-event split degrades cleanly to "everything is an event" for
+    other callers.
+    """
+    if not isinstance(row, dict):
+        return False
+    return bool(row.get("_state_snapshot"))
+
+
+def _analyze_timeline(run_id, all_results, llm_config, anonymizer, log):
+    """Single-pass analysis for small Azure runs.
+
+    Three rendering disciplines that the previous version got wrong:
+
+    1. **State snapshots are not events.** Rows tagged `_state_snapshot=True`
+       (e.g. CA policy / federation config dumps) get rendered in a separate
+       "STATE AT SCAN TIME" section, with their `lastModifiedDateTime` (when
+       the config last changed) explicitly distinguished from the scan time
+       (when we observed it). This stops the LLM confabulating "policy
+       disabled at <scan time>" as if it were an attacker action.
+
+    2. **Dedup by correlationId, not by source.** When the same logical
+       event appears in both `Azure.Audit` and `Azure.UnifiedAudit` (each
+       carries Microsoft's canonical `correlationId`), keep the highest-
+       fidelity copy. Generic and attack-pattern-agnostic — no allowlist
+       of "interesting" Operations.
+
+    3. **System prompt explicitly forbids treating state as events.**
+       Backed up by structural separation in the prompt.
+
+    Returns the narrative string or None on failure.
+    """
+    # ---- Step 1: flatten + bucket into state-snapshots vs. timed events
+    state_rows = []
+    event_rows = []
+    aggregated_mitre = []
+    severity_counts = {"informational": 0, "low": 0, "medium": 0, "high": 0, "critical": 0}
+
+    for artifact, rows in all_results.items():
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sev = (row.get("_severity") or row.get("severity") or "low").lower()
+            if sev in severity_counts:
+                severity_counts[sev] += 1
+            for t in row.get("mitre_attack", []) or []:
+                if isinstance(t, dict) and t.get("id"):
+                    aggregated_mitre.append(t["id"])
+            if _is_state_snapshot(row):
+                state_rows.append((artifact, row))
+            else:
+                event_rows.append((_extract_event_timestamp(row), artifact, row))
+
+    if not state_rows and not event_rows:
+        return None
+
+    # ---- Step 2: mask everything in one pass for consistent anonymization
+    if anonymizer:
+        try:
+            all_dicts = [r for _, r in state_rows] + [r for _, _, r in event_rows]
+            masked = anonymizer.mask_data(all_dicts)
+            ns = len(state_rows)
+            state_rows = [(art, m) for (art, _), m in zip(state_rows, masked[:ns])]
+            event_rows = [(ts, art, m) for (ts, art, _), m in zip(event_rows, masked[ns:])]
+        except Exception as ex:
+            log(f"[LLM] Timeline masking failed (continuing unmasked): {ex}", "warning")
+
+    # ---- Step 3: dedup events by correlationId (keep highest-priority source)
+    deduped = []
+    seen = {}  # corr_id -> index into the deduped list
+    for ts, artifact, row in event_rows:
+        cid = _correlation_id(row)
+        if not cid:
+            deduped.append((ts, artifact, row))
+            continue
+        pri = _TIMELINE_SOURCE_PRIORITY.get(_row_source(row), 1)
+        if cid in seen:
+            existing_idx = seen[cid]
+            existing_pri = _TIMELINE_SOURCE_PRIORITY.get(
+                _row_source(deduped[existing_idx][2]), 1)
+            if pri > existing_pri:
+                deduped[existing_idx] = (ts, artifact, row)
+        else:
+            seen[cid] = len(deduped)
+            deduped.append((ts, artifact, row))
+
+    dropped = len(event_rows) - len(deduped)
+    if dropped > 0:
+        log(f"[LLM] Timeline: deduped {dropped} events by correlationId")
+
+    # Sort timed events chronologically (empty timestamps float to top)
+    deduped.sort(key=lambda x: x[0])
+
+    # ---- Step 4: render the STATE section
+    state_lines = []
+    for artifact, row in state_rows:
+        rec = row.get("matched_record") if isinstance(row.get("matched_record"), dict) else row
+        # Pull state-friendly identifiers
+        name = (
+            rec.get("displayName")
+            or rec.get("name")
+            or row.get("rule_title")
+            or row.get("_description")
+            or "(unnamed)"
+        )
+        # State entries have a real "when last changed" field in
+        # `lastModifiedDateTime` (Graph) or `_last_modified` (custom). NOT
+        # the scan time — that's `_finding_time`, which we deliberately
+        # strip from this rendering.
+        last_mod = (
+            rec.get("lastModifiedDateTime")
+            or rec.get("_last_modified")
+            or rec.get("modifiedDateTime")
+            or "(unknown)"
+        )
+        sev = (row.get("_severity") or row.get("severity") or "?").lower()
+        descr = row.get("_description") or row.get("rule_description") or ""
+        # Render a concise summary; keep the raw record for fact-checking
+        rec_str = json.dumps(
+            {k: v for k, v in rec.items() if k not in ("_finding_time", "_state_snapshot")},
+            default=str,
+        )
+        if len(rec_str) > 800:
+            rec_str = rec_str[:800] + "...(truncated)"
+        state_lines.append(
+            f"- [{artifact}] [{sev}] {name} (last modified: {last_mod}) — {descr} :: {rec_str}"
+        )
+
+    # ---- Step 5: render the EVENT timeline
+    event_lines = []
+    for ts, artifact, row in deduped:
+        ts_label = ts or "(no-timestamp)"
+        sev = (row.get("_severity") or row.get("severity") or "?").lower()
+        desc = row.get("_description") or row.get("rule_title") or row.get("rule_description") or ""
+        rec = row.get("matched_record")
+        if rec is not None:
+            rec_str = json.dumps(rec, default=str)
+        else:
+            rec_str = json.dumps({k: v for k, v in row.items() if not k.startswith("_")},
+                                 default=str)
+        if len(rec_str) > 1000:
+            rec_str = rec_str[:1000] + "...(truncated)"
+        event_lines.append(f"{ts_label} [{sev}] [{artifact}] {desc} :: {rec_str}")
+
+    # Defensive cap so a degenerate run can't blow the LLM context window
+    truncated_note = []
+    if len(event_lines) > 600:
+        truncated_note.append(f"... ({len(deduped) - 600} more events truncated)")
+        event_lines = event_lines[:600]
+
+    # ---- Step 6: pick the macro DFIR playbook
+    macro_body = ""
+    macro_name = ""
+    try:
+        from services.agentic.skills import select_macro_skill, get_macro_body
+        artifact_names = list(all_results.keys())
+        macro_name = select_macro_skill(
+            aggregated_mitre=aggregated_mitre,
+            severity_counts=severity_counts,
+            artifact_names=artifact_names,
+        ) or ""
+        macro_body = get_macro_body(macro_name) if macro_name else ""
+    except Exception as ex:
+        log(f"[LLM] Timeline: skill select failed (continuing without macro): {ex}", "warning")
+
+    if macro_name:
+        log(f"[LLM] Timeline: using macro '{macro_name}'")
+
+    # Optional model upgrade for the timeline pass. Operators that want
+    # Sonnet-class quality on the single analytic call (vs cheaper Haiku for
+    # fan-out) can set agentic.timeline_model in their LLM config. Logged so
+    # the operator sees which model actually ran.
+    timeline_model = (llm_config.get('agentic', {}) or {}).get('timeline_model')
+    if timeline_model:
+        log(f"[LLM] Timeline: using model override '{timeline_model}'")
+
+    # ---- Step 7: build the prompt with explicit state-vs-event discipline
+    state_section = (
+        "\n## STATE AT SCAN TIME (point-in-time observations, NOT events)\n"
+        "These are configuration snapshots, not things that happened during the timeline.\n"
+        "Each entry shows when the config was *last modified* — that is the only real\n"
+        "timestamp on these rows. The scan time is when we OBSERVED the state, not when\n"
+        "it changed.\n\n"
+        + "\n".join(state_lines)
+        if state_lines else
+        "\n## STATE AT SCAN TIME\n(no state snapshots in this run)\n"
+    )
+
+    event_section = (
+        "\n## CHRONOLOGICAL EVENT TIMELINE\n"
+        "Each line: `<timestamp> [<severity>] [<artifact>] <description> :: <record>`.\n"
+        "These ARE things that happened in time order. Use them to build the chain.\n\n"
+        + "\n".join(event_lines + truncated_note)
+        if event_lines else
+        "\n## CHRONOLOGICAL EVENT TIMELINE\n(no time-anchored events in this run)\n"
+    )
+
+    system_prompt = f"""You are a senior DFIR lead writing a single coherent investigation report.
+
+DISCIPLINE:
+- The input has TWO sections: state snapshots (current config) and a chronological event timeline.
+- State entries describe how things are CURRENTLY configured. They are NOT events. Do NOT narrate them as if they happened during the timeline. The "last modified" field is when the config last changed; the scan time is when we observed it.
+- Events have real timestamps. Tell the story in time order. Connect events that share actors / IPs / app IDs / target resources.
+- If a state observation is *relevant* to the events (e.g. "MFA policy is currently disabled, which would explain how the bypass succeeded"), call that out as context — but never as a chained event with a fabricated event time.
+- Stay strictly grounded. Don't invent threat actor names, tools, or activity. If a connection looks plausible but not certain, mark it as an inference with confidence.
+- If the timeline shows nothing actually suspicious, say so plainly. A short honest narrative beats a padded one.
+
+## DOMAIN PLAYBOOK
+{macro_body}
+"""
+
+    user_prompt = f"""## RUN CONTEXT
+- Time-anchored events: {len(deduped)}
+- State snapshots: {len(state_rows)}
+- Severity rollup: {json.dumps(severity_counts)}
+- Distinct MITRE techniques observed: {sorted(set(aggregated_mitre))[:40]}
+- Artifacts merged: {sorted(all_results.keys())}
+{state_section}
+{event_section}
+
+## YOUR DELIVERABLE
+1. **Executive narrative** (≤300 words): what happened in time order, anchored on real event timestamps. Reference state observations where they explain the events, but never as chained events with their own event times.
+2. **Identified chain(s)**: bullet list. Each chain: a 1-line label + the events that compose it (cite by timestamp + artifact).
+3. **Confidence**: low / medium / high with one-line justification.
+4. **Top 3 actions for the SOC**: ranked, each with a single sentence of "why".
+5. **Calibration check**: 1-2 sentences on what would invalidate this narrative.
+"""
+
+    try:
+        return call_llm(user_prompt, system_prompt, llm_config,
+                        run_id=run_id, model_override=timeline_model)
+    except Exception as e:  # noqa: BLE001
+        log(f"[LLM] Timeline call failed: {e}", "warning")
+        return None
+
+
+def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func=None,
+                      pipeline_kind="agentic"):
+    """Run LLM analysis on each artifact's results using parallel execution.
+
+    `pipeline_kind` tells the analyzer what shape the data has:
+      - "azure":   chronological log events (signins, audit, UAL). Eligible
+                   for the single timeline pass when small.
+      - "agentic": forensic artifacts from Velociraptor (registry parses,
+                   browser histories, autoruns, etc). NOT chronological;
+                   always fan out per-artifact. This is the default so
+                   existing on-prem callers keep their behavior unchanged.
+    """
     from services.workflow_service import add_log_to_run
 
     def log(msg, level="info"):
@@ -552,6 +971,40 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
     if not artifacts_list:
         return summaries
 
+    # ---- Adaptive strategy (Azure pipeline only) ----
+    # When the merged event volume is small enough to fit in one LLM context,
+    # do a single time-sorted pass instead of fanning out per-artifact. The
+    # fan-out's "synthesis" pass only sees per-artifact summaries (titles +
+    # severities), so cross-event correlations like "MFA disabled 11 minutes
+    # before the credential was planted" are invisible to it. A single
+    # timeline pass lets the LLM see every event with its real timestamp and
+    # narrate the chain directly. Threshold tunable via
+    # llm_config.agentic.timeline_threshold; 0 disables timeline mode.
+    #
+    # Gated to pipeline_kind="azure" because forensic artifacts (the on-prem
+    # agentic flow) aren't a chronological event stream — registry/browser
+    # data render badly as a timeline. Velociraptor scans always fan out.
+    total_rows = sum(len(rows) for rows in all_results.values())
+    timeline_threshold = int(llm_config.get('agentic', {}).get('timeline_threshold', 500) or 0)
+    if pipeline_kind == "azure" and 0 < total_rows <= timeline_threshold:
+        log(
+            f"[LLM] Small run ({total_rows} rows <= {timeline_threshold}); "
+            f"running single timeline pass instead of {len(artifacts_list)}-artifact fan-out"
+        )
+        timeline_text = _analyze_timeline(run_id, all_results, llm_config, anonymizer, log)
+        if timeline_text:
+            summaries["__timeline__"] = timeline_text
+            # Keep per-artifact keys present so downstream report code that
+            # iterates summaries finds an entry for each rule. The placeholder
+            # tells the renderer to refer to the timeline narrative.
+            for artifact in artifacts_list:
+                summaries.setdefault(artifact, "(see __timeline__ for the cross-artifact narrative)")
+            _log_llm_totals(run_id, log)
+            return summaries
+        # Timeline pass failed — fall through to fan-out
+        log("[LLM] Timeline pass returned empty; falling back to per-artifact fan-out", "warning")
+
+    # ---- Fan-out (one LLM call per artifact) ----
     # Get max concurrent requests from config (default: 5)
     max_concurrent = llm_config.get('agentic', {}).get('max_concurrent_requests', 5)
     log(f"[LLM] Starting parallel analysis with {max_concurrent} concurrent requests")
@@ -576,7 +1029,7 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
             log(f"[LLM] Queued {artifact} ({len(rows)} rows) for analysis")
             future = executor.submit(
                 analyze_single_artifact, artifact, rows, llm_config,
-                anonymizer, finding_meta, log,
+                anonymizer, finding_meta, log, run_id,
             )
             futures[future] = artifact
 
@@ -607,7 +1060,36 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
             summaries["__synthesis__"] = synthesis
             log(f"[LLM] Cross-artifact synthesis added ({len(synthesis)} chars)")
 
+    # Surface running totals for the operator scanning the workflow log.
+    # The dashboard reads the same llm_metrics dict from the workflow row.
+    _log_llm_totals(run_id, log)
+
     return summaries
+
+
+def file_get_workflow_for_metrics(run_id):
+    """Lazy import to avoid a circular import at module load time."""
+    from services.file_storage_service import get_workflow as _get
+    return _get(run_id)
+
+
+def _log_llm_totals(run_id, log):
+    """Emit one `[LLM] Totals: ...` line summarising the run's LLM spend.
+
+    Centralised so timeline-pass and fan-out paths can both call it without
+    risk of double-printing. Quiet if no LLM calls happened.
+    """
+    try:
+        wf = file_get_workflow_for_metrics(run_id)
+        m = (wf or {}).get("llm_metrics") or {}
+        if m.get("calls"):
+            log(
+                f"[LLM] Totals: {m['calls']} calls, "
+                f"{m.get('input_tokens', 0):,} in / {m.get('output_tokens', 0):,} out, "
+                f"~${m.get('cost_usd', 0.0):.4f} ({m.get('model', '?')})"
+            )
+    except Exception as ex:
+        print(f"[ANALYZER] llm totals log failed: {ex}", flush=True)
 
 
 def validate_llm_config(config):
@@ -638,8 +1120,16 @@ def validate_llm_config(config):
             )
 
 
-def call_llm(prompt, system_prompt, config):
-    """Call the configured LLM provider"""
+def call_llm(prompt, system_prompt, config, run_id=None, model_override=None):
+    """Call the configured LLM provider.
+
+    `run_id` is optional; when provided, per-call token usage is accumulated
+    onto the workflow row's llm_metrics dict via record_llm_metrics.
+
+    `model_override` is optional; when set, replaces the configured model
+    for THIS call only. Used by the single-pass timeline mode to spend a
+    bit more on a stronger model since it only fires once per run.
+    """
     agentic_config = config.get('agentic', {})
     mode = agentic_config.get('llm_mode', 'online')
 
@@ -649,12 +1139,18 @@ def call_llm(prompt, system_prompt, config):
     timeout = agentic_config.get('ollama_timeout', OLLAMA_TIMEOUT_SECONDS)
 
     if mode == 'online':
-        return _call_llm_online(prompt, system_prompt, agentic_config.get('online_llm', {}), max_tokens)
+        provider_config = dict(agentic_config.get('online_llm', {}))
+        if model_override:
+            provider_config['model'] = model_override
+        return _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id)
     else:
-        return _call_llm_offline(prompt, system_prompt, agentic_config.get('offline_llm', {}), context_size, timeout)
+        provider_config = dict(agentic_config.get('offline_llm', {}))
+        if model_override:
+            provider_config['model'] = model_override
+        return _call_llm_offline(prompt, system_prompt, provider_config, context_size, timeout, run_id)
 
 
-def _call_llm_online(prompt, system_prompt, provider_config, max_tokens):
+def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=None):
     """Call Claude or other online LLM"""
     provider = provider_config.get('provider', 'claude')
     api_key = provider_config.get('api_key', '')
@@ -698,6 +1194,7 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens):
             system=system_prompt,
             messages=[{"role": "user", "content": prompt}]
         ))
+        _record_llm_usage(run_id, 'claude', model, response)
         return response.content[0].text
     elif provider == 'openai':
         import openai
@@ -712,6 +1209,7 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens):
             max_tokens=max_tokens,
             temperature=0.1
         ))
+        _record_llm_usage(run_id, 'openai', model, response)
         return response.choices[0].message.content
     elif provider == 'openrouter':
         import openai
@@ -730,6 +1228,7 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens):
             max_tokens=max_tokens,
             temperature=0.1
         ))
+        _record_llm_usage(run_id, 'openrouter', model, response)
         return response.choices[0].message.content
     elif provider == 'gemini':
         import google.generativeai as genai
@@ -744,12 +1243,13 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens):
             ),
             request_options={'timeout': ONLINE_LLM_TIMEOUT_SECONDS},
         ))
+        _record_llm_usage(run_id, 'gemini', model, response)
         return response.text
     else:
         raise ValueError(f"Unsupported online provider: {provider}")
 
 
-def _call_llm_offline(prompt, system_prompt, provider_config, context_size, timeout):
+def _call_llm_offline(prompt, system_prompt, provider_config, context_size, timeout, run_id=None):
     """Call Ollama or other local LLM"""
     provider = provider_config.get('provider', 'ollama')
     model = provider_config.get('model', 'llama3.3:70b')
@@ -770,6 +1270,8 @@ def _call_llm_offline(prompt, system_prompt, provider_config, context_size, time
             timeout=timeout
         )
         response.raise_for_status()
-        return response.json().get('response', '')
+        body = response.json()
+        _record_llm_usage(run_id, 'ollama', model, body)
+        return body.get('response', '')
     else:
         raise ValueError(f"Unsupported offline provider: {provider}")

@@ -149,6 +149,20 @@ def start_scan():
     else:
         blueprint_display = str(blueprint_id)
 
+    # scope_mode: "targeted" (default) requires target_users or target_ips, runs
+    # the fast server-side-filtered UAL path. "tenant_wide" pulls every event in
+    # the window — for periodic baselines or unknown-attacker hunts.
+    target_users = data.get('target_users', []) or []
+    target_ips = data.get('target_ips', []) or []
+    scope_mode = (data.get('scope_mode') or "targeted").lower()
+    if scope_mode not in ("targeted", "tenant_wide"):
+        return jsonify({"error": f"Invalid scope_mode: {scope_mode!r}. Use 'targeted' or 'tenant_wide'."}), 400
+    if scope_mode == "targeted" and not (target_users or target_ips):
+        return jsonify({
+            "error": "scope_mode='targeted' requires at least one target_user or target_ip. "
+                     "Pass scope_mode='tenant_wide' to hunt across the whole tenant."
+        }), 400
+
     run_id = create_automation_run(
         automation_type="azure_scan",
         name=f"Azure Scan: {blueprint_display}",
@@ -156,8 +170,9 @@ def start_scan():
             "trigger": "manual",
             "blueprint": blueprint_id,
             "mode": "online",
-            "target_users": data.get('target_users', []),
-            "target_ips": data.get('target_ips', []),
+            "scope_mode": scope_mode,
+            "target_users": target_users,
+            "target_ips": target_ips,
         }
     )
     update_run_status(run_id, "running", progress=5)
@@ -210,11 +225,19 @@ def start_scan():
                 'time_filter': data.get('time_filter'),
                 'min_severity': data.get('min_severity', 'medium'),
                 'iris_config': data.get('iris_config'),
-                'target_users': data.get('target_users', []),
-                'target_ips': data.get('target_ips', []),
+                'scope_mode': scope_mode,
+                'target_users': target_users,
+                'target_ips': target_ips,
                 'pivot_mode': data.get('pivot_mode', False),
                 'anonymizer': None
             }
+            add_log_to_run(
+                run_id,
+                f"[AZURE] Scope: {scope_mode}"
+                + (f" (users={','.join(target_users)})" if target_users else "")
+                + (f" (ips={','.join(target_ips)})" if target_ips else ""),
+                "info",
+            )
 
             result = run_azure_pipeline(
                 run_id=run_id,
@@ -413,6 +436,21 @@ def get_run_status(run_id):
 
         run_data = _azure_runs[run_id]
 
+        # Pull observability fields from the persisted workflow row (the
+        # in-memory _azure_runs dict tracks pipeline state, not these).
+        phase_timings = None
+        llm_metrics = None
+        sigma_rule_tally = None
+        try:
+            from services import get_automation_run as _get_workflow
+            wf = _get_workflow(run_id)
+            if wf:
+                phase_timings = wf.get('phase_timings')
+                llm_metrics = wf.get('llm_metrics')
+                sigma_rule_tally = wf.get('sigma_rule_tally')
+        except Exception:
+            pass
+
         return jsonify({
             'run_id': run_id,
             'status': run_data.get('status'),
@@ -420,7 +458,10 @@ def get_run_status(run_id):
             'phases': run_data.get('phases', {}),
             'start_time': run_data.get('start_time'),
             'end_time': run_data.get('end_time'),
-            'error': run_data.get('error')
+            'error': run_data.get('error'),
+            'phase_timings': phase_timings,
+            'llm_metrics': llm_metrics,
+            'sigma_rule_tally': sigma_rule_tally,
         })
 
     except Exception as e:
