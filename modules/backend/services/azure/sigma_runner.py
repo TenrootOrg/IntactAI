@@ -27,18 +27,14 @@ def load_azure_rules(
     categories: Optional[List[str]] = None
 ) -> List[Dict]:
     """
-    Load SIGMA rules for Azure/M365 from the rules directory, plus any
-    Microsoft Azure-Sentinel rules the operator has dropped into the
-    manual-install Sentinel rules directory.
+    Load SIGMA rules for Azure/M365 from the rules directory.
 
     Args:
         rule_dirs: Custom rule directories (default: Azure + M365 from SigmaHQ)
         categories: Filter by categories (e.g., ['authentication', 'privilege_escalation'])
 
     Returns:
-        List of parsed SIGMA rules as dicts. Sentinel rules carry an
-        `_intact_rule_kind` tag (point_event | aggregate | baseline) so
-        the runner can filter them based on scan scope.
+        List of parsed SIGMA rules as dicts
     """
     if rule_dirs is None:
         rule_dirs = [AZURE_RULES_PATH, M365_RULES_PATH]
@@ -66,17 +62,6 @@ def load_azure_rules(
                             rules.append(rule)
                     except Exception as e:
                         print(f"[SIGMA] Warning: Failed to load {rule_path}: {e}")
-
-    # Append Microsoft Azure-Sentinel rules if the operator has populated
-    # the manual-install directory. Sentinel rules come pre-tagged with
-    # `_intact_rule_kind` and `_intact_source: "sentinel"`.
-    try:
-        from .sentinel_rules import load_sentinel_rules
-        sentinel = load_sentinel_rules()
-        if sentinel:
-            rules.extend(sentinel)
-    except Exception as ex:
-        print(f"[SIGMA] Sentinel loader failed (non-fatal): {ex}", flush=True)
 
     print(f"[SIGMA] Loaded {len(rules)} Azure/M365 detection rules")
     return rules
@@ -115,8 +100,7 @@ def parse_yaml_simple(rule_path: str) -> Optional[Dict]:
 def run_sigma_rules(
     logs: Dict[str, List[Dict]],
     rules: Optional[List[Dict]] = None,
-    min_level: str = 'low',
-    scope_mode: str = 'tenant_wide'
+    min_level: str = 'low'
 ) -> Tuple[Dict[str, List[Dict]], Dict[str, Any]]:
     """
     Execute SIGMA rules against collected logs.
@@ -125,37 +109,12 @@ def run_sigma_rules(
         logs: Dict mapping source names to list of log records
         rules: List of SIGMA rules (loaded if not provided)
         min_level: Minimum severity level ('informational', 'low', 'medium', 'high', 'critical')
-        scope_mode: 'targeted' or 'tenant_wide'. When 'targeted', rules
-            classified as 'aggregate' or 'baseline' are skipped — the data
-            window is too narrow for them to produce meaningful findings
-            and they'd just clutter the rule run.
 
     Returns:
         Tuple of (findings dict, execution status)
     """
     if rules is None:
         rules = load_azure_rules()
-
-    # Filter out aggregate/baseline rules in targeted mode. Generic over the
-    # whole rule corpus (SigmaHQ rules don't carry _intact_rule_kind so they
-    # default to point_event and run in both modes; Sentinel rules carry the
-    # tag from the loader).
-    skipped_by_scope = 0
-    if scope_mode == 'targeted':
-        kept = []
-        for r in rules:
-            kind = (r or {}).get('_intact_rule_kind', 'point_event')
-            if kind in ('aggregate', 'baseline'):
-                skipped_by_scope += 1
-                continue
-            kept.append(r)
-        if skipped_by_scope:
-            print(
-                f"[SIGMA] Skipping {skipped_by_scope} aggregate/baseline rules "
-                f"in targeted scope (rerun with scope_mode=tenant_wide to include them)",
-                flush=True,
-            )
-        rules = kept
 
     status = {
         'execution_start': datetime.utcnow().isoformat(),
@@ -166,9 +125,7 @@ def run_sigma_rules(
         # rule_tally maps rule_title -> hit_count. Surfaces "rule X fired N times"
         # to the dashboard so the operator sees the shape of detection at a
         # glance instead of just a flat total.
-        'rule_tally': {},
-        'scope_mode': scope_mode,
-        'rules_skipped_by_scope': skipped_by_scope,
+        'rule_tally': {}
     }
 
     findings = {}

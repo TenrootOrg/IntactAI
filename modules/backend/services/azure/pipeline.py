@@ -248,34 +248,6 @@ def run_azure_pipeline(
         _set_progress(run_id, 15)
         phase_start("collection")
 
-        # ---- ROADtools tenant-graph gather, in parallel with O365RC. ----
-        # The graph is independent of event collection (different APIs,
-        # different PowerShell sessions), so we spawn it now and join in
-        # phase 4d. On runs where O365RC stalls (the common case), this
-        # adds zero wall-clock cost. On clean runs the cold-cache cost
-        # is ~30-120s; warm cache (within 24h) is ~0s.
-        import threading as _threading
-        _road_result = {"db_path": None, "available": False, "skipped_reason": None}
-
-        def _gather_roadtools():
-            try:
-                from . import roadtools as _rt
-                avail = _rt.is_available()
-                if not avail['available']:
-                    _road_result["skipped_reason"] = avail['message']
-                    return
-                _road_result["available"] = True
-                _road_result["db_path"] = _rt.gather(
-                    tenant_id=azure_config.get('tenant_id', ''),
-                    app_id=azure_config.get('client_id', ''),
-                    log_func=lambda msg, level="info": add_log_to_run(run_id, msg, level),
-                )
-            except Exception as ex:
-                _road_result["skipped_reason"] = f"ROADtools thread raised: {ex}"
-
-        _road_thread = _threading.Thread(target=_gather_roadtools, daemon=True)
-        _road_thread.start()
-
         sources = bp_settings.get('sources', ['all'])
         time_range_days = bp_settings.get('time_range_days', 7)
 
@@ -415,12 +387,9 @@ def run_azure_pipeline(
 
         min_severity = options.get('min_severity') or bp_settings.get('min_severity', 'low')
         add_log_to_run(run_id, f"[AZURE] Minimum severity filter: {min_severity}+", "info")
-        # Pass scope_mode so sigma_runner skips aggregate/baseline rules in
-        # targeted mode (data window too narrow for them to fire).
         findings, detection_status = run_sigma_rules(
             logs=collected_data,
-            min_level=min_severity,
-            scope_mode=options.get('scope_mode', 'tenant_wide'),
+            min_level=min_severity
         )
 
         result['phases']['detection'] = {
@@ -562,96 +531,6 @@ def run_azure_pipeline(
             return result
 
         # =====================================================================
-        # Phase 4d: Blast-radius enrichment (ROADtools-backed, optional)
-        # =====================================================================
-        # Wait for the ROADtools graph (started in phase 2). If the gather
-        # finished cleanly, query for each finding's actor and target and
-        # attach a `_blast_radius` dict per finding bucket. The LLM and
-        # report layers consume this for "blast radius" framing.
-        # Failure modes: prereq not installed (no docker pull), gather
-        # failed, query degraded — all logged and the pipeline continues
-        # without enrichment.
-        phase_start("enrichment")
-        try:
-            _road_thread.join(timeout=120)
-            if _road_thread.is_alive():
-                add_log_to_run(
-                    run_id,
-                    "[ROAD] Graph gather still running after 120s; skipping enrichment for this run",
-                    "warning",
-                )
-            elif not _road_result.get("available"):
-                reason = _road_result.get("skipped_reason") or "ROADtools unavailable"
-                add_log_to_run(run_id, f"[ROAD] Skipping blast-radius: {reason}", "info")
-            elif not _road_result.get("db_path"):
-                add_log_to_run(run_id, "[ROAD] Graph gather did not produce a db; skipping", "info")
-            else:
-                from . import roadtools as _rt
-
-                # Collect actor UPNs and target appIds/objectIds from findings
-                actor_upns = set()
-                target_app_ids = set()
-                target_app_oids = set()
-                for bucket_name, bucket_rows in (findings or {}).items():
-                    for row in bucket_rows or []:
-                        if not isinstance(row, dict):
-                            continue
-                        rec = row.get('matched_record') if isinstance(row.get('matched_record'), dict) else row
-                        # Actor: initiatedBy.user.userPrincipalName (Graph audit shape)
-                        ib = (rec.get('initiatedBy') or {}) if isinstance(rec, dict) else {}
-                        user = ib.get('user') or {}
-                        upn = user.get('userPrincipalName')
-                        if upn:
-                            actor_upns.add(upn)
-                        # Some sign-in shapes carry UPN at top level
-                        if isinstance(rec, dict):
-                            top_upn = rec.get('userPrincipalName')
-                            if top_upn:
-                                actor_upns.add(top_upn)
-                        # Targets: targetResources[*].id / displayName / type
-                        for tr in (rec.get('targetResources') or []) if isinstance(rec, dict) else []:
-                            if not isinstance(tr, dict):
-                                continue
-                            t_id = tr.get('id')
-                            t_type = (tr.get('type') or '').lower()
-                            if t_id and t_type in ('application', 'serviceprincipal'):
-                                # tr.id is usually an objectId for these types
-                                target_app_oids.add(t_id)
-
-                if actor_upns or target_app_ids or target_app_oids:
-                    blast = _rt.query_blast_radius(
-                        db_path=_road_result["db_path"],
-                        actor_upns=sorted(actor_upns),
-                        target_app_ids=sorted(target_app_ids),
-                        target_app_object_ids=sorted(target_app_oids),
-                    )
-                    # Attach the SAME blast dict to every finding bucket so the
-                    # analyzer can see it once. Cheaper than per-row attachment
-                    # and the LLM reads it as a single "## BLAST RADIUS CONTEXT"
-                    # block.
-                    result['blast_radius'] = blast
-
-                    # Brief summary line so the operator sees what got computed
-                    n_actors_with_role = blast.get('summary', {}).get('actors_with_role', 0)
-                    n_high_risk = blast.get('summary', {}).get('targets_with_high_risk_perm', 0)
-                    add_log_to_run(
-                        run_id,
-                        f"[ROAD] Blast radius: {len(blast.get('actors',{}))} actor(s), "
-                        f"{len(blast.get('targets',{}))} target(s); "
-                        f"{n_actors_with_role} actor(s) hold admin roles, "
-                        f"{n_high_risk} target(s) have high-risk permissions",
-                    )
-                else:
-                    add_log_to_run(
-                        run_id,
-                        "[ROAD] No actors/targets identified in findings; skipping blast-radius query",
-                        "info",
-                    )
-        except Exception as ex:
-            add_log_to_run(run_id, f"[ROAD] Enrichment phase raised: {ex}", "warning")
-        phase_end("enrichment")
-
-        # =====================================================================
         # Phase 5: LLM Analysis (if enabled)
         # =====================================================================
         analysis_results = {}
@@ -665,16 +544,12 @@ def run_azure_pipeline(
                 # pipeline_kind="azure" enables the single-pass timeline mode
                 # for small runs — events here are chronological log entries,
                 # unlike the on-prem Velociraptor flow which keeps fan-out.
-                # extra_context carries blast-radius facts from ROADtools
-                # (when available) so the LLM can prioritize remediation by
-                # tenant reach rather than just observed events.
                 analysis_results = analyze_artifacts(
                     run_id=run_id,
                     all_results=findings,
                     llm_config=llm_config,
                     anonymizer=options.get('anonymizer'),
                     pipeline_kind="azure",
-                    extra_context={"blast_radius": result.get("blast_radius")} if result.get("blast_radius") else None,
                 )
 
                 result['phases']['analysis'] = {
@@ -724,8 +599,7 @@ def run_azure_pipeline(
                             'tenant_id': azure_config.get('tenant_id', ''),
                             'time_filter': options.get('time_filter', {}),
                             'sources': list(collected_data.keys()),
-                        },
-                        blast_radius=result.get('blast_radius'),
+                        }
                     )
                 else:
                     # Structured findings list (no LLM tokens spent)
@@ -889,12 +763,9 @@ def run_azure_on_existing(
         add_log_to_run(run_id, "[AZURE] Running SIGMA detection rules...", "info")
 
         min_severity = options.get('min_severity', 'low')
-        # Offline-uploaded data is treated as tenant_wide (we don't know
-        # what scope the operator pulled the upload at).
         findings, detection_status = run_sigma_rules(
             logs=uploaded_data,
-            min_level=min_severity,
-            scope_mode=options.get('scope_mode', 'tenant_wide'),
+            min_level=min_severity
         )
 
         result['phases']['detection'] = {
