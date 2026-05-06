@@ -134,7 +134,8 @@ CRITICAL RULES:
 
 
 def generate_azure_report(run_id, blueprint, collected_data, findings,
-                          analysis_results, llm_config, scan_metadata):
+                          analysis_results, llm_config, scan_metadata,
+                          blast_radius=None):
     """Generate Azure-specific security assessment report.
 
     Args:
@@ -145,6 +146,10 @@ def generate_azure_report(run_id, blueprint, collected_data, findings,
         analysis_results: Dict of rule_name -> LLM analysis markdown
         llm_config: LLM configuration
         scan_metadata: Dict with tenant_id, time_filter, sources, etc.
+        blast_radius: Optional dict from ROADtools enrichment (Round 3).
+            When present, renders a `## BLAST RADIUS` section in the
+            technical report listing each actor's roles + owned apps and
+            each target app's effective permissions.
 
     Returns:
         Dict with 'executive' and 'technical' report markdown strings
@@ -271,15 +276,86 @@ The per-rule analyses have ALREADY been done. Your job is to write a SHORT, accu
     try:
         tech_body = call_llm(tech_prompt, AZURE_REPORT_SYSTEM_PROMPT, llm_config)
         appendix = _build_artifact_appendix(analysis_results)
-        reports['technical'] = header + tech_body + appendix
+        blast_section = _build_blast_radius_section(blast_radius)
+        reports['technical'] = header + tech_body + blast_section + appendix
         add_log_to_run(run_id, "[Report] Azure Technical Report complete", "success")
     except Exception as e:
         add_log_to_run(run_id, f"[Report] Technical Report failed: {e}", "error")
         # Fallback: include the artifact briefs directly so the user still sees something
         appendix = _build_artifact_appendix(analysis_results)
-        reports['technical'] = header + f"Synthesis generation failed: {e}\n" + appendix
+        blast_section = _build_blast_radius_section(blast_radius)
+        reports['technical'] = header + f"Synthesis generation failed: {e}\n" + blast_section + appendix
 
     return reports
+
+
+def _build_blast_radius_section(blast_radius) -> str:
+    """Render the ROADtools blast-radius dict as a markdown section.
+
+    Returns empty string when no enrichment was produced (prereq missing,
+    gather failed, or no actors/targets to query).
+    """
+    if not blast_radius or not isinstance(blast_radius, dict):
+        return ""
+    actors = blast_radius.get("actors") or {}
+    targets = blast_radius.get("targets") or {}
+    if not actors and not targets:
+        return ""
+
+    lines = [
+        "",
+        "---",
+        "",
+        "## BLAST RADIUS",
+        "",
+        "*Configuration snapshot from the Entra tenant graph (ROADtools). "
+        "These are current-state observations of what the actor and target "
+        "objects can reach — not events that occurred during the scan window.*",
+        "",
+    ]
+
+    if actors:
+        lines.append("### Actors")
+        lines.append("")
+        for upn, info in actors.items():
+            roles = info.get("role_memberships") or []
+            owns = info.get("owns_apps") or []
+            lines.append(f"**`{upn}`**")
+            if roles:
+                lines.append(f"- Admin roles held: {', '.join(roles)}")
+            else:
+                lines.append("- Admin roles held: *(none)*")
+            if owns:
+                names = ", ".join(f"`{a.get('displayName','?')}` (`{a.get('appId','?')}`)" for a in owns[:10])
+                more = "" if len(owns) <= 10 else f" + {len(owns)-10} more"
+                lines.append(f"- Other apps owned ({len(owns)}): {names}{more}")
+            else:
+                lines.append("- Other apps owned: *(none)*")
+            lines.append("")
+
+    if targets:
+        lines.append("### Targets")
+        lines.append("")
+        for key, info in targets.items():
+            name = info.get("displayName") or "(unnamed)"
+            perms = info.get("permissions") or []
+            others = info.get("other_owners") or []
+            lines.append(f"**`{name}`** (`{key}`)")
+            if perms:
+                lines.append(f"- Effective permissions ({len(perms)}):")
+                for p in perms[:30]:
+                    lines.append(
+                        f"  - `{p.get('scope','?')}` ({p.get('type','?')}) on `{p.get('resource','?')}`"
+                    )
+                if len(perms) > 30:
+                    lines.append(f"  - … {len(perms) - 30} more")
+            else:
+                lines.append("- Effective permissions: *(none enumerated)*")
+            if others:
+                lines.append(f"- Other owners: {', '.join(others)}")
+            lines.append("")
+
+    return "\n".join(lines)
 
 
 def _build_artifact_appendix(analysis_results: dict) -> str:

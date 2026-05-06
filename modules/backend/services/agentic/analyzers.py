@@ -717,7 +717,7 @@ def _is_state_snapshot(row):
     return bool(row.get("_state_snapshot"))
 
 
-def _analyze_timeline(run_id, all_results, llm_config, anonymizer, log):
+def _analyze_timeline(run_id, all_results, llm_config, anonymizer, log, extras=None):
     """Single-pass analysis for small Azure runs.
 
     Three rendering disciplines that the previous version got wrong:
@@ -921,6 +921,60 @@ DISCIPLINE:
 {macro_body}
 """
 
+    # Blast-radius context from ROADtools (optional, Azure-only). The
+    # Azure pipeline plumbs this through `extras["blast_radius"]`. When
+    # present, it tells the LLM "for the actor X, here are the OTHER apps
+    # they own; for the target app Y, here are its tenant-wide permissions"
+    # — so the executive summary can prioritize remediation by reach, not
+    # just by what was observed.
+    blast_section = ""
+    if extras and isinstance(extras.get("blast_radius"), dict):
+        br = extras["blast_radius"]
+        actors_by_upn = br.get("actors", {}) or {}
+        targets_by_id = br.get("targets", {}) or {}
+        lines = []
+        if actors_by_upn:
+            lines.append("**Actors**:")
+            for upn, info in actors_by_upn.items():
+                roles = info.get("role_memberships") or []
+                owns = info.get("owns_apps") or []
+                role_str = ", ".join(roles) if roles else "(no admin role memberships found)"
+                owns_str = (
+                    f"{len(owns)} other app(s): " + ", ".join(
+                        f"{a.get('displayName','?')}" for a in owns[:5]
+                    )
+                ) if owns else "(no other owned apps)"
+                lines.append(f"- `{upn}` — roles: {role_str}; ownership: {owns_str}")
+        if targets_by_id:
+            lines.append("\n**Targets**:")
+            for key, info in targets_by_id.items():
+                name = info.get("displayName") or key
+                perms = info.get("permissions") or []
+                perm_strs = []
+                for p in perms[:15]:
+                    perm_strs.append(f"{p.get('scope','?')} ({p.get('type','?')} on {p.get('resource','?')})")
+                more = "" if len(perms) <= 15 else f" + {len(perms)-15} more"
+                others = info.get("other_owners") or []
+                others_str = (
+                    f"; other owners: {', '.join(others[:5])}" + ("" if len(others) <= 5 else f" + {len(others)-5} more")
+                ) if others else ""
+                lines.append(
+                    f"- `{name}` ({key}) — permissions: "
+                    f"{', '.join(perm_strs) if perm_strs else '(none enumerated)'}{more}"
+                    f"{others_str}"
+                )
+        if lines:
+            blast_section = (
+                "\n## BLAST RADIUS CONTEXT (from ROADtools tenant graph — current state)\n"
+                "Use this to PRIORITIZE remediation by reach. A backdoored app with\n"
+                "tenant-wide Mail.ReadWrite is materially worse than one with no\n"
+                "permissions, even when the audit-log evidence looks identical.\n"
+                "These are configuration facts, not events — do NOT narrate them as\n"
+                "things that happened during the timeline.\n\n"
+                + "\n".join(lines)
+                + "\n"
+            )
+
     user_prompt = f"""## RUN CONTEXT
 - Time-anchored events: {len(deduped)}
 - State snapshots: {len(state_rows)}
@@ -928,13 +982,14 @@ DISCIPLINE:
 - Distinct MITRE techniques observed: {sorted(set(aggregated_mitre))[:40]}
 - Artifacts merged: {sorted(all_results.keys())}
 {state_section}
+{blast_section}
 {event_section}
 
 ## YOUR DELIVERABLE
-1. **Executive narrative** (≤300 words): what happened in time order, anchored on real event timestamps. Reference state observations where they explain the events, but never as chained events with their own event times.
+1. **Executive narrative** (≤300 words): what happened in time order, anchored on real event timestamps. Reference state observations and blast-radius facts where they explain the events or amplify their severity, but never as chained events with their own event times.
 2. **Identified chain(s)**: bullet list. Each chain: a 1-line label + the events that compose it (cite by timestamp + artifact).
 3. **Confidence**: low / medium / high with one-line justification.
-4. **Top 3 actions for the SOC**: ranked, each with a single sentence of "why".
+4. **Top 3 actions for the SOC**: ranked, each with a single sentence of "why". Use blast-radius facts to rank — a credential planted on a tenant-wide-Mail-Read app is more urgent than the same on a permission-less app.
 5. **Calibration check**: 1-2 sentences on what would invalidate this narrative.
 """
 
@@ -947,7 +1002,7 @@ DISCIPLINE:
 
 
 def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func=None,
-                      pipeline_kind="agentic"):
+                      pipeline_kind="agentic", extra_context=None):
     """Run LLM analysis on each artifact's results using parallel execution.
 
     `pipeline_kind` tells the analyzer what shape the data has:
@@ -957,6 +1012,10 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
                    browser histories, autoruns, etc). NOT chronological;
                    always fan out per-artifact. This is the default so
                    existing on-prem callers keep their behavior unchanged.
+
+    `extra_context` is an optional dict the timeline pass renders as
+    additional prompt sections (e.g. blast-radius facts from ROADtools).
+    Defaults to None so on-prem callers stay backwards-compatible.
     """
     from services.workflow_service import add_log_to_run
 
@@ -987,11 +1046,16 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
     total_rows = sum(len(rows) for rows in all_results.values())
     timeline_threshold = int(llm_config.get('agentic', {}).get('timeline_threshold', 500) or 0)
     if pipeline_kind == "azure" and 0 < total_rows <= timeline_threshold:
+        # Stash blast-radius / other extras for the timeline renderer
+        # (kept out of fan-out path because the per-artifact prompts don't
+        # have a clean place for whole-tenant context).
+        _timeline_extras = extra_context or {}
         log(
             f"[LLM] Small run ({total_rows} rows <= {timeline_threshold}); "
             f"running single timeline pass instead of {len(artifacts_list)}-artifact fan-out"
         )
-        timeline_text = _analyze_timeline(run_id, all_results, llm_config, anonymizer, log)
+        timeline_text = _analyze_timeline(run_id, all_results, llm_config, anonymizer, log,
+                                          extras=_timeline_extras)
         if timeline_text:
             summaries["__timeline__"] = timeline_text
             # Keep per-artifact keys present so downstream report code that
