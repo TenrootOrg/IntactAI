@@ -115,11 +115,13 @@ paths = [
   # Test fixtures that intentionally use realistic-looking PII to exercise
   # the anonymizer. Anything sensitive in here is by design.
   '''modules/backend/services/agentic/tests/test_data_anonymizer\.py''',
-  # Rendered templates by definition contain whatever the operator put in
-  # at install time. The .template files (which are scanned) are the
-  # source of truth.
-  '''modules/timesketch/config/timesketch\.conf''',
-  '''modules/timesketch/config/timesketch_legacy\.conf''',
+  # Rendered runtime conf is allowlisted because the operator pastes
+  # their real key into it (via Settings UI or hand-edit at install
+  # time). The .template files are NOT allowlisted — those are tracked
+  # and a leak there is exactly what we want to catch. Anchored with
+  # `$` so this regex doesn't substring-match `.conf.template`.
+  '''^modules/timesketch/config/timesketch\.conf$''',
+  '''^modules/timesketch/config/timesketch_legacy\.conf$''',
   # The runbook references the very GUID it's helping retire.
   '''docs/SECRETS\.md''',
 ]

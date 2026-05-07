@@ -8,15 +8,27 @@
 # and blocks the commit if a secret is detected. The hook is also
 # auto-installed by `scripts/first-init.sh` when run in a developer
 # clone (when `.git` and `.pre-commit-config.yaml` are both present).
+#
+# We use a `local` hook (not the upstream gitleaks pre-commit hook
+# repo) on purpose:
+#  1. The upstream golang hook compiles gitleaks into pre-commit's
+#     cache dir and runs it from there — gitleaks then can't find our
+#     `.gitleaks.toml` (it auto-discovers in CWD only). Result: hook
+#     reports "no leaks found" while the leak slips through.
+#  2. Pre-commit's `args:` field APPENDS to upstream's `entry:`,
+#     producing a duplicated nonsense command line.
+# Both bugs verified during testing — local hook with explicit entry
+# is the only configuration that actually catches what we want.
+#
+# Tradeoff: requires gitleaks to be on PATH. Devs install it once with:
+#   curl -sL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+#     | tar xz -C ~/.local/bin gitleaks
 
 repos:
-  - repo: https://github.com/gitleaks/gitleaks
-    # Pin to a known-good tag. Bump after testing against
-    # `bash scripts/scan-secrets.sh` on the working tree.
-    rev: v8.21.2
+  - repo: local
     hooks:
       - id: gitleaks
-        # `protect --staged` runs against the index (= what's about to
-        # be committed). The repo-level .gitleaks.toml provides the
-        # rules + allowlist.
-        args: ["protect", "--staged", "--config", ".gitleaks.toml", "--redact"]
+        name: gitleaks (block commit on detected secret)
+        entry: gitleaks protect --staged --redact --config .gitleaks.toml
+        language: system
+        pass_filenames: false
