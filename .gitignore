@@ -89,11 +89,15 @@ data/tmp/
 # those. A blanket *.pem rule would conflict, so we don't add one here.
 # If you drop a new .pem somewhere, add it explicitly.
 
-# Env files anywhere in the tree
+# Env files at the repo root (developer-local). The per-module
+# `.env` files (modules/<mod>/.env) are install-time defaults the
+# operator rotates per-host — they're tracked on purpose with
+# placeholder passwords (see docs/SECRETS.md). Pre-commit gitleaks
+# is the actual defense against secrets in tracked files.
 .env
 .env.*
 !.env.example
-modules/**/.env
+!modules/*/.env
 
 # Rendered configs — the .template files stay tracked, the rendered
 # output (which holds the live API key) does not.
