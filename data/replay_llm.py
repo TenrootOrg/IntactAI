@@ -103,9 +103,17 @@ def main():
     update_run_status(rid, "running", progress=85)
     t1 = time.monotonic()
     try:
-        # Find the original blueprint/tenant if we can guess; otherwise use stubs
+        # Reuse the tenant the source run was collected against. Most
+        # workflow JSONs persist it under either `azure_config.tenant_id`
+        # or `details.tenant_id`; otherwise pull from the env so this
+        # file ships clean — never hardcode a real GUID here.
+        src_tenant = (
+            (src.get("azure_config") or {}).get("tenant_id")
+            or (src.get("details") or {}).get("tenant_id")
+            or os.environ.get("AZURE_TENANT_ID", "")
+        )
         scan_metadata = {
-            "tenant_id": "00000000-0000-0000-0000-000000000000",
+            "tenant_id": src_tenant,
             "time_filter": {"type": "relative", "value": "24h"},
             "sources": list(collected_data.keys()),
         }
