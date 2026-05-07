@@ -22,13 +22,28 @@ useDefault = true
 # variable assignment. Catches the exact pattern that leaked in
 # data/replay_llm.py:108 — `"tenant_id": "d6b5bcda-..."`.
 #
-# We deliberately scope to the variable-assignment form so we don't false-
-# positive on UUIDs that legitimately appear in Sigma rule headers, IOC
-# example markdown, Windows ETW provider GUIDs, or test fixtures.
+# Covers all three real-world shapes:
+#   Python:  tenant_id = "uuid"
+#   JSON:    "tenant_id": "uuid"
+#   YAML:    tenant_id: uuid
+# The `["']?` segments around the keyword make the trailing quote on a
+# JSON key optional. The first version of this rule shipped without that,
+# which would have missed the very leak it was named after — caught
+# during end-to-end testing.
+#
+# We deliberately scope to the assignment form so we don't false-positive
+# on UUIDs that legitimately appear in Sigma rule headers, IOC example
+# markdown, Windows ETW provider GUIDs, or test fixtures.
 [[rules]]
 id = "azure-tenant-guid-assignment"
 description = "Hardcoded Azure tenant_id / client_id GUID — should come from runtime config DB or env"
-regex = '''(?i)(tenant_id|client_id|directory_id|object_id)\s*[:=]\s*["']?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}["']?'''
+# secretGroup = 1 points at the GUID (not the keyword), so the
+# `[allowlist].stopwords` entry for the all-zero post-rewrite placeholder
+# actually filters this rule. Without secretGroup, gitleaks would treat
+# the first capture group (`tenant_id`/`client_id`/…) as the "secret"
+# and the stopword check would never see the GUID.
+regex = '''(?i)["']?(?:tenant_id|client_id|directory_id|object_id)["']?\s*[:=]\s*["']?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["']?'''
+secretGroup = 1
 keywords = ["tenant_id", "client_id", "directory_id", "object_id"]
 
 # TimeSketch SECRET_KEY hardcoded — flag any new occurrences (the
