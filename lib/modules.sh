@@ -338,6 +338,22 @@ deploy_timesketch() {
     local ts_version=$(read_config "['versions']['timesketch']")
     log_info "  TimeSketch version: ${ts_version:-latest}"
 
+    # Render timesketch.conf / timesketch_legacy.conf from templates BEFORE
+    # docker compose up — the conf files are bind-mounted into the
+    # containers, so they must exist by the time the containers come up.
+    # The render step is idempotent: if the rendered file exists, the
+    # operator's edits are preserved.
+    render_config_from_template \
+        "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf.template" \
+        "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf" \
+        "__TIMESKETCH_GOOGLE_AI_STUDIO_KEY__" \
+        "TIMESKETCH_GOOGLE_AI_STUDIO_KEY"
+    render_config_from_template \
+        "${SCRIPT_DIR}/modules/timesketch/config/timesketch_legacy.conf.template" \
+        "${SCRIPT_DIR}/modules/timesketch/config/timesketch_legacy.conf" \
+        "__TIMESKETCH_GOOGLE_AI_STUDIO_KEY__" \
+        "TIMESKETCH_GOOGLE_AI_STUDIO_KEY"
+
     if ! pull_compose_with_retry "TimeSketch"; then
         track_module_failure "TimeSketch"
         return 1

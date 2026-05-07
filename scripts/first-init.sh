@@ -243,6 +243,72 @@ generate_iris_secrets() {
 }
 
 # ============================================================================
+# Render Module Configs from Templates
+# ============================================================================
+#
+# Tracked config files that need to hold a secret at runtime are committed
+# as `.template` files with `__PLACEHOLDER__` tokens. We render them into
+# the runtime path on first install, substituting tokens with env-var
+# values. Idempotent — re-running won't clobber a hand-edited conf.
+#
+# Today this only handles timesketch.conf / timesketch_legacy.conf and
+# their `__TIMESKETCH_GOOGLE_AI_STUDIO_KEY__` token. Add more entries
+# inline as new templated configs land.
+
+# ============================================================================
+# Pre-commit Hook (developer clones only)
+# ============================================================================
+#
+# When run from a `git clone` (i.e. this is a developer's checkout, not an
+# air-gapped extracted tarball), wire up the gitleaks pre-commit hook so
+# accidental secret commits are blocked locally. Production / operator
+# installs from a tarball won't have a `.git` dir and silently skip.
+
+setup_dev_pre_commit() {
+    if [[ ! -d "$SCRIPT_DIR/.git" ]]; then
+        return 0
+    fi
+    if [[ ! -f "$SCRIPT_DIR/.pre-commit-config.yaml" ]]; then
+        return 0
+    fi
+    if ! command -v pre-commit >/dev/null 2>&1; then
+        log_info "Developer clone detected; install \`pre-commit\` (pip install pre-commit) and run \`pre-commit install\` to enable the gitleaks hook"
+        return 0
+    fi
+    (cd "$SCRIPT_DIR" && pre-commit install --hook-type pre-commit >/dev/null 2>&1) && \
+        log_success "Pre-commit hook installed (gitleaks will run on every commit)" || \
+        log_warn "pre-commit install failed — run it manually from the repo root"
+}
+
+render_module_configs() {
+    log_info "Rendering module configs from templates..."
+
+    local ts_dir="$SCRIPT_DIR/modules/timesketch/config"
+    local placeholder="__TIMESKETCH_GOOGLE_AI_STUDIO_KEY__"
+    local value="${TIMESKETCH_GOOGLE_AI_STUDIO_KEY:-}"
+
+    for base in timesketch.conf timesketch_legacy.conf; do
+        local template="$ts_dir/${base}.template"
+        local out="$ts_dir/${base}"
+        if [[ ! -f "$template" ]]; then
+            log_warn "  Template missing: $template — skipping"
+            continue
+        fi
+        if [[ -f "$out" ]]; then
+            log_info "  $base already rendered (skip)"
+            continue
+        fi
+        cp "$template" "$out"
+        sed -i "s|${placeholder}|${value}|g" "$out"
+        if [[ -n "$value" ]]; then
+            log_success "  Rendered $base from template (with TIMESKETCH_GOOGLE_AI_STUDIO_KEY)"
+        else
+            log_info "  Rendered $base (no key — Gemini provider disabled until edited)"
+        fi
+    done
+}
+
+# ============================================================================
 # Start Services
 # ============================================================================
 
@@ -635,6 +701,10 @@ main() {
     generate_certificates
     echo ""
     generate_iris_secrets
+    echo ""
+    setup_dev_pre_commit
+    echo ""
+    render_module_configs
     echo ""
     start_services
     echo ""
