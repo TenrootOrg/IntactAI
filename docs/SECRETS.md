@@ -3,6 +3,33 @@
 Where every kind of secret in this project lives, and how to add a
 new one safely.
 
+> **AI agents:** Before deleting any file in this repo as part of a
+> "scrub secrets" task, read [`AGENTS.md`](../AGENTS.md). Some files
+> look secret-shaped but are install-time defaults that must stay
+> tracked — removing them breaks fresh installs.
+
+## Files that look like secrets but must stay tracked
+
+These are install-time defaults (placeholder passwords, container-
+internal hostnames, version pins). Operators rotate the placeholders
+post-install. They are NOT real secrets — never include them in a
+history-rewrite path-purge list.
+
+* `modules/backend/.env`
+* `modules/elk/.env`
+* `modules/iris/.env`
+* `modules/portainer/.env`
+* `modules/timesketch/.env`
+* `modules/velociraptor/.env`
+* `modules/timesketch/config/timesketch.conf.template`
+* `modules/timesketch/config/timesketch_legacy.conf.template`
+
+The `123123` value that appears in several of these is a documented
+starter password operators rotate on first install (the install
+banner tells them to). Treating it as a secret is wrong. See
+[`AGENTS.md`](../AGENTS.md) for the full list and the postmortem of
+the time it got removed by accident.
+
 ## TL;DR for operators on a fresh install
 
 ```bash
