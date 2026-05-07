@@ -276,12 +276,6 @@
                             </div>
                             <div :class="$store.services.getStatusClass('velociraptor')"></div>
                         </div>
-                        <div class="space-y-2 mb-4 invisible" aria-hidden="true">
-                            <div class="flex justify-between text-sm">
-                                <span class="text-gray-400">Port:</span>
-                                <span class="font-mono">-</span>
-                            </div>
-                        </div>
                         <button onclick="openService('velociraptor')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
                             Open Console
                         </button>
@@ -302,12 +296,6 @@
                                 </div>
                             </div>
                             <div :class="$store.services.getStatusClass('timesketch')"></div>
-                        </div>
-                        <div class="space-y-2 mb-4">
-                            <div class="flex justify-between text-sm">
-                                <span class="text-gray-400">Port:</span>
-                                <span class="font-mono">5000</span>
-                            </div>
                         </div>
                         <button onclick="openService('timesketch')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
                             Open Timeline
@@ -330,12 +318,6 @@
                             </div>
                             <div :class="$store.services.getStatusClass('kibana')"></div>
                         </div>
-                        <div class="space-y-2 mb-4">
-                            <div class="flex justify-between text-sm">
-                                <span class="text-gray-400">Port:</span>
-                                <span class="font-mono">5601</span>
-                            </div>
-                        </div>
                         <button onclick="openService('kibana')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
                             Open Kibana
                         </button>
@@ -357,12 +339,6 @@
                             </div>
                             <div :class="$store.services.getStatusClass('iris')"></div>
                         </div>
-                        <div class="space-y-2 mb-4">
-                            <div class="flex justify-between text-sm">
-                                <span class="text-gray-400">Port:</span>
-                                <span class="font-mono">8443</span>
-                            </div>
-                        </div>
                         <button onclick="openService('iris')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
                             Open IRIS
                         </button>
@@ -383,12 +359,6 @@
                                 </div>
                             </div>
                             <div :class="$store.services.getStatusClass('portainer')"></div>
-                        </div>
-                        <div class="space-y-2 mb-4">
-                            <div class="flex justify-between text-sm">
-                                <span class="text-gray-400">Port:</span>
-                                <span class="font-mono">9443</span>
-                            </div>
                         </div>
                         <button onclick="openService('portainer')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
                             Open Portainer
