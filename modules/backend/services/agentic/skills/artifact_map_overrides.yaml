@@ -1,0 +1,49 @@
+# artifact_map_overrides.yaml — hand-tuned pins that overlay artifact_map.yaml.
+#
+# This file is loaded AFTER the machine-generated artifact_map.yaml in
+# services/agentic/skills.py:_load_artifact_map. Its `exact` entries win
+# and its `patterns` are checked BEFORE the generated ones.
+#
+# Use this file for artifacts the generator cannot infer because their
+# names don't appear in the Velociraptor catalog the generator scans —
+# e.g. cloud-collector artifacts produced by the Azure pipeline.
+#
+# Format:
+#   exact:    <artifact-name>: <skill-name>
+#   patterns: list of {pattern: <fnmatch-glob>, skill: <name>}
+
+exact:
+  # State-snapshot Azure findings are emitted under these stable bucket names.
+  "INV.ca_policies": intact-azure-cloud-investigation
+  "INV.federation": intact-azure-cloud-investigation
+
+  # UAL pre-detected category buckets.
+  "UAL.persistence": intact-azure-cloud-investigation
+  "UAL.lateral_movement": intact-azure-cloud-investigation
+  "UAL.credential_access": intact-azure-cloud-investigation
+  "UAL.authentication": intact-azure-cloud-investigation
+  "UAL.collection": intact-azure-cloud-investigation
+  "UAL.exfiltration": intact-azure-cloud-investigation
+
+patterns:
+  # Sigma rule buckets fired on Azure / Entra data. Names are
+  # `SIGMA.<rule_title with spaces -> underscores>`. We catch any
+  # rule whose title mentions Azure / Entra / sign-in / app / SP /
+  # OAuth / conditional access — all cloud-IR territory.
+  - { pattern: "SIGMA.Azure_*",                                        skill: intact-azure-cloud-investigation }
+  - { pattern: "SIGMA.Sign-ins*",                                      skill: intact-azure-cloud-investigation }
+  - { pattern: "SIGMA.Sign_ins*",                                      skill: intact-azure-cloud-investigation }
+  - { pattern: "SIGMA.Application_*",                                  skill: intact-azure-cloud-investigation }
+  - { pattern: "SIGMA.Added_*",                                        skill: intact-azure-cloud-investigation }
+  - { pattern: "SIGMA.Service_Principal*",                             skill: intact-azure-cloud-investigation }
+  - { pattern: "SIGMA.Added_Credentials*",                             skill: intact-azure-cloud-investigation }
+  - { pattern: "SIGMA.OAuth_*",                                        skill: intact-azure-cloud-investigation }
+  - { pattern: "SIGMA.Consent_*",                                      skill: intact-azure-cloud-investigation }
+  - { pattern: "SIGMA.Conditional_Access*",                            skill: intact-azure-cloud-investigation }
+  - { pattern: "SIGMA.User_Added_to*",                                 skill: intact-azure-cloud-investigation }
+  - { pattern: "SIGMA.Federation*",                                    skill: intact-azure-cloud-investigation }
+  - { pattern: "SIGMA.MFA_*",                                          skill: intact-azure-cloud-investigation }
+
+  # Defensive: any artifact starting with the Azure source prefix
+  # falls through to here if no more-specific rule matched above.
+  - { pattern: "Azure.*",                                              skill: intact-azure-cloud-investigation }
