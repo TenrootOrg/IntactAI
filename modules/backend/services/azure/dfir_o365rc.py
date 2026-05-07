@@ -165,6 +165,49 @@ def check_exchange_online_available(azure_config: Dict[str, str]) -> Dict[str, a
         return {'available': False, 'message': f'Exchange check failed: {str(e)[:200]}'}
 
 
+# =============================================================================
+# UAL collection-mode profiles
+# =============================================================================
+#
+# `ual_mode` selects which UAL records DFIR-O365RC pulls from Microsoft.
+# Big tenants generate millions of low-signal events (PowerBI activity,
+# Yammer, Sway, etc.) that bury the forensically interesting ones and
+# blow up collection time + LLM analysis cost. The two profiles are:
+#
+#   * "full"  — `-requestType Unfiltered`. Every record type. Default —
+#               matches behaviour before the dropdown was introduced.
+#               Right choice for small tenants and "I don't know what
+#               happened" hunts. Slow on large tenants (15-60+ min).
+#
+#   * "light" — `-requestType RecordTypes` filtered to a curated list of
+#               high-signal types covering the main initial-access /
+#               persistence / identity-takeover vectors. Skips PowerBI,
+#               Sway, Yammer, Stream, MicrosoftFlow, etc. Typically
+#               5-10x smaller dataset; matches the use case the operator
+#               flagged: "big organizations need light to avoid waiting".
+#
+# Identity filters (target_users / target_ips) take precedence over both
+# — they're more targeted than any RecordTypes filter — so the user/IP
+# scope wins and `ual_mode` is ignored when a filter is set. The mode
+# only changes the path when no identity filter is in play.
+LIGHT_RECORD_TYPES = [
+    # Identity / auth — the must-have core
+    "AzureActiveDirectory",            # Generic Azure AD events
+    "AzureActiveDirectoryStsLogon",    # STS logon events (interactive + non-interactive)
+    "AzureActiveDirectoryAccountLogon",# Account logon outcomes
+
+    # Persistence vectors
+    "ExchangeAdmin",                   # Mailbox config changes (forwarding rules, etc.)
+    "ApplicationAudit",                # OAuth app consent grants
+
+    # Threat-intel signals
+    "ThreatIntelligenceUrl",           # Malicious URL hits
+
+    # Compliance / security tooling activity (rare but high-signal)
+    "SecurityComplianceCenterEOPCmdlet",
+]
+
+
 def collect_unified_audit_log(
     tenant: str,
     app_id: str,
@@ -173,7 +216,8 @@ def collect_unified_audit_log(
     target_users: Optional[List[str]] = None,
     logger=None,
     azure_config: Optional[Dict[str, str]] = None,
-    run_id: str = None
+    run_id: str = None,
+    ual_mode: str = "full",
 ) -> Dict:
     """
     Collect Unified Audit Log via DFIR-O365RC Docker container.
@@ -185,6 +229,10 @@ def collect_unified_audit_log(
         end_date: End date (ISO format or MM/DD/YYYY)
         target_users: Optional list of user emails to filter
         logger: Logging function
+        ual_mode: "full" (every record type, default) or "light" (curated
+            high-signal record types only — recommended for large tenants).
+            Ignored when target_users or target_ips is set; identity
+            filters take precedence as they're more targeted.
 
     Returns:
         Dict with 'success', 'records' list, and 'error' if failed
@@ -240,6 +288,10 @@ def collect_unified_audit_log(
         ips_arr = ",".join(f"'{ip}'" for ip in target_ips)
         scope_clause = f"-requestType IPAddresses -IPAddresses @({ips_arr})"
         scope_label = f"ips={','.join(target_ips)}"
+    elif (ual_mode or "full").lower() == "light":
+        rec_arr = ",".join(f"'{r}'" for r in LIGHT_RECORD_TYPES)
+        scope_clause = f"-requestType RecordTypes -recordTypes @({rec_arr})"
+        scope_label = f"light:{len(LIGHT_RECORD_TYPES)} record types"
     else:
         scope_clause = "-requestType Unfiltered"
         scope_label = None

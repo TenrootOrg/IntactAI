@@ -168,6 +168,15 @@ def start_scan():
                      "Pass scope_mode='tenant_wide' to hunt across the whole tenant."
         }), 400
 
+    # ual_mode: "full" (default — every UAL record type) or "light" (curated
+    # high-signal record types only — recommended for large tenants where
+    # full collection is slow and most events are PowerBI/Yammer/Sway noise).
+    # Ignored when target_users / target_ips is set: those identity filters
+    # take precedence (they're more targeted than any RecordTypes filter).
+    ual_mode = (data.get('ual_mode') or "full").lower()
+    if ual_mode not in ("full", "light"):
+        return jsonify({"error": f"Invalid ual_mode: {ual_mode!r}. Use 'full' or 'light'."}), 400
+
     run_id = create_automation_run(
         automation_type="azure_scan",
         name=f"Azure Scan: {blueprint_display}",
@@ -178,6 +187,7 @@ def start_scan():
             "scope_mode": scope_mode,
             "target_users": target_users,
             "target_ips": target_ips,
+            "ual_mode": ual_mode,
         }
     )
     update_run_status(run_id, "running", progress=5)
@@ -234,6 +244,7 @@ def start_scan():
                 'target_users': target_users,
                 'target_ips': target_ips,
                 'pivot_mode': data.get('pivot_mode', False),
+                'ual_mode': ual_mode,
                 'anonymizer': None
             }
             add_log_to_run(
@@ -243,6 +254,16 @@ def start_scan():
                 + (f" (ips={','.join(target_ips)})" if target_ips else ""),
                 "info",
             )
+            # Log the UAL collection mode separately so it's obvious in the
+            # workflow log when an operator picked "light" and why some
+            # record types are missing from the result set.
+            if not target_users and not target_ips:
+                add_log_to_run(
+                    run_id,
+                    f"[AZURE] UAL collection mode: {ual_mode}"
+                    + (" (curated high-signal record types only)" if ual_mode == "light" else " (every record type)"),
+                    "info",
+                )
 
             result = run_azure_pipeline(
                 run_id=run_id,

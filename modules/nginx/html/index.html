@@ -1748,6 +1748,13 @@ sudo ./velociraptor service start</code></pre>
                      // server-side filters; 'tenant_wide' pulls every event
                      // in the time window. Tenant-wide is the slow path.
                      azureScopeMode: 'targeted',
+                     // 'full' (default) pulls every UAL record type;
+                     // 'light' filters to a curated high-signal set
+                     // (auth, app, persistence) — recommended for big
+                     // tenants where 'full' takes 30+ minutes and most
+                     // events are PowerBI/Yammer/Sway noise. Ignored when
+                     // target_users / target_ips is set.
+                     azureUalMode: 'full',
                      async checkAzureStatus() {
                          try {
                              const res = await fetch('/api/azure/status');
@@ -1794,7 +1801,8 @@ sudo ./velociraptor service start</code></pre>
                                      scope_mode: this.azureScopeMode,
                                      target_users: targetUsers,
                                      target_ips: targetIps,
-                                     pivot_mode: this.azurePivotMode
+                                     pivot_mode: this.azurePivotMode,
+                                     ual_mode: this.azureUalMode
                                  })
                              });
                              const data = await res.json();
@@ -1967,6 +1975,30 @@ sudo ./velociraptor service start</code></pre>
                                 <label for="azure-pivot" class="text-gray-300 text-sm">Pivot Mode</label>
                                 <span class="text-xs text-gray-500">(find other accounts from same IPs)</span>
                             </div>
+                        </div>
+
+                        <!-- UAL Collection Mode (full vs light) -->
+                        <!-- Only meaningful in tenant-wide mode; identity
+                             filters take precedence and Microsoft-side filter
+                             on UserIds/IPAddresses is already the lightest
+                             query possible. Hide the panel when targeted to
+                             keep the form short. -->
+                        <div x-show="azureScopeMode === 'tenant_wide'" class="p-4 bg-gray-900/50 rounded-lg border border-gray-700 space-y-3">
+                            <label class="block text-sm font-medium text-blue-400">UAL Collection Mode</label>
+                            <select x-model="azureUalMode" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm">
+                                <option value="full">Full — every UAL record type (slow on large tenants)</option>
+                                <option value="light">Light — high-signal record types only (recommended for &gt;1k users)</option>
+                            </select>
+                            <template x-if="azureUalMode === 'light'">
+                                <div class="text-xs text-gray-400 leading-relaxed">
+                                    Pulls only auth (AzureActiveDirectory*), persistence (ExchangeAdmin, ApplicationAudit), and threat-intel record types. Skips PowerBI / Yammer / Sway / Stream / MicrosoftFlow noise. Typically 5-10× smaller dataset and faster collection.
+                                </div>
+                            </template>
+                            <template x-if="azureUalMode === 'full'">
+                                <div class="text-xs text-yellow-400 leading-relaxed">
+                                    ⚠️ Full mode collects every record type. On a tenant with 1,000+ active users this can run 30-60+ minutes and produce a high volume of low-signal events for the analyzer to process.
+                                </div>
+                            </template>
                         </div>
 
                         <!-- Time Filter -->

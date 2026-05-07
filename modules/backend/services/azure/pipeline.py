@@ -555,7 +555,8 @@ def run_azure_pipeline(
             target_ips=target_ips,
             pivot_mode=pivot_mode,
             logger=collection_logger,
-            run_id=run_id
+            run_id=run_id,
+            ual_mode=options.get('ual_mode', 'full'),
         )
 
         result['phases']['collection'] = {
