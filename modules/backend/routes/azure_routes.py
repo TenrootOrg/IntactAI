@@ -33,11 +33,16 @@ _azure_runs = {}
 
 # Upload configuration
 UPLOAD_FOLDER = '/tmp/azure_uploads'
-ALLOWED_EXTENSIONS = {'json', 'jsonl', 'csv'}
+ALLOWED_EXTENSIONS = {'json', 'jsonl', 'csv', 'zip'}
+PARSEABLE_EXTENSIONS = {'json', 'jsonl', 'csv'}
 
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def _parseable(filename: str) -> bool:
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in PARSEABLE_EXTENSIONS
 
 
 # =============================================================================
@@ -317,27 +322,87 @@ def upload_logs():
         uploaded_files = []
         parsed_data = {}
 
+        def _ingest(parsed_path, hint):
+            """Parse one log file and merge it into parsed_data, preserving
+            existing records when the same source_prefix shows up twice
+            (e.g. multi-day UAL split across files)."""
+            data, parse_status = parse_uploaded_logs(parsed_path, filename_hint=hint)
+            for src_prefix, records in data.items():
+                if src_prefix in parsed_data:
+                    parsed_data[src_prefix].extend(records)
+                else:
+                    parsed_data[src_prefix] = records
+            return parse_status
+
         for file in files:
-            if file and file.filename and allowed_file(file.filename):
-                filename = secure_filename(file.filename)
-                file_path = os.path.join(run_dir, filename)
-                file.save(file_path)
+            if not (file and file.filename and allowed_file(file.filename)):
+                continue
+            filename = secure_filename(file.filename)
+            file_path = os.path.join(run_dir, filename)
+            file.save(file_path)
 
-                # Parse the file
+            ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+
+            if ext == 'zip':
+                # Extract every parseable JSON/JSONL/CSV inside; use each
+                # member's basename as the filename hint so files named
+                # `Azure.<source>.json` are tagged correctly.
+                import zipfile as _zf
+                extracted_dir = os.path.join(run_dir, 'extracted')
+                os.makedirs(extracted_dir, exist_ok=True)
                 try:
-                    data, parse_status = parse_uploaded_logs(file_path)
-                    parsed_data.update(data)
+                    with _zf.ZipFile(file_path, 'r') as zf:
+                        for member in zf.namelist():
+                            base = os.path.basename(member)
+                            if not base or member.endswith('/'):
+                                continue
+                            if not _parseable(base):
+                                continue
+                            # Skip findings/analysis sub-dirs — only the
+                            # raw `collected/` records feed the offline
+                            # pipeline. Anything else from the ZIP is
+                            # derived data we'd recompute. Also skip
+                            # `metadata.json` — that's a manifest, not data.
+                            if member.startswith(('findings/', 'analysis/')):
+                                continue
+                            if base == 'metadata.json':
+                                continue
+                            target = os.path.join(extracted_dir, base)
+                            with zf.open(member) as src, open(target, 'wb') as dst:
+                                dst.write(src.read())
+                            try:
+                                ps = _ingest(target, base)
+                                uploaded_files.append({
+                                    'filename': f"{filename}:{base}",
+                                    'records': ps.get('record_count', 0),
+                                    'source_type': ps.get('detected_source'),
+                                    'sigma_prefix': ps.get('sigma_prefix'),
+                                })
+                            except Exception as ex:
+                                uploaded_files.append({
+                                    'filename': f"{filename}:{base}",
+                                    'error': str(ex),
+                                })
+                except _zf.BadZipFile as ex:
+                    uploaded_files.append({
+                        'filename': filename,
+                        'error': f"Invalid ZIP file: {ex}",
+                    })
+                continue
 
-                    uploaded_files.append({
-                        'filename': filename,
-                        'records': parse_status.get('record_count', 0),
-                        'source_type': parse_status.get('detected_source')
-                    })
-                except Exception as e:
-                    uploaded_files.append({
-                        'filename': filename,
-                        'error': str(e)
-                    })
+            try:
+                ps = _ingest(file_path, filename)
+                uploaded_files.append({
+                    'filename': filename,
+                    'records': ps.get('record_count', 0),
+                    'source_type': ps.get('detected_source'),
+                    'sigma_prefix': ps.get('sigma_prefix'),
+                })
+            except Exception as e:
+                uploaded_files.append({
+                    'filename': filename,
+                    'error': str(e),
+                })
 
         # Store parsed data
         _azure_runs[run_id] = {
@@ -348,6 +413,41 @@ def upload_logs():
             'total_records': sum(len(v) for v in parsed_data.values()),
             'upload_time': datetime.utcnow().isoformat()
         }
+
+        # Register the workflow row right at upload so the dashboard
+        # tracks this run from the moment files arrive. We mint the row
+        # ourselves (rather than via `create_automation_run`, which auto-
+        # generates its own run_id) so the same `azure_offline_*` ID
+        # carries through to `analyze-offline` — logs, phase timings,
+        # findings all land on one row.
+        try:
+            from services.file_storage_service import save_workflow
+            from services.workflow_service import update_run_status
+            save_workflow({
+                'run_id': run_id,
+                'automation_type': 'azure_scan',
+                'name': f"Azure Offline Analysis ({len(parsed_data)} sources, {sum(len(v) for v in parsed_data.values())} records)",
+                'details': {
+                    'trigger': 'upload',
+                    'mode': 'offline',
+                    'sources': list(parsed_data.keys()),
+                    'uploaded_files': [f.get('filename') for f in uploaded_files],
+                },
+                'status': 'pending',
+                'progress': 0,
+                'logs': [],
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat(),
+            })
+            update_run_status(run_id, "uploaded", progress=10)
+            add_log_to_run(run_id, f"[AZURE] Uploaded {sum(len(v) for v in parsed_data.values())} records across {len(parsed_data)} sources", "info")
+            for f in uploaded_files:
+                if f.get('error'):
+                    add_log_to_run(run_id, f"[AZURE] {f['filename']}: {f['error']}", "warning")
+                else:
+                    add_log_to_run(run_id, f"[AZURE] {f['filename']}: {f.get('records',0)} records -> {f.get('sigma_prefix','?')}", "success")
+        except Exception as ex:
+            print(f"[AZURE] workflow row create failed: {ex}", flush=True)
 
         return jsonify({
             'run_id': run_id,
@@ -390,32 +490,84 @@ def analyze_offline():
         if not uploaded_data:
             return jsonify({'error': 'No data found for this run_id'}), 400
 
-        # Build options
+        # LLM config: prefer the body, fall back to the saved frontend
+        # config — same source the online scan uses, so the analyst
+        # doesn't need to repeat it on every request.
+        llm_config = data.get('llm_config') or {}
+        if not llm_config:
+            try:
+                from services.file_storage_service import load_frontend_config
+                llm_config = load_frontend_config() or {}
+            except Exception:
+                llm_config = {}
+
+        # LLM is always on for offline analysis: the whole point of
+        # uploading collected data into this endpoint is to get the
+        # forensic narrative — without LLM the user already has
+        # everything they uploaded. We hard-pin enable_llm here so a
+        # stray `false` from the client doesn't produce a useless run.
         options = {
-            'enable_llm': data.get('enable_llm', False),
-            'llm_config': data.get('llm_config', {}),
+            'enable_llm': True,
+            'llm_config': llm_config,
             'time_filter': data.get('time_filter'),
             'min_severity': data.get('min_severity', 'low'),
-            'iris_config': data.get('iris_config')
+            'iris_config': data.get('iris_config'),
+            'anonymizer': None,
         }
 
         add_log_to_run(run_id, "[AZURE] Starting offline analysis", "info")
 
-        # Run analysis pipeline
-        result = run_azure_on_existing(
-            run_id=run_id,
-            uploaded_data=uploaded_data,
-            options=options
+        from services.workflow_service import (
+            update_run_status,
+            register_cancel_event,
+            unregister_cancel,
+            is_cancelled,
         )
+        register_cancel_event(run_id)
+        update_run_status(run_id, "running", progress=15)
 
-        # Update stored data
-        _azure_runs[run_id].update(result)
+        import threading
+
+        def run_analysis():
+            try:
+                result = run_azure_on_existing(
+                    run_id=run_id,
+                    uploaded_data=uploaded_data,
+                    options=options,
+                )
+                _azure_runs[run_id].update(result)
+
+                # Persist raw data to disk so it survives restart and the
+                # dashboard's Data button can pull it back. Same shape as
+                # the online pipeline writes — same downstream code reads it.
+                try:
+                    persist_dir = "/app/data/azure_runs"
+                    os.makedirs(persist_dir, exist_ok=True)
+                    with open(f"{persist_dir}/{run_id}.json", 'w') as f:
+                        json.dump(result, f, default=str)
+                except Exception as persist_err:
+                    print(f"[AZURE] Warning: Could not persist raw data: {persist_err}", flush=True)
+
+                if is_cancelled(run_id):
+                    return
+                if result.get('status') in ('failed', 'error'):
+                    update_run_status(run_id, "failed", error=result.get('error', 'Unknown error'))
+                else:
+                    update_run_status(run_id, "completed", progress=100, details={'has_report': bool(result.get('has_report'))})
+            except Exception as e:
+                if not is_cancelled(run_id):
+                    add_log_to_run(run_id, f"[AZURE] Offline analysis failed: {e}", "error")
+                    update_run_status(run_id, "failed", error=str(e))
+                traceback.print_exc()
+            finally:
+                unregister_cancel(run_id)
+
+        threading.Thread(target=run_analysis, daemon=True).start()
 
         return jsonify({
             'run_id': run_id,
-            'status': result.get('status'),
-            'findings_count': result.get('phases', {}).get('detection', {}).get('total_findings', 0),
-            'message': 'Analysis complete' if result.get('status') == 'complete' else result.get('error', 'Analysis failed')
+            'status': 'running',
+            'message': 'Offline analysis started — track progress on the dashboard.',
         })
 
     except Exception as e:

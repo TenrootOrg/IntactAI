@@ -668,7 +668,8 @@ def get_available_sources(requested: List[str], license_tier: str) -> List[str]:
 
 def parse_uploaded_logs(
     file_path: str,
-    source_type: Optional[str] = None
+    source_type: Optional[str] = None,
+    filename_hint: Optional[str] = None,
 ) -> Tuple[Dict[str, List[Dict]], Dict[str, Any]]:
     """
     Parse uploaded log files (JSON, JSONL, CSV).
@@ -676,6 +677,12 @@ def parse_uploaded_logs(
     Args:
         file_path: Path to uploaded file
         source_type: Optional source type hint (auto-detected if not provided)
+        filename_hint: Optional filename to guide detection. When the file
+            comes from our own download endpoint it's named
+            `Azure.<source>.json` — that prefix wins over field-shape
+            detection (which can't tell, e.g., a CA-policy from a
+            random object). Falls back to shape detection if absent or
+            unrecognised.
 
     Returns:
         Tuple of (parsed_data dict, parse_status dict)
@@ -704,17 +711,50 @@ def parse_uploaded_logs(
         status['errors'].append(f"Parse error: {str(e)}")
         data = []
 
+    # Filename hint takes precedence: a file we produced via the download
+    # endpoint is named `Azure.<source>.json` and the prefix is canonical.
+    sigma_prefix = None
+    if source_type is None and filename_hint:
+        sigma_prefix = _sigma_prefix_from_filename(filename_hint)
+        if sigma_prefix:
+            for key, meta in LOG_SOURCES.items():
+                if meta.get('sigma_prefix') == sigma_prefix:
+                    source_type = key
+                    break
+
     if source_type is None and data:
         source_type = detect_source_type(data[0])
 
-    sigma_prefix = LOG_SOURCES.get(source_type, {}).get('sigma_prefix', 'Azure.Unknown')
+    if not sigma_prefix:
+        sigma_prefix = LOG_SOURCES.get(source_type, {}).get('sigma_prefix', 'Azure.Unknown')
+
     normalized = normalize_logs(data, sigma_prefix)
 
     status['parse_end'] = datetime.utcnow().isoformat()
     status['record_count'] = len(normalized)
     status['detected_source'] = source_type
+    status['sigma_prefix'] = sigma_prefix
 
     return {sigma_prefix: normalized}, status
+
+
+def _sigma_prefix_from_filename(filename: str) -> Optional[str]:
+    """Extract the `Azure.<source>` prefix from our download-endpoint
+    filenames (e.g. `Azure.CAPolicy.json` → `Azure.CAPolicy`). Returns
+    None if the filename doesn't match the expected pattern.
+    """
+    base = Path(filename).name
+    # Strip extension(s) — handle `.json`, `.jsonl`, `.csv`, `.json.gz`...
+    stem = base
+    for ext in ('.json', '.jsonl', '.csv'):
+        if stem.lower().endswith(ext):
+            stem = stem[: -len(ext)]
+            break
+    if stem.startswith('Azure.') and stem.count('.') >= 1:
+        # Take only the first two segments — `Azure.CAPolicy.extra` → `Azure.CAPolicy`
+        parts = stem.split('.')
+        return f"{parts[0]}.{parts[1]}"
+    return None
 
 
 def parse_json_file(file_path: str) -> List[Dict]:
@@ -772,6 +812,16 @@ def parse_csv_file(file_path: str) -> List[Dict]:
 def detect_source_type(sample_record: Dict) -> Optional[str]:
     """Auto-detect log source type from record fields."""
     fields = set(sample_record.keys())
+
+    # Check state-snapshot shapes first — they have very distinctive
+    # nested objects that won't appear in event logs.
+    ca_policy_fields = {'state', 'conditions', 'grantControls'}
+    if ca_policy_fields.issubset(fields) or {'conditions', 'grantControls'}.issubset(fields):
+        return 'ca_policies'
+
+    federation_fields = {'signingCertificate', 'issuerUri', 'passiveSignInUri'}
+    if federation_fields & fields:
+        return 'federation'
 
     signin_fields = {'userPrincipalName', 'ipAddress', 'clientAppUsed', 'conditionalAccessStatus'}
     if signin_fields & fields:
