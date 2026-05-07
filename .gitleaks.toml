@@ -137,4 +137,10 @@ stopwords = [
   # Our own redaction sentinels.
   "REDACTED-GOOGLE-AISTUDIO-KEY-1",
   "REDACTED-GOOGLE-AISTUDIO-KEY-2",
+  # The upstream TimeSketch SECRET_KEY shipped in our templates. Operators
+  # are expected to rotate it per-host (documented in docs/SECRETS.md).
+  # Our `timesketch-secret-key-assignment` rule still flags any *other*
+  # SECRET_KEY hardcoded elsewhere — this stopword just exempts the
+  # known-default value from the templates themselves.
+  "b9d01d529e2a3e3f18f7c4c1e8b5a290d8e4f6a2c1b3d5e7f9a1b3c5d7e9f1a3",
 ]
