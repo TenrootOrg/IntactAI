@@ -469,10 +469,21 @@
                                                 <!-- Azure scan report -->
                                                 <template x-if="run.type === 'azure_scan' && run.status === 'completed'">
                                                     <div class="flex items-center gap-1">
-                                                        <a :href="'/api/azure/report/' + run.id + '/download?type=technical'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Azure Report">
-                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                                                            Report
-                                                        </a>
+                                                        <!-- Report button only when LLM actually ran. No-LLM runs are
+                                                             just a Data ZIP — same content, so we don't offer a duplicate
+                                                             "report" file and instead show a small badge explaining why. -->
+                                                        <template x-if="run.details?.has_report && run.details?.llm_enabled !== false">
+                                                            <a :href="'/api/azure/report/' + run.id + '/download?type=technical'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Azure Report">
+                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                                Report
+                                                            </a>
+                                                        </template>
+                                                        <template x-if="run.details?.llm_enabled === false">
+                                                            <span class="bg-yellow-900/40 border border-yellow-700/60 text-yellow-300 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="LLM analysis was not enabled for this run. The Data ZIP contains the raw findings; re-run with Enable LLM (or upload the Data ZIP to the offline analysis page) to get the full forensic report.">
+                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                                                                LLM disabled
+                                                            </span>
+                                                        </template>
                                                         <a :href="'/api/azure/data/' + run.id + '/download'" download class="bg-gray-600 hover:bg-gray-500 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Raw Data (ZIP)">
                                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                             Data
@@ -1826,36 +1837,48 @@ sudo ./velociraptor service start</code></pre>
                          this.azureRunning = false;
                      },
                      async uploadAzureLogs(event) {
+                         // One-shot: upload → kick off analysis → bounce to
+                         // the Workflows tab so the user tracks progress on
+                         // the same workflow row as everything else
+                         // (mirrors the timesketch upload flow). The Cloud >
+                         // Azure tab itself stays clean — no inline file
+                         // list, no inline results cards.
                          const files = event.target.files;
                          if (!files.length) return;
                          this.azureRunning = true;
                          const formData = new FormData();
                          for (const file of files) formData.append('files', file);
                          try {
-                             const res = await fetch('/api/azure/upload', { method: 'POST', body: formData });
-                             const data = await res.json();
-                             this.azureRunId = data.run_id;
-                             this.azureUploadedFiles = data.files || [];
-                             alert('Uploaded ' + data.total_records + ' records. Click Analyze to run detection.');
-                         } catch(e) { console.error(e); alert('Upload failed'); }
-                         this.azureRunning = false;
-                     },
-                     async analyzeOffline() {
-                         if (!this.azureRunId) { alert('Upload files first'); return; }
-                         this.azureRunning = true;
-                         try {
-                             const res = await fetch('/api/azure/analyze-offline', {
+                             const upRes = await fetch('/api/azure/upload', { method: 'POST', body: formData });
+                             const upData = await upRes.json();
+                             if (!upRes.ok || !upData.run_id) {
+                                 alert('Upload failed: ' + (upData.error || upRes.statusText));
+                                 this.azureRunning = false;
+                                 event.target.value = '';
+                                 return;
+                             }
+                             const runId = upData.run_id;
+
+                             // Kick off the analysis (LLM is hard-pinned on
+                             // the backend for this endpoint, but we send
+                             // true here too for clarity).
+                             await fetch('/api/azure/analyze-offline', {
                                  method: 'POST',
                                  headers: { 'Content-Type': 'application/json' },
-                                 body: JSON.stringify({
-                                     run_id: this.azureRunId,
-                                     enable_llm: this.azureEnableLLM
-                                 })
+                                 body: JSON.stringify({ run_id: runId, enable_llm: true })
                              });
-                             const data = await res.json();
-                             await this.loadAzureResults(this.azureRunId);
-                         } catch(e) { console.error(e); }
+                         } catch(e) {
+                             console.error(e);
+                             alert('Upload failed');
+                             this.azureRunning = false;
+                             event.target.value = '';
+                             return;
+                         }
                          this.azureRunning = false;
+                         event.target.value = '';
+                         // Same handoff timesketch uses — switch to the
+                         // workflows tab where the run is already visible.
+                         this.$store.app.switchTab('workflows');
                      },
                      async loadAzureResults(runId) {
                          try {
@@ -2077,74 +2100,27 @@ sudo ./velociraptor service start</code></pre>
 
                     <!-- Offline Mode -->
                     <div x-show="azureMode === 'offline'" class="space-y-4">
+                        <!-- Static notice: LLM is mandatory and analysis kicks
+                             off automatically — no toggles, no per-file UI. -->
+                        <div class="bg-blue-900/30 border border-blue-700/50 rounded-lg px-4 py-3 text-sm text-blue-200">
+                            <span class="font-semibold">Upload runs the full LLM-backed analysis automatically.</span>
+                            Make sure your LLM API key is configured in
+                            <span class="text-blue-100 font-medium">Settings</span>
+                            before uploading. Progress is shown in the
+                            <span class="text-blue-100 font-medium">Workflows</span> tab.
+                        </div>
+
                         <!-- File Upload -->
-                        <div class="border-2 border-dashed border-gray-600 rounded-lg p-6 text-center">
-                            <input type="file" id="azure-upload" @change="uploadAzureLogs($event)" multiple accept=".json,.jsonl,.csv" class="hidden">
-                            <label for="azure-upload" class="cursor-pointer">
+                        <div class="border-2 border-dashed border-gray-600 rounded-lg p-6 text-center hover:border-blue-500 transition-colors"
+                             :class="azureRunning ? 'opacity-60 pointer-events-none' : ''">
+                            <input type="file" id="azure-upload" @change="uploadAzureLogs($event)" multiple accept=".json,.jsonl,.csv,.zip" class="hidden" :disabled="azureRunning">
+                            <label for="azure-upload" class="cursor-pointer block">
                                 <svg class="w-12 h-12 mx-auto text-gray-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
                                 </svg>
-                                <p class="text-gray-300">Click to upload Azure/M365 logs</p>
-                                <p class="text-gray-500 text-sm mt-1">Supports JSON, JSONL, CSV</p>
+                                <p class="text-gray-300" x-text="azureRunning ? 'Uploading…' : 'Click to upload Azure/M365 logs'"></p>
+                                <p class="text-gray-500 text-sm mt-1">JSON / JSONL / CSV, or a ZIP from the Data button of an online run</p>
                             </label>
-                        </div>
-
-                        <!-- Uploaded Files List -->
-                        <div x-show="azureUploadedFiles.length > 0" class="bg-gray-800 rounded-lg p-4">
-                            <h4 class="text-sm font-medium text-gray-300 mb-2">Uploaded Files:</h4>
-                            <template x-for="file in azureUploadedFiles" :key="file.filename">
-                                <div class="flex justify-between text-sm py-1">
-                                    <span class="text-gray-400" x-text="file.filename"></span>
-                                    <span class="text-green-400" x-text="file.records + ' records'"></span>
-                                </div>
-                            </template>
-                        </div>
-
-                        <!-- LLM Toggle -->
-                        <div class="flex items-center gap-3">
-                            <input type="checkbox" id="azure-llm-offline" x-model="azureEnableLLM" class="rounded bg-gray-700 border-gray-600">
-                            <label for="azure-llm-offline" class="text-gray-300">Enable LLM Analysis</label>
-                        </div>
-
-                        <!-- Analyze Button -->
-                        <button @click="analyzeOffline()"
-                                :disabled="azureRunning || !azureRunId"
-                                class="w-full py-3 rounded-lg font-medium transition-colors"
-                                :class="azureRunning || !azureRunId ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'">
-                            <span x-show="!azureRunning">Analyze Uploaded Logs</span>
-                            <span x-show="azureRunning">Analyzing...</span>
-                        </button>
-                    </div>
-
-                    <!-- Results Section -->
-                    <div x-show="azureResults" class="mt-8 bg-gray-800 rounded-lg p-6">
-                        <h3 class="text-lg font-semibold text-white mb-4">Results</h3>
-
-                        <!-- Status -->
-                        <div class="grid grid-cols-3 gap-4 mb-4">
-                            <div class="bg-gray-900 rounded p-3">
-                                <div class="text-2xl font-bold text-white" x-text="azureResults?.findings?.total_findings || 0"></div>
-                                <div class="text-sm text-gray-400">SIGMA Findings</div>
-                            </div>
-                            <div class="bg-gray-900 rounded p-3">
-                                <div class="text-2xl font-bold text-white" x-text="Object.keys(azureResults?.findings?.findings || {}).length"></div>
-                                <div class="text-sm text-gray-400">Rules Matched</div>
-                            </div>
-                            <div class="bg-gray-900 rounded p-3">
-                                <div class="text-lg font-bold" :class="azureResults?.status?.status === 'complete' ? 'text-green-400' : 'text-yellow-400'" x-text="azureResults?.status?.status || 'unknown'"></div>
-                                <div class="text-sm text-gray-400">Status</div>
-                            </div>
-                        </div>
-
-                        <!-- Findings by Source -->
-                        <div x-show="Object.keys(azureResults?.findings?.findings || {}).length > 0">
-                            <h4 class="text-sm font-medium text-gray-300 mb-2">Findings by Detection Rule:</h4>
-                            <template x-for="(findings, source) in (azureResults?.findings?.findings || {})" :key="source">
-                                <div class="flex justify-between py-1 text-sm border-b border-gray-700">
-                                    <span class="text-gray-400" x-text="source.replace('SIGMA.', '')"></span>
-                                    <span class="text-red-400" x-text="findings.length + ' hits'"></span>
-                                </div>
-                            </template>
                         </div>
                     </div>
                 </div>
