@@ -527,42 +527,61 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None) -
 
 
 def ensure_offline_collector_binaries(downloads_dir: str, logger: Callable = None) -> Dict:
-    """Check that Velociraptor v0.74.1 binaries exist for Offline Collector.
+    """Verify a Velociraptor offline-collector binary is present for each
+    supported platform (windows / linux / darwin).
 
-    v0.74.x is required because v0.75+ broke the -- pseudo-flag in Generic Collector.
-    These binaries are downloaded by install.sh during installation (when internet is available).
-    This function only checks their presence - it does NOT download (supports air-gap environments).
+    Discovery is version-agnostic: any `velociraptor-v<X>-<platform>` file
+    counts. This matches the runtime behaviour of
+    `services.offline_collector.constants:VELO_CLIENT_PATHS`, which picks
+    the highest-version binary per platform from this same directory.
+
+    install.sh's `download_offline_collector_binaries` (in `lib/docker.sh`)
+    is what actually downloads the files; this function only reports
+    presence so the operator can spot a broken air-gap setup.
     """
     def log(msg, level="info"):
         if logger:
             logger(msg, level)
-        print(f"[TOOLS-074] {msg}", flush=True)
+        print(f"[TOOLS] {msg}", flush=True)
+
+    import glob as _glob
 
     results = {"already_exists": [], "missing": []}
 
-    binaries = [
-        "velociraptor-v0.74.1-windows-amd64.exe",
-        "velociraptor-v0.74.1-linux-amd64",
-        "velociraptor-v0.74.1-darwin-amd64"
-    ]
+    # platform_label -> filename suffix glob
+    platforms = {
+        "windows": "windows-amd64.exe",
+        "linux":   "linux-amd64",
+        "darwin":  "darwin-amd64",
+    }
 
-    for binary in binaries:
-        dest_path = os.path.join(downloads_dir, binary)
-
-        # Check if file exists and has content
-        if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
-            results["already_exists"].append(binary)
+    for label, suffix in platforms.items():
+        pattern = os.path.join(downloads_dir, f"velociraptor-v*-{suffix}")
+        # Filter to non-empty regular files; ignore detached signatures.
+        matches = [
+            p for p in _glob.glob(pattern)
+            if os.path.isfile(p)
+            and os.path.getsize(p) > 0
+            and not p.endswith(".sig")
+        ]
+        if matches:
+            # Newest by mtime is good enough here — operators who keep
+            # multiple versions around will see them all in the "found"
+            # list.
+            for p in matches:
+                results["already_exists"].append(os.path.basename(p))
         else:
-            log(f"  Missing: {binary} (should be downloaded by install.sh)", "warning")
-            results["missing"].append(binary)
+            label_str = f"velociraptor-v*-{suffix}"
+            log(f"  Missing for {label}: no {label_str} in {downloads_dir} (run install.sh's offline-collector download step)", "warning")
+            results["missing"].append(label_str)
 
     exist_count = len(results["already_exists"])
     missing_count = len(results["missing"])
 
     if missing_count > 0:
-        log(f"Offline Collector binaries: {exist_count} found, {missing_count} missing", "warning")
+        log(f"Offline Collector binaries: {exist_count} present, {missing_count} platform(s) missing", "warning")
     else:
-        log(f"Offline Collector binaries: all {exist_count} present")
+        log(f"Offline Collector binaries: all {len(platforms)} platforms present ({exist_count} file(s))")
 
     return results
 
@@ -579,10 +598,12 @@ def download_and_configure_tools(logger: Callable = None) -> Dict:
 
     log("Starting tool download and configuration...")
 
-    # Ensure Offline Collector v0.74.1 binaries exist
+    # Ensure Offline Collector binaries are present (any version — pin
+    # comes from config.yaml's `versions.velociraptor` and is enforced by
+    # install.sh; this just verifies the files actually landed).
     # These go to /app/downloads which maps to modules/nginx/html/downloads/
     downloads_dir = "/app/downloads"
-    log("Checking Velociraptor v0.74.1 binaries for Offline Collector...")
+    log("Checking Velociraptor offline-collector binaries...")
     offline_results = ensure_offline_collector_binaries(downloads_dir, log)
 
     exist_count = len(offline_results.get('already_exists', []))

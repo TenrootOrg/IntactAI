@@ -407,33 +407,68 @@ download_timesketch_packages() {
 }
 
 download_offline_collector_binaries() {
-    # Velociraptor v0.74.1 binaries for Offline Collector
-    # NOTE: v0.74.x required because v0.75+ broke the -- pseudo-flag in Generic Collector
-    # GitHub tag is "v0.74" but files contain "v0.74.1" in the filename
+    # Velociraptor offline-collector binaries — version follows
+    # `versions.velociraptor` in `config.yaml` (single source of truth,
+    # same pin used to build the server image). Bump that one value and
+    # both the server and the offline-collector binaries move together
+    # on the next install.
+    #
+    # Old binaries from a previous version pin are removed so the
+    # downloads dir doesn't accumulate stale files. The backend's
+    # offline-collector code (`services/offline_collector/constants.py`)
+    # auto-discovers whatever binaries are present, so the cleanup +
+    # download here is what drives which version actually gets used.
+
+    local velo_version
+    velo_version=$(read_config "['versions']['velociraptor']")
+    if [[ -z "$velo_version" || "$velo_version" == "None" ]]; then
+        log_error "Offline-Collector: versions.velociraptor is not set in config.yaml — cannot determine which binaries to download"
+        return 0
+    fi
+    # GitHub tag is the major.minor (e.g. "v0.76"); patch versions live as
+    # release assets within that tag.
+    local velo_tag
+    velo_tag=$(echo "$velo_version" | sed 's/^\([0-9]*\.[0-9]*\).*/\1/')
 
     local downloads_dir="${SCRIPT_DIR}/modules/nginx/html/downloads"
-    local base_url="https://github.com/Velocidex/velociraptor/releases/download/v0.74"
+    local base_url="https://github.com/Velocidex/velociraptor/releases/download/v${velo_tag}"
 
-    log_info "Checking Velociraptor v0.74.1 binaries for Offline Collector..."
+    log_info "Checking Velociraptor v${velo_version} binaries for Offline Collector..."
 
     mkdir -p "$downloads_dir"
 
     local binaries=(
-        "velociraptor-v0.74.1-windows-amd64.exe"
-        "velociraptor-v0.74.1-linux-amd64"
-        "velociraptor-v0.74.1-darwin-amd64"
+        "velociraptor-v${velo_version}-windows-amd64.exe"
+        "velociraptor-v${velo_version}-linux-amd64"
+        "velociraptor-v${velo_version}-darwin-amd64"
     )
+
+    # Clean up any prior-version binaries so the downloads dir reflects
+    # the current pin. Pattern matches `velociraptor-v<X>-<platform>`
+    # for any version <X> — the loop below deletes only files whose
+    # version segment differs from the configured one.
+    local stale=0
+    for old in "$downloads_dir"/velociraptor-v*-windows-amd64.exe \
+               "$downloads_dir"/velociraptor-v*-linux-amd64 \
+               "$downloads_dir"/velociraptor-v*-darwin-amd64; do
+        [[ -f "$old" ]] || continue
+        if [[ "$old" != *"-v${velo_version}-"* ]]; then
+            log_info "  Removing stale binary: $(basename "$old")"
+            rm -f "$old"
+            ((stale++))
+        fi
+    done
+    if (( stale > 0 )); then
+        log_info "  Cleaned up $stale stale offline-collector binar(y/ies) from prior version pin"
+    fi
 
     local downloaded=0
     local skipped=0
-    # Minimum credible binary size — kept very permissive (1 MB) so any
-    # legitimate binary, even if upstream slimmed it down, passes. We're
-    # only trying to catch the failure modes that today's empty-but-not-
-    # empty `[[ -s ]]` check misses: HTTP 404 HTML pages (a few KB),
-    # GitHub rate-limit JSON responses (under 1 KB), and badly-aborted
-    # partial transfers. Real binaries are 65-75 MB; anything truly
-    # under 1 MB is broken regardless of version.
-    local min_size=$((1 * 1024 * 1024))   # 1 MB
+    # Minimum credible binary size — permissive (1 MB) so legitimate
+    # binaries pass even if upstream slims them down. The 1 MB floor
+    # only catches HTTP 404 HTML pages, GitHub rate-limit JSON, and
+    # badly-aborted partial transfers. Real binaries are 65-85 MB.
+    local min_size=$((1 * 1024 * 1024))
 
     for binary in "${binaries[@]}"; do
         local dest_path="${downloads_dir}/${binary}"
@@ -453,13 +488,11 @@ download_offline_collector_binaries() {
         fi
     done
 
-    # Post-condition validation — the function used to exit 0 even when
-    # every download failed (only log_warn on failure, no final check).
-    # The result was a "successful" install with an empty downloads/
-    # directory; the offline-collector path then failed at runtime
-    # weeks later. This block makes the failure loud during install
-    # without turning it into an abort (operator constraint: don't
-    # introduce new failure paths in fresh installs).
+    # Post-condition validation — function used to exit 0 even when every
+    # download failed; the install would "succeed" with an empty downloads/
+    # directory and the offline-collector path failed silently at runtime.
+    # Loud errors here + the end-of-install ATTENTION report make the issue
+    # visible without aborting installs that were going to succeed anyway.
     local missing=0
     for binary in "${binaries[@]}"; do
         local p="${downloads_dir}/${binary}"
@@ -467,24 +500,20 @@ download_offline_collector_binaries() {
         [[ -f "$p" ]] && sz=$(stat -c%s "$p" 2>/dev/null || echo 0)
         if [[ ! -s "$p" ]] || (( sz < min_size )); then
             log_error "Offline-Collector binary missing or undersized: $binary"
-            log_error "  Expected ≥1 MB at $p — got $sz bytes (real binaries are 65-75 MB)"
+            log_error "  Expected ≥1 MB at $p — got $sz bytes (real binaries are 65-85 MB)"
             log_error "  Manual fix: curl -fsSL ${base_url}/${binary} -o $p && chmod +x $p"
             ((missing++))
         fi
     done
     if (( missing > 0 )); then
-        log_error "Offline-Collector: $missing/${#binaries[@]} binaries unusable. Velociraptor offline-collector generation will fail until fixed (see commands above)."
+        log_error "Offline-Collector: $missing/${#binaries[@]} binaries unusable. Offline-collector generation will fail until fixed."
     fi
 
     if [[ $downloaded -gt 0 ]]; then
-        log_success "Offline Collector binaries: $downloaded downloaded, $skipped already existed"
+        log_success "Offline Collector binaries (v${velo_version}): $downloaded downloaded, $skipped already existed"
     else
-        log_info "Offline Collector binaries: all $skipped binaries already exist"
+        log_info "Offline Collector binaries (v${velo_version}): all $skipped binaries already exist"
     fi
-    # Always return 0 — install flow stays unchanged regardless of outcome.
-    # Loud errors above + the end-of-install ATTENTION report ensure the
-    # operator sees the issue without aborting installs that were already
-    # going to succeed.
     return 0
 }
 

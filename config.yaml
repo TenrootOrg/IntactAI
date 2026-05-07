@@ -40,5 +40,5 @@ versions:
   plaso: '20260119'
   portainer: 2.39.1
   timesketch: '20260326'
-  velociraptor: '0.76.3'
+  velociraptor: '0.76.5'
   backend: '1.0.0'

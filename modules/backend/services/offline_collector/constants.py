@@ -10,12 +10,60 @@ import time
 COLLECTOR_OUTPUT_DIR = "/tmp/offline_collectors"
 VELOCIRAPTOR_CONTAINER = "intact_velociraptor"
 
-# Velociraptor client binary paths (static in nginx/html/downloads)
-# NOTE: v0.74.x required for Generic Collector (v0.75+ broke the -- pseudo-flag)
+# Velociraptor client binary paths.
+#
+# Resolved at import time by scanning `/app/downloads/` for whichever
+# Velociraptor binaries are present. Picks the highest-version file per
+# platform when multiple are around.
+#
+# Source of truth for the version is `versions.velociraptor` in the
+# repo's `config.yaml`; install.sh's
+# `lib/docker.sh:download_offline_collector_binaries` reads that value,
+# downloads the matching binaries into `/app/downloads/`, and removes
+# any stale binaries from a prior version pin. The backend then auto-
+# discovers whatever's there — no edits to this file are needed when
+# the version bumps, just a backend restart.
+import glob
+import os
+import re
+
+_DOWNLOADS_DIR = "/app/downloads"
+
+
+def _semver_key(version: str):
+    """Sort key for `0.76.5` style version strings; missing/non-numeric
+    parts sort last so `velociraptor-v0.76-linux-amd64` (no patch) sorts
+    below `velociraptor-v0.76.5-linux-amd64`."""
+    parts = []
+    for chunk in version.split("."):
+        try:
+            parts.append((0, int(chunk)))
+        except ValueError:
+            parts.append((1, chunk))
+    return tuple(parts)
+
+
+def _discover_latest_binary(platform_glob: str) -> str:
+    """Return the absolute path to the highest-version binary matching
+    `velociraptor-v<version>-<platform_glob>` in `_DOWNLOADS_DIR`, or
+    empty string if none found."""
+    pattern = os.path.join(_DOWNLOADS_DIR, f"velociraptor-v*-{platform_glob}")
+    candidates = []
+    for path in glob.glob(pattern):
+        m = re.search(r"velociraptor-v([\d.]+)-", os.path.basename(path))
+        if not m:
+            continue
+        candidates.append((_semver_key(m.group(1)), path))
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda x: x[0])
+    return candidates[-1][1]
+
+
 VELO_CLIENT_PATHS = {
-    "windows": "/app/downloads/velociraptor-v0.74.1-windows-amd64.exe",
-    "linux": "/app/downloads/velociraptor-v0.74.1-linux-amd64",
-    "darwin": "/app/downloads/velociraptor-v0.74.1-darwin-amd64"
+    "windows": _discover_latest_binary("windows-amd64.exe"),
+    "linux":   _discover_latest_binary("linux-amd64"),
+    "darwin":  _discover_latest_binary("darwin-amd64"),
 }
 
 # Default artifacts (same as BestPractice)
