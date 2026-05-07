@@ -420,6 +420,7 @@ def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None, finding
 6. **Always include a `false_positive_check` for every finding** explaining what would make this benign (e.g., "user is on personal BYOD device", "service principal token refresh", "scheduled background sync").
 7. **Findings emission gate.** A `findings[]` entry exists only when the records show *specific behaviour-level evidence* of attacker intent (detection rule hit, anomalous timing, suspicious chaining of actions, baseline deviation, known TTPs) AND your confidence is high enough that a SOC analyst would act on it (pivot, block, escalate, contain). Default-shaped activity is NOT a finding — even if you could write one for it. Examples that should NOT become findings: normal interactive logons, default Windows scheduled tasks, expected user browsing, vendor RMM tools the org legitimately uses, software-installer mtime changes during normal use. An empty `findings[]` is the correct output when nothing suspicious is in the data. **Do NOT pad with low-confidence findings to make the JSON look fuller.**
 8. **IOC discipline.** A value belongs in `iocs.*` only if an analyst would pivot on it or block it in a SIEM. Brand-name mentions in user activity (browser history, installed-software lists, normal RDP-to-vendor-portal traffic) are NOT IOCs even when "interesting". Authentication providers (AzureAD, NT AUTHORITY, NT VIRTUAL MACHINE) and internal hostnames (DESKTOP-*, local-*) are NEVER IOCs. When in doubt, omit.
+9. **Timestamp format.** The records use a single canonical timestamp format: `YYYY-MM-DD HH:MM:SS` (24-hour, no timezone, no `T`, no `Z`). When you cite timestamps in `sample_timestamps`, evidence quotes, or prose, **use exactly that format** — copy the value from the records as-is. Do not convert to ISO-8601 (`2026-05-06T07:49:12Z`), do not add fractional seconds, do not add a timezone. Example: `"2026-05-06 07:49:12"`, never `"2026-05-06T07:49:12Z"`.
 
 ## OUTPUT FORMAT
 Return your response in two parts:
@@ -441,7 +442,7 @@ Return your response in two parts:
       "false_positive_check": "What would make this benign",
       "sample_users": ["user1@x.com"],
       "sample_ips": ["1.2.3.4"],
-      "sample_timestamps": ["2026-04-01T07:20:17Z"],
+      "sample_timestamps": ["2026-04-01 07:20:17"],
       "mitre": ["T1110"],
       "recommended_action": "What the analyst should do next"
     }
@@ -973,36 +974,35 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
 
     # ---- Adaptive strategy (Azure pipeline only) ----
     # When the merged event volume is small enough to fit in one LLM context,
-    # do a single time-sorted pass instead of fanning out per-artifact. The
-    # fan-out's "synthesis" pass only sees per-artifact summaries (titles +
-    # severities), so cross-event correlations like "MFA disabled 11 minutes
-    # before the credential was planted" are invisible to it. A single
-    # timeline pass lets the LLM see every event with its real timestamp and
-    # narrate the chain directly. Threshold tunable via
-    # llm_config.agentic.timeline_threshold; 0 disables timeline mode.
+    # add a cross-artifact timeline pass on top of the normal per-artifact
+    # fan-out. The timeline pass sees every event with its real timestamp
+    # and narrates the chain — cross-event correlations like "MFA disabled
+    # 11 minutes before the credential was planted" are visible to it but
+    # NOT to the per-artifact synthesis (which only sees titles+severities).
+    # The fan-out then produces the per-rule structured findings the report
+    # appendix renders, matching the on-prem (endpoint) report shape.
     #
     # Gated to pipeline_kind="azure" because forensic artifacts (the on-prem
     # agentic flow) aren't a chronological event stream — registry/browser
-    # data render badly as a timeline. Velociraptor scans always fan out.
+    # data render badly as a timeline. Velociraptor scans always fan out
+    # without the extra timeline call.
+    #
+    # Threshold tunable via llm_config.agentic.timeline_threshold;
+    # 0 disables the timeline-pass add-on entirely.
     total_rows = sum(len(rows) for rows in all_results.values())
     timeline_threshold = int(llm_config.get('agentic', {}).get('timeline_threshold', 500) or 0)
+    timeline_added = False
     if pipeline_kind == "azure" and 0 < total_rows <= timeline_threshold:
         log(
-            f"[LLM] Small run ({total_rows} rows <= {timeline_threshold}); "
-            f"running single timeline pass instead of {len(artifacts_list)}-artifact fan-out"
+            f"[LLM] Small Azure run ({total_rows} rows <= {timeline_threshold}); "
+            f"adding cross-artifact timeline pass on top of {len(artifacts_list)}-artifact fan-out"
         )
         timeline_text = _analyze_timeline(run_id, all_results, llm_config, anonymizer, log)
         if timeline_text:
             summaries["__timeline__"] = timeline_text
-            # Keep per-artifact keys present so downstream report code that
-            # iterates summaries finds an entry for each rule. The placeholder
-            # tells the renderer to refer to the timeline narrative.
-            for artifact in artifacts_list:
-                summaries.setdefault(artifact, "(see __timeline__ for the cross-artifact narrative)")
-            _log_llm_totals(run_id, log)
-            return summaries
-        # Timeline pass failed — fall through to fan-out
-        log("[LLM] Timeline pass returned empty; falling back to per-artifact fan-out", "warning")
+            timeline_added = True
+        else:
+            log("[LLM] Timeline pass returned empty; continuing with fan-out only", "warning")
 
     # ---- Fan-out (one LLM call per artifact) ----
     # Get max concurrent requests from config (default: 5)
@@ -1054,11 +1054,18 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
     # Synthesis pass: cross-artifact narrative anchored on a macro DFIR
     # playbook. Best-effort — never breaks the pipeline if it fails.
     # Stored under a reserved key the report layer can render distinctly.
-    if error_count < len(artifacts_list):
+    #
+    # Skip when the Azure timeline pass already populated __timeline__ —
+    # that's the same cross-artifact narrative role and a second LLM call
+    # for the same job would be pure redundancy. The on-prem (agentic)
+    # path always runs synthesis here because it has no timeline pass.
+    if error_count < len(artifacts_list) and not timeline_added:
         synthesis = synthesize_findings(run_id, summaries, llm_config, log_func=log_func)
         if synthesis:
             summaries["__synthesis__"] = synthesis
             log(f"[LLM] Cross-artifact synthesis added ({len(synthesis)} chars)")
+    elif timeline_added:
+        log("[LLM] Skipping synthesis pass — timeline already provides the cross-artifact narrative")
 
     # Surface running totals for the operator scanning the workflow log.
     # The dashboard reads the same llm_metrics dict from the workflow row.
