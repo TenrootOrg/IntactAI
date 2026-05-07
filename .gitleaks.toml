@@ -1,0 +1,138 @@
+# gitleaks configuration for IntactAI
+#
+# Extends the upstream default ruleset (covers Anthropic / OpenAI /
+# OpenRouter / GCP / AWS / GitHub / Slack / Stripe / npm / etc.) and
+# adds project-specific rules for the kinds of secrets that actually
+# leaked here in the past.
+#
+# Used by:
+#   - .pre-commit-config.yaml (local: blocks bad commits before they land)
+#   - .github/workflows/secret-scan.yml (CI: catches commits that bypassed
+#     the local hook with --no-verify)
+#   - scripts/scan-secrets.sh (one-shot full-history audit)
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Custom rules
+# ---------------------------------------------------------------------------
+
+# Azure tenant ID (or any UUID) hardcoded into a `tenant_id` / `client_id`
+# variable assignment. Catches the exact pattern that leaked in
+# data/replay_llm.py:108 — `"tenant_id": "d6b5bcda-..."`.
+#
+# We deliberately scope to the variable-assignment form so we don't false-
+# positive on UUIDs that legitimately appear in Sigma rule headers, IOC
+# example markdown, Windows ETW provider GUIDs, or test fixtures.
+[[rules]]
+id = "azure-tenant-guid-assignment"
+description = "Hardcoded Azure tenant_id / client_id GUID — should come from runtime config DB or env"
+regex = '''(?i)(tenant_id|client_id|directory_id|object_id)\s*[:=]\s*["']?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}["']?'''
+keywords = ["tenant_id", "client_id", "directory_id", "object_id"]
+
+# TimeSketch SECRET_KEY hardcoded — flag any new occurrences (the
+# legacy/template files have one well-known dev value the operator should
+# rotate; we don't want a SECOND one slipping in elsewhere).
+[[rules]]
+id = "timesketch-secret-key-assignment"
+description = "Hardcoded SECRET_KEY in a Python config — operator should rotate per-host"
+regex = '''SECRET_KEY\s*=\s*['"][0-9a-fA-F]{32,}['"]'''
+keywords = ["SECRET_KEY"]
+
+# Anthropic API keys. The default gitleaks ruleset (as of v8.21) doesn't
+# ship a dedicated Anthropic rule, so add one. Real keys are
+# `sk-ant-api03-<93 of [A-Za-z0-9_\-]>AA`.
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API key — should live in frontend_data.db, not tracked code"
+regex = '''sk-ant-api03-[A-Za-z0-9_\-]{93}AA'''
+keywords = ["sk-ant-"]
+
+# OpenAI project / user keys. Default gitleaks has `openai-api-key` for
+# the legacy `sk-<48 alnum>` form but misses the newer `sk-proj-` /
+# `sk-svcacct-` shapes.
+[[rules]]
+id = "openai-api-key-extended"
+description = "OpenAI key (project / service-account format)"
+regex = '''sk-(proj|svcacct|admin)-[A-Za-z0-9_\-]{40,}'''
+keywords = ["sk-proj-", "sk-svcacct-", "sk-admin-"]
+
+# OpenRouter keys.
+[[rules]]
+id = "openrouter-api-key"
+description = "OpenRouter API key"
+regex = '''sk-or-v1-[A-Za-z0-9]{64}'''
+keywords = ["sk-or-v1-"]
+
+# ---------------------------------------------------------------------------
+# Allowlist
+# ---------------------------------------------------------------------------
+#
+# False positives we already validated. Any addition here should be
+# justified in a comment so future-us knows why it's exempt.
+
+[allowlist]
+description = "Documented dev placeholders, public Microsoft GUIDs, IOC examples, test fixtures"
+
+paths = [
+  # ── Runtime / generated data on disk (all gitignored) ──
+  # gitleaks `detect --no-git` walks every file regardless of gitignore;
+  # without these allowlists every scan-secrets.sh run drowns in
+  # generic-api-key hits against tenant data, certs, YARA rules, etc.
+  # gitignore already prevents these from being committed; allowlisting
+  # them only suppresses the noise during scans.
+  '''^data/azure_runs/''',
+  '''^data/tmp/''',
+  '''^data/tools/''',
+  '''^data/intact\.db''',
+  '''^data/frontend_data\.db''',
+  '''^client_installers/''',
+  '''^modules/iris/secrets/''',
+  '''^modules/iris/config/certificates/''',
+  '''^modules/portainer/secrets/''',
+  '''^modules/nginx/ssl/''',
+  '''^modules/nginx/html/downloads/''',
+  # Velociraptor's vendor artifact bundle ships with placeholder webhook
+  # URLs and YARA keys (e.g. key1/key2 in YaraProcessWin) that match the
+  # generic rules. The upstream files are ours-by-import, not secrets.
+  # The whole `velociraptor/velociraptor/` dir is gitignored now but
+  # exists in older history commits.
+  '''^modules/velociraptor/velociraptor/''',
+
+  # ── In-tree files that legitimately contain secret-shaped strings ──
+  # Sigma rules ship with their own UUID identifiers; not secrets.
+  '''modules/timesketch/config/sigma/.*\.yml''',
+  '''modules/timesketch/config/sigma_config\.yaml''',
+  # Public Windows ETW provider GUIDs.
+  '''modules/timesketch/config/winevt_features\.yaml''',
+  # DFIR skill docs reference public Microsoft GUIDs (DCSync RPC, IOC
+  # examples that mimic STIX format).
+  '''modules/backend/services/agentic/skills/dfir/.*\.md''',
+  # Sample CSV used to seed nl2q examples — contains training-data UUIDs
+  # in human-readable text fields.
+  '''modules/timesketch/config/nl2q/data_types\.csv''',
+  # Test fixtures that intentionally use realistic-looking PII to exercise
+  # the anonymizer. Anything sensitive in here is by design.
+  '''modules/backend/services/agentic/tests/test_data_anonymizer\.py''',
+  # Rendered templates by definition contain whatever the operator put in
+  # at install time. The .template files (which are scanned) are the
+  # source of truth.
+  '''modules/timesketch/config/timesketch\.conf''',
+  '''modules/timesketch/config/timesketch_legacy\.conf''',
+  # The runbook references the very GUID it's helping retire.
+  '''docs/SECRETS\.md''',
+]
+
+stopwords = [
+  # All-zero placeholder GUID we substituted into history.
+  "00000000-0000-0000-0000-000000000000",
+  # Microsoft's public DCSync extended-rights GUIDs.
+  "1131f6aa-9c07-11d1-f79f-00c04fc2dcd2",
+  "1131f6ad-9c07-11d1-f79f-00c04fc2dcd2",
+  # AWS docs placeholder.
+  "AKIAIOSFODNN7EXAMPLE",
+  # Our own redaction sentinels.
+  "REDACTED-GOOGLE-AISTUDIO-KEY-1",
+  "REDACTED-GOOGLE-AISTUDIO-KEY-2",
+]
