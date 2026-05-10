@@ -109,88 +109,42 @@ def get_available_models():
         return jsonify({"error": str(e)}), 500
 
 
-# Cache for OpenRouter models (fetched once, reused)
-_openrouter_models_cache = {"models": None, "fetched_at": 0}
-
 @config_bp.route('/api/config/openrouter/models', methods=['GET'])
 def get_openrouter_models():
-    """Fetch available models from OpenRouter API with caching."""
-    import time, requests
+    """Search the OpenRouter model catalog persisted on disk.
 
-    # Return cache if less than 1 hour old
-    if _openrouter_models_cache["models"] and (time.time() - _openrouter_models_cache["fetched_at"]) < 3600:
-        return jsonify({"models": _openrouter_models_cache["models"]})
+    Replaces the previous in-memory cache + heavy provider/skip-pattern
+    filtering with a search over the full ~300-model catalog at
+    `/app/data/openrouter_models.json`. The catalog is bootstrapped at
+    install time and refreshed by the maintenance workflow — see
+    `services/openrouter_catalog.py` and the
+    `/api/maintenance/refresh-openrouter-models` route.
 
-    # Only show models from these providers
-    ALLOWED_PROVIDERS = ['anthropic', 'openai', 'google', 'qwen']
-    # Skip non-text models, old versions, weak models, and noise
-    SKIP_PATTERNS = [':free', ':extended', ':thinking', '-image', '-audio', '-vl-', 'vl-', '-search-',
-                     'gpt-3.5', 'gpt-4-turbo', 'gpt-4-1106', 'gpt-4-0314', 'gpt-4o-2024',
-                     'gpt-4o-mini', 'gpt-4.1-nano', 'gpt-4', 'gpt-5-nano', 'gpt-5.4-nano',
-                     'gemma-', 'nano-banana', 'safeguard', 'gpt-oss',
-                     '-deep-research', '-codex', '-chat', 'customtools',
-                     'claude-3-haiku', 'claude-3.5', 'claude-3.7', 'claude-sonnet-4:',
-                     'claude-opus-4:', 'claude-opus-4.1',
-                     'qwen-2.5', 'qwen2.5', 'qwq-', 'qwen3-8b', 'qwen3-14b', 'qwen3-32b',
-                     'qwen3-235b', 'qwen3-30b', 'qwen3-next', 'qwen3.5-9b', 'qwen3.5-27b',
-                     'qwen3.5-35b', 'qwen3.5-122b', 'qwen3.5-397b', 'qwen3-coder-30b',
-                     'qwen-plus-2025', 'thinking-2507',
-                     'preview', 'flash-lite', 'gemini-2.0',
-                     'o1-pro', 'o3-mini', 'o4-mini-high',
-                     'gpt-5.1', 'gpt-5.2', 'gpt-5.3']
+    Query params:
+        q      — case-insensitive substring (matches model id or name)
+        limit  — max results (default 10, matches the dashboard's
+                 "show 10 each time" requirement)
+        offset — pagination cursor
 
+    Bootstrap: if the catalog file doesn't exist yet (e.g. install
+    hadn't internet at deploy time), trigger an on-demand refresh.
+    """
+    from services.openrouter_catalog import search, refresh_catalog, load_catalog
+
+    q = request.args.get('q', '')
     try:
-        resp = requests.get("https://openrouter.ai/api/v1/models", timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
+        limit = max(1, min(int(request.args.get('limit', 10)), 100))
+    except (TypeError, ValueError):
+        limit = 10
+    try:
+        offset = max(0, int(request.args.get('offset', 0)))
+    except (TypeError, ValueError):
+        offset = 0
 
-        # Filter to popular providers, skip noise
-        all_models = []
-        for m in data.get("data", []):
-            model_id = m.get("id", "")
-            provider = model_id.split("/")[0] if "/" in model_id else ""
-            if provider not in ALLOWED_PROVIDERS:
-                continue
-            if any(skip in model_id.lower() for skip in SKIP_PATTERNS):
-                continue
-            all_models.append({
-                "id": model_id,
-                "name": m.get("name", ""),
-                "created": m.get("created", 0),
-            })
+    if not load_catalog():
+        refresh_catalog()
 
-        # Group by model family, keep only 2 newest per family
-        # Family = base name without version (e.g. "claude-opus", "gpt-5", "o3", "qwen3-max")
-        import re
-        from collections import defaultdict
-        families = defaultdict(list)
-        for m in all_models:
-            # Extract family: provider/name without trailing version numbers
-            # anthropic/claude-opus-4.6 → anthropic/claude-opus
-            # openai/gpt-5.4-pro → openai/gpt-pro (strip middle versions too)
-            model_id = m["id"]
-            # Remove version at end: -4.6, -4.5, -4, .4, -2.5
-            family = re.sub(r'[-.][\d]+(?:\.[\d]+)?$', '', model_id)
-            families[family].append(m)
-
-        # Keep 2 newest per family
-        models = []
-        for family, group in families.items():
-            group.sort(key=lambda x: x.get("created", 0), reverse=True)
-            for m in group[:2]:
-                models.append({"id": m["id"], "name": m["name"]})
-
-        models.sort(key=lambda x: x["name"].lower())
-
-        _openrouter_models_cache["models"] = models
-        _openrouter_models_cache["fetched_at"] = time.time()
-
-        return jsonify({"models": models})
-    except Exception as e:
-        # Return cache if available, otherwise empty
-        if _openrouter_models_cache["models"]:
-            return jsonify({"models": _openrouter_models_cache["models"]})
-        return jsonify({"models": [], "error": str(e)})
+    return jsonify(search(q=q, limit=limit, offset=offset))
 
 
 # =============================================================================

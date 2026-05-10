@@ -104,6 +104,38 @@ def run_system_maintenance():
                     import traceback
                     traceback.print_exc()
 
+                # =========================================================
+                # Task 2.5: Refresh OpenRouter model catalog (5%)
+                # =========================================================
+                # Replaces the in-memory cache that used to drop on every
+                # backend restart. Persisted catalog at
+                # /app/data/openrouter_models.json drives the dashboard's
+                # model selector. Best-effort — if OpenRouter is down or
+                # we're offline, the existing on-disk file keeps working.
+                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
+                add_log_to_run(run_id, "TASK 2.5: Refresh OpenRouter Model Catalog", "info")
+                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
+                try:
+                    from services.openrouter_catalog import refresh_catalog
+                    catalog_result = refresh_catalog(
+                        logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
+                    )
+                    if catalog_result.get('success'):
+                        add_log_to_run(
+                            run_id,
+                            f"OpenRouter catalog: {catalog_result['model_count']} models cached",
+                            "success",
+                        )
+                    else:
+                        add_log_to_run(
+                            run_id,
+                            f"OpenRouter catalog refresh skipped: {catalog_result.get('error', 'unknown')} "
+                            "(existing on-disk catalog still serves the UI)",
+                            "warning",
+                        )
+                except Exception as e:
+                    add_log_to_run(run_id, f"OpenRouter catalog error: {e}", "warning")
+
                 update_run_status(run_id, "running", progress=60)
 
                 # =========================================================
@@ -217,6 +249,34 @@ def run_system_maintenance():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@maintenance_bp.route('/api/maintenance/openrouter-catalog', methods=['GET'])
+def openrouter_catalog_status():
+    """Return on-disk OpenRouter catalog summary (model count, fetch
+    time, file presence). UI shows this so the operator knows when
+    the dashboard's model selector list was last refreshed."""
+    from services.openrouter_catalog import catalog_status
+    return jsonify(catalog_status())
+
+
+@maintenance_bp.route('/api/maintenance/refresh-openrouter-models', methods=['POST'])
+def refresh_openrouter_models():
+    """Refresh `data/openrouter_models.json` from
+    https://openrouter.ai/api/v1/models. Standalone counterpart to the
+    catalog refresh that runs as Task 2.5 of `/api/maintenance/run`.
+
+    Synchronous — the fetch is small (~few hundred KB) and finishes in
+    a second or two. No workflow row needed for that timescale.
+    """
+    try:
+        from services.openrouter_catalog import refresh_catalog
+        result = refresh_catalog()
+        if result.get('success'):
+            return jsonify(result)
+        return jsonify(result), 502  # upstream fetch problem, not our bug
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @maintenance_bp.route('/api/maintenance/refresh-skills', methods=['POST'])

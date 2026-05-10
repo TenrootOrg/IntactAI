@@ -949,19 +949,51 @@ deploy_backend() {
     log_info "  Waiting for Backend API health check (http://localhost:5001/api/health)..."
     local be_wait=0
     local be_max_wait=60
+    local be_healthy=false
     while [[ $be_wait -lt $be_max_wait ]]; do
         if curl -sf --max-time 5 "http://localhost:5001/api/health" > /dev/null 2>&1; then
             log_success "  Backend API is healthy! (${be_wait}s)"
-            track_module_success "Backend API"
-            return 0
+            be_healthy=true
+            break
         fi
         sleep 5
         ((be_wait+=5))
         log_info "  Waiting for Backend API... (${be_wait}/${be_max_wait}s)"
     done
 
-    log_warn "  Backend API started but health check not responding yet"
-    capture_diagnostic_logs "Backend API (post-deploy timeout)" intact_backend
+    if [[ "$be_healthy" != "true" ]]; then
+        log_warn "  Backend API started but health check not responding yet"
+        capture_diagnostic_logs "Backend API (post-deploy timeout)" intact_backend
+        track_module_success "Backend API"
+        return 0
+    fi
+
+    # ---- Bootstrap OpenRouter model catalog ----------------------------
+    # Persists the full ~300-model OpenRouter catalog to
+    # /app/data/openrouter_models.json so the dashboard's model selector
+    # has results immediately on first open. Best-effort: if OpenRouter
+    # is unreachable from this host, the on-demand fetch in the API
+    # endpoint will retry the next time the operator opens Settings.
+    # The maintenance workflow refreshes the catalog later.
+    log_info "  Bootstrapping OpenRouter model catalog (best-effort)..."
+    local catalog_resp
+    catalog_resp=$(curl -s --max-time 30 -X POST \
+        "http://localhost:5001/api/maintenance/refresh-openrouter-models" 2>/dev/null)
+    local catalog_count
+    catalog_count=$(echo "$catalog_resp" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('model_count', 0) if d.get('success') else 0)
+except Exception:
+    print(0)
+" 2>/dev/null)
+    if [[ "${catalog_count:-0}" -gt 0 ]]; then
+        log_success "  OpenRouter catalog: $catalog_count models cached"
+    else
+        log_warn "  OpenRouter catalog bootstrap deferred (will retry on first UI open or via 'Run Maintenance')"
+    fi
+
     track_module_success "Backend API"
 }
 

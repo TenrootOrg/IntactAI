@@ -2350,29 +2350,40 @@ sudo ./velociraptor service start</code></pre>
                                             </optgroup>
                                         </template>
                                     </select>
-                                    <!-- OpenRouter: autocomplete text input -->
+                                    <!-- OpenRouter: server-side filtered autocomplete.
+                                         Backed by /api/config/openrouter/models
+                                         which reads the persisted catalog at
+                                         /app/data/openrouter_models.json (refreshed
+                                         at install + via Run Maintenance). Each
+                                         keystroke fires a debounced fetch with
+                                         ?q=<input>&limit=10 — only matching rows
+                                         come back, so the operator sees the 10
+                                         most-related models as they type. -->
                                     <div x-show="$store.settings.config.agentic.online_llm.provider === 'openrouter'"
                                          x-data="{
                                              search: $store.settings.config.agentic.online_llm.model || '',
-                                             models: [],
-                                             filtered: [],
+                                             results: [],
+                                             total: 0,
                                              open: false,
                                              loading: false,
-                                             async fetchModels() {
-                                                 if (this.models.length > 0) return;
+                                             fetchedAt: '',
+                                             _debounce: null,
+                                             async query() {
                                                  this.loading = true;
                                                  try {
-                                                     const resp = await fetch('/api/config/openrouter/models');
+                                                     const url = '/api/config/openrouter/models?limit=10&q=' +
+                                                                 encodeURIComponent(this.search || '');
+                                                     const resp = await fetch(url);
                                                      const data = await resp.json();
-                                                     this.models = data.models || [];
-                                                 } catch(e) { this.models = []; }
+                                                     this.results = data.models || [];
+                                                     this.total = data.total || 0;
+                                                     this.fetchedAt = data.fetched_at || '';
+                                                 } catch(e) { this.results = []; this.total = 0; }
                                                  this.loading = false;
                                              },
-                                             filter() {
-                                                 const q = this.search.toLowerCase();
-                                                 this.filtered = this.models.filter(m =>
-                                                     m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)
-                                                 ).slice(0, 15);
+                                             schedule() {
+                                                 clearTimeout(this._debounce);
+                                                 this._debounce = setTimeout(() => this.query(), 150);
                                              },
                                              select(model) {
                                                  this.search = model.id;
@@ -2383,24 +2394,35 @@ sudo ./velociraptor service start</code></pre>
                                          x-init="search = $store.settings.config.agentic.online_llm.model || ''"
                                          class="relative">
                                         <input type="text" x-model="search"
-                                               @focus="fetchModels(); filter(); open = true"
-                                               @input="filter(); open = true"
+                                               @focus="query(); open = true"
+                                               @input="open = true; schedule()"
                                                @click.away="open = false"
                                                @keydown.escape="open = false"
                                                @change="$store.settings.config.agentic.online_llm.model = search"
                                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
-                                               placeholder="Type to search models... e.g. claude, deepseek, llama">
-                                        <div x-show="loading" class="absolute right-2 top-2 text-xs text-gray-500">Loading...</div>
+                                               placeholder="Type to search OpenRouter models — e.g. sonnet, gpt-5, qwen, deepseek">
+                                        <div x-show="loading" class="absolute right-2 top-2 text-xs text-gray-500">Loading…</div>
                                         <!-- Dropdown results -->
-                                        <div x-show="open && filtered.length > 0"
-                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg max-h-48 overflow-y-auto">
-                                            <template x-for="m in filtered" :key="m.id">
+                                        <div x-show="open && results.length > 0"
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg max-h-64 overflow-y-auto">
+                                            <template x-for="m in results" :key="m.id">
                                                 <div @mousedown.prevent="select(m)"
                                                      class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50">
                                                     <div class="text-white" x-text="m.name"></div>
                                                     <div class="text-xs text-gray-500" x-text="m.id"></div>
                                                 </div>
                                             </template>
+                                            <div x-show="total > results.length"
+                                                 class="px-3 py-1 text-[11px] text-gray-500 italic border-t border-gray-700/50">
+                                                Showing <span x-text="results.length"></span> of <span x-text="total"></span> matches — keep typing to narrow down.
+                                            </div>
+                                        </div>
+                                        <div x-show="open && results.length === 0 && !loading && search.length > 0"
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-xs text-gray-400">
+                                            No matching models in the catalog. Run <span class="text-blue-400">Maintenance → Refresh</span> to update, or check <a href="https://openrouter.ai/models" target="_blank" class="text-blue-400 underline">openrouter.ai/models</a>.
+                                        </div>
+                                        <div x-show="fetchedAt" class="mt-1 text-[10px] text-gray-600">
+                                            Catalog last refreshed: <span x-text="fetchedAt"></span>
                                         </div>
                                     </div>
                                 </div>
