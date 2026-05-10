@@ -342,12 +342,17 @@ _pull_image_with_retry() {
     local had_failure=0
 
     while (( attempt <= max_attempts )); do
-        if docker pull "$image" 2>> "$LOG_FILE"; then
-            if (( had_failure > 0 )); then
-                log_success "  $image pulled on attempt $attempt (previous failure was transient)"
-                INSTALL_WARNINGS+=("  ↳ resolved: $image pull succeeded on attempt $attempt")
+        # Stream progress to BOTH terminal and log file. Operator needs
+        # to see the per-layer download bytes so a slow pull doesn't
+        # look like a hang.
+        if docker pull "$image" 2>&1 | tee -a "$LOG_FILE"; then
+            if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+                if (( had_failure > 0 )); then
+                    log_success "  $image pulled on attempt $attempt (previous failure was transient)"
+                    INSTALL_WARNINGS+=("  ↳ resolved: $image pull succeeded on attempt $attempt")
+                fi
+                return 0
             fi
-            return 0
         fi
         had_failure=1
         if (( attempt < max_attempts )); then
@@ -372,8 +377,12 @@ pull_plaso_image() {
     fi
 
     log_info "Downloading $plaso_image (this may take a few minutes)..."
-    if docker pull "$plaso_image" 2>> "$LOG_FILE"; then
-        log_success "Plaso image pulled successfully: $plaso_image"
+    if docker pull "$plaso_image" 2>&1 | tee -a "$LOG_FILE"; then
+        if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            log_success "Plaso image pulled successfully: $plaso_image"
+        else
+            log_warn "Failed to pull Plaso image - it will be downloaded on first use"
+        fi
     else
         log_warn "Failed to pull Plaso image - it will be downloaded on first use"
     fi
@@ -393,8 +402,12 @@ pull_python_alpine_image() {
     fi
 
     log_info "  Downloading $image..."
-    if docker pull "$image" 2>> "$LOG_FILE"; then
-        log_success "  Python Alpine image pulled successfully"
+    if docker pull "$image" 2>&1 | tee -a "$LOG_FILE"; then
+        if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            log_success "  Python Alpine image pulled successfully"
+        else
+            log_warn "  Failed to pull $image - Plaso decompression may fail offline"
+        fi
     else
         log_warn "  Failed to pull $image - Plaso decompression may fail offline"
     fi
@@ -636,8 +649,13 @@ pull_dfir_o365rc_image() {
         return 0
     fi
 
-    if docker pull anssi/dfir-o365rc:latest 2>> "$LOG_FILE"; then
-        log_success "DFIR-O365RC image pulled successfully"
+    if docker pull anssi/dfir-o365rc:latest 2>&1 | tee -a "$LOG_FILE"; then
+        if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            log_success "DFIR-O365RC image pulled successfully"
+        else
+            log_warn "Failed to pull DFIR-O365RC image - Unified Audit Log collection will not be available"
+            return 1
+        fi
     else
         log_warn "Failed to pull DFIR-O365RC image - Unified Audit Log collection will not be available"
         return 1

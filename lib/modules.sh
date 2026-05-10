@@ -226,14 +226,32 @@ pull_compose_with_retry() {
     local had_failure=0
 
     while [[ $attempt -le $max_attempts ]]; do
-        log_info "  Pulling images for ${module_name} (attempt ${attempt}/${max_attempts})..."
-        if docker compose pull 2>&1 | tee -a "$LOG_FILE" | \
-                grep -vE "^\s*[0-9a-f]{12} (Downloading|Extracting|Waiting|Download complete|Pull complete|Pulling fs layer) " >/dev/null; then
-            # PIPESTATUS[0] is docker compose pull's exit code
+        log_info "  Pulling images for ${module_name} (attempt ${attempt}/${max_attempts}) — this can take 5-15 min on first install for big images (ELK / IRIS)..."
+
+        # Stream docker pull progress to BOTH the operator's terminal
+        # and the log file. The previous version filtered the per-layer
+        # progress lines (`<id> Downloading|Extracting|Pull complete …`)
+        # and discarded everything to /dev/null, so an install that hung
+        # for 10 minutes during a multi-GB pull looked completely silent
+        # and operators thought it had crashed.
+        #
+        # `--progress=plain` is critical: docker's default `auto` mode
+        # emits ANSI escape codes that overwrite the same terminal line.
+        # That's nice on a TTY but fills the log file with garbage and
+        # produces no useful output when install.sh's stdout is itself
+        # piped/teed elsewhere. `plain` gives one-line-per-event output
+        # that's readable both on screen and in install_*.log.
+        #
+        # PIPESTATUS[0] is the docker exit code (tee's success doesn't
+        # mask a failed pull). Don't use `set -o pipefail` here — we
+        # want to keep the existing per-attempt retry semantics.
+        if docker compose --progress=plain pull 2>&1 | tee -a "$LOG_FILE"; then
             if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
                 if (( had_failure > 0 )); then
                     log_success "  ${module_name} pull succeeded on attempt ${attempt} (previous failure was transient)"
                     INSTALL_WARNINGS+=("  ↳ resolved: ${module_name} pull succeeded on attempt ${attempt}")
+                else
+                    log_success "  ${module_name} images pulled"
                 fi
                 return 0
             fi
