@@ -18,8 +18,8 @@ velociraptor:
     description: "Fast detection-focused scan for rapid assessment (12 artifacts)"
     is_default: true
     settings:
-      hunt_expiry: 120
-      timeout: 600
+      hunt_expiry: 720
+      timeout: 3600
       cpu_limit: 90
       # Flow-level resource limits (passed into the hunt's VQL `hunt(...)`).
       # Override the historical 1 GiB / 1 M-row hardcoded defaults from
@@ -46,8 +46,8 @@ velociraptor:
     description: "Curated best-practice artifact collection for thorough IR triage (31 artifacts)"
     is_default: true
     settings:
-      hunt_expiry: 120
-      timeout: 3600
+      hunt_expiry: 720
+      timeout: 21600
       cpu_limit: 90
       # Flow-level resource limits — see velociraptor_quick_scan for notes.
       flow_max_rows: 10000000
@@ -91,8 +91,8 @@ velociraptor:
     description: "Maximum artifact collection for deep forensic analysis (53 artifacts)"
     is_default: true
     settings:
-      hunt_expiry: 180
-      timeout: 7200
+      hunt_expiry: 1080
+      timeout: 43200
       cpu_limit: 90
       # Flow-level resource limits — see velociraptor_quick_scan for notes.
       flow_max_rows: 10000000
@@ -169,8 +169,8 @@ velociraptor:
     description: "Low-volume detection artifacts for fast analysis (11 artifacts)"
     is_default: true
     settings:
-      hunt_expiry: 120
-      timeout: 600
+      hunt_expiry: 720
+      timeout: 3600
       cpu_limit: 90
       # Flow-level resource limits — see velociraptor_quick_scan for notes.
       flow_max_rows: 10000000
@@ -194,8 +194,8 @@ velociraptor:
     description: "Extended detection with program execution, C2, and browser artifacts (15 artifacts)"
     is_default: true
     settings:
-      hunt_expiry: 120
-      timeout: 600
+      hunt_expiry: 720
+      timeout: 3600
       cpu_limit: 90
       # Flow-level resource limits — see velociraptor_quick_scan for notes.
       flow_max_rows: 10000000
