@@ -548,7 +548,9 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                     result_artifact, summary, error = future.result(timeout=1)
                     summaries[result_artifact] = summary
                     if error:
-                        add_log_to_run(run_id, f"[LLM] Error for {result_artifact}: {error}", "warning")
+                        from services.agentic.analyzers import explain_llm_error
+                        _ol = (llm_config.get('agentic') or {}).get('online_llm', {}) if isinstance(llm_config, dict) else {}
+                        add_log_to_run(run_id, f"[LLM] Error for {result_artifact}: {explain_llm_error(str(error), _ol.get('model', '?'), _ol.get('provider', '?'))}", "warning")
                     else:
                         add_log_to_run(run_id, f"[LLM] Analysis complete: {result_artifact}", "success")
                     completed.append(result_artifact)
@@ -785,7 +787,9 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                         update_phase_func(run_id, "analyzing", progress)
 
                     if error:
-                        add_log_to_run(run_id, f"[LLM] Error for {result_artifact}: {error}", "warning")
+                        from services.agentic.analyzers import explain_llm_error
+                        _ol = (llm_config.get('agentic') or {}).get('online_llm', {}) if isinstance(llm_config, dict) else {}
+                        add_log_to_run(run_id, f"[LLM] Error for {result_artifact}: {explain_llm_error(str(error), _ol.get('model', '?'), _ol.get('provider', '?'))}", "warning")
                     else:
                         add_log_to_run(run_id, f"[LLM] Analysis complete: {result_artifact}", "success")
                 except Exception as e:

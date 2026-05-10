@@ -180,8 +180,68 @@ def resolve_model_alias(model_name: str, provider: str) -> str:
         if 'openrouter' in alias_map:
             return alias_map['openrouter']
 
+    # OpenRouter aliases — model IDs ending in `-latest` need a leading
+    # `~` to be parsed by the API as "auto-resolve to latest in this
+    # family". Without the tilde, OpenRouter returns 400 "not a valid
+    # model ID". Operators routinely copy the URL slug from
+    # `openrouter.ai/~anthropic/claude-sonnet-latest` and miss the
+    # leading `~` (it looks like part of the URL path); auto-prepend
+    # so the alias works either way. The tilde is OpenRouter-specific —
+    # other providers don't use it, so only apply when we'd hit OR.
+    if (
+        provider == "openrouter"
+        and "/" in model_name
+        and model_name.endswith("-latest")
+        and not model_name.startswith("~")
+    ):
+        return "~" + model_name
+
     # Not an alias, return as-is (user provided actual model ID)
     return model_name
+
+
+def explain_llm_error(error_str: str, model: str, provider: str) -> str:
+    """Wrap a raw LLM API error with operator-friendly guidance when the
+    underlying cause is a model-ID problem.
+
+    The bare error from OpenRouter / Anthropic / OpenAI looks like
+    `Error code: 400 - {'error': {'message': 'X is not a valid model ID', ...}}`
+    which is uninformative when the dashboard logs it on a fresh install.
+    Detect the common 'invalid model' pattern and prepend a hint with
+    the configured model + provider + how to fix it. Pass-through for
+    every other error shape (rate limits, auth, server errors, etc.) so
+    we don't accidentally hide useful detail.
+    """
+    err_lower = (error_str or "").lower()
+    invalid_model = (
+        "is not a valid model id" in err_lower
+        or "model_not_found" in err_lower
+        or "no such model" in err_lower
+    )
+    if not invalid_model:
+        return error_str
+
+    hint_lines = [
+        f"Model '{model}' was rejected by {provider}.",
+    ]
+    if provider == "openrouter":
+        hint_lines.append(
+            f"  Verify the ID at https://openrouter.ai/{model.lstrip('~')} — "
+            "if that page 404s, the model doesn't exist or the alias hasn't been published."
+        )
+        hint_lines.append(
+            "  Common cause: a per-version `-latest` (e.g. `openai/gpt-5.5-latest`) — "
+            "OpenRouter only mints `-latest` aliases at the family level "
+            "(e.g. `~openai/gpt-latest`). Use a pinned version (`openai/gpt-5.5`) "
+            "or a family alias (`~openai/gpt-latest`, `~anthropic/claude-sonnet-latest`)."
+        )
+    else:
+        hint_lines.append(
+            f"  Set a valid model ID in Settings → Agentic → Online LLM. "
+            f"Provider '{provider}' published model lists are at the vendor's API docs."
+        )
+    hint_lines.append(f"  Raw error: {error_str}")
+    return "\n".join(hint_lines)
 
 
 def get_available_models() -> list:
@@ -1043,13 +1103,21 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
 
             if error:
                 error_count += 1
-                log(f"[LLM] Error for {artifact}: {error}", "warning")
+                # Wrap with operator-friendly hint if the underlying cause is
+                # an invalid model ID (the most common operator-config bug).
+                _provider = (llm_config.get('agentic') or {}).get('online_llm', {}).get('provider', '?')
+                _model = (llm_config.get('agentic') or {}).get('online_llm', {}).get('model', '?')
+                log(f"[LLM] Error for {artifact}: {explain_llm_error(str(error), _model, _provider)}", "warning")
             else:
                 log(f"[LLM] Analysis complete for {artifact} ({completed}/{len(artifacts_list)})")
 
     # If ALL analyses failed, raise an exception so the pipeline knows
     if error_count == len(artifacts_list) and len(artifacts_list) > 0:
-        raise RuntimeError(f"All {error_count} LLM analyses failed. Check your LLM configuration (API key or Ollama server).")
+        raise RuntimeError(
+            f"All {error_count} LLM analyses failed. Most common cause: invalid "
+            f"model ID in Settings → Agentic → Online LLM. Check the per-artifact "
+            f"warnings above for the exact upstream error."
+        )
 
     # Synthesis pass: cross-artifact narrative anchored on a macro DFIR
     # playbook. Best-effort — never breaks the pipeline if it fails.
