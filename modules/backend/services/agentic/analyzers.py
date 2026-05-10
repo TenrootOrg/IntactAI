@@ -124,42 +124,104 @@ MODEL_ALIASES = {
     # Claude models - simple aliases auto-update to latest
     "claude-opus": {
         "claude": "opus",  # Auto-resolves to latest Opus
-        "openrouter": "anthropic/claude-opus-4-6"  # OpenRouter needs specific version
+        "openrouter": "anthropic/claude-opus-4-6",  # OpenRouter needs specific version
+        "max_output_tokens": 128000,
     },
     "claude-sonnet": {
         "claude": "sonnet",  # Auto-resolves to latest Sonnet
-        "openrouter": "anthropic/claude-sonnet-4-6"
+        "openrouter": "anthropic/claude-sonnet-4-6",
+        "max_output_tokens": 64000,
     },
     "claude-haiku": {
         "claude": "haiku",  # Auto-resolves to latest Haiku
-        "openrouter": "anthropic/claude-haiku-4-5"
+        "openrouter": "anthropic/claude-haiku-4-5",
+        "max_output_tokens": 8192,
     },
     # OpenAI models
     "gpt-4o": {
         "openai": "gpt-4o",
-        "openrouter": "openai/gpt-4o"
+        "openrouter": "openai/gpt-4o",
+        "max_output_tokens": 16384,
     },
     "gpt-4.1": {
         "openai": "gpt-4.1",
-        "openrouter": "openai/gpt-4.1"
+        "openrouter": "openai/gpt-4.1",
+        "max_output_tokens": 32768,
     },
     # Google models - use -latest suffix for auto-updates
     "gemini-flash": {
         "gemini": "gemini-2.5-flash-latest",  # Auto-resolves to latest Flash
-        "openrouter": "google/gemini-2.5-flash-preview"
+        "openrouter": "google/gemini-2.5-flash-preview",
+        "max_output_tokens": 65536,
     },
     "gemini-pro": {
         "gemini": "gemini-2.5-pro-latest",  # Auto-resolves to latest Pro
-        "openrouter": "google/gemini-2.5-pro-preview"
+        "openrouter": "google/gemini-2.5-pro-preview",
+        "max_output_tokens": 65536,
     },
     # DeepSeek models (OpenRouter only)
     "deepseek-v3": {
-        "openrouter": "deepseek/deepseek-chat-v3-0324"
+        "openrouter": "deepseek/deepseek-chat-v3-0324",
+        "max_output_tokens": 8192,
     },
     "deepseek-r1": {
-        "openrouter": "deepseek/deepseek-r1"
+        "openrouter": "deepseek/deepseek-r1",
+        "max_output_tokens": 8192,
     },
 }
+
+
+def get_model_max_output_tokens(model_input: str, provider: str):
+    """Resolve the max output tokens for a given model id + provider.
+
+    Walk order:
+        1. Friendly alias table (`MODEL_ALIASES[model_input].max_output_tokens`)
+        2. The provider's catalog file (looks up the resolved native id
+           or canonical id and reads `max_output_tokens` off the entry)
+        3. None — caller falls back to the constant default
+
+    Used by the resolver to honor the user's "just always use the max"
+    directive when the operator hasn't explicitly overridden it.
+    """
+    if not model_input:
+        return None
+    # Step 1: alias table
+    alias_entry = MODEL_ALIASES.get(model_input)
+    if alias_entry and alias_entry.get("max_output_tokens"):
+        return alias_entry["max_output_tokens"]
+
+    # Step 2: per-provider catalog. Local imports to avoid module-load
+    # ordering issues — the catalog package imports analyzers' siblings
+    # transitively in some paths.
+    catalog_module = None
+    try:
+        if provider == "openrouter":
+            from services.llm_catalogs import openrouter as catalog_module
+        elif provider == "claude":
+            from services.llm_catalogs import anthropic as catalog_module
+        elif provider == "openai":
+            from services.llm_catalogs import openai as catalog_module
+        elif provider == "gemini":
+            from services.llm_catalogs import gemini as catalog_module
+    except Exception:
+        catalog_module = None
+
+    if catalog_module:
+        try:
+            models = catalog_module.load_catalog()
+            # `model_input` for direct providers is usually the friendly
+            # alias; only OpenRouter and "custom" pass raw ids. Try both
+            # native id and canonical id matches.
+            resolved = resolve_model_alias(model_input, provider)
+            for m in models:
+                if m.get("id") == resolved or m.get("id") == model_input \
+                        or m.get("canonical_id") == resolved:
+                    if m.get("max_output_tokens"):
+                        return m["max_output_tokens"]
+        except Exception:
+            pass
+
+    return None
 
 def resolve_model_alias(model_name: str, provider: str) -> str:
     """Resolve a friendly model name to the actual model ID for a provider.
@@ -1208,8 +1270,25 @@ def call_llm(prompt, system_prompt, config, run_id=None, model_override=None):
     agentic_config = config.get('agentic', {})
     mode = agentic_config.get('llm_mode', 'online')
 
-    # Get configurable limits with fallbacks to constants
-    max_tokens = agentic_config.get('max_response_tokens', MAX_LLM_TOKENS)
+    # Resolution order honors the user's "just always use the max" directive
+    # while preserving the override path: an explicit operator value wins;
+    # otherwise we ask the alias/catalog layer for the model's published
+    # max output tokens; otherwise we fall back to the constant default.
+    # Clearing the input field in Settings sends `None`/0 here, which
+    # re-engages the auto-resolved max — useful escape hatch.
+    configured = agentic_config.get('max_response_tokens')
+    if configured:
+        max_tokens = configured
+    else:
+        if mode == 'online':
+            online_cfg = agentic_config.get('online_llm', {})
+            model_input = (model_override or online_cfg.get('model') or '')
+            provider_name = online_cfg.get('provider', 'claude')
+            model_max = get_model_max_output_tokens(model_input, provider_name)
+        else:
+            model_max = None
+        max_tokens = model_max or MAX_LLM_TOKENS
+
     context_size = agentic_config.get('ollama_context_size', OLLAMA_CONTEXT_SIZE)
     timeout = agentic_config.get('ollama_timeout', OLLAMA_TIMEOUT_SECONDS)
 

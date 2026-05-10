@@ -105,36 +105,55 @@ def run_system_maintenance():
                     traceback.print_exc()
 
                 # =========================================================
-                # Task 2.5: Refresh OpenRouter model catalog (5%)
+                # Task 2.5: Refresh LLM model catalogs (5%)
                 # =========================================================
-                # Replaces the in-memory cache that used to drop on every
-                # backend restart. Persisted catalog at
-                # /app/data/openrouter_models.json drives the dashboard's
-                # model selector. Best-effort — if OpenRouter is down or
-                # we're offline, the existing on-disk file keeps working.
+                # Persisted catalogs at /app/data/{openrouter,anthropic,
+                # openai,gemini}_models.json drive the dashboard's model
+                # selector. OpenRouter goes first because the three
+                # direct-provider refreshes enrich their entries against
+                # it. Each is best-effort — if a provider is unreachable
+                # or its API key isn't configured, the existing on-disk
+                # file keeps serving the UI and the others still run.
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                add_log_to_run(run_id, "TASK 2.5: Refresh OpenRouter Model Catalog", "info")
+                add_log_to_run(run_id, "TASK 2.5: Refresh LLM Model Catalogs", "info")
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                try:
-                    from services.openrouter_catalog import refresh_catalog
-                    catalog_result = refresh_catalog(
-                        logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
-                    )
-                    if catalog_result.get('success'):
-                        add_log_to_run(
-                            run_id,
-                            f"OpenRouter catalog: {catalog_result['model_count']} models cached",
-                            "success",
+
+                from services.llm_catalogs import openrouter as _or_cat
+                from services.llm_catalogs import anthropic as _ant_cat
+                from services.llm_catalogs import openai as _oai_cat
+                from services.llm_catalogs import gemini as _gem_cat
+
+                # OpenRouter first — it's the enrichment source for the
+                # other three. Enrichment failures degrade gracefully but
+                # quality is much better when this finishes first.
+                _CATALOG_TASKS = [
+                    ("OpenRouter", _or_cat),
+                    ("Anthropic", _ant_cat),
+                    ("OpenAI", _oai_cat),
+                    ("Gemini", _gem_cat),
+                ]
+                for label, mod in _CATALOG_TASKS:
+                    try:
+                        cat_result = mod.refresh_catalog(
+                            logger=lambda msg, level="info": add_log_to_run(run_id, f"  [{label}] {msg}", level)
                         )
-                    else:
-                        add_log_to_run(
-                            run_id,
-                            f"OpenRouter catalog refresh skipped: {catalog_result.get('error', 'unknown')} "
-                            "(existing on-disk catalog still serves the UI)",
-                            "warning",
-                        )
-                except Exception as e:
-                    add_log_to_run(run_id, f"OpenRouter catalog error: {e}", "warning")
+                        if cat_result.get('success'):
+                            unenriched = cat_result.get('unenriched_count', 0)
+                            extra = f" ({unenriched} un-enriched)" if unenriched else ""
+                            add_log_to_run(
+                                run_id,
+                                f"{label} catalog: {cat_result['model_count']} models cached{extra}",
+                                "success",
+                            )
+                        else:
+                            add_log_to_run(
+                                run_id,
+                                f"{label} catalog skipped: {cat_result.get('error', 'unknown')} "
+                                "(existing on-disk catalog still serves the UI)",
+                                "warning",
+                            )
+                    except Exception as e:
+                        add_log_to_run(run_id, f"{label} catalog error: {e}", "warning")
 
                 update_run_status(run_id, "running", progress=60)
 
@@ -256,8 +275,20 @@ def openrouter_catalog_status():
     """Return on-disk OpenRouter catalog summary (model count, fetch
     time, file presence). UI shows this so the operator knows when
     the dashboard's model selector list was last refreshed."""
-    from services.openrouter_catalog import catalog_status
+    from services.llm_catalogs.openrouter import catalog_status
     return jsonify(catalog_status())
+
+
+def _refresh_one_catalog(catalog_module):
+    """Standalone synchronous refresh wrapper used by the four per-provider
+    refresh endpoints. Returns (json_dict, http_status)."""
+    try:
+        result = catalog_module.refresh_catalog()
+        if result.get('success'):
+            return result, 200
+        return result, 502  # upstream fetch problem, not our bug
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 500
 
 
 @maintenance_bp.route('/api/maintenance/refresh-openrouter-models', methods=['POST'])
@@ -269,14 +300,37 @@ def refresh_openrouter_models():
     Synchronous — the fetch is small (~few hundred KB) and finishes in
     a second or two. No workflow row needed for that timescale.
     """
-    try:
-        from services.openrouter_catalog import refresh_catalog
-        result = refresh_catalog()
-        if result.get('success'):
-            return jsonify(result)
-        return jsonify(result), 502  # upstream fetch problem, not our bug
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    from services.llm_catalogs import openrouter as catalog_module
+    body, status = _refresh_one_catalog(catalog_module)
+    return jsonify(body), status
+
+
+@maintenance_bp.route('/api/maintenance/refresh-anthropic-models', methods=['POST'])
+def refresh_anthropic_models():
+    """Refresh `data/anthropic_models.json` from Anthropic's `/v1/models`
+    endpoint, then enrich each entry against the OpenRouter catalog."""
+    from services.llm_catalogs import anthropic as catalog_module
+    body, status = _refresh_one_catalog(catalog_module)
+    return jsonify(body), status
+
+
+@maintenance_bp.route('/api/maintenance/refresh-openai-models', methods=['POST'])
+def refresh_openai_models():
+    """Refresh `data/openai_models.json` from OpenAI's `/v1/models`
+    endpoint, filter to chat-capable, enrich from OpenRouter."""
+    from services.llm_catalogs import openai as catalog_module
+    body, status = _refresh_one_catalog(catalog_module)
+    return jsonify(body), status
+
+
+@maintenance_bp.route('/api/maintenance/refresh-gemini-models', methods=['POST'])
+def refresh_gemini_models():
+    """Refresh `data/gemini_models.json` from Google's `/v1beta/models`
+    endpoint. Native max_output_tokens / context_length come from the
+    response; pricing is enriched from OpenRouter."""
+    from services.llm_catalogs import gemini as catalog_module
+    body, status = _refresh_one_catalog(catalog_module)
+    return jsonify(body), status
 
 
 @maintenance_bp.route('/api/maintenance/refresh-skills', methods=['POST'])

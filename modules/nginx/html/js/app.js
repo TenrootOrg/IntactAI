@@ -737,9 +737,24 @@ document.addEventListener('alpine:init', () => {
                 'gemini': 'gemini-flash',
                 'openrouter': 'claude-sonnet'
             };
+            // Per-alias max output tokens (mirrors MODEL_ALIASES on the
+            // backend — kept in sync so the UI auto-fills immediately on
+            // provider switch without a round-trip).
+            const aliasMax = {
+                'gpt-4o': 16384,
+                'gpt-4.1': 32768,
+                'claude-opus': 128000,
+                'claude-sonnet': 64000,
+                'claude-haiku': 8192,
+                'gemini-flash': 65536,
+                'gemini-pro': 65536
+            };
             const defaultModel = modelDefaults[this.config.agentic.online_llm.provider];
             if (defaultModel) {
                 this.config.agentic.online_llm.model = defaultModel;
+                if (aliasMax[defaultModel]) {
+                    this.config.agentic.max_response_tokens = aliasMax[defaultModel];
+                }
             }
         }
     });

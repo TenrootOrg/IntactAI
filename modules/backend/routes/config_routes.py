@@ -109,28 +109,9 @@ def get_available_models():
         return jsonify({"error": str(e)}), 500
 
 
-@config_bp.route('/api/config/openrouter/models', methods=['GET'])
-def get_openrouter_models():
-    """Search the OpenRouter model catalog persisted on disk.
-
-    Replaces the previous in-memory cache + heavy provider/skip-pattern
-    filtering with a search over the full ~300-model catalog at
-    `/app/data/openrouter_models.json`. The catalog is bootstrapped at
-    install time and refreshed by the maintenance workflow — see
-    `services/openrouter_catalog.py` and the
-    `/api/maintenance/refresh-openrouter-models` route.
-
-    Query params:
-        q      — case-insensitive substring (matches model id or name)
-        limit  — max results (default 10, matches the dashboard's
-                 "show 10 each time" requirement)
-        offset — pagination cursor
-
-    Bootstrap: if the catalog file doesn't exist yet (e.g. install
-    hadn't internet at deploy time), trigger an on-demand refresh.
-    """
-    from services.openrouter_catalog import search, refresh_catalog, load_catalog
-
+def _parse_catalog_query():
+    """Parse and clamp the q/limit/offset query params shared by every
+    per-provider model search endpoint."""
     q = request.args.get('q', '')
     try:
         limit = max(1, min(int(request.args.get('limit', 10)), 100))
@@ -140,11 +121,140 @@ def get_openrouter_models():
         offset = max(0, int(request.args.get('offset', 0)))
     except (TypeError, ValueError):
         offset = 0
+    return q, limit, offset
 
-    if not load_catalog():
-        refresh_catalog()
 
-    return jsonify(search(q=q, limit=limit, offset=offset))
+def _alias_entries_for_provider(provider: str):
+    """Project MODEL_ALIASES entries that work for the given provider into
+    the same per-entry shape as catalog entries. Pulled into every
+    per-provider search response so operators always see the friendly
+    aliases — even when there's no API key configured for that provider
+    and the live catalog is empty.
+
+    Each alias entry is enriched against the OpenRouter catalog (via the
+    alias's `openrouter` mapping as canonical_id) so the dropdown shows
+    full Context / Max output / Pricing for aliases too.
+    """
+    from services.agentic.analyzers import MODEL_ALIASES
+    from services.llm_catalogs import openrouter as or_catalog
+
+    or_models = or_catalog.load_catalog()
+    or_by_id = {m["id"]: m for m in or_models}
+
+    out = []
+    for alias_name, entry in MODEL_ALIASES.items():
+        if provider not in entry:
+            continue
+        canonical = entry.get("openrouter") or f"alias/{alias_name}"
+        or_match = or_by_id.get(canonical) or {}
+        out.append({
+            "id": alias_name,
+            "canonical_id": canonical,
+            "name": f"{alias_name}  (friendly alias)",
+            "max_output_tokens": entry.get("max_output_tokens") or or_match.get("max_output_tokens"),
+            "context_length": or_match.get("context_length"),
+            "pricing": or_match.get("pricing"),
+            "created": or_match.get("created"),
+            "deprecated": False,
+            "enriched_from": "alias",
+        })
+    return out
+
+
+def _serve_catalog(catalog_module, provider_name: str, bootstrap: bool = True):
+    """Standard wrapper: prepend alias entries, then catalog matches.
+
+    `bootstrap` triggers a one-shot refresh when the catalog file is
+    missing (operator may not have run install bootstrap yet). For
+    direct providers this is a no-op when the API key isn't configured
+    — `refresh_catalog` returns success=False without raising.
+
+    Aliases ALWAYS appear (modulo the search filter) so the dropdown is
+    never empty, even when no API key is configured for the provider.
+    """
+    q, limit, offset = _parse_catalog_query()
+    if bootstrap and not catalog_module.load_catalog():
+        try:
+            catalog_module.refresh_catalog()
+        except Exception as e:
+            print(f"[CATALOG] Bootstrap refresh failed: {e}", flush=True)
+    catalog_result = catalog_module.search(q=q, limit=limit, offset=offset)
+
+    # Filter alias entries to the search query and prepend them. Dedupe
+    # by id so an alias and its catalog twin (rare — only happens when
+    # the catalog id literally equals an alias name) don't both appear.
+    alias_entries = _alias_entries_for_provider(provider_name)
+    q_lower = (q or "").strip().lower()
+    if q_lower:
+        alias_entries = [a for a in alias_entries
+                         if q_lower in a["id"].lower()
+                         or q_lower in (a.get("name") or "").lower()]
+
+    combined = list(alias_entries)
+    seen = {a["id"] for a in alias_entries}
+    for m in catalog_result.get("models", []):
+        if m["id"] not in seen:
+            combined.append(m)
+            seen.add(m["id"])
+
+    catalog_result["models"] = combined[:limit]
+    catalog_result["total"] = len(alias_entries) + int(catalog_result.get("total", 0))
+    return jsonify(catalog_result)
+
+
+@config_bp.route('/api/config/openrouter/models', methods=['GET'])
+def get_openrouter_models():
+    """Search the OpenRouter model catalog persisted on disk.
+
+    Reads the full ~300-model catalog at
+    `/app/data/openrouter_models.json`. Catalog is bootstrapped at
+    install time and refreshed by the maintenance workflow — see
+    `services/llm_catalogs/openrouter.py` and the
+    `/api/maintenance/refresh-openrouter-models` route.
+
+    Query params:
+        q      — case-insensitive substring (matches model id, name,
+                 or canonical_id)
+        limit  — max results (default 10)
+        offset — pagination cursor
+    """
+    from services.llm_catalogs import openrouter as catalog_module
+    return _serve_catalog(catalog_module, "openrouter", bootstrap=True)
+
+
+@config_bp.route('/api/config/anthropic/models', methods=['GET'])
+def get_anthropic_models():
+    """Search the Anthropic model catalog persisted on disk.
+
+    Catalog is built from Anthropic's `/v1/models` endpoint then
+    enriched against the OpenRouter catalog for max_output_tokens /
+    context_length / pricing. Requires the operator to have configured
+    a Claude API key (the bootstrap fetch is best-effort and skips
+    when no key is present)."""
+    from services.llm_catalogs import anthropic as catalog_module
+    # Direct providers expose the same alias names that map to the
+    # `claude` provider in MODEL_ALIASES.
+    return _serve_catalog(catalog_module, "claude", bootstrap=True)
+
+
+@config_bp.route('/api/config/openai/models', methods=['GET'])
+def get_openai_models():
+    """Search the OpenAI model catalog persisted on disk. Filtered to
+    chat/completion-capable models (drops embeddings, audio, image,
+    tuning). Enriched from OpenRouter for max_output_tokens /
+    context_length / pricing."""
+    from services.llm_catalogs import openai as catalog_module
+    return _serve_catalog(catalog_module, "openai", bootstrap=True)
+
+
+@config_bp.route('/api/config/gemini/models', methods=['GET'])
+def get_gemini_models():
+    """Search the Gemini model catalog persisted on disk. Filtered to
+    `generateContent`-capable models. Native max_output_tokens /
+    context_length come from Gemini's response; pricing is enriched
+    from OpenRouter."""
+    from services.llm_catalogs import gemini as catalog_module
+    return _serve_catalog(catalog_module, "gemini", bootstrap=True)
 
 
 # =============================================================================

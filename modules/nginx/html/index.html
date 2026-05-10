@@ -2327,81 +2327,99 @@ sudo ./velociraptor service start</code></pre>
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">Model</label>
-                                    <!-- Standard dropdown for Claude/OpenAI/Gemini -->
-                                    <select x-show="$store.settings.config.agentic.online_llm.provider !== 'openrouter'"
-                                            x-model="$store.settings.config.agentic.online_llm.model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
-                                        <template x-if="$store.settings.config.agentic.online_llm.provider === 'claude'">
-                                            <optgroup label="Claude">
-                                                <option value="claude-opus">Claude Opus</option>
-                                                <option value="claude-sonnet">Claude Sonnet</option>
-                                                <option value="claude-haiku">Claude Haiku</option>
-                                            </optgroup>
-                                        </template>
-                                        <template x-if="$store.settings.config.agentic.online_llm.provider === 'openai'">
-                                            <optgroup label="OpenAI">
-                                                <option value="gpt-4o">GPT-4o</option>
-                                                <option value="gpt-4.1">GPT-4.1</option>
-                                            </optgroup>
-                                        </template>
-                                        <template x-if="$store.settings.config.agentic.online_llm.provider === 'gemini'">
-                                            <optgroup label="Gemini">
-                                                <option value="gemini-flash">Gemini Flash</option>
-                                                <option value="gemini-pro">Gemini Pro</option>
-                                            </optgroup>
-                                        </template>
-                                    </select>
-                                    <!-- OpenRouter: server-side filtered autocomplete.
-                                         Backed by /api/config/openrouter/models
-                                         which reads the persisted catalog at
-                                         /app/data/openrouter_models.json (refreshed
-                                         at install + via Run Maintenance). Each
-                                         keystroke fires a debounced fetch with
-                                         ?q=<input>&limit=10 — only matching rows
-                                         come back, so the operator sees the 10
-                                         most-related models as they type. -->
-                                    <div x-show="$store.settings.config.agentic.online_llm.provider === 'openrouter'"
-                                         x-data="{
-                                             search: $store.settings.config.agentic.online_llm.model || '',
+                                    <!-- Unified per-provider combobox.
+                                         Each provider has its own persisted
+                                         catalog at /app/data/<provider>_models.json
+                                         (OpenRouter is the metadata source for
+                                         the three direct providers — see
+                                         services/llm_catalogs/__init__.py). The
+                                         search endpoint is per-provider:
+                                           /api/config/<provider>/models?q=…&limit=10
+                                         Each keystroke fires a debounced fetch
+                                         and the operator sees the 10 closest
+                                         matches. Picking a model auto-fills
+                                         max_response_tokens from the entry's
+                                         max_output_tokens field; the operator
+                                         can still override the value below. -->
+                                    <div x-data="{
+                                             selectedModel: null,
                                              results: [],
                                              total: 0,
                                              open: false,
                                              loading: false,
                                              fetchedAt: '',
+                                             unenriched: 0,
                                              _debounce: null,
                                              async query() {
+                                                 const p = $store.settings.config.agentic.online_llm.provider;
+                                                 const q = $store.settings.config.agentic.online_llm.model || '';
                                                  this.loading = true;
                                                  try {
-                                                     const url = '/api/config/openrouter/models?limit=10&q=' +
-                                                                 encodeURIComponent(this.search || '');
+                                                     const url = '/api/config/' + p + '/models?limit=10&q=' + encodeURIComponent(q);
                                                      const resp = await fetch(url);
                                                      const data = await resp.json();
                                                      this.results = data.models || [];
                                                      this.total = data.total || 0;
                                                      this.fetchedAt = data.fetched_at || '';
+                                                     this.unenriched = data.unenriched_count || 0;
                                                  } catch(e) { this.results = []; this.total = 0; }
                                                  this.loading = false;
+                                             },
+                                             // Look up the currently-saved model so we can render its
+                                             // metadata (Context / Max output / Pricing) below the input.
+                                             // The saved value is often a friendly alias (`claude-sonnet`)
+                                             // rather than a catalog id, so we try multiple matching paths.
+                                             async loadSelected() {
+                                                 const p = $store.settings.config.agentic.online_llm.provider;
+                                                 const id = $store.settings.config.agentic.online_llm.model;
+                                                 if (!id) { this.selectedModel = null; return; }
+                                                 try {
+                                                     const url = '/api/config/' + p + '/models?limit=10&q=' + encodeURIComponent(id);
+                                                     const resp = await fetch(url);
+                                                     const data = await resp.json();
+                                                     const list = data.models || [];
+                                                     this.selectedModel = list.find(m => m.id === id)
+                                                         || list.find(m => m.canonical_id === id)
+                                                         || null;
+                                                 } catch(e) { this.selectedModel = null; }
                                              },
                                              schedule() {
                                                  clearTimeout(this._debounce);
                                                  this._debounce = setTimeout(() => this.query(), 150);
                                              },
                                              select(model) {
-                                                 this.search = model.id;
+                                                 this.selectedModel = model;
                                                  $store.settings.config.agentic.online_llm.model = model.id;
+                                                 if (model.max_output_tokens) {
+                                                     $store.settings.config.agentic.max_response_tokens = model.max_output_tokens;
+                                                 }
                                                  this.open = false;
                                              }
                                          }"
-                                         x-init="search = $store.settings.config.agentic.online_llm.model || ''"
+                                         x-init="loadSelected(); query();
+                                                 // x-effect re-runs whenever the store properties it
+                                                 // reads change. Cleaner than $watch for store paths
+                                                 // and avoids the race between provider <select>'s
+                                                 // @change and Alpine's reactive update order.
+                                                 $watch('$store.settings.config.agentic.online_llm.provider', () => {
+                                                     selectedModel = null; results = []; total = 0;
+                                                     query(); loadSelected();
+                                                 });
+                                                 $watch('$store.settings.config.agentic.online_llm.model', () => {
+                                                     loadSelected();
+                                                 });"
                                          class="relative">
-                                        <input type="text" x-model="search"
+                                        <input type="text"
+                                               x-model="$store.settings.config.agentic.online_llm.model"
                                                @focus="query(); open = true"
                                                @input="open = true; schedule()"
                                                @click.away="open = false"
                                                @keydown.escape="open = false"
-                                               @change="$store.settings.config.agentic.online_llm.model = search"
                                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
-                                               placeholder="Type to search OpenRouter models — e.g. sonnet, gpt-5, qwen, deepseek">
-                                        <div x-show="loading" class="absolute right-2 top-2 text-xs text-gray-500">Loading…</div>
+                                               :placeholder="'Type to search ' + ($store.settings.config.agentic.online_llm.provider || '') + ' models'">
+                                        <div x-show="loading" class="absolute right-2 top-2 text-xs text-gray-500">
+                                            Loading models from <span x-text="$store.settings.config.agentic.online_llm.provider"></span>…
+                                        </div>
                                         <!-- Dropdown results -->
                                         <div x-show="open && results.length > 0"
                                              class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg max-h-64 overflow-y-auto">
@@ -2409,7 +2427,12 @@ sudo ./velociraptor service start</code></pre>
                                                 <div @mousedown.prevent="select(m)"
                                                      class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50">
                                                     <div class="text-white" x-text="m.name"></div>
-                                                    <div class="text-xs text-gray-500" x-text="m.id"></div>
+                                                    <div class="flex justify-between text-xs text-gray-500">
+                                                        <span x-text="m.id"></span>
+                                                        <span x-show="m.max_output_tokens">
+                                                            max&nbsp;<span x-text="m.max_output_tokens.toLocaleString()"></span>
+                                                        </span>
+                                                    </div>
                                                 </div>
                                             </template>
                                             <div x-show="total > results.length"
@@ -2419,10 +2442,29 @@ sudo ./velociraptor service start</code></pre>
                                         </div>
                                         <div x-show="open && results.length === 0 && !loading && search.length > 0"
                                              class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-xs text-gray-400">
-                                            No matching models in the catalog. Run <span class="text-blue-400">Maintenance → Refresh</span> to update, or check <a href="https://openrouter.ai/models" target="_blank" class="text-blue-400 underline">openrouter.ai/models</a>.
+                                            No matching models in the catalog for
+                                            <span class="text-white" x-text="$store.settings.config.agentic.online_llm.provider"></span>.
+                                            Run <span class="text-blue-400">Maintenance → Refresh</span> to update, or check the provider's docs.
                                         </div>
-                                        <div x-show="fetchedAt" class="mt-1 text-[10px] text-gray-600">
-                                            Catalog last refreshed: <span x-text="fetchedAt"></span>
+                                        <!-- Currently-selected model info: context window + max output
+                                             tokens + price. Pulled from the catalog entry so it stays
+                                             accurate as models evolve; updates instantly when the
+                                             operator picks a new model from the dropdown. -->
+                                        <div x-show="selectedModel" class="mt-1 text-[11px] text-gray-500 flex flex-wrap gap-x-4">
+                                            <span x-show="selectedModel?.context_length">
+                                                Context: <span class="text-gray-300" x-text="selectedModel.context_length.toLocaleString()"></span>
+                                            </span>
+                                            <span x-show="selectedModel?.max_output_tokens">
+                                                Max output: <span class="text-gray-300" x-text="selectedModel.max_output_tokens.toLocaleString()"></span>
+                                            </span>
+                                            <span x-show="selectedModel?.pricing?.prompt">
+                                                $<span x-text="(parseFloat(selectedModel.pricing.prompt) * 1000000).toFixed(2)"></span>/M&nbsp;in
+                                                ·
+                                                $<span x-text="(parseFloat(selectedModel.pricing.completion) * 1000000).toFixed(2)"></span>/M&nbsp;out
+                                            </span>
+                                        </div>
+                                        <div x-show="unenriched > 0" class="mt-1 text-[10px] text-yellow-600">
+                                            <span x-text="unenriched"></span> entries un-enriched
                                         </div>
                                     </div>
                                 </div>
@@ -2446,16 +2488,9 @@ sudo ./velociraptor service start</code></pre>
                                     <input type="number" x-model.number="$store.settings.config.agentic.max_concurrent_requests" min="1" max="20" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
                                 </div>
                                 <div>
-                                    <label class="block text-xs text-gray-400 mb-1">Max Response Tokens</label>
-                                    <input type="number" x-model.number="$store.settings.config.agentic.max_response_tokens" min="1024" max="131072" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    <label class="block text-xs text-gray-400 mb-1">Max Response Tokens (auto-set from model — clear to revert)</label>
+                                    <input type="number" x-model.number="$store.settings.config.agentic.max_response_tokens" min="0" max="200000" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="auto">
                                 </div>
-                            </div>
-                            <!-- Model Token Limits Reference (Online mode only) -->
-                            <div x-show="$store.settings.config.agentic.llm_mode === 'online'" class="mt-3 p-2 bg-gray-900 rounded text-xs text-gray-500">
-                                <span class="text-gray-400 font-medium">Max Output Tokens:</span>
-                                <span class="text-blue-400">Claude</span> Opus 4.6: 128K | Sonnet 4.6: 64K | Haiku 4.5: 8K |
-                                <span class="text-green-400">Gemini</span> 2.5 Pro: 64K | 2.5 Flash: 65K |
-                                <span class="text-purple-400">GPT</span> 4o: 16K | o1: 100K
                             </div>
                         </div>
 

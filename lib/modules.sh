@@ -986,19 +986,25 @@ deploy_backend() {
         return 0
     fi
 
-    # ---- Bootstrap OpenRouter model catalog ----------------------------
-    # Persists the full ~300-model OpenRouter catalog to
-    # /app/data/openrouter_models.json so the dashboard's model selector
-    # has results immediately on first open. Best-effort: if OpenRouter
-    # is unreachable from this host, the on-demand fetch in the API
-    # endpoint will retry the next time the operator opens Settings.
-    # The maintenance workflow refreshes the catalog later.
-    log_info "  Bootstrapping OpenRouter model catalog (best-effort)..."
-    local catalog_resp
-    catalog_resp=$(curl -s --max-time 30 -X POST \
-        "http://localhost:5001/api/maintenance/refresh-openrouter-models" 2>/dev/null)
-    local catalog_count
-    catalog_count=$(echo "$catalog_resp" | python3 -c "
+    # ---- Bootstrap LLM model catalogs ----------------------------------
+    # Persists each provider's model catalog to /app/data/<provider>_models.json
+    # so the dashboard's model selector has results immediately on first
+    # open. Best-effort: if a provider's API is unreachable (or the
+    # operator hasn't configured an API key for that provider yet) the
+    # bootstrap simply skips it and the on-demand fetch in the API
+    # endpoint retries the next time Settings is opened. The maintenance
+    # workflow refreshes all four catalogs later.
+    #
+    # Order matters: OpenRouter goes first because the three direct-
+    # provider refreshes enrich their entries from the OpenRouter catalog.
+    log_info "  Bootstrapping LLM model catalogs (best-effort)..."
+
+    _bootstrap_one_catalog() {
+        local label="$1"
+        local route="$2"
+        local resp count
+        resp=$(curl -s --max-time 30 -X POST "http://localhost:5001${route}" 2>/dev/null)
+        count=$(echo "$resp" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -1006,11 +1012,17 @@ try:
 except Exception:
     print(0)
 " 2>/dev/null)
-    if [[ "${catalog_count:-0}" -gt 0 ]]; then
-        log_success "  OpenRouter catalog: $catalog_count models cached"
-    else
-        log_warn "  OpenRouter catalog bootstrap deferred (will retry on first UI open or via 'Run Maintenance')"
-    fi
+        if [[ "${count:-0}" -gt 0 ]]; then
+            log_success "    ${label}: ${count} models cached"
+        else
+            log_warn "    ${label}: deferred (no API key, network issue, or provider unreachable)"
+        fi
+    }
+
+    _bootstrap_one_catalog "OpenRouter" "/api/maintenance/refresh-openrouter-models"
+    _bootstrap_one_catalog "Anthropic"  "/api/maintenance/refresh-anthropic-models"
+    _bootstrap_one_catalog "OpenAI"     "/api/maintenance/refresh-openai-models"
+    _bootstrap_one_catalog "Gemini"     "/api/maintenance/refresh-gemini-models"
 
     track_module_success "Backend API"
 }
