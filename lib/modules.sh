@@ -428,23 +428,12 @@ deploy_timesketch() {
     local ts_user=$(read_config "['modules']['timesketch']['id']")
     local ts_pass=$(read_config "['modules']['timesketch']['password']")
 
-    # STEP A — Force schema migration BEFORE creating the user.
-    # Background: previously `tsctl db upgrade` ran AFTER create-user,
-    # so the user table didn't fully exist when create-user tried to
-    # INSERT into it. tsctl exits 0 anyway, install reports SUCCESS,
-    # the user-row write is silently dropped. Running db upgrade here
-    # eliminates the race — create-user always sees the migrated
-    # schema. This was the actual root cause of the
-    # "[SUCCESS] TimeSketch user 'tenroot' ready" lie that broke a
-    # fresh install end-to-end.
-    log_info "  Migrating TimeSketch DB schema (tsctl db upgrade) before user creation..."
-    docker exec intact_timesketch_web tsctl db upgrade 2>&1 | tee -a "$LOG_FILE" || \
-        log_info "  tsctl db upgrade returned non-zero on first invocation (normal on a fresh schema); the table-exists poll below is authoritative"
-
-    # STEP B — Wait until the postgres "user" table actually exists.
-    # tsctl db upgrade should have created it, but the migration runs
-    # async to postgres' own startup; poll until the table is visible
-    # before any create-user attempts.
+    # STEP A — Wait until the postgres "user" table actually exists.
+    # The Timesketch container image doesn't ship Alembic migrations
+    # (no /migrations directory), so `tsctl db upgrade` is a no-op that
+    # prints a misleading ERROR. The schema is auto-created by the web
+    # container's own startup (SQLAlchemy create_all), so we just poll
+    # until the user table is visible before attempting create-user.
     log_info "  Waiting for TimeSketch postgres 'user' table to materialize..."
     local table_wait=0
     local table_ready=false
@@ -462,9 +451,9 @@ deploy_timesketch() {
         ((table_wait+=2))
     done
     if [[ "$table_ready" != "true" ]]; then
-        log_error "  TimeSketch postgres 'user' table did not appear after migration"
+        log_error "  TimeSketch postgres 'user' table did not appear after 60s — schema auto-create may have failed"
         log_error "  Manual diagnosis: docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c \"SELECT to_regclass('public.\\\"user\\\"');\""
-        capture_diagnostic_logs "TimeSketch DB migration" \
+        capture_diagnostic_logs "TimeSketch schema bring-up" \
             intact_timesketch_web intact_timesketch_postgres
     fi
 
@@ -512,9 +501,11 @@ deploy_timesketch() {
             log_warn "  Manual fix: docker exec intact_timesketch_web tsctl enable-user ${ts_user}"
         fi
 
-        # Enable DFIQ after successful deployment (requires db migration for schema)
+        # Enable DFIQ after successful deployment.
+        # (Historically also ran `tsctl db upgrade` here; the current
+        # Timesketch image doesn't ship Alembic migrations, so the call
+        # was a no-op and produced misleading errors. Removed.)
         log_info "  Enabling DFIQ..."
-        docker exec intact_timesketch_web tsctl db upgrade 2>/dev/null || true
         sed -i 's/DFIQ_ENABLED = False/DFIQ_ENABLED = True/' "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf"
         log_success "  DFIQ enabled"
 
