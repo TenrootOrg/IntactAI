@@ -13,6 +13,7 @@ import os
 import zipfile
 import json
 import shutil
+import shlex
 import tempfile
 import subprocess
 import traceback
@@ -253,8 +254,13 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
             get_plaso_image(),
             'log2timeline',
             '--workers', num_workers,
-            '--status_view', 'window',
-            '--status_view_interval', '60',
+            # `linear` emits newline-terminated status lines instead of
+            # ncurses-style in-place cursor redraws — `window` buffered
+            # all the status output until a redraw burst, defeating
+            # real-time log streaming. `linear` makes every status tick
+            # a regular line that flows through `for line in process.stdout`.
+            '--status_view', 'linear',
+            '--status_view_interval', '10',
         ]
 
         # Add parser preset if specified
@@ -281,6 +287,10 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
 
         log(f"Workers: {num_workers}")
         log("Running log2timeline...")
+        # Log the literal command so the workflow log is reproducible —
+        # an operator scrolling back can copy-paste this exact line into
+        # their shell and reproduce the Plaso invocation.
+        log(f"$ {shlex.join(plaso_cmd)}")
 
         # Run Plaso
         process = subprocess.Popen(
@@ -314,16 +324,19 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
                 line_count += 1
                 print(f"[PLASO] {line}", flush=True)
 
-                # Log important lines to workflow
-                line_lower = line.lower()
-                is_important = any(kw in line_lower for kw in ['error', 'warning', 'processing', 'completed', 'events'])
-                if is_important or line_count % 10 == 0:
-                    if logger:
-                        level = "error" if 'error' in line_lower else ("warning" if 'warning' in line_lower else "info")
-                        try:
-                            logger(line[:200], level)
-                        except:
-                            pass
+                # Stream every Plaso stdout/stderr line to the workflow
+                # log in real time — operators need full visibility for
+                # forensic reproducibility, not just every-10th sampled
+                # output. Level-detection so errors / warnings stand out
+                # in the dashboard. 200-char cap is defensive — Plaso
+                # doesn't emit longer lines in practice.
+                if logger:
+                    line_lower = line.lower()
+                    level = "error" if 'error' in line_lower else ("warning" if 'warning' in line_lower else "info")
+                    try:
+                        logger(line[:200], level)
+                    except Exception:
+                        pass
 
         return_code = process.wait()
         if cancel_event and cancel_event.is_set():

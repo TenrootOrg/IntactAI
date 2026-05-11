@@ -138,7 +138,16 @@ def _upload_plaso_direct(api, sketch, plaso_file_path, timeline_name, logger=Non
     log(f"Plaso file size: {plaso_size / (1024*1024):.2f} MB")
 
     try:
-        # Create importer streamer for direct .plaso upload
+        # Create importer streamer for direct .plaso upload.
+        # Synthetic "command" log line for forensic reproducibility —
+        # the importer is a Python SDK call rather than a subprocess,
+        # so we document the equivalent operation in the same `$`-prefixed
+        # style as the log2timeline / pinfo command lines logged earlier
+        # in the pipeline.
+        log(f"$ timesketch_import_client.ImportStreamer().add_file("
+            f"'{plaso_file_path}') → sketch_id={sketch.id} "
+            f"timeline_name='{timeline_name}' data_label='plaso' "
+            f"size={plaso_size / (1024*1024):.2f} MB")
         with ts_importer.ImportStreamer() as streamer:
             streamer.set_sketch(sketch)
             streamer.set_timeline_name(timeline_name)

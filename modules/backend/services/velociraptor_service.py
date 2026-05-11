@@ -5,6 +5,7 @@ Velociraptor Service - gRPC connection, VQL queries, client operations
 
 import subprocess
 import json
+import shlex
 import time
 import yaml
 import os
@@ -791,14 +792,19 @@ def export_flow_to_zip(client_id: str, flow_id: str, out_path: str, logger=None,
         f"chmod 644 /out/{out_file}"
     )
 
+    copy_cmd = [
+        "docker", "run", "--rm",
+        "--volumes-from", VELOCIRAPTOR_CONTAINER,
+        "-v", f"{out_dir}:/out",
+        "alpine", "sh", "-c", copy_script,
+    ]
+    # Log the literal command for forensic reproducibility — same `$`
+    # prefix convention used by the log2timeline / pinfo / importer
+    # launchers elsewhere in the pipeline.
+    log(f"$ {shlex.join(copy_cmd)}")
     try:
         result = subprocess.run(
-            [
-                "docker", "run", "--rm",
-                "--volumes-from", VELOCIRAPTOR_CONTAINER,
-                "-v", f"{out_dir}:/out",
-                "alpine", "sh", "-c", copy_script,
-            ],
+            copy_cmd,
             capture_output=True, text=True, timeout=180
         )
         if result.returncode != 0:
@@ -838,13 +844,15 @@ def cleanup_flow_export(client_id: str, flow_id: str, logger=None) -> None:
     script = (
         f"rm -rf /var./downloads/{client_id}/{flow_id} 2>/dev/null || true"
     )
+    cleanup_cmd = [
+        "docker", "run", "--rm",
+        "--volumes-from", VELOCIRAPTOR_CONTAINER,
+        "alpine", "sh", "-c", script,
+    ]
+    log(f"$ {shlex.join(cleanup_cmd)}")
     try:
         subprocess.run(
-            [
-                "docker", "run", "--rm",
-                "--volumes-from", VELOCIRAPTOR_CONTAINER,
-                "alpine", "sh", "-c", script,
-            ],
+            cleanup_cmd,
             capture_output=True, text=True, timeout=60
         )
         log(f"Removed Velociraptor-side export dir for flow {flow_id}")
