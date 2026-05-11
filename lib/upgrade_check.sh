@@ -102,12 +102,13 @@ PYEOF
 check_module_updates() {
     log_info "Checking upstream module versions (this requires internet)..."
 
-    # Don't try to prompt if stdin isn't a terminal (CI / piped install).
-    if [[ ! -t 0 ]]; then
-        log_warn "  stdin is not a terminal — cannot prompt; skipping update check"
-        log_warn "  (re-run interactively or edit versions: in config.yaml by hand)"
-        return 0
-    fi
+    # Note: no explicit TTY check needed. When stdin is /dev/null
+    # (CI / `bash install.sh < /dev/null`) `read` returns EOF
+    # immediately and `reply` stays empty, which our regex treats as N
+    # — every module's pin is preserved. When stdin is a pipe with
+    # `yes y` / `yes n` the answers flow through normally. When stdin
+    # is a TTY the operator gets the interactive prompt. All three
+    # modes work correctly without a guard.
 
     local any_change=false
     for module in "${!INTACT_UPSTREAM_REPOS[@]}"; do
@@ -125,17 +126,35 @@ check_module_updates() {
             continue
         fi
 
-        # Normalize for comparison (strip a leading 'v' on either side
-        # since some projects tag with the prefix and pin without).
-        local norm_cur="${current#v}"
-        local norm_lat="${latest#v}"
-        if [[ "$norm_cur" == "$norm_lat" ]]; then
+        # Each module has its own version-string convention that the
+        # rest of the codebase (docker-compose interpolation, install
+        # scripts) depends on. Examples:
+        #   elk:          '9.3.3'      no `v` prefix
+        #   iris:         'v2.4.27'    `v` prefix required
+        #   plaso/ts:     '20260119'   date string, no prefix
+        #   velociraptor: '0.76.5'     no `v` prefix
+        #   portainer:    '2.39.1'     no `v` prefix
+        # The upstream `/releases/latest` tag may or may not have a
+        # leading `v` (elastic tags `v9.4.0`, portainer tags `2.39.2`,
+        # iris tags `v2.4.27`, Velociraptor tags `v0.76`). Normalize
+        # `latest` to match the prefix style of `current` so the new
+        # pin keeps the same format that downstream code expects.
+        local upstream_tag="$latest"   # remember the raw tag for the URL
+        if [[ "$current" =~ ^v[0-9] ]]; then
+            # Current has `v` prefix → ensure latest does too.
+            [[ "$latest" =~ ^v ]] || latest="v${latest}"
+        else
+            # Current is bare (no `v` prefix) → strip if upstream added one.
+            latest="${latest#v}"
+        fi
+
+        if [[ "$current" == "$latest" ]]; then
             log_info "  ${module}: ${current} (already latest)"
             continue
         fi
 
         log_info "  ${module}: ${current} → ${latest}"
-        echo "    https://github.com/${repo}/releases/tag/${latest}"
+        echo "    https://github.com/${repo}/releases/tag/${upstream_tag}"
         local reply
         read -r -p "    Upgrade pinned version in config.yaml? [y/N] " reply
         if [[ "$reply" =~ ^[Yy] ]]; then
