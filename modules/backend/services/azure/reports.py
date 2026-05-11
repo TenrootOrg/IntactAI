@@ -202,6 +202,8 @@ def generate_azure_report(run_id, blueprint, collected_data, findings,
 
     header = f"""# Azure Security Assessment Report
 
+> **All timestamps in this report are in UTC.**
+
 **Scan Date:** {scan_date}
 **Blueprint:** {blueprint_name}{f' ({blueprint_id})' if blueprint_id else ''}
 **Tenant:** {tenant}

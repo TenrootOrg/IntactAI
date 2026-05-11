@@ -148,7 +148,9 @@ def generate_final_report(run_id, blueprint, client_ids, collection_minutes,
     def get_header(report_title):
         return f"""# {report_title}
 
-**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+> **All timestamps in this report are in UTC.**
+
+**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC
 **Blueprint:** {blueprint.get('name')}
 **Clients:** {len(client_ids)} analyzed
 **Collection Duration:** {collection_minutes} minutes
@@ -502,7 +504,9 @@ def generate_empty_report(blueprint, client_ids, collection_minutes):
     """Generate report when no data was collected"""
     return f"""# Agentic Forensics Report
 
-**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+> **All timestamps in this report are in UTC.**
+
+**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC
 **Blueprint:** {blueprint.get('name')}
 **Clients:** {len(client_ids)} selected
 **Collection Duration:** {collection_minutes} minutes
