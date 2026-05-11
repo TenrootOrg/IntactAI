@@ -11,7 +11,7 @@ options:
   # release. For each newer release found, prompt the operator; press y
   # to bump the pinned version in this file in place. Set false for
   # unattended installs so the prompt doesn't block.
-  check_module_updates: false
+  check_module_updates: true
 
 modules:
   agentic:

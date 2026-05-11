@@ -26,10 +26,83 @@ declare -A INTACT_UPSTREAM_REPOS=(
     [elk]=elastic/elasticsearch
 )
 
-# Fetch the latest non-prerelease tag from a repo's /releases/latest
-# endpoint. Returns the tag_name (e.g., "v1.2.3" or "20260511"). Empty
-# string on failure (network down, 404, rate-limited, etc.) — callers
-# treat empty as "skip this module quietly".
+# Per-module version-format spec.
+#
+# Each module's pin in config.yaml is already in *Docker image tag*
+# format — docker-compose interpolation drops the value into
+# `image: <repo>:${MODULE_VERSION}` verbatim. The upstream *Git tag*
+# on GitHub may differ from the Docker tag for the same release:
+#   - Elastic tags `v9.4.0` on GitHub but ships Docker images at
+#     `docker.elastic.co/elasticsearch/elasticsearch:9.4.0` (bare).
+#   - Velociraptor tags `v0.76` on GitHub, the binary it ships into
+#     the locally-built image is named with the bare `0.76` form.
+#   - IRIS uses `v2.4.27` in both formats.
+#   - Timesketch and Plaso use bare date strings (`20260326`) in both.
+#
+# So the upgrade-check has TWO formats to deal with:
+#   * config.yaml format (== Docker tag format) — what gets written
+#     back into config.yaml when the operator accepts an upgrade
+#   * upstream Git tag format — what `/releases/latest` returns and
+#     what /releases/tag/<TAG> URLs use
+#
+# Two parallel maps tell us, per module, whether each format carries a
+# leading `v`. Bare-vs-`v` is the only quirk in practice today; if a
+# future module brings a richer format (e.g., `release-1.2.3`) the
+# _config_to_upstream / _upstream_to_config helpers below are the only
+# place that needs to learn about it.
+declare -A INTACT_UPSTREAM_V_PREFIX=(
+    [velociraptor]=yes
+    [timesketch]=no
+    [plaso]=no
+    [iris]=yes
+    [portainer]=no
+    [elk]=yes
+)
+declare -A INTACT_CONFIG_V_PREFIX=(
+    [velociraptor]=no
+    [timesketch]=no
+    [plaso]=no
+    [iris]=yes
+    [portainer]=no
+    [elk]=no
+)
+
+# Convert a config.yaml pin (Docker-tag format) into the upstream Git
+# tag format. Used to compare the operator's current pin against what
+# `_upstream_latest_release` returned. Idempotent — passing a value
+# already in upstream form yields the same value.
+_config_to_upstream() {
+    local module="$1" value="$2"
+    local stripped="${value#v}"
+    if [[ "${INTACT_UPSTREAM_V_PREFIX[$module]:-no}" == "yes" ]]; then
+        echo "v${stripped}"
+    else
+        echo "$stripped"
+    fi
+}
+
+# Convert an upstream Git tag into the config.yaml pin (Docker-tag)
+# format. Used when writing an accepted upgrade back into config.yaml
+# so the docker-compose interpolation gets a tag the registry actually
+# serves.
+_upstream_to_config() {
+    local module="$1" tag="$2"
+    local stripped="${tag#v}"
+    if [[ "${INTACT_CONFIG_V_PREFIX[$module]:-no}" == "yes" ]]; then
+        echo "v${stripped}"
+    else
+        echo "$stripped"
+    fi
+}
+
+# Fetch the latest stable tag from a repo's /releases/latest endpoint.
+# Returns the tag_name (e.g., "v1.2.3" or "20260511"). Empty string on
+# failure (network down, 404, rate-limited).
+#
+# Prereleases + drafts: GitHub's /releases/latest endpoint already
+# excludes both by design — confirmed in practice across all six
+# upstreams we track (every current /releases/latest response has
+# prerelease=false, draft=false). No extra client-side guard needed.
 _upstream_latest_release() {
     local repo="$1"
     curl -sL --max-time 15 \
@@ -119,47 +192,37 @@ check_module_updates() {
             continue  # module not pinned in this config.yaml
         fi
 
-        local latest
-        latest=$(_upstream_latest_release "$repo")
-        if [[ -z "$latest" ]]; then
+        local upstream_tag
+        upstream_tag=$(_upstream_latest_release "$repo")
+        if [[ -z "$upstream_tag" ]]; then
             log_warn "  ${module}: could not reach ${repo} — skipping"
             continue
         fi
 
-        # Each module has its own version-string convention that the
-        # rest of the codebase (docker-compose interpolation, install
-        # scripts) depends on. Examples:
-        #   elk:          '9.3.3'      no `v` prefix
-        #   iris:         'v2.4.27'    `v` prefix required
-        #   plaso/ts:     '20260119'   date string, no prefix
-        #   velociraptor: '0.76.5'     no `v` prefix
-        #   portainer:    '2.39.1'     no `v` prefix
-        # The upstream `/releases/latest` tag may or may not have a
-        # leading `v` (elastic tags `v9.4.0`, portainer tags `2.39.2`,
-        # iris tags `v2.4.27`, Velociraptor tags `v0.76`). Normalize
-        # `latest` to match the prefix style of `current` so the new
-        # pin keeps the same format that downstream code expects.
-        local upstream_tag="$latest"   # remember the raw tag for the URL
-        if [[ "$current" =~ ^v[0-9] ]]; then
-            # Current has `v` prefix → ensure latest does too.
-            [[ "$latest" =~ ^v ]] || latest="v${latest}"
-        else
-            # Current is bare (no `v` prefix) → strip if upstream added one.
-            latest="${latest#v}"
-        fi
+        # Bidirectional format conversion (see header comment for the
+        # full rationale):
+        #   * Project the operator's config.yaml pin into upstream-tag
+        #     format so we're comparing apples-to-apples against what
+        #     /releases/latest returned.
+        #   * Project the upstream tag back into config.yaml (Docker-
+        #     tag) format so the value we'd write actually matches
+        #     what docker-compose interpolates.
+        local current_as_upstream new_as_config
+        current_as_upstream=$(_config_to_upstream "$module" "$current")
+        new_as_config=$(_upstream_to_config "$module" "$upstream_tag")
 
-        if [[ "$current" == "$latest" ]]; then
+        if [[ "$current_as_upstream" == "$upstream_tag" ]]; then
             log_info "  ${module}: ${current} (already latest)"
             continue
         fi
 
-        log_info "  ${module}: ${current} → ${latest}"
+        log_info "  ${module}: ${current} → ${new_as_config}"
         echo "    https://github.com/${repo}/releases/tag/${upstream_tag}"
         local reply
         read -r -p "    Upgrade pinned version in config.yaml? [y/N] " reply
         if [[ "$reply" =~ ^[Yy] ]]; then
-            _pin_module_version "$module" "$latest"
-            log_success "  ${module} pinned -> ${latest}"
+            _pin_module_version "$module" "$new_as_config"
+            log_success "  ${module} pinned -> ${new_as_config}"
             any_change=true
         else
             log_info "  ${module} kept at ${current}"
