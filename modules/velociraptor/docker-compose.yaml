@@ -5,6 +5,14 @@ services:
   velociraptor:
     container_name: intact_velociraptor
     image: velociraptor-server:${VELOCIRAPTOR_VERSION}
+    # `velociraptor-server` is a private local image name (not on any
+    # public registry). Without this hint, `docker compose up -d` tries
+    # to pull from Docker Hub first, gets "pull access denied", then
+    # falls back to build — wasting ~10s and emitting a misleading
+    # error. `pull_policy: build` skips the doomed pull and goes
+    # straight to the local Dockerfile when the tagged image is
+    # missing. No effect when the tagged image already exists.
+    pull_policy: build
     build:
       context: ./
       dockerfile: Dockerfile
