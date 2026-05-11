@@ -201,6 +201,22 @@
                     <span x-show="!$store.app.sidebarCollapsed">Settings</span>
                 </div>
             </nav>
+
+            <!-- AGPL-3.0 source-availability notice (AGPL §13).
+                 Required because Intact.AI runs as a network service:
+                 any user reaching the UI must be told where to obtain
+                 the source. Sidebar bottom is visible on every page. -->
+            <div x-show="!$store.app.sidebarCollapsed"
+                 class="mt-auto px-4 py-3 text-[10px] text-gray-500 leading-relaxed border-t border-gray-800">
+                Licensed under
+                <a href="https://github.com/TenrootOrg/IntactAI/blob/main/LICENSE"
+                   target="_blank" rel="noopener"
+                   class="text-blue-400 hover:underline">AGPL-3.0</a>
+                <br>
+                <a href="https://github.com/TenrootOrg/IntactAI"
+                   target="_blank" rel="noopener"
+                   class="text-gray-400 hover:underline">View source on GitHub</a>
+            </div>
         </aside>
 
         <!-- Main Content Area -->
