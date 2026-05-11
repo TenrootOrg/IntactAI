@@ -37,25 +37,44 @@ async function loadTimesketchBlueprintsDropdown() {
     }
 }
 
-// Handle blueprint selection change
+// Handle blueprint selection change.
+//
+// In Upload Triage mode the operator has already collected the
+// artifacts (KAPE or Velociraptor offline) — the blueprint's
+// kape_target setting only matters during live collection, so the
+// "Triage: _KapeTriage" badge is misleading noise in upload mode.
+// Hide it (and tweak the descriptor sentence above the badges)
+// when the current mode is `upload`.
 function onTimesketchBlueprintChange() {
     const select = document.getElementById('timesketch-blueprint-select');
     const infoDiv = document.getElementById('timesketch-blueprint-info');
     const kapeSpan = document.getElementById('ts-blueprint-kape');
     const plasoSpan = document.getElementById('ts-blueprint-plaso');
+    const descP = select ? select.parentElement.querySelector('p.text-xs') : null;
 
     if (!select || !infoDiv) return;
 
     const blueprintId = select.value;
     const blueprint = window.timesketchBlueprintsCache.find(bp => bp.id === blueprintId);
 
-    if (blueprint && blueprint.settings) {
-        kapeSpan.textContent = `Triage: ${blueprint.settings.kape_target || 'N/A'}`;
-        plasoSpan.textContent = `Plaso: ${blueprint.settings.plaso_parser || 'N/A'}`;
-        infoDiv.classList.remove('hidden');
-    } else {
+    if (!blueprint || !blueprint.settings) {
         infoDiv.classList.add('hidden');
+        return;
     }
+
+    const modeEl = document.querySelector('input[name="ts-mode"]:checked');
+    const isUpload = modeEl && modeEl.value === 'upload';
+
+    if (isUpload) {
+        kapeSpan.classList.add('hidden');
+        if (descP) descP.textContent = 'Select a blueprint to configure Plaso processing settings';
+    } else {
+        kapeSpan.classList.remove('hidden');
+        kapeSpan.textContent = `Triage: ${blueprint.settings.kape_target || 'N/A'}`;
+        if (descP) descP.textContent = 'Select a blueprint to configure triage target and Plaso processing settings';
+    }
+    plasoSpan.textContent = `Plaso: ${blueprint.settings.plaso_parser || 'N/A'}`;
+    infoDiv.classList.remove('hidden');
 }
 
 // Get current blueprint settings
@@ -242,6 +261,9 @@ function toggleTimesketchMode() {
         uploadSection.classList.remove('hidden');
         initTimesketchUploadDropzone();
     }
+    // Re-render the blueprint badges + descriptor so the KAPE-triage
+    // badge appears/disappears the instant the operator switches modes.
+    onTimesketchBlueprintChange();
 }
 
 // Initialize upload dropzone
