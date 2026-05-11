@@ -1,0 +1,71 @@
+Intact.AI Security Platform
+Copyright (c) 2026 Tenroot
+
+This product is licensed under the GNU Affero General Public License v3.0
+(AGPL-3.0). See LICENSE for the full license text.
+
+================================================================================
+This product includes software developed by, and/or modified versions of
+software originally developed by, the following projects. Each upstream
+project's original license terms apply to its code; modifications shipped
+by Intact.AI are released under AGPL-3.0 (compatible upgrades for the
+Apache-2.0 / MIT / DRL-licensed parts; same-license for GPL/LGPL parts).
+================================================================================
+
+Velociraptor
+  Copyright (c) Velocidex Enterprises
+  Source:  https://github.com/Velocidex/velociraptor
+  License: GNU Affero General Public License v3.0 (AGPL-3.0)
+
+Timesketch
+  Copyright (c) Google LLC and contributors
+  Source:  https://github.com/google/timesketch
+  License: Apache License 2.0
+
+Plaso
+  Copyright (c) log2timeline maintainers
+  Source:  https://github.com/log2timeline/plaso
+  License: Apache License 2.0
+
+DFIR-IRIS
+  Copyright (c) DFIR-IRIS team
+  Source:  https://github.com/dfir-iris/iris-web
+  License: GNU Lesser General Public License v3.0 (LGPL-3.0)
+
+DFIR-O365RC
+  Copyright (c) ANSSI-FR
+  Source:  https://github.com/ANSSI-FR/DFIR-O365RC
+  License: GNU General Public License v3.0 (GPL-3.0)
+
+DetectRaptor
+  Copyright (c) Matt Green and contributors
+  Source:  https://github.com/mgreen27/DetectRaptor
+  License: Apache License 2.0
+
+Sigma rules
+  Copyright (c) SigmaHQ contributors
+  Source:  https://github.com/SigmaHQ/sigma
+  License: Detection Rule License (DRL) 1.1
+
+Hayabusa (rules used as input to Velociraptor artifact)
+  Copyright (c) Yamato Security
+  Source:  https://github.com/Yamato-Security/hayabusa
+  License: GNU General Public License v3.0 (GPL-3.0)
+
+Anthropic Cybersecurity Skills (skill content; reuse in agentic prompts)
+  Copyright (c) Anthropic
+  Source:  https://github.com/anthropics/anthropic-cookbook  (and related)
+  License: per upstream repository
+
+================================================================================
+For Apache-2.0 components: modifications have been made to integrate them
+into the Intact platform. Per Apache-2.0 §4(b), this file (NOTICE) records
+that fact. Refer to each upstream project's source tree for the unmodified
+versions and to git history in this repository for the modifications.
+
+For AGPL/GPL/LGPL components: as required by the respective licenses, the
+complete corresponding source for any modifications shipped in a release
+is available in this repository's git history. The Velociraptor and DFIR-
+O365RC modifications, in particular, are direct fork patches and remain
+under their original AGPL-3.0 / GPL-3.0 terms.
+================================================================================

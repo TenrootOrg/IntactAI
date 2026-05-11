@@ -4,6 +4,35 @@ A comprehensive security platform integrating Velociraptor EDR, ELK Stack, TimeS
 
 <!-- readme propagation test 2026-04-29 -->
 
+## License
+
+Intact.AI is licensed under the **GNU Affero General Public License v3.0
+(AGPL-3.0)**. See [LICENSE](./LICENSE) for the full license text.
+
+> If you run a modified version of this software as a network service
+> (e.g. accessible to remote users), AGPL-3.0 requires you to offer the
+> source of your modifications to those users.
+
+## Notice
+
+**This version is a modified version of the original code.** Intact.AI is
+built on top of and incorporates code from several upstream open-source
+projects, including (but not limited to):
+
+| Upstream project | License |
+|---|---|
+| [Velociraptor](https://github.com/Velocidex/velociraptor) | AGPL-3.0 |
+| [Timesketch](https://github.com/google/timesketch) | Apache-2.0 |
+| [Plaso](https://github.com/log2timeline/plaso) | Apache-2.0 |
+| [DFIR-IRIS](https://github.com/dfir-iris/iris-web) | LGPL-3.0 |
+| [DFIR-O365RC](https://github.com/ANSSI-FR/DFIR-O365RC) | GPL-3.0 |
+| [DetectRaptor](https://github.com/mgreen27/DetectRaptor) | Apache-2.0 |
+| [Sigma rules](https://github.com/SigmaHQ/sigma) | DRL-1.1 |
+
+The versions of these projects shipped here have been modified for
+integration into the Intact platform. Full attribution and per-component
+license details are recorded in [NOTICE](./NOTICE). Refer to each
+upstream project's repository for the unmodified original.
 
 ## Requirements
 
