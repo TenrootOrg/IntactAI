@@ -95,27 +95,114 @@ _upstream_to_config() {
     fi
 }
 
+# Sentinel emitted when an upstream call is rejected by GitHub's
+# anonymous rate-limit. Callers distinguish this from a generic
+# empty-string failure (network down / 404) so they can stop the
+# loop early instead of pointlessly retrying 5 more times.
+INTACT_UPSTREAM_RATE_LIMITED="__INTACT_RATE_LIMITED__"
+
 # Fetch the latest stable tag from a repo's /releases/latest endpoint.
-# Returns the tag_name (e.g., "v1.2.3" or "20260511"). Empty string on
-# failure (network down, 404, rate-limited).
+# Returns:
+#   - the tag_name on success (e.g., "v1.2.3" or "20260511")
+#   - INTACT_UPSTREAM_RATE_LIMITED if GitHub rejected the call as
+#     over-quota (HTTP 403 + body mentions "rate limit", or the
+#     X-RateLimit-Remaining response header is 0)
+#   - empty string on any other failure (network down, 404, parse error)
 #
 # Prereleases + drafts: GitHub's /releases/latest endpoint already
 # excludes both by design — confirmed in practice across all six
-# upstreams we track (every current /releases/latest response has
-# prerelease=false, draft=false). No extra client-side guard needed.
+# upstreams we track. No extra client-side guard needed.
 _upstream_latest_release() {
     local repo="$1"
-    curl -sL --max-time 15 \
+    # `-i` includes the response headers so we can read
+    # X-RateLimit-Remaining to detect a 403/rate-limit response. We
+    # pass the captured response to Python as argv (not stdin) because
+    # `python3 -c` already consumes stdin for the script body — if we
+    # piped curl's output to stdin, the script would see an empty
+    # string. Argv is fine for /releases/latest responses (a few KB).
+    local raw
+    raw=$(curl -sLi --max-time 15 \
         -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null \
+        "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)
+    [[ -z "$raw" ]] && return 0   # network failure → empty (handled by caller)
+
+    python3 -c '
+import sys, re, json
+sentinel, raw = sys.argv[1], sys.argv[2]
+
+# curl -L may produce multiple header blocks when following redirects;
+# the actual body is everything after the LAST blank line.
+parts = re.split(r"\r?\n\r?\n", raw)
+body = parts[-1] if parts else ""
+headers = "\n\n".join(parts[:-1]) if len(parts) > 1 else ""
+
+status = 0
+remaining = None
+for line in headers.splitlines():
+    if line.upper().startswith("HTTP/"):
+        try:
+            status = int(line.split()[1])
+        except (IndexError, ValueError):
+            pass
+    elif line.lower().startswith("x-ratelimit-remaining:"):
+        try:
+            remaining = int(line.split(":", 1)[1].strip())
+        except (IndexError, ValueError):
+            pass
+
+# Rate-limit detection: HTTP 403 with body mentioning rate-limit, OR
+# the remaining-counter header at zero. Either is sufficient.
+if (status == 403 and "rate limit" in body.lower()) or remaining == 0:
+    print(sentinel)
+    sys.exit(0)
+
+try:
+    d = json.loads(body)
+    print(d.get("tag_name", "") or "")
+except Exception:
+    pass
+' "$INTACT_UPSTREAM_RATE_LIMITED" "$raw" 2>/dev/null
+}
+
+# Quick zero-cost probe of the operator's current anonymous-API budget.
+# Hits /rate_limit which by GitHub's documentation does NOT itself count
+# against the quota. Returns the remaining-request count as an integer,
+# or empty string if the call fails (in which case the caller proceeds
+# optimistically — better to attempt the per-module check than skip
+# preemptively on a transient network glitch).
+_upstream_rate_limit_remaining() {
+    curl -sL --max-time 10 \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/rate_limit" 2>/dev/null \
         | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
-    print(d.get('tag_name', '') or '')
+    print(d['resources']['core']['remaining'])
 except Exception:
     pass
 " 2>/dev/null
+}
+
+# Format the rate_limit reset timestamp (unix seconds) into a
+# human-readable local time. Falls back to the raw value if `date`
+# can't parse it for some reason.
+_upstream_rate_limit_reset_at() {
+    local epoch
+    epoch=$(curl -sL --max-time 10 \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/rate_limit" 2>/dev/null \
+        | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d['resources']['core']['reset'])
+except Exception:
+    pass
+" 2>/dev/null)
+    if [[ -n "$epoch" ]]; then
+        date -d "@${epoch}" 2>/dev/null || echo "$epoch"
+    fi
 }
 
 # Rewrite one module's pinned version in config.yaml in place. Operates
@@ -183,7 +270,33 @@ check_module_updates() {
     # is a TTY the operator gets the interactive prompt. All three
     # modes work correctly without a guard.
 
+    # Upfront budget probe: one free call to /rate_limit (doesn't
+    # itself count against the quota). If GitHub's anonymous-API
+    # budget for this IP is below what we need (6, one per module),
+    # bail loudly instead of running a partial check. Operators
+    # behind shared NAT or running back-to-back installs from CI hit
+    # this without warning otherwise.
+    local needed=${#INTACT_UPSTREAM_REPOS[@]}
+    local remaining
+    remaining=$(_upstream_rate_limit_remaining)
+    if [[ -n "$remaining" && "$remaining" -lt "$needed" ]]; then
+        local reset_at
+        reset_at=$(_upstream_rate_limit_reset_at)
+        log_warn "GitHub API anonymous-call budget too low for this run"
+        log_warn "  remaining: ${remaining}/60   needed: ${needed}"
+        log_warn "  resets at: ${reset_at:-unknown}"
+        log_warn "  Skipping module update check; install will use existing pinned versions."
+        log_warn "  Re-run after the reset, or set options.check_module_updates: false in config.yaml."
+        return 0
+    fi
+    if [[ -z "$remaining" ]]; then
+        log_info "  (could not pre-probe GitHub API budget — proceeding optimistically)"
+    else
+        log_info "  GitHub API budget: ${remaining}/60 remaining (need ${needed})"
+    fi
+
     local any_change=false
+    local rate_limit_hit=false
     for module in "${!INTACT_UPSTREAM_REPOS[@]}"; do
         local repo="${INTACT_UPSTREAM_REPOS[$module]}"
         local current
@@ -194,6 +307,18 @@ check_module_updates() {
 
         local upstream_tag
         upstream_tag=$(_upstream_latest_release "$repo")
+        if [[ "$upstream_tag" == "$INTACT_UPSTREAM_RATE_LIMITED" ]]; then
+            # GitHub rate-limit hit mid-loop (race with another call from
+            # same IP, or the upfront probe was a slight underestimate).
+            # The remaining 5 modules would all fail the same way —
+            # break loudly instead of pretending to check them.
+            log_warn "  ${module}: GitHub API rate limit hit"
+            log_warn "  resets at: $(_upstream_rate_limit_reset_at || echo unknown)"
+            log_warn "  Aborting update check; install will use existing pinned versions."
+            log_warn "  Re-run after the reset, or set options.check_module_updates: false."
+            rate_limit_hit=true
+            break
+        fi
         if [[ -z "$upstream_tag" ]]; then
             log_warn "  ${module}: could not reach ${repo} — skipping"
             continue
@@ -231,5 +356,11 @@ check_module_updates() {
 
     if [[ "$any_change" == "true" ]]; then
         log_info "config.yaml updated. Continuing installation with the new pins..."
+    fi
+    if [[ "$rate_limit_hit" == "true" ]]; then
+        # Already logged the loud warning where the limit fired; this
+        # is just the trailing summary so the operator's eye catches
+        # the truncation when scrolling back through install output.
+        log_warn "Update check ended early due to GitHub rate limit — some modules were not checked."
     fi
 }

@@ -11,6 +11,16 @@ options:
   # release. For each newer release found, prompt the operator; press y
   # to bump the pinned version in this file in place. Set false for
   # unattended installs so the prompt doesn't block.
+  #
+  # Rate-limit note: when enabled, this makes 6 anonymous calls to
+  # api.github.com per install run. GitHub's anonymous API limit is
+  # 60 requests/hour per IP. Running ~10+ installs from the same IP
+  # within an hour (e.g., a shared NAT'd office network, an air-gap
+  # build pipeline that rebuilds repeatedly, or rapid local testing)
+  # can exhaust the quota and cause the check to silently skip modules.
+  # The installer detects this at runtime and logs a clear
+  # "GitHub rate limit exhausted" warning; the install itself
+  # continues normally using whatever versions are pinned below.
   check_module_updates: true
 
 modules:
