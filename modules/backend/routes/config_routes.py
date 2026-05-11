@@ -21,7 +21,7 @@ DEFAULT_CONFIG = {
         "online_llm": {
             "provider": "openrouter",
             "api_key": "",
-            "model": "claude-sonnet",
+            "model": "~anthropic/claude-haiku-latest",
             "batch_size": 100
         }
     }

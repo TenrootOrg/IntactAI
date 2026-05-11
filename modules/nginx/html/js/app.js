@@ -765,7 +765,7 @@ document.addEventListener('alpine:init', () => {
             const route = provider === 'claude' ? 'anthropic' : provider;
             const preferredId = {
                 'claude':     'claude-haiku-latest',
-                'openai':     'gpt-latest',
+                'openai':     'gpt-mini-latest',
                 'gemini':     'gemini-flash-latest',
                 'openrouter': '~anthropic/claude-haiku-latest'
             }[provider];
@@ -787,10 +787,10 @@ document.addEventListener('alpine:init', () => {
                 // hardcoded default so the field isn't left stale from
                 // the previous provider.
                 const fallback = {
-                    'openai':     'gpt-4o',
-                    'claude':     'claude-sonnet',
-                    'gemini':     'gemini-flash',
-                    'openrouter': 'claude-sonnet'
+                    'openai':     'gpt-mini-latest',
+                    'claude':     'claude-haiku-latest',
+                    'gemini':     'gemini-flash-latest',
+                    'openrouter': '~anthropic/claude-haiku-latest'
                 }[provider];
                 if (fallback) this.config.agentic.online_llm.model = fallback;
             }
