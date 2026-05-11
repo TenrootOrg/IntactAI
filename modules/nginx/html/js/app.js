@@ -439,6 +439,25 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok) {
                     window.currentConfig = this.config;
                     this.showMessage('Agentic settings saved', 'success');
+                    // Fire-and-forget catalog refresh for the just-saved
+                    // provider so the model dropdown picks up the full
+                    // live list (Anthropic / OpenAI / Gemini /v1/models
+                    // require an API key, which we just persisted). Then
+                    // dispatch an event so the combobox re-queries.
+                    const provider = this.config.agentic?.online_llm?.provider;
+                    const providerToRoute = {
+                        openrouter: 'refresh-openrouter-models',
+                        claude:     'refresh-anthropic-models',
+                        openai:     'refresh-openai-models',
+                        gemini:     'refresh-gemini-models'
+                    };
+                    const route = providerToRoute[provider];
+                    if (route) {
+                        try {
+                            await fetch('/api/maintenance/' + route, { method: 'POST' });
+                        } catch (e) { /* best-effort */ }
+                        window.dispatchEvent(new CustomEvent('llm-catalog-refreshed', { detail: { provider } }));
+                    }
                 } else {
                     this.showMessage('Failed to save Agentic config', 'error');
                 }
@@ -729,32 +748,51 @@ document.addEventListener('alpine:init', () => {
             event.target.value = ''; // Reset input for next upload
         },
 
-        onProviderChange() {
-            // Set default model based on provider (using friendly aliases)
-            const modelDefaults = {
-                'openai': 'gpt-4o',
-                'claude': 'claude-sonnet',
-                'gemini': 'gemini-flash',
-                'openrouter': 'claude-sonnet'
-            };
-            // Per-alias max output tokens (mirrors MODEL_ALIASES on the
-            // backend — kept in sync so the UI auto-fills immediately on
-            // provider switch without a round-trip).
-            const aliasMax = {
-                'gpt-4o': 16384,
-                'gpt-4.1': 32768,
-                'claude-opus': 128000,
-                'claude-sonnet': 64000,
-                'claude-haiku': 8192,
-                'gemini-flash': 65536,
-                'gemini-pro': 65536
-            };
-            const defaultModel = modelDefaults[this.config.agentic.online_llm.provider];
-            if (defaultModel) {
-                this.config.agentic.online_llm.model = defaultModel;
-                if (aliasMax[defaultModel]) {
-                    this.config.agentic.max_response_tokens = aliasMax[defaultModel];
+        async onProviderChange() {
+            // Pick a sensible default model when the operator switches
+            // provider, plus auto-fill max_response_tokens from it.
+            //
+            // Per provider we prefer the `*-latest` family alias since
+            // those auto-update when the vendor ships a new model and
+            // don't lock the operator to a specific version. If the
+            // preferred id isn't in the catalog (older snapshot,
+            // catalog filtered it out), fall back to results[0]
+            // (newest entry by `created`).
+            //
+            // Route name mapping: the UI uses `claude` but the catalog
+            // route is `/api/config/anthropic/models` — translate.
+            const provider = this.config.agentic.online_llm.provider;
+            const route = provider === 'claude' ? 'anthropic' : provider;
+            const preferredId = {
+                'claude':     'claude-haiku-latest',
+                'openai':     'gpt-latest',
+                'gemini':     'gemini-flash-latest',
+                'openrouter': '~anthropic/claude-haiku-latest'
+            }[provider];
+
+            try {
+                const resp = await fetch('/api/config/' + route + '/models?limit=30');
+                const data = await resp.json();
+                const list = data.models || [];
+                let picked = preferredId ? list.find(m => m.id === preferredId) : null;
+                if (!picked) picked = list[0];
+                if (picked) {
+                    this.config.agentic.online_llm.model = picked.id;
+                    if (picked.max_output_tokens) {
+                        this.config.agentic.max_response_tokens = picked.max_output_tokens;
+                    }
                 }
+            } catch (e) {
+                // Network/parse failure → fall back to a sensible
+                // hardcoded default so the field isn't left stale from
+                // the previous provider.
+                const fallback = {
+                    'openai':     'gpt-4o',
+                    'claude':     'claude-sonnet',
+                    'gemini':     'gemini-flash',
+                    'openrouter': 'claude-sonnet'
+                }[provider];
+                if (fallback) this.config.agentic.online_llm.model = fallback;
             }
         }
     });

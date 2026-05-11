@@ -1880,10 +1880,8 @@ sudo ./velociraptor service start</code></pre>
                 <div x-show="azureStatus" class="mb-6 p-3 rounded-lg"
                      :class="azureStatus?.status === 'ready' ? 'bg-green-900/30 border border-green-700' : 'bg-yellow-900/30 border border-yellow-700'">
                     <div class="flex items-center gap-2 text-sm">
-                        <span :class="azureStatus?.status === 'ready' ? 'text-green-400' : 'text-yellow-400'">
-                            <template x-if="azureStatus?.status === 'ready'">Ready</template>
-                            <template x-if="azureStatus?.status !== 'ready'">Partial Setup</template>
-                        </span>
+                        <span :class="azureStatus?.status === 'ready' ? 'text-green-400' : 'text-yellow-400'"
+                              x-text="azureStatus?.status === 'ready' ? 'Ready' : 'Partial Setup'"></span>
                         <span class="text-gray-400">|</span>
                         <span class="text-gray-400">SIGMA Rules: <span :class="azureStatus?.sigma_rules?.available ? 'text-green-400' : 'text-red-400'" x-text="azureStatus?.sigma_rules?.available ? 'Available' : 'Not Found'"></span></span>
                         <span class="text-gray-400">|</span>
@@ -2350,12 +2348,20 @@ sudo ./velociraptor service start</code></pre>
                                              fetchedAt: '',
                                              unenriched: 0,
                                              _debounce: null,
+                                             // The provider names used in the UI (`claude`, `openai`,
+                                             // `gemini`, `openrouter`) don't all match the catalog
+                                             // route names on the backend (anthropic, openai, gemini,
+                                             // openrouter — the vendor convention OpenRouter uses).
+                                             // Translate here so /api/config/<route>/models resolves.
+                                             routeFor(provider) {
+                                                 return provider === 'claude' ? 'anthropic' : provider;
+                                             },
                                              async query() {
                                                  const p = $store.settings.config.agentic.online_llm.provider;
                                                  const q = $store.settings.config.agentic.online_llm.model || '';
                                                  this.loading = true;
                                                  try {
-                                                     const url = '/api/config/' + p + '/models?limit=10&q=' + encodeURIComponent(q);
+                                                     const url = '/api/config/' + this.routeFor(p) + '/models?limit=10&q=' + encodeURIComponent(q);
                                                      const resp = await fetch(url);
                                                      const data = await resp.json();
                                                      this.results = data.models || [];
@@ -2367,14 +2373,12 @@ sudo ./velociraptor service start</code></pre>
                                              },
                                              // Look up the currently-saved model so we can render its
                                              // metadata (Context / Max output / Pricing) below the input.
-                                             // The saved value is often a friendly alias (`claude-sonnet`)
-                                             // rather than a catalog id, so we try multiple matching paths.
                                              async loadSelected() {
                                                  const p = $store.settings.config.agentic.online_llm.provider;
                                                  const id = $store.settings.config.agentic.online_llm.model;
                                                  if (!id) { this.selectedModel = null; return; }
                                                  try {
-                                                     const url = '/api/config/' + p + '/models?limit=10&q=' + encodeURIComponent(id);
+                                                     const url = '/api/config/' + this.routeFor(p) + '/models?limit=10&q=' + encodeURIComponent(id);
                                                      const resp = await fetch(url);
                                                      const data = await resp.json();
                                                      const list = data.models || [];
@@ -2397,16 +2401,23 @@ sudo ./velociraptor service start</code></pre>
                                              }
                                          }"
                                          x-init="loadSelected(); query();
-                                                 // x-effect re-runs whenever the store properties it
-                                                 // reads change. Cleaner than $watch for store paths
-                                                 // and avoids the race between provider <select>'s
-                                                 // @change and Alpine's reactive update order.
+                                                 // Re-query when the provider switches so the dropdown
+                                                 // reflects the active provider's catalog.
                                                  $watch('$store.settings.config.agentic.online_llm.provider', () => {
                                                      selectedModel = null; results = []; total = 0;
                                                      query(); loadSelected();
                                                  });
                                                  $watch('$store.settings.config.agentic.online_llm.model', () => {
                                                      loadSelected();
+                                                 });
+                                                 // After Save, app.js fires a background catalog refresh
+                                                 // and dispatches this event — re-query so freshly-
+                                                 // fetched models appear without a page reload.
+                                                 window.addEventListener('llm-catalog-refreshed', (ev) => {
+                                                     if (ev.detail?.provider === $store.settings.config.agentic.online_llm.provider) {
+                                                         results = []; total = 0;
+                                                         query(); loadSelected();
+                                                     }
                                                  });"
                                          class="relative">
                                         <input type="text"
@@ -2440,7 +2451,7 @@ sudo ./velociraptor service start</code></pre>
                                                 Showing <span x-text="results.length"></span> of <span x-text="total"></span> matches — keep typing to narrow down.
                                             </div>
                                         </div>
-                                        <div x-show="open && results.length === 0 && !loading && search.length > 0"
+                                        <div x-show="open && results.length === 0 && !loading && ($store.settings.config.agentic.online_llm.model || '').length > 0"
                                              class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-xs text-gray-400">
                                             No matching models in the catalog for
                                             <span class="text-white" x-text="$store.settings.config.agentic.online_llm.provider"></span>.
@@ -2452,15 +2463,15 @@ sudo ./velociraptor service start</code></pre>
                                              operator picks a new model from the dropdown. -->
                                         <div x-show="selectedModel" class="mt-1 text-[11px] text-gray-500 flex flex-wrap gap-x-4">
                                             <span x-show="selectedModel?.context_length">
-                                                Context: <span class="text-gray-300" x-text="selectedModel.context_length.toLocaleString()"></span>
+                                                Context: <span class="text-gray-300" x-text="(selectedModel?.context_length ?? 0).toLocaleString()"></span>
                                             </span>
                                             <span x-show="selectedModel?.max_output_tokens">
-                                                Max output: <span class="text-gray-300" x-text="selectedModel.max_output_tokens.toLocaleString()"></span>
+                                                Max output: <span class="text-gray-300" x-text="(selectedModel?.max_output_tokens ?? 0).toLocaleString()"></span>
                                             </span>
                                             <span x-show="selectedModel?.pricing?.prompt">
-                                                $<span x-text="(parseFloat(selectedModel.pricing.prompt) * 1000000).toFixed(2)"></span>/M&nbsp;in
+                                                $<span x-text="(parseFloat(selectedModel?.pricing?.prompt ?? 0) * 1000000).toFixed(2)"></span>/M&nbsp;in
                                                 ·
-                                                $<span x-text="(parseFloat(selectedModel.pricing.completion) * 1000000).toFixed(2)"></span>/M&nbsp;out
+                                                $<span x-text="(parseFloat(selectedModel?.pricing?.completion ?? 0) * 1000000).toFixed(2)"></span>/M&nbsp;out
                                             </span>
                                         </div>
                                         <div x-show="unenriched > 0" class="mt-1 text-[10px] text-yellow-600">

@@ -124,6 +124,112 @@ def _parse_catalog_query():
     return q, limit, offset
 
 
+# --- OpenRouter mirror fallback -----------------------------------------
+# Maps direct-provider name → OpenRouter id prefix (incl. the `~` family-
+# alias prefix OpenRouter emits for "-latest" entries).
+_OR_VENDOR_PREFIX = {
+    "claude": "anthropic/",
+    "openai": "openai/",
+    "gemini": "google/",
+}
+
+
+def _direct_sdk_id_from_canonical(canonical: str, provider: str):
+    """Convert an OpenRouter canonical id (`anthropic/claude-opus-4.6`)
+    into the id the direct-provider SDK expects (`claude-opus-4-6`).
+
+    Returns None if the canonical id doesn't belong to this provider.
+    """
+    if not canonical:
+        return None
+    vendor = _OR_VENDOR_PREFIX.get(provider)
+    if not vendor:
+        return None
+    # OpenRouter uses `~vendor/family` for "-latest" auto-resolve entries;
+    # peel the tilde first so the prefix match still works.
+    bare = canonical[1:] if canonical.startswith("~") else canonical
+    if not bare.startswith(vendor):
+        return None
+    bare = bare[len(vendor):]
+    if provider == "claude":
+        # Anthropic native ids use dashes between version components, while
+        # OpenRouter mirrors use dots: claude-opus-4.6 → claude-opus-4-6.
+        return bare.replace(".", "-")
+    # OpenAI + Google keep dots in their native model ids (gpt-4.1,
+    # gemini-2.5-pro), so identity-strip-prefix is enough.
+    return bare
+
+
+def _canonical_from_direct_sdk_id(direct_id: str, provider: str):
+    """Inverse of _direct_sdk_id_from_canonical. Used to look up an
+    OpenRouter mirror entry's metadata when the operator's saved model
+    is in direct-SDK form (e.g. `claude-opus-4-6` ↔
+    `anthropic/claude-opus-4.6`)."""
+    if not direct_id:
+        return None
+    vendor = _OR_VENDOR_PREFIX.get(provider)
+    if not vendor:
+        return None
+    if provider == "claude":
+        # Convert version-separator dashes back to dots. Best-effort: a
+        # generic dash→dot would mangle ids like `claude-opus`. Use a
+        # regex that only swaps `-<digit>-<digit>` patterns.
+        import re
+        cooked = re.sub(r"-(\d+)-(\d+)", r"-\1.\2", direct_id)
+        return vendor + cooked
+    return vendor + direct_id
+
+
+def _openrouter_mirror_for_provider(provider: str, q: str = ""):
+    """Pull OpenRouter catalog entries for the matching vendor and
+    re-shape them as direct-provider entries. Used as a fallback when
+    the operator hasn't configured a direct API key (so the direct
+    catalog is empty) — gives them a rich dropdown anyway.
+
+    Each entry's `id` is the direct-SDK id (so picking it and running
+    `call_llm` actually works against the direct provider), while
+    `canonical_id` keeps the OpenRouter id so metadata stays joinable.
+    """
+    vendor = _OR_VENDOR_PREFIX.get(provider)
+    if not vendor:
+        return []
+
+    from services.llm_catalogs import openrouter as or_catalog
+    or_models = or_catalog.load_catalog()
+
+    q_lower = (q or "").strip().lower()
+    out = []
+    for m in or_models:
+        cid = m.get("id") or ""
+        # Accept both `vendor/…` and the `~vendor/…` family-alias form.
+        bare_cid = cid[1:] if cid.startswith("~") else cid
+        if not bare_cid.startswith(vendor):
+            continue
+        direct_id = _direct_sdk_id_from_canonical(cid, provider)
+        if not direct_id:
+            continue
+        # Substring filter — match on either the direct id or the
+        # OpenRouter name/canonical so operators searching by either
+        # find what they want.
+        if q_lower:
+            if (q_lower not in direct_id.lower()
+                    and q_lower not in cid.lower()
+                    and q_lower not in (m.get("name") or "").lower()):
+                continue
+        out.append({
+            "id": direct_id,
+            "canonical_id": cid,
+            "name": m.get("name") or direct_id,
+            "max_output_tokens": m.get("max_output_tokens"),
+            "context_length": m.get("context_length"),
+            "pricing": m.get("pricing"),
+            "created": m.get("created"),
+            "deprecated": False,
+            "enriched_from": "openrouter_mirror",
+        })
+    return out
+
+
 def _alias_entries_for_provider(provider: str):
     """Project MODEL_ALIASES entries that work for the given provider into
     the same per-entry shape as catalog entries. Pulled into every
@@ -150,7 +256,7 @@ def _alias_entries_for_provider(provider: str):
         out.append({
             "id": alias_name,
             "canonical_id": canonical,
-            "name": f"{alias_name}  (friendly alias)",
+            "name": alias_name,
             "max_output_tokens": entry.get("max_output_tokens") or or_match.get("max_output_tokens"),
             "context_length": or_match.get("context_length"),
             "pricing": or_match.get("pricing"),
@@ -179,26 +285,45 @@ def _serve_catalog(catalog_module, provider_name: str, bootstrap: bool = True):
         except Exception as e:
             print(f"[CATALOG] Bootstrap refresh failed: {e}", flush=True)
     catalog_result = catalog_module.search(q=q, limit=limit, offset=offset)
-
-    # Filter alias entries to the search query and prepend them. Dedupe
-    # by id so an alias and its catalog twin (rare — only happens when
-    # the catalog id literally equals an alias name) don't both appear.
-    alias_entries = _alias_entries_for_provider(provider_name)
     q_lower = (q or "").strip().lower()
-    if q_lower:
-        alias_entries = [a for a in alias_entries
-                         if q_lower in a["id"].lower()
-                         or q_lower in (a.get("name") or "").lower()]
 
-    combined = list(alias_entries)
-    seen = {a["id"] for a in alias_entries}
+    combined = []
+    seen = set()
+
+    # 1. Direct-catalog entries (populated when the operator has saved
+    #    a direct API key — usually 15-50 models per provider).
     for m in catalog_result.get("models", []):
         if m["id"] not in seen:
             combined.append(m)
             seen.add(m["id"])
 
-    catalog_result["models"] = combined[:limit]
-    catalog_result["total"] = len(alias_entries) + int(catalog_result.get("total", 0))
+    # 2. OpenRouter-mirror fallback for direct providers. Gives a rich
+    #    dropdown without requiring a direct API key. Each entry's `id`
+    #    is the direct-SDK form (e.g. claude-opus-4-6), `canonical_id`
+    #    is the OpenRouter id; metadata comes from OpenRouter.
+    if provider_name in ("claude", "openai", "gemini"):
+        for m in _openrouter_mirror_for_provider(provider_name, q):
+            if m["id"] not in seen:
+                combined.append(m)
+                seen.add(m["id"])
+
+    # 3. Friendly-alias fallback. Only surfaces when steps 1+2 produced
+    #    nothing — e.g. offline install with no OpenRouter catalog and
+    #    no direct API key. Operators familiar with the codebase don't
+    #    need these labels cluttering their dropdown in normal use.
+    if not combined:
+        for a in _alias_entries_for_provider(provider_name):
+            if q_lower and q_lower not in a["id"].lower() \
+                    and q_lower not in (a.get("name") or "").lower():
+                continue
+            if a["id"] not in seen:
+                combined.append(a)
+                seen.add(a["id"])
+
+    catalog_result["models"] = combined[offset:offset + max(1, int(limit))]
+    catalog_result["total"] = len(combined)
+    catalog_result["limit"] = limit
+    catalog_result["offset"] = offset
     return jsonify(catalog_result)
 
 

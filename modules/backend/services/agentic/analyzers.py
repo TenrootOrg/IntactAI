@@ -221,6 +221,25 @@ def get_model_max_output_tokens(model_input: str, provider: str):
         except Exception:
             pass
 
+    # Step 3: OpenRouter-mirror fallback. When the operator picks a model
+    # from the dropdown's OpenRouter-fallback section, the saved value
+    # is in direct-SDK form (e.g. `claude-opus-4-6`). Convert back to
+    # canonical (`anthropic/claude-opus-4.6`) and look in the OpenRouter
+    # catalog so max_output_tokens / context_length stay accurate.
+    if provider in ("claude", "openai", "gemini"):
+        try:
+            from routes.config_routes import _canonical_from_direct_sdk_id
+            from services.llm_catalogs import openrouter as or_catalog
+            canonical = _canonical_from_direct_sdk_id(model_input, provider)
+            if canonical:
+                for m in or_catalog.load_catalog():
+                    cid = m.get("id") or ""
+                    bare = cid[1:] if cid.startswith("~") else cid
+                    if bare == canonical and m.get("max_output_tokens"):
+                        return m["max_output_tokens"]
+        except Exception:
+            pass
+
     return None
 
 def resolve_model_alias(model_name: str, provider: str) -> str:
