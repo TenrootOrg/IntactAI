@@ -6,6 +6,13 @@ options:
   # Set to false for faster installation, tools can be downloaded later via Maintenance button
   download_forensic_tools: true
 
+  # Before installing, poll each pinned module's upstream GitHub repo
+  # (Velociraptor, Timesketch, IRIS, Plaso, Portainer, ELK) for a newer
+  # release. For each newer release found, prompt the operator; press y
+  # to bump the pinned version in this file in place. Set false for
+  # unattended installs so the prompt doesn't block.
+  check_module_updates: false
+
 modules:
   agentic:
     enabled: true
