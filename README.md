@@ -241,9 +241,3 @@ sudo bash scripts/first-init.sh
    - Edit `config.yaml` (set IP/domain and passwords)
    - Run `sudo bash scripts/first-init.sh`
    - Access dashboard at `http://CLIENT_IP`
-
----
-
-## License
-
-Internal use only.
