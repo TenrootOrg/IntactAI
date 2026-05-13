@@ -242,3 +242,17 @@ sudo bash scripts/first-init.sh
    - Edit `config.yaml` (set IP/domain and passwords)
    - Run `sudo bash scripts/first-init.sh`
    - Access dashboard at `http://CLIENT_IP`
+
+## Agentic skill audits
+
+The DFIR skills bundled with the agentic pipeline are audited on every
+update. Latest results:
+
+- 🔒 **Security scan** ([`cisco_scan.csv`](modules/backend/services/agentic/skills/audits/cisco_scan.csv))
+  — scanned with [Cisco AI Defense Skill Scanner](https://github.com/cisco-ai-defense/skill-scanner).
+  **0 malicious · 6 false_positive · 63 safe** (69 total).
+- 📈 **Value evaluation** ([`value_evaluation.csv`](modules/backend/services/agentic/skills/audits/value_evaluation.csv))
+  — each skill runs through a baseline-vs-skilled LLM-as-judge comparison.
+  **38 high_value · 30 moderate_value · 1 low_value · 0 worse**.
+
+Methodology + per-skill detail: [`modules/backend/services/agentic/skills/README.md`](modules/backend/services/agentic/skills/README.md).
