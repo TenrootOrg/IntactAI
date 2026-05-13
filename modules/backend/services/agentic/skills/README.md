@@ -148,6 +148,47 @@ on legitimate DFIR primitives:
 | `performing-memory-forensics-with-volatility3` | HIGH supply_chain_attack | `pip install volatility3` + `git clone … && pip install -e .` | Official install for Volatility 3 (the canonical memory-forensics tool). |
 | `analyzing-network-traffic-for-incidents` | MEDIUM tool_chaining_abuse | A markdown table row *describing* DNS tunneling | Educational description so the LLM can hunt for the technique, not an instruction to perform it. |
 
-Detail per row is in `scan_report.csv` (columns `top_findings` for the raw
-Cisco hits, `assessment_reason` for the manual review). Re-grade those
-columns when new skills are added.
+Per-row detail (raw Cisco hits, severity, manual review): see
+[`audits/cisco_scan.csv`](audits/cisco_scan.csv). Re-grade the
+`my_assessment` / `assessment_reason` columns when new skills are added.
+
+## Value evaluation
+
+Every bundled skill is also passed through a three-phase value-evaluation
+harness that measures whether the skill actually adds something a plain
+DFIR-persona Claude wouldn't already produce. Tooling lives outside the
+repo at `/home/tenroot/skill-evaluator/` (generic, not IntactAI-specific);
+see its `README.md` for re-run instructions.
+
+For each skill the harness:
+
+1. Generates a realistic DFIR question from the skill's `description`.
+2. Asks the LLM the same question twice — once with no skill loaded (baseline),
+   once with the skill in the system prompt (mirroring how
+   `compose_system_prompt()` injects skills at runtime).
+3. LLM-as-judge compares the two answers and scores the *added value*
+   on 0-100 with one of four verdicts:
+   `high_value` (70-100) · `moderate_value` (40-69) · `low_value` (0-39) · `worse`.
+
+### Last evaluation result (2026-05-13, model `anthropic/claude-haiku-4-5`)
+
+| Verdict          | Count | Notes                                                                          |
+|------------------|------:|--------------------------------------------------------------------------------|
+| 🟢 high_value     | **38** | Skill clearly adds named tools / event IDs / MITRE codes / commands the baseline lacks. Load-bearing — keep. |
+| 🟡 moderate_value | **30** | Skill adds incremental concrete detail; baseline already covers the core. Keep, marginal. |
+| 🔴 low_value      | **1**  | `detecting-aws-iam-privilege-escalation` (32) — baseline answers AWS IAM privesc almost as well as the skill on its own. Kept anyway: ~3 KB on disk, no displacement risk (top-K=1 selection means it only competes for AWS IAM artifacts). |
+| ⛔ worse          | **0**  | None of the bundled skills made the answer worse than baseline. |
+
+Top scorers (all `high_value`, score in parentheses):
+
+- `performing-cloud-storage-forensic-acquisition` (85)
+- `performing-cloud-forensics-investigation` (78)
+- `performing-ransomware-response` (78)
+- `intact-azure-cloud-investigation` (78) — your custom Azure skill, scored
+  alongside the upstream catalog's best
+- `intact-investigating-azure-account-compromise` (78) — same
+- Plus 33 other skills at 72–78
+
+Per-row detail (question used, both answers, judge reason): see
+[`audits/value_evaluation.csv`](audits/value_evaluation.csv).
+Sorted ascending by score so drop candidates surface at the top.
