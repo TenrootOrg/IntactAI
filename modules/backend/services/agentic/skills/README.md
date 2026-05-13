@@ -5,6 +5,15 @@ Markdown files in this directory are loaded once at backend boot by
 system prompt on a per-request basis (selected by artifact name + MITRE ATT&CK
 techniques).
 
+## 📋 Latest audit results
+
+| Audit | Output | Last result |
+|---|---|---|
+| **Cisco AI Defense skill scanner** (malicious / safe) | 📄 [`audits/cisco_scan.csv`](audits/cisco_scan.csv) | **0 malicious** · 6 false_positive · 63 safe (69 total) |
+| **Value evaluation** (LLM-as-judge: skill vs baseline) | 📄 [`audits/value_evaluation.csv`](audits/value_evaluation.csv) | **38 high_value** · 30 moderate_value · 1 low_value · 0 worse |
+
+Click either CSV — GitHub renders it as a sortable table. Details on how the audits run + how to reproduce them are in the [Security audit](#security-audit) and [Value evaluation](#value-evaluation) sections below.
+
 ## Layout
 
 ```
