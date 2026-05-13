@@ -103,3 +103,51 @@ remaining ~50% of artifacts fall through to fuzzy at runtime.
 `SKILL_DEFAULT_TOP_K = 1` — at most one skill per analysis. Average bundled
 skill is ~3K tokens; total system prompt remains ~3.7K tokens (vs. ~700 tokens
 without skills). This is well within every supported provider's context window.
+
+## Security audit
+
+Every bundled skill is scanned with
+[Cisco AI Defense Skill Scanner](https://github.com/cisco-ai-defense/skill-scanner)
+— a free, open-source (Apache-2.0) static analyzer that flags prompt
+injection, data exfiltration, supply-chain, and command-injection patterns in
+agent skill files. We pair the Cisco scanner's static-analyzer output with a
+manual review of every non-SAFE finding (column `my_assessment` in the CSV)
+to filter the false positives that DFIR content normally trips (`find -exec`,
+`pip install`, attack-technique descriptions are intentional in this domain).
+
+The scan + annotation tooling lives outside this repo at
+`/home/tenroot/skill-scanner-wrapper/` (it's a generic auditing harness, not
+IntactAI-specific). To re-run the audit:
+
+```bash
+/home/tenroot/skill-scanner-wrapper/scan_skills_to_csv.py \
+    /home/tenroot/intact/modules/backend/services/agentic/skills \
+    --csv /home/tenroot/skill-scanner-wrapper/scan_report.csv
+python3 /home/tenroot/skill-scanner-wrapper/annotate_assessment.py
+```
+
+### Last scan result (Cisco scanner v2.0.11, 2026-05-13)
+
+| Severity (Cisco) | Count | My assessment |
+|---|---:|---|
+| SAFE       | 63 | safe |
+| MEDIUM     | 1  | false_positive |
+| HIGH       | 1  | false_positive |
+| CRITICAL   | 4  | false_positive |
+| **TOTAL**  | **69** | **0 malicious / 6 false_positive / 63 safe** |
+
+Every non-SAFE finding was a false positive — Cisco's static layer matched
+on legitimate DFIR primitives:
+
+| Skill | Cisco verdict | Matched pattern | Why it's a false positive |
+|---|---|---|---|
+| `analyzing-bootkit-and-rootkit-samples` | CRITICAL command_injection | `find firmware.rom.dump -name '*.efi' -exec file {} \;` | The `-exec` runs `file` (read-only type identification) on extracted firmware artefacts. |
+| `analyzing-linux-system-artifacts` | CRITICAL command_injection | `find /mnt/evidence/... -exec sh -c ...` over authorized_keys + cron | Operates on a read-only mounted forensic image, not the analyst's box. |
+| `extracting-browser-history-artifacts` | CRITICAL command_injection | mount evidence.dd + find Chrome user data | Read-only mount, fixed paths inside the image. |
+| `performing-malware-persistence-investigation` | CRITICAL command_injection | Linux persistence sweep under `/mnt/evidence` | Same DFIR pattern. The `-exec` only runs inspection commands (cat/stat/ls). |
+| `performing-memory-forensics-with-volatility3` | HIGH supply_chain_attack | `pip install volatility3` + `git clone … && pip install -e .` | Official install for Volatility 3 (the canonical memory-forensics tool). |
+| `analyzing-network-traffic-for-incidents` | MEDIUM tool_chaining_abuse | A markdown table row *describing* DNS tunneling | Educational description so the LLM can hunt for the technique, not an instruction to perform it. |
+
+Detail per row is in `scan_report.csv` (columns `top_findings` for the raw
+Cisco hits, `assessment_reason` for the manual review). Re-grade those
+columns when new skills are added.

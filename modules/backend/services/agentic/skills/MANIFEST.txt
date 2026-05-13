@@ -8,7 +8,6 @@
 # === atomic / per-artifact specifics ===
 dfir/analyzing-bootkit-and-rootkit-samples
 dfir/analyzing-cobalt-strike-beacon-configuration
-dfir/analyzing-email-headers-for-phishing-investigation
 dfir/analyzing-linux-audit-logs-for-intrusion
 dfir/analyzing-linux-elf-malware
 dfir/analyzing-linux-kernel-rootkits
@@ -20,7 +19,6 @@ dfir/analyzing-network-traffic-for-incidents
 dfir/analyzing-packed-malware-with-upx-unpacker
 dfir/analyzing-persistence-mechanisms-in-linux
 dfir/analyzing-prefetch-files-for-execution-history
-dfir/analyzing-ransomware-encryption-mechanisms
 dfir/analyzing-usb-device-connection-history
 dfir/analyzing-windows-amcache-artifacts
 dfir/analyzing-windows-lnk-files-for-artifacts
@@ -28,6 +26,9 @@ dfir/analyzing-windows-registry-for-artifacts
 dfir/analyzing-windows-shellbag-artifacts
 dfir/collecting-indicators-of-compromise
 dfir/deobfuscating-powershell-obfuscated-malware
+dfir/detecting-aws-cloudtrail-anomalies
+dfir/detecting-aws-iam-privilege-escalation
+dfir/detecting-compromised-cloud-credentials
 dfir/detecting-dll-sideloading-attacks
 dfir/detecting-email-account-compromise
 dfir/detecting-evasion-techniques-in-endpoint-logs
@@ -38,6 +39,7 @@ dfir/detecting-malicious-scheduled-tasks-with-sysmon
 dfir/detecting-mimikatz-execution-patterns
 dfir/detecting-pass-the-hash-attacks
 dfir/detecting-process-hollowing-technique
+dfir/detecting-s3-data-exfiltration-attempts
 dfir/detecting-suspicious-powershell-execution
 dfir/detecting-wmi-persistence
 dfir/extracting-browser-history-artifacts
@@ -45,13 +47,11 @@ dfir/extracting-credentials-from-memory-dump
 dfir/extracting-windows-event-logs-artifacts
 dfir/hunting-for-anomalous-powershell-execution
 dfir/hunting-for-cobalt-strike-beacons
-dfir/hunting-for-command-and-control-beaconing
-dfir/hunting-for-data-exfiltration-indicators
 dfir/hunting-for-data-staging-before-exfiltration
 dfir/hunting-for-dcsync-attacks
 dfir/hunting-for-dns-based-persistence
-dfir/hunting-for-domain-fronting-c2-traffic
 dfir/hunting-for-lateral-movement-via-wmi
+dfir/hunting-for-living-off-the-cloud-techniques
 dfir/hunting-for-ntlm-relay-attacks
 dfir/hunting-for-persistence-mechanisms-in-windows
 dfir/hunting-for-process-injection-techniques
@@ -59,15 +59,19 @@ dfir/hunting-for-registry-run-key-persistence
 dfir/hunting-for-scheduled-task-persistence
 dfir/hunting-for-shadow-copy-deletion
 dfir/hunting-for-startup-folder-persistence
-dfir/investigating-ransomware-attack-artifacts
 dfir/performing-active-directory-compromise-investigation
+dfir/performing-cloud-forensics-with-aws-cloudtrail
+dfir/performing-cloud-log-forensics-with-athena
+dfir/performing-cloud-storage-forensic-acquisition
 dfir/performing-linux-log-forensics-investigation
 dfir/performing-malware-persistence-investigation
 dfir/performing-memory-forensics-with-volatility3
 
 # === macro / synthesis playbooks ===
 macros/building-incident-timeline-with-timesketch
+macros/conducting-cloud-incident-response
 macros/conducting-malware-incident-response
+macros/performing-cloud-forensics-investigation
 macros/performing-endpoint-forensics-investigation
 macros/performing-malware-triage-with-yara
 macros/performing-ransomware-response

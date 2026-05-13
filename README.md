@@ -28,6 +28,7 @@ projects, including (but not limited to):
 | [DFIR-O365RC](https://github.com/ANSSI-FR/DFIR-O365RC) | GPL-3.0 |
 | [DetectRaptor](https://github.com/mgreen27/DetectRaptor) | Apache-2.0 |
 | [Sigma rules](https://github.com/SigmaHQ/sigma) | DRL-1.1 |
+| [Anthropic Cybersecurity Skills](https://github.com/mukul975/Anthropic-Cybersecurity-Skills) | Apache-2.0 |
 
 The versions of these projects shipped here have been modified for
 integration into the Intact platform. Full attribution and per-component
