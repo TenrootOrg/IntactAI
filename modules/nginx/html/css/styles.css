@@ -145,8 +145,13 @@ h1, h2, h3, .header-text {
     height: 1.5rem;
 }
 
+/* `.main-content-collapsed` was used when the sidebar was position:fixed
+   and main needed a manual margin to clear it. The sidebar is now a flex
+   sibling (`<div class="flex">` wraps it + main with `flex-1`), so the
+   margin is redundant. Keep the rule as a no-op anchor — JS still toggles
+   the class for the transition timing. */
 .main-content-collapsed {
-    margin-left: 72px !important;
+    /* intentionally empty */
 }
 
 .sidebar-logo {
@@ -254,7 +259,9 @@ h1, h2, h3, .header-text {
    MAIN CONTENT
    ============================================ */
 .main-content {
-    margin-left: 260px;
+    /* No margin-left: the parent <div class="flex"> already lays the
+       sidebar (260px) and this <main flex-1> as siblings. Adding a
+       260px margin on top creates a redundant gap. */
     background: transparent;
     min-height: 100vh;
     position: relative;

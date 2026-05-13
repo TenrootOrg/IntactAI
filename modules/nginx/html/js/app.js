@@ -806,11 +806,16 @@ document.addEventListener('DOMContentLoaded', () => {
         Alpine.store('services').checkAll();
         Alpine.store('services').loadClients();
 
-        // Handle URL hash
-        const hash = window.location.hash.replace('#', '');
-        if (hash) {
-            Alpine.store('app').switchTab(hash);
-        }
+        // Handle URL hash on initial load + on any subsequent change
+        // (manual edit in URL bar, browser back/forward between hashes).
+        // switchTab() writes the same hash value (line 54) so this never
+        // loops.
+        const applyHash = () => {
+            const tab = window.location.hash.replace('#', '') || 'dashboard';
+            Alpine.store('app').switchTab(tab);
+        };
+        if (window.location.hash) applyHash();
+        window.addEventListener('hashchange', applyHash);
 
         // Load blueprints for all modules
         loadBlueprints('velociraptor').then(() => {
