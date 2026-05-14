@@ -65,6 +65,13 @@ data/azure_cert_public.pem
 # Azure scan results (runtime data)
 data/azure_runs/
 
+# AWS scan results (runtime data)
+data/aws_runs/
+
+# DFIQ data — auto-cloned from google/dfiq at install time
+# (see lib/modules.sh). Treated as runtime data, not source.
+modules/timesketch/config/dfiq/
+
 # DFIR-O365RC temp output
 data/tmp/
 

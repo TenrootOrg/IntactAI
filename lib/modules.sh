@@ -356,21 +356,25 @@ deploy_timesketch() {
     local ts_version=$(read_config "['versions']['timesketch']")
     log_info "  TimeSketch version: ${ts_version:-latest}"
 
-    # Render timesketch.conf / timesketch_legacy.conf from templates BEFORE
+    # Copy timesketch.conf / timesketch_legacy.conf from templates BEFORE
     # docker compose up — the conf files are bind-mounted into the
     # containers, so they must exist by the time the containers come up.
-    # The render step is idempotent: if the rendered file exists, the
-    # operator's edits are preserved.
-    render_config_from_template \
-        "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf.template" \
-        "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf" \
-        "__TIMESKETCH_GOOGLE_AI_STUDIO_KEY__" \
-        "TIMESKETCH_GOOGLE_AI_STUDIO_KEY"
-    render_config_from_template \
-        "${SCRIPT_DIR}/modules/timesketch/config/timesketch_legacy.conf.template" \
-        "${SCRIPT_DIR}/modules/timesketch/config/timesketch_legacy.conf" \
-        "__TIMESKETCH_GOOGLE_AI_STUDIO_KEY__" \
-        "TIMESKETCH_GOOGLE_AI_STUDIO_KEY"
+    # Templates ship with empty api_key fields; the operator fills them in
+    # via the dashboard Settings → Timesketch tab (no env var, no secret
+    # baked into install). Idempotent: existing conf is preserved so
+    # post-install edits (manual or via the Settings UI) survive re-runs.
+    for base in timesketch.conf timesketch_legacy.conf; do
+        local ts_template="${SCRIPT_DIR}/modules/timesketch/config/${base}.template"
+        local ts_out="${SCRIPT_DIR}/modules/timesketch/config/${base}"
+        if [[ -f "$ts_out" ]]; then
+            log_info "  ${base} already present (skip)"
+        elif [[ -f "$ts_template" ]]; then
+            cp "$ts_template" "$ts_out"
+            log_success "  ${base} created from template (api_key empty — set via Settings → Timesketch)"
+        else
+            log_warn "  Template missing: $ts_template"
+        fi
+    done
 
     if ! pull_compose_with_retry "TimeSketch"; then
         track_module_failure "TimeSketch"
@@ -509,6 +513,35 @@ deploy_timesketch() {
         sed -i 's/DFIQ_ENABLED = False/DFIQ_ENABLED = True/' "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf"
         log_success "  DFIQ enabled"
 
+        # Populate /etc/timesketch/dfiq/ with the upstream Google DFIQ
+        # YAML files. The Timesketch image does NOT ship these — the
+        # DFIQ_ENABLED flag alone is useless without the 126 question /
+        # facet / scenario YAMLs at DFIQ_PATH. Wiping the volume (e.g.
+        # docker compose down -v) clears the rendered conf but the
+        # bind-mounted config dir survives, so this only really runs on
+        # first install or when /modules/timesketch/config/dfiq/ is empty.
+        local dfiq_dir="${SCRIPT_DIR}/modules/timesketch/config/dfiq"
+        if [[ ! -f "${dfiq_dir}/scenarios/$(ls "${dfiq_dir}/scenarios" 2>/dev/null | head -1)" || -z "$(ls "${dfiq_dir}/scenarios" 2>/dev/null)" ]]; then
+            log_info "  Fetching DFIQ data from google/dfiq..."
+            local _tmp
+            _tmp="$(mktemp -d)"
+            if git clone --depth 1 --quiet https://github.com/google/dfiq.git "${_tmp}/repo" 2>/dev/null; then
+                rm -rf "${dfiq_dir}"
+                mkdir -p "${dfiq_dir}"
+                mv "${_tmp}/repo/dfiq/data"/* "${dfiq_dir}/"
+                rm -rf "${_tmp}"
+                local _yaml_count
+                _yaml_count="$(find "${dfiq_dir}" -name '*.yaml' | wc -l)"
+                log_success "  DFIQ data installed (${_yaml_count} YAML files in ${dfiq_dir})"
+            else
+                log_warn "  Could not clone google/dfiq (network?); DFIQ UI will be empty until you populate ${dfiq_dir} manually."
+            fi
+        else
+            local _yaml_count
+            _yaml_count="$(find "${dfiq_dir}" -name '*.yaml' | wc -l)"
+            log_info "  DFIQ data already present (${_yaml_count} YAML files) — skipping clone."
+        fi
+
         # Raise OpenSearch / import timeouts so large .plaso imports don't false-fail
         # (upstream defaults are 10s and 180s — too aggressive under disk/memory pressure)
         log_info "  Raising Timesketch OpenSearch/import timeouts..."
@@ -518,28 +551,6 @@ deploy_timesketch() {
         sed -i 's/^OPENSEARCH_INDEX_WAIT_TIMEOUT = 10$/OPENSEARCH_INDEX_WAIT_TIMEOUT = 300/' "$ts_conf"
         sed -i 's/^TIMEOUT_FOR_EVENT_IMPORT = 180$/TIMEOUT_FOR_EVENT_IMPORT = 600/'       "$ts_conf"
         log_success "  Timeouts raised (OpenSearch 10->300s, event import 180->600s)"
-
-        # NL2Q defaults to vertexai with an empty project_id, which makes the
-        # "AI generated queries" toggle in the sketch settings sit greyed-out
-        # as "requires LLM provider". Swap it to aistudio and reuse the Gemini
-        # api_key already wired into the llm_summarize block so it works on a
-        # fresh install without manual editing. Idempotent — re-running on an
-        # already-converted block is a no-op.
-        log_info "  Wiring Timesketch nl2q to Gemini AI Studio..."
-        local gemini_key
-        gemini_key=$(awk "/'llm_summarize':/,/},/" "$ts_conf" \
-            | grep -oE "'api_key': '[^']+'" \
-            | head -1 \
-            | sed -E "s/'api_key': '([^']+)'/\1/")
-        if [[ -n "$gemini_key" ]]; then
-            sed -i "/    'nl2q': {/,/    },/ {
-                s/'vertexai':/'aistudio':/
-                s|'project_id': ''|'api_key': '$gemini_key'|
-            }" "$ts_conf"
-            log_success "  nl2q wired to aistudio"
-        else
-            log_warning "  Could not read Gemini api_key from llm_summarize; nl2q left as-is"
-        fi
 
         # Restart the Timesketch containers that bind-mount timesketch.conf so both
         # DFIQ and the timeout bumps take effect. Worker + web_legacy matter too —

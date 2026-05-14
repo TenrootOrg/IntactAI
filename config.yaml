@@ -26,6 +26,8 @@ options:
 modules:
   agentic:
     enabled: true
+  aws:
+    enabled: true
   azure:
     enabled: true
   elk:

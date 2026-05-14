@@ -243,19 +243,6 @@ generate_iris_secrets() {
 }
 
 # ============================================================================
-# Render Module Configs from Templates
-# ============================================================================
-#
-# Tracked config files that need to hold a secret at runtime are committed
-# as `.template` files with `__PLACEHOLDER__` tokens. We render them into
-# the runtime path on first install, substituting tokens with env-var
-# values. Idempotent — re-running won't clobber a hand-edited conf.
-#
-# Today this only handles timesketch.conf / timesketch_legacy.conf and
-# their `__TIMESKETCH_GOOGLE_AI_STUDIO_KEY__` token. Add more entries
-# inline as new templated configs land.
-
-# ============================================================================
 # Pre-commit Hook (developer clones only)
 # ============================================================================
 #
@@ -700,8 +687,6 @@ main() {
     generate_iris_secrets
     echo ""
     setup_dev_pre_commit
-    echo ""
-    render_module_configs
     echo ""
     start_services
     echo ""

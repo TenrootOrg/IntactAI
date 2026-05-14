@@ -797,10 +797,11 @@ body.bg-gray-900 {
     100% { transform: rotate(360deg); }
 }
 
-.flex {
-    position: relative;
-    z-index: 1;
-}
+/* Removed accidental global override of Tailwind's `.flex` utility — it
+   was forcing `position: relative; z-index: 1` on every element with the
+   `flex` class, which broke any `fixed inset-0` overlay that also had
+   `flex items-center justify-center` (e.g. the workflow logs modal).
+   Tailwind's `.flex` should only set `display: flex`. */
 
 /* ============================================
    UTILITY CLASSES - Color & Effects

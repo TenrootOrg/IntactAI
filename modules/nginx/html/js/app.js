@@ -198,11 +198,7 @@ document.addEventListener('alpine:init', () => {
                 this.selectedRun = await response.json();
                 this.modalOpen = true;
                 this.currentRunId = runId;
-
-                // Start auto-refresh every 2 seconds
                 this.startAutoRefresh(runId);
-
-                // Scroll to bottom if autoScroll enabled
                 this.scrollToBottom();
             } catch (e) {
                 console.error('Failed to load logs:', e);

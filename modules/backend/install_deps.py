@@ -11,7 +11,7 @@ try:
 except Exception:
     modules = {}
 
-for mod in ['velociraptor', 'timesketch', 'elk', 'agentic', 'azure']:
+for mod in ['velociraptor', 'timesketch', 'elk', 'agentic', 'azure', 'aws']:
     req = os.path.join(req_dir, f'requirements-{mod}.txt')
     if not os.path.exists(req):
         continue

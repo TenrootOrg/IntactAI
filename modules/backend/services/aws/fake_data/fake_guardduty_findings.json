@@ -1,0 +1,64 @@
+[
+  {
+    "_note": "Shape mirrors guardduty.get_findings output: list of findings with Type, Severity, Service, Resource.",
+    "AccountId": "123456789012",
+    "Arn": "arn:aws:guardduty:us-east-1:123456789012:detector/12abc34d567e8fa901bc2d34e56789f0/finding/abcdef1234567890",
+    "CreatedAt": "2026-05-13T08:32:45.000Z",
+    "Id": "abcdef1234567890",
+    "Region": "us-east-1",
+    "Severity": 8.5,
+    "Title": "Unauthorized API call detected from an IP address on a custom threat list.",
+    "Type": "UnauthorizedAccess:IAMUser/MaliciousIPCaller.Custom",
+    "UpdatedAt": "2026-05-13T08:32:45.000Z",
+    "Service": {
+      "Action": {
+        "ActionType": "AWS_API_CALL",
+        "AwsApiCallAction": {
+          "Api": "CreateAccessKey",
+          "CallerType": "Remote IP",
+          "ServiceName": "iam.amazonaws.com",
+          "RemoteIpDetails": {
+            "IpAddressV4": "185.220.101.45",
+            "Country": {"CountryName": "Netherlands"},
+            "Organization": {"Asn": "AS396356", "Org": "Latitude.sh"}
+          }
+        }
+      },
+      "EventFirstSeen": "2026-05-13T08:17:01.000Z",
+      "EventLastSeen": "2026-05-13T08:29:10.000Z",
+      "ResourceRole": "TARGET"
+    },
+    "Resource": {
+      "AccessKeyDetails": {
+        "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+        "PrincipalId": "AIDA4EXAMPLEADMIN",
+        "UserName": "admin.user",
+        "UserType": "IAMUser"
+      },
+      "ResourceType": "AccessKey"
+    }
+  },
+  {
+    "AccountId": "123456789012",
+    "Arn": "arn:aws:guardduty:us-east-2:123456789012:detector/12abc34d567e8fa901bc2d34e56789f0/finding/fedcba9876543210",
+    "CreatedAt": "2026-05-13T03:21:08.000Z",
+    "Id": "fedcba9876543210",
+    "Region": "us-east-2",
+    "Severity": 7.0,
+    "Title": "An EC2 instance is querying a domain name associated with cryptocurrency-related activity.",
+    "Type": "CryptoCurrency:EC2/BitcoinTool.B!DNS",
+    "UpdatedAt": "2026-05-13T03:21:08.000Z",
+    "Service": {
+      "Action": {"ActionType": "DNS_REQUEST", "DnsRequestAction": {"Domain": "xmr.pool.example.com"}},
+      "ResourceRole": "ACTOR"
+    },
+    "Resource": {
+      "InstanceDetails": {
+        "InstanceId": "i-0abcd1234efgh5678",
+        "InstanceType": "p3.8xlarge",
+        "AvailabilityZone": "us-east-2a"
+      },
+      "ResourceType": "Instance"
+    }
+  }
+]

@@ -1095,6 +1095,9 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
     `pipeline_kind` tells the analyzer what shape the data has:
       - "azure":   chronological log events (signins, audit, UAL). Eligible
                    for the single timeline pass when small.
+      - "aws":     chronological CloudTrail / GuardDuty / AccessAnalyzer
+                   events. Same chronological treatment as "azure" —
+                   eligible for the cross-artifact timeline pass.
       - "agentic": forensic artifacts from Velociraptor (registry parses,
                    browser histories, autoruns, etc). NOT chronological;
                    always fan out per-artifact. This is the default so
@@ -1133,9 +1136,9 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
     total_rows = sum(len(rows) for rows in all_results.values())
     timeline_threshold = int(llm_config.get('agentic', {}).get('timeline_threshold', 500) or 0)
     timeline_added = False
-    if pipeline_kind == "azure" and 0 < total_rows <= timeline_threshold:
+    if pipeline_kind in ("azure", "aws") and 0 < total_rows <= timeline_threshold:
         log(
-            f"[LLM] Small Azure run ({total_rows} rows <= {timeline_threshold}); "
+            f"[LLM] Small {pipeline_kind.upper()} run ({total_rows} rows <= {timeline_threshold}); "
             f"adding cross-artifact timeline pass on top of {len(artifacts_list)}-artifact fan-out"
         )
         timeline_text = _analyze_timeline(run_id, all_results, llm_config, anonymizer, log)

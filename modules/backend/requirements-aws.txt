@@ -1,0 +1,9 @@
+# AWS Security Module Dependencies
+#
+# pysigma is shared with the Azure module; SIGMA matching is provider-
+# agnostic so we don't pin it again here. Add it to requirements.txt
+# (or keep it in requirements-azure.txt) — declaring it twice would
+# only matter if the version pins drift, which they shouldn't.
+
+boto3>=1.35,<2.0
+botocore>=1.35,<2.0

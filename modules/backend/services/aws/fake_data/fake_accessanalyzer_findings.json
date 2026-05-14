@@ -1,0 +1,29 @@
+[
+  {
+    "_note": "Public S3 bucket exposed via bucket policy — matches the PutBucketPolicy event in cloudtrail_full.",
+    "id": "12345678-1234-1234-1234-123456789012",
+    "analyzedAt": "2026-05-13T08:35:30.000Z",
+    "createdAt": "2026-05-13T08:35:30.000Z",
+    "updatedAt": "2026-05-13T08:35:30.000Z",
+    "status": "ACTIVE",
+    "resource": "arn:aws:s3:::company-customer-data",
+    "resourceType": "AWS::S3::Bucket",
+    "resourceOwnerAccount": "123456789012",
+    "isPublic": true,
+    "principal": {"AWS": "*"},
+    "action": ["s3:GetObject"],
+    "condition": {}
+  },
+  {
+    "_note": "Cross-account IAM role assumable by an unknown external account.",
+    "id": "22222222-3333-4444-5555-666666666666",
+    "analyzedAt": "2026-05-13T07:11:18.000Z",
+    "createdAt": "2026-05-13T07:11:18.000Z",
+    "status": "ACTIVE",
+    "resource": "arn:aws:iam::123456789012:role/PowerUserRole",
+    "resourceType": "AWS::IAM::Role",
+    "isPublic": false,
+    "principal": {"AWS": "arn:aws:iam::987654321098:root"},
+    "action": ["sts:AssumeRole"]
+  }
+]

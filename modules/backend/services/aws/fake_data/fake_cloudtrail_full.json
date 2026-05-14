@@ -1,0 +1,78 @@
+[
+  {
+    "_note": "EC2 RunInstances — large GPU instances spun up off-hours, suspicious for crypto mining.",
+    "eventTime": "2026-05-13T03:14:09Z",
+    "eventName": "RunInstances",
+    "eventSource": "ec2.amazonaws.com",
+    "awsRegion": "us-east-2",
+    "sourceIPAddress": "185.220.101.45",
+    "userIdentity": {
+      "type": "IAMUser",
+      "arn": "arn:aws:iam::123456789012:user/bob.smith",
+      "accountId": "123456789012"
+    },
+    "requestParameters": {
+      "instanceType": "p3.8xlarge",
+      "imageId": "ami-0c55b159cbfafe1f0",
+      "maxCount": 4,
+      "minCount": 4
+    },
+    "eventID": "aaaa1111-2222-3333-4444-555555555555"
+  },
+  {
+    "_note": "PutBucketPolicy — opens an S3 bucket to public read.",
+    "eventTime": "2026-05-13T08:35:18Z",
+    "eventName": "PutBucketPolicy",
+    "eventSource": "s3.amazonaws.com",
+    "awsRegion": "us-east-1",
+    "sourceIPAddress": "185.220.101.45",
+    "userIdentity": {
+      "type": "IAMUser",
+      "arn": "arn:aws:iam::123456789012:user/bob.smith"
+    },
+    "requestParameters": {
+      "bucketName": "company-customer-data",
+      "bucketPolicy": {
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::company-customer-data/*"
+          }
+        ]
+      }
+    },
+    "eventID": "bbbb2222-3333-4444-5555-666666666666"
+  },
+  {
+    "_note": "GetObject — exfiltration target download immediately after policy change.",
+    "eventTime": "2026-05-13T08:36:02Z",
+    "eventName": "GetObject",
+    "eventSource": "s3.amazonaws.com",
+    "awsRegion": "us-east-1",
+    "sourceIPAddress": "185.220.101.45",
+    "requestParameters": {
+      "bucketName": "company-customer-data",
+      "key": "exports/customers-2026-q2.csv"
+    },
+    "eventID": "cccc3333-4444-5555-6666-777777777777"
+  },
+  {
+    "_note": "AssumeRole — using a role chain to maintain access.",
+    "eventTime": "2026-05-13T08:40:50Z",
+    "eventName": "AssumeRole",
+    "eventSource": "sts.amazonaws.com",
+    "awsRegion": "us-east-1",
+    "sourceIPAddress": "185.220.101.45",
+    "userIdentity": {
+      "type": "IAMUser",
+      "arn": "arn:aws:iam::123456789012:user/bob.smith"
+    },
+    "requestParameters": {
+      "roleArn": "arn:aws:iam::123456789012:role/PowerUserRole",
+      "roleSessionName": "support-session"
+    },
+    "eventID": "dddd4444-5555-6666-7777-888888888888"
+  }
+]

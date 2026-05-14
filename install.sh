@@ -130,6 +130,14 @@ main() {
     generate_azure_certificate
 
     # -------------------------------------------------------------------------
+    # AWS Security Tools (Prowler posture image)
+    # -------------------------------------------------------------------------
+    # boto3 for the IAM enumeration (CloudFox-equivalent) is installed
+    # into the backend container by install_deps.py — driven off the
+    # `aws` module entry in config.yaml + requirements-aws.txt.
+    pull_prowler_image
+
+    # -------------------------------------------------------------------------
     # Configuration
     # -------------------------------------------------------------------------
     update_env_files

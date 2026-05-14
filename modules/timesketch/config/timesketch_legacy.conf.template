@@ -164,21 +164,21 @@ CONTEXT_LINKS_CONFIG_PATH = '/etc/timesketch/context_links.yaml'
 # LLM disabled
 LLM_PROVIDER_CONFIGS = {
     'nl2q': {
-        'vertexai': {
+        'aistudio': {
             'model': 'gemini-2.5-flash',
-            'project_id': '',
+            'api_key': '',
         },
     },
     'llm_summarize': {
         'aistudio': {
             'model': 'gemini-2.5-flash',
-            'api_key': '__TIMESKETCH_GOOGLE_AI_STUDIO_KEY__',
+            'api_key': '',
         },
     },
     'llm_synthesize': {
         'aistudio': {
             'model': 'gemini-2.5-flash',
-            'api_key': '__TIMESKETCH_GOOGLE_AI_STUDIO_KEY__',
+            'api_key': '',
         },
     },
     'log_analyzer': {

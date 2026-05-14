@@ -47,3 +47,26 @@ patterns:
   # Defensive: any artifact starting with the Azure source prefix
   # falls through to here if no more-specific rule matched above.
   - { pattern: "Azure.*",                                              skill: intact-azure-cloud-investigation }
+
+  # =========================================================================
+  # AWS pipeline pins
+  # =========================================================================
+  # State-snapshot AWS findings emitted under these stable bucket names.
+  - { pattern: "INV.prowler_*",                                        skill: intact-aws-cloud-investigation }
+  - { pattern: "INV.access_analyzer*",                                 skill: intact-aws-cloud-investigation }
+
+  # SIGMA rule buckets fired on AWS data. SigmaHQ AWS-rule titles
+  # commonly start with "AWS", or with the eventName pattern.
+  - { pattern: "SIGMA.AWS_*",                                          skill: intact-aws-cloud-investigation }
+  - { pattern: "SIGMA.IAM_*",                                          skill: intact-aws-cloud-investigation }
+  - { pattern: "SIGMA.S3_*",                                           skill: intact-aws-cloud-investigation }
+  - { pattern: "SIGMA.EC2_*",                                          skill: intact-aws-cloud-investigation }
+  - { pattern: "SIGMA.CloudTrail*",                                    skill: intact-aws-cloud-investigation }
+  - { pattern: "SIGMA.GuardDuty*",                                     skill: intact-aws-cloud-investigation }
+  - { pattern: "SIGMA.STS*",                                           skill: intact-aws-cloud-investigation }
+  - { pattern: "SIGMA.AssumeRole*",                                    skill: intact-aws-cloud-investigation }
+
+  # Defensive: any artifact starting with one of the AWS source prefixes.
+  - { pattern: "AWS.*",                                                skill: intact-aws-cloud-investigation }
+  - { pattern: "GD.*",                                                 skill: intact-aws-cloud-investigation }
+  - { pattern: "IAM.*",                                                skill: intact-aws-cloud-investigation }
