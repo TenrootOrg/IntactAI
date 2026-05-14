@@ -115,6 +115,7 @@ def _stub_collect(
     regions: Optional[List[str]] = None,
     resource_arn: Optional[str] = None,
     target_principal_arns: Optional[List[str]] = None,
+    time_filter: Optional[Dict[str, Any]] = None,
     is_cancelled_func: Optional[Callable[[], bool]] = None,
     max_principal_age_days: Optional[float] = None,
     max_access_key_age_days: Optional[float] = None,
@@ -160,6 +161,88 @@ def _stub_collect(
                 log(f"[AWS] {cfg['name']}: Prowler unavailable ({avail.get('message')}) — using fixture", "warning")
         except Exception as e:
             log(f"[AWS] {cfg['name']}: Prowler call raised {e!r} — using fixture", "error")
+
+    # --- Real-runner path (CloudTrail via boto3 LookupEvents) ---------
+    # Same runner serves all three cloudtrail_* sources; the mode flag
+    # selects which event-name slice we ask AWS for.
+    if source in ('cloudtrail_console', 'cloudtrail_iam', 'cloudtrail_full') and aws_config:
+        try:
+            from . import cloudtrail_runner
+            avail = cloudtrail_runner.is_available(aws_config)
+            if avail.get('available'):
+                ct_mode = {
+                    'cloudtrail_console': 'console_only',
+                    'cloudtrail_iam':     'iam_only',
+                    'cloudtrail_full':    'full',
+                }[source]
+                records = cloudtrail_runner.collect_cloudtrail(
+                    aws_config,
+                    mode=ct_mode,
+                    regions=regions,
+                    time_filter=time_filter,
+                    target_principal_arns=target_principal_arns,
+                    log_func=log,
+                    is_cancelled_func=is_cancelled_func,
+                )
+                if records:
+                    for r in records:
+                        r.setdefault('_source', source)
+                        r.setdefault('EventSource', sigma_prefix)
+                    log(f"[AWS] {cfg['name']}: {len(records)} live events (CloudTrail)", "info")
+                    return records
+                log(f"[AWS] {cfg['name']}: 0 live events in window — using fixture as backstop", "info")
+            else:
+                log(f"[AWS] {cfg['name']}: CloudTrail runner unavailable ({avail.get('message')}) — using fixture", "warning")
+        except Exception as e:
+            log(f"[AWS] {cfg['name']}: CloudTrail call raised {e!r} — using fixture", "error")
+
+    # --- Real-runner path (GuardDuty findings via boto3) --------------
+    if source == 'guardduty_findings' and aws_config:
+        try:
+            from . import guardduty_runner
+            avail = guardduty_runner.is_available(aws_config)
+            if avail.get('available'):
+                records = guardduty_runner.collect_guardduty(
+                    aws_config,
+                    regions=regions,
+                    log_func=log,
+                    is_cancelled_func=is_cancelled_func,
+                )
+                if records:
+                    for r in records:
+                        r.setdefault('_source', source)
+                        r.setdefault('EventSource', sigma_prefix)
+                    log(f"[AWS] {cfg['name']}: {len(records)} live findings (GuardDuty)", "info")
+                    return records
+                log(f"[AWS] {cfg['name']}: GuardDuty has 0 active findings or no detectors — using fixture as backstop", "info")
+            else:
+                log(f"[AWS] {cfg['name']}: GuardDuty runner unavailable ({avail.get('message')}) — using fixture", "warning")
+        except Exception as e:
+            log(f"[AWS] {cfg['name']}: GuardDuty call raised {e!r} — using fixture", "error")
+
+    # --- Real-runner path (Access Analyzer via boto3) -----------------
+    if source == 'accessanalyzer_findings' and aws_config:
+        try:
+            from . import accessanalyzer_runner
+            avail = accessanalyzer_runner.is_available(aws_config)
+            if avail.get('available'):
+                records = accessanalyzer_runner.collect_accessanalyzer(
+                    aws_config,
+                    regions=regions,
+                    log_func=log,
+                    is_cancelled_func=is_cancelled_func,
+                )
+                if records:
+                    for r in records:
+                        r.setdefault('_source', source)
+                        r.setdefault('EventSource', sigma_prefix)
+                    log(f"[AWS] {cfg['name']}: {len(records)} live findings (Access Analyzer)", "info")
+                    return records
+                log(f"[AWS] {cfg['name']}: 0 Access Analyzer findings or no analyzer configured — using fixture as backstop", "info")
+            else:
+                log(f"[AWS] {cfg['name']}: Access Analyzer runner unavailable ({avail.get('message')}) — using fixture", "warning")
+        except Exception as e:
+            log(f"[AWS] {cfg['name']}: Access Analyzer call raised {e!r} — using fixture", "error")
 
     # --- Real-runner path (IAM principals — CloudFox-equivalent) ------
     if source == 'iam_principals' and aws_config:
@@ -283,6 +366,7 @@ def collect_aws_logs(
             regions=regions,
             resource_arn=resource_arn,
             target_principal_arns=target_principal_arns,
+            time_filter=time_filter if isinstance(time_filter, dict) else None,
             is_cancelled_func=_is_cancelled_for_runner,
             max_principal_age_days=max_principal_age_days,
             max_access_key_age_days=max_access_key_age_days,

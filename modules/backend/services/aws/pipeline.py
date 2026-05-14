@@ -408,7 +408,20 @@ def run_aws_pipeline(
                 add_log_to_run(run_id, f"[AWS] IAM runner unavailable — fixture fallback active ({iam_avail.get('message')})", "warning")
         except Exception as e:
             add_log_to_run(run_id, f"[AWS] IAM runner check raised {e!r} — fixture fallback active", "warning")
-        add_log_to_run(run_id, "[AWS] Other sources (GuardDuty / AccessAnalyzer / CloudTrail slices) still use bundled fixtures until boto3 wiring lands.", "info")
+        try:
+            from . import cloudtrail_runner, guardduty_runner, accessanalyzer_runner
+            ct_a = cloudtrail_runner.is_available(aws_config)
+            gd_a = guardduty_runner.is_available(aws_config)
+            aa_a = accessanalyzer_runner.is_available(aws_config)
+            add_log_to_run(
+                run_id,
+                f"[AWS] Live collectors: CloudTrail={ct_a.get('available')}, "
+                f"GuardDuty={gd_a.get('available')}, AccessAnalyzer={aa_a.get('available')} "
+                "(all via boto3; falls back to fixture per-source when unavailable / empty)",
+                "info",
+            )
+        except Exception as e:
+            add_log_to_run(run_id, f"[AWS] boto3 runner availability check raised {e!r}", "warning")
         add_log_to_run(run_id, "=" * 50, "info")
 
         rules_valid, rules_msg = validate_rules_directory()
