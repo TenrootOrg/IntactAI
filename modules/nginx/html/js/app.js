@@ -549,6 +549,25 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        async generateSupportBundle() {
+            this.saving = true;
+            this.showMessage('Support bundle workflow starting...', 'info');
+            try {
+                const response = await fetch('/api/support-bundle/prepare', { method: 'POST' });
+                const result = await response.json();
+                if (response.ok && result.success) {
+                    this.showMessage('Bundle generation started - redirecting to Workflows', 'success');
+                    setTimeout(() => { Alpine.store('app').switchTab('workflows'); }, 500);
+                } else {
+                    this.showMessage('Bundle start failed: ' + (result.error || 'Unknown error'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Bundle start error: ' + e.message, 'error');
+            } finally {
+                this.saving = false;
+            }
+        },
+
         async runPurge() {
             if (!confirm('This will delete ALL workflows, reports, uploads, temp files, and Velociraptor hunt data.\n\nThis cannot be undone. Continue?')) return;
             this.saving = true;
