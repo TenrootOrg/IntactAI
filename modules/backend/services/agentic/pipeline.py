@@ -587,8 +587,9 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
             return
 
         report_content = {}
+        multi_reports = None
+        zip_path = None
         if report_types:
-            add_log_to_run(run_id, f"[Report] Generating {' + '.join(report_types)} report(s)...", "info")
             _update_phase(run_id, "generating_report", 85)
 
             # Build pseudo-blueprint for report generation
@@ -597,24 +598,74 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                 "description": f"Analysis of {collection_type} {collection_id}",
                 "artifacts": artifacts
             }
+            client_ids_list = list(client_info.keys())
 
-            try:
-                report_content = generate_final_report(
-                    run_id, pseudo_blueprint, list(client_info.keys()), 0,
-                    artifact_summaries, all_results, llm_config, report_types, anonymizer
-                )
-                save_report_content(run_id, report_content)
-            except Exception as report_error:
-                add_log_to_run(run_id, f"[Report] Error generating report: {str(report_error)}", "warning")
-                print(f"[AGENTIC] Report generation error: {report_error}", flush=True)
-                traceback.print_exc()
-                # Create fallback report
-                fallback_content = "# Analysis Report (Partial)\n\n"
-                fallback_content += "**Note:** Report generation encountered an error. Raw summaries below.\n\n"
-                for artifact, summary in artifact_summaries.items():
-                    fallback_content += f"## {artifact}\n{summary}\n\n"
-                report_content = {'technical': fallback_content}
-                save_report_content(run_id, report_content)
+            # Multi-client: generate per-client reports + macro summary + ZIP.
+            # Mirrors the new-collection pipeline's multi-client branch
+            # (~L209-246) so an analyze-existing run that pulled rows from
+            # >1 client gets the same per-client + macro-level outputs and
+            # downloadable ZIP package, not just a single merged report.
+            if len(client_ids_list) > 1:
+                add_log_to_run(run_id, f"[Report] Multi-client mode: {len(client_ids_list)} clients", "info")
+                try:
+                    multi_reports = generate_multi_client_reports(
+                        run_id, pseudo_blueprint, client_ids_list, 0,
+                        artifact_summaries, all_results, llm_config, anonymizer
+                    )
+
+                    # Create ZIP package (per-client MDs + macro summary)
+                    zip_path = create_report_package(run_id, multi_reports)
+                    add_log_to_run(run_id, f"[Report] Created ZIP package: {zip_path}", "info")
+
+                    # Save macro report as the main report (back-compat with
+                    # the single-report download endpoint)
+                    report_content = {'technical': multi_reports['macro']}
+                    save_report_content(run_id, report_content)
+
+                    # Update workflow details so the UI surfaces per-client
+                    # download buttons and the multi-client badge.
+                    workflow = get_workflow(run_id)
+                    if workflow:
+                        if 'details' not in workflow:
+                            workflow['details'] = {}
+                        workflow['details']['multi_client'] = True
+                        workflow['details']['report_zip'] = zip_path
+                        workflow['details']['client_count'] = len(client_ids_list)
+                        workflow['details']['hostnames'] = multi_reports.get('hostnames', {})
+                        save_workflow(workflow)
+                except Exception as report_error:
+                    add_log_to_run(run_id, f"[Report] Error generating multi-client report: {str(report_error)}", "warning")
+                    print(f"[AGENTIC] Multi-client report error: {report_error}", flush=True)
+                    traceback.print_exc()
+                    # Fallback: raw summaries glued together so the operator
+                    # still has SOMETHING to read.
+                    fallback_content = "# Multi-Client Analysis (Partial)\n\n"
+                    fallback_content += "**Note:** Report generation encountered an error. Raw summaries below.\n\n"
+                    for artifact, summary in artifact_summaries.items():
+                        fallback_content += f"## {artifact}\n{summary}\n\n"
+                    report_content = {'technical': fallback_content}
+                    save_report_content(run_id, report_content)
+
+            # Single client: existing behaviour preserved verbatim.
+            else:
+                add_log_to_run(run_id, f"[Report] Generating {' + '.join(report_types)} report(s)...", "info")
+                try:
+                    report_content = generate_final_report(
+                        run_id, pseudo_blueprint, client_ids_list, 0,
+                        artifact_summaries, all_results, llm_config, report_types, anonymizer
+                    )
+                    save_report_content(run_id, report_content)
+                except Exception as report_error:
+                    add_log_to_run(run_id, f"[Report] Error generating report: {str(report_error)}", "warning")
+                    print(f"[AGENTIC] Report generation error: {report_error}", flush=True)
+                    traceback.print_exc()
+                    # Create fallback report
+                    fallback_content = "# Analysis Report (Partial)\n\n"
+                    fallback_content += "**Note:** Report generation encountered an error. Raw summaries below.\n\n"
+                    for artifact, summary in artifact_summaries.items():
+                        fallback_content += f"## {artifact}\n{summary}\n\n"
+                    report_content = {'technical': fallback_content}
+                    save_report_content(run_id, report_content)
 
         # Import to IRIS if enabled
         if import_to_iris:
