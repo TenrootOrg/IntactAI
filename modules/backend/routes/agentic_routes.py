@@ -199,7 +199,25 @@ def analyze_existing_collection():
         return jsonify({"error": "Agentic module is not enabled. Enable it in config.yaml and rebuild the backend."}), 400
     try:
         data = request.get_json()
-        flow_id = data.get('flow_id')
+        # `flow_id` may arrive as a single string (legacy single-flow run),
+        # a JSON array of IDs (future-friendly), or a comma-separated string
+        # (what the current multi-client UI sends). Normalise to one of:
+        #   - None
+        #   - single string (legacy single-flow path)
+        #   - list[str] (new multi-flow path — handled by the collector loop)
+        flow_id_raw = data.get('flow_id')
+        if isinstance(flow_id_raw, list):
+            _flow_ids = [str(f).strip() for f in flow_id_raw if str(f).strip()]
+        elif isinstance(flow_id_raw, str) and flow_id_raw.strip():
+            _flow_ids = [f.strip() for f in flow_id_raw.split(',') if f.strip()]
+        else:
+            _flow_ids = []
+        if len(_flow_ids) > 1:
+            flow_id = _flow_ids                          # list
+        elif _flow_ids:
+            flow_id = _flow_ids[0]                       # single string (back-compat)
+        else:
+            flow_id = None
         hunt_id = data.get('hunt_id')
         report_types = data.get('report_types', ['technical'])
         anonymize_data = data.get('anonymize_data', False)
@@ -250,7 +268,13 @@ def analyze_existing_collection():
         llm_config = _load_llm_config()
 
         # Create workflow run
-        collection_id = flow_id or hunt_id
+        # flow_id can now be a list — render as comma-separated for the
+        # workflow name + details.flow_id (DB field accepts string or list
+        # but the run-name template needs a string).
+        if isinstance(flow_id, list):
+            collection_id = ', '.join(flow_id)
+        else:
+            collection_id = flow_id or hunt_id
         collection_type = "flow" if flow_id else "hunt"
         run_id = create_automation_run(
             automation_type="agentic",

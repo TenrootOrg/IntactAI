@@ -407,7 +407,12 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
 
     try:
         update_run_status(run_id, "running", progress=2)
-        collection_id = flow_id or hunt_id
+        # flow_id may be a list (multi-flow run). Render as comma-joined for
+        # any user-facing string; the collector below accepts either shape.
+        if isinstance(flow_id, list):
+            collection_id = ', '.join(flow_id)
+        else:
+            collection_id = flow_id or hunt_id
         collection_type = "flow" if flow_id else "hunt"
         add_log_to_run(run_id, f"[Pipeline] Analyzing existing {collection_type}: {collection_id}", "info")
 

@@ -875,21 +875,37 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
     stub = api_pb2_grpc.APIStub(channel)
 
     try:
-        if flow_id:
-            # Get results from a single flow
-            add_log_to_run(run_id, f"[Velociraptor] Fetching results from flow: {flow_id}", "info")
+        # ---- Normalize flow_id to a list ---------------------------------
+        # Accept three shapes from upstream callers:
+        #   - None / "" / []             → empty (hunt path or no-op)
+        #   - "F.xxx"                    → single-flow legacy path
+        #   - ["F.A", "F.B"]             → multi-flow (new)
+        #   - "F.A, F.B"                 → multi-flow string (UI back-compat)
+        flow_ids = []
+        if not hunt_id:
+            if isinstance(flow_id, list):
+                flow_ids = [str(f).strip() for f in flow_id if str(f).strip()]
+            elif isinstance(flow_id, str) and flow_id.strip():
+                flow_ids = [f.strip() for f in flow_id.split(',') if f.strip()]
 
-            client_id = None
-            client_hostname = "Unknown"
+        if flow_ids:
+            # Pretty log for one-vs-many cases
+            if len(flow_ids) == 1:
+                add_log_to_run(run_id, f"[Velociraptor] Fetching results from flow: {flow_ids[0]}", "info")
+            else:
+                add_log_to_run(
+                    run_id,
+                    f"[Velociraptor] Fetching results from {len(flow_ids)} flows ({', '.join(flow_ids)})",
+                    "info",
+                )
 
-            # First, get all clients and search for the flow
+            # Enumerate all clients ONCE (per-flow location lookup reuses this)
             clients_query = "SELECT client_id, os_info.hostname AS hostname FROM clients()"
             request_obj = api_pb2.VQLCollectorArgs(
                 max_wait=30,
                 max_row=1000,
                 Query=[api_pb2.VQLRequest(VQL=clients_query)]
             )
-
             all_clients = []
             for response in stub.Query(request_obj, timeout=60):
                 if response.Response:
@@ -900,115 +916,159 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                         add_log_to_run(run_id, f"[Velociraptor] Error parsing clients response: {e}", "warning")
                 if response.log:
                     add_log_to_run(run_id, f"[Velociraptor] Server log: {response.log}", "debug")
-
             add_log_to_run(run_id, f"[Velociraptor] Found {len(all_clients)} clients to search", "info")
 
-            # Search each client for this flow
-            for client in all_clients:
-                cid = client.get('client_id')
-                if not cid:
-                    continue
+            # ---- Per-flow loop (mirrors the hunt-flows loop further down) ---
+            for fid in flow_ids:
+                located_client_id = None
+                located_hostname = "Unknown"
 
-                flow_check_query = f"SELECT session_id FROM flows(client_id='{cid}', flow_id='{flow_id}')"
-                request_obj = api_pb2.VQLCollectorArgs(
-                    max_wait=10,
-                    max_row=1,
-                    Query=[api_pb2.VQLRequest(VQL=flow_check_query)]
-                )
+                # Search each client for this flow
+                for client in all_clients:
+                    cid = client.get('client_id')
+                    if not cid:
+                        continue
 
-                try:
-                    for response in stub.Query(request_obj, timeout=30):
-                        if response.log:
-                            add_log_to_run(run_id, f"[Velociraptor] Query log for {cid}: {response.log.strip()}", "debug")
+                    flow_check_query = f"SELECT session_id FROM flows(client_id='{cid}', flow_id='{fid}')"
+                    check_req = api_pb2.VQLCollectorArgs(
+                        max_wait=10,
+                        max_row=1,
+                        Query=[api_pb2.VQLRequest(VQL=flow_check_query)]
+                    )
+                    try:
+                        for response in stub.Query(check_req, timeout=30):
+                            if response.log:
+                                add_log_to_run(run_id, f"[Velociraptor] Query log for {cid}: {response.log.strip()}", "debug")
+                            if response.Response:
+                                try:
+                                    resp_data = json.loads(response.Response)
+                                    add_log_to_run(run_id, f"[Velociraptor] Query result for {cid}: {len(resp_data)} rows", "debug")
+                                    if resp_data and len(resp_data) > 0:
+                                        located_client_id = cid
+                                        located_hostname = client.get('hostname', 'Unknown')
+                                        add_log_to_run(
+                                            run_id,
+                                            f"[Velociraptor] Found flow {fid} on client: {cid} ({located_hostname})",
+                                            "info",
+                                        )
+                                        break
+                                except Exception as e:
+                                    add_log_to_run(run_id, f"[Velociraptor] Error parsing flow check for {cid}: {e}", "warning")
+                    except Exception as e:
+                        add_log_to_run(run_id, f"[Velociraptor] Error querying client {cid}: {e}", "warning")
+                        continue
+                    if located_client_id:
+                        break
+
+                # Fallback: check server flows
+                if not located_client_id:
+                    flow_info_query = f"SELECT client_id FROM flows(client_id='server', flow_id='{fid}')"
+                    info_req = api_pb2.VQLCollectorArgs(
+                        max_wait=30,
+                        max_row=1,
+                        Query=[api_pb2.VQLRequest(VQL=flow_info_query)]
+                    )
+                    for response in stub.Query(info_req, timeout=60):
                         if response.Response:
                             try:
                                 resp_data = json.loads(response.Response)
-                                add_log_to_run(run_id, f"[Velociraptor] Query result for {cid}: {len(resp_data)} rows", "debug")
                                 if resp_data and len(resp_data) > 0:
-                                    client_id = cid
-                                    client_hostname = client.get('hostname', 'Unknown')
-                                    add_log_to_run(run_id, f"[Velociraptor] Found flow on client: {cid} ({client_hostname})", "info")
-                                    break
-                            except Exception as e:
-                                add_log_to_run(run_id, f"[Velociraptor] Error parsing flow check for {cid}: {e}", "warning")
-                except Exception as e:
-                    add_log_to_run(run_id, f"[Velociraptor] Error querying client {cid}: {e}", "warning")
-                    continue
-                if client_id:
-                    break
+                                    located_client_id = 'server'
+                                    located_hostname = 'Server'
+                                    add_log_to_run(run_id, f"[Velociraptor] Found server flow: {fid}", "info")
+                            except Exception:
+                                pass
 
-            # Fallback: check server flows
-            if not client_id:
-                flow_info_query = f"SELECT client_id FROM flows(client_id='server', flow_id='{flow_id}')"
-                request_obj = api_pb2.VQLCollectorArgs(
+                if not located_client_id:
+                    # Don't abort the whole run — log the missing flow and
+                    # continue with whatever flows we CAN find. Matches the
+                    # hunt path's "skip empty flow" tolerance.
+                    add_log_to_run(
+                        run_id,
+                        f"[Velociraptor] Flow {fid} not found on any of {len(all_clients)} clients or server",
+                        "warning",
+                    )
+                    continue
+
+                # List available sources in this flow
+                sources_query = f"SELECT artifacts_with_results FROM flows(client_id='{located_client_id}', flow_id='{fid}')"
+                sources_req = api_pb2.VQLCollectorArgs(
                     max_wait=30,
-                    max_row=1,
-                    Query=[api_pb2.VQLRequest(VQL=flow_info_query)]
+                    max_row=10,
+                    Query=[api_pb2.VQLRequest(VQL=sources_query)]
                 )
 
-                for response in stub.Query(request_obj, timeout=60):
+                flow_sources = []
+                for response in stub.Query(sources_req, timeout=60):
                     if response.Response:
                         try:
                             resp_data = json.loads(response.Response)
                             if resp_data and len(resp_data) > 0:
-                                client_id = 'server'
-                                client_hostname = 'Server'
-                                add_log_to_run(run_id, f"[Velociraptor] Found server flow: {flow_id}", "info")
-                        except:
-                            pass
+                                artifacts_list = resp_data[0].get('artifacts_with_results', [])
+                                if artifacts_list:
+                                    flow_sources = artifacts_list
+                                    add_log_to_run(run_id, f"[Velociraptor] Artifacts in flow {fid}: {artifacts_list}", "debug")
+                        except Exception as e:
+                            add_log_to_run(run_id, f"[Velociraptor] Error getting artifacts list: {e}", "warning")
 
-            if not client_id:
-                add_log_to_run(run_id, f"[Velociraptor] Could not find flow {flow_id} on any of {len(all_clients)} clients or server", "error")
-                return all_results, artifacts, client_info
-
-            # List available sources in the flow using artifacts_with_results
-            sources_query = f"SELECT artifacts_with_results FROM flows(client_id='{client_id}', flow_id='{flow_id}')"
-            request_obj = api_pb2.VQLCollectorArgs(
-                max_wait=30,
-                max_row=10,
-                Query=[api_pb2.VQLRequest(VQL=sources_query)]
-            )
-
-            flow_sources = []
-            for response in stub.Query(request_obj, timeout=60):
-                if response.Response:
-                    try:
-                        resp_data = json.loads(response.Response)
-                        if resp_data and len(resp_data) > 0:
-                            artifacts_list = resp_data[0].get('artifacts_with_results', [])
-                            if artifacts_list:
-                                flow_sources = artifacts_list
-                                add_log_to_run(run_id, f"[Velociraptor] Artifacts in flow: {artifacts_list}", "debug")
-                    except Exception as e:
-                        add_log_to_run(run_id, f"[Velociraptor] Error getting artifacts list: {e}", "warning")
-
-            add_log_to_run(run_id, f"[Velociraptor] Found {len(flow_sources)} artifact sources in flow", "info")
-            artifacts = flow_sources
-
-            # Time filtering done in Python post-query (see filter_results_by_time)
-            for source in flow_sources:
-                query = f"SELECT * FROM source(client_id='{client_id}', flow_id='{flow_id}', artifact='{source}')"
-                request_obj = api_pb2.VQLCollectorArgs(
-                    max_wait=60,
-                    max_row=50000,
-                    Query=[api_pb2.VQLRequest(VQL=query)]
+                add_log_to_run(
+                    run_id,
+                    f"[Velociraptor] Flow {fid} has {len(flow_sources)} artifact source(s)",
+                    "info",
                 )
 
-                rows = []
-                for response in stub.Query(request_obj, timeout=120):
-                    if response.Response:
-                        try:
-                            resp_data = json.loads(response.Response)
-                            rows.extend(resp_data)
-                        except:
-                            pass
+                # Pull rows for each artifact source, tag with client context
+                # so per-client report filters and IRIS asset linking work.
+                for source in flow_sources:
+                    query = f"SELECT * FROM source(client_id='{located_client_id}', flow_id='{fid}', artifact='{source}')"
+                    src_req = api_pb2.VQLCollectorArgs(
+                        max_wait=60,
+                        max_row=50000,
+                        Query=[api_pb2.VQLRequest(VQL=query)]
+                    )
 
-                if rows:
-                    all_results[source] = rows
-                    add_log_to_run(run_id, f"[Velociraptor] Retrieved {len(rows)} rows from {source}", "info")
+                    rows = []
+                    for response in stub.Query(src_req, timeout=120):
+                        if response.Response:
+                            try:
+                                resp_data = json.loads(response.Response)
+                                rows.extend(resp_data)
+                            except Exception:
+                                pass
 
-            # Add client info
-            client_info[client_id] = {"client_id": client_id, "hostname": client_hostname, "os": "Unknown"}
+                    if not rows:
+                        continue
+
+                    # Tag every row with `_client_id` + `_hostname`. The
+                    # per-client report filter (services/agentic/reports.py
+                    # filter_results_by_client) and the IRIS timeline
+                    # extractor (utils.extract_timeline_events) both rely on
+                    # these to slice + link events to the right host.
+                    for r in rows:
+                        r.setdefault('_client_id', located_client_id)
+                        r.setdefault('_hostname', located_hostname)
+
+                    # Append (not overwrite): multiple flows can contribute
+                    # rows to the same artifact name (e.g. each client's
+                    # copy of Generic.Client.Info/DetailedInfo).
+                    all_results.setdefault(source, []).extend(rows)
+                    if source not in artifacts:
+                        artifacts.append(source)
+                    add_log_to_run(
+                        run_id,
+                        f"[Velociraptor] Retrieved {len(rows)} rows from {source} (flow {fid})",
+                        "info",
+                    )
+
+                # Track which client each flow came from. Multi-flow runs
+                # populate one entry per distinct client; single-flow runs
+                # produce exactly one entry (preserves the legacy output).
+                if located_client_id not in client_info:
+                    client_info[located_client_id] = {
+                        "client_id": located_client_id,
+                        "hostname": located_hostname,
+                        "os": "Unknown",
+                    }
 
         elif hunt_id:
             # Get results from a hunt (multiple clients)
