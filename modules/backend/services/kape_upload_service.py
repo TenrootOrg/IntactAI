@@ -232,13 +232,15 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
         os.makedirs(PLASO_OUTPUT_DIR, exist_ok=True)
         plaso_file = f"{PLASO_OUTPUT_DIR}/{client_name}_Artifacts.plaso"
 
-        # Clean up previous output files
-        for old_file in os.listdir(PLASO_OUTPUT_DIR):
-            old_path = os.path.join(PLASO_OUTPUT_DIR, old_file)
+        # Remove only THIS client's previous .plaso output (Plaso refuses to
+        # overwrite an existing storage file). DO NOT wipe the whole dir —
+        # the multi-client Timesketch orchestrator stages other clients' ZIPs
+        # here while they wait their turn in the Plaso queue; wiping the dir
+        # deletes those queued ZIPs and breaks the next client's run.
+        if os.path.isfile(plaso_file):
             try:
-                if os.path.isfile(old_path):
-                    os.remove(old_path)
-            except:
+                os.remove(plaso_file)
+            except Exception:
                 pass
 
         # Build Plaso command
@@ -362,7 +364,7 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
         return None
 
 
-def process_kape_upload(zip_path, original_filename, settings, run_id=None, cleanup_zip=True):
+def process_kape_upload(zip_path, original_filename, settings, run_id=None, cleanup_zip=True, suppress_status_writes=False):
     """Process uploaded KAPE file through Plaso and import to Timesketch
 
     Main entry point called by upload webhook handler and by the Timesketch
@@ -378,10 +380,20 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             provided a new 'timesketch_kape_upload' run is created.
         cleanup_zip: If True, delete the source ZIP after processing.
             Set to False when the caller manages the ZIP lifecycle.
+        suppress_status_writes: If True, skip every update_run_status() call —
+            log lines still flow. Used by the multi-client Timesketch
+            orchestrator so per-client processing doesn't overwrite the
+            parent run's progress %/status (which the orchestrator owns).
 
     Returns:
         Dict with result info or None on failure
     """
+    # Local helper: gate all update_run_status calls behind the suppress flag
+    # so the multi-client orchestrator stays the sole authority on the parent
+    # run's progress + status. We still want per-client log lines either way.
+    def _status(status, **kw):
+        if not suppress_status_writes:
+            update_run_status(run_id, status, **kw)
     temp_dir = None
     plaso_file = None  # Track for cleanup
 
@@ -394,7 +406,7 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
                 {"filename": original_filename, "settings": settings}
             )
             add_log_to_run(run_id, f"Processing uploaded file: {original_filename}")
-            update_run_status(run_id, "running", progress=5)
+            _status("running", progress=5)
         else:
             add_log_to_run(run_id, "=== Starting KAPE Processing ===")
 
@@ -416,7 +428,7 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
         # Automation callers can pre-populate settings['client_name'] to skip the heuristic.
         client_name = settings.get('client_name') or extract_client_info(zip_path, format_type, original_filename)
         add_log_to_run(run_id, f"Client hostname: {client_name}")
-        update_run_status(run_id, "running", progress=10)
+        _status("running", progress=10)
 
         # Create temp directory for extraction inside PLASO_OUTPUT_DIR (shared with host via Docker volume)
         # Must be under /tmp/plaso/ so the Plaso Docker container can access the files
@@ -432,7 +444,7 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             zf.extractall(extract_dir)
             add_log_to_run(run_id, f"Extracted {file_count} files from archive")
 
-        update_run_status(run_id, "running", progress=20)
+        _status("running", progress=20)
 
         # Handle Velociraptor format (needs zlib decompression)
         if format_type == 'velociraptor':
@@ -468,7 +480,7 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             source_dir = extract_dir
             add_log_to_run(run_id, "Using raw KAPE files directly")
 
-        update_run_status(run_id, "running", progress=30)
+        _status("running", progress=30)
 
         # Run Plaso
         add_log_to_run(run_id, "=== Processing with Plaso ===")
@@ -493,7 +505,7 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
         if not plaso_file:
             raise Exception("Plaso processing failed")
 
-        update_run_status(run_id, "running", progress=60)
+        _status("running", progress=60)
 
         # Verify with pinfo
         add_log_to_run(run_id, "=== Verifying Plaso Output ===")
@@ -508,12 +520,12 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             if event_count == 0:
                 add_log_to_run(run_id, "No events extracted - check parser settings", "warning")
                 add_log_to_run(run_id, "Tip: Try using 'Auto (All Parsers)' or 'win7' for broader coverage", "info")
-                update_run_status(run_id, "completed", progress=100)
+                _status("completed", progress=100)
                 return {"run_id": run_id, "status": "no_events"}
             else:
                 add_log_to_run(run_id, f"Plaso extracted {event_count} events", "success")
 
-        update_run_status(run_id, "running", progress=70)
+        _status("running", progress=70)
 
         # Import to Timesketch
         add_log_to_run(run_id, "=== Importing to Timesketch ===")
@@ -538,7 +550,7 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
         if result:
             add_log_to_run(run_id, f"Import complete! Sketch ID: {result.get('sketch_id')}", "success")
             add_log_to_run(run_id, f"Timeline ID: {result.get('timeline_id')}", "success")
-            update_run_status(run_id, "completed", progress=100)
+            _status("completed", progress=100)
 
             return {
                 "run_id": run_id,
@@ -557,7 +569,7 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
 
         if run_id:
             add_log_to_run(run_id, f"Error: {error_msg}", "error")
-            update_run_status(run_id, "failed", error=error_msg)
+            _status("failed", error=error_msg)
 
         return {"run_id": run_id, "status": "failed", "error": error_msg}
 

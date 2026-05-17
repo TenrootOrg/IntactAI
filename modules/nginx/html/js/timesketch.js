@@ -180,58 +180,43 @@ async function runTimeSketchWorkflow() {
     }
 
     try {
-        let successCount = 0;
-        for (let i = 0; i < selectedClients.length; i++) {
-            const clientId = clientIds[i];
-            const hostname = selectedClients[i].dataset.hostname;
+        const blueprintId = document.getElementById('timesketch-blueprint-select').value;
 
-            // Step 1: Start triage collection
-            const blueprintId = document.getElementById('timesketch-blueprint-select').value;
-            const kapeResponse = await fetch('/api/velociraptor/timesketch', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    client_id: clientId,
-                    client_name: hostname,
-                    kape_target: kapeTarget,
-                    timeout_seconds: timeoutSeconds,
-                    cpu_limit: cpuLimit,
-                    blueprint_id: blueprintId,
-                    blueprint: blueprintName
-                })
-            });
+        // One backend call → one workflow row. The /api/timesketch/start-multi
+        // endpoint creates a single run_id, kicks off KAPE on all clients in
+        // parallel, and serializes Plaso + Timesketch upload in
+        // first-finished-first-processed order.
+        const clientsPayload = selectedClients.map((cb, i) => ({
+            client_id: cb.value,
+            client_name: cb.dataset.hostname
+        }));
 
-            const kapeData = await kapeResponse.json();
-            if (!kapeResponse.ok) {
-                console.error(`Failed to start KAPE for ${hostname}:`, kapeData.error);
-                continue;
-            }
+        const response = await fetch('/api/timesketch/start-multi', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                clients: clientsPayload,
+                kape_target: kapeTarget,
+                timeout_seconds: timeoutSeconds,
+                cpu_limit: cpuLimit,
+                blueprint_id: blueprintId,
+                blueprint: blueprintName,
+                sketch_name: sketchName,
+                monitor_timeout: monitorTimeout,
+                plaso_parser: plasoParser,
+                plaso_workers: plasoWorkers,
+                plaso_hasher: plasoHasher,
+                plaso_hasher_size_mb: plasoHasherSizeMb
+            })
+        });
 
-            // Step 2: Start full import pipeline
-            const importResponse = await fetch('/api/timesketch/import', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    flow_id: kapeData.flow_id,
-                    client_id: clientId,
-                    client_name: hostname,
-                    sketch_name: sketchName,
-                    timeline_name: `${hostname}_${new Date().toISOString().slice(0,10).replace(/-/g, '')}_${new Date().toISOString().slice(11,19).replace(/:/g, '')}`,
-                    monitor_timeout: monitorTimeout,
-                    // Plaso settings from blueprint
-                    plaso_parser: plasoParser,
-                    plaso_workers: plasoWorkers,
-                    plaso_hasher: plasoHasher,
-                    plaso_hasher_size_mb: plasoHasherSizeMb
-                })
-            });
-
-            if (importResponse.ok) {
-                successCount++;
-            }
+        const result = await response.json();
+        if (!response.ok) {
+            alert(`Failed to start workflow: ${result.error || 'Unknown error'}`);
+            return;
         }
 
-        alert(`✓ Timesketch pipeline started for ${successCount} client(s)!\n\nSketch: ${sketchName}\nBlueprint: ${blueprintName}\nTriage Target: ${kapeTarget}\n\nCheck the Workflows tab to monitor progress.`);
+        alert(`✓ Timesketch pipeline started for ${clientsPayload.length} client(s) under ONE workflow!\n\nSketch: ${sketchName}\nBlueprint: ${blueprintName}\nTriage Target: ${kapeTarget}\n\nKAPE collections run in parallel; Plaso processing runs one at a time (first finished, first processed).\n\nCheck the Workflows tab to monitor progress.`);
 
         switchTab('workflows');
 
