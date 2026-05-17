@@ -121,3 +121,7 @@ modules/timesketch/config/timesketch_legacy.conf
 modules/nginx/node_modules/
 modules/nginx/package.json
 modules/nginx/package-lock.json
+
+# Timesketch upgrade DB dumps + migrations cache (created at upgrade time,
+# never committed — operators prune them manually)
+/backups/
