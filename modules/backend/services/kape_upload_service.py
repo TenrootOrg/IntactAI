@@ -248,6 +248,13 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
 
         plaso_cmd = [
             'docker', 'run', '--rm',
+            # PYTHONUNBUFFERED disables Python's stdout/stderr block buffering
+            # inside the Plaso container. Without it, log2timeline.py's status
+            # lines sit in a 4 KB pipe buffer until the buffer fills or the
+            # process exits — operators see the "Processing started." line and
+            # then a long silence followed by a burst at completion, instead
+            # of real-time progress every status_view_interval seconds.
+            '-e', 'PYTHONUNBUFFERED=1',
             '-v', f'{PLASO_OUTPUT_DIR}:/data',
             '-v', f'{source_dir}:/source:ro',
             '--cpus', PLASO_CPUS,
