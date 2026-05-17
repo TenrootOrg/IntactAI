@@ -113,6 +113,112 @@ def _restore_timesketch_db(dump_path: str, logger: Callable = None) -> bool:
     return True
 
 
+def _count_timesketch_rows(table: str, logger: Callable = None) -> Optional[int]:
+    """Return COUNT(*) for a Timesketch table, or None on failure.
+
+    Used as a before/after sanity check around the upgrade. The postgres
+    volume is preserved across `docker compose down/up`, so row counts on
+    persistent tables should never drop during a clean upgrade. If they do,
+    something went very wrong (volume detach, mis-applied migration) and
+    the upgrade should fail so the rollback path runs.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    # Quote the table name to protect SQL keywords like "user" / "timeline".
+    result = run_command(
+        f"docker exec {_PG_CONTAINER} psql -U {_PG_USER} -d {_PG_DB} -tAc "
+        f"\"SELECT count(*) FROM \\\"{table}\\\";\"",
+        logger=None
+    )
+    if not result['success']:
+        log(f"Could not count rows of {table!r} (table may not exist yet): {result.get('error','?')[:120]}", "warning")
+        return None
+    try:
+        return int((result.get('stdout') or '').strip())
+    except (ValueError, TypeError):
+        log(f"Unexpected count output for {table!r}: {result.get('stdout','')[:120]}", "warning")
+        return None
+
+
+def _count_timesketch_users(logger: Callable = None) -> Optional[int]:
+    """Convenience wrapper — kept for back-compat with earlier callers."""
+    return _count_timesketch_rows('user', logger=logger)
+
+
+def _snapshot_persistent_counts(logger: Callable = None) -> Dict[str, Optional[int]]:
+    """Snapshot the row count of every Timesketch table that holds user-visible
+    state. Used before + after the upgrade to assert nothing got dropped.
+
+    Coverage spans the full user-facing surface — if any of these lose rows
+    during upgrade, the operator has lost something they care about:
+      - auth          : user, sketch_accesscontrolentry
+      - core          : sketch, timeline, searchindex
+      - investigation : story, view, analysis, attribute
+      - findings      : event, aggregation, graph
+      - searches      : searchhistory, searchtemplate, sigmarule
+      - DFIQ          : scenario, investigativequestion, facet
+
+    Tables that don't exist on the pre-upgrade schema (e.g. brand-new tables
+    introduced by a newer release) return None and are skipped from the
+    before/after comparison.
+    """
+    tables = [
+        # Auth / access
+        'user',
+        'sketch_accesscontrolentry',
+        # Core entities
+        'sketch',
+        'timeline',
+        'searchindex',
+        # Investigation surface
+        'story',
+        'view',
+        'analysis',
+        'attribute',
+        # Tagged events / findings
+        'event',
+        'aggregation',
+        'graph',
+        # Searches + rules
+        'searchhistory',
+        'searchtemplate',
+        'sigmarule',
+        # DFIQ
+        'scenario',
+        'investigativequestion',
+        'facet',
+    ]
+    return {t: _count_timesketch_rows(t, logger=logger) for t in tables}
+
+
+def _assert_counts_preserved(before: Dict[str, Optional[int]],
+                              after: Dict[str, Optional[int]],
+                              logger: Callable = None) -> Optional[str]:
+    """Compare before/after table counts. Returns None on success, or a
+    human-readable error string if any persistent table lost rows. Tables
+    that didn't exist in the before-snapshot are skipped (the new schema
+    may have created them)."""
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    losses = []
+    for table, before_n in before.items():
+        if before_n is None:
+            continue
+        after_n = after.get(table)
+        if after_n is None:
+            # Table existed pre-upgrade but disappeared post-upgrade — that's a real loss.
+            losses.append(f"{table}: {before_n} → MISSING")
+            log(f"  {table:12} pre={before_n} post=MISSING", "error")
+        elif after_n < before_n:
+            losses.append(f"{table}: {before_n} → {after_n}")
+            log(f"  {table:12} pre={before_n} post={after_n}  ✗ ROWS LOST", "error")
+        else:
+            delta = after_n - before_n
+            note = "" if delta == 0 else f" (+{delta} new)"
+            log(f"  {table:12} pre={before_n} post={after_n}{note}", "info")
+    if losses:
+        return "Row count dropped in: " + "; ".join(losses)
+    return None
+
+
 def _fetch_migrations_dir(version: str, logger: Callable = None) -> Optional[str]:
     """Download Timesketch's alembic migrations/ tree for `version` from GitHub.
 
@@ -177,18 +283,100 @@ def _fetch_migrations_dir(version: str, logger: Callable = None) -> Optional[str
     return migrations_path
 
 
-def _run_db_schema_upgrade(target_version: str, logger: Callable = None) -> bool:
-    """Run `tsctl db upgrade` inside the (already-upgraded) web container.
+def _bootstrap_alembic_if_needed(current_version: str, logger: Callable = None) -> bool:
+    """If the DB has no alembic_version row, stamp it to the CURRENT version's
+    migration head — anchoring alembic to the schema actually on disk before
+    the upgrade starts. This must run BEFORE `docker compose down` so the old
+    web container is still up to execute tsctl against the matching migration
+    chain.
 
-    The installed Timesketch wheel doesn't ship the alembic migrations/
-    directory, so we fetch the matching version's migrations from GitHub,
-    docker-cp them into the running web container at /migrations, then run
-    `tsctl db upgrade -d /migrations` (idempotent — a no-op for patch-level
-    upgrades returns 0).
+    Without this step, the first `tsctl db upgrade` after an image swap would
+    have to choose between:
+      - applying every migration from scratch (collides with existing tables), or
+      - stamping head of the NEW chain (claims the schema is at the target,
+        skips the deltas, leaves the DB missing columns the new code expects —
+        exactly the bug that surfaced as `column analysis.approach_id does
+        not exist` when querying through 20260326 code on a 20240828 schema).
+
+    Returns True on success (or if no bootstrap was needed); False on failure.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
-    migrations_host_path = _fetch_migrations_dir(target_version, logger=log)
+    check = run_command(
+        f"docker exec {_PG_CONTAINER} psql -U {_PG_USER} -d {_PG_DB} -tAc "
+        f"\"SELECT to_regclass('alembic_version');\"",
+        logger=None
+    )
+    if check['success'] and (check.get('stdout') or '').strip() not in ('', 'alembic_version'):
+        # Strange: to_regclass returned something unexpected. Don't bootstrap.
+        return True
+    if check['success'] and (check.get('stdout') or '').strip() == 'alembic_version':
+        # Table exists. If it has a row, no bootstrap needed.
+        row_check = run_command(
+            f"docker exec {_PG_CONTAINER} psql -U {_PG_USER} -d {_PG_DB} -tAc "
+            f"\"SELECT version_num FROM alembic_version LIMIT 1;\"",
+            logger=None
+        )
+        marker = (row_check.get('stdout') or '').strip() if row_check['success'] else ''
+        if marker:
+            log(f"DB already alembic-tracked at revision {marker} — no bootstrap needed", "info")
+            return True
+        log("alembic_version table exists but is empty — bootstrap needed", "warning")
+    else:
+        log("alembic_version table missing — bootstrap needed", "warning")
+
+    # Need to stamp. Use the CURRENT version's migrations against the
+    # still-running OLD web container.
+    log(f"Bootstrapping alembic by stamping head of current version ({current_version})...", "info")
+    mig_path = _fetch_migrations_dir(current_version, logger=log)
+    if not mig_path:
+        log(f"Could not download {current_version} migrations for bootstrap — "
+            f"upgrade will likely fail to apply schema deltas", "error")
+        return False
+
+    run_command(f"docker exec {_WEB_CONTAINER} rm -rf /migrations", logger=None)
+    cp = run_command(
+        f"docker cp {shlex.quote(mig_path)} {_WEB_CONTAINER}:/migrations",
+        timeout=60, logger=log
+    )
+    if not cp['success']:
+        log(f"docker cp old migrations failed: {cp.get('error','?')[:200]}", "error")
+        return False
+
+    stamp = run_command(
+        f"docker exec {_WEB_CONTAINER} tsctl db stamp -d /migrations head",
+        timeout=120, logger=log
+    )
+    if not stamp['success']:
+        log(f"db stamp failed: {stamp.get('error','?')[:300]}", "error")
+        return False
+    log(f"✓ Alembic bootstrapped to head of {current_version} — post-upgrade db upgrade will apply only the deltas", "success")
+    return True
+
+
+def _run_db_schema_upgrade(target_version: str, logger: Callable = None,
+                            local_migrations_dir: Optional[str] = None) -> bool:
+    """Run `tsctl db upgrade` inside the (already-upgraded) web container.
+
+    Migrations resolution order:
+      1. `local_migrations_dir` if supplied (offline upgrade passes the path
+         to the migrations bundled inside the upgrade package — no internet).
+      2. Otherwise fetch from GitHub at the matching version tag (online).
+
+    The installed Timesketch wheel doesn't ship migrations/ so one of these
+    two paths has to provide them. Idempotent — a patch-level upgrade with
+    no schema delta returns 0.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+
+    if local_migrations_dir and os.path.isdir(local_migrations_dir):
+        log(f"Using bundled migrations from package: {local_migrations_dir}", "info")
+        migrations_host_path = local_migrations_dir
+    else:
+        if local_migrations_dir:
+            log(f"Bundled migrations not found at {local_migrations_dir} — falling back to GitHub fetch", "warning")
+        migrations_host_path = _fetch_migrations_dir(target_version, logger=log)
+
     if not migrations_host_path:
         log("Skipping schema migration — no migrations available. Run "
             "'docker exec intact_timesketch_web tsctl db upgrade -d <path>' "
@@ -207,29 +395,25 @@ def _run_db_schema_upgrade(target_version: str, logger: Callable = None) -> bool
         log(f"docker cp migrations into container failed: {cp.get('error','?')[:200]}", "error")
         return False
 
-    # If the DB has never been alembic-tracked (no alembic_version row),
-    # stamp it to head BEFORE attempting `upgrade` — otherwise alembic will
-    # try to run every migration from scratch and collide with the tables
-    # Timesketch already create_all'd at first setup. Most install paths of
-    # Timesketch don't initialise the alembic table; this bootstraps it.
+    # Bootstrap (if needed) MUST have already run in the caller against the
+    # OLD container — see `_bootstrap_alembic_if_needed`. At this point the
+    # alembic_version row should exist; tsctl db upgrade just applies any
+    # pending deltas between the bootstrapped revision and the target head.
     check = run_command(
         f"docker exec {_PG_CONTAINER} psql -U {_PG_USER} -d {_PG_DB} -tAc "
         f"\"SELECT version_num FROM alembic_version LIMIT 1;\"",
         logger=None
     )
     current_marker = (check.get('stdout') or '').strip()
-    if not current_marker:
-        log("DB has no alembic_version marker — stamping head to bootstrap tracking", "warning")
-        stamp = run_command(
-            f"docker exec {_WEB_CONTAINER} tsctl db stamp -d /migrations head",
-            timeout=120, logger=log
-        )
-        if not stamp['success']:
-            log(f"db stamp failed: {stamp.get('error','?')[:300]}", "error")
-            return False
-        log("Alembic stamped to head — future upgrades will apply pending migrations cleanly", "success")
-    else:
+    if current_marker:
         log(f"DB alembic version marker: {current_marker}", "info")
+    else:
+        # Caller didn't bootstrap. Don't blindly stamp head here — that's the
+        # very bug we just fixed. Surface loudly so the operator notices.
+        log("alembic_version is empty but bootstrap was skipped — refusing to "
+            "blind-stamp head (would skip needed schema deltas). Run the "
+            "upgrade flow which does pre-bootstrap, or stamp manually.", "error")
+        return False
 
     log("Running tsctl db upgrade (alembic schema migration)...", "info")
     cmd = f"docker exec {_WEB_CONTAINER} tsctl db upgrade -d /migrations"
@@ -305,6 +489,27 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
     if not db_backup_path:
         log("Proceeding without DB backup — rollback will be config-only if upgrade fails", "warning")
 
+    # Snapshot row counts of every persistent table BEFORE the upgrade so we
+    # can verify nothing disappeared. The postgres + opensearch volumes are
+    # preserved by `docker compose down/up`, so persistent data should survive
+    # automatically; this check makes that contract observable in every run.
+    log("Snapshotting Timesketch row counts (users, sketches, timelines, indices)...", "info")
+    counts_before = _snapshot_persistent_counts(logger=log)
+    for tbl, n in counts_before.items():
+        if n is not None:
+            log(f"  pre-upgrade  {tbl:12} = {n}", "info")
+
+    # Bootstrap alembic AGAINST THE STILL-RUNNING OLD CONTAINER so the post-
+    # upgrade `tsctl db upgrade` knows to apply only the deltas between
+    # current_version and target version. Without this, an install that was
+    # never alembic-tracked (the common Timesketch case) would have its
+    # schema deltas silently skipped — exactly the bug that left
+    # `analysis.approach_id` missing after our first 20240828→20260326 test.
+    if not _bootstrap_alembic_if_needed(current_version, logger=log):
+        log("Alembic bootstrap failed — upgrade will likely leave schema mismatched. "
+            "Refusing to continue.", "error")
+        raise Exception("Could not bootstrap alembic tracking before upgrade")
+
     try:
         # Stop containers
         log("Stopping Timesketch containers...", "info")
@@ -373,6 +578,20 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
         # which is what bit the 2024 → 2026 upgrade.
         if not _run_db_schema_upgrade(version, logger=log):
             raise Exception("tsctl db upgrade failed — DB schema is not in sync with new code")
+
+        # Verify ALL persistent rows survived. If any table lost rows, treat
+        # the upgrade as failed so the rollback path runs (.env restore +
+        # pg_restore). This catches volume detach, mis-applied migrations,
+        # and any other class of regression that silently drops user data.
+        log("Verifying Timesketch row counts after upgrade...", "info")
+        counts_after = _snapshot_persistent_counts(logger=log)
+        loss = _assert_counts_preserved(counts_before, counts_after, logger=log)
+        if loss:
+            raise Exception(
+                f"Data loss detected after upgrade — {loss}. "
+                f"Rolling back from pg_dump at {db_backup_path}"
+            )
+        log("✓ All persistent rows preserved (users, sketches, timelines, indices)", "success")
 
         # Success - cleanup env-file backups. Keep the DB dump on disk so the
         # operator has a manual rollback artifact for the next 24-48h until
@@ -459,6 +678,23 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
     if not db_backup_path:
         log("Proceeding without DB backup — rollback will be config-only if upgrade fails", "warning")
 
+    # Snapshot row counts of every persistent table BEFORE the upgrade so we
+    # can prove nothing got dropped. The postgres + opensearch volumes are
+    # preserved by `docker compose down/up`, so persistent data should survive
+    # automatically; this check makes that contract observable in every run.
+    log("Snapshotting Timesketch row counts (users, sketches, timelines, indices)...", "info")
+    counts_before = _snapshot_persistent_counts(logger=log)
+    for tbl, n in counts_before.items():
+        if n is not None:
+            log(f"  pre-upgrade  {tbl:12} = {n}", "info")
+
+    # Bootstrap alembic against the still-running OLD container — same fix
+    # as the online path. Without this, the post-upgrade `tsctl db upgrade`
+    # would refuse to blind-stamp head and the upgrade would abort+rollback.
+    if not _bootstrap_alembic_if_needed(current_version, logger=log):
+        log("Alembic bootstrap failed — refusing to continue", "error")
+        raise Exception("Could not bootstrap alembic tracking before upgrade")
+
     try:
         # Stop containers
         log("Stopping Timesketch containers...", "info")
@@ -523,9 +759,23 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
                 raise Exception(f"Timesketch failed to start - container status: {container_status}")
             log("Timesketch health check: TIMEOUT (containers may still be starting)", "warning")
 
-        # Apply alembic schema migration from inside the new container.
-        if not _run_db_schema_upgrade(version, logger=log):
+        # Apply alembic schema migration. Offline upgrades use the migrations
+        # bundled in the package (no internet); the prepare step downloads and
+        # bundles them. Fall back to GitHub only if the bundle is missing.
+        bundled_mig = os.path.join(package_dir, 'migrations', 'timesketch')
+        if not _run_db_schema_upgrade(version, logger=log, local_migrations_dir=bundled_mig):
             raise Exception("tsctl db upgrade failed — DB schema is not in sync with new code")
+
+        # Verify ALL persistent rows survived the offline upgrade.
+        log("Verifying Timesketch row counts after upgrade...", "info")
+        counts_after = _snapshot_persistent_counts(logger=log)
+        loss = _assert_counts_preserved(counts_before, counts_after, logger=log)
+        if loss:
+            raise Exception(
+                f"Data loss detected after upgrade — {loss}. "
+                f"Rolling back from pg_dump at {db_backup_path}"
+            )
+        log("✓ All persistent rows preserved (users, sketches, timelines, indices)", "success")
 
         # Success - cleanup env-file backups; keep the DB dump for manual rollback.
         cleanup_backup(ts_backup, logger=log)

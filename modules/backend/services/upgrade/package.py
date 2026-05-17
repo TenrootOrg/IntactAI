@@ -336,6 +336,41 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                         manifest["contents"]["images"].append(output_name)
 
                 manifest["versions"][module] = version
+
+                # Timesketch-specific: bundle alembic migrations into the package
+                # so the offline upgrade doesn't need internet access. The
+                # installed Timesketch wheel doesn't ship migrations/; fetching
+                # from GitHub at upgrade time defeats the offline guarantee.
+                if module == 'timesketch':
+                    log("Bundling Timesketch alembic migrations...", "info")
+                    mig_url = f"https://github.com/google/timesketch/archive/refs/tags/{version}.tar.gz"
+                    src_tarball = f"{package_dir}/_ts_src_{version}.tar.gz"
+                    dl = run_command(f"curl -fLsS -o {src_tarball} {mig_url}", timeout=180, logger=None)
+                    if not dl['success'] or not os.path.exists(src_tarball) or os.path.getsize(src_tarball) < 1024:
+                        log(f"  Failed to download Timesketch source for migrations from {mig_url}", "warning")
+                        log("  Offline upgrade may fall back to GitHub for migrations at apply time", "warning")
+                    else:
+                        ts_mig_dir = f"{package_dir}/migrations/timesketch"
+                        os.makedirs(ts_mig_dir, exist_ok=True)
+                        # --strip-components=3 drops `timesketch-<ver>/timesketch/migrations/`
+                        # so extracted contents land as `versions/`, `env.py`,
+                        # `alembic.ini` etc. directly under ts_mig_dir — the
+                        # layout tsctl's `-d` flag expects.
+                        extract = run_command(
+                            f"tar -xzf {src_tarball} -C {ts_mig_dir} --wildcards "
+                            f"--strip-components=3 '*/timesketch/migrations/*'",
+                            timeout=60, logger=None
+                        )
+                        try:
+                            os.remove(src_tarball)
+                        except Exception:
+                            pass
+                        if extract['success'] and os.path.isdir(f"{ts_mig_dir}/versions"):
+                            mig_count = len([f for f in os.listdir(f"{ts_mig_dir}/versions") if f.endswith('.py')])
+                            log(f"  Migrations bundled ({mig_count} revision files)", "success")
+                            manifest["contents"].setdefault("migrations", []).append("timesketch")
+                        else:
+                            log(f"  Failed to extract migrations from source tarball", "warning")
             else:
                 log(f"  Unknown module: {module}", "warning")
 
