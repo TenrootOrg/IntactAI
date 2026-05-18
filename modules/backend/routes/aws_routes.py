@@ -232,6 +232,16 @@ def start_scan():
             #    7 days for keys   (any access key minted in last week)
             # Callers can pass explicit nulls to disable, or larger
             # numbers for retrospective sweeps.
+            # CloudTrail per-region cap: null/0 means use blueprint default.
+            # See pipeline.collect_aws_logs → cloudtrail_runner for resolution.
+            mepr_raw = data.get('max_events_per_region')
+            try:
+                mepr = int(mepr_raw) if mepr_raw not in (None, '', 0, '0') else None
+                if mepr is not None and mepr < 1:
+                    mepr = None
+            except (TypeError, ValueError):
+                mepr = None
+
             options = {
                 'enable_llm': data.get('enable_llm', False),
                 'llm_config': llm_config,
@@ -242,8 +252,16 @@ def start_scan():
                 'target_principals': target_principals,
                 'regions': data.get('regions'),
                 'cloudtrail_mode': cloudtrail_mode,
-                'max_principal_age_days': data.get('max_principal_age_days', 30),
-                'max_access_key_age_days': data.get('max_access_key_age_days', 7),
+                'max_events_per_region': mepr,
+                # DFIR fresh-admin / fresh-key flagging used to take two
+                # separate knobs (max_principal_age_days, max_access_key_age_days)
+                # — operators didn't understand them and they duplicated the
+                # generic `time_range_days` already on the blueprint. The IAM
+                # runner now derives the freshness window from the scan's
+                # time range, so a 1-day Quick Triage flags admins/keys
+                # created in that 1 day, and a 30-day Full Investigation
+                # flags anything created in those 30 days. One concept,
+                # scales automatically with investigation scope.
                 'anonymizer': None,
             }
             add_log_to_run(

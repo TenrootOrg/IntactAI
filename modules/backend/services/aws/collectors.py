@@ -117,8 +117,8 @@ def _stub_collect(
     target_principal_arns: Optional[List[str]] = None,
     time_filter: Optional[Dict[str, Any]] = None,
     is_cancelled_func: Optional[Callable[[], bool]] = None,
-    max_principal_age_days: Optional[float] = None,
-    max_access_key_age_days: Optional[float] = None,
+    freshness_window_days: Optional[float] = None,
+    max_events_per_region: Optional[int] = None,
 ) -> List[Dict]:
     """Collect records for one source. If a real runner exists for this
     source AND `aws_config` is provided, run it; on empty/failure fall
@@ -175,8 +175,7 @@ def _stub_collect(
                     'cloudtrail_iam':     'iam_only',
                     'cloudtrail_full':    'full',
                 }[source]
-                records = cloudtrail_runner.collect_cloudtrail(
-                    aws_config,
+                ct_kwargs = dict(
                     mode=ct_mode,
                     regions=regions,
                     time_filter=time_filter,
@@ -184,6 +183,9 @@ def _stub_collect(
                     log_func=log,
                     is_cancelled_func=is_cancelled_func,
                 )
+                if max_events_per_region is not None:
+                    ct_kwargs['max_events_per_region'] = int(max_events_per_region)
+                records = cloudtrail_runner.collect_cloudtrail(aws_config, **ct_kwargs)
                 if records:
                     for r in records:
                         r.setdefault('_source', source)
@@ -252,8 +254,7 @@ def _stub_collect(
             if avail.get('available'):
                 records = iam_runner.collect_iam_principals(
                     aws_config,
-                    max_principal_age_days=max_principal_age_days,
-                    max_access_key_age_days=max_access_key_age_days,
+                    freshness_window_days=freshness_window_days,
                     target_principal_arns=target_principal_arns,
                     log_func=log,
                     is_cancelled_func=is_cancelled_func,
@@ -299,8 +300,8 @@ def collect_aws_logs(
     target_principals: Optional[List[str]] = None,
     scope_mode: str = 'targeted',
     cloudtrail_mode: str = 'light',
-    max_principal_age_days: Optional[float] = None,
-    max_access_key_age_days: Optional[float] = None,
+    freshness_window_days: Optional[float] = None,
+    max_events_per_region: Optional[int] = None,
     log_func: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, List[Dict]]:
     """Collect AWS logs for the requested `sources`.
@@ -321,7 +322,8 @@ def collect_aws_logs(
             add_log_to_run(run_id, msg, level)
 
     log(f"[AWS] Collection start — sources={sources}, regions={regions or ['(default)']}, "
-        f"scope_mode={scope_mode}, cloudtrail_mode={cloudtrail_mode}", "info")
+        f"scope_mode={scope_mode}, cloudtrail_mode={cloudtrail_mode}, "
+        f"max_events_per_region={max_events_per_region or 'default'}", "info")
     if target_principals:
         log(f"[AWS] Targeted principals: {target_principals}", "info")
 
@@ -368,8 +370,8 @@ def collect_aws_logs(
             target_principal_arns=target_principal_arns,
             time_filter=time_filter if isinstance(time_filter, dict) else None,
             is_cancelled_func=_is_cancelled_for_runner,
-            max_principal_age_days=max_principal_age_days,
-            max_access_key_age_days=max_access_key_age_days,
+            freshness_window_days=freshness_window_days,
+            max_events_per_region=max_events_per_region,
         )
         if not records:
             continue

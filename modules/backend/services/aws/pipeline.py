@@ -456,8 +456,14 @@ def run_aws_pipeline(
             target_principals=options.get('target_principals'),
             scope_mode=options.get('scope_mode', 'targeted'),
             cloudtrail_mode=options.get('cloudtrail_mode', bp_settings.get('cloudtrail_mode', 'light')),
-            max_principal_age_days=options.get('max_principal_age_days'),
-            max_access_key_age_days=options.get('max_access_key_age_days'),
+            # Use the same `time_range_days` the rest of the scan honours
+            # as the freshness window for IAM users/keys. See iam_runner
+            # for what gets bumped to critical; this collapses the two
+            # legacy DFIR age knobs into the generic scan-window concept.
+            freshness_window_days=bp_settings.get('time_range_days'),
+            # Per-region CloudTrail cap. Resolved as request override →
+            # blueprint default → hard fallback in cloudtrail_runner.
+            max_events_per_region=options.get('max_events_per_region') or bp_settings.get('max_events_per_region'),
         )
         total_records = sum(len(v) for v in collected_data.values())
         result['phases']['collection'] = {
@@ -571,6 +577,7 @@ def get_aws_blueprints() -> List[Dict]:
                 'sources': ['cloudtrail_console', 'cloudtrail_iam', 'guardduty_findings', 'iam_principals'],
                 'time_range_days': 1,
                 'cloudtrail_mode': 'light',
+                'max_events_per_region': 500,
             },
             'min_severity': 'low',
         },
@@ -585,6 +592,7 @@ def get_aws_blueprints() -> List[Dict]:
                 'sources': ['cloudtrail_console', 'cloudtrail_iam', 'cloudtrail_full', 'guardduty_findings', 'accessanalyzer_findings', 'iam_principals'],
                 'time_range_days': 2,
                 'cloudtrail_mode': 'full',
+                'max_events_per_region': 2000,
             },
             'min_severity': 'low',
             'requires_target_principals': True,
@@ -600,6 +608,7 @@ def get_aws_blueprints() -> List[Dict]:
                 'sources': ['cloudtrail_iam', 'accessanalyzer_findings', 'prowler_posture', 'iam_principals'],
                 'time_range_days': 7,
                 'cloudtrail_mode': 'light',
+                'max_events_per_region': 2000,
             },
             'min_severity': 'low',
         },
@@ -614,6 +623,7 @@ def get_aws_blueprints() -> List[Dict]:
                 'sources': ['all'],
                 'time_range_days': 30,
                 'cloudtrail_mode': 'full',
+                'max_events_per_region': 10000,
             },
             'min_severity': 'informational',
         },

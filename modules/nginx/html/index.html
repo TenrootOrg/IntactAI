@@ -440,11 +440,12 @@
                                         </td>
                                         <td class="px-6 py-4">
                                             <span :class="$store.workflows.getStatusColor(run.status) + ' px-3 py-1 rounded-full text-xs font-semibold uppercase'" x-text="run.status || 'unknown'"></span>
-                                            <template x-if="(run.error_count || 0) > 0">
-                                                <span class="ml-2 inline-flex items-center gap-1 bg-red-900/40 border border-red-700 text-red-300 px-2 py-0.5 rounded text-xs font-medium" :title="run.error_count + ' error-level log entr' + (run.error_count === 1 ? 'y' : 'ies') + ' recorded during this run'">
-                                                    <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
-                                                    <span x-text="run.error_count + ' err'"></span>
-                                                </span>
+                                            <!-- Error-count chip: only show on COMPLETED runs (where it's actual signal —
+                                                 "this finished green but had errors logged"). On FAILED runs the status pill
+                                                 already conveys errors; a separate chip is redundant noise. -->
+                                            <template x-if="(run.error_count || 0) > 0 && run.status === 'completed'">
+                                                <span class="ml-1.5 text-[10px] font-medium text-red-400" :title="run.error_count + ' error-level log entr' + (run.error_count === 1 ? 'y' : 'ies') + ' recorded during this run'"
+                                                      x-text="'(' + run.error_count + ' err)'"></span>
                                             </template>
                                         </td>
                                         <td class="px-6 py-4">
@@ -1708,8 +1709,8 @@ sudo ./velociraptor service start</code></pre>
                      awsTargetPrincipals: '',
                      awsScopeMode: 'account_wide',
                      awsCloudTrailMode: 'light',
-                     awsMaxPrincipalAgeDays: 30,
-                     awsMaxAccessKeyAgeDays: 7,
+                     awsMaxEventsPerRegion: '',
+                     awsMaxEventsUserEdited: false,
                      async checkAwsStatus() {
                          try {
                              const r = await fetch('/api/aws/status');
@@ -1719,10 +1720,37 @@ sudo ./velociraptor service start</code></pre>
                              const r = await fetch('/api/aws/blueprints');
                              const d = await r.json();
                              this.awsBlueprints = d.blueprints || [];
+                             // Seed the cap textbox with the current blueprint's default
+                             this.$nextTick(() => this.applyBlueprintDefaults());
                          } catch(e) { console.error(e); }
                      },
                      get selectedAwsBlueprint() {
                          return this.awsBlueprints.find(b => b.id === this.awsBlueprint) || null;
+                     },
+                     applyBlueprintDefaults() {
+                         // When the user picks a new blueprint, replace the cap
+                         // with that blueprint's default — unless the user has
+                         // already overridden it in this session.
+                         if (this.awsMaxEventsUserEdited) return;
+                         const bp = this.selectedAwsBlueprint;
+                         const def = bp?.settings?.max_events_per_region;
+                         this.awsMaxEventsPerRegion = (def != null) ? String(def) : '';
+                     },
+                     get awsEffectiveMaxEvents() {
+                         const v = parseInt(this.awsMaxEventsPerRegion, 10);
+                         if (!isNaN(v) && v > 0) return v;
+                         return this.selectedAwsBlueprint?.settings?.max_events_per_region || 500;
+                     },
+                     get awsScanTimeEstimate() {
+                         // LookupEvents = 50 events/page, ~2 pages/sec → events/100 = seconds.
+                         const events = this.awsEffectiveMaxEvents;
+                         const regions = this.awsRegions.split(',').map(r => r.trim()).filter(r => r).length || 1;
+                         const perRegionSec = Math.max(2, Math.round(events / 100));
+                         const totalSec = perRegionSec * regions;
+                         const fmt = s => s < 60 ? `${s} sec` : `${Math.round(s / 60)} min`;
+                         return regions > 1
+                             ? `≈ ${fmt(perRegionSec)} per region (~${fmt(totalSec)} across ${regions} regions)`
+                             : `≈ ${fmt(perRegionSec)} per region`;
                      },
                      async startAwsScan() {
                          this.awsRunning = true;
@@ -1748,6 +1776,7 @@ sudo ./velociraptor service start</code></pre>
                                  const n = parseFloat(v);
                                  return (isNaN(n) || n < 0) ? null : n;
                              };
+                             const mepr = parseInt(this.awsMaxEventsPerRegion, 10);
                              const r = await fetch('/api/aws/scan', {
                                  method: 'POST',
                                  headers: { 'Content-Type': 'application/json' },
@@ -1760,8 +1789,7 @@ sudo ./velociraptor service start</code></pre>
                                      cloudtrail_mode: this.awsCloudTrailMode,
                                      enable_llm: this.awsEnableLLM,
                                      min_severity: this.awsMinSeverity,
-                                     max_principal_age_days: parseDays(this.awsMaxPrincipalAgeDays),
-                                     max_access_key_age_days: parseDays(this.awsMaxAccessKeyAgeDays),
+                                     max_events_per_region: (!isNaN(mepr) && mepr > 0) ? mepr : null,
                                  }),
                              });
                              const d = await r.json();
@@ -1851,7 +1879,9 @@ sudo ./velociraptor service start</code></pre>
                         <!-- Blueprint -->
                         <div>
                             <label class="block text-sm font-medium text-gray-300 mb-2">Blueprint</label>
-                            <select x-model="awsBlueprint" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                            <select x-model="awsBlueprint"
+                                    @change="awsMaxEventsUserEdited = false; applyBlueprintDefaults()"
+                                    class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
                                 <template x-for="bp in awsBlueprints" :key="bp.id">
                                     <option :value="bp.id" x-text="bp.name"></option>
                                 </template>
@@ -1965,27 +1995,26 @@ sudo ./velociraptor service start</code></pre>
                                    class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white font-mono text-xs">
                         </div>
 
-                        <!-- DFIR age filters — when iam_principals source is in scope, flag fresh admin/keys as critical -->
-                        <details class="p-3 bg-gray-900/40 border border-orange-700/40 rounded-lg" open>
-                            <summary class="cursor-pointer text-sm font-medium text-orange-300 flex items-center gap-2">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                DFIR age filters <span class="text-xs text-gray-500 font-normal">(applied to IAM principals/keys)</span>
-                            </summary>
-                            <div class="grid grid-cols-2 gap-3 mt-3">
-                                <div>
-                                    <label class="block text-xs text-gray-400 mb-1">Fresh-user window (days)</label>
-                                    <input type="number" min="0" step="1" x-model="awsMaxPrincipalAgeDays"
-                                           class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
-                                    <p class="text-[10px] text-gray-500 mt-1">Admin users created within this window get <span class="text-red-300">critical</span> + <code>FRESH ADMIN</code> tag. Empty/0 disables.</p>
-                                </div>
-                                <div>
-                                    <label class="block text-xs text-gray-400 mb-1">Fresh-key window (days)</label>
-                                    <input type="number" min="0" step="1" x-model="awsMaxAccessKeyAgeDays"
-                                           class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
-                                    <p class="text-[10px] text-gray-500 mt-1">Active access keys minted within this window on an admin user → <span class="text-red-300">critical</span>. Empty/0 disables.</p>
-                                </div>
-                            </div>
-                        </details>
+                        <!-- DFIR age filters now run automatically with the
+                             backend defaults (30d fresh-admin, 7d fresh-key).
+                             The previous UI knobs were noise — see
+                             routes/aws_routes.py:245-246 + iam_runner.py for
+                             where the thresholds live and how fresh-admin
+                             gets bumped to critical. -->
+
+                        <!-- CloudTrail per-region cap (advanced) -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">
+                                Max CloudTrail events per region
+                                <span class="text-xs text-gray-500">(defaults from blueprint; raise for deeper coverage)</span>
+                            </label>
+                            <input type="number" min="50" step="50"
+                                   x-model="awsMaxEventsPerRegion"
+                                   @input="awsMaxEventsUserEdited = true"
+                                   :placeholder="selectedAwsBlueprint?.settings?.max_events_per_region || 500"
+                                   class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white font-mono">
+                            <p class="text-xs text-gray-500 mt-1" x-text="awsScanTimeEstimate"></p>
+                        </div>
 
                         <!-- Min severity + LLM -->
                         <div class="grid grid-cols-2 gap-3">

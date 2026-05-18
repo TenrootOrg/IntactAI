@@ -176,8 +176,7 @@ def _age_days(dt) -> Optional[float]:
 def collect_iam_principals(
     aws_config: Dict[str, Any],
     *,
-    max_principal_age_days: Optional[float] = None,
-    max_access_key_age_days: Optional[float] = None,
+    freshness_window_days: Optional[float] = None,
     target_principal_arns: Optional[List[str]] = None,
     log_func: Optional[Callable[[str, str], None]] = None,
     is_cancelled_func: Optional[Callable[[], bool]] = None,
@@ -187,12 +186,16 @@ def collect_iam_principals(
     user in IntactAI shape (carries both PascalCase and lowercase keys so
     the state-snapshot wrapper in pipeline.py picks them up).
 
-    Date-based DFIR filters (optional):
-      - max_principal_age_days: users created within this window are
-        flagged `fresh` and (if admin) bumped to `critical`.
-      - max_access_key_age_days: keys created within this window are
-        flagged `fresh` and (if owner is admin) bump the principal to
-        `critical`.
+    `freshness_window_days` is the generic scan-time window — when set,
+    an admin user OR an active access key created inside that window
+    gets flagged `fresh` and the principal's severity is bumped to
+    `critical`. Sourced from the blueprint's `time_range_days`, so the
+    detection scales with the operator's chosen investigation scope
+    (1-day Quick Triage → fresh = created in the last 1 day; 30-day
+    Full Investigation → fresh = created in the last 30 days). The
+    two separate `max_principal_age_days` / `max_access_key_age_days`
+    knobs this replaces were operator-confusing and duplicated the
+    generic concept.
 
     Returns [] on any boto3/import error or if creds are missing —
     callers fall back to fixtures.
@@ -279,22 +282,29 @@ def collect_iam_principals(
         is_admin = _is_admin_principal(iam, name, attached)
 
         # ---- Age-based DFIR filters ----------------------------------
+        # Both fresh-user and fresh-key checks share the same window
+        # (`freshness_window_days`), sourced from the blueprint's
+        # `time_range_days`. Set to None or 0 to disable the bump
+        # entirely — the rest of the principal record still gets
+        # produced.
         user_age = _age_days(u.get("CreateDate"))
         user_is_fresh = (
-            max_principal_age_days is not None
+            freshness_window_days is not None
+            and float(freshness_window_days) > 0
             and user_age is not None
-            and user_age <= float(max_principal_age_days)
+            and user_age <= float(freshness_window_days)
         )
-        # Per-key ages
+        # Per-key ages — same `freshness_window_days` as user freshness.
         key_ages: List[Dict[str, Any]] = []
         any_active_key_is_fresh = False
         for k in keys:
             age = _age_days(k.get("CreateDate"))
             fresh = (
                 k.get("Status") == "Active"
-                and max_access_key_age_days is not None
+                and freshness_window_days is not None
+                and float(freshness_window_days) > 0
                 and age is not None
-                and age <= float(max_access_key_age_days)
+                and age <= float(freshness_window_days)
             )
             if fresh:
                 any_active_key_is_fresh = True
