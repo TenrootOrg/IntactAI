@@ -17,7 +17,7 @@ window.defaultConfig = {
     agentic: {
         llm_mode: "offline",
         offline_llm: { provider: "ollama", model: "llama3.3:70b", url: "http://localhost:11434", batch_size: 100 },
-        online_llm: { provider: "claude", api_key: "", model: "claude-sonnet-4-6", batch_size: 100 },
+        online_llm: { provider: "claude", api_key: "", model: "claude-sonnet-latest", batch_size: 100 },
     }
 };
 
@@ -344,7 +344,7 @@ document.addEventListener('alpine:init', () => {
             agentic: {
                 llm_mode: 'offline',
                 offline_llm: { provider: 'ollama', model: 'llama3.3:70b', url: 'http://localhost:11434', batch_size: 100 },
-                online_llm: { provider: 'claude', api_key: '', model: 'claude-sonnet-4-6', batch_size: 100 },
+                online_llm: { provider: 'claude', api_key: '', model: 'claude-sonnet-latest', batch_size: 100 },
                 max_concurrent_requests: 5,
                 max_response_tokens: 16384,
                 ollama_context_size: 65536,
@@ -767,10 +767,10 @@ document.addEventListener('alpine:init', () => {
             // Pick a sensible default model when the operator switches
             // provider, plus auto-fill max_response_tokens from it.
             //
-            // Per provider we prefer the `*-latest` family alias since
-            // those auto-update when the vendor ships a new model and
-            // don't lock the operator to a specific version. If the
-            // preferred id isn't in the catalog (older snapshot,
+            // Per provider we prefer the higher-tier `*-latest` family
+            // alias since those auto-update when the vendor ships a new
+            // model and don't lock the operator to a specific version.
+            // If the preferred id isn't in the catalog (older snapshot,
             // catalog filtered it out), fall back to results[0]
             // (newest entry by `created`).
             //
@@ -779,10 +779,10 @@ document.addEventListener('alpine:init', () => {
             const provider = this.config.agentic.online_llm.provider;
             const route = provider === 'claude' ? 'anthropic' : provider;
             const preferredId = {
-                'claude':     'claude-haiku-latest',
-                'openai':     'gpt-mini-latest',
-                'gemini':     'gemini-flash-latest',
-                'openrouter': '~anthropic/claude-haiku-latest'
+                'claude':     'claude-sonnet-latest',
+                'openai':     'gpt-latest',
+                'gemini':     'gemini-pro-latest',
+                'openrouter': '~anthropic/claude-sonnet-latest'
             }[provider];
 
             try {
@@ -802,10 +802,10 @@ document.addEventListener('alpine:init', () => {
                 // hardcoded default so the field isn't left stale from
                 // the previous provider.
                 const fallback = {
-                    'openai':     'gpt-mini-latest',
-                    'claude':     'claude-haiku-latest',
-                    'gemini':     'gemini-flash-latest',
-                    'openrouter': '~anthropic/claude-haiku-latest'
+                    'openai':     'gpt-latest',
+                    'claude':     'claude-sonnet-latest',
+                    'gemini':     'gemini-pro-latest',
+                    'openrouter': '~anthropic/claude-sonnet-latest'
                 }[provider];
                 if (fallback) this.config.agentic.online_llm.model = fallback;
             }
