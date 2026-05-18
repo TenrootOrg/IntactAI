@@ -243,19 +243,33 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
 
         if total_rows == 0:
             if total_rows_before_filter > 0:
-                # Data existed but filters removed everything
+                # Data existed but filters removed everything — this is a
+                # configuration mismatch, not a fatal collection failure.
+                # Keep status='completed' (with the warning visible) so the
+                # operator notices the filter setting; auto-flip would
+                # otherwise hide the legit-but-empty report.
                 add_log_to_run(run_id, f"[Pipeline] Data was collected ({total_rows_before_filter} rows) but all rows were removed by filters (severity: {min_severity}+). Try lowering the severity filter or adjusting the time range.", "warning")
+                report_content = generate_empty_report(blueprint, client_ids, collection_minutes)
+                save_report_content(run_id, report_content)
+                _update_phase(run_id, "completed", 100)
+                update_run_status(run_id, "completed", progress=100, force=True)
+                return
             else:
-                # No data at all from Velociraptor
-                add_log_to_run(run_id, "[Pipeline] No data was returned from the selected clients. Possible causes:", "warning")
-                add_log_to_run(run_id, "  - Collection time too short - try increasing it", "warning")
-                add_log_to_run(run_id, "  - Artifacts not applicable to this system - try a different blueprint", "warning")
-                add_log_to_run(run_id, "  - Clients may be offline - verify client status in Velociraptor", "warning")
-            report_content = generate_empty_report(blueprint, client_ids, collection_minutes)
-            save_report_content(run_id, report_content)
-            _update_phase(run_id, "completed", 100)
-            update_run_status(run_id, "completed", progress=100)
-            return
+                # No data at all from Velociraptor — this IS a fatal
+                # outcome, not a recoverable warning. Promote the logs
+                # to 'error' level so the auto-flip in workflow_service
+                # picks it up AND the operator sees red, AND set status
+                # to 'failed' explicitly so future readers don't have
+                # to chase through the auto-flip logic.
+                add_log_to_run(run_id, "[Pipeline] No data was returned from the selected clients. Possible causes:", "error")
+                add_log_to_run(run_id, "  - Collection time too short - try increasing it", "error")
+                add_log_to_run(run_id, "  - Artifacts not applicable to this system - try a different blueprint", "error")
+                add_log_to_run(run_id, "  - Clients may be offline - verify client status in Velociraptor", "error")
+                update_run_status(
+                    run_id, "failed", progress=0,
+                    error="No data returned from selected clients during collection window",
+                )
+                return
 
         # 7. Generate report(s) - skip if no report types selected
         if cancel_event and cancel_event.is_set():
@@ -575,8 +589,23 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         )
 
         if not all_results:
-            add_log_to_run(run_id, f"[Pipeline] No data found in {collection_type} {collection_id}. The collection returned no results - try running a new collection with more artifacts or a longer time window.", "warning")
-            update_run_status(run_id, "completed", progress=100)
+            # This is the case the user reported as wrongly marked
+            # 'completed' (UI showed green even though the Velociraptor
+            # flow couldn't be found / had no rows). Promote to 'error'
+            # so the auto-flip in workflow_service catches anything
+            # downstream that calls update_run_status('completed'), and
+            # mark 'failed' explicitly here so the intent is obvious.
+            add_log_to_run(
+                run_id,
+                f"[Pipeline] No data found in {collection_type} {collection_id}. "
+                f"The collection returned no results - try running a new collection "
+                f"with more artifacts or a longer time window.",
+                "error",
+            )
+            update_run_status(
+                run_id, "failed", progress=0,
+                error=f"No data found in {collection_type} {collection_id}",
+            )
             return
 
         total_rows = sum(len(rows) for rows in all_results.values())

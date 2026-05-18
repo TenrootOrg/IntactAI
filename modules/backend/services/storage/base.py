@@ -92,7 +92,8 @@ def create_tables():
             updated_at TEXT,
             phase_timings TEXT,
             llm_metrics TEXT,
-            sigma_rule_tally TEXT
+            sigma_rule_tally TEXT,
+            error_count INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS blueprints_velociraptor (
@@ -174,6 +175,24 @@ def create_tables():
         );
     """)
     conn.commit()
+
+    # Lightweight schema migrations — ALTER TABLE columns added after the
+    # initial CREATE TABLE shipped. SQLite has no IF NOT EXISTS for ADD
+    # COLUMN, so we introspect via PRAGMA table_info and skip if present.
+    _ensure_column(conn, "workflows", "error_count", "INTEGER DEFAULT 0")
+
+
+def _ensure_column(conn, table: str, column: str, decl: str):
+    """Add `column decl` to `table` if it isn't already present.
+    Idempotent — safe to call on every startup."""
+    try:
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            conn.commit()
+            print(f"[STORAGE] Added column {table}.{column}", flush=True)
+    except Exception as e:
+        print(f"[STORAGE] Could not ensure column {table}.{column}: {e}", flush=True)
 
 
 def migrate_from_json():

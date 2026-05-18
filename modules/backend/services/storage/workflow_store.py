@@ -26,8 +26,8 @@ def save_workflow(workflow_data: Dict[str, Any]) -> bool:
         conn.execute(
             """INSERT OR REPLACE INTO workflows
                (run_id, automation_type, name, details, status, progress, logs, phase, error,
-                created_at, updated_at, phase_timings, llm_metrics, sigma_rule_tally)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                created_at, updated_at, phase_timings, llm_metrics, sigma_rule_tally, error_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (workflow_data.get('run_id'),
              workflow_data.get('automation_type'),
              workflow_data.get('name'),
@@ -41,7 +41,8 @@ def save_workflow(workflow_data: Dict[str, Any]) -> bool:
              workflow_data.get('updated_at'),
              _json_or_default(workflow_data.get('phase_timings'), None),
              _json_or_default(workflow_data.get('llm_metrics'), None),
-             _json_or_default(workflow_data.get('sigma_rule_tally'), None))
+             _json_or_default(workflow_data.get('sigma_rule_tally'), None),
+             int(workflow_data.get('error_count') or 0))
         )
         conn.commit()
         return True

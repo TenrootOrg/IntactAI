@@ -130,7 +130,13 @@ def create_automation_run(automation_type, name, details=None):
     """Create a new automation run entry with logging"""
     run_id = f"{automation_type}_{int(time.time() * 1000)}"
 
-    # Create workflow run structure
+    # Create workflow run structure. `error_count` is incremented every
+    # time add_log_to_run() is called with level='error'; it surfaces as
+    # a small "N errors" badge in the Workflows tab so an operator can
+    # quickly spot runs that finished with status='completed' but
+    # actually had fatal errors logged. See the QA bug context — a
+    # Velociraptor flow logged "Could not find flow ... No data found"
+    # at error level and the run still went green.
     workflow_data = {
         "run_id": run_id,
         "automation_type": automation_type,
@@ -139,6 +145,7 @@ def create_automation_run(automation_type, name, details=None):
         "status": "pending",
         "progress": 0,
         "logs": [],
+        "error_count": 0,
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat()
     }
@@ -175,6 +182,11 @@ def add_log_to_run(run_id, log_message, log_level="info"):
 
     Thread-safe per run_id: load-modify-save is serialized so concurrent
     worker threads do not silently overwrite each other's log appends.
+
+    Also auto-increments `error_count` when log_level == 'error'. The
+    counter is read at terminal-status time so a pipeline that logs a
+    fatal error mid-run can't accidentally end up marked 'completed'
+    — see update_run_status() for the auto-flip rule.
     """
     with _get_run_log_lock(run_id):
         workflow = file_get_workflow(run_id)
@@ -187,14 +199,56 @@ def add_log_to_run(run_id, log_message, log_level="info"):
                 "level": log_level,
                 "message": log_message
             })
+            if log_level == "error":
+                workflow["error_count"] = int(workflow.get("error_count") or 0) + 1
             workflow["updated_at"] = datetime.now().isoformat()
 
             save_workflow(workflow)
 
-def update_run_status(run_id, status, progress=None, error=None, details=None):
-    """Update automation run status and optionally merge additional details"""
+def update_run_status(run_id, status, progress=None, error=None, details=None, force=False):
+    """Update automation run status and optionally merge additional details.
+
+    Safety net: when `status='completed'` is requested on a run that
+    already accumulated `error_count > 0` (any call to
+    `add_log_to_run(..., 'error')`), the status is auto-flipped to
+    'failed' and a clear summary log line is added. This catches the
+    long-standing pattern where pipelines log fatal errors mid-run but
+    still reach `update_run_status('completed')` at the end (e.g. the
+    'No data found in flow' / 'Could not find flow' Velociraptor cases
+    that left runs green in the UI despite producing nothing useful).
+
+    Pipelines that legitimately log error-level entries but should
+    still complete (e.g. one of N clients failed in a multi-client
+    fan-out where the others succeeded) can pass `force=True` to opt
+    out of the auto-flip. Use sparingly — the default is the safer
+    behaviour.
+    """
     workflow = file_get_workflow(run_id)
     if workflow:
+        # Safety net: refuse to mark a run with logged errors as
+        # 'completed' unless the caller explicitly forces it.
+        if status == "completed" and not force:
+            n_errors = int(workflow.get("error_count") or 0)
+            if n_errors > 0:
+                # Demote to 'failed' so the UI shows red instead of
+                # green and the operator notices the run had real
+                # problems even if the pipeline thought it was done.
+                summary = (
+                    f"[Workflow] Status auto-set to 'failed' because "
+                    f"{n_errors} error-level log entr"
+                    f"{'y was' if n_errors == 1 else 'ies were'} recorded "
+                    f"during this run."
+                )
+                workflow["logs"] = workflow.get("logs") or []
+                workflow["logs"].append({
+                    "timestamp": datetime.now().isoformat(),
+                    "level": "error",
+                    "message": summary,
+                })
+                status = "failed"
+                if not error:
+                    error = f"{n_errors} fatal error(s) logged during the run"
+
         workflow["status"] = status
         if progress is not None:
             workflow["progress"] = progress
