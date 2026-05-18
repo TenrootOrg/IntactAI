@@ -3,6 +3,7 @@
 Agentic Pipeline - Main orchestration for forensics analysis pipeline
 """
 
+import threading
 import traceback
 from datetime import datetime
 
@@ -10,8 +11,45 @@ from services.workflow_service import (
     add_log_to_run,
     update_run_status,
     is_cancelled,
-    unregister_cancel
+    unregister_cancel,
+    request_stop,
 )
+
+
+# Outer watchdog grace period: how long after the collection window the
+# pipeline may keep running for synthesis / report generation / IRIS
+# import before we force-kill it. The QA hang sat at "running" for
+# nearly an hour with no upper bound — this is the absolute backstop
+# even if every other safety check misses.
+_PIPELINE_SYNTHESIS_GRACE_SECONDS = 15 * 60  # 15 minutes
+
+
+def _start_watchdog(run_id: str, collection_minutes: int, label: str = "agentic"):
+    """Start a threading.Timer that calls request_stop(run_id) if the
+    pipeline outlives `collection_minutes * 60 + grace`. The cancel
+    event then propagates through every loop in collectors.py and
+    pipeline.py exits via its existing `except`. Returns the Timer
+    so the caller can .cancel() it in the finally block."""
+    deadline = max(int(collection_minutes), 1) * 60 + _PIPELINE_SYNTHESIS_GRACE_SECONDS
+
+    def _fire():
+        # Log loudly so the operator sees this in the run log instead
+        # of just a status flip.
+        try:
+            add_log_to_run(
+                run_id,
+                f"[Pipeline] Watchdog: {label} pipeline exceeded "
+                f"{deadline}s — forcing cancellation",
+                "error",
+            )
+            request_stop(run_id)
+        except Exception:
+            pass
+
+    t = threading.Timer(deadline, _fire)
+    t.daemon = True
+    t.start()
+    return t
 from services.file_storage_service import get_agentic_blueprint, get_workflow, save_workflow
 from services.data_anonymizer import DataAnonymizer
 
@@ -53,17 +91,41 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
     if anonymize_data:
         anonymizer = DataAnonymizer(custom_patterns=custom_patterns)
 
+    # Outer watchdog — the absolute backstop. Even if every other
+    # safety check misses, the run cannot exceed
+    # `collection_minutes + 15min synthesis grace`. See QA hang
+    # context: pipeline stayed "running" for ~1 hour after the LLM
+    # died because no outer timeout bounded the total wall-clock.
+    _watchdog = _start_watchdog(run_id, collection_minutes, label="agentic")
+
     try:
         update_run_status(run_id, "running", progress=2)
         add_log_to_run(run_id, "[Pipeline] Starting Agentic Forensics pipeline", "info")
 
         # Validate LLM configuration before starting
-        from services.agentic.analyzers import validate_llm_config
+        from services.agentic.analyzers import validate_llm_config, ping_llm
         try:
             validate_llm_config(llm_config)
         except ValueError as e:
             add_log_to_run(run_id, f"[Pipeline] Configuration error: {str(e)}", "error")
             update_run_status(run_id, "failed", progress=0, error=str(e))
+            return
+
+        # Pre-flight LLM reachability — fail fast (within ~30s) if the
+        # endpoint is unreachable, instead of triggering Velociraptor
+        # collection and discovering the problem 2+ minutes later when
+        # the first artifact analysis crashes.
+        add_log_to_run(run_id, "[Pipeline] Pre-flight LLM reachability check...", "info")
+        try:
+            ping_llm(llm_config, timeout_seconds=30)
+            add_log_to_run(run_id, "[Pipeline] ✓ LLM is reachable", "success")
+        except Exception as e:
+            err = f"LLM unreachable before pipeline start: {str(e)[:200]}"
+            add_log_to_run(run_id, f"[Pipeline] ✗ {err}", "error")
+            add_log_to_run(run_id,
+                "Check Settings > Agentic that your API key / Ollama URL is correct "
+                "and the endpoint is reachable from this host.", "error")
+            update_run_status(run_id, "failed", progress=0, error=err)
             return
 
         # Store report_types in workflow details for UI
@@ -198,6 +260,28 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         # 7. Generate report(s) - skip if no report types selected
         if cancel_event and cancel_event.is_set():
             return
+
+        # Pre-synthesis success check: if every artifact analysis failed
+        # (LLM was unreachable for the whole pipeline), skip synthesis —
+        # which would otherwise call call_llm again, hit the same dead
+        # endpoint, and hang for the full 600s timeout before failing.
+        # Better to fail loudly right here with a clear message.
+        if artifact_summaries:
+            real_summaries = {
+                k: v for k, v in artifact_summaries.items()
+                if v and not (isinstance(v, str) and v.startswith("Analysis failed:"))
+            }
+            if not real_summaries:
+                add_log_to_run(run_id,
+                    f"[Pipeline] All {len(artifact_summaries)} artifact analyses errored — "
+                    f"skipping synthesis (would hit the same dead LLM). "
+                    f"Check Settings > Agentic and the LLM endpoint, then re-run.",
+                    "error")
+                update_run_status(
+                    run_id, "failed", progress=0,
+                    error=f"All {len(artifact_summaries)} analyses failed — LLM unreachable",
+                )
+                return
 
         report_content = {}
         multi_reports = None
@@ -361,6 +445,10 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         add_log_to_run(run_id, traceback.format_exc(), "error")
         update_run_status(run_id, "failed", error=str(e))
     finally:
+        try:
+            _watchdog.cancel()
+        except Exception:
+            pass
         unregister_cancel(run_id)
 
 
@@ -405,6 +493,11 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
     if anonymize_data:
         anonymizer = DataAnonymizer(custom_patterns=custom_patterns)
 
+    # Outer watchdog — same backstop as the main pipeline. This path
+    # has no Velociraptor collection window so we charge the whole
+    # synthesis-grace budget for analyse + report + IRIS import.
+    _watchdog = _start_watchdog(run_id, collection_minutes=1, label="agentic-existing")
+
     try:
         update_run_status(run_id, "running", progress=2)
         # flow_id may be a list (multi-flow run). Render as comma-joined for
@@ -448,12 +541,29 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                 add_log_to_run(run_id, f"[Pipeline] Time filter: {time_filter.get('start_datetime')} to {time_filter.get('end_datetime', 'now')}", "info")
 
         # Validate LLM configuration before starting
-        from services.agentic.analyzers import validate_llm_config
+        from services.agentic.analyzers import validate_llm_config, ping_llm
         try:
             validate_llm_config(llm_config)
         except ValueError as e:
             add_log_to_run(run_id, f"[Pipeline] Configuration error: {str(e)}", "error")
             update_run_status(run_id, "failed", progress=0, error=str(e))
+            return
+
+        # Pre-flight LLM reachability — fail fast (within ~30s) if the
+        # endpoint is unreachable, instead of triggering Velociraptor
+        # collection and discovering the problem 2+ minutes later when
+        # the first artifact analysis crashes.
+        add_log_to_run(run_id, "[Pipeline] Pre-flight LLM reachability check...", "info")
+        try:
+            ping_llm(llm_config, timeout_seconds=30)
+            add_log_to_run(run_id, "[Pipeline] ✓ LLM is reachable", "success")
+        except Exception as e:
+            err = f"LLM unreachable before pipeline start: {str(e)[:200]}"
+            add_log_to_run(run_id, f"[Pipeline] ✗ {err}", "error")
+            add_log_to_run(run_id,
+                "Check Settings > Agentic that your API key / Ollama URL is correct "
+                "and the endpoint is reachable from this host.", "error")
+            update_run_status(run_id, "failed", progress=0, error=err)
             return
 
         _update_phase(run_id, "fetching_results", 5)
@@ -585,6 +695,26 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         # Generate reports
         if cancel_event and cancel_event.is_set():
             return
+
+        # Pre-synthesis success check — same rationale as the main
+        # pipeline path: don't waste another LLM call on a dead endpoint
+        # when every analysis already failed.
+        if artifact_summaries:
+            real_summaries = {
+                k: v for k, v in artifact_summaries.items()
+                if v and not (isinstance(v, str) and v.startswith("Analysis failed:"))
+            }
+            if not real_summaries:
+                add_log_to_run(run_id,
+                    f"[Pipeline] All {len(artifact_summaries)} artifact analyses errored — "
+                    f"skipping synthesis (would hit the same dead LLM). "
+                    f"Check Settings > Agentic and the LLM endpoint, then re-run.",
+                    "error")
+                update_run_status(
+                    run_id, "failed", progress=0,
+                    error=f"All {len(artifact_summaries)} analyses failed — LLM unreachable",
+                )
+                return
 
         report_content = {}
         multi_reports = None
@@ -743,4 +873,8 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         add_log_to_run(run_id, error_msg, "error")
         update_run_status(run_id, "failed", error=str(e))
     finally:
+        try:
+            _watchdog.cancel()
+        except Exception:
+            pass
         unregister_cancel(run_id)

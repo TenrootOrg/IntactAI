@@ -538,6 +538,19 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
         )
         llm_futures[future] = artifact_name
 
+    # Circuit-breaker state. Track consecutive LLM failures across the
+    # whole streaming loop. If we hit `_circuit_threshold` failures in a
+    # row with zero successes ever recorded, the LLM is dead — bail out
+    # of the pipeline cleanly instead of sitting in the polling loop for
+    # the rest of the collection window producing nothing useful.
+    _circuit_state = {
+        'consecutive_failures': 0,
+        'successful_analyses': 0,
+        'failed_analyses': 0,
+        'tripped': False,
+    }
+    _circuit_threshold = 5
+
     def check_completed_analyses():
         """Check for completed LLM analyses (non-blocking)."""
         completed = []
@@ -551,12 +564,43 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                         from services.agentic.analyzers import explain_llm_error
                         _ol = (llm_config.get('agentic') or {}).get('online_llm', {}) if isinstance(llm_config, dict) else {}
                         add_log_to_run(run_id, f"[LLM] Error for {result_artifact}: {explain_llm_error(str(error), _ol.get('model', '?'), _ol.get('provider', '?'))}", "warning")
+                        _circuit_state['consecutive_failures'] += 1
+                        _circuit_state['failed_analyses'] += 1
                     else:
                         add_log_to_run(run_id, f"[LLM] Analysis complete: {result_artifact}", "success")
+                        _circuit_state['consecutive_failures'] = 0
+                        _circuit_state['successful_analyses'] += 1
                     completed.append(result_artifact)
                 except Exception as e:
                     add_log_to_run(run_id, f"[LLM] Analysis failed for {artifact}: {str(e)}", "warning")
                     summaries[artifact] = f"Analysis failed: {str(e)}"
+                    _circuit_state['consecutive_failures'] += 1
+                    _circuit_state['failed_analyses'] += 1
+
+        # Trip the breaker only on a sustained-failure-with-zero-success
+        # pattern. Tolerates short blips because a single later success
+        # resets `consecutive_failures` to 0.
+        if (_circuit_state['consecutive_failures'] >= _circuit_threshold
+                and _circuit_state['successful_analyses'] == 0
+                and not _circuit_state['tripped']):
+            _circuit_state['tripped'] = True
+            add_log_to_run(
+                run_id,
+                f"[Pipeline] LLM circuit breaker tripped — "
+                f"{_circuit_state['consecutive_failures']} consecutive failures, "
+                f"0 successes. Aborting before more time is wasted on a dead LLM.",
+                "error",
+            )
+            # Cancel any pending LLM futures so they stop retrying.
+            for f in list(llm_futures.keys()):
+                try:
+                    f.cancel()
+                except Exception:
+                    pass
+            # The pipeline.py except handler catches RuntimeError and
+            # moves the run to `failed`; cancel_event propagation also
+            # ensures the outer collection loop exits its sleep().
+            raise RuntimeError("LLM circuit breaker tripped — LLM is unreachable")
         return completed
 
     # Track discovered sources (including sub-artifacts)
@@ -710,13 +754,21 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
             artifacts_found = len(all_results)
             total_rows = sum(len(r) for r in all_results.values())
             analyzing_count = len(analyzed_artifacts)
-            analyzed_count = len(summaries)
 
             # Count total discovered sources
             total_sources = sum(len(srcs) for srcs in discovered_sources.values())
 
+            # Show successes vs failures separately so a misleading
+            # "Done: 10/10" never hides that every single one errored
+            # — the QA bug that prompted the circuit-breaker work.
+            ok_n = _circuit_state['successful_analyses']
+            fail_n = _circuit_state['failed_analyses']
+            done_part = f"Done: {ok_n} ✓ / {fail_n} ✗" if fail_n else f"Done: {ok_n}"
+
             add_log_to_run(run_id,
-                f"[Pipeline] {remaining_min}m {remaining_sec}s | Collected: {artifacts_found}/{total_sources} sources | Analyzing: {analyzing_count} | Done: {analyzed_count}",
+                f"[Pipeline] {remaining_min}m {remaining_sec}s | "
+                f"Collected: {artifacts_found}/{total_sources} sources | "
+                f"Analyzing: {analyzing_count} | {done_part}",
                 "info")
 
             sleep_time = min(interval, remaining)

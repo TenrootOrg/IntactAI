@@ -1279,6 +1279,48 @@ def validate_llm_config(config):
             )
 
 
+def ping_llm(config, timeout_seconds=30):
+    """Reachability check for the configured LLM. Sends a trivial 1-token
+    completion ('ping') and raises on connection error, auth failure, or
+    timeout. Used as a pre-flight at the top of the pipeline so the run
+    fails immediately when the LLM endpoint is unreachable, instead of
+    spending 30 minutes' worth of Velociraptor collection before
+    discovering the problem.
+
+    A thread-with-join wrapper enforces the timeout — call_llm itself
+    bakes in ONLINE_LLM_TIMEOUT_SECONDS (600s) which is way too long
+    for a pre-flight. The inner call uses an intentionally short prompt
+    so we get a real connection attempt with minimal token spend.
+    """
+    import threading
+
+    err_holder: list = [None]
+
+    def _do_ping():
+        try:
+            # 'ping' is two tokens of prompt and we ask for a single
+            # token back — total LLM cost is negligible per pipeline
+            # run, and a real round-trip is what proves the endpoint
+            # is alive.
+            call_llm("ping", "Reply with a single word.", config)
+        except Exception as e:  # noqa: BLE001 — we want everything
+            err_holder[0] = e
+
+    t = threading.Thread(target=_do_ping, daemon=True)
+    t.start()
+    t.join(timeout=timeout_seconds)
+    if t.is_alive():
+        # The thread is still running; the LLM SDK isn't honouring our
+        # timeout (or 30s wasn't enough). Surface as a timeout so the
+        # caller can fail-fast even though the daemon thread keeps
+        # spinning in the background until the SDK gives up.
+        raise TimeoutError(
+            f"LLM ping did not return within {timeout_seconds}s — endpoint is unreachable"
+        )
+    if err_holder[0] is not None:
+        raise err_holder[0]
+
+
 def call_llm(prompt, system_prompt, config, run_id=None, model_override=None):
     """Call the configured LLM provider.
 
