@@ -26,10 +26,23 @@ from services.offline_collector.config import get_config
 def get_blueprint_as_config(blueprint_id):
     """Try to load a blueprint as an offline collector config.
 
-    This allows using unified forensics blueprints for offline collector generation.
+    Supports three blueprint families:
+      - velociraptor_*  : list of artifacts, no per-artifact env
+      - agentic_*       : list of artifacts, no per-artifact env
+      - timesketch_*    : single KAPE artifact (Windows.Triage.Targets) with
+                          the kape_* settings mapped onto the artifact's env
+                          (Targets, MaxFileSize, MaxHashSize, CollectionPolicy).
+                          The resulting offline ZIP runs the same triage the
+                          live Timesketch automation runs - drop on a target
+                          host, double-click, get a collection ZIP back.
     """
     try:
-        from routes.blueprint_routes import load_velociraptor_blueprints, load_agentic_blueprints
+        import json as _json
+        from routes.blueprint_routes import (
+            load_velociraptor_blueprints,
+            load_agentic_blueprints,
+            load_timesketch_blueprints,
+        )
 
         # Check velociraptor blueprints
         velo_blueprints = load_velociraptor_blueprints()
@@ -57,6 +70,40 @@ def get_blueprint_as_config(blueprint_id):
                         'CpuLimit': bp.get('settings', {}).get('cpu_limit', 80),
                         'MaxExecutionTimeInSeconds': bp.get('settings', {}).get('timeout', 3600)
                     }
+                }
+
+        # Check Timesketch blueprints. These ARE KAPE blueprints, so they
+        # map to a single artifact (Windows.Triage.Targets) and carry the
+        # kape_* env knobs the live automation already honours.
+        ts_blueprints = load_timesketch_blueprints()
+        for bp in ts_blueprints:
+            if bp.get('id') == blueprint_id:
+                s = bp.get('settings', {}) or {}
+                kape_target = s.get('kape_target', '_KapeTriage')
+                # env values are passed to the VQL artifact as STRINGS — same
+                # serialization the live kape_service uses (json-encoded array
+                # for Targets, str() for the size knobs).
+                artifact_env = {
+                    'Targets': _json.dumps([kape_target]),
+                    'MaxFileSize': str(int(s.get('kape_max_file_size', 10737418240))),
+                    'MaxHashSize': str(int(s.get('kape_max_hash_size', 0))),
+                    'CollectionPolicy': s.get('kape_collection_policy', 'ExcludeSigned'),
+                }
+                return {
+                    'config_id': bp['id'],
+                    'config_name': bp.get('name', blueprint_id),
+                    'artifacts': ['Windows.Triage.Targets'],
+                    'parameters': {
+                        'CpuLimit': s.get('cpu_limit', 80),
+                        'MaxExecutionTimeInSeconds': s.get('collection_timeout',
+                                                           s.get('timeout', 100000)),
+                    },
+                    # Per-artifact env dict. generator picks this up and inlines
+                    # it into the Server.Utils.CreateCollector spec.
+                    'artifact_env': {'Windows.Triage.Targets': artifact_env},
+                    # Flag so the BAT/launcher generator can pick a sensible
+                    # output filename suffix.
+                    'kind': 'kape',
                 }
 
         return None
@@ -145,8 +192,26 @@ def generate_collector(config_id, os_type="windows"):
         )
         stub = api_pb2_grpc.APIStub(channel)
 
-        # Build artifacts list as VQL array
-        artifacts_vql = "[" + ", ".join(f'"{a}"' for a in filtered_artifacts) + "]"
+        # Server.Utils.CreateCollector declares both `artifacts` and
+        # `parameters` as type=json / json_array. The artifact dispatcher
+        # expects them as JSON-encoded STRINGS — passing a VQL list / dict
+        # literal silently coerces to "null" (we proved this by decoding
+        # the resulting collector_config: Artifacts came through as "null"
+        # and the collection ran with no artifacts in 100ms).
+        #
+        # Fix: serialize both fields to JSON in Python and inline them as
+        # VQL string literals via triple-quoting.
+        artifacts_json = json.dumps(filtered_artifacts)
+        artifacts_vql = f"'''{artifacts_json}'''"
+
+        # `parameters` is a JSON dict keyed by artifact name -> dict of
+        # parameter overrides. Currently only Timesketch (KAPE) blueprints
+        # carry artifact_env; other blueprint families just leave it empty.
+        artifact_env = config.get("artifact_env") or {}
+        params_json = json.dumps(artifact_env)
+        params_vql = f"'''{params_json}'''"
+        if artifact_env:
+            print(f"[OFFLINE] Inlining parameter overrides for {len(artifact_env)} artifact(s): {list(artifact_env.keys())}", flush=True)
 
         # Use "Generic" OS type - this has NO size limit and embeds tools
         vql_query = f'''SELECT collect_client(
@@ -156,7 +221,7 @@ def generate_collector(config_id, os_type="windows"):
                 `Server.Utils.CreateCollector`=dict(
                     OS="Generic",
                     artifacts={artifacts_vql},
-                    parameters=dict(),
+                    parameters={params_vql},
                     target="ZIP",
                     target_args=dict(Filename="Collector_{safe_name}"),
                     opt_verbose="Y",

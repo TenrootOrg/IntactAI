@@ -23,6 +23,7 @@ from services.offline_collector import (
     import_results
 )
 from services.file_storage_service import get_agentic_blueprint, get_velociraptor_blueprint
+from services.storage.blueprint_store import get_timesketch_blueprint
 
 velociraptor_offline_bp = Blueprint('velociraptor_offline', __name__)
 
@@ -131,8 +132,15 @@ def generate_offline_collector():
         config = get_config(config_id)
         config_name = config.get('config_name', config_id) if config else config_id
 
-        # Look up blueprint display name from blueprints tables
-        blueprint = get_agentic_blueprint(config_id) or get_velociraptor_blueprint(config_id)
+        # Look up blueprint display name from blueprints tables. Timesketch
+        # blueprints (KAPE triage) now also flow through the offline collector
+        # generator — check that store too so the workflow row shows the
+        # human-readable blueprint name in the dashboard.
+        blueprint = (
+            get_agentic_blueprint(config_id)
+            or get_velociraptor_blueprint(config_id)
+            or get_timesketch_blueprint(config_id)
+        )
         blueprint_display_name = blueprint.get('name', config_name) if blueprint else config_name
 
         # Create workflow run for tracking
