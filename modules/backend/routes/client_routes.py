@@ -10,7 +10,7 @@ import traceback
 from services import get_clients_from_snapshot
 from services.msi_generator_service import download_client_installer
 from services.legacy_velociraptor_service import (
-    build_legacy_windows_client,
+    build_legacy_client,
     legacy_status as _legacy_status,
 )
 
@@ -71,10 +71,14 @@ def download_client(platform):
         windows-msi, windows-exe, linux, mac  (modern build, pre-generated
             at velociraptor container startup)
         windows-legacy-exe                    (legacy build for Server 2008
-            R2 / Win 7 — built on demand here from the bundled or
+            R2 / Win 7 — built on demand from the bundled or
             on-demand-fetched legacy binary)
+        linux-legacy                          (legacy build for old-glibc
+            Linux hosts like CentOS 7 / RHEL 7 / Ubuntu 16.04, where
+            glibc < 2.28 makes the modern binary crash on load. Built
+            on demand from the same legacy version pin.)
 
-    Query params for the legacy platform:
+    Query params for the legacy platforms:
         source  : 'offline' (default) | 'online'
         version : legacy version (defaults to versions.velociraptor_legacy
                   in config.yaml). Only honoured when source='online'.
@@ -82,20 +86,24 @@ def download_client(platform):
     try:
         print(f"[CLIENT-ROUTE] Download request for platform: {platform}", flush=True)
 
-        # --- Legacy build: repack on demand ---------------------------------
-        if platform == 'windows-legacy-exe':
+        # --- Legacy builds: repack on demand --------------------------------
+        # 'windows-legacy-exe' → repack legacy Windows binary
+        # 'linux-legacy'        → repack legacy Linux binary (for old glibc
+        #                          hosts like CentOS 7, glibc 2.17)
+        if platform in ('windows-legacy-exe', 'linux-legacy'):
+            target = 'linux' if platform == 'linux-legacy' else 'windows'
             source = (request.args.get('source') or 'offline').lower()
             if source not in ('offline', 'online'):
                 return jsonify({"error": "source must be 'offline' or 'online'"}), 400
             version = request.args.get('version') or None
 
-            result = build_legacy_windows_client(version=version, source=source)
+            result = build_legacy_client(target=target, version=version, source=source)
             if not result.get('success'):
                 return jsonify({"error": result.get('error', 'legacy repack failed')}), 500
 
             return send_file(
                 result['path'],
-                mimetype='application/x-msdownload',
+                mimetype='application/octet-stream' if target == 'linux' else 'application/x-msdownload',
                 as_attachment=True,
                 download_name=result['filename'],
             )

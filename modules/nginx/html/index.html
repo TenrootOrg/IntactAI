@@ -585,7 +585,7 @@
                                 <p class="text-gray-400 text-sm">MSI Installer</p>
                             </div>
                         </div>
-                        <a href="/api/clients/download/windows-msi" class="block w-full bg-blue-600 hover:bg-blue-700 text-center py-3 rounded-lg font-semibold">
+                        <a href="/api/clients/download/windows-msi" class="block w-full bg-blue-600 hover:bg-blue-700 text-white text-center py-3 rounded-lg font-semibold">
                             Download MSI
                         </a>
                     </div>
@@ -595,7 +595,7 @@
                         <div class="flex items-center gap-4 mb-4">
                             <div class="bg-orange-600 p-3 rounded-lg">
                                 <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
-                                    <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.84-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.406-.046.615.27.563.863.436 1.417.289.563-.158 1.163-.406 1.755-.516.11-.021.227-.045.348-.064.17-.558.406-1.142.983-1.485.177-.105.413-.159.619-.074.063.025.117.03.186.047a.795.795 0 01-.017-.11c-.078-.558-.13-1.605.21-2.053.786-.953 1.642-1.953 1.932-3.047.21-.787.233-1.391.233-2.159 0-.42-.012-.84-.03-1.258-.021-.42-.042-.84-.074-1.258-.105-1.5-.242-3.105.21-4.605.484-1.605 1.86-2.813 3.555-3.285.074-.02.148-.042.222-.06a5.57 5.57 0 011.05-.12z"/>
+                                    <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.84-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.406-.046.615.27.563.863.436 1.417.289.563-.158 1.163-.406 1.755-.516.11-.021.227-.045.348-.064.17-.558.406-1.142.983-1.485.177-.105.413-.159.619-.074.063.025.117.03.186.047a.795.795 0 01-.017-.11c-.078-.558-.13-1.605.21-2.053.786-.953 1.642-1.953 1.932-3.047.21-.787.233-1.391.233-2.159 0-.42-.012-.84-.03-1.258-.021-.42-.042-.84-.042-1.258-.105-1.5-.242-3.105.21-4.605.484-1.605 1.86-2.813 3.555-3.285.074-.02.148-.042.222-.06a5.57 5.57 0 011.05-.12z"/>
                                 </svg>
                             </div>
                             <div>
@@ -603,11 +603,71 @@
                                 <p class="text-gray-400 text-sm">Binary</p>
                             </div>
                         </div>
-                        <a href="/api/clients/download/linux" class="block w-full bg-orange-600 hover:bg-orange-700 text-center py-3 rounded-lg font-semibold">
+                        <a href="/api/clients/download/linux" class="block w-full bg-orange-600 hover:bg-orange-700 text-white text-center py-3 rounded-lg font-semibold">
                             Download Linux
                         </a>
                     </div>
+
+                    <!-- Windows Legacy (Server 2008 R2 / Win 7) -->
+                    <div class="bg-gray-800 rounded-lg p-6 border border-purple-700/50" id="dl-legacy-card">
+                        <div class="flex items-center gap-4 mb-4">
+                            <div class="bg-purple-600 p-3 rounded-lg">
+                                <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 class="text-xl font-semibold text-white">Windows Legacy</h3>
+                                <p class="text-gray-400 text-sm">For Server 2008 R2 / Win 7</p>
+                            </div>
+                        </div>
+                        <a href="/api/clients/download/windows-legacy-exe"
+                           id="dl-legacy-btn"
+                           class="block w-full bg-purple-600 hover:bg-purple-700 text-white text-center py-3 rounded-lg font-semibold">
+                            Download Legacy EXE
+                        </a>
+                    </div>
+
+                    <!-- Linux Legacy (old glibc — CentOS 7, RHEL 7, Ubuntu 16.04) -->
+                    <div class="bg-gray-800 rounded-lg p-6 border border-purple-700/50" id="dl-legacy-linux-card">
+                        <div class="flex items-center gap-4 mb-4">
+                            <div class="bg-purple-600 p-3 rounded-lg">
+                                <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.84-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.406-.046.615.27.563.863.436 1.417.289.563-.158 1.163-.406 1.755-.516.11-.021.227-.045.348-.064.17-.558.406-1.142.983-1.485.177-.105.413-.159.619-.074.063.025.117.03.186.047a.795.795 0 01-.017-.11c-.078-.558-.13-1.605.21-2.053.786-.953 1.642-1.953 1.932-3.047.21-.787.233-1.391.233-2.159 0-.42-.012-.84-.03-1.258-.021-.42-.042-.84-.074-1.258-.105-1.5-.242-3.105.21-4.605.484-1.605 1.86-2.813 3.555-3.285.074-.02.148-.042.222-.06a5.57 5.57 0 011.05-.12z"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 class="text-xl font-semibold text-white">Linux Legacy</h3>
+                                <p class="text-gray-400 text-sm">Static — runs on any Linux (CentOS, Ubuntu, …)</p>
+                            </div>
+                        </div>
+                        <a href="/api/clients/download/linux-legacy"
+                           id="dl-legacy-linux-btn"
+                           class="block w-full bg-purple-600 hover:bg-purple-700 text-white text-center py-3 rounded-lg font-semibold">
+                            Download Legacy Linux
+                        </a>
+                    </div>
                 </div>
+
+                <script>
+                    // Grey out + disable each legacy button if its bundled
+                    // binary isn't on disk yet (re-run install.sh's
+                    // download_legacy_velociraptor_binaries to fix).
+                    fetch('/api/clients/legacy/status').then(r => r.json()).then(s => {
+                        if (!s || s.error) return;
+                        const greyIfMissing = (btnId, key) => {
+                            const btn = document.getElementById(btnId);
+                            if (!btn) return;
+                            if (!s.binaries[key]?.available) {
+                                btn.classList.add('opacity-50', 'cursor-not-allowed');
+                                btn.removeAttribute('href');
+                                btn.title = `Bundled binary not present — re-run install.sh.`;
+                            }
+                        };
+                        greyIfMissing('dl-legacy-btn',       'windows-amd64');
+                        greyIfMissing('dl-legacy-linux-btn', 'linux-amd64');
+                    }).catch(() => {});
+                </script>
 
                 <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 max-w-3xl">
                     <h3 class="text-xl font-semibold text-white mb-4">Installation</h3>
@@ -621,12 +681,69 @@ msiexec /i velociraptor.msi</code></pre>
                         </div>
                         <div>
                             <h4 class="text-lg font-semibold text-orange-400 mb-2">Linux</h4>
-                            <div class="bg-gray-900 p-4 rounded-lg">
-                                <pre class="text-white text-sm overflow-x-auto"><code># Run as root
-chmod +x velociraptor
-sudo ./velociraptor service install
-sudo ./velociraptor service start</code></pre>
+                            <div class="bg-gray-900 p-4 rounded-lg space-y-3">
+                                <!-- Each row: label + Copy button. Full command lives in
+                                     a hidden <template> so it doesn't clutter the panel. -->
+                                <div class="flex items-center justify-between gap-3">
+                                    <div class="min-w-0">
+                                        <p class="text-orange-300 text-xs font-semibold">Foreground test</p>
+                                        <p class="text-gray-400 text-xs truncate font-mono">chmod +x velociraptor &amp;&amp; sudo ./velociraptor client -v</p>
+                                    </div>
+                                    <button onclick="copyLinuxCmd(this, 'lx-cmd-test')" class="shrink-0 bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
+                                </div>
+                                <div class="flex items-center justify-between gap-3">
+                                    <div class="min-w-0">
+                                        <p class="text-orange-300 text-xs font-semibold">Permanent install (systemd)</p>
+                                        <p class="text-gray-400 text-xs truncate font-mono">install + write unit + enable --now</p>
+                                    </div>
+                                    <button onclick="copyLinuxCmd(this, 'lx-cmd-install')" class="shrink-0 bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
+                                </div>
+                                <div class="flex items-center justify-between gap-3">
+                                    <div class="min-w-0">
+                                        <p class="text-orange-300 text-xs font-semibold">Uninstall</p>
+                                        <p class="text-gray-400 text-xs truncate font-mono">disable + remove unit + remove binary</p>
+                                    </div>
+                                    <button onclick="copyLinuxCmd(this, 'lx-cmd-uninstall')" class="shrink-0 bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
+                                </div>
                             </div>
+                            <!-- Hidden command bodies. Verified working on Ubuntu host
+                                 (install → Active: active (running) → clean uninstall). -->
+                            <template id="lx-cmd-test">chmod +x velociraptor && sudo ./velociraptor client -v</template>
+                            <template id="lx-cmd-install">sudo install -m 0755 ./velociraptor /usr/local/bin/velociraptor && sudo tee /etc/systemd/system/velociraptor_client.service >/dev/null <<'EOF'
+[Unit]
+Description=Velociraptor Client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/velociraptor client
+Restart=on-failure
+RestartSec=30
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client</template>
+                            <template id="lx-cmd-uninstall">sudo systemctl disable --now velociraptor_client && sudo rm -f /etc/systemd/system/velociraptor_client.service /usr/local/bin/velociraptor /etc/velociraptor.writeback.yaml && sudo systemctl daemon-reload</template>
+                            <script>
+                                if (!window.copyLinuxCmd) {
+                                    window.copyLinuxCmd = function(btn, tplId) {
+                                        const tpl = document.getElementById(tplId);
+                                        if (!tpl) return;
+                                        const text = tpl.innerHTML
+                                            .replace(/&lt;/g, '<')
+                                            .replace(/&gt;/g, '>')
+                                            .replace(/&amp;/g, '&');
+                                        navigator.clipboard.writeText(text).then(() => {
+                                            const orig = btn.textContent;
+                                            btn.textContent = 'Copied!';
+                                            setTimeout(() => { btn.textContent = orig; }, 1200);
+                                        });
+                                    };
+                                }
+                            </script>
                         </div>
                     </div>
                 </div>
@@ -1009,23 +1126,16 @@ sudo ./velociraptor service start</code></pre>
                                 <!-- Legacy Velociraptor toggle (for Server 2008 R2 / Win 7) -->
                                 <div class="bg-gray-900/60 border border-purple-700/40 rounded-lg p-3 space-y-2">
                                     <label class="flex items-center gap-2 cursor-pointer text-sm">
-                                        <input type="checkbox" id="offline-gen-legacy" onchange="onOfflineLegacyToggle()"
+                                        <input type="checkbox" id="offline-gen-legacy"
                                                class="w-4 h-4 text-purple-600 bg-gray-800 border-gray-600 rounded focus:ring-purple-500">
                                         <span class="text-purple-300 font-medium">Use legacy Velociraptor binary</span>
                                     </label>
                                     <p class="text-xs text-gray-400">
                                         For old Windows hosts (Server 2008 R2, Win 7) where the modern
-                                        Go 1.22+ binary crashes with 0xc0000005. Bundled legacy version
-                                        is set by <code class="text-gray-300">versions.velociraptor_legacy</code>
-                                        in config.yaml.
+                                        Go 1.22+ binary crashes with 0xc0000005. Uses the bundled legacy
+                                        version pinned in <code class="text-gray-300">versions.velociraptor_legacy</code>
+                                        (config.yaml).
                                     </p>
-                                    <div id="offline-gen-legacy-options" class="hidden flex gap-2 items-center text-xs">
-                                        <label class="text-gray-400">Source:</label>
-                                        <select id="offline-gen-legacy-source" class="bg-gray-800 text-white border border-gray-700 rounded px-2 py-1 text-xs">
-                                            <option value="offline">Offline (bundled by install.sh)</option>
-                                            <option value="online">Online (fetch from GitHub)</option>
-                                        </select>
-                                    </div>
                                 </div>
                                 <button onclick="generateOfflineCollector()" class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-3 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2">
                                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

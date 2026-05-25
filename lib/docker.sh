@@ -558,9 +558,18 @@ download_legacy_velociraptor_binaries() {
     log_info "Checking Velociraptor LEGACY v${legacy_version} binaries..."
     mkdir -p "$downloads_dir"
 
+    # Why -musl for linux:
+    # The plain velociraptor-vX.Y.Z-linux-amd64 build is dynamically linked
+    # and (even in v0.7.1) imports GLIBC_2.28 symbols, so it fails to load
+    # on glibc-2.17 hosts (CentOS 7, RHEL 7, Ubuntu 16.04). The -musl
+    # variant is statically linked against musl-libc with zero shared-lib
+    # deps — runs on ANY Linux x86_64 with kernel >= 2.6.32. The legacy
+    # service prefers -musl for the linux-legacy target; the non-musl
+    # build is kept too for parity / debug.
     local binaries=(
         "velociraptor-v${legacy_version}-windows-amd64.exe"
         "velociraptor-v${legacy_version}-linux-amd64"
+        "velociraptor-v${legacy_version}-linux-amd64-musl"
         "velociraptor-v${legacy_version}-darwin-amd64"
     )
 
@@ -572,6 +581,7 @@ download_legacy_velociraptor_binaries() {
     local stale=0
     for old in "$downloads_dir"/velociraptor-v0.[67].*-windows-amd64.exe \
                "$downloads_dir"/velociraptor-v0.[67].*-linux-amd64 \
+               "$downloads_dir"/velociraptor-v0.[67].*-linux-amd64-musl \
                "$downloads_dir"/velociraptor-v0.[67].*-darwin-amd64; do
         [[ -f "$old" ]] || continue
         if [[ "$old" != *"-v${legacy_version}-"* ]]; then
@@ -603,18 +613,24 @@ download_legacy_velociraptor_binaries() {
         fi
     done
 
-    # Validate at least the Windows binary — that's the primary use case
-    # (Server 2008 R2 / Win 7 hosts). Linux/macOS legacy is nice-to-have.
-    local win_bin="${downloads_dir}/velociraptor-v${legacy_version}-windows-amd64.exe"
-    local sz=0
-    [[ -f "$win_bin" ]] && sz=$(stat -c%s "$win_bin" 2>/dev/null || echo 0)
-    if [[ ! -s "$win_bin" ]] || (( sz < min_size )); then
-        log_warn "Legacy Velociraptor: Windows binary missing/undersized at $win_bin ($sz bytes)."
-        log_warn "  Legacy live-client + offline-collector flows will require online mode until this is fixed."
-        log_warn "  Manual fix: curl -fsSL ${base_url}/velociraptor-v${legacy_version}-windows-amd64.exe -o $win_bin"
-    else
-        log_success "Legacy Velociraptor (v${legacy_version}): Windows binary ready ($(numfmt --to=iec $sz))"
-    fi
+    # Validate the two binaries the dashboard's legacy buttons actually
+    # serve: Windows .exe (windows-legacy-exe) and Linux musl (linux-legacy).
+    # macOS legacy is a "nice to have" — not validated; no UI button uses it.
+    for plat_check in \
+        "Windows:velociraptor-v${legacy_version}-windows-amd64.exe" \
+        "Linux (musl-static):velociraptor-v${legacy_version}-linux-amd64-musl"; do
+        local label="${plat_check%%:*}"
+        local fname="${plat_check##*:}"
+        local p="${downloads_dir}/${fname}"
+        local sz=0
+        [[ -f "$p" ]] && sz=$(stat -c%s "$p" 2>/dev/null || echo 0)
+        if [[ ! -s "$p" ]] || (( sz < min_size )); then
+            log_warn "Legacy Velociraptor: ${label} binary missing/undersized at $p ($sz bytes)."
+            log_warn "  Manual fix: curl -fsSL ${base_url}/${fname} -o $p"
+        else
+            log_success "Legacy Velociraptor (v${legacy_version}): ${label} binary ready ($(numfmt --to=iec $sz))"
+        fi
+    done
 
     if [[ $downloaded -gt 0 ]]; then
         log_success "Legacy Velociraptor (v${legacy_version}): $downloaded downloaded, $skipped already existed"

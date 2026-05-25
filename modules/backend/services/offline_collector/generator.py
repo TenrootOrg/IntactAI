@@ -402,14 +402,32 @@ def generate_collector(config_id, os_type="windows",
                     get_legacy_binary, _read_default_legacy_version,
                 )
                 lv = legacy_version or _read_default_legacy_version()
-                legacy_plat = {
-                    "windows": "windows-amd64",
-                    "linux":   "linux-amd64",
-                    "darwin":  "darwin-amd64",
-                }.get(os_type, "windows-amd64")
-                legacy_bin = get_legacy_binary(lv, legacy_plat, legacy_source)
+                # For linux we prefer the musl-static variant — same
+                # rationale as the live-client route:
+                # services/legacy_velociraptor_service.py:_TARGET_MAP. The
+                # plain linux-amd64 build links to GLIBC_2.28 and won't
+                # load on CentOS 7 / RHEL 7 / Ubuntu 16.04 (glibc 2.17).
+                # The musl variant is statically linked, zero glibc deps.
+                # Fall back to plain linux-amd64 if musl isn't cached.
+                if os_type == "linux":
+                    plat_candidates = ["linux-amd64-musl", "linux-amd64"]
+                elif os_type == "darwin":
+                    plat_candidates = ["darwin-amd64"]
+                else:  # windows
+                    plat_candidates = ["windows-amd64"]
+                legacy_bin = None
+                last_err = None
+                for plat in plat_candidates:
+                    try:
+                        legacy_bin = get_legacy_binary(lv, plat, legacy_source)
+                        chosen_plat = plat
+                        break
+                    except FileNotFoundError as e:
+                        last_err = e
+                if legacy_bin is None:
+                    raise last_err or RuntimeError("no legacy binary candidates available")
                 shutil.copy2(legacy_bin, velo_dest)
-                print(f"[OFFLINE] Swapped in legacy binary v{lv} ({legacy_source}): {legacy_bin}", flush=True)
+                print(f"[OFFLINE] Swapped in legacy binary v{lv} ({chosen_plat}, {legacy_source}): {legacy_bin}", flush=True)
                 # Tag the safe_name so the resulting filename + file_id
                 # don't collide with the modern variant.
                 safe_name = f"{safe_name}_legacy_v{lv.replace('.', '_')}"

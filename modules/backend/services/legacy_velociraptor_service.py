@@ -61,7 +61,13 @@ def _read_default_legacy_version() -> str:
 
 def _binary_filename(version: str, platform: str) -> str:
     """GitHub release filename. Legacy releases use the full-version
-    naming convention: velociraptor-v0.7.1-windows-amd64.exe etc."""
+    naming convention: velociraptor-v0.7.1-windows-amd64.exe etc.
+
+    Special case: 'linux-amd64-musl' for the statically-linked variant
+    that has no glibc dependency — required for old-glibc Linux hosts
+    (CentOS 7/RHEL 7) where the plain linux-amd64 build crashes at load
+    with `GLIBC_2.28 not found`. Both .exe / musl have no suffix.
+    """
     suffix = ".exe" if platform == "windows-amd64" else ""
     return f"velociraptor-v{version}-{platform}{suffix}"
 
@@ -206,25 +212,77 @@ def _fetch_client_config(out_path: str) -> None:
         _yaml.safe_dump(legacy_cfg, f)
 
 
-def build_legacy_windows_client(version: Optional[str] = None,
-                                source: str = "offline") -> Dict:
-    """Produce a deployable legacy Windows .exe with the live server's
-    client.config.yaml embedded.
+# Target → tuple of (binary platform tag, output filename suffix).
+# Linux output has no suffix (just a bare executable); Windows is .exe.
+# For the linux target we prefer the musl-static build because the
+# plain linux-amd64 still imports GLIBC_2.28 symbols and crashes on
+# old glibc hosts (CentOS 7 / RHEL 7 / Ubuntu 16.04). The musl build
+# is statically linked with zero shared-lib deps and runs on ANY
+# Linux x86_64 with kernel >= 2.6.32. If the musl variant isn't
+# cached (older installs that pre-date the musl download), we fall
+# back to the plain build in get_legacy_binary().
+_TARGET_MAP = {
+    "windows": ("windows-amd64",     ".exe"),
+    "linux":   ("linux-amd64-musl",  ""),
+}
+# Fallback platform tag per target — used when the preferred binary
+# isn't cached and we want to try one more spelling before giving up.
+_TARGET_FALLBACK = {
+    "linux": "linux-amd64",
+}
 
-    Returns: {success, path, size, version, source} or
-             {success: False, error}.
+
+def build_legacy_client(target: str = "windows",
+                        version: Optional[str] = None,
+                        source: str = "offline") -> Dict:
+    """Produce a deployable legacy client (Windows .exe OR Linux ELF) with
+    the live server's client.config.yaml embedded.
+
+    Args:
+        target: 'windows' or 'linux'. Selects which legacy binary to
+            repack into the final deliverable.
+        version: legacy version (defaults to versions.velociraptor_legacy
+            in config.yaml).
+        source: 'offline' (install.sh cache) | 'online' (GitHub fetch).
+
+    Returns: {success, path, filename, size, version, source, target}
+        or {success: False, error}.
+
+    The repack always uses the LINUX legacy binary as the repacker
+    (regardless of target) because that's what runs inside the backend
+    container; `--exe <target_bin>` tells it which platform's binary to
+    embed the config into. Both 0.7.x and 0.76+ accept identical flag
+    shape, so the recipe is portable across versions.
     """
+    if target not in _TARGET_MAP:
+        return {"success": False, "error": f"unknown target {target!r} (use 'windows' or 'linux')"}
+    plat_tag, out_suffix = _TARGET_MAP[target]
     v = version or _read_default_legacy_version()
 
     try:
-        # Need both the linux binary (repacker) AND the windows binary
-        # (subject of the repack). Same version + source.
-        linux_bin = get_legacy_binary(v, "linux-amd64", source)
-        windows_bin = get_legacy_binary(v, "windows-amd64", source)
+        # The LINUX legacy binary is always the repacker (we run it inside
+        # the backend container which is Linux). Try the platform's
+        # preferred tag first; on FileNotFoundError fall back to the
+        # backup tag if one is configured — handles installs that
+        # pre-date the musl download.
+        def _acquire(tag):
+            try:
+                return get_legacy_binary(v, tag, source)
+            except FileNotFoundError:
+                fb = _TARGET_FALLBACK.get(target)
+                if fb and fb != tag:
+                    return get_legacy_binary(v, fb, source)
+                raise
+
+        # Repacker is always the linux build — pick whichever is cached.
+        try:
+            linux_bin = get_legacy_binary(v, "linux-amd64-musl", source)
+        except FileNotFoundError:
+            linux_bin = get_legacy_binary(v, "linux-amd64", source)
+        target_bin = linux_bin if target == "linux" else _acquire(plat_tag)
     except Exception as e:
         return {"success": False, "error": f"binary acquisition failed: {e}"}
 
-    # Make sure the linux binary is executable (in cache or downloads dir)
     try:
         os.chmod(linux_bin, 0o755)
     except Exception:
@@ -232,7 +290,7 @@ def build_legacy_windows_client(version: Optional[str] = None,
 
     work = tempfile.mkdtemp(prefix="intact-legacy-repack-")
     cfg_path = os.path.join(work, "client.config.yaml")
-    out_path = os.path.join(work, f"velociraptor_client_legacy_v{v}.exe")
+    out_path = os.path.join(work, f"velociraptor_client_legacy_v{v}{out_suffix}")
 
     try:
         _fetch_client_config(cfg_path)
@@ -240,10 +298,11 @@ def build_legacy_windows_client(version: Optional[str] = None,
         shutil.rmtree(work, ignore_errors=True)
         return {"success": False, "error": str(e)}
 
-    # `velociraptor config repack --exe <windows_bin> <config> <output>`
-    # works in BOTH legacy 0.7.x and modern 0.76+; flag shape is identical.
+    # `velociraptor config repack --exe <target_bin> <config> <output>`
+    # works for both linux and windows targets; the legacy linux binary
+    # just stamps the config blob into the chosen target binary.
     cmd = [linux_bin, "config", "repack",
-           "--exe", windows_bin,
+           "--exe", target_bin,
            cfg_path, out_path]
     proc = subprocess.run(cmd, capture_output=True, timeout=180)
 
@@ -264,25 +323,39 @@ def build_legacy_windows_client(version: Optional[str] = None,
     size = os.path.getsize(out_path)
     if size < 1024 * 1024:
         shutil.rmtree(work, ignore_errors=True)
-        return {"success": False, "error": f"repacked exe is suspiciously small ({size} bytes)"}
+        return {"success": False, "error": f"repacked binary is suspiciously small ({size} bytes)"}
 
     # Move out of tempdir so callers can serve the file. Stable predictable
-    # location keyed by version + source so repeat calls overwrite cleanly.
+    # location keyed by target + version + source so repeat calls overwrite
+    # cleanly without clobbering other targets.
     persistent_dir = "/tmp/intact-legacy-clients"
     os.makedirs(persistent_dir, exist_ok=True)
-    final = os.path.join(persistent_dir, f"velociraptor_client_legacy_v{v}_{source}.exe")
+    final = os.path.join(
+        persistent_dir,
+        f"velociraptor_client_legacy_{target}_v{v}_{source}{out_suffix}",
+    )
     shutil.move(out_path, final)
     shutil.rmtree(work, ignore_errors=True)
 
     return {
         "success": True,
         "path": final,
-        "filename": f"velociraptor_client_legacy_v{v}.exe",
+        "filename": f"velociraptor_client_legacy_v{v}{out_suffix}",
         "size": os.path.getsize(final),
         "version": v,
         "source": source,
+        "target": target,
         "built_at": int(time.time()),
     }
+
+
+# Backwards-compat alias: existing route imports build_legacy_windows_client.
+# Keep it pointing at the new generalised builder pinned to target=windows so
+# the route doesn't need to change in a follow-up commit if it imports the
+# old name elsewhere.
+def build_legacy_windows_client(version: Optional[str] = None,
+                                source: str = "offline") -> Dict:
+    return build_legacy_client(target="windows", version=version, source=source)
 
 
 # ---------------------------------------------------------------------------
@@ -292,18 +365,31 @@ def build_legacy_windows_client(version: Optional[str] = None,
 
 def legacy_status() -> Dict:
     """Snapshot of what's available so the UI can grey out buttons
-    correctly. Cheap to call (just stats files)."""
+    correctly. Cheap to call (just stats files).
+
+    For the linux-amd64 key we report "available" if EITHER the musl
+    variant (preferred — what /api/clients/download/linux-legacy actually
+    serves) OR the plain linux-amd64 build is cached. That way the
+    Linux Legacy button only greys out when neither is on disk.
+    """
     v = _read_default_legacy_version()
     out = {"configured_version": v, "binaries": {}}
-    for plat in ("windows-amd64", "linux-amd64", "darwin-amd64"):
-        cached = _cached_path(v, plat)
-        if os.path.exists(cached):
-            out["binaries"][plat] = {
-                "available": True,
-                "size": os.path.getsize(cached),
-                "path": cached,
-            }
-        else:
-            out["binaries"][plat] = {"available": False}
+
+    def _probe(plat_tag):
+        p = _cached_path(v, plat_tag)
+        if os.path.exists(p):
+            return {"available": True, "size": os.path.getsize(p), "path": p}
+        return None
+
+    # Windows: single platform tag, no fallback.
+    out["binaries"]["windows-amd64"] = _probe("windows-amd64") or {"available": False}
+    # Linux: prefer musl, fall back to plain. The status entry advertises
+    # whichever was found so the UI knows the byte-size of the file that
+    # will actually be served.
+    linux_entry = _probe("linux-amd64-musl") or _probe("linux-amd64") or {"available": False}
+    out["binaries"]["linux-amd64"] = linux_entry
+    # macOS: kept for completeness; no UI button uses it today.
+    out["binaries"]["darwin-amd64"] = _probe("darwin-amd64") or {"available": False}
+
     out["offline_ready"] = out["binaries"]["windows-amd64"]["available"]
     return out

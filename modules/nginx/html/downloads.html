@@ -118,27 +118,23 @@
                         <div class="ml-auto w-2 h-2 rounded-full bg-purple-500"></div>
                     </div>
                     <div class="text-xs text-gray-400 mb-3" id="legacy-version-info">Checking bundled binary...</div>
-                    <a href="/api/clients/download/windows-legacy-exe?source=offline"
+                    <a href="/api/clients/download/windows-legacy-exe"
                        id="legacy-offline-btn"
-                       class="w-full bg-purple-600 hover:bg-purple-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg flex items-center justify-center gap-2 mb-2">
+                       class="w-full bg-purple-600 hover:bg-purple-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg flex items-center justify-center gap-2">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
                         </svg>
-                        Bundled (offline)
-                    </a>
-                    <a href="/api/clients/download/windows-legacy-exe?source=online"
-                       class="w-full bg-gray-700 hover:bg-gray-600 py-2 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064"></path>
-                        </svg>
-                        Or download fresh from GitHub
+                        Download Legacy EXE
                     </a>
                 </div>
             </div>
 
             <script>
-                // Surface the bundled legacy version + grey out the offline
-                // button if install.sh didn't manage to fetch the binary.
+                // Surface the bundled legacy version. If install.sh didn't
+                // manage to fetch the binary, grey out the button + show a
+                // pointer to re-run the installer (operators kept hitting
+                // a separate "fetch from GitHub" button by accident, so it
+                // was removed in favour of the single bundled path).
                 fetch('/api/clients/legacy/status').then(r => r.json()).then(s => {
                     const info = document.getElementById('legacy-version-info');
                     const btn  = document.getElementById('legacy-offline-btn');
@@ -147,7 +143,7 @@
                         const sz = (s.binaries['windows-amd64'].size / (1024*1024)).toFixed(0);
                         info.textContent = `Bundled: v${s.configured_version} (${sz} MB) — repacked with this server's client.config`;
                     } else {
-                        info.textContent = `Bundled v${s.configured_version} not present — install.sh download failed. Use the GitHub option below.`;
+                        info.textContent = `Bundled v${s.configured_version} not present — re-run install.sh to fetch (download_legacy_velociraptor_binaries).`;
                         btn.classList.add('opacity-50', 'cursor-not-allowed');
                         btn.removeAttribute('href');
                     }

@@ -336,18 +336,10 @@ async function deleteOfflineConfig(configId) {
     }
 }
 
-// Show / hide the legacy source selector when the checkbox toggles.
-function onOfflineLegacyToggle() {
-    const cb  = document.getElementById('offline-gen-legacy');
-    const opt = document.getElementById('offline-gen-legacy-options');
-    if (cb && opt) opt.classList.toggle('hidden', !cb.checked);
-}
-
 async function generateOfflineCollector() {
     const configId = document.getElementById('offline-gen-config').value;
     const os       = document.getElementById('offline-gen-os').value;
     const legacy   = document.getElementById('offline-gen-legacy')?.checked || false;
-    const legacySrc = document.getElementById('offline-gen-legacy-source')?.value || 'offline';
 
     if (!configId) {
         alert('Please select a configuration');
@@ -356,14 +348,18 @@ async function generateOfflineCollector() {
 
     const statusEl = document.getElementById('offline-gen-status');
     statusEl.classList.remove('hidden');
-    const legacyTag = legacy ? ` <span class="text-purple-400">(legacy / ${legacySrc})</span>` : '';
+    const legacyTag = legacy ? ` <span class="text-purple-400">(legacy)</span>` : '';
     statusEl.innerHTML = `<span class="text-yellow-400">Starting collector generation...</span>${legacyTag}`;
 
     try {
+        // Always use the install.sh-bundled binary (source=offline). The
+        // backend still accepts an `online` mode for power-users hitting
+        // the API directly, but the UI doesn't expose it — operators kept
+        // hitting the GitHub button by accident.
         const body = { config_id: configId, os: os };
         if (legacy) {
             body.legacy = true;
-            body.legacy_source = legacySrc;
+            body.legacy_source = 'offline';
         }
         const response = await fetch('/api/velociraptor/offline/generate', {
             method: 'POST',
