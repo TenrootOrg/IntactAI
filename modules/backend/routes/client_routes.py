@@ -9,6 +9,10 @@ import traceback
 
 from services import get_clients_from_snapshot
 from services.msi_generator_service import download_client_installer
+from services.legacy_velociraptor_service import (
+    build_legacy_windows_client,
+    legacy_status as _legacy_status,
+)
 
 client_bp = Blueprint('client', __name__)
 
@@ -61,16 +65,42 @@ def get_client(client_id):
 
 @client_bp.route('/api/clients/download/<platform>')
 def download_client(platform):
-    """Download a Velociraptor client installer
+    """Download a Velociraptor client installer.
 
-    Platforms: windows-msi, windows-exe, linux, mac
+    Platforms:
+        windows-msi, windows-exe, linux, mac  (modern build, pre-generated
+            at velociraptor container startup)
+        windows-legacy-exe                    (legacy build for Server 2008
+            R2 / Win 7 — built on demand here from the bundled or
+            on-demand-fetched legacy binary)
 
-    Clients are pre-generated during platform installation.
+    Query params for the legacy platform:
+        source  : 'offline' (default) | 'online'
+        version : legacy version (defaults to versions.velociraptor_legacy
+                  in config.yaml). Only honoured when source='online'.
     """
     try:
         print(f"[CLIENT-ROUTE] Download request for platform: {platform}", flush=True)
 
-        # Get the installer file path
+        # --- Legacy build: repack on demand ---------------------------------
+        if platform == 'windows-legacy-exe':
+            source = (request.args.get('source') or 'offline').lower()
+            if source not in ('offline', 'online'):
+                return jsonify({"error": "source must be 'offline' or 'online'"}), 400
+            version = request.args.get('version') or None
+
+            result = build_legacy_windows_client(version=version, source=source)
+            if not result.get('success'):
+                return jsonify({"error": result.get('error', 'legacy repack failed')}), 500
+
+            return send_file(
+                result['path'],
+                mimetype='application/x-msdownload',
+                as_attachment=True,
+                download_name=result['filename'],
+            )
+
+        # --- Modern builds (existing behavior) ------------------------------
         file_path = download_client_installer(platform)
 
         if not file_path or not os.path.exists(file_path):
@@ -103,4 +133,14 @@ def download_client(platform):
     except Exception as e:
         print(f"[CLIENT-ROUTE] Error downloading client: {e}", flush=True)
         traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@client_bp.route('/api/clients/legacy/status')
+def legacy_client_status():
+    """Snapshot of legacy-binary availability for the UI to grey/show
+    the Download Legacy buttons correctly."""
+    try:
+        return jsonify(_legacy_status())
+    except Exception as e:
         return jsonify({"error": str(e)}), 500

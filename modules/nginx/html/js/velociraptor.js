@@ -336,9 +336,18 @@ async function deleteOfflineConfig(configId) {
     }
 }
 
+// Show / hide the legacy source selector when the checkbox toggles.
+function onOfflineLegacyToggle() {
+    const cb  = document.getElementById('offline-gen-legacy');
+    const opt = document.getElementById('offline-gen-legacy-options');
+    if (cb && opt) opt.classList.toggle('hidden', !cb.checked);
+}
+
 async function generateOfflineCollector() {
     const configId = document.getElementById('offline-gen-config').value;
-    const os = document.getElementById('offline-gen-os').value;
+    const os       = document.getElementById('offline-gen-os').value;
+    const legacy   = document.getElementById('offline-gen-legacy')?.checked || false;
+    const legacySrc = document.getElementById('offline-gen-legacy-source')?.value || 'offline';
 
     if (!configId) {
         alert('Please select a configuration');
@@ -347,13 +356,19 @@ async function generateOfflineCollector() {
 
     const statusEl = document.getElementById('offline-gen-status');
     statusEl.classList.remove('hidden');
-    statusEl.innerHTML = '<span class="text-yellow-400">Starting collector generation...</span>';
+    const legacyTag = legacy ? ` <span class="text-purple-400">(legacy / ${legacySrc})</span>` : '';
+    statusEl.innerHTML = `<span class="text-yellow-400">Starting collector generation...</span>${legacyTag}`;
 
     try {
+        const body = { config_id: configId, os: os };
+        if (legacy) {
+            body.legacy = true;
+            body.legacy_source = legacySrc;
+        }
         const response = await fetch('/api/velociraptor/offline/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ config_id: configId, os: os })
+            body: JSON.stringify(body)
         });
 
         const data = await response.json();

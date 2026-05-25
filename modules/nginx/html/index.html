@@ -1006,6 +1006,27 @@ sudo ./velociraptor service start</code></pre>
                                         <option value="darwin">macOS</option>
                                     </select>
                                 </div>
+                                <!-- Legacy Velociraptor toggle (for Server 2008 R2 / Win 7) -->
+                                <div class="bg-gray-900/60 border border-purple-700/40 rounded-lg p-3 space-y-2">
+                                    <label class="flex items-center gap-2 cursor-pointer text-sm">
+                                        <input type="checkbox" id="offline-gen-legacy" onchange="onOfflineLegacyToggle()"
+                                               class="w-4 h-4 text-purple-600 bg-gray-800 border-gray-600 rounded focus:ring-purple-500">
+                                        <span class="text-purple-300 font-medium">Use legacy Velociraptor binary</span>
+                                    </label>
+                                    <p class="text-xs text-gray-400">
+                                        For old Windows hosts (Server 2008 R2, Win 7) where the modern
+                                        Go 1.22+ binary crashes with 0xc0000005. Bundled legacy version
+                                        is set by <code class="text-gray-300">versions.velociraptor_legacy</code>
+                                        in config.yaml.
+                                    </p>
+                                    <div id="offline-gen-legacy-options" class="hidden flex gap-2 items-center text-xs">
+                                        <label class="text-gray-400">Source:</label>
+                                        <select id="offline-gen-legacy-source" class="bg-gray-800 text-white border border-gray-700 rounded px-2 py-1 text-xs">
+                                            <option value="offline">Offline (bundled by install.sh)</option>
+                                            <option value="online">Online (fetch from GitHub)</option>
+                                        </select>
+                                    </div>
+                                </div>
                                 <button onclick="generateOfflineCollector()" class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-3 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2">
                                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>

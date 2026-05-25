@@ -60,4 +60,11 @@ versions:
   portainer: 2.39.1
   timesketch: '20260326'
   velociraptor: '0.76.5'
+  # Legacy Velociraptor build for old Windows hosts (Server 2008 R2, Win 7)
+  # where the modern Go 1.22+ binary crashes with 0xc0000005. 0.7.1 is the
+  # last 0.7.x release built with Go 1.20 and runs cleanly on those OSes.
+  # install.sh downloads this version alongside the main binary so both
+  # the live-client (repack) and offline-collector flows can produce
+  # legacy-compatible installers without an internet round-trip at runtime.
+  velociraptor_legacy: '0.7.1'
   backend: '1.0.0'

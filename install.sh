@@ -113,6 +113,7 @@ main() {
     # Forensic Collection (Velociraptor/Offline Collector) - Air-gap Support
     # -------------------------------------------------------------------------
     download_offline_collector_binaries
+    download_legacy_velociraptor_binaries
     create_velociraptor_collector
     pull_velociraptor_base_image
 

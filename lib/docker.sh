@@ -530,6 +530,100 @@ download_offline_collector_binaries() {
     return 0
 }
 
+download_legacy_velociraptor_binaries() {
+    # Legacy Velociraptor binary for old Windows hosts (Server 2008 R2 SP1,
+    # Win 7). Pin lives in `versions.velociraptor_legacy` in config.yaml.
+    # Distinct namespace from the main pin so they coexist in the same
+    # downloads dir — the legacy binary keeps its full GitHub-style filename
+    # (e.g. velociraptor-v0.7.1-windows-amd64.exe) so the cleanup pattern in
+    # download_offline_collector_binaries() (matches `*-v<MAIN_VER>-*`) does
+    # NOT delete it. The two installs don't fight.
+
+    local legacy_version
+    legacy_version=$(read_config "['versions']['velociraptor_legacy']")
+    if [[ -z "$legacy_version" || "$legacy_version" == "None" ]]; then
+        log_info "Legacy Velociraptor: versions.velociraptor_legacy not set — skipping"
+        return 0
+    fi
+    # Legacy releases (≤0.7.x) use FULL-version tags on GitHub (e.g. v0.7.1),
+    # unlike modern releases (≥0.72) which use major.minor tags (e.g. v0.76).
+    # The download_offline_collector_binaries() function above truncates to
+    # major.minor because that matches the modern pin; here we keep the full
+    # version because that matches the legacy pin.
+    local legacy_tag="${legacy_version}"
+
+    local downloads_dir="${SCRIPT_DIR}/modules/nginx/html/downloads"
+    local base_url="https://github.com/Velocidex/velociraptor/releases/download/v${legacy_tag}"
+
+    log_info "Checking Velociraptor LEGACY v${legacy_version} binaries..."
+    mkdir -p "$downloads_dir"
+
+    local binaries=(
+        "velociraptor-v${legacy_version}-windows-amd64.exe"
+        "velociraptor-v${legacy_version}-linux-amd64"
+        "velociraptor-v${legacy_version}-darwin-amd64"
+    )
+
+    # Clean up stale legacy binaries from prior pin changes. Pattern is the
+    # same as the main downloader but constrained to versions OLDER than the
+    # current main version (anything <0.74 is legacy-territory in practice).
+    # Simpler heuristic: just match "velociraptor-v0.7.*-*" and skip the
+    # configured one.
+    local stale=0
+    for old in "$downloads_dir"/velociraptor-v0.[67].*-windows-amd64.exe \
+               "$downloads_dir"/velociraptor-v0.[67].*-linux-amd64 \
+               "$downloads_dir"/velociraptor-v0.[67].*-darwin-amd64; do
+        [[ -f "$old" ]] || continue
+        if [[ "$old" != *"-v${legacy_version}-"* ]]; then
+            log_info "  Removing stale legacy binary: $(basename "$old")"
+            rm -f "$old"
+            ((stale++))
+        fi
+    done
+    (( stale > 0 )) && log_info "  Cleaned up $stale stale legacy binar(y/ies)"
+
+    local downloaded=0
+    local skipped=0
+    local min_size=$((1 * 1024 * 1024))   # 1 MB floor — real legacy bins are ~50 MB
+
+    for binary in "${binaries[@]}"; do
+        local dest_path="${downloads_dir}/${binary}"
+        if [[ -f "$dest_path" ]] && [[ -s "$dest_path" ]]; then
+            log_info "  Already exists: $binary"
+            ((skipped++))
+        else
+            log_info "  Downloading: $binary"
+            if curl -fsSL "${base_url}/${binary}" -o "$dest_path" 2>> "$LOG_FILE"; then
+                chmod +x "$dest_path" 2>/dev/null || true
+                log_success "  Downloaded: $binary"
+                ((downloaded++))
+            else
+                log_warn "  Failed to download: $binary (legacy support for that OS will require online mode)"
+            fi
+        fi
+    done
+
+    # Validate at least the Windows binary — that's the primary use case
+    # (Server 2008 R2 / Win 7 hosts). Linux/macOS legacy is nice-to-have.
+    local win_bin="${downloads_dir}/velociraptor-v${legacy_version}-windows-amd64.exe"
+    local sz=0
+    [[ -f "$win_bin" ]] && sz=$(stat -c%s "$win_bin" 2>/dev/null || echo 0)
+    if [[ ! -s "$win_bin" ]] || (( sz < min_size )); then
+        log_warn "Legacy Velociraptor: Windows binary missing/undersized at $win_bin ($sz bytes)."
+        log_warn "  Legacy live-client + offline-collector flows will require online mode until this is fixed."
+        log_warn "  Manual fix: curl -fsSL ${base_url}/velociraptor-v${legacy_version}-windows-amd64.exe -o $win_bin"
+    else
+        log_success "Legacy Velociraptor (v${legacy_version}): Windows binary ready ($(numfmt --to=iec $sz))"
+    fi
+
+    if [[ $downloaded -gt 0 ]]; then
+        log_success "Legacy Velociraptor (v${legacy_version}): $downloaded downloaded, $skipped already existed"
+    else
+        log_info "Legacy Velociraptor (v${legacy_version}): all $skipped binaries already exist"
+    fi
+    return 0
+}
+
 create_velociraptor_collector() {
     # Download the special velociraptor-collector binary from GitHub
     # This is a small (~80KB) template binary designed for config embedding

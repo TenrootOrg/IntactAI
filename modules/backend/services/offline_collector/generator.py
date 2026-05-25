@@ -112,7 +112,8 @@ def get_blueprint_as_config(blueprint_id):
         return None
 
 
-def generate_collector(config_id, os_type="windows"):
+def generate_collector(config_id, os_type="windows",
+                       legacy=False, legacy_version=None, legacy_source="offline"):
     """Generate an offline collector using Velociraptor's Generic Collector.
 
     The Generic Collector has NO size limit (unlike platform-specific collectors
@@ -122,6 +123,15 @@ def generate_collector(config_id, os_type="windows"):
     Args:
         config_id: The configuration ID or blueprint ID to use
         os_type: Target OS (windows, linux, darwin) - used for naming only
+        legacy: when True, swap the bundled Velociraptor binary for the
+            legacy build (v0.7.x by default) so the resulting collector runs
+            on Server 2008 R2 / Windows 7 hosts that the modern Go 1.22+
+            binary crashes on. The embedded collector_config is platform-
+            agnostic and is understood by both modern and legacy binaries.
+        legacy_version: explicit legacy version (default: pulled from
+            versions.velociraptor_legacy in config.yaml).
+        legacy_source: 'offline' uses the binary install.sh pre-downloaded;
+            'online' fetches from GitHub at request time.
 
     Returns:
         dict with success status, file_id, file_name, file_path
@@ -380,6 +390,32 @@ def generate_collector(config_id, os_type="windows"):
         else:
             shutil.rmtree(bundle_dir, ignore_errors=True)
             return {"success": False, "error": f"Velociraptor binary not found: {velo_src}"}
+
+        # If the caller asked for a legacy-compatible collector (for Server
+        # 2008 R2 / Win 7 hosts), overwrite the just-copied binary with the
+        # legacy one. The collector_config produced above is platform-
+        # agnostic and 0.7.x's --embedded_config consumes it the same way
+        # 0.76+ does, so the swap is invisible to the rest of this fn.
+        if legacy:
+            try:
+                from services.legacy_velociraptor_service import (
+                    get_legacy_binary, _read_default_legacy_version,
+                )
+                lv = legacy_version or _read_default_legacy_version()
+                legacy_plat = {
+                    "windows": "windows-amd64",
+                    "linux":   "linux-amd64",
+                    "darwin":  "darwin-amd64",
+                }.get(os_type, "windows-amd64")
+                legacy_bin = get_legacy_binary(lv, legacy_plat, legacy_source)
+                shutil.copy2(legacy_bin, velo_dest)
+                print(f"[OFFLINE] Swapped in legacy binary v{lv} ({legacy_source}): {legacy_bin}", flush=True)
+                # Tag the safe_name so the resulting filename + file_id
+                # don't collide with the modern variant.
+                safe_name = f"{safe_name}_legacy_v{lv.replace('.', '_')}"
+            except Exception as e:
+                shutil.rmtree(bundle_dir, ignore_errors=True)
+                return {"success": False, "error": f"legacy binary swap failed: {e}"}
 
         # Create launch script
         if os_type == "windows":
