@@ -121,11 +121,13 @@ def generate_offline_collector():
         data = request.get_json()
         config_id = data.get('config_id')
         os_type = data.get('os', 'windows')
-        # Legacy mode: swap the bundled Velociraptor binary in the resulting
-        # ZIP for the legacy v0.7.x build so the collector runs on Win 7 /
-        # Server 2008 R2. Either pulls from install.sh's cache (offline) or
-        # downloads from GitHub at request time (online).
+        # Binary variant — three mutually-exclusive modes:
+        #   legacy=True   → swap in legacy v0.7.x build (Server 2008 R2 / Win 7)
+        #   musl=True     → swap in MODERN musl-static linux build (any-glibc Linux)
+        #   neither       → default standard build
+        # legacy + musl together is rejected as inconsistent.
         legacy = bool(data.get('legacy'))
+        musl   = bool(data.get('musl'))
         legacy_source = (data.get('legacy_source') or 'offline').lower()
         legacy_version = data.get('legacy_version') or None
 
@@ -137,6 +139,11 @@ def generate_offline_collector():
 
         if legacy and legacy_source not in ('offline', 'online'):
             return jsonify({"error": "legacy_source must be 'offline' or 'online'"}), 400
+
+        if legacy and musl:
+            return jsonify({"error": "legacy and musl are mutually exclusive — pick one"}), 400
+        if musl and os_type != 'linux':
+            return jsonify({"error": "musl variant is Linux-only"}), 400
 
         # Get config name for workflow
         config = get_config(config_id)
@@ -154,13 +161,19 @@ def generate_offline_collector():
         blueprint_display_name = blueprint.get('name', config_name) if blueprint else config_name
 
         # Create workflow run for tracking
-        suffix = " [legacy]" if legacy else ""
+        if legacy:
+            suffix = " [legacy]"
+        elif musl:
+            suffix = " [musl]"
+        else:
+            suffix = ""
         run_id = create_automation_run(
             automation_type="velociraptor_offline_collector",
             name=f"Generate Collector: {blueprint_display_name} ({os_type}){suffix}",
             details={"config_id": config_id, "os": os_type, "config_name": config_name,
                      "blueprint": blueprint_display_name, "blueprint_id": config_id,
-                     "legacy": legacy, "legacy_source": legacy_source,
+                     "legacy": legacy, "musl": musl,
+                     "legacy_source": legacy_source,
                      "legacy_version": legacy_version},
         )
 
@@ -169,6 +182,8 @@ def generate_offline_collector():
         add_log_to_run(run_id, f"Target OS: {os_type}", "info")
         if legacy:
             add_log_to_run(run_id, f"Legacy mode: binary={legacy_version or 'default'} source={legacy_source}", "info")
+        elif musl:
+            add_log_to_run(run_id, "Musl-static mode: swap in modern musl Linux binary (zero glibc deps)", "info")
         update_run_status(run_id, "running", progress=10)
 
         from services.workflow_service import register_cancel_event, unregister_cancel
@@ -187,6 +202,7 @@ def generate_offline_collector():
                     legacy=legacy,
                     legacy_version=legacy_version,
                     legacy_source=legacy_source,
+                    musl=musl,
                 )
 
                 if result.get('success'):

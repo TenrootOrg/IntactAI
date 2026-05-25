@@ -59,6 +59,19 @@ def _read_default_legacy_version() -> str:
         return "0.7.1"
 
 
+def _read_modern_velociraptor_version() -> str:
+    """Pull `versions.velociraptor` (the modern pin) from config.yaml.
+    Used by the modern-musl repack flow which targets the SAME version
+    as the regular Linux/Windows clients — just the static-musl build."""
+    try:
+        import yaml
+        with open(os.path.join(INSTALL_ROOT, "config.yaml")) as f:
+            cfg = yaml.safe_load(f) or {}
+        return str((cfg.get("versions") or {}).get("velociraptor") or "0.76.5")
+    except Exception:
+        return "0.76.5"
+
+
 def _binary_filename(version: str, platform: str) -> str:
     """GitHub release filename. Legacy releases use the full-version
     naming convention: velociraptor-v0.7.1-windows-amd64.exe etc.
@@ -358,6 +371,103 @@ def build_legacy_windows_client(version: Optional[str] = None,
     return build_legacy_client(target="windows", version=version, source=source)
 
 
+def build_modern_musl_linux_client(version: Optional[str] = None,
+                                   source: str = "offline") -> Dict:
+    """Produce a deployable MODERN-version Linux .ELF with the live server's
+    client.config embedded, but using the musl-static variant so it runs
+    on any Linux x86_64 regardless of glibc version.
+
+    Use case: hosts where the modern Velociraptor feature set is desired
+    (newer artifacts, performance improvements) BUT the host's glibc is
+    too old for the regular linux-amd64 build (CentOS 7, Sophos UTM,
+    Ubuntu 16.04, Alpine containers, etc.).
+
+    Differences from build_legacy_client(target='linux'):
+      - Uses the MODERN version pin (versions.velociraptor) not legacy
+      - Does NOT strip fields from client.config — modern binary accepts
+        the modern config schema as-is, no compat filtering needed
+    """
+    v = version or _read_modern_velociraptor_version()
+
+    # Modern musl uses the same filename convention as legacy musl:
+    # velociraptor-vX.Y.Z-linux-amd64-musl
+    cached = os.path.join(DOWNLOADS_DIR, _binary_filename(v, "linux-amd64-musl"))
+    if source == "online":
+        # Online mode: fetch from GitHub at request time
+        try:
+            musl_bin = get_legacy_binary(v, "linux-amd64-musl", "online")
+        except Exception as e:
+            return {"success": False, "error": f"musl binary download failed: {e}"}
+    else:
+        if not os.path.exists(cached):
+            return {"success": False, "error":
+                f"modern musl binary not present at {cached}. "
+                f"Re-run install.sh to fetch (download_offline_collector_binaries "
+                f"now downloads the musl variant), or pass source='online'."}
+        musl_bin = cached
+
+    try:
+        os.chmod(musl_bin, 0o755)
+    except Exception:
+        pass
+
+    work = tempfile.mkdtemp(prefix="intact-modern-musl-")
+    cfg_path = os.path.join(work, "client.config.yaml")
+    out_path = os.path.join(work, f"velociraptor_client_musl_v{v}")
+
+    # Pull modern client.config AS-IS (no field stripping). The modern
+    # binary accepts the modern config schema natively.
+    result = subprocess.run(
+        ["docker", "exec", VELO_CONTAINER,
+         "cat", "/velociraptor/client.config.yaml"],
+        capture_output=True, timeout=15,
+    )
+    if result.returncode != 0:
+        shutil.rmtree(work, ignore_errors=True)
+        return {"success": False, "error":
+            f"Could not read client.config.yaml from {VELO_CONTAINER}: "
+            f"{result.stderr.decode('utf-8', errors='replace')[:200]}"}
+    with open(cfg_path, "wb") as f:
+        f.write(result.stdout)
+
+    # Repack: musl binary repacks itself with the config embedded.
+    cmd = [musl_bin, "config", "repack",
+           "--exe", musl_bin,
+           cfg_path, out_path]
+    proc = subprocess.run(cmd, capture_output=True, timeout=180)
+
+    if proc.returncode != 0 or not os.path.exists(out_path):
+        def _filter(b):
+            text = b.decode("utf-8", errors="replace")
+            return "\n".join(l for l in text.splitlines()
+                             if not l.lstrip().startswith("[INFO]"))
+        err = _filter(proc.stderr) or _filter(proc.stdout) or "(no output)"
+        shutil.rmtree(work, ignore_errors=True)
+        return {"success": False, "error": f"repack failed (rc={proc.returncode}): {err[:800]}"}
+
+    if os.path.getsize(out_path) < 1024 * 1024:
+        shutil.rmtree(work, ignore_errors=True)
+        return {"success": False, "error":
+            f"repacked binary suspiciously small ({os.path.getsize(out_path)} bytes)"}
+
+    persistent_dir = "/tmp/intact-modern-musl-clients"
+    os.makedirs(persistent_dir, exist_ok=True)
+    final = os.path.join(persistent_dir, f"velociraptor_client_musl_v{v}_{source}")
+    shutil.move(out_path, final)
+    shutil.rmtree(work, ignore_errors=True)
+
+    return {
+        "success": True,
+        "path": final,
+        "filename": f"velociraptor_client_musl_v{v}",
+        "size": os.path.getsize(final),
+        "version": v,
+        "source": source,
+        "target": "linux-musl",
+        "built_at": int(time.time()),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Status — for the UI
 # ---------------------------------------------------------------------------
@@ -367,29 +477,38 @@ def legacy_status() -> Dict:
     """Snapshot of what's available so the UI can grey out buttons
     correctly. Cheap to call (just stats files).
 
-    For the linux-amd64 key we report "available" if EITHER the musl
-    variant (preferred — what /api/clients/download/linux-legacy actually
-    serves) OR the plain linux-amd64 build is cached. That way the
-    Linux Legacy button only greys out when neither is on disk.
+    Reports:
+      - binaries.windows-amd64 / linux-amd64 / darwin-amd64 — LEGACY pin
+      - modern_musl — MODERN pin's musl-static linux build (used by the
+        Linux (musl) download button + offline-collector musl mode)
     """
-    v = _read_default_legacy_version()
-    out = {"configured_version": v, "binaries": {}}
+    v_legacy = _read_default_legacy_version()
+    v_modern = _read_modern_velociraptor_version()
+    out = {
+        "configured_version": v_legacy,
+        "modern_version": v_modern,
+        "binaries": {},
+    }
 
-    def _probe(plat_tag):
-        p = _cached_path(v, plat_tag)
+    def _probe(version, plat_tag):
+        p = os.path.join(DOWNLOADS_DIR, _binary_filename(version, plat_tag))
         if os.path.exists(p):
             return {"available": True, "size": os.path.getsize(p), "path": p}
         return None
 
-    # Windows: single platform tag, no fallback.
-    out["binaries"]["windows-amd64"] = _probe("windows-amd64") or {"available": False}
-    # Linux: prefer musl, fall back to plain. The status entry advertises
-    # whichever was found so the UI knows the byte-size of the file that
-    # will actually be served.
-    linux_entry = _probe("linux-amd64-musl") or _probe("linux-amd64") or {"available": False}
-    out["binaries"]["linux-amd64"] = linux_entry
-    # macOS: kept for completeness; no UI button uses it today.
-    out["binaries"]["darwin-amd64"] = _probe("darwin-amd64") or {"available": False}
+    # Legacy: Windows (only platform tag), Linux (prefer musl else plain),
+    # macOS (completeness, no UI button uses it).
+    out["binaries"]["windows-amd64"] = _probe(v_legacy, "windows-amd64") or {"available": False}
+    out["binaries"]["linux-amd64"] = (
+        _probe(v_legacy, "linux-amd64-musl")
+        or _probe(v_legacy, "linux-amd64")
+        or {"available": False}
+    )
+    out["binaries"]["darwin-amd64"] = _probe(v_legacy, "darwin-amd64") or {"available": False}
+
+    # Modern musl: separate slot so the UI's grey-out logic can drive the
+    # Linux (musl) button independently of the legacy buttons.
+    out["modern_musl"] = _probe(v_modern, "linux-amd64-musl") or {"available": False}
 
     out["offline_ready"] = out["binaries"]["windows-amd64"]["available"]
     return out

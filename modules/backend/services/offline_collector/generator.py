@@ -113,7 +113,8 @@ def get_blueprint_as_config(blueprint_id):
 
 
 def generate_collector(config_id, os_type="windows",
-                       legacy=False, legacy_version=None, legacy_source="offline"):
+                       legacy=False, legacy_version=None, legacy_source="offline",
+                       musl=False):
     """Generate an offline collector using Velociraptor's Generic Collector.
 
     The Generic Collector has NO size limit (unlike platform-specific collectors
@@ -396,6 +397,31 @@ def generate_collector(config_id, os_type="windows",
         # legacy one. The collector_config produced above is platform-
         # agnostic and 0.7.x's --embedded_config consumes it the same way
         # 0.76+ does, so the swap is invisible to the rest of this fn.
+        # If the caller asked for the MODERN musl-static variant (Linux only)
+        # — swap the just-copied bundled binary for the musl one. Same
+        # version as the modern build, but statically linked against musl
+        # libc so it runs on any-glibc Linux. Mutually exclusive with
+        # legacy; the route already rejects "both" requests.
+        if musl and os_type == "linux":
+            try:
+                from services.legacy_velociraptor_service import (
+                    _read_modern_velociraptor_version, _binary_filename, DOWNLOADS_DIR,
+                )
+                mv = _read_modern_velociraptor_version()
+                musl_src = os.path.join(DOWNLOADS_DIR, _binary_filename(mv, "linux-amd64-musl"))
+                if not os.path.exists(musl_src):
+                    shutil.rmtree(bundle_dir, ignore_errors=True)
+                    return {"success": False, "error":
+                        f"modern musl binary not present at {musl_src}. "
+                        f"Re-run install.sh's download_offline_collector_binaries "
+                        f"(it now fetches the -musl variant alongside the regular ones)."}
+                shutil.copy2(musl_src, velo_dest)
+                print(f"[OFFLINE] Swapped in modern musl-static linux binary v{mv}: {musl_src}", flush=True)
+                safe_name = f"{safe_name}_musl"
+            except Exception as e:
+                shutil.rmtree(bundle_dir, ignore_errors=True)
+                return {"success": False, "error": f"musl binary swap failed: {e}"}
+
         if legacy:
             try:
                 from services.legacy_velociraptor_service import (

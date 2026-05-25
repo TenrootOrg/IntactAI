@@ -339,17 +339,25 @@ async function deleteOfflineConfig(configId) {
 async function generateOfflineCollector() {
     const configId = document.getElementById('offline-gen-config').value;
     const os       = document.getElementById('offline-gen-os').value;
-    const legacy   = document.getElementById('offline-gen-legacy')?.checked || false;
+    // Three-way radio: 'standard' | 'musl' | 'legacy'. Default 'standard'.
+    const variant  = document.querySelector('input[name="offline-gen-variant"]:checked')?.value || 'standard';
 
     if (!configId) {
         alert('Please select a configuration');
         return;
     }
 
+    // Musl variant only makes sense on Linux. If picked for windows/darwin
+    // we silently fall back to 'standard' for those platforms; the user
+    // will see no warning, just the regular build.
+    const variantEffective = (variant === 'musl' && os !== 'linux') ? 'standard' : variant;
+
     const statusEl = document.getElementById('offline-gen-status');
     statusEl.classList.remove('hidden');
-    const legacyTag = legacy ? ` <span class="text-purple-400">(legacy)</span>` : '';
-    statusEl.innerHTML = `<span class="text-yellow-400">Starting collector generation...</span>${legacyTag}`;
+    const variantTag = variantEffective === 'standard'
+        ? ''
+        : ` <span class="text-${variantEffective === 'legacy' ? 'purple' : 'orange'}-400">(${variantEffective})</span>`;
+    statusEl.innerHTML = `<span class="text-yellow-400">Starting collector generation...</span>${variantTag}`;
 
     try {
         // Always use the install.sh-bundled binary (source=offline). The
@@ -357,9 +365,11 @@ async function generateOfflineCollector() {
         // the API directly, but the UI doesn't expose it — operators kept
         // hitting the GitHub button by accident.
         const body = { config_id: configId, os: os };
-        if (legacy) {
+        if (variantEffective === 'legacy') {
             body.legacy = true;
             body.legacy_source = 'offline';
+        } else if (variantEffective === 'musl') {
+            body.musl = true;
         }
         const response = await fetch('/api/velociraptor/offline/generate', {
             method: 'POST',

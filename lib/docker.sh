@@ -450,9 +450,18 @@ download_offline_collector_binaries() {
 
     mkdir -p "$downloads_dir"
 
+    # Why the -musl variant for the modern version:
+    # Even Velociraptor's current build (linux-amd64) imports GLIBC_2.28
+    # symbols, so it crashes at load on any host with glibc < 2.28
+    # (CentOS 7, RHEL 7, Sophos UTM, Ubuntu 16.04, etc.). The -musl
+    # variant is statically linked against musl libc with zero shared-
+    # library deps — runs on ANY Linux x86_64 with kernel >= 2.6.32.
+    # The new "Linux (musl)" download button on the dashboard serves
+    # this variant repacked with the live client.config.
     local binaries=(
         "velociraptor-v${velo_version}-windows-amd64.exe"
         "velociraptor-v${velo_version}-linux-amd64"
+        "velociraptor-v${velo_version}-linux-amd64-musl"
         "velociraptor-v${velo_version}-darwin-amd64"
     )
 
@@ -463,6 +472,7 @@ download_offline_collector_binaries() {
     local stale=0
     for old in "$downloads_dir"/velociraptor-v*-windows-amd64.exe \
                "$downloads_dir"/velociraptor-v*-linux-amd64 \
+               "$downloads_dir"/velociraptor-v*-linux-amd64-musl \
                "$downloads_dir"/velociraptor-v*-darwin-amd64; do
         [[ -f "$old" ]] || continue
         if [[ "$old" != *"-v${velo_version}-"* ]]; then

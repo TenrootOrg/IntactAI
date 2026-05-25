@@ -11,6 +11,7 @@ from services import get_clients_from_snapshot
 from services.msi_generator_service import download_client_installer
 from services.legacy_velociraptor_service import (
     build_legacy_client,
+    build_modern_musl_linux_client,
     legacy_status as _legacy_status,
 )
 
@@ -85,6 +86,26 @@ def download_client(platform):
     """
     try:
         print(f"[CLIENT-ROUTE] Download request for platform: {platform}", flush=True)
+
+        # --- Modern musl Linux build: repack on demand ----------------------
+        # 'linux-musl' → repack the modern Velociraptor musl-static binary
+        # (statically linked against musl libc, zero glibc deps). Same
+        # feature set as the regular linux-amd64 build but runs on ANY
+        # Linux x86_64 — CentOS 7, Sophos UTM, Alpine containers, etc.
+        if platform == 'linux-musl':
+            source = (request.args.get('source') or 'offline').lower()
+            if source not in ('offline', 'online'):
+                return jsonify({"error": "source must be 'offline' or 'online'"}), 400
+            version = request.args.get('version') or None
+            result = build_modern_musl_linux_client(version=version, source=source)
+            if not result.get('success'):
+                return jsonify({"error": result.get('error', 'musl repack failed')}), 500
+            return send_file(
+                result['path'],
+                mimetype='application/octet-stream',
+                as_attachment=True,
+                download_name=result['filename'],
+            )
 
         # --- Legacy builds: repack on demand --------------------------------
         # 'windows-legacy-exe' → repack legacy Windows binary
