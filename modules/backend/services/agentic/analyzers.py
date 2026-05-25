@@ -51,14 +51,28 @@ def _estimate_llm_cost(model: str, in_tokens: int, out_tokens: int) -> float:
     still sees the token volume in the metrics). Picks the longest matching
     prefix so e.g. `anthropic/claude-sonnet-4-6` resolves to the
     `anthropic/claude-sonnet` row.
+
+    Normalises the model string before matching:
+      - strip leading `~` (added by the route for OpenRouter "latest"
+        auto-resolve — `~anthropic/claude-haiku-latest`)
+      - strip trailing `-latest` (resolves to whatever the alias points
+        at, but pricing follows the family)
+    Without this, OpenRouter aliases reported $0 cost despite real spend
+    because the `~` prefix prevented any pricing-table key from matching.
     """
     if not model:
         return 0.0
-    key = model.lower()
+    key = model.lower().lstrip("~")
+    # Match against both the raw key AND the -latest-stripped form so
+    # `anthropic/claude-haiku-latest` resolves to `anthropic/claude-haiku`.
+    candidates = {key}
+    if key.endswith("-latest"):
+        candidates.add(key[: -len("-latest")])
     best = None
-    for k in _LLM_COST_PER_MTOK:
-        if key.startswith(k.lower()) and (best is None or len(k) > len(best)):
-            best = k
+    for cand in candidates:
+        for k in _LLM_COST_PER_MTOK:
+            if cand.startswith(k.lower()) and (best is None or len(k) > len(best)):
+                best = k
     if best is None:
         return 0.0
     cin, cout = _LLM_COST_PER_MTOK[best]

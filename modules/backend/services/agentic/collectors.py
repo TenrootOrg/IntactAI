@@ -204,6 +204,37 @@ WHERE client_id IN ('{client_list}')
     return hostnames
 
 
+def resolve_hostnames(client_ids):
+    """Public wrapper around get_client_hostnames() that handles its own
+    gRPC connection. Designed for callers that don't have a stub in
+    scope yet — e.g. routes building the workflow name BEFORE the
+    pipeline thread starts.
+
+    Returns: dict[client_id -> hostname]. Falls back to client_id on
+    error or when the hostname isn't known, so callers can always do
+    `names = [out.get(cid, cid) for cid in client_ids]`."""
+    if not client_ids:
+        return {}
+    channel = None
+    try:
+        channel = setup_velociraptor_connection()
+        if not channel:
+            return {cid: cid for cid in client_ids}
+        stub = api_pb2_grpc.APIStub(channel)
+        hostnames = get_client_hostnames(stub, client_ids)
+    except Exception:
+        hostnames = {}
+    finally:
+        if channel is not None:
+            try:
+                channel.close()
+            except Exception:
+                pass
+    # Backfill any missing entries with the client_id so callers always
+    # get one string per requested client.
+    return {cid: hostnames.get(cid, cid) for cid in client_ids}
+
+
 def create_collections(run_id, artifacts, settings, client_ids):
     """Create a collection on each selected client with all artifacts bundled.
     Returns list of {client_id, flow_id, hostname}."""
@@ -229,6 +260,25 @@ def create_collections(run_id, artifacts, settings, client_ids):
 
     # Get hostname mapping for all clients
     client_hostnames = get_client_hostnames(stub, client_ids)
+
+    # Multi-client: make parallelism visible. The for-loop below just
+    # submits gRPC create_collection requests (each returns in ms with a
+    # flow_id); Velociraptor then runs the flows on the endpoints in
+    # parallel. The previous logging made it look serial — fix that
+    # without restructuring the loop.
+    n_clients = len(client_ids)
+    if n_clients > 1:
+        names_for_log = [client_hostnames.get(cid, cid) for cid in client_ids]
+        # "show up to 3 names then + N-3 more" — same rule as workflow name.
+        if n_clients <= 3:
+            names_str = ", ".join(names_for_log)
+        else:
+            names_str = ", ".join(names_for_log[:3]) + f" + {n_clients - 3} more"
+        add_log_to_run(
+            run_id,
+            f"[Velociraptor] Launching {n_clients} collections in parallel: {names_str}",
+            "info",
+        )
 
     # Build spec with time filtering if enabled
     time_filter = settings.get('time_filter', {})
@@ -482,6 +532,17 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
         add_log_to_run(run_id, "[Velociraptor] No active flows to monitor", "warning")
         return all_results, summaries, False, 0
 
+    # Per-flow hostname lookup so the per-client log lines below can show
+    # readable names instead of opaque client_ids. Each collection_results
+    # entry already carries `hostname` from create_collections().
+    flow_hostnames = {
+        c.get('client_id'): c.get('hostname') or c.get('client_id')
+        for c in collection_results if c.get('client_id')
+    }
+    multi_client = len(active_flows) > 1
+    def _name(cid):
+        return flow_hostnames.get(cid, cid)
+
     # Setup Velociraptor connection
     channel = setup_velociraptor_connection()
     stub = api_pb2_grpc.APIStub(channel) if channel else None
@@ -513,7 +574,17 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
         if artifact_name in analyzed_artifacts:
             return
         analyzed_artifacts.add(artifact_name)
-        add_log_to_run(run_id, f"[LLM] Starting analysis: {artifact_name} ({len(rows)} rows)", "info")
+        # In multi-client mode, rows from all clients for a given artifact
+        # are merged into a single pan-client list (analyzers don't know or
+        # care which client a row came from — that's by design). The
+        # suffix below makes that explicit so the operator doesn't think
+        # the per-client analyses are queued up serially.
+        if multi_client:
+            distinct_clients = {r.get('_client_id') for r in rows if isinstance(r, dict) and r.get('_client_id')}
+            suffix = f" — {len(rows)} rows from {len(distinct_clients) or len(active_flows)} clients"
+        else:
+            suffix = f" ({len(rows)} rows)"
+        add_log_to_run(run_id, f"[LLM] Starting analysis: {artifact_name}{suffix}", "info")
 
         # Mirror the existing-flow path: lift SIGMA-rule / MITRE metadata off
         # the first row so the analyzer gets `finding_meta` (drives skill
@@ -629,11 +700,20 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                 new_sources = set(current_sources) - discovered_sources[flow_id]
 
                 if new_sources:
+                    # Tag with hostname so multi-client logs show which host
+                    # each discovered source belongs to (single-client mode
+                    # adds a redundant tag but it's harmless and keeps the
+                    # line format consistent across modes).
+                    src_host = _name(client_id)
                     for src in new_sources:
-                        add_log_to_run(run_id, f"[Velociraptor] Discovered source: {src}", "info")
+                        add_log_to_run(run_id, f"[Velociraptor] [{src_host}] Discovered source: {src}", "info")
                     discovered_sources[flow_id].update(new_sources)
 
                 # Query all discovered sources for this flow
+                # client_hostname is used to tag rows (see below) so the
+                # per-client filter in reports.py can attribute each row
+                # back to its source host.
+                client_hostname = _name(client_id)
                 for source_name in discovered_sources[flow_id]:
                     artifact_key = (client_id, source_name)
 
@@ -647,6 +727,19 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                             retrieved_artifacts[artifact_key] = len(rows)
                             total_rows_before_filter += len(rows) - prev_count  # Track raw rows
                             stable_artifacts[source_name] = 0  # Reset stability counter
+
+                            # Tag every row with _client_id + _hostname so
+                            # the per-client report filter
+                            # (reports.py:filter_results_by_client) can
+                            # attribute rows back to their source host.
+                            # WITHOUT this tagging, multi-client runs lose
+                            # all per-client structure and the per-host
+                            # reports come out empty even when 100s of rows
+                            # are collected.
+                            for r in rows:
+                                if isinstance(r, dict):
+                                    r.setdefault('_client_id', client_id)
+                                    r.setdefault('_hostname', client_hostname)
 
                             # Apply time filter first (if enabled)
                             filtered_rows = rows
@@ -664,19 +757,35 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                             # Update all_results with filtered data
                             if source_name not in all_results:
                                 all_results[source_name] = []
-                                # Build informative log message
-                                if rows_after_time < len(rows) or rows_after_severity < rows_after_time:
-                                    filter_parts = []
-                                    if rows_after_time < len(rows):
-                                        filter_parts.append(f"{rows_after_time} after time filter")
-                                    if rows_after_severity < rows_after_time:
-                                        filter_parts.append(f"{rows_after_severity} after {min_severity}+ filter")
-                                    add_log_to_run(run_id, f"[Velociraptor] Found: {source_name} ({len(rows)} rows, {', '.join(filter_parts)})", "info")
-                                else:
-                                    add_log_to_run(run_id, f"[Velociraptor] Found: {source_name} ({len(rows)} rows)", "info")
+                            # Build informative log message — always include
+                            # the hostname tag so multi-client runs are
+                            # readable. The "first time this source is seen"
+                            # branch used to be the only one that logged;
+                            # now we log for every per-client increment so
+                            # an operator can see e.g. NofLaptop adding 50
+                            # new MFT rows after DESKTOP-566AT85 already
+                            # delivered its 100.
+                            if rows_after_time < len(rows) or rows_after_severity < rows_after_time:
+                                filter_parts = []
+                                if rows_after_time < len(rows):
+                                    filter_parts.append(f"{rows_after_time} after time filter")
+                                if rows_after_severity < rows_after_time:
+                                    filter_parts.append(f"{rows_after_severity} after {min_severity}+ filter")
+                                add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Found: {source_name} ({len(rows)} rows, {', '.join(filter_parts)})", "info")
+                            else:
+                                add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Found: {source_name} ({len(rows)} rows)", "info")
 
-                            # Replace with latest filtered data
-                            all_results[source_name] = filtered_rows
+                            # Multi-client merge: keep rows from OTHER
+                            # clients, replace this client's rows with the
+                            # latest filtered set. Without this, a poll on
+                            # client B would wipe out client A's rows for
+                            # the same source, leaving all_results with only
+                            # one client's data per artifact.
+                            existing_other_clients = [
+                                r for r in all_results[source_name]
+                                if isinstance(r, dict) and r.get('_client_id') != client_id
+                            ]
+                            all_results[source_name] = existing_other_clients + filtered_rows
                         else:
                             # Data unchanged - increment stability counter
                             if source_name in all_results and source_name not in analyzed_artifacts:
@@ -703,9 +812,10 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                 status, error_info = check_flow_status(stub, client_id, flow_id)
                 if status == 'FINISHED':
                     completed_flows.add(flow_id)
-                    add_log_to_run(run_id, f"[Velociraptor] Flow completed on {client_id}", "info")
+                    add_log_to_run(run_id, f"[Velociraptor] Flow completed on {_name(client_id)}", "info")
                 elif status == 'ERROR':
                     completed_flows.add(flow_id)
+                    host = _name(client_id)
                     # Log error details but continue processing - data may still be available
                     if error_info and error_info.get('artifacts_completed', 0) > 0:
                         completed = error_info['artifacts_completed']
@@ -718,12 +828,12 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                             failed_str = ', '.join(failed[:3])  # Show up to 3 failed
                             if len(failed) > 3:
                                 failed_str += f" (+{len(failed)-3} more)"
-                            msg = f"[Velociraptor] (Warning, non-blocking) {len(failed)} artifact(s) did not complete ({failed_str}). {completed}/{requested} succeeded - pipeline continues."
+                            msg = f"[Velociraptor] (Warning, non-blocking) {host}: {len(failed)} artifact(s) did not complete ({failed_str}). {completed}/{requested} succeeded - pipeline continues."
                         else:
-                            msg = f"[Velociraptor] (Warning, non-blocking) Flow had partial issues. {completed}/{requested} artifacts succeeded - pipeline continues."
+                            msg = f"[Velociraptor] (Warning, non-blocking) {host}: flow had partial issues. {completed}/{requested} artifacts succeeded - pipeline continues."
                         add_log_to_run(run_id, msg, "warning")
                     else:
-                        add_log_to_run(run_id, f"[Velociraptor] (Error) Flow failed on {client_id} - no data collected", "error")
+                        add_log_to_run(run_id, f"[Velociraptor] (Error) Flow failed on {host} - no data collected", "error")
                     if error_info and error_info.get('backtrace'):
                         # Log first line of backtrace for debugging
                         bt_first_line = error_info['backtrace'].split('\n')[0][:100]
@@ -771,6 +881,36 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                 f"Analyzing: {analyzing_count} | {done_part}",
                 "info")
 
+            # Per-client breakdown (multi-client only) so the operator
+            # can see each host's progress independently. The aggregate
+            # line above merges everything; with N>1 that hides whether
+            # one host is stuck while others march on. discovered_sources
+            # is keyed by flow_id, so map flow_id -> client_id via
+            # active_flows.
+            #
+            # Format chosen to avoid the trailing-ellipsis trap (`…`)
+            # which previous versions used — operators reported the
+            # heartbeat looked truncated mid-line.
+            if multi_client:
+                per_client_parts = []
+                for col in active_flows:
+                    cid = col.get('client_id')
+                    fid = col.get('flow_id')
+                    if not cid or not fid:
+                        continue
+                    n_sources = len(discovered_sources.get(fid, set()))
+                    # ✓ marker on done flows; no marker while running
+                    # (avoids the previous trailing-ellipsis that looked
+                    # like the line was truncated).
+                    marker = " ✓" if fid in completed_flows else ""
+                    per_client_parts.append(f"{_name(cid)}:{n_sources}{marker}")
+                if per_client_parts:
+                    add_log_to_run(
+                        run_id,
+                        "[Pipeline] Per-client: " + " | ".join(per_client_parts),
+                        "info",
+                    )
+
             sleep_time = min(interval, remaining)
             if cancel_event:
                 cancel_event.wait(timeout=sleep_time)
@@ -788,12 +928,19 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
             flow_id = col.get('flow_id')
             if not flow_id:
                 continue
+            client_hostname = _name(client_id)
 
             # Get final list of all sources
             final_sources = enumerate_flow_sources(stub, client_id, flow_id)
             for source_name in final_sources:
                 rows = query_artifact_results(stub, client_id, flow_id, source_name)
                 if rows:
+                    # Tag rows for per-client attribution (same as main poll loop)
+                    for r in rows:
+                        if isinstance(r, dict):
+                            r.setdefault('_client_id', client_id)
+                            r.setdefault('_hostname', client_hostname)
+
                     # Apply time filter first (same as polling loop)
                     filtered_rows = rows
                     if time_filter_func:
@@ -806,11 +953,18 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                     if source_name not in all_results:
                         all_results[source_name] = filtered_rows
                         if min_severity != 'informational' and len(filtered_rows) < len(rows):
-                            add_log_to_run(run_id, f"[Velociraptor] Final: {source_name} ({len(rows)} rows, {len(filtered_rows)} after {min_severity}+ filter)", "info")
+                            add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Final: {source_name} ({len(rows)} rows, {len(filtered_rows)} after {min_severity}+ filter)", "info")
                         else:
-                            add_log_to_run(run_id, f"[Velociraptor] Final: {source_name} ({len(rows)} rows)", "info")
-                    elif len(filtered_rows) > len(all_results.get(source_name, [])):
-                        all_results[source_name] = filtered_rows
+                            add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Final: {source_name} ({len(rows)} rows)", "info")
+                    else:
+                        # Multi-client merge: keep other clients' rows,
+                        # replace this client's with the latest filtered set.
+                        existing_other_clients = [
+                            r for r in all_results[source_name]
+                            if isinstance(r, dict) and r.get('_client_id') != client_id
+                        ]
+                        all_results[source_name] = existing_other_clients + filtered_rows
+                        add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Final: {source_name} ({len(filtered_rows)} rows added — total now {len(all_results[source_name])})", "info")
 
         # Submit any remaining sources that haven't been analyzed yet
         for source_name in all_results.keys():

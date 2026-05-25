@@ -63,7 +63,8 @@ from services.agentic.reports import (
     generate_empty_report,
     save_report_content,
     generate_multi_client_reports,
-    create_report_package
+    create_report_package,
+    get_client_hostname,
 )
 from services.agentic.utils import extract_timeline_events, filter_malicious_events
 
@@ -135,6 +136,25 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                 workflow['details'] = {}
             workflow['details']['report_types'] = report_types
             save_workflow(workflow)
+
+        # Hostnames are stashed in workflow.details by agentic_routes when
+        # the run is created (resolve_hostnames is called there so the
+        # workflow name in the Workflows tab carries readable names from
+        # the moment the row appears). Pull the same map here so the
+        # report header + macro citations show those names instead of the
+        # bare client_ids.
+        hostnames = {}
+        if workflow:
+            hostnames = (workflow.get('details') or {}).get('hostnames') or {}
+        if not hostnames:
+            # Fallback: re-resolve. Cheap (one VQL call) and keeps this
+            # pipeline robust against older runs that pre-date the route
+            # change.
+            try:
+                from services.agentic.collectors import resolve_hostnames as _resolve_hn
+                hostnames = _resolve_hn(client_ids)
+            except Exception:
+                hostnames = {cid: cid for cid in client_ids}
 
         # 1. Get blueprint
         blueprint = get_agentic_blueprint(blueprint_id)
@@ -310,7 +330,8 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                 try:
                     multi_reports = generate_multi_client_reports(
                         run_id, blueprint, client_ids, collection_minutes,
-                        artifact_summaries, all_results, llm_config, anonymizer
+                        artifact_summaries, all_results, llm_config, anonymizer,
+                        hostnames=hostnames,
                     )
 
                     # Create ZIP package
@@ -350,7 +371,8 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                 try:
                     report_content = generate_final_report(
                         run_id, blueprint, client_ids, collection_minutes,
-                        artifact_summaries, all_results, llm_config, report_types, anonymizer
+                        artifact_summaries, all_results, llm_config, report_types, anonymizer,
+                        hostnames=hostnames,
                     )
                     # 8. Save report
                     save_report_content(run_id, report_content)
@@ -759,6 +781,32 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
             }
             client_ids_list = list(client_info.keys())
 
+            # Hostnames for the report header. Two-tier resolution:
+            # 1. Prefer row-derived (`_hostname` tag from the original
+            #    collection) — works in air-gap / uploaded-data scenarios.
+            # 2. For any client that returned zero rows (so no _hostname
+            #    to extract), fall back to a live VQL query against the
+            #    Velociraptor server. Without the fallback the report
+            #    header shows the ugly "Client-3653059e5f15efc6" stub
+            #    for any client that didn't deliver data.
+            existing_hostnames = {}
+            needs_live_lookup = []
+            for cid in client_ids_list:
+                hn = get_client_hostname(cid, all_results)
+                if hn and not hn.startswith('Client-'):
+                    existing_hostnames[cid] = hn
+                else:
+                    needs_live_lookup.append(cid)
+            if needs_live_lookup:
+                try:
+                    from services.agentic.collectors import resolve_hostnames as _rh
+                    live = _rh(needs_live_lookup)
+                    for cid in needs_live_lookup:
+                        existing_hostnames[cid] = live.get(cid) or get_client_hostname(cid, all_results)
+                except Exception:
+                    for cid in needs_live_lookup:
+                        existing_hostnames[cid] = get_client_hostname(cid, all_results)
+
             # Multi-client: generate per-client reports + macro summary + ZIP.
             # Mirrors the new-collection pipeline's multi-client branch
             # (~L209-246) so an analyze-existing run that pulled rows from
@@ -769,7 +817,8 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                 try:
                     multi_reports = generate_multi_client_reports(
                         run_id, pseudo_blueprint, client_ids_list, 0,
-                        artifact_summaries, all_results, llm_config, anonymizer
+                        artifact_summaries, all_results, llm_config, anonymizer,
+                        hostnames=existing_hostnames,
                     )
 
                     # Create ZIP package (per-client MDs + macro summary)
@@ -811,7 +860,8 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                 try:
                     report_content = generate_final_report(
                         run_id, pseudo_blueprint, client_ids_list, 0,
-                        artifact_summaries, all_results, llm_config, report_types, anonymizer
+                        artifact_summaries, all_results, llm_config, report_types, anonymizer,
+                        hostnames=existing_hostnames,
                     )
                     save_report_content(run_id, report_content)
                 except Exception as report_error:

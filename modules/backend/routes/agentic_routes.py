@@ -130,14 +130,37 @@ def start_agentic_run():
         # Load LLM config
         llm_config = _load_llm_config()
 
+        # Resolve hostnames upfront so the workflow name + run details
+        # carry human-readable names from the moment the row appears in
+        # the Workflows tab. Mirrors the Timesketch pattern (which uses
+        # the client list it already has) — the agentic side only had
+        # client_ids in hand at request time, so we add one VQL roundtrip
+        # against the Velociraptor server here. Falls back to client_id
+        # if the lookup fails (operator still sees something usable).
+        from services.agentic.collectors import resolve_hostnames as _resolve
+        hostnames = _resolve(client_ids)
+        names = [hostnames.get(cid, cid) for cid in client_ids]
+
+        # Workflow-name label uses the "show up to 3 names, then collapse"
+        # rule. Past 3 the names string would overflow the table column
+        # in the dashboard and stop being useful at a glance.
+        if len(client_ids) <= 3:
+            client_label = f"{len(client_ids)} clients ({', '.join(names)})"
+        else:
+            client_label = f"{len(client_ids)} clients"
+
         # Create workflow run
         run_id = create_automation_run(
             automation_type="agentic",
-            name=f"Agentic Analysis ({len(client_ids)} clients, {collection_minutes}m)",
+            name=f"Agentic Analysis - {client_label}, {collection_minutes}m",
             details={
                 "blueprint_id": blueprint_id,
                 "blueprint": blueprint_name,
                 "client_ids": client_ids,
+                # Stashed so the report generator can read the same map
+                # without re-querying. Keys are client_ids; values are
+                # the human hostnames (or the client_id as fallback).
+                "hostnames": hostnames,
                 "collection_minutes": collection_minutes,
                 "report_types": report_types,
                 "anonymize_data": anonymize_data,
