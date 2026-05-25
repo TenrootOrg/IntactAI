@@ -1089,6 +1089,23 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                         </div>
                                     </div>
 
+                                    <!-- Cross-client synthesis (multi-client only) -->
+                                    <div class="border-t border-gray-700 pt-4 mt-2">
+                                        <label class="flex items-center gap-2 cursor-pointer mb-2">
+                                            <input type="checkbox" id="forensics-cross-client-toggle"
+                                                class="w-4 h-4 rounded border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                            <span class="text-sm font-medium text-gray-300">Generate organization-wide synthesis</span>
+                                            <span class="ml-2 px-2 py-0.5 bg-purple-900 text-purple-300 text-xs rounded">Multi-client only</span>
+                                        </label>
+                                        <p class="ml-6 text-xs text-gray-500">
+                                            On a multi-client run, adds a cross-host
+                                            <code class="text-gray-400">00_ORGANIZATION_SUMMARY.md</code> to the report ZIP
+                                            (Critical Findings, attack-narrative timeline, cross-host indicators, MITRE mapping).
+                                            Costs one extra LLM call. Off by default — per-client reports are always generated.
+                                            Ignored on single-client runs.
+                                        </p>
+                                    </div>
+
                                     <!-- IRIS Import -->
                                     <div class="border-t border-gray-700 pt-4 mt-2">
                                         <label class="flex items-center gap-2 cursor-pointer mb-2">

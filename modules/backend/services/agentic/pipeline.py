@@ -144,8 +144,17 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         # report header + macro citations show those names instead of the
         # bare client_ids.
         hostnames = {}
+        # Cross-client synthesis is opt-in (stashed in details by the route).
+        # When False, multi-client runs still produce per-client reports
+        # but skip the org-wide macro pass — saves one LLM call and one
+        # markdown file (00_ORGANIZATION_SUMMARY.md) in the ZIP. When True,
+        # the macro pass runs as it always has. Single-client runs never
+        # generated a macro, so the flag is moot for N=1.
+        cross_client_synthesis = False
         if workflow:
-            hostnames = (workflow.get('details') or {}).get('hostnames') or {}
+            details = workflow.get('details') or {}
+            hostnames = details.get('hostnames') or {}
+            cross_client_synthesis = bool(details.get('cross_client_synthesis'))
         if not hostnames:
             # Fallback: re-resolve. Cheap (one VQL call) and keeps this
             # pipeline robust against older runs that pre-date the route
@@ -332,14 +341,31 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                         run_id, blueprint, client_ids, collection_minutes,
                         artifact_summaries, all_results, llm_config, anonymizer,
                         hostnames=hostnames,
+                        generate_macro=cross_client_synthesis,
                     )
 
                     # Create ZIP package
                     zip_path = create_report_package(run_id, multi_reports)
                     add_log_to_run(run_id, f"[Report] Created ZIP package: {zip_path}", "info")
 
-                    # Save macro report as the main report (for backwards compatibility)
-                    report_content = {'technical': multi_reports['macro']}
+                    # Save macro report as the main report (for backwards
+                    # compatibility with the single-report download endpoint).
+                    # When the operator didn't opt in to cross-client synthesis,
+                    # multi_reports['macro'] is None — use a friendly pointer
+                    # to the ZIP's per-client files instead, so /api/agentic/
+                    # run/<run_id>/download?type=technical never returns empty.
+                    macro_md = multi_reports.get('macro')
+                    if not macro_md:
+                        hn_list = list((multi_reports.get('hostnames') or {}).values())
+                        macro_md = (
+                            "# Multi-client run — per-client reports only\n\n"
+                            "The organization-wide synthesis was not enabled for this run "
+                            "(checkbox 'Generate organization-wide synthesis' was off).\n\n"
+                            f"Per-host reports for the {len(multi_reports.get('per_client', {}))} "
+                            f"client(s) are inside the ZIP — download it from the workflow row.\n\n"
+                            f"Hosts: {', '.join(hn_list) if hn_list else '(unknown)'}.\n"
+                        )
+                    report_content = {'technical': macro_md}
                     save_report_content(run_id, report_content)
 
                     # Store multi-client info in workflow
@@ -819,6 +845,7 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                         run_id, pseudo_blueprint, client_ids_list, 0,
                         artifact_summaries, all_results, llm_config, anonymizer,
                         hostnames=existing_hostnames,
+                        generate_macro=cross_client_synthesis,
                     )
 
                     # Create ZIP package (per-client MDs + macro summary)

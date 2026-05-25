@@ -86,6 +86,14 @@ def start_agentic_run():
         # Each item: {'upload_id': '...', 'filename': 'crowdstrike.csv'}
         external_files = data.get('external_files', [])
 
+        # Cross-client synthesis flag (multi-client only). When False
+        # (default), multi-client runs still produce per-client reports
+        # but skip the org-wide macro `00_ORGANIZATION_SUMMARY.md` and
+        # the extra LLM call that produces it. Operators opt in only when
+        # they want the cross-host narrative. Ignored when N=1 — single-
+        # client runs never generated a macro anyway.
+        cross_client_synthesis = bool(data.get('cross_client_synthesis'))
+
         # Validate
         if not blueprint_id:
             return jsonify({"error": "blueprint_id is required"}), 400
@@ -170,6 +178,7 @@ def start_agentic_run():
                 "time_filter": time_filter if time_filter.get('enabled') else None,
                 "min_severity": min_severity,
                 "external_files": external_files if external_files else None,
+                "cross_client_synthesis": cross_client_synthesis,
                 "phase": "starting"
             }
         )
@@ -258,6 +267,12 @@ def analyze_existing_collection():
         # External log files (optional)
         external_files = data.get('external_files', [])
 
+        # Cross-client synthesis flag (multi-client only). Same semantics
+        # as the main /api/agentic/run route: opt-in macro pass. Useful
+        # on re-runs where the operator already has per-client reports
+        # and now wants the cross-host narrative.
+        cross_client_synthesis = bool(data.get('cross_client_synthesis'))
+
         # Optional client scoping for hunt mode. When the analyst pastes a
         # hunt-derived flow ID (`F.xxx.H`) the frontend opens the multi-
         # client picker and sends the selection here so the collector can
@@ -313,6 +328,7 @@ def analyze_existing_collection():
                 "time_filter": time_filter if time_filter.get('enabled') else None,
                 "min_severity": min_severity,
                 "external_files": external_files if external_files else None,
+                "cross_client_synthesis": cross_client_synthesis,
                 "phase": "starting",
                 "analyze_existing": True
             }

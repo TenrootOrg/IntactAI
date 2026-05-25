@@ -547,6 +547,9 @@ async function startForensicsCollection() {
             const irisCaseName = document.getElementById('forensics-iris-case-name')?.value || '';
             const minSeverity = document.getElementById('forensics-min-severity')?.value || 'informational';
             const timeFilter = getForensicsTimeFilterSettings();
+            // Cross-client synthesis (multi-client only) — default OFF.
+            // The backend ignores this when len(client_ids) == 1.
+            const crossClientSynthesis = document.getElementById('forensics-cross-client-toggle')?.checked || false;
 
             // Validate time filter settings
             if (timeFilter && timeFilter.enabled) {
@@ -578,7 +581,8 @@ async function startForensicsCollection() {
                     iris_case_name: irisCaseName,
                     time_filter: timeFilter,
                     min_severity: minSeverity,
-                    external_files: externalFiles
+                    external_files: externalFiles,
+                    cross_client_synthesis: crossClientSynthesis
                 })
             });
 

@@ -969,8 +969,9 @@ Now produce the organization-wide synthesis following the required structure abo
 
 def generate_multi_client_reports(run_id, blueprint, client_ids, collection_minutes,
                                    artifact_summaries, all_results, llm_config, anonymizer=None,
-                                   hostnames=None):
-    """Generate per-client reports + macro summary for multi-client analysis.
+                                   hostnames=None, generate_macro=False):
+    """Generate per-client reports + (optionally) macro summary for
+    multi-client analysis.
 
     Args:
         run_id: Workflow run ID
@@ -984,11 +985,17 @@ def generate_multi_client_reports(run_id, blueprint, client_ids, collection_minu
         hostnames: Optional pre-resolved dict[client_id -> hostname]. When
             omitted, falls back to deriving from collected rows via
             get_client_hostname() (used by the analyze-existing path).
+        generate_macro: when True, produces the org-wide macro synthesis
+            (`00_ORGANIZATION_SUMMARY.md` in the ZIP). Off by default —
+            operators opt in via the dashboard checkbox. The extra LLM
+            call is meaningful spend on large hosts, and on a small run
+            the macro often adds noise; per-client reports are always
+            generated regardless.
 
     Returns:
         Dict with:
             - 'per_client': Dict of client_id -> report markdown
-            - 'macro': Macro summary markdown
+            - 'macro': Macro summary markdown (None when generate_macro=False)
             - 'hostnames': Dict of client_id -> hostname
     """
     add_log_to_run(run_id, f"[Report] Generating reports for {len(client_ids)} clients...", "info")
@@ -1059,22 +1066,32 @@ def generate_multi_client_reports(run_id, blueprint, client_ids, collection_minu
                 "info",
             )
 
-    # Generate macro summary. Feed in the per-client reports just built
-    # above — that's the gold-standard input the OMC reference report was
-    # produced from (the operator manually pasted all per-host reports
-    # into a single synthesis prompt). Without these, the macro pass falls
-    # back to per-artifact summaries only, which produces a much weaker
-    # output.
-    add_log_to_run(run_id, "[Report] Generating organization summary...", "info")
-    macro_report = generate_macro_report(
-        run_id, client_ids, hostnames, all_results, artifact_summaries, llm_config,
-        per_client_reports=per_client_reports,
-    )
+    # Generate macro summary ONLY when the operator opted in (UI checkbox
+    # `forensics-cross-client-toggle`). Off by default — saves one LLM
+    # call and avoids adding a cross-host narrative to the ZIP when the
+    # operator just wanted per-host reports. The operator can still get
+    # the macro later by re-running the same flow IDs via analyze-existing
+    # with the flag flipped on.
+    macro_report = None
+    if generate_macro:
+        add_log_to_run(run_id, "[Report] Generating organization-wide synthesis (opt-in)...", "info")
+        macro_report = generate_macro_report(
+            run_id, client_ids, hostnames, all_results, artifact_summaries, llm_config,
+            per_client_reports=per_client_reports,
+        )
+    else:
+        add_log_to_run(
+            run_id,
+            "[Report] Skipping organization-wide synthesis (checkbox off). "
+            "Per-client reports were still generated.",
+            "info",
+        )
 
     # Unmask if anonymization was used
     if anonymizer:
         add_log_to_run(run_id, "[Report] Restoring original values from anonymized data...", "info")
-        macro_report = anonymizer.unmask_text(macro_report)
+        if macro_report:
+            macro_report = anonymizer.unmask_text(macro_report)
         for client_id in per_client_reports:
             per_client_reports[client_id] = anonymizer.unmask_text(per_client_reports[client_id])
 
@@ -1085,7 +1102,8 @@ def generate_multi_client_reports(run_id, blueprint, client_ids, collection_minu
         if per_client_reports[_cid]:
             per_client_reports[_cid] = wrap_markdown_paragraphs(per_client_reports[_cid], width=100)
 
-    add_log_to_run(run_id, f"[Report] Generated {len(per_client_reports)} client reports + 1 summary", "success")
+    macro_suffix = " + 1 summary" if macro_report else " (no org summary)"
+    add_log_to_run(run_id, f"[Report] Generated {len(per_client_reports)} client reports{macro_suffix}", "success")
 
     return {
         'per_client': per_client_reports,
@@ -1112,8 +1130,12 @@ def create_report_package(run_id, multi_reports):
     hostnames = multi_reports.get('hostnames', {})
 
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        # Add macro summary first (00_ prefix for sorting)
-        zf.writestr("00_ORGANIZATION_SUMMARY.md", multi_reports['macro'])
+        # Add macro summary first (00_ prefix for sorting). Only present
+        # when the operator opted in via the cross-client-synthesis
+        # checkbox; otherwise the ZIP contains only per-client reports.
+        macro = multi_reports.get('macro')
+        if macro:
+            zf.writestr("00_ORGANIZATION_SUMMARY.md", macro)
 
         # Add per-client reports
         for client_id, report in multi_reports['per_client'].items():
