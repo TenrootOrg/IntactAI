@@ -64,7 +64,9 @@ from services.agentic.reports import (
     save_report_content,
     generate_multi_client_reports,
     create_report_package,
+    persist_per_client_reports,
     get_client_hostname,
+    persist_pipeline_artifacts,
 )
 from services.agentic.utils import extract_timeline_events, filter_malicious_events
 
@@ -151,10 +153,17 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         # the macro pass runs as it always has. Single-client runs never
         # generated a macro, so the flag is moot for N=1.
         cross_client_synthesis = False
+        # Interactive-mode master prompt — present on re-runs triggered
+        # from the chat panel (POST /api/agentic/run/<run_id>/rerun). Stashed
+        # in details by the chat synthesis step; we thread it into every
+        # LLM-call surface so the operator's corrections influence both
+        # per-artifact analysis and report writing.
+        master_prompt = None
         if workflow:
             details = workflow.get('details') or {}
             hostnames = details.get('hostnames') or {}
             cross_client_synthesis = bool(details.get('cross_client_synthesis'))
+            master_prompt = details.get('master_prompt') or None
         if not hostnames:
             # Fallback: re-resolve. Cheap (one VQL call) and keeps this
             # pipeline robust against older runs that pre-date the route
@@ -213,6 +222,27 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         success_collections = [c for c in collection_results if c['flow_id']]
         add_log_to_run(run_id, f"[Velociraptor] Created {len(success_collections)}/{len(client_ids)} collections ({len(artifacts)} artifacts each)", "info")
 
+        # Persist the flow IDs back into workflow.details so a future
+        # Full re-analysis (from the Interactive chat panel) can fetch
+        # the same data without launching a new collection. Without
+        # this stash, run_agentic_on_existing has nothing to point at
+        # and the full-scope re-run is impossible.
+        try:
+            launched_flow_ids = [c['flow_id'] for c in success_collections if c.get('flow_id')]
+            if launched_flow_ids:
+                _wf = get_workflow(run_id)
+                if _wf is not None:
+                    _wd = _wf.get('details') or {}
+                    if not isinstance(_wd, dict):
+                        _wd = {}
+                    _wd['flow_id'] = launched_flow_ids if len(launched_flow_ids) > 1 else launched_flow_ids[0]
+                    _wf['details'] = _wd
+                    save_workflow(_wf)
+        except Exception as _e:
+            # Best-effort — re-analysis falls back to "unavailable" if
+            # the stash misses; doesn't break the main pipeline.
+            print(f"[PIPELINE] Failed to stash flow_ids on {run_id}: {_e}", flush=True)
+
         if not success_collections:
             add_log_to_run(run_id, "[Velociraptor] No collections were created successfully", "error")
             update_run_status(run_id, "failed", progress=0, error="Failed to create any collections")
@@ -227,7 +257,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
             add_log_to_run(run_id, f"[Pipeline] Severity filter active: {min_severity}+ only", "info")
         _update_phase(run_id, "collecting", 10)
         all_results, artifact_summaries, timed_out, total_rows_before_filter = stream_collect_and_analyze(
-            run_id, success_collections, artifacts, collection_minutes, llm_config, anonymizer, _update_phase, min_severity, time_filter, cancel_event
+            run_id, success_collections, artifacts, collection_minutes, llm_config, anonymizer, _update_phase, min_severity, time_filter, cancel_event, master_prompt=master_prompt,
         )
 
         # 4. Cancel any remaining collections ONLY if we timed out
@@ -342,11 +372,20 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                         artifact_summaries, all_results, llm_config, anonymizer,
                         hostnames=hostnames,
                         generate_macro=cross_client_synthesis,
+                        master_prompt=master_prompt,
                     )
 
                     # Create ZIP package
                     zip_path = create_report_package(run_id, multi_reports)
                     add_log_to_run(run_id, f"[Report] Created ZIP package: {zip_path}", "info")
+
+                    # Also drop per-client reports on disk so the chat
+                    # assistant can read them without unpacking the ZIP.
+                    persist_per_client_reports(
+                        run_id,
+                        multi_reports.get('per_client') or {},
+                        multi_reports.get('hostnames') or {},
+                    )
 
                     # Save macro report as the main report (for backwards
                     # compatibility with the single-report download endpoint).
@@ -399,6 +438,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                         run_id, blueprint, client_ids, collection_minutes,
                         artifact_summaries, all_results, llm_config, report_types, anonymizer,
                         hostnames=hostnames,
+                        master_prompt=master_prompt,
                     )
                     # 8. Save report
                     save_report_content(run_id, report_content)
@@ -491,6 +531,15 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
             except Exception as e:
                 add_log_to_run(run_id, f"[IRIS] Import error: {str(e)}", "warning")
                 # Don't fail the pipeline for IRIS import failure
+
+        # Save artifact summaries + raw row data for interactive-mode
+        # re-runs (chat → master prompt → reports-only regenerate). Cheap
+        # to write, best-effort: failures are logged but don't fail the
+        # pipeline.
+        try:
+            persist_pipeline_artifacts(run_id, artifact_summaries, all_results)
+        except Exception as _e:
+            print(f"[AGENTIC] persist_pipeline_artifacts failed (non-fatal): {_e}", flush=True)
 
         _update_phase(run_id, "completed", 100)
         add_log_to_run(run_id, "[Pipeline] Analysis complete! Report ready for download.", "success")
@@ -759,8 +808,19 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
 
         add_log_to_run(run_id, "[LLM] Starting artifact analysis...", "info")
         _update_phase(run_id, "analyzing", 20)
+        # Read master_prompt early (same pattern the main pipeline uses)
+        # so analyze_artifacts can thread it into every per-artifact call.
+        # Re-reads happen later for the report-generation step, but that's
+        # cheap (in-memory dict access on the workflow row).
+        _wf_for_mp = get_workflow(run_id)
+        _master_prompt_early = (((_wf_for_mp or {}).get('details') or {}).get('master_prompt')) or None
+        if _master_prompt_early:
+            add_log_to_run(run_id, "[Pipeline] Master prompt active — operator corrections will be applied to all LLM calls.", "info")
         from services.agentic.analyzers import analyze_artifacts
-        artifact_summaries = analyze_artifacts(run_id, all_results, llm_config, anonymizer)
+        artifact_summaries = analyze_artifacts(
+            run_id, all_results, llm_config, anonymizer,
+            master_prompt=_master_prompt_early,
+        )
         add_log_to_run(run_id, f"[LLM] Analysis complete: {len(artifact_summaries)} artifact summaries", "success")
         _update_phase(run_id, "analyzing", 80)
 
@@ -807,6 +867,15 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
             }
             client_ids_list = list(client_info.keys())
 
+            # Same details-read pattern as the main pipeline path. cross_client_
+            # synthesis + master_prompt are stashed in workflow.details by the
+            # route. Read once here and thread into both report-generation
+            # variants below.
+            _existing_workflow = get_workflow(run_id)
+            _existing_details = (_existing_workflow.get('details') or {}) if _existing_workflow else {}
+            existing_cross_client = bool(_existing_details.get('cross_client_synthesis'))
+            existing_master_prompt = _existing_details.get('master_prompt') or None
+
             # Hostnames for the report header. Two-tier resolution:
             # 1. Prefer row-derived (`_hostname` tag from the original
             #    collection) — works in air-gap / uploaded-data scenarios.
@@ -845,12 +914,25 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                         run_id, pseudo_blueprint, client_ids_list, 0,
                         artifact_summaries, all_results, llm_config, anonymizer,
                         hostnames=existing_hostnames,
-                        generate_macro=cross_client_synthesis,
+                        # Note: this used to reference an undefined
+                        # `cross_client_synthesis` (lived in the main
+                        # pipeline's scope, not here). Use the
+                        # `existing_cross_client` value read from
+                        # workflow.details a few lines up.
+                        generate_macro=existing_cross_client,
+                        master_prompt=existing_master_prompt,
                     )
 
                     # Create ZIP package (per-client MDs + macro summary)
                     zip_path = create_report_package(run_id, multi_reports)
                     add_log_to_run(run_id, f"[Report] Created ZIP package: {zip_path}", "info")
+
+                    # Disk copy of per-client reports for the chat assistant.
+                    persist_per_client_reports(
+                        run_id,
+                        multi_reports.get('per_client') or {},
+                        multi_reports.get('hostnames') or {},
+                    )
 
                     # Save macro report as the main report (back-compat with
                     # the single-report download endpoint)
@@ -889,6 +971,7 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                         run_id, pseudo_blueprint, client_ids_list, 0,
                         artifact_summaries, all_results, llm_config, report_types, anonymizer,
                         hostnames=existing_hostnames,
+                        master_prompt=existing_master_prompt,
                     )
                     save_report_content(run_id, report_content)
                 except Exception as report_error:
@@ -964,6 +1047,14 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
 
             except Exception as e:
                 add_log_to_run(run_id, f"[IRIS] Import error: {str(e)}", "warning")
+
+        # Persist artifact summaries + raw row data so interactive-mode
+        # re-runs on this workflow can use the cheap reports-only path.
+        # Mirrors the main pipeline's persistence step.
+        try:
+            persist_pipeline_artifacts(run_id, artifact_summaries, all_results)
+        except Exception as _e:
+            print(f"[AGENTIC] persist_pipeline_artifacts failed (non-fatal): {_e}", flush=True)
 
         _update_phase(run_id, "completed", 100)
         add_log_to_run(run_id, "[Pipeline] Analysis complete! Report ready.", "success")

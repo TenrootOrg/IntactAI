@@ -490,7 +490,7 @@ def filter_by_severity(rows, severity_level):
     return filtered
 
 
-def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes, llm_config, anonymizer=None, update_phase_func=None, min_severity='informational', time_filter=None, cancel_event=None):
+def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes, llm_config, anonymizer=None, update_phase_func=None, min_severity='informational', time_filter=None, cancel_event=None, master_prompt=None):
     """Monitor collection, poll artifact sources for data, analyze as data becomes available.
     Returns (all_results dict, summaries dict, timed_out bool).
     If anonymizer is provided, data is masked before LLM analysis.
@@ -605,7 +605,7 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
 
         future = executor.submit(
             analyze_single_artifact, artifact_name, rows, llm_config,
-            anonymizer, finding_meta, _wf_log,
+            anonymizer, finding_meta, _wf_log, run_id, master_prompt,
         )
         llm_futures[future] = artifact_name
 

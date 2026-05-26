@@ -155,8 +155,14 @@ def generate_aws_report(
     analysis_results: Dict[str, str],
     llm_config: Dict[str, Any],
     scan_metadata: Dict[str, Any],
+    master_prompt: str = None,
 ) -> Dict[str, str]:
-    """Generate AWS-specific assessment report. Returns {'technical': markdown}."""
+    """Generate AWS-specific assessment report. Returns {'technical': markdown}.
+
+    `master_prompt` (optional) is the operator's distilled chat context
+    from interactive mode. When set, it's prepended to the synthesis
+    system prompt so the LLM treats it as ground truth — same pattern
+    as the agentic report builders."""
 
     total_events = sum(len(records) for records in collected_data.values())
     total_findings = sum(len(matches) for matches in findings.values())
@@ -276,8 +282,24 @@ The per-rule analyses have ALREADY been done. Your job is to write a SHORT, accu
 """
 
     add_log_to_run(run_id, "[Report] Generating AWS Technical Report...", "info")
+    # Prepend interactive-mode operator context to the system prompt
+    # when present. Same shape as the agentic report builders so the
+    # LLM treats the operator's notes as ground truth.
+    system_prompt = AWS_REPORT_SYSTEM_PROMPT
+    if master_prompt:
+        system_prompt = (
+            "## OPERATOR CONTEXT (from interactive validation)\n"
+            "The following corrections + investigation priorities have been "
+            "supplied by the analyst after reviewing a prior version of this "
+            "report. Treat them as ground truth and adjust your analysis "
+            "accordingly — downweight or remove findings the analyst marked "
+            "as false-positive / known-legitimate, surface and deepen any "
+            "areas they asked you to investigate further.\n\n"
+            f"{master_prompt.strip()}\n\n---\n\n"
+        ) + system_prompt
+        add_log_to_run(run_id, "[Pipeline] master prompt applied to AWS report", "info")
     try:
-        tech_body = call_llm(tech_prompt, AWS_REPORT_SYSTEM_PROMPT, llm_config)
+        tech_body = call_llm(tech_prompt, system_prompt, llm_config)
         appendix = _build_artifact_appendix(analysis_results)
         reports['technical'] = header + tech_body + appendix
         add_log_to_run(run_id, "[Report] AWS Technical Report complete", "success")
@@ -287,6 +309,59 @@ The per-rule analyses have ALREADY been done. Your job is to write a SHORT, accu
         reports['technical'] = header + f"Synthesis generation failed: {e}\n" + appendix
 
     return reports
+
+
+def get_aws_report_content(run_id: str):
+    """Return the AWS scan's stored markdown report, or a best-effort
+    fallback for the interactive chat to feed the assistant as system
+    context.
+
+    Resolution order:
+      1. DB-stored markdown report (the normal pipeline finish path).
+      2. The `reports.technical` field in
+         `/app/data/aws_runs/<run_id>.json` (covers runs that wrote
+         the JSON but failed to commit to the DB).
+      3. A synthesised digest of the persisted `analysis` dict —
+         per-rule LLM summaries glued together with rule-name
+         headings. Lets the assistant still discuss findings on
+         older runs that never produced a full report.
+    """
+    import os as _os
+    # 1. DB
+    raw = get_report(run_id)
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                body = parsed.get('technical') or parsed.get('executive')
+                if body:
+                    return body
+            return str(parsed)
+        except (ValueError, TypeError):
+            return raw
+    # 2 + 3. Fall back to the persisted JSON dump.
+    persisted = f"/app/data/aws_runs/{run_id}.json"
+    if not _os.path.exists(persisted):
+        return None
+    try:
+        with open(persisted) as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    reps = data.get('reports') or {}
+    if isinstance(reps, dict):
+        body = reps.get('technical') or reps.get('executive')
+        if body:
+            return body
+    # 3. Glue per-rule analyses into a single markdown blob so the
+    # assistant has something concrete to discuss.
+    analysis = data.get('analysis') or {}
+    if not isinstance(analysis, dict) or not analysis:
+        return None
+    parts = ["# AWS scan — per-rule findings (digest)", ""]
+    for rule, summary in analysis.items():
+        parts.append(f"## {rule}\n\n{summary}\n")
+    return "\n".join(parts)
 
 
 def _build_artifact_appendix(analysis_results: dict) -> str:

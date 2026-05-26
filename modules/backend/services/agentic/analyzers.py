@@ -481,7 +481,8 @@ def _strip_metadata_fields(rows):
     return out
 
 
-def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None, finding_meta=None, log_func=None, run_id=None):
+def analyze_single_artifact(artifact, rows, llm_config, anonymizer=None, finding_meta=None,
+                            log_func=None, run_id=None, master_prompt=None):
     """Analyze a single artifact with LLM. Returns (artifact, summary, error) tuple.
 
     `log_func` is the workflow-log callback `(msg, level)` from the
@@ -645,6 +646,26 @@ A short narrative the analyst can paste into a ticket. NO recap of every finding
             log_func(f"[Skill] {artifact} → no match (using base prompt only)", "info")
     except Exception:  # noqa: BLE001 — skills must never block analysis
         pass
+
+    # Interactive-mode master prompt — domain context supplied by the
+    # operator after reviewing a prior run's report (false positives,
+    # legitimate IT activity, investigation priorities). Prepended to
+    # the system prompt so the analyst's corrections take precedence
+    # over the base instructions. Only present on re-runs triggered
+    # from the interactive chat panel.
+    if master_prompt:
+        system_prompt = (
+            "## OPERATOR CONTEXT (from interactive validation)\n"
+            "The following corrections + investigation priorities have been "
+            "supplied by the analyst after reviewing a prior version of this "
+            "report. Treat them as ground truth and adjust your analysis "
+            "accordingly — downweight or remove findings the analyst marked "
+            "as false-positive / known-legitimate, surface and deepen any "
+            "areas they asked you to investigate further.\n\n"
+            f"{master_prompt.strip()}\n\n---\n\n"
+        ) + system_prompt
+        if log_func:
+            log_func(f"[Pipeline] master prompt applied to {artifact}", "info")
 
     user_prompt = f"""## ARTIFACT
 {artifact}
@@ -1103,7 +1124,7 @@ DISCIPLINE:
 
 
 def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func=None,
-                      pipeline_kind="agentic"):
+                      pipeline_kind="agentic", master_prompt=None):
     """Run LLM analysis on each artifact's results using parallel execution.
 
     `pipeline_kind` tells the analyzer what shape the data has:
@@ -1187,7 +1208,7 @@ def analyze_artifacts(run_id, all_results, llm_config, anonymizer=None, log_func
             log(f"[LLM] Queued {artifact} ({len(rows)} rows) for analysis")
             future = executor.submit(
                 analyze_single_artifact, artifact, rows, llm_config,
-                anonymizer, finding_meta, log, run_id,
+                anonymizer, finding_meta, log, run_id, master_prompt,
             )
             futures[future] = artifact
 

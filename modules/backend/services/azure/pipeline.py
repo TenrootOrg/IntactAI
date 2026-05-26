@@ -107,6 +107,17 @@ def _run_post_collection_phases(
     """
     from services.workflow_service import is_cancelled, record_sigma_rule_tally, update_run_status
 
+    # Pick up operator-supplied master prompt from workflow.details
+    # if interactive mode populated one. Threaded into both the
+    # per-rule LLM analyse step and the report-synthesis step.
+    master_prompt = None
+    try:
+        from services.file_storage_service import get_workflow as _get_wf
+        _wf = _get_wf(run_id) or {}
+        master_prompt = ((_wf.get('details') or {}).get('master_prompt') or '').strip() or None
+    except Exception:
+        master_prompt = None
+
     # Apply timestamp normalisation right at the entry — every downstream
     # phase (SIGMA matching, LLM prompt, report writer) sees one canonical
     # format. Same helper the on-prem (Velociraptor) flow uses.
@@ -268,6 +279,7 @@ def _run_post_collection_phases(
                 llm_config=llm_config,
                 anonymizer=options.get('anonymizer'),
                 pipeline_kind="azure",
+                master_prompt=master_prompt,
             )
             result['phases']['analysis'] = {
                 'status': 'complete',
@@ -278,6 +290,14 @@ def _run_post_collection_phases(
                 f"[AZURE] LLM analysis complete: {len(analysis_results)} summaries",
                 "info",
             )
+            # Persist analyse outputs to disk so Interactive Reports-only
+            # rerun can replay them cheaply without re-running per-rule
+            # LLM calls. Same shape as agentic/aws.
+            try:
+                from services.agentic.reports import persist_pipeline_artifacts as _persist
+                _persist(run_id, analysis_results, findings)
+            except Exception as _pe:
+                print(f"[AZURE] Failed to persist pipeline artifacts: {_pe}", flush=True)
         except Exception as e:
             add_log_to_run(run_id, f"[AZURE] LLM analysis failed: {e}", "error")
             result['phases']['analysis'] = {'status': 'error', 'error': str(e)}
@@ -318,6 +338,7 @@ def _run_post_collection_phases(
                     'time_filter': options.get('time_filter', {}),
                     'sources': list(collected_data.keys()),
                 },
+                master_prompt=master_prompt,
             )
             result['reports'] = reports
             result['phases']['reporting'] = {'status': 'complete'}
@@ -842,6 +863,92 @@ def get_azure_blueprints() -> List[Dict]:
             'min_severity': 'informational',
         }
     ]
+
+
+def _run_azure_reanalyze(run_id: str, master_prompt: str, llm_config: Dict, scope: str = 'reports_only') -> Dict:
+    """Re-run Azure analysis on the run's persisted JSON, with the
+    operator's master prompt threaded through every LLM prompt.
+
+    scope='reports_only': rebuild only the report markdown from the
+    cached `analysis` dict + master prompt. One LLM call.
+
+    scope='full': re-run `analyze_artifacts` over cached findings
+    first, then rebuild the report. One LLM call per rule that fired.
+
+    Called by /api/azure/run/<id>/rerun in a background thread."""
+    import json as _json
+    import os as _os
+    from .reports import generate_azure_report, save_azure_report
+    from services.workflow_service import update_run_status as _upd, add_log_to_run as _log
+
+    data_path = f"/app/data/azure_runs/{run_id}.json"
+    if not _os.path.exists(data_path):
+        raise FileNotFoundError(
+            f"No persisted Azure run data at {data_path} — cannot re-analyse."
+        )
+    with open(data_path, 'r') as f:
+        run_data = _json.load(f)
+
+    collected_data = run_data.get('collected_data') or {}
+    findings = run_data.get('findings') or {}
+    analysis_results = run_data.get('analysis') or {}
+    blueprint = run_data.get('blueprint') or {'name': run_data.get('blueprint_name') or 'Azure Re-run'}
+    scan_metadata = run_data.get('scan_metadata') or {}
+
+    if scope == 'full':
+        if not findings:
+            raise RuntimeError("No findings on file to re-analyse.")
+        _log(run_id, f"[AZURE] Re-running LLM analysis on {len(findings)} rule(s) with master prompt", "info")
+        _upd(run_id, 'running', progress=30)
+        analysis_results = analyze_artifacts(
+            run_id=run_id,
+            all_results=findings,
+            llm_config=llm_config,
+            pipeline_kind="azure",
+            master_prompt=master_prompt,
+        )
+        try:
+            from services.agentic.reports import persist_pipeline_artifacts as _persist
+            _persist(run_id, analysis_results, findings)
+        except Exception as _pe:
+            print(f"[AZURE] reanalyse: failed to refresh sidecars: {_pe}", flush=True)
+    else:
+        # reports_only: prefer the on-disk sidecar (if a fresh pipeline
+        # has written it), otherwise lean on whatever's in the persisted
+        # run dict.
+        sidecar = f"/data/downloads/{run_id}/artifact_summaries.json"
+        if _os.path.exists(sidecar):
+            try:
+                with open(sidecar) as f:
+                    analysis_results = _json.load(f) or analysis_results
+            except Exception:
+                pass
+        _log(run_id, "[AZURE] Reports-only re-run — replaying cached analyses with master prompt", "info")
+
+    _upd(run_id, 'running', progress=80)
+    _log(run_id, "[AZURE] Re-generating report with master prompt applied…", "info")
+    reports = generate_azure_report(
+        run_id=run_id,
+        blueprint=blueprint,
+        collected_data=collected_data,
+        findings=findings,
+        analysis_results=analysis_results,
+        llm_config=llm_config,
+        scan_metadata=scan_metadata,
+        master_prompt=master_prompt,
+    )
+    save_azure_report(run_id, reports)
+
+    try:
+        run_data['analysis'] = analysis_results
+        run_data['reports'] = reports
+        with open(data_path, 'w') as f:
+            _json.dump(run_data, f, default=str)
+    except Exception as _e:
+        print(f"[AZURE] reanalyse: failed to update persisted run data: {_e}", flush=True)
+
+    _upd(run_id, 'running', progress=95)
+    return reports
 
 
 def get_available_sources() -> List[Dict]:

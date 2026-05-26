@@ -327,37 +327,70 @@ def record_sigma_rule_tally(run_id, tally):
         save_workflow(workflow)
 
 def cleanup_orphan_workflows():
-    """Mark workflows as failed if they've been running for more than 10 hours"""
+    """Mark workflows as failed if they look orphaned — `running`/`pending`
+    with no activity (no log lines, no status updates) for more than the
+    idle threshold.
+
+    Historically this checked `created_at`, which broke the interactive
+    re-run flow: an agentic workflow completed days ago can be put back
+    into `running` momentarily by a Re-run on the chat panel, and the
+    watchdog would see "created >10h ago + status=running" and slay it
+    mid-rerun. Switched to `updated_at` (and the most recent log entry
+    as a second-best fallback) so the semantics is "stale", not "old".
+    A genuinely orphaned crash still has an ancient `updated_at` and
+    still gets caught.
+    """
     now = datetime.now()
-    max_runtime_hours = 10
+    max_idle_hours = 10
+
+    def _last_activity(wf):
+        """Most recent of updated_at + last log timestamp; falls back to
+        created_at when neither is parseable so we don't accidentally
+        spare a row with garbage timestamps forever."""
+        candidates = []
+        for fld in ('updated_at', 'created_at'):
+            v = wf.get(fld)
+            if v:
+                try:
+                    candidates.append(datetime.fromisoformat(str(v).replace('Z', '+00:00')).replace(tzinfo=None))
+                except Exception:
+                    pass
+        logs = wf.get('logs') or []
+        if logs:
+            last_log_ts = logs[-1].get('timestamp')
+            if last_log_ts:
+                try:
+                    candidates.append(datetime.fromisoformat(str(last_log_ts).replace('Z', '+00:00')).replace(tzinfo=None))
+                except Exception:
+                    pass
+        return max(candidates) if candidates else None
 
     # Clean up SQLite workflows
     sqlite_workflows = load_workflows()
     for workflow in sqlite_workflows:
         if workflow.get('status') in ['running', 'pending']:
-            created_at = workflow.get('created_at', '')
-            if created_at:
-                try:
-                    start_time = datetime.fromisoformat(created_at)
-                    elapsed_hours = (now - start_time).total_seconds() / 3600
+            last_active = _last_activity(workflow)
+            if last_active is None:
+                continue
+            try:
+                idle_hours = (now - last_active).total_seconds() / 3600
+                if idle_hours > max_idle_hours:
+                    workflow['status'] = 'failed'
+                    workflow['error'] = f'Workflow idle for {idle_hours:.1f}h with no updates (max: {max_idle_hours}h)'
+                    workflow['updated_at'] = now.isoformat()
 
-                    if elapsed_hours > max_runtime_hours:
-                        workflow['status'] = 'failed'
-                        workflow['error'] = f'Workflow timed out after {elapsed_hours:.1f} hours (max: {max_runtime_hours}h)'
-                        workflow['updated_at'] = now.isoformat()
+                    if 'logs' not in workflow:
+                        workflow['logs'] = []
+                    workflow['logs'].append({
+                        'timestamp': now.isoformat(),
+                        'level': 'error',
+                        'message': f'Workflow automatically marked as failed - idle for {idle_hours:.1f}h (max: {max_idle_hours}h)'
+                    })
 
-                        if 'logs' not in workflow:
-                            workflow['logs'] = []
-                        workflow['logs'].append({
-                            'timestamp': now.isoformat(),
-                            'level': 'error',
-                            'message': f'Workflow automatically marked as failed - exceeded {max_runtime_hours} hour timeout'
-                        })
-
-                        save_workflow(workflow)
-                        print(f"[WORKFLOW] Marked SQLite orphan workflow as failed: {workflow.get('run_id')}", flush=True)
-                except Exception as e:
-                    print(f"[WORKFLOW] Error checking SQLite workflow age: {e}", flush=True)
+                    save_workflow(workflow)
+                    print(f"[WORKFLOW] Marked SQLite orphan workflow as failed: {workflow.get('run_id')}", flush=True)
+            except Exception as e:
+                print(f"[WORKFLOW] Error checking SQLite workflow age: {e}", flush=True)
 
     # Clean up Elasticsearch workflows
     if ES_AVAILABLE:
@@ -365,22 +398,21 @@ def cleanup_orphan_workflows():
             es_workflows = es_get_all_workflows(size=200)
             for workflow in es_workflows:
                 if workflow.get('status') in ['running', 'pending']:
-                    started_at = workflow.get('started_at', workflow.get('created_at', ''))
-                    if started_at:
-                        try:
-                            start_time = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
-                            elapsed_hours = (now - start_time.replace(tzinfo=None)).total_seconds() / 3600
-
-                            if elapsed_hours > max_runtime_hours:
-                                run_id = workflow.get('run_id', workflow.get('id'))
-                                es_update_workflow_status(
-                                    run_id,
-                                    status='failed',
-                                    error=f'Workflow timed out after {elapsed_hours:.1f} hours (max: {max_runtime_hours}h)'
-                                )
-                                print(f"[WORKFLOW] Marked ES orphan workflow as failed: {run_id}", flush=True)
-                        except Exception as e:
-                            print(f"[WORKFLOW] Error checking ES workflow age: {e}", flush=True)
+                    last_active = _last_activity(workflow)
+                    if last_active is None:
+                        continue
+                    try:
+                        idle_hours = (now - last_active).total_seconds() / 3600
+                        if idle_hours > max_idle_hours:
+                            run_id = workflow.get('run_id', workflow.get('id'))
+                            es_update_workflow_status(
+                                run_id,
+                                status='failed',
+                                error=f'Workflow idle for {idle_hours:.1f}h with no updates (max: {max_idle_hours}h)'
+                            )
+                            print(f"[WORKFLOW] Marked ES orphan workflow as failed: {run_id}", flush=True)
+                    except Exception as e:
+                        print(f"[WORKFLOW] Error checking ES workflow age: {e}", flush=True)
         except Exception as e:
             print(f"[WORKFLOW] Error cleaning ES workflows: {e}", flush=True)
 

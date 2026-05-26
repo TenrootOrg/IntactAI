@@ -114,6 +114,19 @@ def _run_post_collection_phases(
 ) -> Dict:
     """Phases 3–7. Same shape as `services.azure.pipeline._run_post_collection_phases`."""
 
+    # Pick up an operator-supplied master prompt from workflow.details
+    # if interactive validation populated one. Threaded through both
+    # the per-rule LLM analyse step and the report-synthesis step so
+    # the operator's "Bob from IT was patching, ignore those" notes
+    # take effect on this run.
+    master_prompt = None
+    try:
+        from services.file_storage_service import get_workflow as _get_wf
+        _wf = _get_wf(run_id) or {}
+        master_prompt = ((_wf.get('details') or {}).get('master_prompt') or '').strip() or None
+    except Exception:
+        master_prompt = None
+
     # Phase 3 — normalize + time filter
     try:
         normalize_all_results(collected_data)
@@ -246,12 +259,24 @@ def _run_post_collection_phases(
                 llm_config=llm_config,
                 anonymizer=options.get('anonymizer'),
                 pipeline_kind="aws",
+                master_prompt=master_prompt,
             )
             result['phases']['analysis'] = {
                 'status': 'complete',
                 'artifacts_analyzed': len(analysis_results),
             }
             add_log_to_run(run_id, f"[AWS] LLM analysis complete: {len(analysis_results)} summaries", "info")
+
+            # Persist analyse-step outputs to disk so the Interactive
+            # "Report only" re-run can replay them cheaply (one LLM
+            # call to rebuild the report, no per-rule re-analysis).
+            try:
+                from services.agentic.reports import persist_pipeline_artifacts as _persist
+                _persist(run_id, analysis_results, findings)
+            except Exception as _pe:
+                # Best-effort — chat will still work; reports-only
+                # will gate itself off if these are missing.
+                print(f"[AWS] Failed to persist pipeline artifacts: {_pe}", flush=True)
         except Exception as e:
             add_log_to_run(run_id, f"[AWS] LLM analysis failed: {e}", "error")
             result['phases']['analysis'] = {'status': 'error', 'error': str(e)}
@@ -285,6 +310,7 @@ def _run_post_collection_phases(
                     'time_filter': options.get('time_filter', {}),
                     'sources': list(collected_data.keys()),
                 },
+                master_prompt=master_prompt,
             )
             result['reports'] = reports
             result['phases']['reporting'] = {'status': 'complete'}
@@ -628,6 +654,98 @@ def get_aws_blueprints() -> List[Dict]:
             'min_severity': 'informational',
         },
     ]
+
+
+def _run_aws_reanalyze(run_id: str, master_prompt: str, llm_config: Dict, scope: str = 'reports_only') -> Dict:
+    """Re-run AWS analysis on the run's persisted collected_data, with
+    the operator's master prompt threaded through every LLM prompt.
+
+    scope='reports_only': skips the per-rule LLM analyse step and just
+    rebuilds the report from the cached `analysis_results` (or from the
+    sidecar artifact_summaries.json if present). One LLM call total.
+
+    scope='full': re-runs `analyze_artifacts` over the cached `findings`
+    first, then rebuilds the report. Multiple LLM calls (one per rule
+    that fired).
+
+    Called by the /api/aws/run/<id>/rerun route in a background thread.
+    No public endpoint — Interactive mode is the only caller."""
+    import json as _json
+    from .reports import generate_aws_report, save_aws_report
+    from services.workflow_service import update_run_status as _upd, add_log_to_run as _log
+
+    data_path = f"/app/data/aws_runs/{run_id}.json"
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(
+            f"No persisted AWS run data at {data_path} — cannot re-analyse."
+        )
+    with open(data_path, 'r') as f:
+        run_data = _json.load(f)
+
+    collected_data = run_data.get('collected_data') or {}
+    findings = run_data.get('findings') or {}
+    analysis_results = run_data.get('analysis') or {}
+    blueprint = run_data.get('blueprint') or {'name': run_data.get('blueprint_name') or 'AWS Re-run'}
+    scan_metadata = run_data.get('scan_metadata') or {}
+
+    if scope == 'full':
+        if not findings:
+            raise RuntimeError("No findings on file to re-analyse.")
+        _log(run_id, f"[AWS] Re-running LLM analysis on {len(findings)} rule(s) with master prompt", "info")
+        _upd(run_id, 'running', progress=30)
+        analysis_results = analyze_artifacts(
+            run_id=run_id,
+            all_results=findings,
+            llm_config=llm_config,
+            pipeline_kind="aws",
+            master_prompt=master_prompt,
+        )
+        # Refresh the sidecars so subsequent reports-only re-runs see
+        # the new analyses.
+        try:
+            from services.agentic.reports import persist_pipeline_artifacts as _persist
+            _persist(run_id, analysis_results, findings)
+        except Exception as _pe:
+            print(f"[AWS] reanalyse: failed to refresh sidecars: {_pe}", flush=True)
+    else:
+        # reports_only: prefer the on-disk sidecar (matches what a
+        # fresh pipeline finish would have written), fall back to
+        # whatever's in the persisted run dict.
+        sidecar = f"/data/downloads/{run_id}/artifact_summaries.json"
+        if os.path.exists(sidecar):
+            try:
+                with open(sidecar) as f:
+                    analysis_results = _json.load(f) or analysis_results
+            except Exception:
+                pass
+        _log(run_id, "[AWS] Reports-only re-run — replaying cached analyses with master prompt", "info")
+
+    _upd(run_id, 'running', progress=80)
+    _log(run_id, "[AWS] Re-generating report with master prompt applied…", "info")
+    reports = generate_aws_report(
+        run_id=run_id,
+        blueprint=blueprint,
+        collected_data=collected_data,
+        findings=findings,
+        analysis_results=analysis_results,
+        llm_config=llm_config,
+        scan_metadata=scan_metadata,
+        master_prompt=master_prompt,
+    )
+    save_aws_report(run_id, reports)
+
+    # Update the persisted run blob so future re-runs see the new
+    # analyses + reports as the new baseline.
+    try:
+        run_data['analysis'] = analysis_results
+        run_data['reports'] = reports
+        with open(data_path, 'w') as f:
+            _json.dump(run_data, f, default=str)
+    except Exception as _e:
+        print(f"[AWS] reanalyse: failed to update persisted run data: {_e}", flush=True)
+
+    _upd(run_id, 'running', progress=95)
+    return reports
 
 
 def get_available_sources() -> List[Dict]:

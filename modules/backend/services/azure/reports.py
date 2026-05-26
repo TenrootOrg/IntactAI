@@ -134,8 +134,13 @@ CRITICAL RULES:
 
 
 def generate_azure_report(run_id, blueprint, collected_data, findings,
-                          analysis_results, llm_config, scan_metadata):
+                          analysis_results, llm_config, scan_metadata,
+                          master_prompt=None):
     """Generate Azure-specific security assessment report.
+
+    `master_prompt` (optional): operator's distilled chat context from
+    interactive mode. Prepended to the synthesis system prompt when set
+    so the LLM treats it as ground truth.
 
     Args:
         run_id: Workflow run ID
@@ -270,8 +275,24 @@ The per-rule analyses have ALREADY been done. Your job is to write a SHORT, accu
 - Reference findings by their rule name; do not recopy individual events.
 """
 
+    # Prepend operator context to the system prompt when set —
+    # interactive mode threads it through here so the operator's
+    # corrections shape every LLM output, including the synthesis.
+    system_prompt = AZURE_REPORT_SYSTEM_PROMPT
+    if master_prompt:
+        system_prompt = (
+            "## OPERATOR CONTEXT (from interactive validation)\n"
+            "The following corrections + investigation priorities have been "
+            "supplied by the analyst after reviewing a prior version of this "
+            "report. Treat them as ground truth and adjust your analysis "
+            "accordingly — downweight or remove findings the analyst marked "
+            "as false-positive / known-legitimate, surface and deepen any "
+            "areas they asked you to investigate further.\n\n"
+            f"{master_prompt.strip()}\n\n---\n\n"
+        ) + system_prompt
+        add_log_to_run(run_id, "[Pipeline] master prompt applied to Azure report", "info")
     try:
-        tech_body = call_llm(tech_prompt, AZURE_REPORT_SYSTEM_PROMPT, llm_config)
+        tech_body = call_llm(tech_prompt, system_prompt, llm_config)
         appendix = _build_artifact_appendix(analysis_results)
         reports['technical'] = header + tech_body + appendix
         add_log_to_run(run_id, "[Report] Azure Technical Report complete", "success")
@@ -372,6 +393,46 @@ def save_azure_report(run_id, reports):
     """Save Azure reports to database."""
     save_report(run_id, json.dumps(reports))
     print(f"[AZURE] Reports saved for run_id: {run_id} ({list(reports.keys())})", flush=True)
+
+
+def get_azure_report_content(run_id):
+    """Best-effort report accessor used by the interactive chat.
+    Resolution order matches AWS: DB → persisted JSON's
+    `reports.technical` → per-rule analyses digest. Lets the
+    assistant discuss findings even on runs that never committed a
+    full report to the DB."""
+    import os as _os
+    content = get_report(run_id)
+    if content:
+        try:
+            reports = json.loads(content)
+            if isinstance(reports, dict):
+                body = reports.get('technical') or reports.get('executive')
+                if body:
+                    return body
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return content
+    persisted = f"/app/data/azure_runs/{run_id}.json"
+    if not _os.path.exists(persisted):
+        return None
+    try:
+        with open(persisted) as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    reps = data.get('reports') or {}
+    if isinstance(reps, dict):
+        body = reps.get('technical') or reps.get('executive')
+        if body:
+            return body
+    analysis = data.get('analysis') or {}
+    if not isinstance(analysis, dict) or not analysis:
+        return None
+    parts = ["# Azure scan — per-rule findings (digest)", ""]
+    for rule, summary in analysis.items():
+        parts.append(f"## {rule}\n\n{summary}\n")
+    return "\n".join(parts)
 
 
 def get_azure_report(run_id, report_type=None):
