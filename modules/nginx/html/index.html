@@ -388,9 +388,26 @@
                 <div class="flex justify-between items-center mb-6">
                     <div>
                         <h2 class="text-3xl font-bold text-white">Workflow Runs</h2>
-                        <p class="text-gray-400 mt-1">View all workflow executions with status, dates, and logs</p>
+                        <p class="text-gray-400 mt-1">View all workflow executions with status, dates, and logs · tick the checkboxes to bundle selected runs into an Engagement Report</p>
                     </div>
                     <div class="flex items-center gap-3">
+                        <!-- Engagement Report — always-visible action so the
+                             button is discoverable before any boxes are
+                             checked. Disabled state explains itself via tooltip.
+                             Inline styles back up Tailwind so the colour is
+                             guaranteed regardless of CDN/JIT timing issues. -->
+                        <button @click="$store.engagement.openComposeModal()"
+                                :disabled="$store.engagement.selectedRunIds.length === 0"
+                                :title="$store.engagement.selectedRunIds.length === 0 ? 'Tick the checkboxes next to one or more completed Agentic / AWS / Azure runs to enable.' : 'Generate a combined engagement report from the ' + $store.engagement.selectedRunIds.length + ' selected workflow(s).'"
+                                :style="$store.engagement.selectedRunIds.length === 0 ? 'background-color:#374151; cursor:not-allowed;' : 'background-color:#4f46e5;'"
+                                class="px-4 py-2 rounded-lg text-sm font-medium text-white flex items-center gap-2 hover:brightness-110 transition">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#ffffff;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
+                            <span style="color:#ffffff;">Engagement Report</span>
+                            <span x-show="$store.engagement.selectedRunIds.length > 0"
+                                  class="text-xs px-2 py-0.5 rounded-full"
+                                  style="background-color:rgba(255,255,255,0.2); color:#ffffff;"
+                                  x-text="$store.engagement.selectedRunIds.length"></span>
+                        </button>
                         <label class="text-sm text-gray-400">Filter:</label>
                         <select x-model="$store.workflows.typeFilter" @change="$store.workflows.applyFilter()" class="bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
                             <option value="">All Types</option>
@@ -404,12 +421,34 @@
                     </div>
                 </div>
 
+                <!-- A subtle inline hint sits above the table whenever the
+                     operator has at least one workflow selected, so they
+                     remember to scroll back up to the header button.
+                     Plain text — no duplicate Generate button. -->
+                <p x-show="$store.engagement.selectedRunIds.length > 0"
+                   class="text-xs text-indigo-300 mb-2">
+                    <strong x-text="$store.engagement.selectedRunIds.length"></strong>
+                    workflow<span x-show="$store.engagement.selectedRunIds.length !== 1">s</span>
+                    selected for the next Engagement Report —
+                    <button @click="$store.engagement.openComposeModal()"
+                            class="underline text-indigo-200 hover:text-white">configure &amp; generate</button>
+                    or
+                    <button @click="$store.engagement.clearSelection()"
+                            class="underline text-indigo-200 hover:text-white">clear selection</button>.
+                </p>
+
                 <!-- Workflows Table -->
                 <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
                     <div class="overflow-x-auto">
                         <table class="w-full">
                             <thead class="bg-gray-900">
                                 <tr class="text-left text-gray-400 text-sm">
+                                    <th class="px-3 py-4 font-medium w-12 text-center"
+                                        title="Tick to include a completed Agentic / AWS / Azure run in the next Engagement Report build">
+                                        <svg class="w-4 h-4 inline-block text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
+                                        </svg>
+                                    </th>
                                     <th class="px-6 py-4 font-medium">Type</th>
                                     <th class="px-6 py-4 font-medium">Name</th>
                                     <th class="px-6 py-4 font-medium">Status</th>
@@ -420,16 +459,32 @@
                             </thead>
                             <tbody class="divide-y divide-gray-700 text-sm">
                                 <template x-if="$store.workflows.loading">
-                                    <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">Loading workflows...</td></tr>
+                                    <tr><td colspan="7" class="px-6 py-8 text-center text-gray-400">Loading workflows...</td></tr>
                                 </template>
                                 <template x-if="!$store.workflows.loading && $store.workflows.runs.length === 0 && !$store.workflows.typeFilter">
-                                    <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">No workflow runs yet. Start a Timesketch import or hunt to see them here.</td></tr>
+                                    <tr><td colspan="7" class="px-6 py-8 text-center text-gray-400">No workflow runs yet. Start a Timesketch import or hunt to see them here.</td></tr>
                                 </template>
                                 <template x-if="!$store.workflows.loading && $store.workflows.runs.length === 0 && $store.workflows.typeFilter">
-                                    <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">No workflows match the selected filter.</td></tr>
+                                    <tr><td colspan="7" class="px-6 py-8 text-center text-gray-400">No workflows match the selected filter.</td></tr>
                                 </template>
                                 <template x-for="run in $store.workflows.runs" :key="run.id">
                                     <tr class="hover:bg-gray-750 transition-colors">
+                                        <!-- Engagement-Report checkbox: only renders for completed runs
+                                             with an LLM-written report (agentic / aws_scan / azure_scan).
+                                             Other rows show a faint em-dash placeholder so the column
+                                             reads as intentional rather than broken. -->
+                                        <td class="px-3 py-4 align-middle text-center">
+                                            <template x-if="$store.engagement.isEligible(run)">
+                                                <input type="checkbox"
+                                                       :checked="$store.engagement.isSelected(run.id)"
+                                                       @change="$store.engagement.toggle(run)"
+                                                       class="text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4"
+                                                       title="Include in next engagement report">
+                                            </template>
+                                            <template x-if="!$store.engagement.isEligible(run)">
+                                                <span class="text-gray-600 text-xs" title="No LLM report on this run — not eligible for an engagement bundle">—</span>
+                                            </template>
+                                        </td>
                                         <td class="px-6 py-4">
                                             <span :class="$store.workflows.getTypeColor(run.type) + ' px-3 py-1 rounded-full text-xs font-semibold uppercase'" x-text="run.type || 'system'"></span>
                                         </td>
@@ -518,6 +573,21 @@
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                         Reports (<span x-text="run.details?.client_count || '?'"></span>)
                                                     </a>
+                                                </template>
+                                                <!-- Engagement Report — customer-facing branded PDF only. -->
+                                                <template x-if="run.type === 'engagement_report' && run.status === 'completed'">
+                                                    <a :href="'/api/engagement/' + run.id + '/download/pdf'" download class="bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Engagement Report (branded PDF with cover page, TLP marking, page headers/footers)">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                                                        Engagement Report
+                                                    </a>
+                                                </template>
+                                                <!-- Interactive: chat about findings + re-run pipeline with operator corrections.
+                                                     Available for agentic, AWS scan, Azure scan, and Engagement Report runs. -->
+                                                <template x-if="(run.type === 'agentic' || run.type === 'aws_scan' || run.type === 'azure_scan' || run.type === 'engagement_report') && run.status === 'completed'">
+                                                    <button @click="$store.agenticChat.open(run.id, run.type)" class="bg-teal-600 hover:bg-teal-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Open interactive chat: refine the report with operator notes, then re-run">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
+                                                        Interactive
+                                                    </button>
                                                 </template>
                                                 <template x-if="(run.type === 'velociraptor_offline_collector' || run.type === 'offline_collector') && run.status === 'completed' && run.details?.file_id">
                                                     <a :href="'/api/velociraptor/offline/download/' + run.details.file_id" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Offline Collector">
@@ -3398,6 +3468,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
     <script src="js/utils/client-manager.js"></script>
     <script src="js/timesketch.js"></script>
     <script src="js/agentic.js"></script>
+    <script src="js/agentic-chat.js?v=7"></script>
+    <script src="js/engagement.js?v=9"></script>
     <script src="js/scheduler.js"></script>
     <!-- Azure date pickers -->
     <script>
@@ -3515,6 +3587,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
          positioning is relative to the viewport.
          ====================================================================== -->
     <div x-show="$store.workflows.modalOpen"
+         @keydown.escape.window="if ($store.workflows.modalOpen) $store.workflows.closeModal()"
          class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-6"
          style="z-index: 99999;">
         <div class="bg-gray-800 rounded-lg border border-gray-700 max-w-[90vw] w-full max-h-[90vh] flex flex-col">
@@ -3578,6 +3651,241 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
             <!-- Modal Footer -->
             <div class="p-6 border-t border-gray-700 flex justify-end">
                 <button @click="$store.workflows.closeModal()" class="bg-gray-700 hover:bg-gray-600 px-6 py-2 rounded-lg">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====================================================================
+         Interactive agentic chat modal — body-level for the same reason as
+         the workflow-logs modal above (avoid x-transition's transformed
+         containing block breaking `position: fixed`).
+         ==================================================================== -->
+    <div x-show="$store.agenticChat?.isOpen"
+         @keydown.escape.window="if ($store.agenticChat?.isOpen) $store.agenticChat.close()"
+         class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-6"
+         style="z-index: 99998;"
+         x-cloak>
+        <div class="bg-gray-800 rounded-lg border border-gray-700 flex flex-col relative"
+             style="width: 90vw; height: 90vh; max-width: 1400px;">
+            <!-- Floating close (top-right) — no header bar / no description / no clutter -->
+            <button @click="$store.agenticChat.close()"
+                    class="absolute top-3 right-3 text-gray-500 hover:text-white z-10"
+                    title="Close">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                </svg>
+            </button>
+
+            <!-- Chat transcript -->
+            <div id="agentic-chat-scroll" class="flex-1 overflow-y-auto p-5 pt-10 space-y-3">
+                <template x-if="(!$store.agenticChat?.messages || $store.agenticChat.messages.length === 0)">
+                    <p class="text-gray-500 text-sm italic">Type what came out of the conversation with the customer's IT team.</p>
+                </template>
+                <template x-for="(msg, i) in ($store.agenticChat?.messages || [])" :key="i">
+                    <div class="flex" :class="msg.role === 'user' ? 'justify-end' : 'justify-start'">
+                        <div class="max-w-[80%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap leading-relaxed"
+                             :class="msg.role === 'user' ? 'bg-teal-700 text-white' : 'bg-gray-700 text-gray-100'"
+                             x-text="$store.agenticChat.clean(msg.content)"></div>
+                    </div>
+                </template>
+                <template x-if="$store.agenticChat?.sending">
+                    <div class="flex justify-start">
+                        <div class="bg-gray-700 text-gray-300 rounded-lg px-3 py-2 text-sm italic">assistant is thinking…</div>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Chat input -->
+            <div class="border-t border-gray-700 p-3 flex gap-2">
+                <textarea x-model="$store.agenticChat.draft"
+                          @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); $store.agenticChat.send(); }"
+                          rows="2"
+                          placeholder="Write here. Enter to send · Shift+Enter for newline · Esc to close."
+                          class="flex-1 bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm resize-none focus:outline-none focus:border-teal-500"></textarea>
+                <button @click="$store.agenticChat.send()"
+                        :disabled="$store.agenticChat?.sending || !$store.agenticChat?.draft?.trim()"
+                        class="bg-teal-600 hover:bg-teal-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm font-medium text-white self-end">
+                    Send
+                </button>
+            </div>
+
+            <!-- Status banner: colour-coded by severity, dismissable. Sits
+                 above the footer so long error messages have room to breathe
+                 instead of getting squished next to the rerun button. -->
+            <div x-show="$store.agenticChat?.status"
+                 class="px-4 py-2 border-t flex items-start gap-3"
+                 :class="{
+                    'bg-red-900/40 border-red-700/60 text-red-200': $store.agenticChat?.status?.level === 'error',
+                    'bg-teal-900/40 border-teal-700/60 text-teal-200': $store.agenticChat?.status?.level === 'success',
+                    'bg-gray-700/40 border-gray-600 text-gray-200': $store.agenticChat?.status?.level === 'info'
+                 }">
+                <span class="text-sm flex-1 whitespace-pre-wrap" x-text="$store.agenticChat?.status?.text"></span>
+                <button @click="$store.agenticChat.dismissStatus()" class="text-current opacity-60 hover:opacity-100" title="Dismiss">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+
+            <!-- Footer: target client + scope toggle + rerun -->
+            <div class="p-3 border-t border-gray-700 flex items-center justify-between gap-3 flex-wrap">
+                <div class="flex items-center gap-4 flex-wrap">
+                    <!-- Target client (multi-client runs only): regenerate
+                         one host's report or all of them. Hidden on
+                         single-client runs since there's nothing to choose. -->
+                    <template x-if="$store.agenticChat?.isMultiClient">
+                        <label class="flex items-center gap-2">
+                            <span class="text-xs text-gray-400">For</span>
+                            <select x-model="$store.agenticChat.target"
+                                    class="bg-gray-900 text-gray-100 border border-gray-700 rounded text-xs px-2 py-1 focus:outline-none focus:border-teal-500">
+                                <option value="all">All clients</option>
+                                <template x-for="c in ($store.agenticChat?.clients || [])" :key="c.client_id">
+                                    <option :value="c.client_id" x-text="c.hostname || c.client_id"></option>
+                                </template>
+                            </select>
+                        </label>
+                    </template>
+                    <label class="flex items-center gap-2"
+                           :class="$store.agenticChat?.reportsOnlyAvailable ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'"
+                           :title="$store.agenticChat?.reportsOnlyAvailable ? '' : 'This run completed before the report-cache was added — only Full re-analysis is available.'">
+                        <input type="radio" x-model="$store.agenticChat.scope" value="reports_only"
+                               :disabled="!$store.agenticChat?.reportsOnlyAvailable"
+                               class="text-teal-600 focus:ring-teal-500 disabled:opacity-40">
+                        <span class="text-xs text-gray-300">Report only</span>
+                    </label>
+                    <label class="flex items-center gap-2"
+                           :class="$store.agenticChat?.fullAnalysisAvailable ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'"
+                           :title="$store.agenticChat?.fullAnalysisAvailable ? '' : 'This run\'s original Velociraptor flow IDs were not stored, so the per-artifact analysis cannot be re-run. Only Report-only is available.'">
+                        <input type="radio" x-model="$store.agenticChat.scope" value="full"
+                               :disabled="!$store.agenticChat?.fullAnalysisAvailable"
+                               class="text-teal-600 focus:ring-teal-500 disabled:opacity-40">
+                        <span class="text-xs text-gray-300">Full re-analysis</span>
+                    </label>
+                    <button @click="$store.agenticChat.clear()"
+                            x-show="$store.agenticChat?.messages?.length"
+                            class="text-xs text-gray-500 hover:text-gray-300 underline">
+                        Clear chat
+                    </button>
+                </div>
+                <button @click="$store.agenticChat.rerun()"
+                        :disabled="$store.agenticChat?.rerunning || !$store.agenticChat?.messages?.length"
+                        class="bg-teal-600 hover:bg-teal-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm font-medium text-white">
+                    <span x-show="!$store.agenticChat?.rerunning">Re-run</span>
+                    <span x-show="$store.agenticChat?.rerunning">Re-running…</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====================================================================
+         Engagement Report compose modal — opens from the action bar on the
+         Workflows page when at least one row is checked. Body-level
+         placement so the modal isn't clipped by transformed containers.
+         ==================================================================== -->
+    <div x-show="$store.engagement.composeOpen"
+         @keydown.escape.window="if ($store.engagement.composeOpen) $store.engagement.closeComposeModal()"
+         class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-6"
+         style="z-index: 99998;"
+         x-cloak>
+        <div class="bg-gray-800 rounded-lg border border-gray-700 flex flex-col relative"
+             style="width: min(90vw, 56rem); max-height: 88vh;">
+            <button @click="$store.engagement.closeComposeModal()"
+                    class="absolute top-3 right-3 text-gray-500 hover:text-white z-10" title="Close">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+
+            <div class="p-6 border-b border-gray-700">
+                <h3 class="text-xl font-bold text-white mb-1">New Engagement Report</h3>
+                <p class="text-gray-400 text-xs">
+                    Bundle the <strong x-text="$store.engagement.selectedRunIds.length"></strong>
+                    selected workflow<span x-show="$store.engagement.selectedRunIds.length !== 1">s</span>
+                    into a single customer-facing IR deliverable. The LLM writes the executive
+                    layer (summary, scope, findings, timeline, recommendations);
+                    each selected workflow's report appears verbatim under its
+                    environment section.
+                </p>
+            </div>
+
+            <div class="flex-1 overflow-y-auto p-6 space-y-5">
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Report name</label>
+                    <input type="text" x-model="$store.engagement.name"
+                           placeholder="e.g. OMCDOM IR Engagement — May 2026"
+                           class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Selected workflows + section assignments</label>
+                    <div class="border border-gray-700 rounded max-h-72 overflow-y-auto">
+                        <template x-if="$store.engagement.selectedRunIds.length === 0">
+                            <p class="text-gray-500 text-sm italic p-3">No workflows selected.</p>
+                        </template>
+                        <template x-for="src in $store.engagement.selectedDetails" :key="src.run_id">
+                            <div class="flex items-center gap-3 px-3 py-2 border-b border-gray-700/60 text-sm">
+                                <span class="text-xs uppercase tracking-wide w-16"
+                                      :class="{
+                                          'text-purple-400': src.automation_type === 'agentic',
+                                          'text-blue-400':   src.automation_type === 'aws_scan',
+                                          'text-cyan-400':   src.automation_type === 'azure_scan'
+                                      }"
+                                      x-text="src.automation_type === 'aws_scan' ? 'AWS' : (src.automation_type === 'azure_scan' ? 'Azure' : 'Agentic')"></span>
+                                <div class="flex-1 min-w-0">
+                                    <div class="text-gray-200 truncate" x-text="src.name"></div>
+                                    <div class="text-gray-500 text-xs" x-text="src.run_id"></div>
+                                </div>
+                                <!-- Every workflow type maps to exactly one section,
+                                     decided by its data source. Agentic = Velociraptor
+                                     endpoint data (whether single host, multi-host, or
+                                     multi-host with a DC), so it always lands in
+                                     Endpoints — the LLM will surface AD-specific
+                                     findings inside that section automatically when
+                                     they're present in the source. -->
+                                <template x-if="src.automation_type === 'agentic'">
+                                    <span class="text-xs text-purple-300 px-2 py-1 rounded bg-purple-900/30 border border-purple-800/60">→ Endpoints section</span>
+                                </template>
+                                <template x-if="src.automation_type === 'aws_scan'">
+                                    <span class="text-xs text-blue-300 px-2 py-1 rounded bg-blue-900/30 border border-blue-800/60">→ AWS section</span>
+                                </template>
+                                <template x-if="src.automation_type === 'azure_scan'">
+                                    <span class="text-xs text-cyan-300 px-2 py-1 rounded bg-cyan-900/30 border border-cyan-800/60">→ Azure section</span>
+                                </template>
+                                <button @click="$store.engagement.remove(src.run_id)"
+                                        class="text-gray-500 hover:text-red-300 text-xs" title="Remove from selection">
+                                    ✕
+                                </button>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">
+                        Engagement notes <span class="text-gray-500">(optional)</span>
+                    </label>
+                    <textarea x-model="$store.engagement.notes" rows="4"
+                              placeholder="Customer name, breach window, attribution hypothesis, anything the LLM should know up front…"
+                              class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm resize-none focus:outline-none focus:border-indigo-500"></textarea>
+                </div>
+            </div>
+
+            <div class="p-4 border-t border-gray-700 flex items-center justify-between gap-3">
+                <p x-show="$store.engagement.status" class="text-xs"
+                   :class="{
+                       'text-red-300':  $store.engagement.statusLevel === 'error',
+                       'text-teal-300': $store.engagement.statusLevel === 'success',
+                       'text-gray-400': $store.engagement.statusLevel === 'info'
+                   }"
+                   x-text="$store.engagement.status"></p>
+                <div class="flex items-center gap-2 ml-auto">
+                    <button @click="$store.engagement.closeComposeModal()"
+                            class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm text-white">
+                        Cancel
+                    </button>
+                    <button @click="$store.engagement.generate()"
+                            :disabled="$store.engagement.generating || $store.engagement.selectedRunIds.length === 0"
+                            class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm font-medium text-white">
+                        <span x-show="!$store.engagement.generating">Generate Engagement Report</span>
+                        <span x-show="$store.engagement.generating">Generating…</span>
+                    </button>
+                </div>
             </div>
         </div>
     </div>
