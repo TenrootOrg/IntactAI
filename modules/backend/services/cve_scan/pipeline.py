@@ -24,6 +24,70 @@ from services.storage.report_store import save_report
 from . import nvd as _nvd
 
 
+def _collapse_validated_rows(rows):
+    """Collapse near-duplicate findings that share `(host, status,
+    cve_link)` — e.g. Microsoft Office Click-to-Run's Extensibility /
+    Licensing / Localization sub-components all flagged against the
+    same CVE on the same host, or the same product appearing with
+    minor punctuation differences from overlapping inputs
+    (system_programs.csv vs detectraptor_applications.csv).
+
+    The remediation for both cases is identical ("patch CVE-X on host
+    Y" or "this CVE is patched on host Y"), so showing them as N
+    separate rows just inflates the CSV without adding actionable
+    signal. The display product becomes the longest common prefix of
+    the merged rows' product strings + a `(+N variants)` annotation.
+
+    Status is part of the key so a host with one patched and one
+    vulnerable sub-component on the same CVE doesn't get merged — we
+    want to preserve that distinction."""
+    if not rows:
+        return rows
+    groups: Dict[tuple, list] = {}
+    order: list = []
+    for r in rows:
+        host, product, version, status, level, link = r
+        key = (host, status, link)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+
+    out = []
+    for key in order:
+        group = groups[key]
+        if len(group) == 1:
+            out.append(group[0])
+            continue
+        # Pick the highest-CVSS row as representative for the CVE
+        # level / link metadata (they're nearly always identical
+        # inside a group since the CVE itself drives those fields).
+        def _score(r):
+            try:
+                return float((r[4] or '').split(None, 1)[0])
+            except Exception:
+                return 0.0
+        rep = max(group, key=_score)
+        products = [r[1] or '' for r in group]
+        prefix = products[0]
+        for p in products[1:]:
+            i = 0
+            limit = min(len(prefix), len(p))
+            while i < limit and prefix[i] == p[i]:
+                i += 1
+            prefix = prefix[:i]
+        display_prod = prefix.rstrip(" -–—_/.,:").strip()
+        if len(display_prod) < 4:
+            display_prod = min(products, key=len)
+        extras = len(group) - 1
+        merged_product = f"{display_prod} (+{extras} variant{'' if extras == 1 else 's'})"
+        versions = sorted({(r[2] or '') for r in group})
+        merged_version = versions[0] if len(versions) == 1 else f"{versions[0]} (+{len(versions) - 1} more)"
+        host, _, _, status, level, link = rep
+        out.append((host, merged_product, merged_version, status, level, link))
+    return out
+
+
 # Per the README — these are the four artifact CSV exports the scan
 # expects. Filenames are how the side-project's main() identifies
 # inputs by content; we accept either the historical filename or any
@@ -163,6 +227,16 @@ def run_cve_scan(run_id: str, input_csv_paths: List[Path], name: Optional[str] =
         # range. Non-vulnerable rows pass through untouched.
         log("[CVE] Independent CVE-detail validation pass…", "info")
         validated = _nvd.validate_combined(combined_rows, log=log)
+        # Collapse sub-component / near-duplicate rows that share
+        # (host, status, CVE) — single source of truth for both CSV and
+        # findings.json so the operator's deliverables don't repeat
+        # Office Click-to-Run's three sub-components for every CVE
+        # match, etc.
+        raw_count = len(validated)
+        validated = _collapse_validated_rows(validated)
+        collapsed_delta = raw_count - len(validated)
+        if collapsed_delta:
+            log(f"[CVE] Collapsed {collapsed_delta} sub-component / near-duplicate row(s) by (host, status, CVE)", "info")
         vuln_count = sum(1 for r in validated if r[3] == "vulnerable")
         patched_count = sum(1 for r in validated if r[3] == "patched")
         unknown_count = sum(1 for r in validated if r[3] == "unknown")

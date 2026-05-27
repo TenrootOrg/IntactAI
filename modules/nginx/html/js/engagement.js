@@ -54,6 +54,14 @@ document.addEventListener('alpine:init', () => {
                 const d = run.details || {};
                 return d.has_report === true && d.llm_enabled !== false;
             }
+            if (run.type === 'cve_scan') {
+                // CVE Scan doesn't run an LLM; eligibility is whether
+                // it produced the short markdown summary + findings.json
+                // (both come from save_report + findings.json write in
+                // services/cve_scan/pipeline.py).
+                const d = run.details || {};
+                return d.has_report === true;
+            }
             return false;
         },
 
@@ -74,6 +82,7 @@ document.addEventListener('alpine:init', () => {
                 case 'agentic':    return 'Endpoints';
                 case 'aws_scan':   return 'AWS';
                 case 'azure_scan': return 'Azure';
+                case 'cve_scan':   return 'Vulnerabilities';
                 default:           return 'Other';
             }
         },
@@ -109,6 +118,7 @@ document.addEventListener('alpine:init', () => {
                 if (run.automation_type === 'agentic')    return 'Endpoints';
                 if (run.automation_type === 'aws_scan')   return 'AWS';
                 if (run.automation_type === 'azure_scan') return 'Azure';
+                if (run.automation_type === 'cve_scan')   return 'Vulnerabilities';
             }
             return this.sectionByRun[runId] || 'Other';
         },

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from services.workflow_service import update_run_status, add_log_to_run
@@ -46,9 +47,43 @@ def _load_source_report(run_id: str, automation_type: str) -> Optional[str]:
         if automation_type == 'azure_scan':
             from services.azure.reports import get_azure_report_content
             return get_azure_report_content(run_id)
+        if automation_type == 'cve_scan':
+            # CVE Scan stores its short markdown summary via the same
+            # save_report accessor AWS / Azure use. Pull it the same way.
+            from services.storage.report_store import get_report
+            raw = get_report(run_id)
+            if not raw:
+                return None
+            try:
+                payload = json.loads(raw)
+                return payload.get('technical') or None
+            except Exception:
+                return raw  # treat as bare markdown if the row wasn't JSON
     except Exception as e:
         print(f"[ENGAGEMENT] Failed to load report for {run_id}: {e}", flush=True)
     return None
+
+
+def _load_cve_findings(run_id: str) -> List[Dict]:
+    """Read the CVE Scan run's `findings.json` — the structured form
+    of `combined_cves.csv`. Returns a list of dicts in CVSS-descending
+    order, vulnerable findings only.
+
+    Returns [] when the file is missing (e.g. the CVE run pre-dated
+    the findings.json write, or its downloads dir was purged)."""
+    path = Path(f"/data/downloads/{run_id}/findings.json")
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return []
+    vulns = [r for r in (data or []) if (r.get('status') or '').lower() == 'vulnerable']
+    # Sort by CVSS desc, then by host + product for stable output.
+    vulns.sort(key=lambda r: (-float(r.get('cvss_score') or 0),
+                              r.get('hostname') or '',
+                              r.get('product') or ''))
+    return vulns
 
 
 def _condense(markdown: Optional[str], budget: int) -> str:
@@ -699,9 +734,199 @@ def _build_source_metadata_summary(s):
         if blueprint:
             bits.append(f"blueprint: `{blueprint}`")
 
+    elif atype == 'cve_scan':
+        # Findings counts come from the cve_scan workflow row's stash;
+        # see services/cve_scan/pipeline.py which writes
+        # findings_count / patched_count / unknown_count / unique_pairs.
+        unique = meta.get('unique_pairs')
+        vuln = meta.get('findings_count')
+        patched = meta.get('patched_count')
+        unknown = meta.get('unknown_count')
+        inputs = meta.get('inputs_processed') or []
+        bits.append("software-inventory CVE scan")
+        if isinstance(vuln, int):
+            counts = [f"{vuln} vulnerable"]
+            if isinstance(patched, int):
+                counts.append(f"{patched} patched")
+            if isinstance(unknown, int):
+                counts.append(f"{unknown} unknown")
+            bits.append(", ".join(counts))
+        if isinstance(unique, int):
+            bits.append(f"{unique} unique (product, version) pairs scanned")
+        if inputs:
+            bits.append(f"inputs: {', '.join(inputs[:4])}")
+
     if not bits:
         return ''
     return "*Scope: " + "; ".join(bits) + ".*"
+
+
+def _collapse_findings_by_host_cve(findings: List[Dict]) -> List[Dict]:
+    """Collapse rows that share `(hostname, cve_id)` into one display
+    row. This catches:
+      - Sub-components of the same parent product on the same host
+        that all hit the same CVE (e.g. Office Click-to-Run's
+        Extensibility / Licensing / Localization Component rows all
+        mapped to CVE-2025-53766 on DC1).
+      - Near-duplicate inventory rows differing only by punctuation
+        ("ASP.NET Core 8.0.14 - Shared Framework" vs "… Shared
+        Framework") from overlapping inputs (system_programs.csv vs
+        detectraptor_applications.csv).
+
+    The remediation for both cases is identical ("patch CVE-X on host
+    Y"), so showing them as N rows just inflates the table without
+    adding actionable signal. Raw row-level data is preserved in
+    `combined_cves.csv` from the workflow download for anyone who
+    needs to audit the underlying inventory."""
+    if not findings:
+        return []
+    groups: Dict[tuple, List[Dict]] = {}
+    order: List[tuple] = []
+    for f in findings:
+        key = (f.get('hostname') or '(unknown)', f.get('cve_id') or '')
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(f)
+
+    collapsed: List[Dict] = []
+    for key in order:
+        rows = groups[key]
+        if len(rows) == 1:
+            collapsed.append(rows[0])
+            continue
+        # Pick the highest-CVSS row as representative for severity /
+        # link metadata (they're nearly always identical inside a group
+        # since the CVE itself drives those fields).
+        rep = max(rows, key=lambda r: float(r.get('cvss_score') or 0))
+        products = [r.get('product') or '' for r in rows]
+        # Longest common prefix as the display name. Strip trailing
+        # whitespace and dangling punctuation so we don't show
+        # "Microsoft Office 16 -" with a hanging hyphen.
+        prefix = products[0]
+        for p in products[1:]:
+            i = 0
+            limit = min(len(prefix), len(p))
+            while i < limit and prefix[i] == p[i]:
+                i += 1
+            prefix = prefix[:i]
+        display_prod = prefix.rstrip(" -–—_/.,:").strip()
+        # If the prefix collapsed too aggressively (one product had
+        # nothing in common with the rest), fall back to the shortest
+        # full product name in the group.
+        if len(display_prod) < 4:
+            display_prod = min(products, key=len)
+        merged = dict(rep)
+        extras = len(rows) - 1
+        merged['product'] = f"{display_prod} (+{extras} variant{'' if extras == 1 else 's'})"
+        versions = sorted({(r.get('version') or '') for r in rows})
+        merged['version'] = versions[0] if len(versions) == 1 else f"{versions[0]} (+{len(versions) - 1} more)"
+        merged['_group_size'] = len(rows)
+        collapsed.append(merged)
+
+    # Re-sort by CVSS desc for stable display (groups may have shifted
+    # things around if the representative wasn't the original head).
+    collapsed.sort(key=lambda r: (-float(r.get('cvss_score') or 0),
+                                  r.get('hostname') or '',
+                                  r.get('product') or ''))
+    return collapsed
+
+
+def _build_vulnerabilities_section(cve_sources: List[Dict]) -> List[str]:
+    """Render the Vulnerabilities table body. Reads findings.json for
+    each cve_scan source and produces a per-source breakdown + a
+    consolidated top-50 table. The list is bounded so a hunt with
+    1000 vulnerable rows doesn't dominate the PDF — the operator can
+    still pull the full CSV from the source workflow's downloads.
+
+    Rows are collapsed by `(hostname, cve_id)` first so sibling
+    sub-components of a parent product (Office Click-to-Run's
+    Extensibility / Licensing / Localization Components, etc.) appear
+    as a single actionable row."""
+    out: List[str] = []
+    TOP_N = 50
+    severity_order = {'Critical': 0, 'High': 1, 'Medium': 2, 'Low': 3}
+
+    for src in cve_sources:
+        raw_findings = _load_cve_findings(src['run_id'])
+        meta = src.get('metadata') or {}
+        out.append(f"### From `{src['run_id']}` — {src.get('name') or '(unnamed)'}")
+        out.append("")
+        if not raw_findings:
+            out.append(
+                "*No `findings.json` is on file for this scan (the run may "
+                "pre-date the structured-output write, or its downloads "
+                "directory was purged). Re-run the scan to regenerate.*"
+            )
+            out.append("")
+            continue
+
+        findings = _collapse_findings_by_host_cve(raw_findings)
+        collapsed_delta = len(raw_findings) - len(findings)
+
+        # Severity breakdown counts the COLLAPSED set so it lines up
+        # with the table the operator actually sees below.
+        buckets: Dict[str, int] = {'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0}
+        for f in findings:
+            sev = (f.get('severity_bucket') or '').title()
+            if sev in buckets:
+                buckets[sev] += 1
+        out.append("**Severity breakdown:**")
+        out.append("")
+        for sev in ('Critical', 'High', 'Medium', 'Low'):
+            n = buckets[sev]
+            if n:
+                out.append(f"- {sev}: {n}")
+        # Per-host count summary (also against the collapsed set).
+        hosts: Dict[str, int] = {}
+        for f in findings:
+            h = f.get('hostname') or '(unknown)'
+            hosts[h] = hosts.get(h, 0) + 1
+        if hosts:
+            host_list = ', '.join(
+                f"`{h}` ({n})" for h, n in sorted(hosts.items(), key=lambda kv: -kv[1])[:10]
+            )
+            extra = "" if len(hosts) <= 10 else f" (+{len(hosts)-10} more hosts)"
+            out.append("")
+            out.append(f"**Hosts with findings ({len(hosts)} total):** {host_list}{extra}")
+
+        if collapsed_delta:
+            out.append("")
+            out.append(
+                f"*{collapsed_delta} sub-component / near-duplicate row(s) "
+                f"collapsed into the {len(findings)} actionable findings below "
+                f"(grouped by host + CVE).*"
+            )
+
+        # Top-N table (already sorted CVSS desc by _collapse_findings_by_host_cve).
+        out.append("")
+        if len(findings) > TOP_N:
+            out.append(f"**Top {TOP_N} findings (of {len(findings)} total, sorted by CVSS desc):**")
+        else:
+            out.append(f"**All {len(findings)} findings (sorted by CVSS desc):**")
+        out.append("")
+        out.append("| Host | Product | Version | CVSS | CVE |")
+        out.append("|---|---|---|---|---|")
+        pipe_esc = "\\|"
+        for f in findings[:TOP_N]:
+            host = (f.get('hostname') or '(unknown)').replace('|', pipe_esc)
+            prod = (f.get('product') or '').replace('|', pipe_esc)
+            ver = (f.get('version') or '').replace('|', pipe_esc)
+            score = f.get('cvss_score') or 0
+            sev = f.get('severity_bucket') or ''
+            cve = f.get('cve_id') or ''
+            link = f.get('cve_link') or (f"https://nvd.nist.gov/vuln/detail/{cve}" if cve else '')
+            cell = f"[{cve}]({link})" if (cve and link) else (cve or '—')
+            out.append(f"| {host} | {prod} | {ver} | {score} {sev} | {cell} |")
+        out.append("")
+        if len(findings) > TOP_N:
+            out.append(
+                f"*The remaining {len(findings) - TOP_N} vulnerable findings are in "
+                f"`combined_cves.csv` from the CVE Scan workflow row, alongside the "
+                f"full Patched + Unknown coverage data.*"
+            )
+            out.append("")
+    return out
 
 
 def _assemble_markdown(name, notes, loaded_sources, synthesis_md, *, tlp='AMBER', version=1):
@@ -722,8 +947,15 @@ def _assemble_markdown(name, notes, loaded_sources, synthesis_md, *, tlp='AMBER'
     # order. Only included when the operator picked at least one
     # source for the section. The body is the source's report
     # markdown, capped + appendix-pointered if it's enormous.
+    #
+    # cve_scan sources are excluded here: they get their own dedicated
+    # Vulnerabilities section later (with the per-host CVE table from
+    # findings.json). Otherwise they'd render twice — once as a thin
+    # metadata blurb here, once with the actual table.
     by_section = {}
     for s in loaded_sources:
+        if s.get('automation_type') == 'cve_scan':
+            continue
         by_section.setdefault(s['section'], []).append(s)
 
     section_order = list(CANONICAL_SECTIONS)
@@ -734,9 +966,13 @@ def _assemble_markdown(name, notes, loaded_sources, synthesis_md, *, tlp='AMBER'
 
     # Track each source's Appendix A position so the per-environment
     # section can point at it rather than duplicating the full text
-    # inline. The order is the same as `loaded_sources`, so the
-    # ordinal matches.
-    appendix_index = {s['run_id']: idx + 1 for idx, s in enumerate(loaded_sources)}
+    # inline. cve_scan sources are skipped (their data is rendered in
+    # §8 Vulnerabilities, not Appendix A) so we index over the same
+    # filtered list the appendix renderer below uses.
+    appendix_index = {
+        s['run_id']: idx + 1
+        for idx, s in enumerate(s for s in loaded_sources if s.get('automation_type') != 'cve_scan')
+    }
 
     # Per-environment sections start at §6 in the new layout (§1-§5
     # are the LLM-written executive layer: Exec, Scope, Attack
@@ -829,6 +1065,26 @@ def _assemble_markdown(name, notes, loaded_sources, synthesis_md, *, tlp='AMBER'
     body.append("")
     ordinal += 1
 
+    # Vulnerabilities — software-inventory CVE table built mechanically
+    # from each cve_scan source's findings.json. Sits AFTER Containment
+    # but BEFORE the LLM tail so the operator sees concrete vulnerable
+    # products before reading "Recommended Next Steps". Only renders
+    # when at least one cve_scan source was selected for the engagement.
+    cve_sources = [s for s in loaded_sources if s.get('automation_type') == 'cve_scan']
+    if cve_sources:
+        body.append(f"## {ordinal}. Vulnerabilities")
+        ordinal += 1
+        body.append("")
+        body.append(
+            "*Software-inventory CVE scan results (NVD matches against installed "
+            "software on each host). Findings sorted by CVSS desc. Full per-row "
+            "data with all severities — including patched + unknown — is in the "
+            "downloadable `combined_cves.csv` from the source workflow.*"
+        )
+        body.append("")
+        body.extend(_build_vulnerabilities_section(cve_sources))
+        body.append("")
+
     # Renumber + append the LLM-written tail block (Recommended
     # Next Steps + MITRE Mapping). Their ordinals follow the
     # Containment section's ordinal.
@@ -836,15 +1092,23 @@ def _assemble_markdown(name, notes, loaded_sources, synthesis_md, *, tlp='AMBER'
         body += [_renumber_tail(tail, ordinal), ""]
 
     # Appendix A — verbatim source reports.
-    body.append(appendix_heading())
-    body.append("")
-    for idx, s in enumerate(loaded_sources, 1):
-        body.append(f"### A.{idx} — `{s['run_id']}` — {s.get('name') or '(unnamed)'}  *({s.get('section')})*")
+    #
+    # cve_scan sources are excluded: their structured data is already
+    # fully rendered in §8 Vulnerabilities (top-50 table + severity +
+    # per-host counts), and the cve_scan short markdown summary just
+    # duplicates a subset of the same rows. The full per-row data
+    # lives in the downloadable combined_cves.csv from the workflow row.
+    appendix_sources = [s for s in loaded_sources if s.get('automation_type') != 'cve_scan']
+    if appendix_sources:
+        body.append(appendix_heading())
         body.append("")
-        body.append(s.get('markdown') or '*(no content on file)*')
-        body.append("")
-        body.append("---")
-        body.append("")
+        for idx, s in enumerate(appendix_sources, 1):
+            body.append(f"### A.{idx} — `{s['run_id']}` — {s.get('name') or '(unnamed)'}  *({s.get('section')})*")
+            body.append("")
+            body.append(s.get('markdown') or '*(no content on file)*')
+            body.append("")
+            body.append("---")
+            body.append("")
 
     # Appendix B — Tools Used. One row per source workflow with what
     # ran. Helps the customer reproduce or audit the analysis later.
@@ -867,6 +1131,8 @@ def _assemble_markdown(name, notes, loaded_sources, synthesis_md, *, tlp='AMBER'
             tool = "IntactAI AWS Scan (CloudTrail + Prowler + GuardDuty + LLM)"
         elif atype == 'azure_scan':
             tool = "IntactAI Azure Scan (DFIR-O365RC + SIGMA + LLM analysis)"
+        elif atype == 'cve_scan':
+            tool = "IntactAI CVE Scan (Velociraptor inventory + local NVD mirror + CPE/Publisher resolver)"
         else:
             tool = "IntactAI workflow"
         blueprint = meta.get('blueprint') or meta.get('blueprint_id') or '—'

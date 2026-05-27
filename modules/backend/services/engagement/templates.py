@@ -20,7 +20,7 @@ SOURCE_INLINE_CHAR_BUDGET = 10_000
 # these. "Endpoints" covers Velociraptor-collected agentic runs
 # (workstations + servers including DCs). Any non-canonical label
 # falls into "Other" at the end.
-CANONICAL_SECTIONS = ("Endpoints", "AWS", "Azure", "Other")
+CANONICAL_SECTIONS = ("Endpoints", "AWS", "Azure", "Vulnerabilities", "Other")
 
 
 ENGAGEMENT_SYSTEM_PROMPT = """You are a senior DFIR consultant writing the executive layer of an
