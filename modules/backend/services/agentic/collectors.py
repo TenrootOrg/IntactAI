@@ -1331,6 +1331,34 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
 
             add_log_to_run(run_id, f"[Velociraptor] Found {len(hunt_flows)} flows in hunt", "info")
 
+            # Offline-collector imports produce flows whose IDs happen to
+            # end in `.H` (e.g. `F.D87HII4KI3BOO.H`), but they are *not*
+            # hunt-derived — there's no underlying `H.xxx` hunt. The
+            # block above converts `F.xxx.H` → `H.xxx` and queries
+            # hunt_flows(), which legitimately returns 0 for these.
+            # Detect that empty result and fall through to the flow-id
+            # path (which searches every client for the flow). Closing
+            # the channel first to avoid leaking — the recursive call
+            # opens a fresh one.
+            if not hunt_flows and hunt_id.startswith('F.') and hunt_id.endswith('.H'):
+                add_log_to_run(
+                    run_id,
+                    f"[Velociraptor] '{hunt_id}' returned no hunt flows — retrying as a single-flow ID "
+                    f"(common for offline-collector imports).",
+                    "info",
+                )
+                try:
+                    channel.close()
+                except Exception:
+                    pass
+                return get_existing_collection_results(
+                    run_id=run_id,
+                    flow_id=hunt_id,
+                    hunt_id=None,
+                    time_filter=time_filter,
+                    client_ids=client_ids,
+                )
+
             # Now fetch results from each flow
             for flow_info in hunt_flows:
                 flow_client_id = flow_info.get('ClientId')
