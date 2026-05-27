@@ -737,7 +737,8 @@ def _try_local_db(name, version, cpe_or_pair, log: Optional[Callable] = None):
         return False, None
 
 
-def find_best_cve(name, version, cache, cache_path: Path, log: Optional[Callable] = None):
+def find_best_cve(name, version, cache, cache_path: Path, log: Optional[Callable] = None,
+                  publisher_hint: Optional[str] = None):
     """Return (status, cve_id, score, severity). `status` ∈
     {'vulnerable', 'patched', 'unknown'} and lets callers separate
     "we found a CVE that applies" from "NVD has CVEs for this product
@@ -759,15 +760,32 @@ def find_best_cve(name, version, cache, cache_path: Path, log: Optional[Callable
 
     saw_any_cve_data = False
 
-    # Resolve CPE candidates from the two existing layers (curated +
-    # dictionary). These no longer need to issue HTTPS — we use them
-    # to derive a vendor:product to query the local DB with.
+    # Resolve CPE candidates from the existing layers (curated +
+    # name-based dictionary + publisher-based dictionary). These no
+    # longer need to issue HTTPS — we use them to derive a
+    # vendor:product to query the local DB with.
     cpe_curated = cpe_for(name)
     try:
         from . import cpe_dict as _cpe_dict
         cpe_dict_hit = _cpe_dict.lookup_cpe(name)
     except Exception:
+        _cpe_dict = None
         cpe_dict_hit = None
+
+    # Publisher-driven CPE — fires only when the name-based lookups
+    # didn't produce a usable candidate AND the caller supplied the
+    # Publisher hint (typically pulled from Velociraptor's
+    # Windows.Sys.Programs export). Lets us catch products whose
+    # install name omits the vendor token ("Advanced IP Scanner"
+    # has no "radmin" in it but Publisher says "Famatech"). The
+    # publisher matcher is conservative — it requires the dict
+    # entry's product tokens to be present in the name.
+    cpe_publisher = None
+    if publisher_hint and _cpe_dict is not None and not (cpe_curated or cpe_dict_hit):
+        try:
+            cpe_publisher = _cpe_dict.lookup_cpe_by_publisher(name, publisher_hint)
+        except Exception:
+            cpe_publisher = None
 
     # Track which CPEs were answered by the local DB so we can skip
     # the REST fallback for the same CPE. Local DB is authoritative
@@ -776,7 +794,9 @@ def find_best_cve(name, version, cache, cache_path: Path, log: Optional[Callable
     cpes_answered_locally: set = set()
 
     # Layer 0: local SQLite — instant, deterministic, no network.
-    for cpe in (cpe_curated, cpe_dict_hit):
+    # Includes the publisher-derived CPE so the local DB gets first
+    # crack at it, same as any other CPE candidate.
+    for cpe in (cpe_curated, cpe_dict_hit, cpe_publisher):
         if not cpe:
             continue
         saw_local, hit = _try_local_db(name, version, cpe, log=log)
@@ -801,6 +821,18 @@ def find_best_cve(name, version, cache, cache_path: Path, log: Optional[Callable
     if (cpe_dict_hit and cpe_dict_hit != cpe_curated
             and cpe_dict_hit not in cpes_answered_locally):
         blob = _fetch(cpe_dict_hit, True, cache, cache_path, log=log)
+        if blob.get("totalResults", 0) > 0:
+            saw_any_cve_data = True
+            hit = _scan(blob, name, version)
+            if hit and hit[0]:
+                return ("vulnerable",) + hit
+
+    # Layer 2b: REST against publisher-derived CPE — same fallback
+    # role as Layer 2 but for the publisher-driven candidate.
+    if (cpe_publisher
+            and cpe_publisher not in (cpe_curated, cpe_dict_hit)
+            and cpe_publisher not in cpes_answered_locally):
+        blob = _fetch(cpe_publisher, True, cache, cache_path, log=log)
         if blob.get("totalResults", 0) > 0:
             saw_any_cve_data = True
             hit = _scan(blob, name, version)
@@ -969,6 +1001,45 @@ def collect_unique_pairs(paths: List[Path]) -> set:
                 if name and ver:
                     pairs.add((name, ver))
     return pairs
+
+
+def collect_name_publisher_map(paths: List[Path]) -> Dict[str, str]:
+    """Harvest `name → Publisher` from every input CSV that carries
+    a Publisher column (Velociraptor's `Windows.Sys.Programs` does).
+
+    Used to feed find_best_cve's Publisher-driven fallback: when the
+    name doesn't carry the vendor token (e.g. "Advanced IP Scanner"
+    has no "radmin" in the name), the Publisher column ("Famatech")
+    is a high-confidence hint we'd otherwise throw away.
+
+    Strategy: first non-empty Publisher value per name wins. Most
+    installs have the same Publisher for the same product across
+    hosts; in the rare case where they disagree (e.g. corporate name
+    drifts between releases), the first one is good enough — the
+    Publisher normalizer collapses the variants anyway."""
+    out: Dict[str, str] = {}
+    for p in paths:
+        if not p.exists():
+            continue
+        with p.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f)
+            try:
+                header = next(reader)
+            except StopIteration:
+                continue
+            if "Publisher" not in header:
+                continue
+            pub_idx = header.index("Publisher")
+            for row in reader:
+                while len(row) < len(header):
+                    row.append("")
+                name, _ver = _row_name_version(row, header)
+                if not name or name in out:
+                    continue
+                pub = row[pub_idx].strip()
+                if pub:
+                    out[name] = pub
+    return out
 
 
 def write_per_input_output(src: Path, dst: Path, lookup: Dict):
@@ -1195,6 +1266,7 @@ def validate_combined(rows: List, log: Optional[Callable] = None) -> List:
 
 
 def fetch_all_pairs(pairs: list, cache: Dict, cache_path: Path, log: Optional[Callable] = None,
+                    publisher_map: Optional[Dict[str, str]] = None,
                     progress_cb: Optional[Callable] = None) -> Dict:
     """For every (product, version) pair, look up the best CVE in
     parallel using 12 workers. Returns dict[(name, ver) -> (status,
@@ -1256,8 +1328,10 @@ def fetch_all_pairs(pairs: list, cache: Dict, cache_path: Path, log: Optional[Ca
         with lock:
             state["in_flight"] += 1
             state["last_pair"] = pair
+        publisher = (publisher_map or {}).get(name, "")
         try:
-            result = find_best_cve(name, ver, cache, cache_path, log=log)
+            result = find_best_cve(name, ver, cache, cache_path, log=log,
+                                   publisher_hint=publisher)
         except Exception as e:
             # Don't let one bad pair poison the pool. Tag the result as
             # 'unknown' so the row still appears in full-mode output

@@ -66,6 +66,116 @@ _STOPWORDS = {
 # vendor AND also appears in the installed name, the score gets a
 # bonus so e.g. "Microsoft Edge" prefers "microsoft:edge" over a
 # vendor-less collision.
+# Velociraptor's `Windows.Sys.Programs` artifact carries a `Publisher`
+# column for every installed program — but the publisher string is the
+# vendor's marketing name ("NVIDIA Corporation", "Red Hat, Inc.",
+# "Famatech") which rarely matches NVD's CPE vendor token. Normalize
+# the publisher → CPE vendor so we can do a vendor-scoped lookup when
+# the install name doesn't carry the vendor token (e.g.
+# "Advanced IP Scanner" → no "radmin" in the name, but Publisher
+# says "Famatech" → we know to search the `radmin` vendor space).
+#
+# Order: strip corp-suffix → lowercase → squeeze whitespace → consult
+# the OVERRIDES map for cases where NVD's vendor token doesn't match
+# the publisher's natural slug (e.g. Famatech-the-company vs. radmin-
+# the-NVD-vendor for Advanced IP Scanner).
+_PUB_CORP_SUFFIXES = re.compile(
+    r"[,\s]*\b("
+    r"corp(?:oration)?|inc\.?|incorporated|ltd\.?|limited|llc|llp|"
+    r"co\.?|gmbh|kg|kgaa|s\.a\.?|s\.l\.?|s\.r\.l\.?|d\.o\.o\.?|"
+    r"plc|pty|ag|bv|nv|oy|ab|aps|sas|sarl|sas u\.?|s\.p\.?a\.?|"
+    r"company|holdings?|software industries|"
+    # Generic open-source / SDO descriptors that aren't part of the brand:
+    r"foundation|project|team|developers"
+    # Deliberately NOT stripping 'group' or 'labs' — brand names like
+    # "Eugene Roshal & Far Group" and "Sentinel Labs" need overrides.
+    r")\.?\s*$",
+    re.I,
+)
+_PUB_THE_PREFIX = re.compile(r"^the\s+", re.I)
+
+# Publisher → NVD-CPE-vendor overrides — only for truly anomalous
+# cases where the slug-of-the-publisher genuinely disagrees with the
+# CPE vendor token NVD uses (and the normalizer can't derive it from
+# the string alone). Most vendors are caught automatically by the
+# normalize-then-verify-against-vendor-set ladder below, so we keep
+# this small.
+_PUB_OVERRIDES = {
+    "famatech":                          "radmin",          # Famatech makes Advanced IP Scanner; NVD uses "radmin"
+    "eugene roshal & far group":         "rarlab",          # FAR Manager
+    "the document":                      "libreoffice",     # "The Document Foundation" after suffix strip
+    "the openssh":                       "openbsd",         # OpenSSH lives under openbsd in NVD
+    "git for windows":                   "git-scm",
+    "filezilla":                         "filezilla-project",
+    "obs":                               "obsproject",      # "OBS Project" after suffix strip
+    "sentinel labs":                     "sentinelone",
+    "hewlett-packard":                   "hp",
+    "hewlett-packard development":       "hp",
+    "hewlett packard enterprise":        "hpe",
+    "vmware by broadcom":                "vmware",
+    "amazon web services":               "amazon",
+    "googlechrome":                      "google",          # the "Google\Chrome" backslash-stripped form
+}
+
+
+# Vendor-token set populated by init_dictionary() — used by the
+# normalizer to verify that a derived slug actually corresponds to a
+# real NVD vendor before returning it. Without this check we'd hand
+# back garbage slugs like "ericdraken" or "imicrosoft" that no CPE
+# entry uses.
+_vendor_set: set = set()
+
+
+def _normalize_publisher(publisher: str) -> str:
+    """Reduce a free-form Publisher string to a candidate NVD CPE
+    vendor token, verified against the loaded vendor set. Returns
+    empty string when no derivable slug exists in the dictionary.
+
+    Lookup ladder (first hit wins):
+      1. Override map (truly-anomalous mappings)
+      2. Full-string slug after corp-suffix strip
+      3. First-word-only slug ("Microsoft Corporation" → "microsoft")
+      4. Full slug returned unverified (caller can still try; layer
+         will just return None on miss)"""
+    if not publisher:
+        return ""
+    if not _loaded:
+        init_dictionary()
+
+    p = _BACKSLASH_ESC_RE.sub(r"\1", publisher.lower()).strip().strip(",")
+    p = _PUB_THE_PREFIX.sub("", p)
+    p = _PUB_CORP_SUFFIXES.sub("", p).strip().rstrip(".").strip()
+    if not p:
+        return ""
+
+    # 1. Explicit override.
+    if p in _PUB_OVERRIDES:
+        return _PUB_OVERRIDES[p]
+
+    # 2. Full-string slug — most generic case.
+    slug = re.sub(r"[^a-z0-9]+", "_", p).strip("_")
+    if slug and slug in _vendor_set:
+        return slug
+
+    # 3. Joined slug (no separators) — handles "Red Hat" → "redhat",
+    # "TrendMicro" → "trendmicro" without needing an override per case.
+    joined = re.sub(r"[^a-z0-9]", "", p)
+    if joined and joined in _vendor_set:
+        return joined
+
+    # 4. First word ("Microsoft Corporation" → "microsoft").
+    tokens = p.split()
+    if tokens:
+        first = re.sub(r"[^a-z0-9]+", "_", tokens[0]).strip("_")
+        if first and first in _vendor_set:
+            return first
+
+    # 5. Fall through with the full slug even if it's not in the
+    # vendor set — caller's lookup will return None on miss, and the
+    # log message at least records what we tried.
+    return slug
+
+
 # Product-name tokens too generic to use as a single-token "rescue"
 # match. Without this, "Microsoft Visual C++ ... Runtime" → first dict
 # entry where any vendor's product is exactly 'runtime' (e.g.
@@ -115,13 +225,15 @@ _BACKSLASH_ESC_RE = re.compile(r"\\(.)")
 
 def _tokenize(text: str) -> List[str]:
     """Lowercase, strip noise, return non-stopword tokens of length ≥ 2.
-    Underscores are treated as word separators so the dictionary's
-    canonical product names (e.g. 'visual_c++', 'windows_11') split on
-    the same boundaries an installed name would naturally produce."""
+    Underscores AND hyphens are treated as word separators so the
+    dictionary's canonical product names (e.g. 'visual_c++',
+    'windows_11', 'virtio-win', 'git-scm') split on the same
+    boundaries an installed name naturally produces ("Virtio-win
+    Driver Installer" → {virtio, win, driver, installer})."""
     if not text:
         return []
     text = _BACKSLASH_ESC_RE.sub(r"\1", text.lower())
-    text = text.replace("_", " ")
+    text = text.replace("_", " ").replace("-", " ")
     toks = _TOKEN_RE.findall(text)
     return [t for t in toks if t not in _STOPWORDS and len(t) >= 2]
 
@@ -191,6 +303,11 @@ def init_dictionary(path: Optional[Path] = None, force: bool = False) -> int:
                     post.setdefault(t, set()).add(entry_id)
         _index = idx
         _postings = post
+        # Vendor set — every distinct CPE vendor string (lowercased) so
+        # the publisher normalizer can verify a derived slug actually
+        # exists in NVD's catalog before returning it.
+        global _vendor_set
+        _vendor_set = {v.lower() for v, _, _, _ in idx}
         _loaded = True
         return len(_index)
 
@@ -298,6 +415,83 @@ def lookup_cpe(product_name: str) -> Optional[str]:
                 v, p = entries[0]
                 return f"cpe:2.3:a:{v}:{p}"
     return None
+
+
+def lookup_cpe_by_publisher(product_name: str, publisher: str) -> Optional[str]:
+    """Vendor-scoped CPE lookup using Velociraptor's `Publisher` signal.
+
+    The default token-overlap matcher (`lookup_cpe`) requires the
+    vendor token to appear in the installed product name — which fails
+    for products whose install string omits the vendor ("Advanced IP
+    Scanner 2.5.1" doesn't say "Famatech" or "Radmin", but the
+    Publisher column does). This function takes the publisher as a
+    secondary signal: normalize it to a CPE vendor token, restrict
+    the candidate set to dict entries with that vendor, and pick the
+    entry whose product tokens best overlap the installed name.
+
+    Returns a CPE-2.3 string or None. None is returned when:
+      - the publisher couldn't be normalized to a known vendor token
+      - the vendor has no entries in the dictionary
+      - no candidate scored above the overlap threshold
+
+    Conservative on purpose — we'd rather return None than guess a
+    wrong CPE that adds noise to the operator's findings."""
+    if not _loaded:
+        init_dictionary()
+    if not _index:
+        return None
+
+    vendor = _normalize_publisher(publisher)
+    if not vendor:
+        return None
+
+    name_tokens = set(_tokenize(product_name))
+    if not name_tokens:
+        return None
+
+    # Walk the inverted index for entries whose full vendor string
+    # matches. For 65 k entries this is microseconds even without an
+    # index. We compare the FULL vendor string (`vendor_raw.lower()`)
+    # not just the first token — "git-scm" should match the publisher
+    # slug "git-scm", not the truncated "git".
+    best_score = 0.0
+    best_entry: Optional[Tuple[str, str]] = None
+    vendor_norm = vendor.replace("-", "_")
+    for vendor_raw, product_raw, dict_tokens, _vendor_token in _index:
+        v_low = vendor_raw.lower()
+        # Accept exact match OR a hyphen/underscore-normalized one so
+        # publisher slugs like "git_scm" still find dict entries spelled
+        # "git-scm".
+        if v_low != vendor and v_low.replace("-", "_") != vendor_norm:
+            continue
+        product_tokens = set(_tokenize(product_raw))
+        if not product_tokens:
+            continue
+        overlap = name_tokens & product_tokens
+        if not overlap:
+            continue
+        # Score = number of product tokens hit, weighted by coverage
+        # of the dict entry. Favours specific products over generic
+        # ones (microsoft:office_2019 beats microsoft:office when the
+        # name contains both).
+        coverage_product = len(overlap) / max(len(product_tokens), 1)
+        score = len(overlap) * 1.0 + coverage_product
+        # Require ALL of the dict's product tokens to be in the name
+        # when the product has multiple tokens — otherwise a "framework"
+        # match in "microsoft:asp.net_core_runtime_framework" would
+        # collide with anything Microsoft-published containing
+        # "framework". Single-token products skip this check (the
+        # vendor restriction already disambiguates).
+        if len(product_tokens) > 1 and not product_tokens.issubset(name_tokens):
+            continue
+        if score > best_score:
+            best_score = score
+            best_entry = (vendor_raw, product_raw)
+
+    if best_entry is None:
+        return None
+    v, p = best_entry
+    return f"cpe:2.3:a:{v}:{p}"
 
 
 def refresh_dictionary_from_upstream(logger: Optional[Callable] = None,

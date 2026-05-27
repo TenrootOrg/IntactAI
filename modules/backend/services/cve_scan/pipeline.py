@@ -95,9 +95,15 @@ def run_cve_scan(run_id: str, input_csv_paths: List[Path], name: Optional[str] =
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # Step 1: collect every unique (product, version) pair across
-        # all inputs.
+        # all inputs. Also harvest a name→Publisher map so the lookup
+        # layer can fall back to vendor-scoped CPE search for products
+        # whose install string doesn't carry the vendor token (e.g.
+        # "Advanced IP Scanner" has no "radmin" in the name but the
+        # Publisher column says "Famatech").
         pairs = sorted(_nvd.collect_unique_pairs(existing))
-        log(f"[CVE] {len(pairs)} unique (product, version) pairs to look up", "info")
+        publisher_map = _nvd.collect_name_publisher_map(existing)
+        log(f"[CVE] {len(pairs)} unique (product, version) pairs to look up "
+            f"({len(publisher_map)} with Publisher hints)", "info")
         update_run_status(run_id, 'running', progress=15)
 
         if not pairs:
@@ -124,7 +130,9 @@ def run_cve_scan(run_id: str, input_csv_paths: List[Path], name: Optional[str] =
             pct = 15 + int(45 * done / max(total, 1))
             update_run_status(run_id, 'running', progress=min(pct, 60))
 
-        lookup = _nvd.fetch_all_pairs(pairs, cache, cache_path, log=log, progress_cb=_lookup_progress)
+        lookup = _nvd.fetch_all_pairs(pairs, cache, cache_path, log=log,
+                                       publisher_map=publisher_map,
+                                       progress_cb=_lookup_progress)
         elapsed = time.time() - started
         log(f"[CVE] Fetched {len(pairs)} products from NVD in {elapsed:.1f}s", "success")
         update_run_status(run_id, 'running', progress=60)
