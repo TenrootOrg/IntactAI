@@ -189,6 +189,77 @@ def run_system_maintenance():
                     import traceback
                     traceback.print_exc()
 
+                update_run_status(run_id, "running", progress=68)
+
+                # =========================================================
+                # Task 3.5: Refresh CVE Scan databases (CPE dict + local
+                # CVE mirror) (~3%)
+                # =========================================================
+                # Two refreshes back-to-back, both best-effort:
+                #   a) CPE dictionary CSV from tiiuae/cpedict — drives
+                #      the product → CPE resolver.
+                #   b) Local CVE mirror from fkie-cad/nvd-json-data-feeds
+                #      — eliminates per-product NVD REST calls at scan
+                #      time. Initial run takes ~10-30 min; subsequent
+                #      runs are incremental (skip unchanged year-files).
+                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
+                add_log_to_run(run_id, "TASK 3.5/4: Refresh CVE Scan databases (CPE dict + local CVE mirror)", "info")
+                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
+
+                # --- 3.5a: CPE dictionary ---
+                try:
+                    from services.cve_scan.cpe_dict import refresh_dictionary_from_upstream
+                    cpe_dict_result = refresh_dictionary_from_upstream(
+                        logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
+                    )
+                    if cpe_dict_result.get("ok"):
+                        add_log_to_run(
+                            run_id,
+                            f"CPE dictionary refresh: {cpe_dict_result.get('message')}",
+                            "success",
+                        )
+                    else:
+                        add_log_to_run(
+                            run_id,
+                            f"CPE dictionary refresh had issues: {cpe_dict_result.get('message')}",
+                            "warning",
+                        )
+                except Exception as e:
+                    add_log_to_run(run_id, f"CPE dictionary refresh error: {str(e)}", "warning")
+                    import traceback
+                    traceback.print_exc()
+
+                # --- 3.5b: local CVE mirror ---
+                try:
+                    from services.cve_scan import local_db as _local_db
+                    add_log_to_run(
+                        run_id,
+                        "[LOCAL_DB] Refreshing local CVE mirror "
+                        "(initial run ~10-30 min, incremental ~minutes)…",
+                        "info",
+                    )
+                    bulk_result = _local_db.bulk_load(
+                        logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
+                    )
+                    if bulk_result.get("ok"):
+                        add_log_to_run(
+                            run_id,
+                            f"Local CVE mirror: {bulk_result.get('cve_count')} CVEs indexed, "
+                            f"{bulk_result.get('db_size_mb', 0):.0f} MB on disk, "
+                            f"{bulk_result.get('elapsed_seconds', 0):.0f}s elapsed",
+                            "success",
+                        )
+                    else:
+                        add_log_to_run(
+                            run_id,
+                            "Local CVE mirror refresh had issues — scans will fall back to REST",
+                            "warning",
+                        )
+                except Exception as e:
+                    add_log_to_run(run_id, f"Local CVE mirror refresh error: {str(e)}", "warning")
+                    import traceback
+                    traceback.print_exc()
+
                 update_run_status(run_id, "running", progress=70)
 
                 # =========================================================

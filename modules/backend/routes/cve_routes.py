@@ -65,6 +65,16 @@ def _auto_run_name() -> str:
     return f"CVE Management — {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
 
+def _coerce_scan_mode(value) -> str:
+    """Normalize whatever the operator (or worker chaining a run-hunt
+    call) sends. We accept 'full' or 'vulnerable_only'; anything else
+    falls back to the safer vulnerable-only mode so the report stays
+    legible if the field arrives empty / malformed."""
+    if isinstance(value, str) and value.strip().lower() == "full":
+        return "full"
+    return "vulnerable_only"
+
+
 def _extract_artifact_csvs_from_zip(zip_path: Path, dest_dir: Path) -> list[Path]:
     """Unpack a Velociraptor hunt ZIP and merge per-client CSVs into the
     four canonical artifact CSVs the CVE pipeline consumes. Returns the
@@ -73,8 +83,81 @@ def _extract_artifact_csvs_from_zip(zip_path: Path, dest_dir: Path) -> list[Path
     side-project scan is tolerant of extra columns."""
     merged_rows: dict[str, list[list[str]]] = {a: [] for a in _ARTIFACT_TO_CANONICAL}
     merged_headers: dict[str, list[str]] = {}
+    # client_id → hostname map, built from Generic.Client.Info rows in
+    # a pass-1 over the ZIP. Used to inject a `Hostname` column on
+    # every artifact's merged CSV so the side-project's `_row_host()`
+    # picks it up — otherwise `combined_cves.csv` shows "(unknown)"
+    # for every finding pulled from a hunt-download ZIP.
+    client_id_to_hostname: dict[str, str] = {}
+
+    def _entry_client_id(entry_path: str) -> str:
+        """Per-client folder name from a hunt-ZIP entry path. Velociraptor
+        emits two structures depending on which Download button you use:
+
+          1. "Full Download" of an offline-collector run:
+             `clients/<client_id>/...`
+          2. "Full Download" / "Summary" of a regular hunt:
+             `<hostname>-<client_id>/results/<artifact>.csv`
+
+        For (2), `parts[-2]` is always the literal string 'results' —
+        which would (and did) collapse every host's rows under one
+        bogus key. Walk for the segment that looks like a Velociraptor
+        client folder (contains '-C.' or starts with 'C.'); fall back
+        to the legacy 'clients/' lookup; finally the parent dir."""
+        parts = entry_path.split('/')
+        if 'clients' in parts:
+            try:
+                return parts[parts.index('clients') + 1]
+            except (ValueError, IndexError):
+                return ''
+        for p in parts:
+            if '-C.' in p or p.startswith('C.'):
+                return p
+        return parts[-2] if len(parts) >= 2 else ''
+
+
+    def _hostname_from_folder(folder: str) -> str:
+        """Velociraptor's per-client folder is `<Hostname>-C.<hash>` — so
+        the hostname is everything before the last `-C.`. Useful as a
+        fallback when the Generic.Client.Info CSV isn't present for that
+        client (e.g. older hunt exports)."""
+        if not folder or '-C.' not in folder:
+            return ''
+        return folder.rsplit('-C.', 1)[0]
 
     with zipfile.ZipFile(str(zip_path)) as zf:
+        # Pass 1: harvest hostnames from Generic.Client.Info CSVs.
+        # That artifact's rows carry `Hostname` (or `Fqdn`) directly.
+        for entry in zf.namelist():
+            if not entry.lower().endswith('.csv'):
+                continue
+            base = os.path.basename(entry)
+            if not (base.startswith('Generic.Client.Info') or 'Client.Info' in base):
+                continue
+            cid = _entry_client_id(entry)
+            if not cid:
+                continue
+            try:
+                with zf.open(entry) as fh:
+                    text = io.TextIOWrapper(fh, encoding='utf-8', errors='replace', newline='')
+                    reader = csv.reader(text)
+                    hdr = next(reader, None)
+                    if not hdr:
+                        continue
+                    # Find Hostname/Fqdn column index — case-insensitive,
+                    # accept either.
+                    hcol = next((i for i, c in enumerate(hdr) if c.strip().lower() in ('hostname', 'fqdn')), -1)
+                    if hcol < 0:
+                        continue
+                    for row in reader:
+                        if hcol < len(row) and row[hcol].strip():
+                            client_id_to_hostname[cid] = row[hcol].strip()
+                            break  # one row is enough per file
+            except Exception:
+                continue
+
+        # Pass 2: merge artifact CSVs into one file per artifact, with
+        # the operator-facing `Hostname` column appended.
         for entry in zf.namelist():
             name_lower = entry.lower()
             if not name_lower.endswith('.csv'):
@@ -92,17 +175,16 @@ def _extract_artifact_csvs_from_zip(zip_path: Path, dest_dir: Path) -> list[Path
                     break
             if not artifact:
                 continue
-            # Client id is the segment immediately after "clients/" in
-            # the ZIP entry path. Fall back to the parent dir name.
-            client_id = ''
-            parts = entry.split('/')
-            if 'clients' in parts:
-                try:
-                    client_id = parts[parts.index('clients') + 1]
-                except (ValueError, IndexError):
-                    pass
-            if not client_id and len(parts) >= 2:
-                client_id = parts[-2]
+            client_id = _entry_client_id(entry)
+            # Hostname resolution order:
+            #   1. Generic.Client.Info CSV (pass 1) — most accurate
+            #   2. Parse `<Hostname>-C.<hash>` from the folder name
+            #   3. Fall back to the raw client_id
+            hostname = (
+                client_id_to_hostname.get(client_id)
+                or _hostname_from_folder(client_id)
+                or client_id
+            )
             with zf.open(entry) as fh:
                 text = io.TextIOWrapper(fh, encoding='utf-8', errors='replace', newline='')
                 reader = csv.reader(text)
@@ -112,7 +194,12 @@ def _extract_artifact_csvs_from_zip(zip_path: Path, dest_dir: Path) -> list[Path
                 header = rows[0]
                 data = rows[1:]
                 if artifact not in merged_headers:
-                    merged_headers[artifact] = header + ['_velo_client_id']
+                    # Append both _velo_client_id (for traceability) AND
+                    # Hostname (which the side-project's _row_host()
+                    # actually consumes). If hostname lookup failed we
+                    # fall back to client_id so at least something
+                    # human-meaningful appears in the report.
+                    merged_headers[artifact] = header + ['_velo_client_id', 'Hostname']
                 # Pad short rows / trim long rows to header width so the
                 # merged CSV stays well-formed across heterogeneous hosts.
                 width = len(header)
@@ -121,7 +208,7 @@ def _extract_artifact_csvs_from_zip(zip_path: Path, dest_dir: Path) -> list[Path
                         row = row + [''] * (width - len(row))
                     elif len(row) > width:
                         row = row[:width]
-                    merged_rows[artifact].append(row + [client_id])
+                    merged_rows[artifact].append(row + [client_id, hostname])
 
     written: list[Path] = []
     for artifact, rows in merged_rows.items():
@@ -170,10 +257,11 @@ def upload_scan():
             return jsonify({'error': 'Expected a .zip file (Velociraptor hunt Full Download).'}), 400
 
         run_name = _auto_run_name()
+        scan_mode = _coerce_scan_mode(request.form.get('scan_mode'))
         run_id = create_automation_run(
             automation_type='cve_scan',
             name=run_name,
-            details={'phase': 'starting', 'mode': 'upload', 'source_filename': zip_file.filename},
+            details={'phase': 'starting', 'mode': 'upload', 'scan_mode': scan_mode, 'source_filename': zip_file.filename},
         )
         run_dir = Path(UPLOAD_ROOT) / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -207,12 +295,12 @@ def upload_scan():
 
         def _worker():
             try:
-                run_cve_scan(run_id, saved, name=run_name)
+                run_cve_scan(run_id, saved, name=run_name, mode=scan_mode)
             except Exception:
                 pass
         threading.Thread(target=_worker, daemon=True).start()
 
-        return jsonify({'run_id': run_id, 'status': 'started', 'extracted': len(saved)})
+        return jsonify({'run_id': run_id, 'status': 'started', 'extracted': len(saved), 'scan_mode': scan_mode})
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -234,12 +322,14 @@ def from_flow_scan():
             return jsonify({'error': 'Provide flow_id or hunt_id.'}), 400
 
         name = (data.get('name') or '').strip() or _auto_run_name()
+        scan_mode = _coerce_scan_mode(data.get('scan_mode'))
         run_id = create_automation_run(
             automation_type='cve_scan',
             name=name,
             details={
                 'phase': 'starting',
                 'mode': 'from-flow',
+                'scan_mode': scan_mode,
                 'flow_id': flow_id,
                 'hunt_id': hunt_id,
             },
@@ -251,12 +341,12 @@ def from_flow_scan():
             try:
                 update_run_status(run_id, 'running', progress=2)
                 csvs = pull_from_velociraptor(run_id, flow_id, hunt_id, Path(run_dir))
-                run_cve_scan(run_id, csvs, name=name)
+                run_cve_scan(run_id, csvs, name=name, mode=scan_mode)
             except Exception as e:
                 add_log_to_run(run_id, f"[CVE] from-flow dispatch failed: {e}", "error")
                 update_run_status(run_id, 'failed', error=str(e))
         threading.Thread(target=_worker, daemon=True).start()
-        return jsonify({'run_id': run_id, 'status': 'started'})
+        return jsonify({'run_id': run_id, 'status': 'started', 'scan_mode': scan_mode})
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -274,14 +364,19 @@ _CVE_HUNT_ARTIFACTS = [
 ]
 
 
-def _dispatch_cve_hunt(run_id: str, description: str) -> str | None:
+def _dispatch_cve_hunt(run_id: str, description: str, max_wait_seconds: int = 3600) -> str | None:
     """Create a multi-artifact Velociraptor hunt with the cve_management
     artifact set. Returns the new hunt_id (H.xxx) or None on failure.
     Logs progress to the given workflow row.
 
+    `max_wait_seconds` ties the hunt's `expires` to the operator's
+    max-wait window from the UI. Past that point Velociraptor stops
+    handing this hunt out to any newly-online client, so the operator
+    doesn't end up with a hunt that lingers for hours after the
+    auto-scan has already finished.
+
     Mirrors the bulk-hunt VQL the bestpractice route uses
-    (routes/velociraptor_routes.py:217), with the resource caps from
-    the cve_management blueprint's settings."""
+    (routes/velociraptor_routes.py:217)."""
     import json as _json
     from services.velociraptor_service import setup_velociraptor_connection
     from pyvelociraptor import api_pb2, api_pb2_grpc
@@ -294,14 +389,13 @@ def _dispatch_cve_hunt(run_id: str, description: str) -> str | None:
         stub = api_pb2_grpc.APIStub(channel)
         artifacts_list = _json.dumps(_CVE_HUNT_ARTIFACTS)
         spec_parts = ", ".join([f'`{a}`=dict()' for a in _CVE_HUNT_ARTIFACTS])
-        # Mirrors the cve_management blueprint settings in
-        # modules/backend/config/default_blueprints.yaml. Hunt expiry
-        # is set equal to the per-client timeout so the hunt closes
-        # itself instead of lingering open after clients have all
-        # finished. The per-run "max wait" the operator sets in the UI
-        # controls the *polling* timeout, not these hunt-side caps.
-        timeout_seconds = 3600
-        expire_seconds = timeout_seconds
+        # Hunt-side caps. expire_seconds == operator's max_wait so the
+        # hunt self-closes when the polling window ends — no orphan
+        # hunt picks up brand-new endpoints hours later. Per-client
+        # collect timeout stays tight (5min) — these 4 artifacts are
+        # registry/WMI lookups that finish in seconds on a healthy host.
+        expire_seconds = max(60, int(max_wait_seconds))
+        timeout_seconds = min(expire_seconds, 300)
         cpu_limit = 80
         flow_max_rows = 5_000_000
         flow_max_bytes = 10_240 * 1024 * 1024
@@ -335,6 +429,35 @@ SELECT HuntId FROM collection
                 except Exception:
                     continue
         return hunt_id
+    finally:
+        try:
+            channel.close()
+        except Exception:
+            pass
+
+
+def _stop_hunt(run_id: str, hunt_id: str) -> bool:
+    """Ask Velociraptor to stop a running hunt — used when the operator's
+    max-wait window expires and we'd rather scan the partial results
+    than throw them away. Best-effort; the pull path tolerates a hunt
+    that's still in any state."""
+    import json as _json
+    from services.velociraptor_service import setup_velociraptor_connection
+    from pyvelociraptor import api_pb2, api_pb2_grpc
+
+    channel = setup_velociraptor_connection()
+    if not channel:
+        return False
+    try:
+        stub = api_pb2_grpc.APIStub(channel)
+        q = f"SELECT * FROM hunt_stop(hunt_id='{hunt_id}')"
+        req = api_pb2.VQLCollectorArgs(max_wait=10, max_row=10, Query=[api_pb2.VQLRequest(VQL=q)])
+        for _ in stub.Query(req, timeout=20):
+            pass
+        return True
+    except Exception as e:
+        add_log_to_run(run_id, f"[CVE] hunt_stop({hunt_id}) failed (continuing anyway): {e}", "warning")
+        return False
     finally:
         try:
             channel.close()
@@ -419,10 +542,12 @@ def run_cve_hunt():
         # the CVE CSV download button), velociraptor_hunt for hunt-only
         # so it sorts alongside other hunt rows.
         automation_type = 'cve_scan' if chain else 'velociraptor_hunt'
+        scan_mode = _coerce_scan_mode(data.get('scan_mode'))
         details = {
             'phase': 'dispatching_hunt',
             'mode': 'run-hunt',
             'chain_cve_scan': chain,
+            'scan_mode': scan_mode,
             'artifacts': _CVE_HUNT_ARTIFACTS,
         }
         run_id = create_automation_run(
@@ -436,7 +561,14 @@ def run_cve_hunt():
         def _worker():
             try:
                 update_run_status(run_id, 'running', progress=5)
-                hunt_id = _dispatch_cve_hunt(run_id, description=f"Intact.AI CVE Scan: {run_name}")
+                # Pass the operator's max_wait through so the hunt's
+                # `expires` matches the polling window — no orphan hunt
+                # left running after we've already stopped watching.
+                hunt_id = _dispatch_cve_hunt(
+                    run_id,
+                    description=f"Intact.AI CVE Scan: {run_name}",
+                    max_wait_seconds=max_wait_seconds,
+                )
                 if not hunt_id:
                     add_log_to_run(run_id, "[CVE] Hunt creation failed — no HuntId returned", "error")
                     update_run_status(run_id, 'failed', error="Hunt creation failed")
@@ -462,40 +594,44 @@ def run_cve_hunt():
                 update_run_status(run_id, 'running', progress=15)
                 add_log_to_run(run_id, f"[CVE] Waiting for hunt to finish (polling every 30s, max {max_wait_minutes} min)…", "info")
                 finished = _wait_for_hunt(run_id, hunt_id, timeout_seconds=max_wait_seconds)
+                partial = False
                 if not finished:
-                    # The hunt is still running on Velociraptor — we just
-                    # stopped polling. Surface the hunt_id in the error so
-                    # the operator can paste it into 'Use existing hunt'
-                    # once it completes, instead of having to dig through
-                    # the logs to find it.
+                    # Timeout: stop the hunt on Velociraptor so it
+                    # doesn't keep eating endpoint resources, then scan
+                    # whatever results have already arrived. Partial
+                    # data is more useful to the operator than a
+                    # `failed` status with no output.
+                    partial = True
                     add_log_to_run(
                         run_id,
-                        f"[CVE] Auto-scan skipped — hunt {hunt_id} still running. "
-                        f"To finish: 'Use existing hunt / flow' → paste '{hunt_id}'.",
+                        f"[CVE] {max_wait_minutes} min timer expired — stopping hunt {hunt_id} "
+                        f"and scanning whatever has been collected so far.",
                         "warning",
                     )
-                    update_run_status(
-                        run_id,
-                        'failed',
-                        error=f"Auto-scan timed out after {max_wait_minutes} min — "
-                              f"hunt {hunt_id} still running; paste it into 'Use existing hunt' to finish.",
-                    )
-                    return
+                    _stop_hunt(run_id, hunt_id)
 
                 update_run_status(run_id, 'running', progress=40)
                 run_dir = Path(os.path.join(UPLOAD_ROOT, run_id))
                 csvs = pull_from_velociraptor(run_id, None, hunt_id, run_dir)
                 if not csvs:
-                    add_log_to_run(run_id, "[CVE] Hunt finished but no CSVs were produced (artifacts may have errored on every client).", "error")
-                    update_run_status(run_id, 'failed', error="No CSVs pulled from hunt")
+                    note = ("Hunt timer expired before any client checked in." if partial
+                            else "Hunt finished but no CSVs were produced (artifacts may have errored on every client).")
+                    add_log_to_run(run_id, f"[CVE] {note}", "error")
+                    update_run_status(run_id, 'failed', error=note)
                     return
-                run_cve_scan(run_id, csvs, name=run_name)
+                if partial:
+                    add_log_to_run(
+                        run_id,
+                        f"[CVE] Pulled partial results from {len(csvs)} CSV(s) — running NVD scan on partial data.",
+                        "info",
+                    )
+                run_cve_scan(run_id, csvs, name=(f"{run_name} (partial)" if partial else run_name), mode=scan_mode)
             except Exception as e:
                 add_log_to_run(run_id, f"[CVE] run-hunt dispatch failed: {e}", "error")
                 update_run_status(run_id, 'failed', error=str(e))
 
         threading.Thread(target=_worker, daemon=True).start()
-        return jsonify({'run_id': run_id, 'status': 'started', 'chain_cve_scan': chain})
+        return jsonify({'run_id': run_id, 'status': 'started', 'chain_cve_scan': chain, 'scan_mode': scan_mode})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

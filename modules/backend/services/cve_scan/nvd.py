@@ -115,6 +115,109 @@ def clean_for_query(name: str) -> str:
     return s[:120]
 
 
+# Stop-word tokens that should never end a keyword. Names like
+# "Microsoft 365 Apps for business" otherwise produce keywords like
+# "365 Apps for" — strip the trailing "for" and adjacent dangling tokens
+# before sending to NVD.
+_KW_TRAILING_NOISE = {"for", "with", "and", "by", "of", "the", "a", "an", "to", "in"}
+
+
+# Canonicalization patterns — every regex that matches gets replaced
+# with the second element, dramatically collapsing near-duplicate SKUs
+# to one lookup. Ordered most-specific first.
+_CANON_PATTERNS = [
+    # Microsoft Visual C++ runtime — 8+ SKUs per version (X64/X86 ×
+    # Additional/Minimum × Runtime/Redistributable). Collapse to year.
+    (re.compile(r"\bmicrosoft visual c\+\+ (\d{4}).*$", re.I), r"microsoft visual c++ \1"),
+    (re.compile(r"\bmicrosoft visual c\+\+ \d{4}-(\d{4}).*$", re.I), r"microsoft visual c++ \1"),
+    (re.compile(r"\bmicrosoft visual c\+\+ v?14\b.*$", re.I), "microsoft visual c++ 14"),
+    # Python 3.x — has up to 12 sub-component installer entries.
+    (re.compile(r"\bpython (\d+\.\d+(?:\.\d+)?) .*$", re.I), r"python \1"),
+    (re.compile(r"\bpython launcher\b.*$", re.I), "python launcher"),
+    # Microsoft Office Click-to-Run components.
+    (re.compile(r"\boffice 16 click-to-run .*$", re.I), "office 16 click-to-run"),
+    (re.compile(r"\bmicrosoft (?:office|365 apps?)\b.*$", re.I), "microsoft 365 apps"),
+    (re.compile(r"\bיישומי microsoft 365\b.*$", re.I), "microsoft 365 apps"),
+    # Microsoft .NET runtime variants.
+    (re.compile(r"\bmicrosoft \.net core runtime - (\d+\.\d+(?:\.\d+)?)\b.*$", re.I), r"microsoft .net core runtime \1"),
+    (re.compile(r"\bmicrosoft \.net runtime - (\d+\.\d+(?:\.\d+)?)\b.*$", re.I), r"microsoft .net runtime \1"),
+    (re.compile(r"\bmicrosoft \.net host(?:fxr)? - (\d+\.\d+(?:\.\d+)?)\b.*$", re.I), r"microsoft .net runtime \1"),
+    (re.compile(r"\bmicrosoft windows desktop runtime - (\d+\.\d+(?:\.\d+)?)\b.*$", re.I), r"microsoft windows desktop runtime \1"),
+    # Microsoft Edge / WebView2.
+    (re.compile(r"\bmicrosoft edge webview2 runtime\b.*$", re.I), "microsoft edge"),
+    # CrowdStrike product family — many sub-products (Sensor / Device
+    # Control / Firmware Analysis) all map to the same falcon CPE.
+    (re.compile(r"\bcrowdstrike .*$", re.I), "crowdstrike falcon"),
+    # Generic "(User)" / "(Machine)" / "(Per User)" install-scope tags.
+    (re.compile(r"\s*\((?:user|machine|per[- ]user|all users?)\)\s*$", re.I), ""),
+]
+
+
+def canonical_name(name: str) -> str:
+    """Collapse a noisy product name into the form most likely to share
+    a CPE lookup with siblings. Returns the canonical lookup key
+    (lower-cased). Used to dedupe (product, version) pairs before
+    hitting NVD — a Windows enterprise inventory typically has ~30%
+    near-duplicate SKUs (8 Visual C++ variants → 1 lookup, 12 Python
+    sub-components → 1, etc.)."""
+    if not name:
+        return ""
+    s = name.strip()
+    for pat, repl in _CANON_PATTERNS:
+        s = pat.sub(repl, s)
+    # Strip trailing whitespace / dashes left by the substitutions.
+    s = re.sub(r"\s+", " ", s).strip(" -")
+    return s.lower()
+
+
+def _keyword_candidates(name: str) -> list:
+    """Generate an ordered list of keyword candidates to try against
+    NVD when no CPE-map hit. First candidate is the existing
+    `clean_for_query` result (back-compat); subsequent candidates are
+    progressively broader heuristics so a noisy product like
+    'Microsoft 365 Apps for business - en-us' eventually retries with
+    'Microsoft 365' instead of giving up after 'Apps for'.
+
+    Each candidate is also de-duplicated and bounded to keep API call
+    counts predictable: at most 3 attempts per product."""
+    cands: list = []
+
+    def _add(s: str) -> None:
+        s = (s or "").strip()
+        if not s:
+            return
+        # Drop trailing stop-words/noise tokens.
+        toks = s.split()
+        while toks and toks[-1].lower() in _KW_TRAILING_NOISE:
+            toks.pop()
+        s = " ".join(toks)[:120].strip()
+        if s and s not in cands:
+            cands.append(s)
+
+    # 1. Original cleaner — keeps existing matches working.
+    _add(clean_for_query(name))
+
+    # 2. Vendor-preserving variant: don't strip the vendor prefix
+    # (Microsoft 365, Adobe Acrobat — the vendor IS the brand).
+    s = LOCALE_RE.sub(" ", name)
+    s = PARENS_RE.sub(" ", s)
+    s = TRAILING_DASH_NUM_RE.sub(" ", s)
+    s = VERSION_RE.sub(" ", s)
+    s = re.sub(r"[^\w\s\.\+\-]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    words = s.split()
+    if len(words) >= 2:
+        _add(" ".join(words[:2]))
+
+    # Note: an earlier revision also tried a single-word fallback
+    # (e.g. "Java", "Microsoft"). It was dropped because such broad
+    # queries return ENORMOUS result sets (NVD's keyword search on
+    # "Microsoft" or "Adobe" can return thousands of unrelated CVEs);
+    # each one made the workers stall on JSON parse + cve_applies_to
+    # scan, doubling overall scan time for negligible match gain.
+    return cands[:2]
+
+
 def parse_version(v):
     if not v:
         return ()
@@ -234,16 +337,28 @@ def nvd_query_page(keyword, start_index=0, use_cpe=False, log: Optional[Callable
     qs = urllib.parse.urlencode(params)
     url = f"{NVD_URL}?{qs}"
     req = urllib.request.Request(url, headers=_nvd_headers())
+    # 30s per attempt × 3 attempts = ≤90s worst case per page. The
+    # previous 120s default let a hung TLS handshake silently stall an
+    # entire 12-worker pool for >6 minutes — easy to misread as "stuck".
     for attempt in range(3):
         _acquire_rate_slot()
+        t0 = time.time()
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                # Only log slow successes (>5s) to keep the log readable.
+                elapsed = time.time() - t0
+                if log and elapsed > 5:
+                    log(f"[CVE] NVD slow ({elapsed:.1f}s) for {('CPE ' if use_cpe else 'kw ')+keyword!r}", "info")
+                return data
         except Exception as e:
             wait = 2 ** attempt
+            elapsed = time.time() - t0
             if log:
-                log(f"[CVE] NVD error '{e}', retrying in {wait}s…", "warning")
+                log(f"[CVE] NVD error after {elapsed:.1f}s on {('CPE ' if use_cpe else 'kw ')+keyword!r}: {e} (retry {attempt+1}/3 in {wait}s)", "warning")
             time.sleep(wait)
+    if log:
+        log(f"[CVE] NVD gave up after 3 attempts on {('CPE ' if use_cpe else 'kw ')+keyword!r}", "error")
     return None
 
 
@@ -323,6 +438,67 @@ PRODUCT_TO_CPE = [
     ("icloud",                      "cpe:2.3:a:apple:icloud"),
     ("grammarly",                   "cpe:2.3:a:grammarly:grammarly"),
     ("whatsapp",                    "cpe:2.3:a:whatsapp:whatsapp"),
+
+    # Expanded coverage for common Windows-enterprise software the
+    # original side-project map didn't catch. Each new entry was added
+    # because a real run produced an "unknown" status that the operator
+    # would have to triage by hand otherwise.
+    ("python",                      "cpe:2.3:a:python:python"),
+    ("microsoft 365",               "cpe:2.3:a:microsoft:365_apps"),
+    ("יישומי microsoft 365",        "cpe:2.3:a:microsoft:365_apps"),
+    ("microsoft 365 apps",          "cpe:2.3:a:microsoft:365_apps"),
+    ("crowdstrike",                 "cpe:2.3:a:crowdstrike:falcon"),
+    ("notepad++",                   "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+"),
+    ("slack",                       "cpe:2.3:a:slack:slack"),
+    ("discord",                     "cpe:2.3:a:discord:discord"),
+    ("telegram desktop",            "cpe:2.3:a:telegram:telegram_desktop"),
+    ("docker desktop",              "cpe:2.3:a:docker:desktop"),
+    ("docker",                      "cpe:2.3:a:docker:docker"),
+    ("vlc media player",            "cpe:2.3:a:videolan:vlc_media_player"),
+    ("obs studio",                  "cpe:2.3:a:obsproject:obs_studio"),
+    ("wireshark",                   "cpe:2.3:a:wireshark:wireshark"),
+    ("nodejs",                      "cpe:2.3:a:nodejs:node.js"),
+    ("node.js",                     "cpe:2.3:a:nodejs:node.js"),
+    ("anydesk",                     "cpe:2.3:a:anydesk:anydesk"),
+    ("filezilla",                   "cpe:2.3:a:filezilla-project:filezilla_client"),
+    ("winscp",                      "cpe:2.3:a:winscp:winscp"),
+    ("openssh",                     "cpe:2.3:a:openbsd:openssh"),
+    ("git",                         "cpe:2.3:a:git-scm:git"),
+    ("apache tomcat",               "cpe:2.3:a:apache:tomcat"),
+    ("apache",                      "cpe:2.3:a:apache:http_server"),
+    ("nginx",                       "cpe:2.3:a:nginx:nginx"),
+    ("oracle java",                 "cpe:2.3:a:oracle:jdk"),
+    ("amazon corretto",             "cpe:2.3:a:amazon:corretto"),
+    ("jetbrains",                   "cpe:2.3:a:jetbrains:intellij_idea"),
+    ("sublime text",                "cpe:2.3:a:sublimehq:sublime_text"),
+    ("opera",                       "cpe:2.3:a:opera:opera"),
+    ("brave",                       "cpe:2.3:a:brave:browser"),
+    ("vivaldi",                     "cpe:2.3:a:vivaldi:vivaldi"),
+    ("thunderbird",                 "cpe:2.3:a:mozilla:thunderbird"),
+    ("libreoffice",                 "cpe:2.3:a:libreoffice:libreoffice"),
+    ("openoffice",                  "cpe:2.3:a:apache:openoffice"),
+    ("foxit reader",                "cpe:2.3:a:foxit:reader"),
+    ("evernote",                    "cpe:2.3:a:evernote:evernote"),
+    ("dropbox",                     "cpe:2.3:a:dropbox:dropbox"),
+    ("box drive",                   "cpe:2.3:a:box:drive"),
+    ("splunk",                      "cpe:2.3:a:splunk:splunk"),
+    ("postman",                     "cpe:2.3:a:postman:postman"),
+    ("yara",                        "cpe:2.3:a:virustotal:yara"),
+    ("kape",                        "cpe:2.3:a:eric-zimmerman:kape"),
+    ("wsl",                         "cpe:2.3:a:microsoft:windows_subsystem_for_linux"),
+    # Windows 11 / 10 — extra editions the strict "pro NNh2" / "NN h2"
+    # prefixes didn't cover (Enterprise, Enterprise Evaluation, etc.).
+    ("windows 11 enterprise evaluation 25h2", "cpe:2.3:o:microsoft:windows_11_25h2"),
+    ("windows 11 enterprise evaluation 24h2", "cpe:2.3:o:microsoft:windows_11_24h2"),
+    ("windows 11 enterprise evaluation 23h2", "cpe:2.3:o:microsoft:windows_11_23h2"),
+    ("windows 11 enterprise 25h2",  "cpe:2.3:o:microsoft:windows_11_25h2"),
+    ("windows 11 enterprise 24h2",  "cpe:2.3:o:microsoft:windows_11_24h2"),
+    ("windows 11 enterprise 23h2",  "cpe:2.3:o:microsoft:windows_11_23h2"),
+    ("windows 10 enterprise 22h2",  "cpe:2.3:o:microsoft:windows_10_22h2"),
+    ("windows 10 enterprise 21h2",  "cpe:2.3:o:microsoft:windows_10_21h2"),
+    ("windows server 2022",         "cpe:2.3:o:microsoft:windows_server_2022"),
+    ("windows server 2019",         "cpe:2.3:o:microsoft:windows_server_2019"),
+    ("windows server 2016",         "cpe:2.3:o:microsoft:windows_server_2016"),
 ]
 
 
@@ -485,25 +661,175 @@ def _scan(blob, name, version):
     return best if best[0] is not None else None
 
 
+def _scan_local_rows(local_rows, name, version):
+    """Run the same matching logic as `_scan` against rows produced by
+    `local_db.search_by_cpe()`. Each local row has the shape
+    {cve_id, cvss_score, severity, cpe_match} where `cpe_match` mirrors
+    the NVD-API cpeMatch shape that `cpe_matches_version` already
+    understands. Returns (cve_id, score, severity) for the
+    highest-CVSS applicable CVE, or None."""
+    best = (None, -1.0, "")
+    for r in local_rows:
+        m = r["cpe_match"]
+        if not cpe_matches_version(m, version):
+            continue
+        # Reuse the existing name-token check from `cve_applies_to` —
+        # the local-DB row only carries one cpe match, but the
+        # phrase/token rule still applies to guard against generic-name
+        # collisions ("Microsoft Office" CPE matching "Office Lens").
+        # Inline the check rather than call cve_applies_to (which
+        # iterates a full cve_obj we don't have here).
+        lname = name.lower()
+        for marker in (" for ", " plugin for ", " add-in for ", " addin for "):
+            idx = lname.find(marker)
+            if idx > 0:
+                lname = lname[:idx]
+                break
+        name_tokens = set(re.findall(r"\w+", lname))
+        if not name_tokens:
+            continue
+        criteria = m.get("criteria", "")
+        parts = criteria.split(":")
+        if len(parts) < 6:
+            continue
+        product = parts[4].replace("_", " ").lower()
+        prod_tokens = [t for t in re.findall(r"\w+", product) if len(t) >= 4]
+        phrase_in_name = product in lname
+        tokens_in_name = bool(prod_tokens) and all(t in name_tokens for t in prod_tokens)
+        if not (phrase_in_name or tokens_in_name):
+            continue
+        score = r.get("cvss_score") or 0.0
+        sev = r.get("severity") or ""
+        if score > best[1]:
+            best = (r["cve_id"], score, sev)
+    return best if best[0] is not None else None
+
+
+def _try_local_db(name, version, cpe_or_pair, log: Optional[Callable] = None):
+    """Look up a CPE in the local SQLite mirror. Returns
+    (saw_data, hit) — `saw_data=True` when the DB had ANY rows for
+    this vendor:product (used to disambiguate 'patched' vs 'unknown'),
+    `hit` is the (cve_id, score, sev) triple if a CVE applies.
+
+    `cpe_or_pair` is either a CPE-2.3 string ('cpe:2.3:a:vendor:product:...')
+    or a pre-parsed (vendor, product) tuple. Returns (False, None) if
+    the local DB hasn't been populated yet — caller falls back to REST.
+    """
+    try:
+        from . import local_db as _local_db
+        if not _local_db.is_populated():
+            return False, None
+        if isinstance(cpe_or_pair, tuple):
+            vendor, product = cpe_or_pair
+        else:
+            parts = (cpe_or_pair or "").split(":")
+            if len(parts) < 5:
+                return False, None
+            vendor, product = parts[3], parts[4]
+        rows = _local_db.search_by_cpe(vendor, product)
+        if not rows:
+            return False, None
+        hit = _scan_local_rows(rows, name, version)
+        return True, hit
+    except Exception as e:
+        if log:
+            log(f"[CVE] Local-DB lookup error for {cpe_or_pair}: {e} (falling back to REST)", "warning")
+        return False, None
+
+
 def find_best_cve(name, version, cache, cache_path: Path, log: Optional[Callable] = None):
+    """Return (status, cve_id, score, severity). `status` ∈
+    {'vulnerable', 'patched', 'unknown'} and lets callers separate
+    "we found a CVE that applies" from "NVD has CVEs for this product
+    but none affect this version" from "no NVD data for this product
+    at all". When status != 'vulnerable', the remaining fields are
+    None and callers should treat them as empty.
+
+    Lookup order:
+      Layer 0 — local SQLite mirror of the NVD feed (fast, no network)
+      Layer 1 — hand-curated PRODUCT_TO_CPE → REST (operator overrides)
+      Layer 2 — vendored CPE dictionary → REST
+      Layer 3 — NVD keyword search (broad, slow)
+
+    The REST layers (1-3) only fire when the local DB hasn't been
+    populated yet (fresh install) or returned nothing for the resolved
+    CPE — they're the back-compat path."""
     if not (name and name.strip()) or not (version and version.strip()):
-        return None, None, None
+        return ("unknown", None, None, None)
 
-    cpe = cpe_for(name)
-    if cpe:
-        blob = _fetch(cpe, True, cache, cache_path, log=log)
+    saw_any_cve_data = False
+
+    # Resolve CPE candidates from the two existing layers (curated +
+    # dictionary). These no longer need to issue HTTPS — we use them
+    # to derive a vendor:product to query the local DB with.
+    cpe_curated = cpe_for(name)
+    try:
+        from . import cpe_dict as _cpe_dict
+        cpe_dict_hit = _cpe_dict.lookup_cpe(name)
+    except Exception:
+        cpe_dict_hit = None
+
+    # Track which CPEs were answered by the local DB so we can skip
+    # the REST fallback for the same CPE. Local DB is authoritative
+    # when populated — a "patched" verdict there means we should NOT
+    # turn around and re-ask NVD over the network for the same data.
+    cpes_answered_locally: set = set()
+
+    # Layer 0: local SQLite — instant, deterministic, no network.
+    for cpe in (cpe_curated, cpe_dict_hit):
+        if not cpe:
+            continue
+        saw_local, hit = _try_local_db(name, version, cpe, log=log)
+        if saw_local:
+            saw_any_cve_data = True
+            cpes_answered_locally.add(cpe)
+            if hit and hit[0]:
+                return ("vulnerable",) + hit
+
+    # Layer 1: REST against PRODUCT_TO_CPE (only when local DB didn't
+    # have data for this CPE — i.e. CPE is brand-new and not in our
+    # mirror yet).
+    if cpe_curated and cpe_curated not in cpes_answered_locally:
+        blob = _fetch(cpe_curated, True, cache, cache_path, log=log)
         if blob.get("totalResults", 0) > 0:
+            saw_any_cve_data = True
             hit = _scan(blob, name, version)
-            return hit if hit else (None, None, None)
+            if hit and hit[0]:
+                return ("vulnerable",) + hit
 
-    keyword = clean_for_query(name)
-    if keyword:
-        blob = _fetch(keyword, False, cache, cache_path, log=log)
-        hit = _scan(blob, name, version)
-        if hit:
-            return hit
+    # Layer 2: REST against vendored CPE dictionary.
+    if (cpe_dict_hit and cpe_dict_hit != cpe_curated
+            and cpe_dict_hit not in cpes_answered_locally):
+        blob = _fetch(cpe_dict_hit, True, cache, cache_path, log=log)
+        if blob.get("totalResults", 0) > 0:
+            saw_any_cve_data = True
+            hit = _scan(blob, name, version)
+            if hit and hit[0]:
+                return ("vulnerable",) + hit
 
-    return None, None, None
+    # Layer 3: multi-keyword REST fallback — DROPPED when the local
+    # DB is populated. The mirror is comprehensive (every CVE NVD
+    # has), so if our PRODUCT_TO_CPE map AND the cpe_dict both failed
+    # to produce a CPE, the noisy keyword search isn't going to do
+    # better. Skipping it saves 15-30 s per unmatched product (some
+    # keyword calls hit NVD's slow long-tail). Only fires when local
+    # DB hasn't been populated yet (e.g. fresh install before the
+    # first bulk_load completes).
+    try:
+        from . import local_db as _local_db
+        _local_populated = _local_db.is_populated()
+    except Exception:
+        _local_populated = False
+    if not _local_populated:
+        for keyword in _keyword_candidates(name):
+            blob = _fetch(keyword, False, cache, cache_path, log=log)
+            if blob.get("totalResults", 0) > 0:
+                saw_any_cve_data = True
+                hit = _scan(blob, name, version)
+                if hit and hit[0]:
+                    return ("vulnerable",) + hit
+
+    return (("patched" if saw_any_cve_data else "unknown"), None, None, None)
 
 
 def _kernel_build(s):
@@ -661,8 +987,10 @@ def write_per_input_output(src: Path, dst: Path, lookup: Dict):
         name, ver = _row_name_version(row, header)
         link, sev = "", ""
         hit = lookup.get((name, ver))
-        if hit and hit[0]:
-            cve_id, score, severity = hit
+        # New 4-tuple shape: (status, cve_id, score, severity). Only
+        # populate the CVE columns when status == 'vulnerable'.
+        if hit and hit[0] == "vulnerable":
+            _status, cve_id, score, severity = hit
             link = NVD_DETAIL + cve_id
             sev = f"{score} {severity}".strip()
             cve_count += 1
@@ -674,11 +1002,25 @@ def write_per_input_output(src: Path, dst: Path, lookup: Dict):
     return cve_count
 
 
-def build_combined_rows(paths: List[Path], lookup: Dict) -> List[Tuple[str, str, str, str, str]]:
-    """Return the deduped (host, product, version, level, link) rows
-    that go into combined_cves.csv, sorted by severity desc."""
-    rows: List[Tuple[str, str, str, str, str]] = []
-    seen = set()
+def build_combined_rows(paths: List[Path], lookup: Dict, mode: str = "vulnerable_only") -> List[Tuple[str, str, str, str, str, str]]:
+    """Return the deduped (host, product, version, status, level, link)
+    rows that go into combined_cves.csv.
+
+    `mode` controls inclusion + sort:
+      - 'vulnerable_only' (default): only rows where NVD found an
+        applicable CVE. Sorted by CVSS desc. Matches the original
+        side-project behavior.
+      - 'full': include every (host × product × version) the inventory
+        saw. Rows without a CVE get status 'patched' (NVD has CVEs
+        for the product but not this version) or 'unknown' (no NVD
+        data at all). Ordered Vulnerable → Unknown → Patched, then
+        by CVSS desc within each bucket.
+    """
+    rows: List[Tuple[str, str, str, str, str, str]] = []
+    # Vulnerable rows are deduped by (host, name, ver, cve). Patched /
+    # unknown rows by (host, name, ver) — no CVE to disambiguate by.
+    seen_vuln = set()
+    seen_other = set()
     for p in paths:
         if not p.exists():
             continue
@@ -695,24 +1037,51 @@ def build_combined_rows(paths: List[Path], lookup: Dict) -> List[Tuple[str, str,
                 if not (name and ver):
                     continue
                 hit = lookup.get((name, ver))
-                if not (hit and hit[0]):
+                host = _row_host(row, header) or "(unknown)"
+                if not hit:
+                    if mode != "full":
+                        continue
+                    key = (host, name, ver)
+                    if key in seen_other:
+                        continue
+                    seen_other.add(key)
+                    rows.append((host, name, ver, "unknown", "", ""))
                     continue
-                host = _row_host(row, header)
-                cve_id, score, sev = hit
-                link = NVD_DETAIL + cve_id
-                level = f"{score} {sev}".strip()
-                key = (host, name, ver, cve_id)
-                if key in seen:
-                    continue
-                seen.add(key)
-                rows.append((host or "(unknown)", name, ver, level, link))
+                status = hit[0]
+                if status == "vulnerable":
+                    cve_id, score, sev = hit[1], hit[2], hit[3]
+                    link = NVD_DETAIL + cve_id
+                    level = f"{score} {sev}".strip()
+                    key = (host, name, ver, cve_id)
+                    if key in seen_vuln:
+                        continue
+                    seen_vuln.add(key)
+                    rows.append((host, name, ver, "vulnerable", level, link))
+                else:
+                    if mode != "full":
+                        continue
+                    key = (host, name, ver)
+                    if key in seen_other:
+                        continue
+                    seen_other.add(key)
+                    rows.append((host, name, ver, status, "", ""))
+
+    # Ordering: Vulnerable first (sorted by descending CVSS), then
+    # Unknown, then Patched. Within Unknown/Patched buckets, sort by
+    # (host, product, version) for stable diffing across runs.
+    bucket_order = {"vulnerable": 0, "unknown": 1, "patched": 2}
 
     def _sort_key(r):
-        try:
-            score = -float(r[3].split()[0])
-        except Exception:
-            score = 0
-        return (score, r[0], r[1], r[2])
+        host, name, ver, status, level, link = r
+        bucket = bucket_order.get(status, 99)
+        if status == "vulnerable":
+            try:
+                score = -float(level.split()[0])
+            except Exception:
+                score = 0
+            return (bucket, score, host, name, ver)
+        return (bucket, 0, host, name, ver)
+
     rows.sort(key=_sort_key)
     return rows
 
@@ -720,18 +1089,81 @@ def build_combined_rows(paths: List[Path], lookup: Dict) -> List[Tuple[str, str,
 def validate_combined(rows: List, log: Optional[Callable] = None) -> List:
     """Independent CVE-detail validation pass — same as the side
     project's validate_combined.py logic, run inline here so the
-    workflow finishes with one shot. Drops any row whose CVE detail
-    doesn't actually have a CPE in range for the installed version."""
+    workflow finishes with one shot. Drops any *vulnerable* row whose
+    CVE detail doesn't actually have a CPE in range for the installed
+    version. Rows with status 'patched' or 'unknown' are passed
+    through untouched (there's no CVE to validate)."""
     detail_path = _cache_dir() / "nvd_cve_detail_cache.json"
     cache = _load_cve_detail_cache(detail_path)
     validated = []
     drop_count = 0
 
+    # Local-DB lookup is the fast path: a single SELECT returns every
+    # cpe_match for a CVE-ID, no HTTPS round-trip. Falls back to the
+    # REST cve-detail call only when local DB isn't populated.
+    try:
+        from . import local_db as _local_db
+        _local_db_populated = _local_db.is_populated()
+    except Exception:
+        _local_db = None
+        _local_db_populated = False
+
+    def _local_cpe_matches_for_cve(cve_id):
+        """Return every cpe_match row tied to this CVE, in the same
+        shape `cpe_matches_version` / `_cpe_product_matches` consume.
+        Uses the local_db module's thread-local connection cache so
+        we don't blow through the FD limit under heavy concurrency."""
+        if not (_local_db and _local_db_populated):
+            return []
+        db = _local_db._DEFAULT_DB
+        if not db.exists():
+            return []
+        out = []
+        con = _local_db._get_thread_conn(db)
+        for r in con.execute("""
+            SELECT vendor, product, cpe_version,
+                   version_start, version_start_incl,
+                   version_end, version_end_incl, vulnerable
+            FROM cpe_match WHERE cve_id = ?
+        """, (cve_id,)):
+            m = {
+                "criteria": f"cpe:2.3:a:{r['vendor']}:{r['product']}:{r['cpe_version'] or '*'}:*:*:*:*:*:*:*",
+                "vulnerable": bool(r["vulnerable"]),
+            }
+            if r["version_start"]:
+                k = "versionStartIncluding" if r["version_start_incl"] else "versionStartExcluding"
+                m[k] = r["version_start"]
+            if r["version_end"]:
+                k = "versionEndIncluding" if r["version_end_incl"] else "versionEndExcluding"
+                m[k] = r["version_end"]
+            out.append(m)
+        return out
+
     def _validate(row):
-        host, product, version, level, link = row
+        # row shape: (host, product, version, status, level, link)
+        host, product, version, status, level, link = row
+        if status != "vulnerable":
+            return row, True
         cve_id = link.rsplit("/", 1)[-1] if "/" in link else ""
         if not cve_id:
             return row, False
+
+        # Layer 0: validate against local DB. Avoids a per-row NVD
+        # cve-detail HTTPS round-trip.
+        if _local_db_populated:
+            matches = _local_cpe_matches_for_cve(cve_id)
+            if matches:
+                product_cpes = [m for m in matches if _cpe_product_matches(m, product)]
+                if not product_cpes:
+                    return row, False
+                for m in product_cpes:
+                    if cpe_matches_version(m, version):
+                        return row, True
+                return row, False
+            # Empty matches list = CVE not in local DB (newer than
+            # last bulk_load). Fall through to REST.
+
+        # Fallback: NVD REST cve-detail call.
         cve = _fetch_cve_detail(cve_id, cache, detail_path, log=log)
         if not cve:
             return row, False
@@ -748,39 +1180,128 @@ def validate_combined(rows: List, log: Optional[Callable] = None) -> List:
                 return row, True
         return row, False
 
-    with ThreadPoolExecutor(max_workers=12) as ex:
+    # 64 workers when validating against local DB (no rate limit, just
+    # SQLite SELECTs), 12 when falling back to NVD REST.
+    _vworkers = 64 if _local_db_populated else 12
+    with ThreadPoolExecutor(max_workers=_vworkers) as ex:
         for row, ok in ex.map(_validate, rows):
             if ok:
                 validated.append(list(row))
             else:
                 drop_count += 1
     if log and drop_count:
-        log(f"[CVE] Dropped {drop_count} row(s) that didn't survive independent CVE-detail validation", "info")
+        log(f"[CVE] Dropped {drop_count} vulnerable row(s) that didn't survive independent CVE-detail validation", "info")
     return validated
 
 
-def fetch_all_pairs(pairs: list, cache: Dict, cache_path: Path, log: Optional[Callable] = None) -> Dict:
+def fetch_all_pairs(pairs: list, cache: Dict, cache_path: Path, log: Optional[Callable] = None,
+                    progress_cb: Optional[Callable] = None) -> Dict:
     """For every (product, version) pair, look up the best CVE in
-    parallel using 12 workers. Returns dict[(name, ver) -> (cve_id,
-    score, severity) | (None, None, None)]."""
+    parallel using 12 workers. Returns dict[(name, ver) -> (status,
+    cve_id, score, severity)].
+
+    `progress_cb(done, total)` is invoked every ~5% so the caller can
+    update the workflow row's progress bar live (otherwise it sits at
+    the same value through a long NVD lookup phase — confusing on
+    enterprise-scale inventories with 900+ pairs)."""
+    # Canonicalize first — collapse near-duplicate SKUs that would
+    # otherwise each issue their own NVD lookup. The 'pairs' the caller
+    # gave us still get full results (we expand back at the end); the
+    # threadpool only sees the deduped canonical set.
+    canon_to_originals: Dict[Tuple[str, str], list] = {}
+    for p in pairs:
+        canon = (canonical_name(p[0]) or p[0].lower().strip(), p[1])
+        canon_to_originals.setdefault(canon, []).append(p)
+    canonical_pairs = list(canon_to_originals.keys())
+    if log and len(canonical_pairs) < len(pairs):
+        log(
+            f"[CVE] Canonicalized {len(pairs)} pairs → {len(canonical_pairs)} unique lookups "
+            f"({len(pairs) - len(canonical_pairs)} duplicates collapsed)",
+            "info",
+        )
+
     lookup: Dict = {}
-    counter = {"done": 0}
+    state = {
+        "done": 0,
+        "in_flight": 0,
+        "last_pair": None,
+        "stop_heartbeat": False,
+    }
     lock = threading.Lock()
-    total = len(pairs)
+    total = len(canonical_pairs)
+    log_step = max(5, total // 40)
+    pct_step = max(1, total // 20)
+
+    def _heartbeat():
+        """Background thread — emits a status line every 30s so a
+        wedged worker pool never goes silent. Without this, a hung
+        urlopen looks identical to slow rate-limited progress."""
+        while True:
+            time.sleep(30)
+            with lock:
+                if state["stop_heartbeat"]:
+                    return
+                done = state["done"]
+                inflight = state["in_flight"]
+                last = state["last_pair"]
+            if log and done < total:
+                pair_desc = f"{last[0]!r}@{last[1]}" if last else "(none)"
+                log(
+                    f"[CVE] Heartbeat: {done}/{total} done, {inflight} in flight, last pair: {pair_desc}",
+                    "info",
+                )
 
     def process(pair):
         name, ver = pair
-        result = find_best_cve(name, ver, cache, cache_path, log=log)
         with lock:
-            counter["done"] += 1
-            done = counter["done"]
-        # Per-pair progress is too noisy for the workflow log;
-        # emit every 20.
-        if log and done % 20 == 0:
-            log(f"[CVE] Lookup progress: {done}/{total} pairs", "info")
+            state["in_flight"] += 1
+            state["last_pair"] = pair
+        try:
+            result = find_best_cve(name, ver, cache, cache_path, log=log)
+        except Exception as e:
+            # Don't let one bad pair poison the pool. Tag the result as
+            # 'unknown' so the row still appears in full-mode output
+            # with an obvious explanation in the workflow log.
+            if log:
+                log(f"[CVE] Lookup error on ({name!r}, {ver!r}): {e}", "warning")
+            result = ("unknown", None, None, None)
+        with lock:
+            state["in_flight"] -= 1
+            state["done"] += 1
+            done = state["done"]
+        if log and (done % log_step == 0 or done == total):
+            pct = int(100 * done / max(total, 1))
+            log(f"[CVE] Lookup progress: {done}/{total} pairs ({pct}%)", "info")
+        if progress_cb and (done % pct_step == 0 or done == total):
+            try:
+                progress_cb(done, total)
+            except Exception:
+                pass
         return pair, result
 
-    with ThreadPoolExecutor(max_workers=12) as ex:
-        for pair, result in ex.map(process, pairs):
-            lookup[pair] = result
+    # Worker count: when the local DB is populated (no NVD rate cap),
+    # we're CPU/SQLite-bound and benefit from more threads. When we
+    # have to fall back to the REST path, the 50 req/30s NVD cap
+    # means more workers just queue on the rate slot — keep it modest.
+    try:
+        from . import local_db as _local_db
+        _local_populated = _local_db.is_populated()
+    except Exception:
+        _local_populated = False
+    workers = 64 if _local_populated else 12
+
+    hb_thread = threading.Thread(target=_heartbeat, daemon=True, name="cve-scan-heartbeat")
+    hb_thread.start()
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            # Look up canonical pairs only — each result is then fanned
+            # out to every original pair that canonicalized to it, so
+            # the caller's dict is keyed by the original (name, version)
+            # exactly as before.
+            for canon_pair, result in ex.map(process, canonical_pairs):
+                for orig in canon_to_originals[canon_pair]:
+                    lookup[orig] = result
+    finally:
+        with lock:
+            state["stop_heartbeat"] = True
     return lookup

@@ -46,7 +46,8 @@ def _log(run_id):
     return _f
 
 
-def run_cve_scan(run_id: str, input_csv_paths: List[Path], name: Optional[str] = None) -> Dict:
+def run_cve_scan(run_id: str, input_csv_paths: List[Path], name: Optional[str] = None,
+                 mode: str = "vulnerable_only") -> Dict:
     """Background-thread worker for /api/cve/scan/upload and
     /api/cve/scan/from-flow. Mutates the workflow row's status +
     progress + logs throughout.
@@ -57,8 +58,16 @@ def run_cve_scan(run_id: str, input_csv_paths: List[Path], name: Optional[str] =
     (upload route writes them via the existing upload service; from-
     flow route writes them via `pull_from_velociraptor`).
 
+    `mode`: 'vulnerable_only' (default) emits one row per host ×
+    product × CVE. 'full' additionally emits one row per host ×
+    product even when nothing matched, with a Status column =
+    Vulnerable / Unknown / Patched. Rows are ordered vulnerable
+    → unknown → patched in 'full' mode.
+
     Returns the result dict (mostly for tests / future inspection).
     """
+    if mode not in ("vulnerable_only", "full"):
+        mode = "vulnerable_only"
     log = _log(run_id)
     result = {'has_report': False}
 
@@ -101,10 +110,21 @@ def run_cve_scan(run_id: str, input_csv_paths: List[Path], name: Optional[str] =
             # an empty CSV they can use to debug their input.
 
         # Step 2: parallel NVD lookup (12 workers, rate-limited).
+        # The lookup phase dominates on big inventories — 946 pairs at
+        # the 50 req/30s rate can take ~10 minutes. Pump live progress
+        # into the workflow row so the operator sees movement instead
+        # of a static 15%.
         cache_path = Path("/app/data/cve_cache/nvd_cache.json")
         cache = _nvd.load_cache(cache_path)
         started = time.time()
-        lookup = _nvd.fetch_all_pairs(pairs, cache, cache_path, log=log)
+
+        def _lookup_progress(done, total):
+            # Map 0..total → 15..60% so the rest of the pipeline still
+            # has room to advance the bar.
+            pct = 15 + int(45 * done / max(total, 1))
+            update_run_status(run_id, 'running', progress=min(pct, 60))
+
+        lookup = _nvd.fetch_all_pairs(pairs, cache, cache_path, log=log, progress_cb=_lookup_progress)
         elapsed = time.time() - started
         log(f"[CVE] Fetched {len(pairs)} products from NVD in {elapsed:.1f}s", "success")
         update_run_status(run_id, 'running', progress=60)
@@ -125,34 +145,53 @@ def run_cve_scan(run_id: str, input_csv_paths: List[Path], name: Optional[str] =
         update_run_status(run_id, 'running', progress=75)
 
         # Step 4: build the combined cross-host table.
-        log("[CVE] Assembling combined table…", "info")
-        combined_rows = _nvd.build_combined_rows(existing, lookup)
-        log(f"[CVE] Combined table: {len(combined_rows)} (host, product, CVE) rows pre-validation", "info")
+        log(f"[CVE] Assembling combined table (mode={mode})…", "info")
+        combined_rows = _nvd.build_combined_rows(existing, lookup, mode=mode)
+        log(f"[CVE] Combined table: {len(combined_rows)} rows pre-validation", "info")
         update_run_status(run_id, 'running', progress=85)
 
         # Step 5: independent CVE-detail validation pass — drops rows
         # whose CVE-by-id payload doesn't actually have a CPE in
-        # range. Matches the side project's validate_combined.py.
+        # range. Non-vulnerable rows pass through untouched.
         log("[CVE] Independent CVE-detail validation pass…", "info")
         validated = _nvd.validate_combined(combined_rows, log=log)
-        log(f"[CVE] {len(validated)} rows survived validation", "success")
+        vuln_count = sum(1 for r in validated if r[3] == "vulnerable")
+        patched_count = sum(1 for r in validated if r[3] == "patched")
+        unknown_count = sum(1 for r in validated if r[3] == "unknown")
+        log(f"[CVE] {vuln_count} vulnerable / {patched_count} patched / {unknown_count} unknown rows after validation", "success")
         update_run_status(run_id, 'running', progress=92)
 
-        # Step 6: write combined_cves.csv (the headline deliverable).
+        # Step 6: write combined_cves.csv. Schema changes per mode so
+        # the vulnerable-only output stays identical to the original
+        # side-project deliverable; full mode adds a Status column.
         combined_csv = out_dir / "combined_cves.csv"
-        header_out = ["HostName", "Product", "ProductVersion", "CVELevel", "LinkToCVE"]
         with combined_csv.open("w", encoding="utf-8", newline="") as fout:
             w = csv.writer(fout)
-            w.writerow(header_out)
-            w.writerows(validated)
+            if mode == "full":
+                w.writerow(["HostName", "Product", "ProductVersion", "Status", "CVELevel", "LinkToCVE"])
+                for r in validated:
+                    host, product, version, status, level, link = r
+                    w.writerow([host, product, version, status.title(), level, link])
+            else:
+                w.writerow(["HostName", "Product", "ProductVersion", "CVELevel", "LinkToCVE"])
+                for r in validated:
+                    host, product, version, status, level, link = r
+                    # vulnerable_only already filtered by build_combined_rows,
+                    # but double-check so we never leak a non-vulnerable
+                    # row into the legacy schema.
+                    if status != "vulnerable":
+                        continue
+                    w.writerow([host, product, version, level, link])
         log(f"[CVE] Wrote combined_cves.csv: {len(validated)} rows", "success")
 
         # Step 7: write findings.json (forward-compat for the
-        # Engagement Report integration).
+        # Engagement Report integration). Always carries the Status
+        # field so downstream consumers can choose whether to show
+        # patched/unknown lines.
         findings_json = out_dir / "findings.json"
         findings = []
         for r in validated:
-            host, product, version, level, link = r
+            host, product, version, status, level, link = r
             score = 0.0
             severity = ''
             try:
@@ -166,6 +205,7 @@ def run_cve_scan(run_id: str, input_csv_paths: List[Path], name: Optional[str] =
                 'hostname': host,
                 'product': product,
                 'version': version,
+                'status': status,
                 'cve_id': cve_id,
                 'cve_link': link,
                 'cvss_score': score,
@@ -190,7 +230,10 @@ def run_cve_scan(run_id: str, input_csv_paths: List[Path], name: Optional[str] =
                 wd['has_report'] = True
                 wd['llm_enabled'] = False  # no LLM ran; for Engagement-Report eligibility
                 wd['combined_csv'] = str(combined_csv)
-                wd['findings_count'] = len(validated)
+                wd['findings_count'] = vuln_count
+                wd['patched_count'] = patched_count
+                wd['unknown_count'] = unknown_count
+                wd['mode'] = mode
                 wd['inputs_processed'] = [p.name for p in existing]
                 wd['unique_pairs'] = len(pairs)
                 wf['details'] = wd
@@ -199,9 +242,12 @@ def run_cve_scan(run_id: str, input_csv_paths: List[Path], name: Optional[str] =
             print(f"[CVE] Failed to stash run details: {e}", flush=True)
 
         update_run_status(run_id, 'completed', progress=100, force=True)
-        log(f"[CVE] Done. {len(validated)} validated CVE rows across {len(existing)} input CSVs.", "success")
+        if mode == "full":
+            log(f"[CVE] Done. {vuln_count} vulnerable + {unknown_count} unknown + {patched_count} patched rows across {len(existing)} input CSVs.", "success")
+        else:
+            log(f"[CVE] Done. {vuln_count} validated CVE rows across {len(existing)} input CSVs.", "success")
         result['has_report'] = True
-        result['findings_count'] = len(validated)
+        result['findings_count'] = vuln_count
         return result
 
     except Exception as e:
@@ -216,8 +262,10 @@ def _build_markdown_summary(name, inputs, validated_rows, pairs_total) -> str:
     """Compact markdown summary of the scan — used as the report
     body that get_X_report_content (when ported) will return. This
     is also what the engagement chat assistant sees when discussing
-    CVE findings."""
-    if not validated_rows:
+    CVE findings. Reads the 6-tuple row shape
+    (host, product, version, status, level, link)."""
+    vuln_rows = [r for r in validated_rows if r[3] == "vulnerable"]
+    if not vuln_rows:
         return (
             f"# CVE Scan — {name}\n\n"
             f"**Inputs:** {', '.join(p.name for p in inputs)}\n"
@@ -226,26 +274,27 @@ def _build_markdown_summary(name, inputs, validated_rows, pairs_total) -> str:
             f"or the version ranges in NVD don't cover the installed builds.\n"
         )
 
-    # Bucket counts.
+    # Bucket counts (vulnerable rows only — patched/unknown don't
+    # carry a severity).
     buckets = {'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0, 'Other': 0}
-    for r in validated_rows:
-        sev = (r[3].split(None, 1)[1] if len(r[3].split(None, 1)) > 1 else 'Other').title()
+    for r in vuln_rows:
+        level = r[4]
+        sev = (level.split(None, 1)[1] if len(level.split(None, 1)) > 1 else 'Other').title()
         buckets[sev if sev in buckets else 'Other'] += 1
 
-    # Top 10 findings by score.
     def _score(r):
         try:
-            return float(r[3].split()[0])
+            return float(r[4].split()[0])
         except Exception:
             return 0.0
-    top = sorted(validated_rows, key=_score, reverse=True)[:10]
+    top = sorted(vuln_rows, key=_score, reverse=True)[:10]
 
     md_lines = [
         f"# CVE Scan — {name}",
         "",
         f"**Inputs:** {', '.join(p.name for p in inputs)}",
         f"**Unique (product, version) pairs scanned:** {pairs_total}",
-        f"**Validated findings:** {len(validated_rows)}",
+        f"**Validated vulnerable findings:** {len(vuln_rows)}",
         "",
         "## Severity breakdown",
         "",
@@ -261,7 +310,7 @@ def _build_markdown_summary(name, inputs, validated_rows, pairs_total) -> str:
         "|---|---|---|---|---|",
     ]
     pipe_escape = "\\|"
-    for host, product, version, level, link in top:
+    for host, product, version, _status, level, link in top:
         cve_id = link.rsplit('/', 1)[-1] if '/' in link else '?'
         product_safe = product.replace('|', pipe_escape)
         md_lines.append(
