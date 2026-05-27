@@ -30,6 +30,8 @@ modules:
     enabled: true
   azure:
     enabled: true
+  cve_scan:
+    enabled: true
   elk:
     enabled: true
     id: elastic

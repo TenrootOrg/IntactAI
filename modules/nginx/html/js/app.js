@@ -371,6 +371,9 @@ document.addEventListener('alpine:init', () => {
                     client_secret: '',
                     subscription_id: ''
                 }
+            },
+            cve_scan: {
+                nvd_api_key: ''
             }
         },
         saving: false,
@@ -417,6 +420,19 @@ document.addEventListener('alpine:init', () => {
                         azure: { ...this.config.cloud.azure, ...cloudData.azure }
                     };
                 }
+
+                // CVE Scan settings come back via the same /api/config
+                // payload (frontend_config blob) — agenticResponse above
+                // already has the full doc.
+                try {
+                    const r = await fetch('/api/config');
+                    if (r.ok) {
+                        const d = await r.json();
+                        this.config.cve_scan = {
+                            nvd_api_key: (d.cve_scan && d.cve_scan.nvd_api_key) || ''
+                        };
+                    }
+                } catch (e) { /* best-effort */ }
 
                 window.currentConfig = this.config;
             } catch (e) {
@@ -499,6 +515,35 @@ document.addEventListener('alpine:init', () => {
                     this.showMessage('Cloud settings saved', 'success');
                 } else {
                     this.showMessage('Failed to save Cloud config', 'error');
+                }
+            } catch (e) {
+                this.showMessage('Error: ' + e.message, 'error');
+            }
+            this.saving = false;
+        },
+
+        // CVE Scan settings — currently just the NVD API key. The
+        // /api/config PUT endpoint replaces the whole frontend_config
+        // doc, so we read-modify-write to preserve everything else
+        // (agentic, timesketch refs etc.).
+        async saveCveScan() {
+            this.saving = true;
+            try {
+                const r = await fetch('/api/config');
+                const cfg = r.ok ? (await r.json()) : {};
+                cfg.cve_scan = Object.assign({}, cfg.cve_scan || {}, {
+                    nvd_api_key: (this.config.cve_scan && this.config.cve_scan.nvd_api_key) || ''
+                });
+                const save = await fetch('/api/config', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(cfg)
+                });
+                if (save.ok) {
+                    window.currentConfig = this.config;
+                    this.showMessage('CVE Scan settings saved', 'success');
+                } else {
+                    this.showMessage('Failed to save CVE Scan config', 'error');
                 }
             } catch (e) {
                 this.showMessage('Error: ' + e.message, 'error');

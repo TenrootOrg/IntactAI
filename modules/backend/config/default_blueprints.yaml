@@ -164,6 +164,31 @@ velociraptor:
   # AGENTIC BLUEPRINTS (LLM-optimized detection)
   # --------------------------------------------------------------------------
 
+  # CVE Scan inputs — the four artifacts the on-prem CVE Scan tab needs.
+  # Operators dispatch this hunt (manually or via the CVE Scan tab's
+  # "Run from Velociraptor" mode), then the tab pulls the result CSVs
+  # and runs them through the NVD lookup pipeline.
+  - id: cve_management
+    name: "[CVE] CVE Management Collection"
+    description: "Collects the four artifacts the CVE Scan tab consumes (installed programs + DetectRaptor app/LolRM tables + OS version)"
+    is_default: true
+    # Conservative defaults — the hunt itself stays open long enough to
+    # catch hosts that come online late. The Run-from-Velociraptor UI
+    # exposes a per-run "max wait" override that controls how long the
+    # CVE Scan workflow polls for completion in chain mode.
+    settings:
+      hunt_expiry: 60          # minutes — match the per-client timeout
+      timeout: 3600            # seconds (1h)
+      cpu_limit: 80
+      flow_max_rows: 5000000
+      flow_max_logs: 500000
+      flow_max_upload_mb: 10240
+    artifacts:
+      - Windows.Sys.Programs
+      - DetectRaptor.Windows.Detection.Applications
+      - DetectRaptor.Windows.Detection.LolRMM
+      - Generic.Client.Info
+
   - id: agentic_quick_wins
     name: "[Agentic] Quick Wins"
     description: "Low-volume detection artifacts for fast analysis (11 artifacts)"

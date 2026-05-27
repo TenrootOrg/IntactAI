@@ -32,6 +32,7 @@ from routes import (
     aws_bp,
     support_bundle_bp,
     engagement_bp,
+    cve_bp,
 )
 
 # Import initialization services
@@ -65,6 +66,7 @@ app.register_blueprint(azure_bp)
 app.register_blueprint(aws_bp)
 app.register_blueprint(support_bundle_bp)
 app.register_blueprint(engagement_bp)
+app.register_blueprint(cve_bp)
 
 # Global flag to track initialization status
 initialization_status = {

@@ -21,6 +21,7 @@ from routes.azure_routes import azure_bp
 from routes.aws_routes import aws_bp
 from routes.support_bundle_routes import support_bundle_bp
 from routes.engagement_routes import engagement_bp
+from routes.cve_routes import cve_bp
 
 __all__ = [
     'client_bp',
@@ -42,4 +43,5 @@ __all__ = [
     'aws_bp',
     'support_bundle_bp',
     'engagement_bp',
+    'cve_bp',
 ]
