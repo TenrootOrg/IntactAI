@@ -1359,24 +1359,38 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                     client_ids=client_ids,
                 )
 
+            # Resolve hostnames up-front for every client that contributed
+            # a flow to this hunt. Without this, downstream consumers (CVE
+            # Scan, per-client report filters, IRIS asset linking) see
+            # `_hostname` = "Unknown" or missing and the final CSV ends up
+            # with `(unknown)` in the HostName column.
+            unique_hunt_client_ids = sorted({fi.get('ClientId') for fi in hunt_flows if fi.get('ClientId')})
+            hunt_hostnames = get_client_hostnames(stub, unique_hunt_client_ids) if unique_hunt_client_ids else {}
+
             # Now fetch results from each flow
             for flow_info in hunt_flows:
                 flow_client_id = flow_info.get('ClientId')
                 flow_id = flow_info.get('FlowId')
                 if not flow_client_id or not flow_id:
                     continue
+                resolved_hostname = hunt_hostnames.get(flow_client_id, flow_client_id)
 
                 # Get available sources in this flow
                 sources = enumerate_flow_sources(stub, flow_client_id, flow_id)
                 add_log_to_run(run_id, f"[Velociraptor] Flow {flow_id} has {len(sources)} sources", "info")
 
-                # Track client info
+                # Track client info (with the real hostname this time).
                 if flow_client_id not in client_info:
                     client_info[flow_client_id] = {
                         "client_id": flow_client_id,
-                        "hostname": "Unknown",
+                        "hostname": resolved_hostname,
                         "os": "Unknown"
                     }
+                else:
+                    # Backfill hostname on a pre-existing entry that may
+                    # have been created with "Unknown" by earlier code.
+                    if client_info[flow_client_id].get("hostname") in (None, "", "Unknown"):
+                        client_info[flow_client_id]["hostname"] = resolved_hostname
 
                 # Fetch results from each source with VQL time filtering
                 for source_name in sources:
@@ -1386,9 +1400,13 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                             artifacts.append(source_name)
                         if source_name not in all_results:
                             all_results[source_name] = []
-                        # Add client_id to each row for traceability
+                        # Tag every row with client_id AND hostname — see
+                        # the matching flow-id path at line 1253 for the
+                        # reasoning (per-client report filter, IRIS, CVE
+                        # Scan's HostName resolution all depend on this).
                         for row in rows:
                             row['_client_id'] = flow_client_id
+                            row.setdefault('_hostname', resolved_hostname)
                         all_results[source_name].extend(rows)
                         add_log_to_run(run_id, f"[Velociraptor] Retrieved {len(rows)} rows from {source_name}", "info")
 
