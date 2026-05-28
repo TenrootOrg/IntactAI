@@ -102,6 +102,16 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
                 raise Exception(f"Elasticsearch failed to start - container status: {container_status}")
             log("Elasticsearch health check: TIMEOUT (containers may still be starting)", "warning")
 
+        # Re-ensure the Kibana 'artifact_*' data view — it can be lost when
+        # Kibana migrates/recreates saved objects across an upgrade. Idempotent;
+        # same helper install.sh's post-install maintenance uses. Best-effort.
+        log("Re-ensuring Kibana data view (post-upgrade init)...", "info")
+        try:
+            from services.kibana_init import ensure_kibana_data_view
+            ensure_kibana_data_view(log, wait=True)
+        except Exception as _e:
+            log(f"  Kibana data view re-init skipped: {str(_e)[:80]}", "warning")
+
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
         log(f"ELK upgrade completed: {current_version} -> {version}", "success")
@@ -202,6 +212,14 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None)
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"Elasticsearch failed to start - container status: {container_status}")
             log("Elasticsearch health check: TIMEOUT (containers may still be starting)", "warning")
+
+        # Re-ensure the Kibana 'artifact_*' data view (see online path).
+        log("Re-ensuring Kibana data view (post-upgrade init)...", "info")
+        try:
+            from services.kibana_init import ensure_kibana_data_view
+            ensure_kibana_data_view(log, wait=True)
+        except Exception as _e:
+            log(f"  Kibana data view re-init skipped: {str(_e)[:80]}", "warning")
 
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
