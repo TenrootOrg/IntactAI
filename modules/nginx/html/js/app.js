@@ -7,8 +7,8 @@
 window.baseHost = window.location.hostname;
 window.services = {
     velociraptor: { path: '/velociraptor/', protocol: 'https' },
-    timesketch: { port: 5000, protocol: 'http' },
-    kibana: { port: 5601, protocol: 'http' },
+    timesketch: { port: 5000, protocol: 'https' },
+    kibana: { port: 5601, protocol: 'https' },
     iris: { port: 8443, protocol: 'https' },
     portainer: { port: 9443, protocol: 'https' }
 };

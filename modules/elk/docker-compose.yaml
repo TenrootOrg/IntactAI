@@ -60,6 +60,16 @@ services:
       - TELEMETRY_ENABLED=false
       # - SERVER_BASEPATH=/kibana
       # - SERVER_REWRITEBASEPATH=true
+      # Serve the Kibana UI over HTTPS using Kibana's native TLS (no proxy).
+      # Reuses the shared self-signed cert (CN=domain) that install.sh /
+      # change_ip.sh already generate + rotate. Kibana->Elasticsearch stays
+      # plain http on the internal docker network (ELASTICSEARCH_HOSTS above).
+      - SERVER_SSL_ENABLED=true
+      - SERVER_SSL_CERTIFICATE=/certs/cert.crt
+      - SERVER_SSL_KEY=/certs/key.key
+    volumes:
+      - ../nginx/ssl/nginx-cert.crt:/certs/cert.crt:ro
+      - ../nginx/ssl/nginx-cert.key:/certs/key.key:ro
     ports:
       - "5601:5601"
     restart: unless-stopped
@@ -69,7 +79,7 @@ services:
     networks:
       - intact_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5601/api/status"]
+      test: ["CMD", "curl", "-fk", "https://localhost:5601/api/status"]
       interval: 30s
       timeout: 10s
       retries: 5

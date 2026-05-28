@@ -121,6 +121,12 @@ generate_certificates() {
     else
         log_info "  Nginx SSL certificate exists, skipping"
     fi
+    # Make the key group-readable (640, group root/gid 0) so containers that
+    # run as a non-root uid but are members of gid 0 — notably Kibana (uid
+    # 1000) which serves HTTPS natively from this same shared cert — can read
+    # it. Still NOT world-readable. openssl creates the key 600 by default, so
+    # this must run on every (re)generation, including change_ip.sh's regen.
+    [[ -f "$nginx_ssl/nginx-cert.key" ]] && chmod 640 "$nginx_ssl/nginx-cert.key" 2>/dev/null || true
 
     # IRIS Root CA
     local iris_ca="${SCRIPT_DIR}/modules/iris/config/certificates/rootCA"

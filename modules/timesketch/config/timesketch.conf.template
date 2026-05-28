@@ -125,8 +125,8 @@ EMAIL_DOMAIN = 'localhost'
 EMAIL_FROM_USER = 'nobody'
 EMAIL_SMTP_SERVER = 'localhost'
 EMAIL_RECIPIENTS = []
-EXTERNAL_HOST_URL = 'http://localhost:5000'
-PREFERRED_URL_SCHEME = 'http'
+EXTERNAL_HOST_URL = 'https://localhost:5000'
+PREFERRED_URL_SCHEME = 'https'
 EMAIL_TLS = False
 EMAIL_SSL = False
 EMAIL_AUTH_USERNAME = ''
@@ -139,15 +139,15 @@ SIGMA_TAG_DELAY = 5
 # Flask settings - CSRF
 # Disabled because we're not using nginx reverse proxy
 WTF_CSRF_ENABLED = False
-REVERSE_PROXY_COUNT = 0
+REVERSE_PROXY_COUNT = 1
 
 # Session/Cookie settings for HTTP access
-SESSION_COOKIE_SECURE = False
+SESSION_COOKIE_SECURE = True
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
 SESSION_COOKIE_NAME = 'timesketch_session'
 SESSION_COOKIE_PATH = '/'
-REMEMBER_COOKIE_SECURE = False
+REMEMBER_COOKIE_SECURE = True
 REMEMBER_COOKIE_HTTPONLY = True
 REMEMBER_COOKIE_SAMESITE = 'Lax'
 # 1 week (604800s). Bumped from 3600 (1h) so service-to-service automation

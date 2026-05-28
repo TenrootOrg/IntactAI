@@ -126,6 +126,11 @@ services:
     image: nginx:alpine
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Shared self-signed cert for TLS termination (CN=domain), same one
+      # the main nginx/IRIS/Portainer use. nginx runs as root so the 600/640
+      # key is readable.
+      - ../nginx/ssl/nginx-cert.crt:/etc/nginx/cert.crt:ro
+      - ../nginx/ssl/nginx-cert.key:/etc/nginx/cert.key:ro
     ports:
       - "5000:5000"
     restart: unless-stopped
