@@ -428,6 +428,12 @@ def add_timeline_events(case_id: int, events: List[dict], iris_config: dict,
                 "event_raw": json.dumps(event.get('raw', {}), default=str)[:5000] if event.get('raw') else "",
                 "event_source": source,
                 "event_tz": "+00:00",
+                # Must send an explicit empty string: if omitted, IRIS
+                # stores event_tags as NULL, and its own timeline CSV
+                # exporter (case.timeline.js timelineToCsv) then calls
+                # .replace() on null and the whole "Download as CSV"
+                # button throws with no file produced.
+                "event_tags": "",
                 "event_category_id": 1,  # Default category (Unspecified)
                 "event_assets": event_assets,
                 "event_iocs": []
