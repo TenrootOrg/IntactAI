@@ -3020,8 +3020,9 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                     </button>
                                 </div>
                                 <!-- Fresh install options -->
-                                <div class="p-3 bg-gray-800 rounded border border-yellow-700">
-                                    <p class="text-yellow-400 text-sm font-medium mb-2">Fresh install (required when new version has schema changes):</p>
+                                <div class="p-3 bg-gray-800 rounded border border-red-700">
+                                    <p class="text-red-400 text-sm font-medium mb-1">⚠️ Fresh install — DELETES ALL DATA for the selected module</p>
+                                    <p class="text-gray-400 text-xs mb-2">Leave these UNCHECKED for normal upgrades. Schema changes are applied automatically by database migrations with no data loss. Only tick a box to wipe that module and start completely empty (removes every sketch / case / index).</p>
                                     <div class="grid grid-cols-3 gap-3">
                                         <label class="flex items-center gap-2 p-2 rounded cursor-pointer select-none hover:bg-gray-700 transition-colors">
                                             <input type="checkbox" x-model="$store.settings.dbOverwriteTimesketch"

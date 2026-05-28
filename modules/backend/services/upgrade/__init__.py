@@ -54,10 +54,17 @@ RESET_VOLUMES = {
 
 
 def reset_module_database(module_name: str, logger: Callable = None) -> bool:
-    """Remove database volumes for fresh install (new schema).
+    """DESTRUCTIVE: delete a module's data volumes for a fresh/empty install.
 
-    This is needed when upgrading between versions with incompatible
-    database schemas (e.g., Timesketch 2024 -> 2026 with DFIQ columns).
+    This is NOT required for schema upgrades. Schema changes between versions
+    are applied by database migrations (e.g. Timesketch's alembic
+    `tsctl db upgrade`, verified to preserve all sketches + events across a
+    2024 -> 2026 jump) — the normal upgrade keeps every row and index.
+
+    Only call this when the operator has EXPLICITLY asked to start that module
+    from scratch (db_overwrite flag). It permanently removes all data:
+    Timesketch sketches + every timeline event in OpenSearch, IRIS cases,
+    ELK indices, etc. There is no automatic backup of these volumes.
 
     Args:
         module_name: Name of the module (timesketch, iris, elk)
@@ -70,7 +77,10 @@ def reset_module_database(module_name: str, logger: Callable = None) -> bool:
         return True
 
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    log(f"Fresh install: removing {module_name} database for new schema...", "warning")
+    log(f"⚠️ FRESH INSTALL: PERMANENTLY DELETING all {module_name} data "
+        f"(volumes: {', '.join(RESET_VOLUMES[module_name])}). This is not "
+        f"needed for schema upgrades — migrations handle those without data loss.",
+        "warning")
 
     # Get module directory
     module_dir = os.path.join(HOST_PATH, 'modules', module_name)

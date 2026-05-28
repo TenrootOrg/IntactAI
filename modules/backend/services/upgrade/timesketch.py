@@ -28,6 +28,47 @@ _PG_CONTAINER = 'intact_timesketch_postgres'
 _PG_USER = 'timesketch'
 _PG_DB = 'timesketch'
 _WEB_CONTAINER = 'intact_timesketch_web'
+_OPENSEARCH_CONTAINER = 'intact_timesketch_opensearch'
+
+
+def _count_opensearch_docs(logger: Callable = None) -> Optional[int]:
+    """Return the total OpenSearch document count across Timesketch's
+    timeline indices, or None on failure.
+
+    This is the critical data-loss check the postgres row counts MISS:
+    Timesketch stores sketch/timeline *metadata* in postgres but the
+    actual timeline EVENTS live in OpenSearch indices. A `docker compose
+    down/up` preserves the opensearch named volume, so events should
+    survive automatically — but if they ever don't (volume detach,
+    accidental reset, index deletion), the postgres-only guard would
+    pass while every timeline silently goes empty. Counting opensearch
+    docs before/after makes that observable and triggers the rollback.
+
+    System indices (names starting with '.') are excluded so we only
+    track user timeline data.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    result = run_command(
+        f"docker exec {_OPENSEARCH_CONTAINER} "
+        f"curl -s 'http://localhost:9200/_cat/indices?h=index,docs.count'",
+        logger=None
+    )
+    if not result['success']:
+        log(f"Could not query OpenSearch doc counts: {result.get('error','?')[:120]}", "warning")
+        return None
+    total = 0
+    for line in (result.get('stdout') or '').splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        index_name, docs = parts[0], parts[1]
+        if index_name.startswith('.'):
+            continue  # skip opensearch/plugin system indices
+        try:
+            total += int(docs)
+        except (ValueError, TypeError):
+            continue
+    return total
 
 
 def _backup_timesketch_db(current_version: str, target_version: str, logger: Callable = None) -> Optional[str]:
@@ -187,7 +228,13 @@ def _snapshot_persistent_counts(logger: Callable = None) -> Dict[str, Optional[i
         'investigativequestion',
         'facet',
     ]
-    return {t: _count_timesketch_rows(t, logger=logger) for t in tables}
+    counts = {t: _count_timesketch_rows(t, logger=logger) for t in tables}
+    # The timeline EVENTS themselves live in OpenSearch, not postgres — the
+    # postgres tables above only hold metadata. Track opensearch doc totals
+    # too so a loss of actual event data is caught + rolled back, not just
+    # a loss of postgres rows.
+    counts['_opensearch_docs'] = _count_opensearch_docs(logger=logger)
+    return counts
 
 
 def _assert_counts_preserved(before: Dict[str, Optional[int]],
