@@ -152,10 +152,16 @@ update_env_files() {
         local ts_user=$(read_config "['modules']['timesketch']['id']")
         local ts_pass=$(read_config "['modules']['timesketch']['password']")
         local plaso_version=$(read_config "['versions']['plaso']")
+        local prowler_version=$(read_config "['versions']['aws_prowler']")
+        local o365rc_version=$(read_config "['versions']['azure_dfir_o365rc']")
 
         update_env_var "$backend_env" "TIMESKETCH_USER" "$ts_user"
         update_env_var "$backend_env" "TIMESKETCH_PASS" "$ts_pass"
         update_env_var "$backend_env" "PLASO_VERSION" "$plaso_version"
+        # AWS (Prowler) + Azure (DFIR-O365RC) image versions — consumed at
+        # scan time by services/aws/prowler_runner.py + services/azure/dfir_o365rc.py.
+        [[ -n "$prowler_version" ]] && update_env_var "$backend_env" "PROWLER_VERSION" "$prowler_version"
+        [[ -n "$o365rc_version" ]] && update_env_var "$backend_env" "DFIR_O365RC_VERSION" "$o365rc_version"
         log_success "Updated Backend .env"
     else
         log_warn "Backend .env not found, skipping"

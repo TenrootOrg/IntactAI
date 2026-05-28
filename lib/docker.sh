@@ -762,14 +762,19 @@ pull_dfir_o365rc_image() {
         return 0
     fi
 
-    log_info "Pulling DFIR-O365RC image (Unified Audit Log collection)..."
+    # Version pin from config.yaml (upstream only ships ':latest').
+    local o365rc_version=$(read_config "['versions']['azure_dfir_o365rc']")
+    [[ -z "$o365rc_version" ]] && o365rc_version="latest"
+    local o365rc_image="anssi/dfir-o365rc:${o365rc_version}"
 
-    if docker image inspect anssi/dfir-o365rc:latest > /dev/null 2>&1; then
+    log_info "Pulling DFIR-O365RC image (${o365rc_image}, Unified Audit Log collection)..."
+
+    if docker image inspect "$o365rc_image" > /dev/null 2>&1; then
         log_info "DFIR-O365RC image already present"
         return 0
     fi
 
-    if docker pull anssi/dfir-o365rc:latest 2>&1 | tee -a "$LOG_FILE"; then
+    if docker pull "$o365rc_image" 2>&1 | tee -a "$LOG_FILE"; then
         if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
             log_success "DFIR-O365RC image pulled successfully"
         else
@@ -799,14 +804,19 @@ pull_prowler_image() {
         return 0
     fi
 
-    log_info "Pulling Prowler image (AWS posture scans, ~3.5 GB)..."
+    # Version pin from config.yaml for reproducible installs.
+    local prowler_version=$(read_config "['versions']['aws_prowler']")
+    [[ -z "$prowler_version" ]] && prowler_version="5.28.1"
+    local prowler_image="toniblyx/prowler:${prowler_version}"
 
-    if docker image inspect toniblyx/prowler:latest > /dev/null 2>&1; then
+    log_info "Pulling Prowler image (${prowler_image}, AWS posture scans, ~3.5 GB)..."
+
+    if docker image inspect "$prowler_image" > /dev/null 2>&1; then
         log_info "Prowler image already present"
         return 0
     fi
 
-    if docker pull toniblyx/prowler:latest 2>&1 | tee -a "$LOG_FILE"; then
+    if docker pull "$prowler_image" 2>&1 | tee -a "$LOG_FILE"; then
         if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
             log_success "Prowler image pulled successfully"
         else

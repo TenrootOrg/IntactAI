@@ -35,6 +35,8 @@ from .iris import upgrade_iris, upgrade_iris_offline
 from .velociraptor import upgrade_velociraptor, upgrade_velociraptor_offline
 from .intact import upgrade_intact, upgrade_intact_offline
 from .plaso import upgrade_plaso, upgrade_plaso_offline
+from .aws import upgrade_aws, upgrade_aws_offline
+from .azure import upgrade_azure, upgrade_azure_offline
 
 # Storage functions for two-phase upgrade state
 from services.storage.base import (
@@ -205,13 +207,15 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
     db_overwrite = db_overwrite or {}
 
     # Intact.AI must be first so backend code is updated before modules
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure']
     upgrade_functions = {
         'elk': upgrade_elk,
         'timesketch': upgrade_timesketch,
         'plaso': upgrade_plaso,
         'iris': upgrade_iris,
         'velociraptor': upgrade_velociraptor,
+        'aws': upgrade_aws,
+        'azure': upgrade_azure,
         'intact': upgrade_intact,
     }
 
@@ -429,7 +433,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             package_dir = package_dir_raw
             extract_dir = package_dir_raw
 
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure']
 
     # Use online or offline functions based on mode
     if mode == 'offline':
@@ -439,6 +443,8 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'plaso': lambda v, **kw: upgrade_plaso_offline(package_dir, v, **kw),
             'iris': lambda v, **kw: upgrade_iris_offline(package_dir, v, **kw),
             'velociraptor': lambda v, **kw: upgrade_velociraptor_offline(package_dir, v, **kw),
+            'aws': lambda v, **kw: upgrade_aws_offline(package_dir, v, **kw),
+            'azure': lambda v, **kw: upgrade_azure_offline(package_dir, v, **kw),
             'intact': lambda **kw: upgrade_intact_offline(package_dir, **kw),
         }
     else:
@@ -635,11 +641,13 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
         'plaso': upgrade_plaso_offline,
         'iris': upgrade_iris_offline,
         'velociraptor': upgrade_velociraptor_offline,
+        'aws': upgrade_aws_offline,
+        'azure': upgrade_azure_offline,
         'intact': upgrade_intact_offline,
     }
 
     # Intact.AI must be first so backend code is updated before modules
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure']
 
     results = {}
     total = 0
@@ -853,6 +861,8 @@ __all__ = [
     'upgrade_plaso',
     'upgrade_iris',
     'upgrade_velociraptor',
+    'upgrade_aws',
+    'upgrade_azure',
     'upgrade_intact',
     # Offline upgrade functions
     'upgrade_elk_offline',
@@ -860,6 +870,8 @@ __all__ = [
     'upgrade_plaso_offline',
     'upgrade_iris_offline',
     'upgrade_velociraptor_offline',
+    'upgrade_aws_offline',
+    'upgrade_azure_offline',
     'upgrade_intact_offline',
     # Workflow functions
     'run_upgrade_workflow',

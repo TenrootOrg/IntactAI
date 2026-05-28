@@ -655,6 +655,8 @@ document.addEventListener('alpine:init', () => {
             { id: 'plaso', name: 'Plaso (Timeline)', targetVersion: '', enabled: false, fallback: '20240308' },
             { id: 'iris', name: 'IRIS', targetVersion: '', enabled: false, fallback: 'v2.4.19' },
             { id: 'velociraptor', name: 'Velociraptor', targetVersion: '', enabled: false, fallback: '0.73.4' },
+            { id: 'aws', name: 'AWS (Prowler)', targetVersion: '', enabled: false, fallback: '5.28.1' },
+            { id: 'azure', name: 'Azure (DFIR-O365RC)', targetVersion: '', enabled: false, fallback: 'latest' },
             { id: 'intact', name: 'Intact.AI Source Code', targetVersion: '1.0.0', enabled: false, fallback: '1.0.0' },
         ],
 

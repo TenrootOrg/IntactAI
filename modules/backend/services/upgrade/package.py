@@ -33,6 +33,15 @@ DOCKER_IMAGES = {
         ('ghcr.io/dfir-iris/iriswebapp_nginx:{version}', 'iris-nginx-{version}.tar'),
         ('ghcr.io/dfir-iris/iriswebapp_db:{version}', 'iris-db-{version}.tar'),
     ],
+    'aws': [
+        # Prowler image for AWS posture scans (run on demand, no live container)
+        ('toniblyx/prowler:{version}', 'prowler-{version}.tar'),
+    ],
+    'azure': [
+        # DFIR-O365RC image for Azure Unified Audit Log (run on demand). Upstream
+        # only ships ':latest', so {version} is normally 'latest'.
+        ('anssi/dfir-o365rc:{version}', 'dfir-o365rc-{version}.tar'),
+    ],
 }
 
 

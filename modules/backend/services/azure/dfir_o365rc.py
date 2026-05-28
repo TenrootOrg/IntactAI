@@ -23,7 +23,17 @@ from services.upgrade.base import run_command, HOST_PATH
 
 CERT_PATH = "/app/data/azure_cert.pfx"
 CERT_PUBLIC_PATH = "/app/data/azure_cert_public.pem"
-DOCKER_IMAGE = "anssi/dfir-o365rc:latest"
+
+
+def _docker_image() -> str:
+    """DFIR-O365RC image ref, version-pinned via config.yaml -> backend .env.
+    Upstream only ships ':latest'; read fresh so an upgrade (re-pull of
+    latest) applies without a backend restart."""
+    try:
+        from config import get_dfir_o365rc_image
+        return get_dfir_o365rc_image()
+    except Exception:
+        return f"anssi/dfir-o365rc:{os.environ.get('DFIR_O365RC_VERSION', 'latest')}"
 
 
 def _cleanup_container(container_name: str):
@@ -64,7 +74,7 @@ def is_available() -> Dict[str, any]:
     }
 
     # Check Docker image
-    check = run_command(f"docker image inspect {DOCKER_IMAGE}", logger=None)
+    check = run_command(f"docker image inspect {_docker_image()}", logger=None)
     result['has_image'] = check.get('success', False)
 
     # Check certificate
@@ -369,7 +379,7 @@ def collect_unified_audit_log(
             f'docker run -d --name {container_name} '
             f'-v {host_output_dir}:/mnt/host/output '
             f'-v {host_data_dir}:/mnt/cert:ro '
-            f'{DOCKER_IMAGE} '
+            f'{_docker_image()} '
             f'pwsh -NonInteractive -Command "{ps_cmd}"',
             shell=True, capture_output=True, text=True, timeout=30
         )
@@ -703,7 +713,7 @@ def _run_dfir_command(
             f'docker run -d --name {container_name} '
             f'-v {host_output_dir}:/mnt/host/output '
             f'-v {host_data_dir}:/mnt/cert:ro '
-            f'{DOCKER_IMAGE} '
+            f'{_docker_image()} '
             f'pwsh -NonInteractive -Command "{ps_cmd}"',
             shell=True, capture_output=True, text=True, timeout=30
         )

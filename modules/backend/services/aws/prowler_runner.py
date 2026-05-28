@@ -23,7 +23,15 @@ from typing import Any, Callable, Dict, List, Optional
 
 from services.upgrade.base import HOST_PATH
 
-DOCKER_IMAGE = "toniblyx/prowler:latest"
+
+def _docker_image() -> str:
+    """Prowler image ref, version-pinned via config.yaml -> backend .env.
+    Read fresh so an upgrade applies without a backend restart."""
+    try:
+        from config import get_prowler_image
+        return get_prowler_image()
+    except Exception:
+        return f"toniblyx/prowler:{os.environ.get('PROWLER_VERSION', '5.28.1')}"
 
 # Service families we ever ask Prowler for, in the order they appear on
 # the CLI. Anything not in this list is ignored to keep arg quoting
@@ -50,7 +58,7 @@ def is_available() -> Dict[str, Any]:
     }
     try:
         check = subprocess.run(
-            f"docker image inspect {DOCKER_IMAGE}",
+            f"docker image inspect {_docker_image()}",
             shell=True, capture_output=True, timeout=10,
         )
         result["has_image"] = check.returncode == 0
@@ -60,7 +68,7 @@ def is_available() -> Dict[str, Any]:
 
     if not result["has_image"]:
         result["message"] = (
-            f"Prowler docker image missing. Run: docker pull {DOCKER_IMAGE}"
+            f"Prowler docker image missing. Run: docker pull {_docker_image()}"
         )
         return result
 
@@ -138,7 +146,7 @@ def _build_command(
         f"docker run -d --name {container_name} "
         f"{' '.join(env_args)} "
         f"-v {host_output_dir}:/out "
-        f"{DOCKER_IMAGE} {' '.join(prowler_args)}"
+        f"{_docker_image()} {' '.join(prowler_args)}"
     )
 
 

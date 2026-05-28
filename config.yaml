@@ -62,6 +62,13 @@ versions:
   portainer: 2.39.1
   timesketch: '20260326'
   velociraptor: '0.76.5'
+  # AWS posture scans run the Prowler image (toniblyx/prowler). Pinned to a
+  # real release tag for reproducible installs + upgrades.
+  aws_prowler: '5.28.1'
+  # Azure Unified Audit Log collection runs the DFIR-O365RC image
+  # (anssi/dfir-o365rc). Upstream only publishes ':latest' (no version tags),
+  # so we track latest — "upgrade" re-pulls the newest latest.
+  azure_dfir_o365rc: 'latest'
   # Legacy Velociraptor build for old Windows hosts (Server 2008 R2, Win 7)
   # where the modern Go 1.22+ binary crashes with 0xc0000005. 0.7.1 is the
   # last 0.7.x release built with Go 1.20 and runs cleanly on those OSes.

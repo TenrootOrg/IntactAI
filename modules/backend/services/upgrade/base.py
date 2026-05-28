@@ -228,6 +228,8 @@ def get_latest_versions() -> Dict:
         'plaso': '20260119',
         'iris': 'v2.4.27',
         'velociraptor': '0.75.6',
+        'aws': '5.28.1',
+        'azure': 'latest',
         'intact': '1.0.0',
     }
 
