@@ -259,7 +259,7 @@ echo
 echo "  Access:"
 echo "    Dashboard:   https://${NEW_IP}"
 echo "    IRIS:        https://${NEW_IP}:8443"
-echo "    Timesketch:  http://${NEW_IP}:5000"
+echo "    Timesketch:  https://${NEW_IP}:5000"
 echo
 log_warn "Already-deployed Velociraptor agents baked in the OLD IP ($OLD_IP) and"
 log_warn "will NOT reconnect. Redeploy endpoints with the freshly generated"

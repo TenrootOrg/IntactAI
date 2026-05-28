@@ -410,13 +410,13 @@ deploy_timesketch() {
     fi
 
     # Wait for TimeSketch API to be ready (check from host, not container - no curl in container)
-    log_info "  Waiting for TimeSketch API (http://localhost:5000)..."
+    log_info "  Waiting for TimeSketch API (https://localhost:5000)..."
     local ts_ready=false
     local ts_wait=0
     local ts_max_wait=90
 
     while [[ $ts_wait -lt $ts_max_wait ]]; do
-        local http_code=$(curl -s --max-time 5 "http://localhost:5000/" -o /dev/null -w "%{http_code}" 2>/dev/null)
+        local http_code=$(curl -sk --max-time 5 "https://localhost:5000/" -o /dev/null -w "%{http_code}" 2>/dev/null)
         if [[ "$http_code" =~ ^(200|301|302|303|307|308)$ ]]; then
             ts_ready=true
             log_success "  TimeSketch API is ready! (HTTP $http_code, ${ts_wait}s)"
