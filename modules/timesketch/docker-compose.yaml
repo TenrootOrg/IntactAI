@@ -103,6 +103,24 @@ services:
     networks:
       - intact_network
 
+  timesketch-web-v3:
+    container_name: intact_timesketch_web_v3
+    image: us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:${TIMESKETCH_VERSION:-latest}
+    entrypoint: ["/docker-entrypoint.sh"]
+    command: ["timesketch-web-v3"]
+    environment:
+      - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-2}
+      - TIMESKETCH_UI_MODE=v3
+    volumes:
+      - ./config:/etc/timesketch
+      - timesketch_upload:/usr/share/timesketch/upload
+      - timesketch_logs:/var/log/timesketch
+    restart: unless-stopped
+    depends_on:
+      - timesketch-web
+    networks:
+      - intact_network
+
   timesketch-nginx:
     container_name: intact_timesketch_nginx
     image: nginx:alpine
@@ -114,6 +132,7 @@ services:
     depends_on:
       - timesketch-web
       - timesketch-web-legacy
+      - timesketch-web-v3
     networks:
       - intact_network
 
