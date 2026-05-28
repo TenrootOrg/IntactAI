@@ -153,6 +153,40 @@ sudo bash scripts/repair_modules.sh elk
 
 Available modules: `elk`, `timesketch`, `velociraptor`, `iris`, `portainer`, `backend`, `nginx`
 
+### Change Platform IP
+
+Repoint an already-installed platform to a new IP (e.g. after moving the
+VM to a different network). `config.yaml`'s `domain:` is the single
+source of truth; this script updates it and re-runs the same propagation
+the installer uses, then restarts the affected containers.
+
+```bash
+# Interactive (asks for confirmation)
+sudo bash scripts/change_ip.sh 192.168.120.11
+
+# Non-interactive
+sudo bash scripts/change_ip.sh 192.168.120.11 --yes
+```
+
+What it does:
+1. Sets `domain: <NEW_IP>` in `config.yaml`
+2. Re-propagates the IP into `modules/velociraptor/.env`
+3. Sweeps `modules/` + `scripts/` for any stray old-IP literals and replaces them
+4. Regenerates the TLS certificates with `CN=<NEW_IP>` (nginx + IRIS)
+5. Patches the Velociraptor server config, restarts it so the client
+   config + API config regenerate, and restarts the backend
+6. Refreshes the nginx containers (clears upstream DNS cache + serves the new cert)
+7. Regenerates the Velociraptor client installers in `client_installers/`
+
+It is idempotent (re-running with the current IP is a no-op) and safe to
+re-run if interrupted.
+
+> **Note:** Velociraptor agents already deployed on endpoints have the
+> old server IP baked in and will **not** reconnect. Redeploy those
+> endpoints with the freshly generated installers in `client_installers/`,
+> or keep the old IP reachable as an alias. Browser TLS warnings are
+> expected (self-signed certificate).
+
 ### Clean/Uninstall
 
 To remove Intact.AI components (containers, volumes, data):
