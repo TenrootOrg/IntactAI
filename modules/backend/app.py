@@ -179,7 +179,7 @@ def run_startup_initialization():
         print("[STARTUP] Velociraptor not responding after 60s, continuing anyway...", flush=True)
 
     # NOTE: Tool download is NOT done on startup - it runs via:
-    # 1) install.sh/first-init.sh (calls /api/maintenance/run)
+    # 1) install.sh (calls /api/maintenance/run)
     # 2) Maintenance button in Settings UI
     # This keeps container restarts fast
     initialization_status["tools_download"] = "skipped"

@@ -5,9 +5,8 @@
 #   pre-commit install
 #
 # Once activated, every `git commit` runs gitleaks on the staged diff
-# and blocks the commit if a secret is detected. The hook is also
-# auto-installed by `scripts/first-init.sh` when run in a developer
-# clone (when `.git` and `.pre-commit-config.yaml` are both present).
+# and blocks the commit if a secret is detected. Install it once per
+# developer clone with `pip install pre-commit && pre-commit install`.
 #
 # We use a `local` hook (not the upstream gitleaks pre-commit hook
 # repo) on purpose:

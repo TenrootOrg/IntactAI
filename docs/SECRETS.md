@@ -37,8 +37,7 @@ the time it got removed by accident.
 # providers in TimeSketch stay disabled and the rest still works.
 export TIMESKETCH_GOOGLE_AI_STUDIO_KEY="AIza..."
 
-sudo bash scripts/first-init.sh
-# (or `sudo ./install.sh` if you're using the full installer)
+sudo bash install.sh
 ```
 
 After install, configure the rest through the **Settings** page in the
@@ -60,7 +59,7 @@ dashboard:
 | **Azure app-auth credentials** (tenant_id, client_id, client_secret) | `data/frontend_data.db` under `frontend_config` key `cloud.azure` | Saved via `POST /api/config/cloud`. Read at run time by `routes/config_routes.py:_load_cloud_config`. The `client_secret` is masked as `••••••••` on `GET /api/config/cloud`. |
 | **Azure app-auth certificate** (private key + public PEM) | `data/azure_cert.pfx`, `data/azure_cert_public.pem` (both gitignored) | Generated at install. Path constants live in `services/azure/dfir_o365rc.py`. Operator uploads the public key to Azure portal. |
 | **TimeSketch Google AI Studio key** (used by `timesketch.conf` for nl2q / summarize / synthesize) | Either: <br>(a) `${TIMESKETCH_GOOGLE_AI_STUDIO_KEY}` env var, baked in at install time by the template-render step, OR <br>(b) hand-edited into `modules/timesketch/config/timesketch.conf` after install (the rendered file is gitignored). | The `.template` file is tracked; the rendered `.conf` is not. |
-| **IRIS / Postgres / TimeSketch user passwords** | `config.yaml` (operator-managed) → propagated by `scripts/first-init.sh` into per-module `.env` and secrets dirs (`modules/iris/secrets/`, `modules/portainer/secrets/`) — all gitignored. | The default values in `config.yaml` are placeholders meant to be overwritten before install. |
+| **IRIS / Postgres / TimeSketch user passwords** | `config.yaml` (operator-managed) → propagated by `install.sh` (via `lib/config.sh` + `lib/modules.sh`) into per-module `.env` and secrets dirs (`modules/iris/secrets/`, `modules/portainer/secrets/`) — all gitignored. | The default values in `config.yaml` are placeholders meant to be overwritten before install. |
 
 ## Rules for adding a new secret
 
@@ -78,8 +77,7 @@ dashboard:
    - Add `config` (the rendered output) to `.gitignore`.
    - Render at install time via
      `lib/common.sh:render_config_from_template` (used by
-     `lib/modules.sh`) or the inline `render_module_configs` in
-     `scripts/first-init.sh`.
+     `lib/modules.sh`).
    - The render reads the value from an environment variable; absent
      env var = empty substitution = the consuming service sees an
      empty / disabled config.
@@ -113,9 +111,9 @@ hit blocks the commit. Don't bypass with `--no-verify`; if the
 finding is a false positive, add an entry to `.gitleaks.toml`
 under `[allowlist]` with a comment explaining why.
 
-`scripts/first-init.sh` auto-runs `pre-commit install` when run from
-a developer clone (i.e. `.git` exists and `pre-commit` is on PATH).
-Production / operator installs from a tarball skip this silently.
+Run the two commands above once per developer clone. Production /
+operator installs from a tarball have no `.git`, so the hook simply
+doesn't apply there.
 
 ## CI
 

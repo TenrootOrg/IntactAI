@@ -185,44 +185,13 @@ Available options:
 
 For distributing Intact.AI as a pre-configured VM image (OVA) to clients, including air-gapped environments.
 
-### Prepare Image for Export
-
-Before exporting the VM, clean all development artifacts:
-
-```bash
-# Preview what will be deleted (dry-run)
-sudo bash scripts/prepare-image.sh --dry-run
-
-# Clean everything for distribution
-sudo bash scripts/prepare-image.sh
-
-# Keep Claude Code files (for debugging)
-sudo bash scripts/prepare-image.sh --keep-claude
-
-# Keep .git and .ssh (for pushing fixes before final export)
-sudo bash scripts/prepare-image.sh --keep-git
-```
-
-**What gets cleaned:**
-- Docker containers and volumes (client/case data)
-- SQLite databases and reports
-- SSL certificates (regenerated on first-init)
-- Client installers (regenerated on first-init)
-- Log files, caches, history
-- SSH keys, Claude Code files, VSCode server
-
-**What stays:**
-- `config.yaml` (client edits this)
-- `data/tools/` (forensic tools for air-gapped)
-- All source code
-
 ### Client First Boot
 
 After client imports the VM and edits `config.yaml`:
 
 ```bash
 # Initialize all services
-sudo bash scripts/first-init.sh
+sudo bash install.sh
 ```
 
 **What it does:**
@@ -234,13 +203,12 @@ sudo bash scripts/first-init.sh
 
 ### Distribution Workflow
 
-1. **Prepare:** `sudo bash scripts/prepare-image.sh`
-2. **Export:** Create OVA/snapshot in your hypervisor
-3. **Deliver:** Transfer OVA to client (network or USB)
-4. **Client Setup:**
+1. **Export:** Create OVA/snapshot in your hypervisor
+2. **Deliver:** Transfer OVA to client (network or USB)
+3. **Client Setup:**
    - Import OVA
    - Edit `config.yaml` (set IP/domain and passwords)
-   - Run `sudo bash scripts/first-init.sh`
+   - Run `sudo bash install.sh`
    - Access dashboard at `http://CLIENT_IP`
 
 ## Agentic skill audits

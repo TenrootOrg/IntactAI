@@ -23,7 +23,7 @@ list. Removing them breaks fresh installs.
 | `modules/iris/.env` | service names + ports + `IRIS_VERSION` | IRIS compose env-file. |
 | `modules/portainer/.env` | version pins only | Portainer compose env-file. |
 | `modules/timesketch/.env` | `TIMESKETCH_PASSWORD=123123`, version | TimeSketch compose env-file. |
-| `modules/velociraptor/.env` | `VELOX_PASSWORD=123123`, hostnames | Velociraptor compose env-file. `scripts/first-init.sh:sync_velociraptor_env` rewrites this in place at install time. |
+| `modules/velociraptor/.env` | `VELOX_PASSWORD=123123`, hostnames | Velociraptor compose env-file. `lib/config.sh:update_env_files` (run by `install.sh`) rewrites this in place at install time. |
 | `modules/timesketch/config/timesketch.conf.template` | placeholder for `__TIMESKETCH_GOOGLE_AI_STUDIO_KEY__` | Rendered into `timesketch.conf` (gitignored) by `lib/common.sh:render_config_from_template`. |
 | `modules/timesketch/config/timesketch_legacy.conf.template` | same | Same. |
 
