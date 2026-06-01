@@ -304,8 +304,43 @@ document.addEventListener('alpine:init', () => {
         },
 
         getTypeColor(type) {
-            const colors = { timesketch: 'bg-purple-600', velociraptor_hunt: 'bg-green-600', hunt: 'bg-orange-600', artifact: 'bg-blue-600', agentic: 'bg-pink-600', maintenance: 'bg-yellow-600', velociraptor_offline_collector: 'bg-teal-600', velociraptor_offline_import: 'bg-teal-600', offline_collector: 'bg-teal-600', offline_import: 'bg-teal-600', settings: 'bg-red-600' };
-            return colors[type] || 'bg-gray-600';
+            // Module-themed palette so each chip reflects which module produced
+            // the run. Velociraptor family (incl. agentic + CVE) = green;
+            // Timesketch = purple (avoids blue since Azure owns blue);
+            // Settings / system actions = red; AWS = orange; Azure = blue;
+            // Engagement Report = yellow (customer-facing deliverable).
+            // Fallback is slate-700 — never gray-600, which reads black-on-dark.
+            const colors = {
+                // Velociraptor (incl. agentic + CVE-mgmt scans + offline collectors)
+                agentic: 'bg-green-600',
+                velociraptor_hunt: 'bg-green-700',
+                velociraptor_upload: 'bg-green-700',
+                velociraptor_offline_collector: 'bg-green-700',
+                velociraptor_offline_import: 'bg-green-700',
+                offline_collector: 'bg-green-700',
+                offline_import: 'bg-green-700',
+                hunt: 'bg-green-700',
+                cve_scan: 'bg-green-700',
+                artifact: 'bg-green-600',
+                // Timesketch (and IRIS, when its runs get a workflow row)
+                timesketch: 'bg-purple-600',
+                timesketch_upload: 'bg-purple-700',
+                iris: 'bg-purple-600',
+                // AWS / Azure cloud scans
+                aws_scan: 'bg-orange-600',
+                azure_scan: 'bg-blue-600',
+                // Settings + system-level actions (all red — destructive or
+                // platform-affecting in nature)
+                settings: 'bg-red-600',
+                system_purge: 'bg-red-700',
+                prepare_package: 'bg-red-700',
+                upgrade: 'bg-red-700',
+                support_bundle: 'bg-red-700',
+                maintenance: 'bg-red-700',
+                // Customer-facing reporting
+                engagement_report: 'bg-yellow-600',
+            };
+            return colors[type] || 'bg-slate-700';
         },
 
         getLogColor(level) {

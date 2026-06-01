@@ -31,6 +31,7 @@ from .templates import (
     section_heading,
     ioc_table_header,
     appendix_heading,
+    audience_language_directive,
 )
 
 
@@ -394,6 +395,109 @@ def _extract_iocs(loaded_sources):
         [(k[0], k[1], sorted(rids)) for k, rids in found.items()],
         key=lambda t: (t[0], t[1]),
     )
+
+
+# Regex matching the `**Severity:** Critical` style severity lines the
+# per-module pipelines emit (AWS / Azure / agentic / CVE all do).
+# Captures the level, case-insensitive.
+_SEVERITY_LINE_RE = re.compile(
+    r"\*\*Severity:\*\*\s*(critical|high|medium|low|info(?:rmational)?)",
+    re.IGNORECASE,
+)
+
+
+def _tally_findings_severity(loaded_sources):
+    """Count Critical/High/Medium/Low findings across every source's
+    markdown by scanning for `**Severity:** <level>` lines (the shared
+    convention the per-module pipelines emit). Returns
+    {'Critical': N, 'High': N, 'Medium': N, 'Low': N, 'Informational': N}.
+
+    Conservative — a source that uses different wording for severity
+    won't contribute, but won't crash either. False positives are
+    unlikely because the literal "**Severity:**" string is reserved
+    for finding records by every emitter."""
+    counts = {'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0, 'Informational': 0}
+    for s in loaded_sources or []:
+        md = s.get('markdown') or ''
+        for m in _SEVERITY_LINE_RE.finditer(md):
+            level = m.group(1).lower()
+            if level in ('info', 'informational'):
+                counts['Informational'] += 1
+            else:
+                counts[level.capitalize()] += 1
+    return counts
+
+
+def _format_severity_rollup(counts):
+    """Render the tally as a one-line markdown string for the cover
+    metadata, e.g. `🟥 2 · 🟧 5 · 🟨 12 · 🟩 3`. Informational is
+    only shown when non-zero (most reports skip it). Returns empty
+    string when every count is zero — caller can omit the row in
+    that case."""
+    total = sum(counts.values())
+    if total == 0:
+        return ''
+    parts = [
+        f"🟥 Critical: {counts['Critical']}",
+        f"🟧 High: {counts['High']}",
+        f"🟨 Medium: {counts['Medium']}",
+        f"🟩 Low: {counts['Low']}",
+    ]
+    if counts.get('Informational', 0) > 0:
+        parts.append(f"⬜ Informational: {counts['Informational']}")
+    return "  ·  ".join(parts)
+
+
+# Regex finding the title line that immediately precedes a Severity
+# row inside a finding block. Walks back to the nearest preceding
+# `### <title>` or `#### <title>` H3/H4 heading.
+_FINDING_TITLE_RE = re.compile(r"(?m)^[ \t]*#{3,4}[ \t]+(.+?)\s*$")
+
+
+def _dedupe_findings_index(loaded_sources):
+    """Build a cross-source finding index: for every finding-like block
+    (one with a `**Severity:** X` line), capture the nearest preceding
+    H3/H4 heading as the title, then merge by `(severity, title-stem)`
+    across all source workflows.
+
+    Returns a list of `(title, severity, source_run_ids, count)`
+    tuples sorted by severity desc → title asc, deduped so the same
+    finding hitting 5 hosts in different sources collapses to one row
+    with `Seen in N sources`. Useful as a "Findings at a Glance" table
+    in the engagement deliverable — the customer scans one list
+    instead of paging through every source appendix."""
+    SEV_RANK = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1, 'informational': 0, 'info': 0}
+    bucket = {}  # (severity, title_stem) -> set of run_ids
+    for s in loaded_sources or []:
+        md = s.get('markdown') or ''
+        rid = s.get('run_id', '?')
+        title_positions = [(m.start(), m.group(1).strip()) for m in _FINDING_TITLE_RE.finditer(md)]
+        for sev_match in _SEVERITY_LINE_RE.finditer(md):
+            # Walk backwards to find the nearest H3/H4 title before
+            # this severity line.
+            title = ''
+            for pos, t in reversed(title_positions):
+                if pos < sev_match.start():
+                    title = t
+                    break
+            if not title:
+                continue
+            sev = sev_match.group(1).lower()
+            if sev in ('info', 'informational'):
+                sev = 'informational'
+            # Stem the title — drop trailing source/host identifiers in
+            # parens / brackets so the same rule fired on different
+            # hosts dedupes ("Suspicious LSASS Access (host-a)" ==
+            # "Suspicious LSASS Access (host-b)").
+            stem = re.sub(r'[\(\[][^)\]]*[\)\]]\s*$', '', title).strip().lower()
+            if not stem:
+                continue
+            bucket.setdefault((sev, stem), set()).add(rid)
+    out = []
+    for (sev, stem), rids in bucket.items():
+        out.append((stem, sev.capitalize(), sorted(rids), len(rids)))
+    out.sort(key=lambda t: (-SEV_RANK.get(t[1].lower(), 0), t[0]))
+    return out
 
 
 _HEAD_NUMBERED_HEADINGS = (
@@ -929,12 +1033,22 @@ def _build_vulnerabilities_section(cve_sources: List[Dict]) -> List[str]:
     return out
 
 
-def _assemble_markdown(name, notes, loaded_sources, synthesis_md, *, tlp='AMBER', version=1):
+def _assemble_markdown(name, notes, loaded_sources, synthesis_md, *, tlp='AMBER', version=1, customer_name='', audience='both'):
     """Glue the LLM-written synthesis layer together with the
     mechanically-assembled per-environment sections, IOC table, and
-    appendix."""
+    appendix.
+
+    `customer_name` is rendered into the cover block ("Prepared for: …").
+    `audience='executive'` skips the verbatim source-reports appendix
+    since exec-only readers won't need the rule-by-rule output."""
     generated_at = datetime.now().strftime('%Y-%m-%d %H:%M UTC')
-    body = [cover_block(name, generated_at, loaded_sources, tlp=tlp, version=version)]
+    severity_counts = _tally_findings_severity(loaded_sources)
+    severity_summary = _format_severity_rollup(severity_counts)
+    body = [cover_block(
+        name, generated_at, loaded_sources,
+        tlp=tlp, version=version, customer_name=customer_name,
+        severity_summary=severity_summary,
+    )]
 
     if (notes or '').strip():
         body += ["", "## Engagement notes (operator-supplied)", "", notes.strip(), ""]
@@ -1044,6 +1158,31 @@ def _assemble_markdown(name, notes, loaded_sources, synthesis_md, *, tlp='AMBER'
             body.append("")
     body.append("")
 
+    # Cross-source Finding Index — same finding hitting multiple
+    # sources collapses to one row with `Seen in N sources` so the
+    # customer can scan one list instead of paging through every
+    # appendix.
+    finding_index = _dedupe_findings_index(loaded_sources)
+    if finding_index:
+        body.append(f"## {ordinal}. Cross-Source Finding Index")
+        ordinal += 1
+        body.append("")
+        body.append(
+            "*Findings collapsed across source workflows by (severity, "
+            "title). When the same rule fired in multiple sources the "
+            "row's `Sources` count reflects every workflow that "
+            "surfaced it — drill into the source appendices for the "
+            "per-host detail.*"
+        )
+        body.append("")
+        body.append("| # | Severity | Finding | Sources |")
+        body.append("|---|---|---|---|")
+        for idx, (title, severity, sources, count) in enumerate(finding_index, 1):
+            srcs = ", ".join(f"`{r}`" for r in sources)
+            title_safe = (title or '').replace('|', '\\|').strip().capitalize()
+            body.append(f"| {idx} | {severity} | {title_safe} | {count} ({srcs}) |")
+        body.append("")
+
     # Containment Actions Taken — what the IR team and the customer
     # did during the engagement (separate from future
     # recommendations). Default body is a placeholder that the
@@ -1098,7 +1237,13 @@ def _assemble_markdown(name, notes, loaded_sources, synthesis_md, *, tlp='AMBER'
     # per-host counts), and the cve_scan short markdown summary just
     # duplicates a subset of the same rows. The full per-row data
     # lives in the downloadable combined_cves.csv from the workflow row.
+    #
+    # On exec-only deliverables we drop the appendix entirely — boards
+    # don't read per-rule technical detail, and shipping it just inflates
+    # page count.
     appendix_sources = [s for s in loaded_sources if s.get('automation_type') != 'cve_scan']
+    if (audience or 'both').lower() == 'executive':
+        appendix_sources = []
     if appendix_sources:
         body.append(appendix_heading())
         body.append("")
@@ -1223,20 +1368,30 @@ def run_engagement_build(run_id, sources, notes, llm_config):
         # if there is one. On a brand-new engagement build it's None;
         # on a re-run via the chat, it's the synthesised brief.
         wf = get_workflow(run_id) or {}
-        master_prompt = ((wf.get('details') or {}).get('master_prompt') or '').strip() or None
+        details = wf.get('details') or {}
+        master_prompt = (details.get('master_prompt') or '').strip() or None
+        audience = (details.get('audience') or 'both').lower()
+        language = (details.get('language') or 'en').lower()
+        customer_name = (details.get('customer_name') or '').strip()
 
         add_log_to_run(run_id, "[Engagement] Synthesising executive narrative with LLM…", "info")
         update_run_status(run_id, 'running', progress=40)
-        synthesis_md = _synthesise_executive(run_id, sources_data=loaded, notes=notes, llm_config=llm_config, master_prompt=master_prompt)
+        synthesis_md = _synthesise_executive(
+            run_id, sources_data=loaded, notes=notes, llm_config=llm_config,
+            master_prompt=master_prompt, audience=audience, language=language,
+        )
         update_run_status(run_id, 'running', progress=80)
 
         # Engagement name comes from the workflow row's name (the user
         # entered it when creating the build).
         name = (wf.get('name') or 'Engagement Report')
-        tlp = (wf.get('details') or {}).get('tlp') or 'AMBER'
-        version = int((wf.get('details') or {}).get('report_version') or 1)
+        tlp = details.get('tlp') or 'AMBER'
+        version = int(details.get('report_version') or 1)
         add_log_to_run(run_id, "[Engagement] Assembling final markdown document…", "info")
-        final_md = _assemble_markdown(name, notes, loaded, synthesis_md, tlp=tlp, version=version)
+        final_md = _assemble_markdown(
+            name, notes, loaded, synthesis_md,
+            tlp=tlp, version=version, customer_name=customer_name, audience=audience,
+        )
         update_run_status(run_id, 'running', progress=95)
 
         # Save under the same shape the AWS/Azure download endpoint
@@ -1264,14 +1419,21 @@ def run_engagement_build(run_id, sources, notes, llm_config):
         update_run_status(run_id, 'failed', error=str(e))
 
 
-def _synthesise_executive(run_id, sources_data, notes, llm_config, master_prompt=None):
+def _synthesise_executive(run_id, sources_data, notes, llm_config, master_prompt=None, audience='both', language='en'):
     """One LLM call producing the executive layer (§1–§4 + §9 + §10).
 
     When `master_prompt` is set (operator used the chat refinement
     loop), it's prepended to the system prompt so the LLM treats the
     operator's notes as ground truth. Same pattern the agentic /
-    AWS / Azure pipelines use for chat-driven re-runs."""
+    AWS / Azure pipelines use for chat-driven re-runs.
+
+    `audience` and `language` append a small tailoring directive
+    (audience: executive/technical/both; language: en/he). Defaults
+    preserve the previous behaviour for back-compat with old runs."""
     system_prompt = ENGAGEMENT_SYSTEM_PROMPT
+    directive = audience_language_directive(audience=audience, language=language)
+    if directive:
+        system_prompt = system_prompt + "\n\n" + directive
     if master_prompt:
         system_prompt = (
             "## OPERATOR CONTEXT (from interactive validation)\n"
@@ -1327,11 +1489,17 @@ def run_engagement_reanalyze(run_id, master_prompt, llm_config, scope='reports_o
         raise RuntimeError("All source workflows became unreadable since the original build.")
 
     update_run_status(run_id, 'running', progress=40)
-    synthesis_md = _synthesise_executive(run_id, sources_data=loaded, notes=notes, llm_config=llm_config, master_prompt=master_prompt)
+    audience = (details.get('audience') or 'both').lower()
+    language = (details.get('language') or 'en').lower()
+    customer_name = (details.get('customer_name') or '').strip()
+    synthesis_md = _synthesise_executive(
+        run_id, sources_data=loaded, notes=notes, llm_config=llm_config,
+        master_prompt=master_prompt, audience=audience, language=language,
+    )
     update_run_status(run_id, 'running', progress=80)
 
     name = wf.get('name') or 'Engagement Report'
-    tlp = (wf.get('details') or {}).get('tlp') or 'AMBER'
+    tlp = details.get('tlp') or 'AMBER'
     # On a re-run, bump the version so the Document History row
     # reads as a revision rather than the initial build.
     prior_version = int((wf.get('details') or {}).get('report_version') or 1)
@@ -1349,6 +1517,9 @@ def run_engagement_reanalyze(run_id, master_prompt, llm_config, scope='reports_o
     except Exception:
         pass
     add_log_to_run(run_id, f"[Engagement] Reassembling final markdown (v{version})…", "info")
-    final_md = _assemble_markdown(name, notes, loaded, synthesis_md, tlp=tlp, version=version)
+    final_md = _assemble_markdown(
+        name, notes, loaded, synthesis_md,
+        tlp=tlp, version=version, customer_name=customer_name, audience=audience,
+    )
     save_report(run_id, json.dumps({'technical': final_md}))
     update_run_status(run_id, 'running', progress=95)

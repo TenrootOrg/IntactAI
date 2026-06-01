@@ -31,9 +31,33 @@ document.addEventListener('alpine:init', () => {
         composeOpen: false,
         name: '',
         notes: '',
+        // Operator-controlled engagement metadata. These default to the
+        // same values the backend used to hardcode (TLP=AMBER, audience
+        // mixed, English) so blank-form behaviour matches the old build
+        // exactly. Logo override is a data URL; empty falls back to the
+        // embedded Tenroot brand.
+        tlp: 'AMBER',
+        customerName: '',
+        audience: 'both',
+        language: 'en',
+        logoB64: '',
+        logoName: '',
         generating: false,
         status: '',
         statusLevel: 'info',
+        // In-modal progress state. Populated by the post-submit polling
+        // loop so the operator can watch the build finish without
+        // hunting in the workflows tab. `currentRunId` is the row the
+        // poller is watching; `phase` is the human-readable progress
+        // line; `progress` is the 0-100 percentage; `done`/`failed`
+        // freeze the modal into a final state where the footer offers
+        // direct download + chat shortcuts.
+        currentRunId: '',
+        phase: '',
+        progress: 0,
+        done: false,
+        failed: false,
+        _pollTimer: null,
 
         // ──────────────────────────────────────────────────────────────
         // Predicates + helpers
@@ -158,6 +182,9 @@ document.addEventListener('alpine:init', () => {
         },
 
         closeComposeModal() {
+            // Stop any in-flight polling — the workflow row on the
+            // dashboard will continue showing live progress regardless.
+            this._stopPolling();
             this.composeOpen = false;
         },
 
@@ -177,27 +204,174 @@ document.addEventListener('alpine:init', () => {
                 section: this.sectionByRun[id] || 'Other',
             }));
             this.generating = true;
+            this.done = false;
+            this.failed = false;
+            this.progress = 0;
+            this.phase = 'Dispatching build…';
             this._setStatus('Dispatching build…', 'info');
             try {
                 const r = await fetch('/api/engagement/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, sources, notes: this.notes || '' }),
+                    body: JSON.stringify({
+                        name,
+                        sources,
+                        notes: this.notes || '',
+                        tlp: this.tlp || 'AMBER',
+                        customer_name: this.customerName || '',
+                        audience: this.audience || 'both',
+                        language: this.language || 'en',
+                        customer_logo_b64: this.logoB64 || '',
+                    }),
                 });
                 const data = await r.json();
                 if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-                // Success — close modal, clear state, refresh workflows
-                // so the new row appears immediately.
-                this.composeOpen = false;
-                this.clearSelection();
-                this.name = '';
-                this.notes = '';
+                // Modal stays OPEN so the operator can watch progress.
+                // Polling drives `phase` + `progress` until the run
+                // settles (completed / failed). The clearSelection +
+                // field-reset only happen if the operator clicks "New
+                // Engagement" after this one completes, or closes
+                // the modal — we don't want to wipe their input mid-build.
+                this.currentRunId = data.run_id;
+                this._setStatus('Build started — watching progress…', 'info');
                 if (Alpine.store('workflows')?.load) Alpine.store('workflows').load();
+                this._startPolling(data.run_id);
             } catch (e) {
                 this._setStatus(`Build failed: ${e.message}`, 'error');
-            } finally {
                 this.generating = false;
+                this.failed = true;
             }
+        },
+
+        // Poll the workflow row's status every ~1.5 s so the modal can
+        // show live progress. Stops on completed / failed / cancelled.
+        _startPolling(runId) {
+            if (this._pollTimer) {
+                clearInterval(this._pollTimer);
+                this._pollTimer = null;
+            }
+            const tick = async () => {
+                try {
+                    const r = await fetch(`/api/automations/${encodeURIComponent(runId)}`);
+                    if (!r.ok) return;
+                    const data = await r.json();
+                    const run = data?.run || data?.workflow || data;
+                    if (!run) return;
+                    const status = (run.status || '').toLowerCase();
+                    this.progress = Math.max(0, Math.min(100, Number(run.progress) || 0));
+                    // Phase label: walk the most recent log line for
+                    // a useful human-readable hint. Fall back to a
+                    // progress-bucket name.
+                    const logs = run.logs || [];
+                    let phase = '';
+                    for (let i = logs.length - 1; i >= 0; i--) {
+                        const msg = (logs[i].message || logs[i] || '').toString();
+                        if (msg.startsWith('[Engagement]')) {
+                            phase = msg.replace('[Engagement]', '').trim();
+                            break;
+                        }
+                    }
+                    if (!phase) {
+                        if (this.progress < 25) phase = 'Loading sources…';
+                        else if (this.progress < 50) phase = 'Synthesising executive narrative…';
+                        else if (this.progress < 85) phase = 'Assembling final markdown…';
+                        else phase = 'Rendering PDF…';
+                    }
+                    this.phase = phase;
+                    if (status === 'completed') {
+                        this.progress = 100;
+                        this.done = true;
+                        this.failed = false;
+                        this.generating = false;
+                        this._setStatus('Engagement report ready.', 'success');
+                        this._stopPolling();
+                        if (Alpine.store('workflows')?.load) Alpine.store('workflows').load();
+                    } else if (status === 'failed' || status === 'cancelled') {
+                        this.done = false;
+                        this.failed = true;
+                        this.generating = false;
+                        this._setStatus(`Build ${status}: ${run.error || 'see workflow logs'}`, 'error');
+                        this._stopPolling();
+                        if (Alpine.store('workflows')?.load) Alpine.store('workflows').load();
+                    }
+                } catch (_e) {
+                    // Single failed poll is fine — try again next tick.
+                }
+            };
+            this._pollTimer = setInterval(tick, 1500);
+            tick();
+        },
+
+        _stopPolling() {
+            if (this._pollTimer) {
+                clearInterval(this._pollTimer);
+                this._pollTimer = null;
+            }
+        },
+
+        // Operator clicked "New Engagement" from a completed modal — wipe
+        // the form state so the next compose starts clean.
+        startOver() {
+            this._stopPolling();
+            this.currentRunId = '';
+            this.phase = '';
+            this.progress = 0;
+            this.done = false;
+            this.failed = false;
+            this.clearSelection();
+            this.name = '';
+            this.notes = '';
+            this.customerName = '';
+            this.logoB64 = '';
+            this.logoName = '';
+            this.composeOpen = false;
+        },
+
+        // Open the chat for the just-built engagement.
+        openInteractiveForCurrent() {
+            if (!this.currentRunId) return;
+            this.composeOpen = false;
+            if (Alpine.store('agenticChat')?.open) {
+                Alpine.store('agenticChat').open(this.currentRunId, 'engagement_report');
+            }
+        },
+
+
+        // File-picker handler for the logo upload field. Reads the
+        // chosen file as a base64 data URL ready to drop into the
+        // dispatch payload — backend stores the data URL verbatim and
+        // the PDF renderer embeds it directly into <img src="…">.
+        async onLogoSelected(event) {
+            const file = event?.target?.files?.[0];
+            if (!file) {
+                this.logoB64 = '';
+                this.logoName = '';
+                return;
+            }
+            // 1.5 MiB hard cap — the backend cap is 2 MiB on the
+            // already-encoded payload (~1.5 MiB raw). Keep them in sync.
+            if (file.size > 1_500_000) {
+                this._setStatus('Logo too large (>1.5 MB). Pick a smaller image.', 'error');
+                event.target.value = '';
+                return;
+            }
+            try {
+                const reader = new FileReader();
+                const dataUrl = await new Promise((resolve, reject) => {
+                    reader.onerror = () => reject(reader.error);
+                    reader.onload = () => resolve(reader.result);
+                    reader.readAsDataURL(file);
+                });
+                this.logoB64 = dataUrl || '';
+                this.logoName = file.name || '';
+            } catch (e) {
+                this._setStatus(`Could not read logo file: ${e.message}`, 'error');
+            }
+        },
+
+        clearLogo() {
+            this.logoB64 = '';
+            this.logoName = '';
         },
 
         _setStatus(text, level) {

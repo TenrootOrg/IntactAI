@@ -190,7 +190,63 @@ OVERALL DISCIPLINE
 """
 
 
-def cover_block(name, generated_at, sources, tlp='AMBER', version=1):
+def audience_language_directive(audience: str = 'both', language: str = 'en') -> str:
+    """Return a short directive block to append to ENGAGEMENT_SYSTEM_PROMPT
+    so the LLM tailors the executive layer to the chosen audience +
+    language. Both controls are optional — defaults preserve the
+    previous behaviour (technical + executive bilingually-readable
+    English).
+
+    audience: 'technical' | 'executive' | 'both' (default).
+    language: ISO short code — 'en' (default) or 'he' for Hebrew.
+    """
+    lines = []
+    aud = (audience or 'both').lower()
+    if aud == 'executive':
+        lines.append(
+            "## AUDIENCE: Executive\n"
+            "Write strictly for a non-technical executive audience (CIO, "
+            "CISO, board). Lead with business impact, risk posture, and "
+            "recommended decisions. Avoid rule names, log field "
+            "references, and per-artefact technicalia inside §1-§4. "
+            "Save the deep technical detail for the verbatim source "
+            "appendices that follow."
+        )
+    elif aud == 'technical':
+        lines.append(
+            "## AUDIENCE: Technical (DFIR / SOC)\n"
+            "Write for a technical audience already fluent in DFIR. "
+            "Cite rule IDs, log sources, host/principal identifiers, "
+            "ATT&CK technique numbers, and exact timestamps liberally. "
+            "Keep §1 brief; spend the budget on §3 (Attack Narrative) "
+            "and §5 (Key Findings)."
+        )
+    else:
+        lines.append(
+            "## AUDIENCE: Mixed (Executive + Technical)\n"
+            "Default audience — open each section with a one-paragraph "
+            "executive summary, then expand into technical detail. "
+            "The same document needs to serve both the CIO and the "
+            "responding SOC."
+        )
+
+    lang = (language or 'en').lower()
+    if lang in ('he', 'heb', 'hebrew'):
+        lines.append(
+            "\n## LANGUAGE: Hebrew\n"
+            "Write the ENTIRE deliverable in modern professional Hebrew. "
+            "Technical terms (CVE-IDs, ATT&CK technique IDs, rule names, "
+            "log field names, hostnames, IPs, hashes) stay in their "
+            "original English/Latin form — do not transliterate them. "
+            "Section headings, narrative prose, table headers, and "
+            "recommendations are all in Hebrew."
+        )
+    # English is the default — no extra directive needed.
+
+    return "\n\n".join(lines)
+
+
+def cover_block(name, generated_at, sources, tlp='AMBER', version=1, customer_name='', severity_summary=''):
     """Return the markdown cover block that opens the assembled
     report. Layered like a professional IR firm deliverable:
 
@@ -210,6 +266,10 @@ def cover_block(name, generated_at, sources, tlp='AMBER', version=1):
 
     `version` is the report revision; bumps on interactive re-run
     by the chat-driven master-prompt cycle.
+
+    `customer_name`, when set, is rendered into a "Prepared for: <name>"
+    line on the cover. When blank the line is omitted (back-compat with
+    runs dispatched before the field existed).
     """
     tlp_color = {
         'RED': '🟥',
@@ -226,6 +286,14 @@ def cover_block(name, generated_at, sources, tlp='AMBER', version=1):
         f"**Version:** v{version}  ·  "
         f"**Generated:** {generated_at}",
         "",
+    ]
+    if (customer_name or '').strip():
+        lines.append(f"**Prepared for:** {customer_name.strip()}")
+        lines.append("")
+    if (severity_summary or '').strip():
+        lines.append(f"**Severity Summary:** {severity_summary.strip()}")
+        lines.append("")
+    lines += [
         "**Prepared by:** IntactAI — Incident Response Engagement Builder",
         "",
         "---",

@@ -69,17 +69,21 @@ _META_RE = re.compile(
     r"\*\*Version:\*\*\s+v(?P<version>\d+)\s*·\s*"
     r"\*\*Generated:\*\*\s+(?P<generated>[^\n]+)",
 )
+_CUSTOMER_RE = re.compile(r'^\*\*Prepared for:\*\*\s+(?P<customer>.+?)\s*$', re.MULTILINE)
+_SEVERITY_RE = re.compile(r'^\*\*Severity Summary:\*\*\s+(?P<severity>.+?)\s*$', re.MULTILINE)
 
 
 def _extract_cover_meta(md: str) -> dict:
-    """Pull title + TLP + version + generated-at from the markdown
-    cover so the PDF cover page can render them in styled HTML
-    instead of plain markdown."""
+    """Pull title + TLP + version + generated-at + customer + severity
+    summary from the markdown cover so the PDF cover page can render
+    them in styled HTML instead of plain markdown."""
     out = {
         'name': 'Engagement Report',
         'tlp': 'AMBER',
         'version': 1,
         'generated': datetime.now().strftime('%Y-%m-%d %H:%M UTC'),
+        'customer': '',
+        'severity': '',
     }
     m = _TITLE_RE.search(md)
     if m:
@@ -89,6 +93,12 @@ def _extract_cover_meta(md: str) -> dict:
         out['tlp'] = m.group('tlp')
         out['version'] = int(m.group('version'))
         out['generated'] = m.group('generated').strip()
+    m = _CUSTOMER_RE.search(md)
+    if m:
+        out['customer'] = m.group('customer').strip()
+    m = _SEVERITY_RE.search(md)
+    if m:
+        out['severity'] = m.group('severity').strip()
     return out
 
 
@@ -140,8 +150,12 @@ def _wrap_findings_severity(html: str) -> str:
     return pattern.sub(repl, html)
 
 
-def _build_html(md_body: str, meta: dict, source_run_id: str) -> str:
-    """Compose the full HTML document the PDF renderer will see."""
+def _build_html(md_body: str, meta: dict, source_run_id: str, logo_override: str = '') -> str:
+    """Compose the full HTML document the PDF renderer will see.
+
+    `logo_override`, when set, is used in place of the embedded Tenroot
+    logo. Expected as a `data:image/...;base64,...` URL so it inlines
+    straight into the rendered HTML without filesystem fetches."""
     body_html = _markdown.markdown(
         md_body,
         extensions=[
@@ -158,7 +172,9 @@ def _build_html(md_body: str, meta: dict, source_run_id: str) -> str:
     )
     body_html = _wrap_findings_severity(body_html)
 
-    logo = _logo_data_url()
+    # Operator-supplied customer logo wins over the embedded Tenroot
+    # one. Falls back to Tenroot if the override is empty / invalid.
+    logo = (logo_override or '').strip() or _logo_data_url()
     tlp_color = _tlp_color(meta['tlp'])
     css = f"""
     @page {{
@@ -394,6 +410,27 @@ def _build_html(md_body: str, meta: dict, source_run_id: str) -> str:
     h2 + p, h2 + ul, h2 + table {{ page-break-before: avoid; }}
     table {{ page-break-inside: avoid; }}
     h3, h4 {{ page-break-after: avoid; }}
+
+    /* Table of Contents — rendered by markdown.extensions.toc from
+       the [TOC] marker prepended in render_engagement_pdf. Sits on
+       its own page right after the cover so the reader can navigate
+       a long IR deliverable. */
+    h2.toc-heading {{
+        page-break-before: always;
+        border-bottom: none;
+        margin-top: 0;
+        color: #1d4ed8;
+    }}
+    .toc {{
+        page-break-after: always;
+        font-size: 9.5pt;
+        line-height: 1.5;
+    }}
+    .toc ul {{ list-style: none; padding-left: 1rem; margin: 0.25rem 0; }}
+    .toc > ul {{ padding-left: 0; }}
+    .toc li {{ padding: 0.1rem 0; }}
+    .toc a {{ color: #1f2937; text-decoration: none; }}
+    .toc a:hover {{ color: #1d4ed8; text-decoration: underline; }}
     """
 
     return f"""<!doctype html>
@@ -413,6 +450,8 @@ def _build_html(md_body: str, meta: dict, source_run_id: str) -> str:
     <p class="subtitle">Incident Response Engagement Deliverable — multi-environment forensic write-up prepared by the IntactAI engagement builder, reviewed by the operator who ran the source workflows.</p>
     <div class="meta-grid">
       <div class="meta-row"><div class="meta-label">Classification</div><div class="meta-value">TLP:{_html_escape(meta['tlp'])}</div></div>
+      {f'<div class="meta-row"><div class="meta-label">Prepared for</div><div class="meta-value">{_html_escape(meta["customer"])}</div></div>' if meta.get('customer') else ''}
+      {f'<div class="meta-row"><div class="meta-label">Severity Summary</div><div class="meta-value">{_html_escape(meta["severity"])}</div></div>' if meta.get('severity') else ''}
       <div class="meta-row"><div class="meta-label">Version</div><div class="meta-value">v{meta['version']}</div></div>
       <div class="meta-row"><div class="meta-label">Generated</div><div class="meta-value">{_html_escape(meta['generated'])}</div></div>
       <div class="meta-row"><div class="meta-label">Engagement ID</div><div class="meta-value"><code>{_html_escape(source_run_id)}</code></div></div>
@@ -443,13 +482,24 @@ def _html_escape(s) -> str:
     )
 
 
-def render_engagement_pdf(markdown_text: str, run_id: str) -> bytes:
+def render_engagement_pdf(markdown_text: str, run_id: str, logo_b64: str = '') -> bytes:
     """Public entry point. Takes the engagement-report markdown and
-    returns the PDF as bytes ready to ship in an HTTP response."""
+    returns the PDF as bytes ready to ship in an HTTP response.
+
+    `logo_b64`, when set, is a `data:image/...;base64,...` URL used in
+    place of the embedded Tenroot logo on the cover page. Empty string
+    keeps the default branding."""
     from weasyprint import HTML  # heavy import — defer
     meta = _extract_cover_meta(markdown_text)
     body = _strip_cover_from_md(markdown_text)
-    html = _build_html(body, meta, run_id)
+    # Inject a clickable Table of Contents right after the cover page.
+    # The markdown.extensions.toc extension expands the `[TOC]` marker
+    # in-place at render time, producing an HTML <div class="toc">…</div>
+    # with anchor links to every H2/H3 in the document. Wrap it in a
+    # heading + CSS class so the cover stylesheet can lay it out as a
+    # distinct page rather than running into the first section.
+    body = "## Table of Contents {.toc-heading}\n\n[TOC]\n\n" + body
+    html = _build_html(body, meta, run_id, logo_override=logo_b64)
     buf = io.BytesIO()
     HTML(string=html, base_url='/').write_pdf(buf)
     return buf.getvalue()

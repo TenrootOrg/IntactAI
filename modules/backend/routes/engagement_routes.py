@@ -37,7 +37,7 @@ def _load_llm_config():
 # ---------------------------------------------------------------------------
 
 
-_ELIGIBLE_TYPES = {'agentic', 'aws_scan', 'azure_scan'}
+_ELIGIBLE_TYPES = {'agentic', 'aws_scan', 'azure_scan', 'cve_scan'}
 
 
 @engagement_bp.route('/api/engagement/sources', methods=['GET'])
@@ -91,6 +91,31 @@ def generate_engagement():
         sources = data.get('sources') or []
         notes = data.get('notes') or ''
 
+        # Operator-controlled engagement metadata. TLP defaults to AMBER
+        # (sensitive but recipient may share within their org) — same
+        # default the builder used to hardcode. Customer name + audience
+        # + language tailor the LLM synthesis and PDF cover. Logo override
+        # is stored as a base64 data URL so the PDF renderer can embed
+        # it without needing host filesystem access.
+        _ALLOWED_TLP = {'CLEAR', 'GREEN', 'AMBER', 'AMBER+STRICT', 'RED'}
+        _ALLOWED_AUDIENCE = {'technical', 'executive', 'both'}
+        _ALLOWED_LANGUAGE = {'en', 'he'}
+        tlp = (data.get('tlp') or 'AMBER').upper().strip()
+        if tlp not in _ALLOWED_TLP:
+            return jsonify({'error': f"tlp must be one of {sorted(_ALLOWED_TLP)}"}), 400
+        audience = (data.get('audience') or 'both').lower().strip()
+        if audience not in _ALLOWED_AUDIENCE:
+            return jsonify({'error': f"audience must be one of {sorted(_ALLOWED_AUDIENCE)}"}), 400
+        language = (data.get('language') or 'en').lower().strip()
+        if language not in _ALLOWED_LANGUAGE:
+            return jsonify({'error': f"language must be one of {sorted(_ALLOWED_LANGUAGE)}"}), 400
+        customer_name = (data.get('customer_name') or '').strip()[:120]
+        customer_logo_b64 = data.get('customer_logo_b64') or ''
+        # Defensive cap: 2 MiB of base64 → ~1.5 MiB raw image. Anything
+        # larger is almost certainly a mistake.
+        if customer_logo_b64 and len(customer_logo_b64) > 2_800_000:
+            return jsonify({'error': 'customer_logo_b64 too large (>2 MiB)'}), 400
+
         if not isinstance(sources, list) or not sources:
             return jsonify({'error': 'sources must be a non-empty list'}), 400
         # Each source: {'run_id': str, 'section': str}
@@ -115,6 +140,14 @@ def generate_engagement():
                 'sources': cleaned,
                 'notes': notes,
                 'phase': 'starting',
+                'tlp': tlp,
+                'customer_name': customer_name,
+                'audience': audience,
+                'language': language,
+                # Stash the logo override if provided. Stored as a data
+                # URL (data:image/...;base64,...) so the PDF renderer
+                # can drop it straight into an <img src>.
+                'customer_logo_b64': customer_logo_b64,
             },
         )
         add_log_to_run(run_id, f"[Engagement] Build dispatched with {len(cleaned)} source(s)", "info")
@@ -183,8 +216,14 @@ def download_engagement_pdf(run_id):
         md = _load_engagement_markdown(run_id)
         if md is None:
             return jsonify({'error': 'Engagement report not found or not yet generated'}), 404
+        # Pull the operator-supplied logo (data URL) if one was provided
+        # at dispatch. Falls through to the embedded Tenroot brand when
+        # absent.
+        from services.file_storage_service import get_workflow as _get_wf
+        _wf = _get_wf(run_id) or {}
+        logo_b64 = (_wf.get('details') or {}).get('customer_logo_b64') or ''
         from services.engagement.pdf import render_engagement_pdf
-        pdf_bytes = render_engagement_pdf(md, run_id)
+        pdf_bytes = render_engagement_pdf(md, run_id, logo_b64=logo_b64)
         return Response(
             pdf_bytes,
             mimetype='application/pdf',

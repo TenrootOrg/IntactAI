@@ -6,9 +6,9 @@
     <title>TenRoot Intact.AI</title>
     <link rel="icon" type="image/png" href="img/tenroot-logo.png">
     <!-- Local scripts - no CDN dependencies -->
-    <link rel="stylesheet" href="css/tailwind.css?v=2">
+    <link rel="stylesheet" href="css/tailwind.css?v=7">
     <script defer src="js/alpine.min.js"></script>
-    <link rel="stylesheet" href="css/styles.css?v=2">
+    <link rel="stylesheet" href="css/styles.css?v=8">
     <!-- Flatpickr date picker (local) -->
     <link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css">
     <link rel="stylesheet" href="vendor/flatpickr/dark.css">
@@ -421,7 +421,11 @@
                         <label class="text-sm text-gray-400">Filter:</label>
                         <select x-model="$store.workflows.typeFilter" @change="$store.workflows.applyFilter()" class="bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
                             <option value="">All Types</option>
+                            <option value="engagement_report">Engagement Report</option>
+                            <option value="aws_scan">AWS Scan</option>
+                            <option value="azure_scan">Azure Scan</option>
                             <option value="agentic">Agentic</option>
+                            <option value="cve_scan">CVE Scan</option>
                             <option value="timesketch">TimeSketch</option>
                             <option value="velociraptor_hunt">Velociraptor Hunt</option>
                             <option value="velociraptor_offline_collector">Offline Collector</option>
@@ -531,7 +535,7 @@
                                                              just a Data ZIP — same content, so we don't offer a duplicate
                                                              "report" file and instead show a small badge explaining why. -->
                                                         <template x-if="run.details?.has_report && run.details?.llm_enabled !== false">
-                                                            <a :href="'/api/azure/report/' + run.id + '/download?type=technical'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Azure Report">
+                                                            <a :href="'/api/azure/report/' + run.id + '/download?type=technical'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Azure Report">
                                                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                                 Report
                                                             </a>
@@ -542,7 +546,7 @@
                                                                 LLM disabled
                                                             </span>
                                                         </template>
-                                                        <a :href="'/api/azure/data/' + run.id + '/download'" download class="bg-gray-600 hover:bg-gray-500 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Raw Data (ZIP)">
+                                                        <a :href="'/api/azure/data/' + run.id + '/download'" download style="color:#fff;background-color:#64748b;" class="px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Raw Data (ZIP)">
                                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                             Data
                                                         </a>
@@ -553,7 +557,7 @@
                                                 <template x-if="run.type === 'aws_scan' && run.status === 'completed'">
                                                     <div class="flex items-center gap-1">
                                                         <template x-if="run.details?.has_report && run.details?.llm_enabled !== false">
-                                                            <a :href="'/api/aws/report/' + run.id + '/download'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download AWS Report (Markdown)">
+                                                            <a :href="'/api/aws/report/' + run.id + '/download'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download AWS Report (Markdown)">
                                                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                                 Report
                                                             </a>
@@ -564,7 +568,7 @@
                                                                 LLM disabled
                                                             </span>
                                                         </template>
-                                                        <a :href="'/api/aws/data/' + run.id + '/download'" download class="bg-gray-600 hover:bg-gray-500 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Raw Data (ZIP)">
+                                                        <a :href="'/api/aws/data/' + run.id + '/download'" download style="color:#fff;background-color:#64748b;" class="px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Raw Data (ZIP)">
                                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                             Data
                                                         </a>
@@ -572,35 +576,49 @@
                                                 </template>
                                                 <!-- Single client: single report -->
                                                 <template x-if="run.type === 'agentic' && run.status === 'completed' && !run.details?.multi_client">
-                                                    <a :href="'/api/agentic/run/' + run.id + '/download?type=technical'" download class="bg-purple-600 hover:bg-purple-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Report">
+                                                    <a :href="'/api/agentic/run/' + run.id + '/download?type=technical'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Report">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                         Report
                                                     </a>
                                                 </template>
                                                 <!-- Multi-client: ZIP with all reports -->
                                                 <template x-if="run.type === 'agentic' && run.status === 'completed' && run.details?.multi_client">
-                                                    <a :href="'/api/agentic/run/' + run.id + '/download/zip'" download class="bg-purple-600 hover:bg-purple-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" :title="'Download ' + (run.details?.client_count || 'all') + ' client reports (ZIP)'">
+                                                    <a :href="'/api/agentic/run/' + run.id + '/download/zip'" download style="color:#fff;background-color:#64748b;" class="px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" :title="'Download ' + (run.details?.client_count || 'all') + ' client reports (ZIP)'">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                         Reports (<span x-text="run.details?.client_count || '?'"></span>)
                                                     </a>
                                                 </template>
-                                                <!-- CVE Scan: download combined_cves.csv -->
+                                                <!-- CVE Scan: download combined_cves.csv. Labelled "Download" (not
+                                                     "CVE CSV") so it matches the convention of other download-style
+                                                     actions in this dashboard. -->
                                                 <template x-if="run.type === 'cve_scan' && run.status === 'completed'">
-                                                    <a :href="'/api/cve/run/' + run.id + '/download'" download class="bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download combined_cves.csv (one row per host × product × CVE)">
+                                                    <a :href="'/api/cve/run/' + run.id + '/download'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download combined_cves.csv (one row per host × product × CVE)">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                                                        CVE CSV
+                                                        Download
                                                     </a>
                                                 </template>
-                                                <!-- Engagement Report — customer-facing branded PDF only. -->
+                                                <!-- Engagement Report — customer-facing branded PDF only.
+                                                     A small `v<N>` pill sits next to the button when the
+                                                     report has been re-run via the Interactive chat (v2,
+                                                     v3, …) so the operator can see at a glance which
+                                                     revision they're downloading. -->
+                                                <template x-if="run.type === 'engagement_report' && run.status === 'completed' && (run.details?.report_version || 1) > 1">
+                                                    <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded bg-blue-900/40 border border-blue-700/60 text-blue-200"
+                                                          :title="'Revision v' + (run.details?.report_version || 1) + ' — bumped on every interactive chat re-run.'"
+                                                          x-text="'v' + (run.details?.report_version || 1)"></span>
+                                                </template>
                                                 <template x-if="run.type === 'engagement_report' && run.status === 'completed'">
-                                                    <a :href="'/api/engagement/' + run.id + '/download/pdf'" download class="bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Engagement Report (branded PDF with cover page, TLP marking, page headers/footers)">
+                                                    <a :href="'/api/engagement/' + run.id + '/download/pdf'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Engagement Report (branded PDF with cover page, TLP marking, page headers/footers)">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                                                         Engagement Report
                                                     </a>
                                                 </template>
                                                 <!-- Interactive: chat about findings + re-run pipeline with operator corrections.
-                                                     Available for agentic, AWS scan, Azure scan, and Engagement Report runs. -->
-                                                <template x-if="(run.type === 'agentic' || run.type === 'aws_scan' || run.type === 'azure_scan' || run.type === 'engagement_report') && run.status === 'completed'">
+                                                     Available for agentic, AWS scan, Azure scan, and Engagement Report runs.
+                                                     For AWS/Azure, hidden when LLM was disabled — there are no analyses
+                                                     to refine, so the chat-driven rerun has nothing to work on. Agentic
+                                                     and Engagement Report runs are unaffected (they don't gate on this flag). -->
+                                                <template x-if="(run.type === 'agentic' || run.type === 'aws_scan' || run.type === 'azure_scan' || run.type === 'engagement_report') && run.status === 'completed' && (run.type === 'agentic' || run.type === 'engagement_report' || run.details?.llm_enabled !== false)">
                                                     <button @click="$store.agenticChat.open(run.id, run.type)" class="bg-teal-600 hover:bg-teal-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Open interactive chat: refine the report with operator notes, then re-run">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
                                                         Interactive
@@ -613,13 +631,13 @@
                                                     </a>
                                                 </template>
                                                 <template x-if="run.type === 'prepare_package' && run.status === 'completed'">
-                                                    <button @click="$store.workflows.downloadPackage(run.id)" class="bg-green-600 hover:bg-green-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Upgrade Package (expires after 24h)">
+                                                    <button @click="$store.workflows.downloadPackage(run.id)" class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Upgrade Package (expires after 24h)">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                         Package
                                                     </button>
                                                 </template>
                                                 <template x-if="run.type === 'support_bundle' && run.status === 'completed' && run.details?.bundle_path">
-                                                    <a :href="'/api/support-bundle/' + run.id + '/download'" download class="bg-purple-600 hover:bg-purple-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" :title="'Download support bundle (' + (run.details?.bundle_size_mb || '?') + ' MB)'">
+                                                    <a :href="'/api/support-bundle/' + run.id + '/download'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" :title="'Download support bundle (' + (run.details?.bundle_size_mb || '?') + ' MB)'">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                         Bundle (<span x-text="run.details?.bundle_size_mb || '?'"></span> MB)
                                                     </a>
@@ -632,7 +650,7 @@
                                                         Stop
                                                     </button>
                                                 </template>
-                                                <button @click.stop="$store.workflows.viewLogs(run.id)" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1">
+                                                <button @click.stop="$store.workflows.viewLogs(run.id)" style="color:#fff;background-color:#475569;" class="hover:bg-slate-600 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1">
                                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
@@ -3630,7 +3648,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
 
     <!-- JavaScript - Alpine app + module-specific scripts -->
     <script src="js/api-client.js"></script>
-    <script src="js/app.js?v=4"></script>
+    <script src="js/app.js?v=10"></script>
     <script src="js/velociraptor.js?v=2"></script>
     <script src="js/blueprints.js?v=3"></script>
     <script src="js/blueprints-forensics.js?v=1"></script>
@@ -3641,8 +3659,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
     <script src="js/utils/client-manager.js"></script>
     <script src="js/timesketch.js"></script>
     <script src="js/agentic.js"></script>
-    <script src="js/agentic-chat.js?v=7"></script>
-    <script src="js/engagement.js?v=10"></script>
+    <script src="js/agentic-chat.js?v=8"></script>
+    <script src="js/engagement.js?v=12"></script>
     <script src="js/cve-scan.js?v=8"></script>
     <script src="js/scheduler.js"></script>
     <!-- Azure date pickers -->
@@ -4030,35 +4048,159 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                     </div>
                 </div>
 
+                <!-- Customer + classification + audience + language —
+                     operator-controlled metadata that drives the cover page
+                     and tailors the LLM synthesis. Defaults match the
+                     pre-fix hardcoded behaviour (AMBER / mixed / English)
+                     so leaving everything blank reproduces the old build. -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">
+                            Customer name <span class="text-gray-500">(optional)</span>
+                        </label>
+                        <input type="text" x-model="$store.engagement.customerName"
+                               placeholder="e.g. Acme Corp"
+                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">TLP marking</label>
+                        <select x-model="$store.engagement.tlp"
+                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
+                            <option value="CLEAR">TLP:CLEAR — disclosure permitted</option>
+                            <option value="GREEN">TLP:GREEN — community-wide</option>
+                            <option value="AMBER">TLP:AMBER — limited (default)</option>
+                            <option value="AMBER+STRICT">TLP:AMBER+STRICT — recipient org only</option>
+                            <option value="RED">TLP:RED — named recipients only</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Audience</label>
+                        <select x-model="$store.engagement.audience"
+                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
+                            <option value="both">Mixed — exec + technical (default)</option>
+                            <option value="executive">Executive — exec summary only, no appendix</option>
+                            <option value="technical">Technical — DFIR / SOC detail-heavy</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Language</label>
+                        <select x-model="$store.engagement.language"
+                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
+                            <option value="en">English (default)</option>
+                            <option value="he">עברית — Hebrew</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">
+                        Customer logo <span class="text-gray-500">(optional — PNG/JPG, ≤1.5 MB)</span>
+                    </label>
+                    <div class="flex items-center gap-3">
+                        <input type="file" accept="image/png,image/jpeg,image/svg+xml"
+                               @change="$store.engagement.onLogoSelected($event)"
+                               class="flex-1 text-sm text-gray-300 file:bg-gray-700 file:text-white file:rounded file:border-0 file:px-3 file:py-1 file:mr-3 file:cursor-pointer">
+                        <template x-if="$store.engagement.logoB64">
+                            <div class="flex items-center gap-2">
+                                <img :src="$store.engagement.logoB64" alt="logo preview"
+                                     class="h-10 w-10 object-contain bg-gray-900 border border-gray-700 rounded">
+                                <button type="button" @click="$store.engagement.clearLogo()"
+                                        class="text-xs text-gray-400 hover:text-red-300" title="Remove logo">Clear</button>
+                            </div>
+                        </template>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-1">
+                        Replaces the Tenroot logo on the PDF cover. Leave blank for default branding.
+                    </p>
+                </div>
+
                 <div>
                     <label class="block text-sm font-medium text-gray-300 mb-2">
                         Engagement notes <span class="text-gray-500">(optional)</span>
                     </label>
                     <textarea x-model="$store.engagement.notes" rows="4"
-                              placeholder="Customer name, breach window, attribution hypothesis, anything the LLM should know up front…"
+                              placeholder="Breach window, attribution hypothesis, environment context, anything the LLM should know up front…"
                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm resize-none focus:outline-none focus:border-indigo-500"></textarea>
                 </div>
             </div>
 
-            <div class="p-4 border-t border-gray-700 flex items-center justify-between gap-3">
-                <p x-show="$store.engagement.status" class="text-xs"
-                   :class="{
-                       'text-red-300':  $store.engagement.statusLevel === 'error',
-                       'text-teal-300': $store.engagement.statusLevel === 'success',
-                       'text-gray-400': $store.engagement.statusLevel === 'info'
-                   }"
-                   x-text="$store.engagement.status"></p>
-                <div class="flex items-center gap-2 ml-auto">
-                    <button @click="$store.engagement.closeComposeModal()"
-                            class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm text-white">
-                        Cancel
-                    </button>
-                    <button @click="$store.engagement.generate()"
-                            :disabled="$store.engagement.generating || $store.engagement.selectedRunIds.length === 0"
-                            class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm font-medium text-white">
-                        <span x-show="!$store.engagement.generating">Generate Engagement Report</span>
-                        <span x-show="$store.engagement.generating">Generating…</span>
-                    </button>
+            <div class="p-4 border-t border-gray-700">
+                <!-- In-progress: progress bar + phase line. Modal stays
+                     open after Generate so the operator can watch the
+                     build finish without context-switching to the
+                     workflows tab. -->
+                <template x-if="$store.engagement.generating && !$store.engagement.done && !$store.engagement.failed">
+                    <div class="mb-3">
+                        <div class="flex justify-between text-xs mb-1">
+                            <span class="text-gray-300" x-text="$store.engagement.phase || 'Working…'"></span>
+                            <span class="text-gray-400" x-text="$store.engagement.progress + '%'"></span>
+                        </div>
+                        <div class="w-full h-2 bg-gray-900 rounded">
+                            <div class="h-full bg-indigo-600 rounded transition-all"
+                                 :style="'width: ' + ($store.engagement.progress || 0) + '%'"></div>
+                        </div>
+                    </div>
+                </template>
+
+                <div class="flex items-center justify-between gap-3">
+                    <p x-show="$store.engagement.status" class="text-xs"
+                       :class="{
+                           'text-red-300':  $store.engagement.statusLevel === 'error',
+                           'text-teal-300': $store.engagement.statusLevel === 'success',
+                           'text-gray-400': $store.engagement.statusLevel === 'info'
+                       }"
+                       x-text="$store.engagement.status"></p>
+
+                    <div class="flex items-center gap-2 ml-auto">
+                        <!-- Default footer: Cancel + Generate. -->
+                        <template x-if="!$store.engagement.done && !$store.engagement.failed">
+                            <div class="flex items-center gap-2">
+                                <button @click="$store.engagement.closeComposeModal()"
+                                        class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm text-white">
+                                    <span x-show="!$store.engagement.generating">Cancel</span>
+                                    <span x-show="$store.engagement.generating">Close (build continues)</span>
+                                </button>
+                                <button @click="$store.engagement.generate()"
+                                        :disabled="$store.engagement.generating || $store.engagement.selectedRunIds.length === 0"
+                                        class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm font-medium text-white">
+                                    <span x-show="!$store.engagement.generating">Generate Engagement Report</span>
+                                    <span x-show="$store.engagement.generating">Generating…</span>
+                                </button>
+                            </div>
+                        </template>
+
+                        <!-- Completion footer: direct download + chat + reset. -->
+                        <template x-if="$store.engagement.done && $store.engagement.currentRunId">
+                            <div class="flex items-center gap-2">
+                                <button @click="$store.engagement.startOver()"
+                                        class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm text-white">
+                                    Done
+                                </button>
+                                <button @click="$store.engagement.openInteractiveForCurrent()"
+                                        class="bg-teal-600 hover:bg-teal-700 px-4 py-2 rounded-lg text-sm font-medium text-white">
+                                    Open Interactive Chat
+                                </button>
+                                <a :href="'/api/engagement/' + $store.engagement.currentRunId + '/download/pdf'" download
+                                   class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium text-white">
+                                    Download PDF
+                                </a>
+                            </div>
+                        </template>
+
+                        <!-- Failure footer: retry + close. -->
+                        <template x-if="$store.engagement.failed">
+                            <div class="flex items-center gap-2">
+                                <button @click="$store.engagement.closeComposeModal()"
+                                        class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm text-white">
+                                    Close
+                                </button>
+                                <button @click="$store.engagement.generate()"
+                                        class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg text-sm font-medium text-white">
+                                    Retry
+                                </button>
+                            </div>
+                        </template>
+                    </div>
                 </div>
             </div>
         </div>
