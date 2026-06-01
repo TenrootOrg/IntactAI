@@ -608,6 +608,18 @@ def run_azure_pipeline(
                 add_log_to_run(run_id, "[AZURE] No data collected. Some sources were skipped - check license tier and API permissions.", "warning")
             else:
                 add_log_to_run(run_id, "[AZURE] No events found in the selected time range.", "warning")
+            # Tag the workflow row so the dashboard renders the right
+            # state (LLM-disabled badge when the operator opted out,
+            # plain "no report" otherwise). Without this the row sits
+            # at llm_enabled=None and the Interactive button keeps
+            # showing for a run that has no analyses to refine.
+            result['has_report'] = False
+            result['llm_enabled'] = bool(enable_llm)
+            _update_run_status(run_id, "running", details={
+                'has_report': False,
+                'llm_enabled': result['llm_enabled'],
+                'report_kind': None,
+            })
             result['status'] = 'completed'
             result['message'] = 'No data collected'
             phase_end("collection")
@@ -865,7 +877,40 @@ def get_azure_blueprints() -> List[Dict]:
     ]
 
 
-def _run_azure_reanalyze(run_id: str, master_prompt: str, llm_config: Dict, scope: str = 'reports_only') -> Dict:
+def _filter_azure_findings_by_severity(findings: Dict, analysis_results: Dict, min_severity: str, run_id: str):
+    """Defensively drop sub-threshold records from cached findings + analysis.
+
+    Mirrors the AWS rerun helper — scan-time already applied the same
+    threshold (see SEVERITY_RANK use elsewhere in this module), but a
+    rerun is a cheap moment to re-enforce. Rules whose records all drop
+    out are removed; `analysis_results` is pruned to surviving rule keys."""
+    from services.workflow_service import add_log_to_run as _log
+    _RANK = {'informational': 0, 'info': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
+    min_rank = _RANK.get((min_severity or 'low').lower(), 1)
+    out_findings = {}
+    dropped = 0
+    for rule_key, records in (findings or {}).items():
+        if not isinstance(records, list):
+            out_findings[rule_key] = records
+            continue
+        kept = []
+        for r in records:
+            sev = 'low'
+            if isinstance(r, dict):
+                sev = (r.get('_severity') or r.get('severity') or 'low').lower()
+            if _RANK.get(sev, 1) >= min_rank:
+                kept.append(r)
+            else:
+                dropped += 1
+        if kept:
+            out_findings[rule_key] = kept
+    out_analysis = {k: v for k, v in (analysis_results or {}).items() if k in out_findings}
+    if dropped:
+        _log(run_id, f"[RERUN] Dropped {dropped} sub-threshold record(s) below {min_severity}", "info")
+    return out_findings, out_analysis
+
+
+def _run_azure_reanalyze(run_id: str, master_prompt: str, llm_config: Dict, scope: str = 'reports_only', original_filters: Dict = None) -> Dict:
     """Re-run Azure analysis on the run's persisted JSON, with the
     operator's master prompt threaded through every LLM prompt.
 
@@ -874,6 +919,10 @@ def _run_azure_reanalyze(run_id: str, master_prompt: str, llm_config: Dict, scop
 
     scope='full': re-run `analyze_artifacts` over cached findings
     first, then rebuild the report. One LLM call per rule that fired.
+
+    original_filters: filters captured at dispatch (min_severity,
+    time_filter, target_users, target_ips). Applied to cached findings
+    before re-analysis so the rerun reflects the operator's scope.
 
     Called by /api/azure/run/<id>/rerun in a background thread."""
     import json as _json
@@ -894,6 +943,14 @@ def _run_azure_reanalyze(run_id: str, master_prompt: str, llm_config: Dict, scop
     analysis_results = run_data.get('analysis') or {}
     blueprint = run_data.get('blueprint') or {'name': run_data.get('blueprint_name') or 'Azure Re-run'}
     scan_metadata = run_data.get('scan_metadata') or {}
+
+    if original_filters and original_filters.get('min_severity'):
+        tf = original_filters.get('time_filter')
+        tf_desc = f", time_filter={tf}" if tf else ''
+        _log(run_id, f"[RERUN] Re-applying original filters: min_severity={original_filters['min_severity']}{tf_desc}", "info")
+        findings, analysis_results = _filter_azure_findings_by_severity(
+            findings, analysis_results, original_filters['min_severity'], run_id
+        )
 
     if scope == 'full':
         if not findings:

@@ -499,6 +499,19 @@ def run_aws_pipeline(
         }
         if not collected_data:
             add_log_to_run(run_id, "[AWS] No data collected — pipeline stopping.", "warning")
+            # Tag the workflow row so the dashboard renders the right
+            # state (LLM-disabled badge when the operator opted out,
+            # plain "no report" otherwise). Without this the row sits
+            # at llm_enabled=None and the Interactive button keeps
+            # showing for a run that has no analyses to refine.
+            result['has_report'] = False
+            result['llm_enabled'] = bool(enable_llm)
+            from services.workflow_service import update_run_status as _upd
+            _upd(run_id, "running", details={
+                'has_report': False,
+                'llm_enabled': result['llm_enabled'],
+                'report_kind': None,
+            })
             result['status'] = 'completed'
             result['message'] = 'No data collected'
             phase_end("collection")
@@ -656,7 +669,41 @@ def get_aws_blueprints() -> List[Dict]:
     ]
 
 
-def _run_aws_reanalyze(run_id: str, master_prompt: str, llm_config: Dict, scope: str = 'reports_only') -> Dict:
+def _filter_aws_findings_by_severity(findings: Dict, analysis_results: Dict, min_severity: str, run_id: str):
+    """Defensively drop sub-threshold records from cached findings + analysis.
+
+    Cached `findings` should already be post-filter (scan-time applied
+    `min_severity` to SIGMA + state-snapshot records), but a rerun is a
+    cheap moment to re-enforce the threshold — and it matters when an
+    older run was saved before that filter was complete. Rules whose
+    records all drop out are removed; `analysis_results` is pruned to
+    the surviving rule keys."""
+    from services.workflow_service import add_log_to_run as _log
+    min_rank = SEVERITY_RANK.get((min_severity or 'low').lower(), 1)
+    out_findings = {}
+    dropped = 0
+    for rule_key, records in (findings or {}).items():
+        if not isinstance(records, list):
+            out_findings[rule_key] = records
+            continue
+        kept = []
+        for r in records:
+            sev = 'low'
+            if isinstance(r, dict):
+                sev = (r.get('_severity') or r.get('severity') or 'low').lower()
+            if SEVERITY_RANK.get(sev, 1) >= min_rank:
+                kept.append(r)
+            else:
+                dropped += 1
+        if kept:
+            out_findings[rule_key] = kept
+    out_analysis = {k: v for k, v in (analysis_results or {}).items() if k in out_findings}
+    if dropped:
+        _log(run_id, f"[RERUN] Dropped {dropped} sub-threshold record(s) below {min_severity}", "info")
+    return out_findings, out_analysis
+
+
+def _run_aws_reanalyze(run_id: str, master_prompt: str, llm_config: Dict, scope: str = 'reports_only', original_filters: Dict = None) -> Dict:
     """Re-run AWS analysis on the run's persisted collected_data, with
     the operator's master prompt threaded through every LLM prompt.
 
@@ -667,6 +714,12 @@ def _run_aws_reanalyze(run_id: str, master_prompt: str, llm_config: Dict, scope:
     scope='full': re-runs `analyze_artifacts` over the cached `findings`
     first, then rebuilds the report. Multiple LLM calls (one per rule
     that fired).
+
+    original_filters: filters captured at dispatch (min_severity,
+    time_filter, target_principals). Applied to cached findings before
+    re-analysis so the rerun reflects the same scope the operator chose.
+    None on legacy runs that predate the persistence — falls through to
+    the old un-filtered behaviour with a warning logged at the caller.
 
     Called by the /api/aws/run/<id>/rerun route in a background thread.
     No public endpoint — Interactive mode is the only caller."""
@@ -687,6 +740,14 @@ def _run_aws_reanalyze(run_id: str, master_prompt: str, llm_config: Dict, scope:
     analysis_results = run_data.get('analysis') or {}
     blueprint = run_data.get('blueprint') or {'name': run_data.get('blueprint_name') or 'AWS Re-run'}
     scan_metadata = run_data.get('scan_metadata') or {}
+
+    if original_filters and original_filters.get('min_severity'):
+        tf = original_filters.get('time_filter')
+        tf_desc = f", time_filter={tf}" if tf else ''
+        _log(run_id, f"[RERUN] Re-applying original filters: min_severity={original_filters['min_severity']}{tf_desc}", "info")
+        findings, analysis_results = _filter_aws_findings_by_severity(
+            findings, analysis_results, original_filters['min_severity'], run_id
+        )
 
     if scope == 'full':
         if not findings:

@@ -192,6 +192,11 @@ def start_scan():
             "target_users": target_users,
             "target_ips": target_ips,
             "ual_mode": ual_mode,
+            # Persisted so /rerun can re-apply the same scope on the
+            # cached findings instead of regenerating reports over
+            # informational/low + out-of-window noise.
+            "min_severity": data.get('min_severity', 'medium'),
+            "time_filter": data.get('time_filter'),
         }
     )
     update_run_status(run_id, "running", progress=5)
@@ -1026,6 +1031,30 @@ def rerun_azure(run_id):
 
         llm_config = _azure_load_llm_config()
         add_log_to_run(run_id, f"[Pipeline] Interactive re-run (scope={scope}) starting", "info")
+
+        original_filters = {
+            'min_severity': details.get('min_severity'),
+            'time_filter': details.get('time_filter'),
+            'target_users': details.get('target_users') or [],
+            'target_ips': details.get('target_ips') or [],
+        }
+        if original_filters['min_severity']:
+            tf = original_filters['time_filter']
+            tf_desc = f", time_filter={tf}" if tf else ''
+            add_log_to_run(
+                run_id,
+                f"[RERUN] Re-applying original filters: min_severity={original_filters['min_severity']}{tf_desc}",
+                "info",
+            )
+        else:
+            add_log_to_run(
+                run_id,
+                "[RERUN] Original run has no persisted filters — running with full data. "
+                "Re-dispatch the scan to enable filtered reruns.",
+                "warning",
+            )
+            original_filters = None
+
         update_run_status(run_id, 'running', progress=5)
 
         def _worker():
@@ -1035,7 +1064,7 @@ def rerun_azure(run_id):
                 mp = (mp or '').strip()
                 if not mp:
                     raise RuntimeError("synthesised master prompt was empty — add more detail to the chat")
-                _run_azure_reanalyze(run_id, mp, llm_config, scope=scope)
+                _run_azure_reanalyze(run_id, mp, llm_config, scope=scope, original_filters=original_filters)
                 update_run_status(run_id, 'completed', progress=100, force=True)
                 add_log_to_run(run_id, f"[Pipeline] Azure re-run ({scope}) complete", "success")
             except FileNotFoundError as fe:

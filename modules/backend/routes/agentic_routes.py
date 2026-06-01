@@ -731,6 +731,38 @@ def _rerun_reports_only(run_id, master_prompt, llm_config, target_client_ids=Non
     blueprint_name = details.get('blueprint') or 'Unknown'
     report_types = details.get('report_types') or ['technical']
 
+    # Re-apply the original dispatch severity filter to the cached raw
+    # rows. Scan-time already filtered (so this should mostly be a
+    # no-op), but a rerun is a cheap moment to re-enforce — and it
+    # actually drops the trash on legacy runs whose `min_severity` was
+    # loose at first dispatch. artifact_summaries are LLM-derived from
+    # the raw rows so they stay as-is; the report generator is fed the
+    # re-filtered all_results and chooses what to surface.
+    min_severity = (details.get('min_severity') or 'informational').lower()
+    if min_severity != 'informational':
+        try:
+            from services.agentic.collectors import filter_by_severity
+            total_before = sum(len(v) if isinstance(v, list) else 0 for v in (all_results or {}).values())
+            for artifact_name, rows in list((all_results or {}).items()):
+                if isinstance(rows, list) and rows:
+                    all_results[artifact_name] = filter_by_severity(rows, min_severity)
+            total_after = sum(len(v) if isinstance(v, list) else 0 for v in (all_results or {}).values())
+            dropped = total_before - total_after
+            add_log_to_run(
+                run_id,
+                f"[RERUN] Re-applying original filters: min_severity={min_severity} "
+                f"(dropped {dropped} sub-threshold row(s))",
+                "info",
+            )
+        except Exception as _fe:
+            add_log_to_run(run_id, f"[RERUN] severity re-filter skipped: {_fe}", "warning")
+    else:
+        add_log_to_run(
+            run_id,
+            "[RERUN] No min_severity persisted (or set to informational) — running with full data.",
+            "info",
+        )
+
     blueprint_stub = {'name': blueprint_name}
 
     # Derive client_ids from raw_results if the workflow didn't stash them
