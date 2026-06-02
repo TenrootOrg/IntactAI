@@ -150,12 +150,15 @@ def _wrap_findings_severity(html: str) -> str:
     return pattern.sub(repl, html)
 
 
-def _build_html(md_body: str, meta: dict, source_run_id: str, logo_override: str = '') -> str:
+def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str = '') -> str:
     """Compose the full HTML document the PDF renderer will see.
 
-    `logo_override`, when set, is used in place of the embedded Tenroot
-    logo. Expected as a `data:image/...;base64,...` URL so it inlines
-    straight into the rendered HTML without filesystem fetches."""
+    The Tenroot logo always renders on the cover (this is OUR
+    engagement-builder deliverable; customer-facing or not, the tool's
+    brand stays). When `customer_logo` is provided (a `data:image/...;
+    base64,...` URL), it joins the Tenroot logo side-by-side on the
+    cover with a thin separator — the classic co-branded look
+    professional IR firms use ("Customer × Tenroot")."""
     body_html = _markdown.markdown(
         md_body,
         extensions=[
@@ -172,9 +175,8 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, logo_override: str
     )
     body_html = _wrap_findings_severity(body_html)
 
-    # Operator-supplied customer logo wins over the embedded Tenroot
-    # one. Falls back to Tenroot if the override is empty / invalid.
-    logo = (logo_override or '').strip() or _logo_data_url()
+    tenroot_logo = _logo_data_url()
+    cust_logo = (customer_logo or '').strip()
     tlp_color = _tlp_color(meta['tlp'])
     css = f"""
     @page {{
@@ -228,10 +230,28 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, logo_override: str
     }}
     .cover .logo-wrap {{
         margin-bottom: 18mm;
+        display: flex;
+        align-items: center;
+        gap: 10mm;
     }}
+    /* Both logos render into the SAME bounding box (60×22 mm) with
+       object-fit:contain so each is scaled to fit, preserving its
+       aspect ratio with whitespace padding the rest of the box. This
+       keeps a wide Tenroot wordmark and a square customer mark visually
+       balanced — neither dwarfs the other. */
     .cover .logo-wrap img {{
-        max-height: 22mm;
-        max-width: 80mm;
+        height: 22mm;
+        width: 60mm;
+        object-fit: contain;
+        object-position: center;
+    }}
+    /* Thin vertical separator between Tenroot and the customer logo —
+       classic "co-branded engagement deliverable" look. Only rendered
+       when both logos are present. */
+    .cover .logo-wrap .sep {{
+        width: 1px;
+        height: 18mm;
+        background: rgba(248, 250, 252, 0.25);
     }}
     .cover h1 {{
         font-size: 28pt;
@@ -443,7 +463,8 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, logo_override: str
 <body>
   <section class="cover">
     <div class="logo-wrap">
-      {f'<img src="{logo}" alt="Tenroot">' if logo else '<div style="font-weight:800;font-size:18pt;color:#38bdf8;">TENROOT</div>'}
+      {f'<img src="{tenroot_logo}" alt="Tenroot">' if tenroot_logo else '<div style="font-weight:800;font-size:18pt;color:#38bdf8;">TENROOT</div>'}
+      {f'<div class="sep"></div><img src="{cust_logo}" alt="Customer">' if cust_logo else ''}
     </div>
     <div class="tlp-badge">TLP:{_html_escape(meta['tlp'])}</div>
     <h1>Engagement Report<br><span class="accent">{_html_escape(meta['name'])}</span></h1>
@@ -486,9 +507,10 @@ def render_engagement_pdf(markdown_text: str, run_id: str, logo_b64: str = '') -
     """Public entry point. Takes the engagement-report markdown and
     returns the PDF as bytes ready to ship in an HTTP response.
 
-    `logo_b64`, when set, is a `data:image/...;base64,...` URL used in
-    place of the embedded Tenroot logo on the cover page. Empty string
-    keeps the default branding."""
+    `logo_b64`, when set, is a `data:image/...;base64,...` URL for the
+    operator-uploaded CUSTOMER logo. It's rendered alongside (not in
+    place of) the embedded Tenroot logo on the cover page — co-branded
+    look. Empty string = Tenroot logo only."""
     from weasyprint import HTML  # heavy import — defer
     meta = _extract_cover_meta(markdown_text)
     body = _strip_cover_from_md(markdown_text)
@@ -499,7 +521,7 @@ def render_engagement_pdf(markdown_text: str, run_id: str, logo_b64: str = '') -
     # heading + CSS class so the cover stylesheet can lay it out as a
     # distinct page rather than running into the first section.
     body = "## Table of Contents {.toc-heading}\n\n[TOC]\n\n" + body
-    html = _build_html(body, meta, run_id, logo_override=logo_b64)
+    html = _build_html(body, meta, run_id, customer_logo=logo_b64)
     buf = io.BytesIO()
     HTML(string=html, base_url='/').write_pdf(buf)
     return buf.getvalue()

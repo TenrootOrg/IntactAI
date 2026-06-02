@@ -8,7 +8,7 @@
     <!-- Local scripts - no CDN dependencies -->
     <link rel="stylesheet" href="css/tailwind.css?v=7">
     <script defer src="js/alpine.min.js"></script>
-    <link rel="stylesheet" href="css/styles.css?v=8">
+    <link rel="stylesheet" href="css/styles.css?v=9">
     <!-- Flatpickr date picker (local) -->
     <link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css">
     <link rel="stylesheet" href="vendor/flatpickr/dark.css">
@@ -1037,13 +1037,29 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                             </div>
 
                             <!-- Hunt Info (Raw mode only) -->
-                            <div x-show="forensicsMode === 'raw'" class="bg-gray-900 border border-gray-700 rounded-lg p-4">
+                            <div x-show="forensicsMode === 'raw'" class="bg-gray-900 border border-gray-700 rounded-lg p-4 space-y-3">
                                 <div class="flex items-center gap-2 text-gray-300">
                                     <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                                     </svg>
                                     <span class="text-sm">Hunt will run on <strong>all online clients</strong></span>
                                 </div>
+                                <!-- One hunt per artifact (raw-mode only). Default: false = one
+                                     bundled hunt with all N artifacts (existing behavior). When
+                                     on: N separate Velociraptor hunts + N workflow rows so the
+                                     operator can monitor / cancel / re-run each artifact's hunt
+                                     independently. Useful when a single noisy artifact would
+                                     stall the whole bundle. -->
+                                <label class="flex items-start gap-2 cursor-pointer text-sm text-gray-300">
+                                    <input type="checkbox" id="forensics-per-artifact-toggle"
+                                           class="mt-0.5 w-4 h-4 rounded border-gray-700 bg-gray-800 text-blue-600 focus:ring-blue-500">
+                                    <span>
+                                        <strong>Dispatch one hunt per artifact</strong>
+                                        <span class="block text-xs text-gray-500 mt-0.5">
+                                            Creates N separate Velociraptor hunts + N workflow rows (one per artifact in the blueprint) instead of one bundled hunt. Easier to cancel / re-run / monitor a single artifact.
+                                        </span>
+                                    </span>
+                                </label>
                             </div>
 
                             <!-- AI Analysis Options (only shown when mode is 'ai') -->
@@ -3648,10 +3664,10 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
 
     <!-- JavaScript - Alpine app + module-specific scripts -->
     <script src="js/api-client.js"></script>
-    <script src="js/app.js?v=10"></script>
+    <script src="js/app.js?v=12"></script>
     <script src="js/velociraptor.js?v=2"></script>
     <script src="js/blueprints.js?v=3"></script>
-    <script src="js/blueprints-forensics.js?v=1"></script>
+    <script src="js/blueprints-forensics.js?v=2"></script>
     <!-- tus resumable upload protocol (local) -->
     <script src="vendor/tus/tus.min.js"></script>
     <script src="js/upload.js"></script>
@@ -3660,7 +3676,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
     <script src="js/timesketch.js"></script>
     <script src="js/agentic.js"></script>
     <script src="js/agentic-chat.js?v=8"></script>
-    <script src="js/engagement.js?v=12"></script>
+    <script src="js/engagement.js?v=14"></script>
     <script src="js/cve-scan.js?v=8"></script>
     <script src="js/scheduler.js"></script>
     <!-- Azure date pickers -->
@@ -4124,83 +4140,25 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                 </div>
             </div>
 
-            <div class="p-4 border-t border-gray-700">
-                <!-- In-progress: progress bar + phase line. Modal stays
-                     open after Generate so the operator can watch the
-                     build finish without context-switching to the
-                     workflows tab. -->
-                <template x-if="$store.engagement.generating && !$store.engagement.done && !$store.engagement.failed">
-                    <div class="mb-3">
-                        <div class="flex justify-between text-xs mb-1">
-                            <span class="text-gray-300" x-text="$store.engagement.phase || 'Working…'"></span>
-                            <span class="text-gray-400" x-text="$store.engagement.progress + '%'"></span>
-                        </div>
-                        <div class="w-full h-2 bg-gray-900 rounded">
-                            <div class="h-full bg-indigo-600 rounded transition-all"
-                                 :style="'width: ' + ($store.engagement.progress || 0) + '%'"></div>
-                        </div>
-                    </div>
-                </template>
-
-                <div class="flex items-center justify-between gap-3">
-                    <p x-show="$store.engagement.status" class="text-xs"
-                       :class="{
-                           'text-red-300':  $store.engagement.statusLevel === 'error',
-                           'text-teal-300': $store.engagement.statusLevel === 'success',
-                           'text-gray-400': $store.engagement.statusLevel === 'info'
-                       }"
-                       x-text="$store.engagement.status"></p>
-
-                    <div class="flex items-center gap-2 ml-auto">
-                        <!-- Default footer: Cancel + Generate. -->
-                        <template x-if="!$store.engagement.done && !$store.engagement.failed">
-                            <div class="flex items-center gap-2">
-                                <button @click="$store.engagement.closeComposeModal()"
-                                        class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm text-white">
-                                    <span x-show="!$store.engagement.generating">Cancel</span>
-                                    <span x-show="$store.engagement.generating">Close (build continues)</span>
-                                </button>
-                                <button @click="$store.engagement.generate()"
-                                        :disabled="$store.engagement.generating || $store.engagement.selectedRunIds.length === 0"
-                                        class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm font-medium text-white">
-                                    <span x-show="!$store.engagement.generating">Generate Engagement Report</span>
-                                    <span x-show="$store.engagement.generating">Generating…</span>
-                                </button>
-                            </div>
-                        </template>
-
-                        <!-- Completion footer: direct download + chat + reset. -->
-                        <template x-if="$store.engagement.done && $store.engagement.currentRunId">
-                            <div class="flex items-center gap-2">
-                                <button @click="$store.engagement.startOver()"
-                                        class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm text-white">
-                                    Done
-                                </button>
-                                <button @click="$store.engagement.openInteractiveForCurrent()"
-                                        class="bg-teal-600 hover:bg-teal-700 px-4 py-2 rounded-lg text-sm font-medium text-white">
-                                    Open Interactive Chat
-                                </button>
-                                <a :href="'/api/engagement/' + $store.engagement.currentRunId + '/download/pdf'" download
-                                   class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium text-white">
-                                    Download PDF
-                                </a>
-                            </div>
-                        </template>
-
-                        <!-- Failure footer: retry + close. -->
-                        <template x-if="$store.engagement.failed">
-                            <div class="flex items-center gap-2">
-                                <button @click="$store.engagement.closeComposeModal()"
-                                        class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm text-white">
-                                    Close
-                                </button>
-                                <button @click="$store.engagement.generate()"
-                                        class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg text-sm font-medium text-white">
-                                    Retry
-                                </button>
-                            </div>
-                        </template>
-                    </div>
+            <div class="p-4 border-t border-gray-700 flex items-center justify-between gap-3">
+                <p x-show="$store.engagement.status" class="text-xs"
+                   :class="{
+                       'text-red-300':  $store.engagement.statusLevel === 'error',
+                       'text-teal-300': $store.engagement.statusLevel === 'success',
+                       'text-gray-400': $store.engagement.statusLevel === 'info'
+                   }"
+                   x-text="$store.engagement.status"></p>
+                <div class="flex items-center gap-2 ml-auto">
+                    <button @click="$store.engagement.closeComposeModal()"
+                            class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm text-white">
+                        Cancel
+                    </button>
+                    <button @click="$store.engagement.generate()"
+                            :disabled="$store.engagement.generating || $store.engagement.selectedRunIds.length === 0"
+                            class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm font-medium text-white">
+                        <span x-show="!$store.engagement.generating">Generate Engagement Report</span>
+                        <span x-show="$store.engagement.generating">Dispatching…</span>
+                    </button>
                 </div>
             </div>
         </div>

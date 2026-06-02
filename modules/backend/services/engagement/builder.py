@@ -87,6 +87,52 @@ def _load_cve_findings(run_id: str) -> List[Dict]:
     return vulns
 
 
+def _top_vulnerable_products(raw_findings, top_n=20):
+    """Aggregate raw CVE findings by `(product, cve_id)` and count
+    distinct hostnames per pair. Returns the top N rows sorted by
+    CVSS desc then host-count desc — the exec-friendly view of
+    "what software needs patching across how many machines" without
+    listing every host by name.
+
+    Each row dict: {product, cve_id, cvss_score, severity_bucket,
+    cve_link, host_count}.
+    """
+    by_pair = {}
+    for r in raw_findings or []:
+        prod = (r.get('product') or '').strip()
+        cve = (r.get('cve_id') or '').strip()
+        host = (r.get('hostname') or '(unknown)').strip()
+        if not prod or not cve:
+            continue
+        key = (prod, cve)
+        score = float(r.get('cvss_score') or 0)
+        if key not in by_pair:
+            by_pair[key] = {
+                'product': prod,
+                'cve_id': cve,
+                'cvss_score': score,
+                'severity_bucket': r.get('severity_bucket') or '',
+                'cve_link': r.get('cve_link') or (f'https://nvd.nist.gov/vuln/detail/{cve}' if cve else ''),
+                'hosts': set(),
+            }
+        else:
+            # Defensive — same CVE rarely varies in CVSS across rows,
+            # but keep the highest if it does.
+            if score > by_pair[key]['cvss_score']:
+                by_pair[key]['cvss_score'] = score
+                by_pair[key]['severity_bucket'] = r.get('severity_bucket') or by_pair[key]['severity_bucket']
+        by_pair[key]['hosts'].add(host)
+    rows = []
+    for r in by_pair.values():
+        r['host_count'] = len(r['hosts'])
+        # Drop the set — JSON-unfriendly + we don't need the names downstream.
+        r.pop('hosts', None)
+        rows.append(r)
+    rows.sort(key=lambda r: (-r['cvss_score'], -r['host_count'], r['product']))
+    return rows[:top_n]
+
+
+
 def _condense(markdown: Optional[str], budget: int) -> str:
     """Trim to `budget` chars + a truncation marker. Used for the
     evidence block we feed the synthesis LLM (we'd blow the context
@@ -452,6 +498,118 @@ def _format_severity_rollup(counts):
 # row inside a finding block. Walks back to the nearest preceding
 # `### <title>` or `#### <title>` H3/H4 heading.
 _FINDING_TITLE_RE = re.compile(r"(?m)^[ \t]*#{3,4}[ \t]+(.+?)\s*$")
+
+# Captures the body of `**Evidence (FACT):** <fact text>` lines that
+# per-module pipelines emit under each finding. Used by the Appendix A
+# facts extractor — the "fact" body is the customer-facing nugget; the
+# Interpretation / Recommended-action / Principals lines that follow
+# it inside the same finding block are deliberately dropped.
+_EVIDENCE_FACT_RE = re.compile(
+    r"\*\*Evidence\s*(?:\(\s*FACT\s*\))?\s*:?\s*\*\*\s*(.+?)(?=\n\s*[-*]\s|\n\s*\*\*|\n{2,}|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+# Leading "F1 — " / "F12 — " / emoji prefix on finding titles. Stripped
+# for the appendix's customer-facing rendering (the operator doesn't
+# need to see internal finding IDs).
+_FINDING_ID_PREFIX_RE = re.compile(r"^[^\w]*F\d+\s*[—\-:]\s*", re.UNICODE)
+
+
+_AGENTIC_FINDING_RE = re.compile(
+    r"\*\*Finding:\*\*\s*(?P<title>.+?)(?=\n\s*[-*]|\n{2,}|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+_AGENTIC_EVIDENCE_RE = re.compile(
+    r"\*\*Evidence(?:\s+Source)?:?\*\*\s*(?P<evidence>.+?)(?=\n\s*[-*]\s|\n\s*\*\*|\n{2,}|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+_AGENTIC_SECTION_RE = re.compile(
+    r"^##\s+\d+\.\s+(Critical|High|Medium|Low)\s+Findings",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _extract_source_facts(markdown: str, limit: int = 12):
+    """For one source workflow's markdown, yield up to `limit` tuples of
+    `(severity, finding_title, evidence_fact)` — exactly the three
+    fields a customer-facing appendix should show. Everything else
+    (Interpretation / Recommended action / MITRE IDs / IOCs blocks /
+    Analyst notes / JSON payloads / internal section headings like
+    `## __timeline__` and `## INV.*`) is dropped.
+
+    Two source formats are handled:
+
+    1. **Structured** (AWS / Azure / CVE pipelines): each finding has a
+       `**Severity:** <level>` anchor with a nearest-preceding H3/H4
+       title and a following `**Evidence (FACT):**` line. The walk
+       anchors on the severity line.
+
+    2. **Narrative** (agentic / endpoint forensics): findings live as
+       bullet-list items under `## <N>. Critical|High|Medium|Low
+       Findings` section headings, with `**Finding:** <title>` and
+       `**Evidence Source:** <source>` sub-bullets. Severity is taken
+       from the enclosing section heading.
+    """
+    if not markdown:
+        return []
+    out = []
+
+    # --- Structured pipelines ---
+    title_positions = [(m.start(), m.group(1).strip()) for m in _FINDING_TITLE_RE.finditer(markdown)]
+    for sev_match in _SEVERITY_LINE_RE.finditer(markdown):
+        title = ''
+        for pos, t in reversed(title_positions):
+            if pos < sev_match.start():
+                title = t
+                break
+        if not title:
+            continue
+        clean_title = _FINDING_ID_PREFIX_RE.sub('', title).strip()
+        clean_title = re.sub(r"^[\U0001F300-\U0001FAFF☀-➿⬀-⯿]\s*", '', clean_title).strip()
+        window = markdown[sev_match.end(): sev_match.end() + 800]
+        m_ev = _EVIDENCE_FACT_RE.search(window)
+        evidence = ''
+        if m_ev:
+            evidence = re.sub(r"\s+", " ", m_ev.group(1)).strip()
+            if len(evidence) > 320:
+                evidence = evidence[:320].rstrip() + '…'
+        out.append({
+            'title': clean_title or title,
+            'severity': sev_match.group(1).strip().capitalize(),
+            'evidence': evidence,
+        })
+        if len(out) >= limit:
+            return out
+
+    # --- Narrative (agentic) ---
+    # Walk each "Critical|High|Medium|Low Findings" section and pluck
+    # the `**Finding:** <title>` + `**Evidence Source:** <src>` bullets
+    # inside it. Skip if the structured walk already produced results
+    # for this source — the two formats are mutually exclusive in
+    # practice.
+    if not out:
+        section_bounds = [(m.start(), m.group(1).capitalize()) for m in _AGENTIC_SECTION_RE.finditer(markdown)]
+        section_bounds.append((len(markdown), ''))
+        for i, (start, sev_label) in enumerate(section_bounds[:-1]):
+            end = section_bounds[i + 1][0]
+            section_md = markdown[start:end]
+            for f_match in _AGENTIC_FINDING_RE.finditer(section_md):
+                raw_title = re.sub(r"\s+", " ", f_match.group('title')).strip().rstrip('.')
+                # Look ahead ~600 chars for the Evidence Source / Evidence line.
+                window = section_md[f_match.end(): f_match.end() + 600]
+                evidence = ''
+                m_ev = _AGENTIC_EVIDENCE_RE.search(window)
+                if m_ev:
+                    evidence = re.sub(r"\s+", " ", m_ev.group('evidence')).strip()
+                    if len(evidence) > 320:
+                        evidence = evidence[:320].rstrip() + '…'
+                out.append({
+                    'title': raw_title,
+                    'severity': sev_label,
+                    'evidence': evidence,
+                })
+                if len(out) >= limit:
+                    return out
+    return out
 
 
 def _dedupe_findings_index(loaded_sources):
@@ -948,7 +1106,6 @@ def _build_vulnerabilities_section(cve_sources: List[Dict]) -> List[str]:
     Extensibility / Licensing / Localization Components, etc.) appear
     as a single actionable row."""
     out: List[str] = []
-    TOP_N = 50
     severity_order = {'Critical': 0, 'High': 1, 'Medium': 2, 'Low': 3}
 
     for src in cve_sources:
@@ -981,55 +1138,52 @@ def _build_vulnerabilities_section(cve_sources: List[Dict]) -> List[str]:
             n = buckets[sev]
             if n:
                 out.append(f"- {sev}: {n}")
-        # Per-host count summary (also against the collapsed set).
-        hosts: Dict[str, int] = {}
-        for f in findings:
-            h = f.get('hostname') or '(unknown)'
-            hosts[h] = hosts.get(h, 0) + 1
-        if hosts:
-            host_list = ', '.join(
-                f"`{h}` ({n})" for h, n in sorted(hosts.items(), key=lambda kv: -kv[1])[:10]
-            )
-            extra = "" if len(hosts) <= 10 else f" (+{len(hosts)-10} more hosts)"
-            out.append("")
-            out.append(f"**Hosts with findings ({len(hosts)} total):** {host_list}{extra}")
+        # Total hosts that surfaced any vulnerable finding — useful
+        # one-liner without naming the hosts (per the customer-facing
+        # aggregation policy: counts, not roll-call).
+        host_set = {(f.get('hostname') or '(unknown)') for f in findings}
+        out.append("")
+        out.append(f"**Vulnerable hosts:** {len(host_set)}")
 
         if collapsed_delta:
             out.append("")
             out.append(
                 f"*{collapsed_delta} sub-component / near-duplicate row(s) "
-                f"collapsed into the {len(findings)} actionable findings below "
-                f"(grouped by host + CVE).*"
+                f"collapsed into the {len(findings)} actionable findings before "
+                f"aggregation (grouped by host + CVE).*"
             )
 
-        # Top-N table (already sorted CVSS desc by _collapse_findings_by_host_cve).
+        # Aggregated top-N table: one row per (product, CVE) pair with
+        # the count of distinct hosts that have it. Exec-friendly — the
+        # operator sees what to patch + how widespread without per-host
+        # noise (which is in `combined_cves.csv` if needed).
+        TOP_PRODUCTS = 20
+        top_rows = _top_vulnerable_products(raw_findings, top_n=TOP_PRODUCTS)
         out.append("")
-        if len(findings) > TOP_N:
-            out.append(f"**Top {TOP_N} findings (of {len(findings)} total, sorted by CVSS desc):**")
-        else:
-            out.append(f"**All {len(findings)} findings (sorted by CVSS desc):**")
-        out.append("")
-        out.append("| Host | Product | Version | CVSS | CVE |")
-        out.append("|---|---|---|---|---|")
-        pipe_esc = "\\|"
-        for f in findings[:TOP_N]:
-            host = (f.get('hostname') or '(unknown)').replace('|', pipe_esc)
-            prod = (f.get('product') or '').replace('|', pipe_esc)
-            ver = (f.get('version') or '').replace('|', pipe_esc)
-            score = f.get('cvss_score') or 0
-            sev = f.get('severity_bucket') or ''
-            cve = f.get('cve_id') or ''
-            link = f.get('cve_link') or (f"https://nvd.nist.gov/vuln/detail/{cve}" if cve else '')
-            cell = f"[{cve}]({link})" if (cve and link) else (cve or '—')
-            out.append(f"| {host} | {prod} | {ver} | {score} {sev} | {cell} |")
-        out.append("")
-        if len(findings) > TOP_N:
-            out.append(
-                f"*The remaining {len(findings) - TOP_N} vulnerable findings are in "
-                f"`combined_cves.csv` from the CVE Scan workflow row, alongside the "
-                f"full Patched + Unknown coverage data.*"
-            )
+        if not top_rows:
+            out.append("*No (product, CVE) pairs to display.*")
             out.append("")
+            continue
+        out.append(f"**Top {min(TOP_PRODUCTS, len(top_rows))} vulnerable products (sorted by CVSS desc, host count tiebreaker):**")
+        out.append("")
+        out.append("| Hosts | Product | CVSS | CVE |")
+        out.append("|---|---|---|---|")
+        pipe_esc = "\\|"
+        for r in top_rows:
+            n_hosts = r.get('host_count', 0)
+            prod = (r.get('product') or '').replace('|', pipe_esc)
+            score = r.get('cvss_score') or 0
+            sev = r.get('severity_bucket') or ''
+            cve = r.get('cve_id') or ''
+            link = r.get('cve_link') or ''
+            cve_cell = f"[{cve}]({link})" if (cve and link) else (cve or '—')
+            out.append(f"| {n_hosts} | {prod} | {score} {sev} | {cve_cell} |")
+        out.append("")
+        out.append(
+            "*Full per-host detail is in `combined_cves.csv` from the CVE "
+            "Scan workflow row.*"
+        )
+        out.append("")
     return out
 
 
@@ -1230,30 +1384,95 @@ def _assemble_markdown(name, notes, loaded_sources, synthesis_md, *, tlp='AMBER'
     if tail:
         body += [_renumber_tail(tail, ordinal), ""]
 
-    # Appendix A — verbatim source reports.
+    # Appendix A — Source workflow citations.
     #
-    # cve_scan sources are excluded: their structured data is already
-    # fully rendered in §8 Vulnerabilities (top-50 table + severity +
-    # per-host counts), and the cve_scan short markdown summary just
-    # duplicates a subset of the same rows. The full per-row data
-    # lives in the downloadable combined_cves.csv from the workflow row.
+    # Default: a tight citation table (one row per source workflow) so
+    # the reader knows which runs back the analysis without us dumping
+    # 700 lines of raw analyst-internal markdown into a customer-facing
+    # deliverable. The full source reports remain a click away on the
+    # workflow row's Report button.
     #
-    # On exec-only deliverables we drop the appendix entirely — boards
-    # don't read per-rule technical detail, and shipping it just inflates
-    # page count.
+    # cve_scan sources are excluded from the citation list since their
+    # output is already fully rendered in §12 Vulnerabilities (top
+    # vulnerable products + counts).
+    #
+    # `audience='technical'` is the one case where we still ship the
+    # verbatim raw markdown — a DFIR / SOC reader explicitly opted in
+    # to the per-rule detail. Exec + Mixed audiences get the clean
+    # citation table.
     appendix_sources = [s for s in loaded_sources if s.get('automation_type') != 'cve_scan']
-    if (audience or 'both').lower() == 'executive':
-        appendix_sources = []
+    audience_lc = (audience or 'both').lower()
     if appendix_sources:
-        body.append(appendix_heading())
-        body.append("")
-        for idx, s in enumerate(appendix_sources, 1):
-            body.append(f"### A.{idx} — `{s['run_id']}` — {s.get('name') or '(unnamed)'}  *({s.get('section')})*")
+        if audience_lc == 'technical':
+            body.append(appendix_heading())
             body.append("")
-            body.append(s.get('markdown') or '*(no content on file)*')
+            for idx, s in enumerate(appendix_sources, 1):
+                body.append(f"### A.{idx} — `{s['run_id']}` — {s.get('name') or '(unnamed)'}  *({s.get('section')})*")
+                body.append("")
+                body.append(s.get('markdown') or '*(no content on file)*')
+                body.append("")
+                body.append("---")
+                body.append("")
+        else:
+            # Customer-facing appendix: per-source list of facts only.
+            # Each finding renders as a small block with severity + the
+            # title + the Evidence (FACT) line. Interpretation,
+            # Recommended action, MITRE IDs, raw IOC dumps, JSON
+            # payloads, Analyst notes — all dropped. The full
+            # analyst-internal source markdown is one click away on the
+            # workflow row in the dashboard.
+            body.append("\n---\n")
+            body.append("## Appendix A — Findings by Source")
             body.append("")
-            body.append("---")
+            body.append(
+                "*Per-source list of findings: severity, title, and the "
+                "evidentiary fact behind each. Interpretation, "
+                "recommended actions, and raw evidence dumps live on the "
+                "source workflow's full report (one click from the row "
+                "on the dashboard) — they're omitted here to keep this "
+                "deliverable focused on what was found, not how it was "
+                "analysed.*"
+            )
             body.append("")
+            type_pretty = {
+                'aws_scan': 'AWS Scan',
+                'azure_scan': 'Azure Scan',
+                'agentic': 'Endpoint Forensics',
+                'timesketch': 'TimeSketch',
+            }
+            pipe_esc = "\\|"
+            for idx, s in enumerate(appendix_sources, 1):
+                rid = s.get('run_id', '?')
+                name = (s.get('name') or '(unnamed)').strip()
+                at = s.get('automation_type') or '?'
+                at_disp = type_pretty.get(at, at)
+                sec = s.get('section') or '?'
+                # Avoid "AWS Scan: AWS Scan: foo" — the workflow name
+                # often already starts with the type prefix.
+                lowered = name.lower()
+                if lowered.startswith(f"{at_disp.lower()}:") or lowered.startswith(f"{at_disp.lower()} "):
+                    heading = f"### A.{idx} — {name}"
+                else:
+                    heading = f"### A.{idx} — {at_disp}: {name}"
+                body.append(heading)
+                body.append(f"*Source: `{rid}` · Section: {sec}*")
+                body.append("")
+                facts = _extract_source_facts(s.get('markdown') or '')
+                if not facts:
+                    body.append(
+                        "*No structured findings extracted from this source — "
+                        "see the workflow row's full report for narrative-only output.*"
+                    )
+                    body.append("")
+                    continue
+                body.append("| Severity | Finding | Evidence (Fact) |")
+                body.append("|---|---|---|")
+                for f in facts:
+                    sev = f.get('severity') or '—'
+                    title = (f.get('title') or '').replace('|', pipe_esc)
+                    ev = (f.get('evidence') or '—').replace('|', pipe_esc)
+                    body.append(f"| {sev} | {title} | {ev} |")
+                body.append("")
 
     # Appendix B — Tools Used. One row per source workflow with what
     # ran. Helps the customer reproduce or audit the analysis later.
@@ -1358,8 +1577,25 @@ def run_engagement_build(run_id, sources, notes, llm_config):
     try:
         update_run_status(run_id, 'running', progress=5)
         add_log_to_run(run_id, f"[Engagement] Loading {len(sources)} source report(s)…", "info")
+        # Enumerate the chosen sources up front so the workflow log shows
+        # exactly which runs are being bundled. Useful when triaging a
+        # build later — the dispatched selection is visible in the log
+        # alongside the (eventual) per-source load result.
+        for s in sources:
+            rid = s.get('run_id', '?')
+            sec = s.get('section', '?')
+            add_log_to_run(run_id, f"[Engagement]   - {rid}  ({sec})", "info")
         loaded = _load_all_sources(sources, lambda m, l: add_log_to_run(run_id, m, l))
-        add_log_to_run(run_id, f"[Engagement] Loaded {len(loaded)} source(s)", "info")
+        add_log_to_run(run_id, f"[Engagement] Loaded {len(loaded)} source(s):", "info")
+        # And again with the resolved automation_type + name now that
+        # the loader has filled them in — confirms which inputs actually
+        # produced usable markdown.
+        for s in loaded:
+            at = s.get('automation_type', '?')
+            rid = s.get('run_id', '?')
+            sec = s.get('section', '?')
+            name = (s.get('name') or '').strip() or '(unnamed)'
+            add_log_to_run(run_id, f"[Engagement]   - {at}  {rid}  →  {sec}  ·  {name}", "info")
         if not loaded:
             raise RuntimeError("No usable source workflows — every selected run had empty or unreadable reports.")
         update_run_status(run_id, 'running', progress=25)
@@ -1479,6 +1715,11 @@ def run_engagement_reanalyze(run_id, master_prompt, llm_config, scope='reports_o
         raise RuntimeError("No source workflows on file for this engagement — cannot re-run.")
 
     add_log_to_run(run_id, f"[Engagement] Re-running with master prompt ({len(sources_meta)} source(s))", "info")
+    for s in sources_meta:
+        at = s.get('automation_type', '?')
+        rid = s.get('run_id', '?')
+        sec = s.get('section', '?')
+        add_log_to_run(run_id, f"[Engagement]   - {at}  {rid}  →  {sec}", "info")
     update_run_status(run_id, 'running', progress=15)
 
     # Reload sources fresh — the operator may have re-run one of them
@@ -1487,6 +1728,13 @@ def run_engagement_reanalyze(run_id, master_prompt, llm_config, scope='reports_o
     loaded = _load_all_sources(src_list, lambda m, l: add_log_to_run(run_id, m, l))
     if not loaded:
         raise RuntimeError("All source workflows became unreadable since the original build.")
+    add_log_to_run(run_id, f"[Engagement] Reloaded {len(loaded)} source(s):", "info")
+    for s in loaded:
+        at = s.get('automation_type', '?')
+        rid = s.get('run_id', '?')
+        sec = s.get('section', '?')
+        name = (s.get('name') or '').strip() or '(unnamed)'
+        add_log_to_run(run_id, f"[Engagement]   - {at}  {rid}  →  {sec}  ·  {name}", "info")
 
     update_run_status(run_id, 'running', progress=40)
     audience = (details.get('audience') or 'both').lower()

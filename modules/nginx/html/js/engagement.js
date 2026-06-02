@@ -45,19 +45,6 @@ document.addEventListener('alpine:init', () => {
         generating: false,
         status: '',
         statusLevel: 'info',
-        // In-modal progress state. Populated by the post-submit polling
-        // loop so the operator can watch the build finish without
-        // hunting in the workflows tab. `currentRunId` is the row the
-        // poller is watching; `phase` is the human-readable progress
-        // line; `progress` is the 0-100 percentage; `done`/`failed`
-        // freeze the modal into a final state where the footer offers
-        // direct download + chat shortcuts.
-        currentRunId: '',
-        phase: '',
-        progress: 0,
-        done: false,
-        failed: false,
-        _pollTimer: null,
 
         // ──────────────────────────────────────────────────────────────
         // Predicates + helpers
@@ -182,15 +169,17 @@ document.addEventListener('alpine:init', () => {
         },
 
         closeComposeModal() {
-            // Stop any in-flight polling — the workflow row on the
-            // dashboard will continue showing live progress regardless.
-            this._stopPolling();
             this.composeOpen = false;
         },
 
         // ──────────────────────────────────────────────────────────────
         // Dispatch the build
         // ──────────────────────────────────────────────────────────────
+        //
+        // POST then immediately close — the build runs in the backend
+        // worker thread and the operator monitors progress via the
+        // workflow row on the dashboard (which already polls). No need
+        // for a duplicate progress UI inside the modal.
 
         async generate() {
             if (this.generating) return;
@@ -204,10 +193,6 @@ document.addEventListener('alpine:init', () => {
                 section: this.sectionByRun[id] || 'Other',
             }));
             this.generating = true;
-            this.done = false;
-            this.failed = false;
-            this.progress = 0;
-            this.phase = 'Dispatching build…';
             this._setStatus('Dispatching build…', 'info');
             try {
                 const r = await fetch('/api/engagement/generate', {
@@ -226,113 +211,21 @@ document.addEventListener('alpine:init', () => {
                 });
                 const data = await r.json();
                 if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-                // Modal stays OPEN so the operator can watch progress.
-                // Polling drives `phase` + `progress` until the run
-                // settles (completed / failed). The clearSelection +
-                // field-reset only happen if the operator clicks "New
-                // Engagement" after this one completes, or closes
-                // the modal — we don't want to wipe their input mid-build.
-                this.currentRunId = data.run_id;
-                this._setStatus('Build started — watching progress…', 'info');
+                // Success — close modal + clear state. The new
+                // engagement_report row picks up the live progress bar
+                // on the dashboard.
+                this.composeOpen = false;
+                this.clearSelection();
+                this.name = '';
+                this.notes = '';
+                this.customerName = '';
+                this.logoB64 = '';
+                this.logoName = '';
                 if (Alpine.store('workflows')?.load) Alpine.store('workflows').load();
-                this._startPolling(data.run_id);
             } catch (e) {
                 this._setStatus(`Build failed: ${e.message}`, 'error');
+            } finally {
                 this.generating = false;
-                this.failed = true;
-            }
-        },
-
-        // Poll the workflow row's status every ~1.5 s so the modal can
-        // show live progress. Stops on completed / failed / cancelled.
-        _startPolling(runId) {
-            if (this._pollTimer) {
-                clearInterval(this._pollTimer);
-                this._pollTimer = null;
-            }
-            const tick = async () => {
-                try {
-                    const r = await fetch(`/api/automations/${encodeURIComponent(runId)}`);
-                    if (!r.ok) return;
-                    const data = await r.json();
-                    const run = data?.run || data?.workflow || data;
-                    if (!run) return;
-                    const status = (run.status || '').toLowerCase();
-                    this.progress = Math.max(0, Math.min(100, Number(run.progress) || 0));
-                    // Phase label: walk the most recent log line for
-                    // a useful human-readable hint. Fall back to a
-                    // progress-bucket name.
-                    const logs = run.logs || [];
-                    let phase = '';
-                    for (let i = logs.length - 1; i >= 0; i--) {
-                        const msg = (logs[i].message || logs[i] || '').toString();
-                        if (msg.startsWith('[Engagement]')) {
-                            phase = msg.replace('[Engagement]', '').trim();
-                            break;
-                        }
-                    }
-                    if (!phase) {
-                        if (this.progress < 25) phase = 'Loading sources…';
-                        else if (this.progress < 50) phase = 'Synthesising executive narrative…';
-                        else if (this.progress < 85) phase = 'Assembling final markdown…';
-                        else phase = 'Rendering PDF…';
-                    }
-                    this.phase = phase;
-                    if (status === 'completed') {
-                        this.progress = 100;
-                        this.done = true;
-                        this.failed = false;
-                        this.generating = false;
-                        this._setStatus('Engagement report ready.', 'success');
-                        this._stopPolling();
-                        if (Alpine.store('workflows')?.load) Alpine.store('workflows').load();
-                    } else if (status === 'failed' || status === 'cancelled') {
-                        this.done = false;
-                        this.failed = true;
-                        this.generating = false;
-                        this._setStatus(`Build ${status}: ${run.error || 'see workflow logs'}`, 'error');
-                        this._stopPolling();
-                        if (Alpine.store('workflows')?.load) Alpine.store('workflows').load();
-                    }
-                } catch (_e) {
-                    // Single failed poll is fine — try again next tick.
-                }
-            };
-            this._pollTimer = setInterval(tick, 1500);
-            tick();
-        },
-
-        _stopPolling() {
-            if (this._pollTimer) {
-                clearInterval(this._pollTimer);
-                this._pollTimer = null;
-            }
-        },
-
-        // Operator clicked "New Engagement" from a completed modal — wipe
-        // the form state so the next compose starts clean.
-        startOver() {
-            this._stopPolling();
-            this.currentRunId = '';
-            this.phase = '';
-            this.progress = 0;
-            this.done = false;
-            this.failed = false;
-            this.clearSelection();
-            this.name = '';
-            this.notes = '';
-            this.customerName = '';
-            this.logoB64 = '';
-            this.logoName = '';
-            this.composeOpen = false;
-        },
-
-        // Open the chat for the just-built engagement.
-        openInteractiveForCurrent() {
-            if (!this.currentRunId) return;
-            this.composeOpen = false;
-            if (Alpine.store('agenticChat')?.open) {
-                Alpine.store('agenticChat').open(this.currentRunId, 'engagement_report');
             }
         },
 
