@@ -34,10 +34,85 @@ def load_tools_config() -> Optional[Dict]:
         try:
             if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
-                    return yaml.safe_load(f)
+                    cfg = yaml.safe_load(f)
+                if cfg:
+                    _warn_dangling_inventory_refs(cfg, config_path)
+                return cfg
         except Exception as e:
             print(f"[TOOLS] Error loading {config_path}: {e}", flush=True)
     return None
+
+
+def _warn_dangling_inventory_refs(cfg: Dict, config_path: str) -> None:
+    """Cross-check `velociraptor_inventory` entries against the
+    download-source sections. A `tool_name` registered with the
+    Velociraptor server that no download path provides will fail at
+    runtime when the artifact tries to use it — log a clear warning
+    here so the inconsistency surfaces at startup, not first use.
+
+    Non-fatal: this is purely a developer-quality-of-life check.
+    `velociraptor_inventory` matches files by regex pattern, not by
+    name, so we use a prefix heuristic: strip a trailing version-like
+    suffix (`-1.2.3`, `_v2`) from both inventory tool names and
+    download names, then match on either-contains-the-other.
+    """
+    import re
+
+    inv = cfg.get('velociraptor_inventory') or []
+    download_sections = [
+        'velociraptor_core', 'event_log_tools', 'persistence_tools',
+        'yara_tools', 'velociraptor_artifacts', 'memory_tools',
+        'nirsoft_tools', 'zimmerman_tools', 'sysinternals_tools',
+        'imaging_tools', 'audit_tools', 'threat_intel',
+        'osquery_tools', 'network_tools', 'linux_tools', 'optional_large',
+    ]
+
+    # Strip trailing "-1.2.3", "_v0.7", "-rev2", and similar so
+    # version-pinned tool_names like "Hayabusa-2.14.0" reduce to
+    # "hayabusa" and match the generic "Hayabusa" download entry.
+    _VER_SUFFIX = re.compile(r'[-_](?:v?\d+(?:\.\d+)*|\d+).*$', re.IGNORECASE)
+
+    def _base(s: str) -> str:
+        return _VER_SUFFIX.sub('', s.lower())
+
+    download_bases = set()
+    for section in download_sections:
+        for entry in (cfg.get(section) or []):
+            if isinstance(entry, dict):
+                for key in ('name', 'filename'):
+                    val = entry.get(key)
+                    if isinstance(val, str):
+                        download_bases.add(_base(val))
+
+    missing: list = []
+    for inv_entry in inv:
+        if not isinstance(inv_entry, dict):
+            continue
+        tool = inv_entry.get('tool_name', '')
+        if not tool:
+            continue
+        # Velociraptor binaries are intentionally satisfied by the
+        # staging path under modules/velociraptor/clients/, not by a
+        # tools_inventory download. Don't flag those.
+        if tool.lower().startswith('velociraptor'):
+            continue
+        base = _base(tool)
+        # Match if any download base contains the tool base OR
+        # vice versa (handles plural/singular + minor name variations).
+        if any(base in d or d in base for d in download_bases if d and base):
+            continue
+        missing.append(tool)
+
+    if missing:
+        seen = set()
+        uniq = [m for m in missing if not (m in seen or seen.add(m))]
+        print(
+            f"[TOOLS] WARNING: {len(uniq)} velociraptor_inventory entries "
+            f"in {config_path} reference tools with no download source: "
+            f"{', '.join(uniq[:10])}"
+            f"{'...' if len(uniq) > 10 else ''}",
+            flush=True,
+        )
 
 
 def get_github_release_url(repo: str, pattern: str, logger: Callable = None) -> Optional[str]:

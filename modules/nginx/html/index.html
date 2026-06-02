@@ -395,43 +395,51 @@
 
             <!-- Workflows Tab -->
             <div x-show="$store.app.currentTab === 'workflows'" x-transition class="tab-content">
-                <div class="flex justify-between items-center mb-6">
-                    <div>
-                        <h2 class="text-3xl font-bold text-white">Workflow Runs</h2>
-                        <p class="text-gray-400 mt-1">View all workflow executions with status, dates, and logs · tick the checkboxes to bundle selected runs into an Engagement Report</p>
-                    </div>
-                    <div class="flex items-center gap-3">
-                        <!-- Engagement Report — always-visible action so the
-                             button is discoverable before any boxes are
-                             checked. Disabled state explains itself via tooltip.
-                             Inline styles back up Tailwind so the colour is
-                             guaranteed regardless of CDN/JIT timing issues. -->
-                        <button @click="$store.engagement.openComposeModal()"
-                                :disabled="$store.engagement.selectedRunIds.length === 0"
-                                :title="$store.engagement.selectedRunIds.length === 0 ? 'Tick the checkboxes next to one or more completed Agentic / AWS / Azure runs to enable.' : 'Generate a combined engagement report from the ' + $store.engagement.selectedRunIds.length + ' selected workflow(s).'"
-                                :style="$store.engagement.selectedRunIds.length === 0 ? 'background-color:#374151; cursor:not-allowed;' : 'background-color:#4f46e5;'"
-                                class="px-4 py-2 rounded-lg text-sm font-medium text-white flex items-center gap-2 hover:brightness-110 transition">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#ffffff;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
-                            <span style="color:#ffffff;">Engagement Report</span>
-                            <span x-show="$store.engagement.selectedRunIds.length > 0"
-                                  class="text-xs px-2 py-0.5 rounded-full"
-                                  style="background-color:rgba(255,255,255,0.2); color:#ffffff;"
-                                  x-text="$store.engagement.selectedRunIds.length"></span>
-                        </button>
-                        <label class="text-sm text-gray-400">Filter:</label>
-                        <select x-model="$store.workflows.typeFilter" @change="$store.workflows.applyFilter()" class="bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
-                            <option value="">All Types</option>
-                            <option value="engagement_report">Engagement Report</option>
-                            <option value="aws_scan">AWS Scan</option>
-                            <option value="azure_scan">Azure Scan</option>
-                            <option value="agentic">Agentic</option>
-                            <option value="cve_scan">CVE Scan</option>
-                            <option value="timesketch">TimeSketch</option>
-                            <option value="velociraptor_hunt">Velociraptor Hunt</option>
-                            <option value="velociraptor_offline_collector">Offline Collector</option>
-                            <option value="velociraptor_offline_import">Offline Import</option>
-                            <option value="maintenance">Maintenance</option>
-                        </select>
+                <div class="mb-6">
+                    <h2 class="text-3xl font-bold text-white">Workflow Runs</h2>
+                    <!-- Subtitle + controls share the same row, vertically
+                         centred. Subtitle gets `flex-1 min-w-0` so it
+                         truncates / wraps before pushing the controls off. -->
+                    <div class="flex flex-wrap items-center justify-between gap-4 mt-2">
+                        <p class="text-gray-400 flex-1 min-w-0">View all workflow executions with status, dates, and logs · tick the checkboxes to bundle selected runs into an Engagement Report</p>
+                        <div class="flex flex-wrap items-center gap-3 shrink-0">
+                            <!-- Engagement Report — always-visible action so the
+                                 button is discoverable before any boxes are
+                                 checked. Disabled state explains itself via tooltip.
+                                 Inline styles back up Tailwind so the colour is
+                                 guaranteed regardless of CDN/JIT timing issues. -->
+                            <button @click="$store.engagement.openComposeModal()"
+                                    :disabled="$store.engagement.selectedRunIds.length === 0"
+                                    :title="$store.engagement.selectedRunIds.length === 0 ? 'Tick the checkboxes next to one or more completed Agentic / AWS / Azure runs to enable.' : 'Generate a combined engagement report from the ' + $store.engagement.selectedRunIds.length + ' selected workflow(s).'"
+                                    :style="$store.engagement.selectedRunIds.length === 0 ? 'background-color:#374151; cursor:not-allowed;' : 'background-color:#4f46e5;'"
+                                    class="h-10 px-4 rounded-lg text-sm font-medium text-white flex items-center gap-2 hover:brightness-110 transition">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#ffffff;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
+                                <span style="color:#ffffff;">Engagement Report</span>
+                                <span x-show="$store.engagement.selectedRunIds.length > 0"
+                                      class="text-xs px-2 py-0.5 rounded-full"
+                                      style="background-color:rgba(255,255,255,0.2); color:#ffffff;"
+                                      x-text="$store.engagement.selectedRunIds.length"></span>
+                            </button>
+                            <div class="flex items-center gap-2">
+                                <label class="text-sm text-gray-400 whitespace-nowrap" for="workflows-type-filter">Filter:</label>
+                                <select id="workflows-type-filter"
+                                        x-model="$store.workflows.typeFilter"
+                                        @change="$store.workflows.applyFilter()"
+                                        class="h-10 bg-gray-800 border border-gray-600 rounded-lg px-3 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <option value="">All Types</option>
+                                    <option value="engagement_report">Engagement Report</option>
+                                    <option value="aws_scan">AWS Scan</option>
+                                    <option value="azure_scan">Azure Scan</option>
+                                    <option value="agentic">Agentic</option>
+                                    <option value="cve_scan">CVE Scan</option>
+                                    <option value="timesketch">TimeSketch</option>
+                                    <option value="velociraptor_hunt">Velociraptor Hunt</option>
+                                    <option value="velociraptor_offline_collector">Offline Collector</option>
+                                    <option value="velociraptor_offline_import">Offline Import</option>
+                                    <option value="maintenance">Maintenance</option>
+                                </select>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -1211,10 +1219,10 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                     </div>
 
                                     <!-- Cross-client synthesis (multi-client only) -->
-                                    <div class="border-t border-gray-700 pt-4 mt-2">
+                                    <div id="forensics-cross-client-wrapper" class="border-t border-gray-700 pt-4 mt-2 opacity-50 pointer-events-none" title="Select 2+ clients to enable">
                                         <label class="flex items-center gap-2 cursor-pointer mb-2">
-                                            <input type="checkbox" id="forensics-cross-client-toggle"
-                                                class="w-4 h-4 rounded border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                            <input type="checkbox" id="forensics-cross-client-toggle" disabled
+                                                class="w-4 h-4 rounded border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500 disabled:cursor-not-allowed">
                                             <span class="text-sm font-medium text-gray-300">Generate organization-wide synthesis</span>
                                             <span class="ml-2 px-2 py-0.5 bg-purple-900 text-purple-300 text-xs rounded">Multi-client only</span>
                                         </label>
@@ -1318,42 +1326,69 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                         <option value="">Loading blueprints...</option>
                                     </select>
                                 </div>
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-300 mb-2">Target Operating System</label>
-                                    <select id="offline-gen-os" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-blue-500 focus:outline-none">
-                                        <option value="windows">Windows</option>
-                                        <option value="linux">Linux</option>
-                                        <option value="darwin">macOS</option>
-                                    </select>
-                                </div>
-                                <!-- Binary variant — three mutually-exclusive options.
-                                     Default (none checked) = the regular Velociraptor build.
-                                     - "musl-static": modern build, statically linked against
-                                       musl libc. No glibc deps. Use for old-glibc Linux
-                                       (CentOS 7, Sophos UTM, …) where the regular build
-                                       crashes with `GLIBC_2.28 not found`. Linux only.
-                                     - "legacy": v0.7.x build (also musl on linux). For very
-                                       old Windows (Server 2008 R2 / Win 7) where modern
-                                       Go-1.22+ binaries crash with 0xc0000005. -->
-                                <div class="bg-gray-900/60 border border-gray-700 rounded-lg p-3 space-y-2">
-                                    <label class="block text-sm font-medium text-gray-300">Velociraptor binary variant</label>
-                                    <div class="flex flex-col gap-1 text-sm">
-                                        <label class="flex items-center gap-2 cursor-pointer">
-                                            <input type="radio" name="offline-gen-variant" value="standard" checked
-                                                   class="text-blue-600 bg-gray-800 border-gray-600 focus:ring-blue-500">
-                                            <span class="text-gray-300">Standard</span>
-                                            <span class="text-xs text-gray-500">(default — regular build for modern OSes)</span>
-                                        </label>
-                                        <label class="flex items-center gap-2 cursor-pointer">
-                                            <input type="radio" name="offline-gen-variant" value="musl"
-                                                   class="text-orange-600 bg-gray-800 border-gray-600 focus:ring-orange-500">
-                                            <span class="text-orange-300">Musl-static <span class="text-xs text-gray-500">(Linux only — any glibc, any kernel ≥ 2.6.32)</span></span>
-                                        </label>
-                                        <label class="flex items-center gap-2 cursor-pointer">
-                                            <input type="radio" name="offline-gen-variant" value="legacy"
-                                                   class="text-purple-600 bg-gray-800 border-gray-600 focus:ring-purple-500">
-                                            <span class="text-purple-300">Legacy v0.7.x <span class="text-xs text-gray-500">(Windows Server 2008 R2 / Win 7; old kernels)</span></span>
-                                        </label>
+                                <!-- Target build: one flat radio group, grouped
+                                     visually by OS. Each option encodes both the
+                                     OS and the binary variant ("os:variant"),
+                                     so submission is a single value lookup —
+                                     no JS filtering, no impossible combos. -->
+                                <div class="bg-gray-900/60 border border-gray-700 rounded-lg p-3 space-y-3">
+                                    <label class="block text-sm font-medium text-gray-300">Target build</label>
+
+                                    <!-- Windows -->
+                                    <div>
+                                        <div class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Windows</div>
+                                        <div class="flex flex-col gap-1 text-sm pl-2">
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="offline-gen-target" value="windows:standard" checked
+                                                       class="text-blue-600 bg-gray-800 border-gray-600 focus:ring-blue-500">
+                                                <span class="text-gray-300">Normal</span>
+                                                <span class="text-xs text-gray-500">(modern Windows — Server 2012+, Win 10/11)</span>
+                                            </label>
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="offline-gen-target" value="windows:legacy"
+                                                       class="text-purple-600 bg-gray-800 border-gray-600 focus:ring-purple-500">
+                                                <span class="text-purple-300">Legacy v0.7.x</span>
+                                                <span class="text-xs text-gray-500">(Server 2008 R2 / Win 7)</span>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <!-- Linux -->
+                                    <div>
+                                        <div class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Linux</div>
+                                        <div class="flex flex-col gap-1 text-sm pl-2">
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="offline-gen-target" value="linux:standard"
+                                                       class="text-blue-600 bg-gray-800 border-gray-600 focus:ring-blue-500">
+                                                <span class="text-gray-300">Normal</span>
+                                                <span class="text-xs text-gray-500">(modern glibc — Ubuntu 20.04+, RHEL 8+)</span>
+                                            </label>
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="offline-gen-target" value="linux:musl"
+                                                       class="text-orange-600 bg-gray-800 border-gray-600 focus:ring-orange-500">
+                                                <span class="text-orange-300">Musl-static</span>
+                                                <span class="text-xs text-gray-500">(any glibc, any kernel ≥ 2.6.32 — CentOS 7, Sophos UTM)</span>
+                                            </label>
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="offline-gen-target" value="linux:legacy"
+                                                       class="text-purple-600 bg-gray-800 border-gray-600 focus:ring-purple-500">
+                                                <span class="text-purple-300">Legacy v0.7.x</span>
+                                                <span class="text-xs text-gray-500">(very old glibc / kernel)</span>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <!-- macOS -->
+                                    <div>
+                                        <div class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">macOS</div>
+                                        <div class="flex flex-col gap-1 text-sm pl-2">
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="offline-gen-target" value="darwin:standard"
+                                                       class="text-blue-600 bg-gray-800 border-gray-600 focus:ring-blue-500">
+                                                <span class="text-gray-300">Normal</span>
+                                                <span class="text-xs text-gray-500">(Intel x86_64 — Velociraptor doesn't ship a darwin-arm64 yet)</span>
+                                            </label>
+                                        </div>
                                     </div>
                                 </div>
                                 <button onclick="generateOfflineCollector()" class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-3 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2">
@@ -3148,9 +3183,6 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">Provider</label>
                                     <select x-model="$store.settings.config.agentic.online_llm.provider" @change="$store.settings.onProviderChange()" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
-                                        <option value="openai">OpenAI</option>
-                                        <option value="claude">Claude</option>
-                                        <option value="gemini">Gemini</option>
                                         <option value="openrouter">OpenRouter</option>
                                     </select>
                                 </div>

@@ -10,8 +10,134 @@ from .base import (
     WORKDIR, HOST_PATH,
     run_command, read_env_file, update_env_file,
     backup_env_file, restore_env_file, cleanup_backup,
-    load_docker_image
+    load_docker_image, compare_versions
 )
+
+
+# All four binaries the Dockerfile needs to COPY at build time. The
+# entrypoint repacks the Mac/Win/Linux clients with the server's config
+# on every container boot, so all four MUST be present in the image —
+# we can't ship just the linux server. See entrypoint.sh for the
+# repack logic.
+def _velociraptor_binary_set(clean_version: str) -> Dict[str, str]:
+    """Map module-relative dest path → upstream GitHub filename for the
+    four binaries required by Dockerfile + entrypoint.sh."""
+    return {
+        os.path.join('clients', 'linux', 'velociraptor'):
+            f"velociraptor-v{clean_version}-linux-amd64",
+        os.path.join('clients', 'mac', 'velociraptor_client'):
+            f"velociraptor-v{clean_version}-darwin-amd64",
+        os.path.join('clients', 'windows', 'velociraptor_client.exe'):
+            f"velociraptor-v{clean_version}-windows-amd64.exe",
+        os.path.join('clients', 'windows', 'velociraptor_client.msi'):
+            f"velociraptor-v{clean_version}-windows-amd64.msi",
+    }
+
+
+# Of the four binaries the Dockerfile expects, only the linux server is
+# strictly REQUIRED — without it the container won't start. The
+# Mac/Windows CLIENT binaries are convenience artifacts the entrypoint
+# tries to repack with the server's config (see entrypoint.sh). When
+# they're missing the repack step fails silently and operators just
+# don't get a pre-configured client for that platform.
+#
+# Upstream Velociraptor releases are inconsistent: v0.75.6 ships no
+# darwin-amd64; some point releases skip the MSI. We treat those as
+# best-effort + drop a zero-byte placeholder so the Dockerfile COPY
+# still succeeds.
+_REQUIRED_BINARY = os.path.join('clients', 'linux', 'velociraptor')
+
+
+def _stage_binaries_for_build(
+    module_dir: str,
+    clean_version: str,
+    source: str,
+    package_binaries_dir: Optional[str] = None,
+    logger: Optional[Callable] = None,
+) -> Dict:
+    """Stage the four Velociraptor binaries into the module's build
+    context so `docker compose build` can COPY them without any
+    network access at build time.
+
+    Args:
+        module_dir: e.g. /app/workdir/modules/velociraptor — the Dockerfile build context.
+        clean_version: e.g. "0.75.6" (no `v` prefix).
+        source: "github" (curl from upstream) or "package" (copy from `package_binaries_dir`).
+        package_binaries_dir: required when source == "package". The dir is
+            expected to contain files named per `_velociraptor_binary_set`.
+        logger: standard logger callable (msg, level).
+
+    Returns:
+        {"success": bool, "staged": [<rel>...], "placeholder": [<rel>...]}
+
+    `success` is True iff the linux server binary was staged. Mac/Win
+    misses become zero-byte placeholders + warnings.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    parts = clean_version.split('.')
+    release_tag = f"v{parts[0]}.{parts[1]}" if len(parts) >= 2 else f"v{clean_version}"
+    base_url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}"
+
+    staged: list = []
+    placeholder: list = []
+    linux_ok = False
+    for rel_dest, upstream_fname in _velociraptor_binary_set(clean_version).items():
+        is_required = (rel_dest == _REQUIRED_BINARY)
+        dest = os.path.join(module_dir, rel_dest)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+
+        ok = False
+        if source == "package":
+            assert package_binaries_dir, "package_binaries_dir is required when source='package'"
+            src_path = os.path.join(package_binaries_dir, upstream_fname)
+            if os.path.exists(src_path):
+                res = run_command(f"cp {src_path} {dest}", logger=log, timeout=60)
+                ok = res['success']
+            else:
+                log(f"  [stage] missing in package: {upstream_fname}", "warning")
+        else:  # github
+            url = f"{base_url}/{upstream_fname}"
+            log(f"  [stage] download {upstream_fname}", "info")
+            res = run_command(
+                f"curl -fL --retry 5 --retry-delay 5 --retry-max-time 120 -o {dest} {url}",
+                logger=log, timeout=300,
+            )
+            ok = res['success'] and os.path.exists(dest) and os.path.getsize(dest) > 0
+            if not ok and os.path.exists(dest):
+                # curl -f exits non-zero on HTTP 4xx but may have written partial bytes
+                os.remove(dest)
+
+        if ok:
+            if not dest.endswith('.msi'):
+                run_command(f"chmod +x {dest}", logger=log)
+            staged.append(rel_dest)
+            if is_required:
+                linux_ok = True
+        else:
+            if is_required:
+                # Fail loud — Dockerfile build will explode anyway, this
+                # makes the message actionable.
+                log(f"  [stage] REQUIRED binary missing: {upstream_fname}", "error")
+                return {
+                    "success": False,
+                    "staged": staged,
+                    "placeholder": placeholder,
+                    "error": f"required binary not available upstream: {upstream_fname}",
+                }
+            # Drop an empty placeholder so the Dockerfile's COPY
+            # succeeds. Runtime entrypoint's repack step will silently
+            # no-op on the empty file. Operators who need that client
+            # can run `velociraptor config repack` later by hand.
+            log(f"  [stage] {upstream_fname} unavailable upstream — using empty placeholder", "warning")
+            with open(dest, 'wb') as f:
+                pass  # zero bytes
+            placeholder.append(rel_dest)
+
+    return {
+        "success": linux_ok,
+        "staged": staged,
+        "placeholder": placeholder,
+    }
 
 
 def get_velociraptor_download_url(version: str, logger: Callable = None) -> Tuple[Optional[str], Optional[str]]:
@@ -67,6 +193,24 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
     # Get current version for rollback
     current_vars = read_env_file(env_file)
     current_version = current_vars.get('VELOCIRAPTOR_VERSION', 'unknown')
+
+    # Reject downgrades. Velociraptor's filestore + datastore schema is
+    # forward-compatible only; the docs explicitly warn against rolling
+    # the server binary backwards over an existing datastore. Without
+    # this guard the upgrade UI happily accepts a lower version (e.g.
+    # 0.76.2 -> 0.75.6 selected by mistake in the prepare dialog) and
+    # we end up with a half-broken container that fails to start.
+    if current_version != 'unknown' and compare_versions(version, current_version) < 0:
+        error_msg = (
+            f"Velociraptor downgrade not supported: {current_version} -> {version}. "
+            f"The server binary cannot be rolled backwards over an existing datastore."
+        )
+        log(error_msg, "error")
+        return {"success": False, "error": error_msg}
+
+    if current_version != 'unknown' and compare_versions(version, current_version) == 0:
+        log(f"Velociraptor is already at version {version}", "info")
+        return {"success": True, "version": version, "message": "Already at target version"}
 
     # Export artifacts to disk (before stopping)
     log("Exporting custom artifacts...", "info")
@@ -141,19 +285,40 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
             velo_tag = f"{version_parts[0]}.{version_parts[1]}"
             update_env_file(env_file, 'VELOCIRAPTOR_TAG', velo_tag, logger=log)
 
-        # Download new binary
-        log(f"Downloading Velociraptor {actual_version}...", "info")
-        log(f"  URL: {download_url}", "info")
+        # Stage all four binaries (linux server + mac/win clients)
+        # into the Dockerfile's build context. The Dockerfile is pure
+        # COPY now — no network access at build time.
+        log(f"Staging Velociraptor {actual_version} binaries for build...", "info")
+        stage = _stage_binaries_for_build(
+            module_dir=work_dir,
+            clean_version=actual_version,
+            source="github",
+            logger=log,
+        )
+        if not stage['success']:
+            raise Exception(
+                f"Failed to stage required binary for build: {stage.get('error','linux server binary not staged')}"
+            )
+        if stage['placeholder']:
+            log(
+                f"  Note: {len(stage['placeholder'])} client binary(ies) unavailable upstream — "
+                f"placeholder(s) inserted: {', '.join(os.path.basename(p) for p in stage['placeholder'])}",
+                "warning",
+            )
 
-        result = run_command(f"curl -fL --retry 5 --retry-delay 5 --retry-max-time 120 -o {velo_bin} {download_url}", logger=log, timeout=300)
-        if not result['success']:
-            raise Exception("Failed to download new binary")
+        # Also keep a copy at the legacy `velo_data/velociraptor` path
+        # so the rollback path's backup target still has something to
+        # restore from. Cheap belt-and-braces — file already on disk.
+        staged_linux = os.path.join(work_dir, 'clients', 'linux', 'velociraptor')
+        if os.path.exists(staged_linux):
+            run_command(f"cp {staged_linux} {velo_bin}", logger=log)
+            run_command(f"chmod +x {velo_bin}", logger=log)
 
-        run_command(f"chmod +x {velo_bin}", logger=log)
-
-        # Rebuild container
+        # Rebuild container — offline-safe now (COPY-only Dockerfile).
         log("Rebuilding container...", "info")
-        run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
+        result = run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
+        if not result['success']:
+            raise Exception(f"docker compose build failed: {result.get('error','')[:200]}")
 
         # Restore config/artifact backups (we want to keep these)
         log("Restoring config and artifacts...", "info")
@@ -246,6 +411,19 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
     # Get current version for rollback
     current_vars = read_env_file(env_file)
     current_version = current_vars.get('VELOCIRAPTOR_VERSION', 'unknown')
+
+    # Reject downgrades — see notes in upgrade_velociraptor() above.
+    if current_version != 'unknown' and compare_versions(version, current_version) < 0:
+        error_msg = (
+            f"Velociraptor downgrade not supported: {current_version} -> {version}. "
+            f"The server binary cannot be rolled backwards over an existing datastore."
+        )
+        log(error_msg, "error")
+        return {"success": False, "error": error_msg}
+
+    if current_version != 'unknown' and compare_versions(version, current_version) == 0:
+        log(f"Velociraptor is already at version {version}", "info")
+        return {"success": True, "version": version, "message": "Already at target version"}
 
     # Export artifacts
     log("Exporting custom artifacts...", "info")
@@ -348,13 +526,42 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
             velo_tag = f"{version_parts[0]}.{version_parts[1]}"
             update_env_file(env_file, 'VELOCIRAPTOR_TAG', velo_tag, logger=log)
 
-        # Copy binary from package
-        log("Copying Velociraptor binary from package...", "info")
-        run_command(f"cp {source_binary} {velo_bin}", logger=log)
-        run_command(f"chmod +x {velo_bin}", logger=log)
-        log("  Binary copied successfully", "info")
+        # Stage all four binaries (linux server + mac/win clients) into
+        # the build context from the upgrade package. The Dockerfile is
+        # pure COPY, so the build step below is fully offline.
+        log("Staging binaries from upgrade package...", "info")
+        stage = _stage_binaries_for_build(
+            module_dir=work_dir,
+            clean_version=actual_version,
+            source="package",
+            package_binaries_dir=binaries_dir,
+            logger=log,
+        )
+        if not stage['success']:
+            raise Exception(
+                f"Required linux binary missing from upgrade package: "
+                f"{stage.get('error','no linux server binary')}. "
+                f"Re-prepare the upgrade package."
+            )
+        if stage['placeholder']:
+            log(
+                f"  Note: {len(stage['placeholder'])} client binary(ies) absent from package — "
+                f"placeholder(s) inserted: {', '.join(os.path.basename(p) for p in stage['placeholder'])}",
+                "warning",
+            )
 
-        # Load pre-built image from package (for air-gap support)
+        # Keep a copy at the legacy velo_data path for backup symmetry
+        # with the online flow (same reasoning as upgrade_velociraptor).
+        staged_linux = os.path.join(work_dir, 'clients', 'linux', 'velociraptor')
+        if os.path.exists(staged_linux):
+            run_command(f"cp {staged_linux} {velo_bin}", logger=log)
+            run_command(f"chmod +x {velo_bin}", logger=log)
+        log("  Binaries staged successfully", "info")
+
+        # Prefer the pre-built image tar bundled in the package — fast,
+        # zero-build path. Fall back to a local rebuild (now also
+        # offline-safe because every COPY source is in the build
+        # context).
         images_dir = os.path.join(package_dir, 'images')
         image_path = os.path.join(images_dir, f"velociraptor-{actual_version}.tar")
 
@@ -362,14 +569,15 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
             log("Loading pre-built Velociraptor image...", "info")
             result = load_docker_image(image_path, logger=log)
             if not result['success']:
-                log(f"  Warning: Failed to load image, will try build: {result.get('error', '')[:50]}", "warning")
-                # Fallback to build if image load fails
-                log("Rebuilding container (fallback)...", "info")
-                run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
+                log(f"  Image load failed, falling back to local build: {result.get('error', '')[:80]}", "warning")
+                build = run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
+                if not build['success']:
+                    raise Exception(f"docker compose build failed: {build.get('error','')[:200]}")
         else:
-            # No pre-built image, must build (requires network)
-            log("No pre-built image found, rebuilding container...", "info")
-            run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
+            log("No pre-built image in package — building locally (offline-safe).", "info")
+            build = run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
+            if not build['success']:
+                raise Exception(f"docker compose build failed: {build.get('error','')[:200]}")
 
         # Restore config/artifact backups
         log("Restoring config and artifacts...", "info")

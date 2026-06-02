@@ -221,6 +221,14 @@ def prepare_upgrade_package():
         if not modules:
             return jsonify({"error": "No modules selected for package"}), 400
 
+        # NOTE: no downgrade check here on purpose. The prepare-side
+        # machine is often DIFFERENT from the target — a build server
+        # at 0.76.5 may legitimately prepare a 0.75.6 package destined
+        # for a customer who's still on 0.74.0. The downgrade guard
+        # lives in services/upgrade/velociraptor.py where it checks
+        # the TARGET's .env at apply time, which is the only point
+        # where "current vs requested" has a meaningful answer.
+
         # Create workflow run
         run_id = create_automation_run(
             automation_type="prepare_package",

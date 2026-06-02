@@ -540,6 +540,113 @@ download_offline_collector_binaries() {
     return 0
 }
 
+stage_velociraptor_client_binaries() {
+    # Stage the four binaries the Velociraptor Dockerfile COPYs at
+    # build time. Without these, `docker compose build` fails because
+    # the Dockerfile is pure COPY (intentionally — see Dockerfile
+    # comments for why we moved off in-container curl).
+    #
+    # Args:
+    #   $1 = full version, e.g. "0.75.6"
+    #   $2 = velociraptor module dir (the docker build context)
+    #
+    # Side effects:
+    #   Populates $module_dir/clients/{linux,mac,windows}/...
+    #
+    # Returns 0 on success, 1 if any required binary couldn't be
+    # downloaded.
+
+    local velo_version="$1"
+    local module_dir="$2"
+
+    if [[ -z "$velo_version" || -z "$module_dir" ]]; then
+        log_error "stage_velociraptor_client_binaries: version + module_dir required"
+        return 1
+    fi
+
+    local parts
+    IFS='.' read -r -a parts <<< "$velo_version"
+    if (( ${#parts[@]} < 2 )); then
+        log_error "stage_velociraptor_client_binaries: malformed version '$velo_version' — need at least major.minor"
+        return 1
+    fi
+    local release_tag="v${parts[0]}.${parts[1]}"
+    local base_url="https://github.com/Velocidex/velociraptor/releases/download/${release_tag}"
+
+    local linux_dir="${module_dir}/clients/linux"
+    local mac_dir="${module_dir}/clients/mac"
+    local win_dir="${module_dir}/clients/windows"
+    mkdir -p "$linux_dir" "$mac_dir" "$win_dir"
+
+    # Pairs of "dest_path|upstream_filename" — must mirror
+    # services/upgrade/velociraptor.py:_velociraptor_binary_set.
+    local items=(
+        "${linux_dir}/velociraptor|velociraptor-v${velo_version}-linux-amd64"
+        "${mac_dir}/velociraptor_client|velociraptor-v${velo_version}-darwin-amd64"
+        "${win_dir}/velociraptor_client.exe|velociraptor-v${velo_version}-windows-amd64.exe"
+        "${win_dir}/velociraptor_client.msi|velociraptor-v${velo_version}-windows-amd64.msi"
+    )
+
+    local min_size=$((1 * 1024 * 1024))  # 1 MB floor — under that = HTTP 404 / rate-limit / partial
+    local required_dest="${linux_dir}/velociraptor"
+    local required_ok=0
+    local placeholders=0
+
+    for item in "${items[@]}"; do
+        local dest="${item%%|*}"
+        local fname="${item##*|}"
+        local is_required=0
+        [[ "$dest" == "$required_dest" ]] && is_required=1
+
+        if [[ -f "$dest" ]] && [[ $(stat -c%s "$dest" 2>/dev/null || echo 0) -ge $min_size ]]; then
+            log_info "  Already staged: $(basename "$dest")"
+            (( is_required )) && required_ok=1
+            continue
+        fi
+
+        log_info "  Staging: $fname  (from ${base_url}/${fname})"
+        local sz=0
+        if curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 120 \
+                "${base_url}/${fname}" -o "$dest" 2>> "$LOG_FILE"; then
+            sz=$(stat -c%s "$dest" 2>/dev/null || echo 0)
+        else
+            sz=0
+            rm -f "$dest"
+        fi
+
+        if (( sz < min_size )); then
+            if (( is_required )); then
+                log_error "  REQUIRED binary unavailable upstream: $fname"
+                return 1
+            fi
+            # Optional client binary missing (e.g. v0.75.6 has no
+            # darwin-amd64). Drop a zero-byte placeholder so the
+            # Dockerfile COPY still succeeds; entrypoint's repack
+            # step silently no-ops on the empty file.
+            log_warn "  $fname unavailable upstream — using empty placeholder (no pre-repacked client for this platform)"
+            : > "$dest"
+            ((placeholders++))
+            continue
+        fi
+
+        if [[ "$dest" != *.msi ]]; then
+            chmod +x "$dest" 2>/dev/null || true
+        fi
+        log_success "  Staged: $(basename "$dest") (${sz} bytes)"
+        (( is_required )) && required_ok=1
+    done
+
+    if (( required_ok != 1 )); then
+        log_error "stage_velociraptor_client_binaries: linux server binary not staged. Install/upgrade cannot continue."
+        return 1
+    fi
+
+    if (( placeholders > 0 )); then
+        log_warn "stage_velociraptor_client_binaries: ${placeholders} optional client binary placeholder(s) inserted — image build will succeed, those platforms just won't have a pre-repacked client."
+    fi
+    return 0
+}
+
 download_legacy_velociraptor_binaries() {
     # Legacy Velociraptor binary for old Windows hosts (Server 2008 R2 SP1,
     # Win 7). Pin lives in `versions.velociraptor_legacy` in config.yaml.

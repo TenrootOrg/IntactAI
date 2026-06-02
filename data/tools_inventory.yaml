@@ -19,72 +19,14 @@ settings:
 # ============================================================================
 # VELOCIRAPTOR CORE
 # ============================================================================
-velociraptor_core:
-  - name: "Velociraptor Windows x64"
-    enabled: true
-    type: github_release
-    repo: "Velocidex/velociraptor"
-    pattern: ".*windows-amd64\\.exe$"
-    category: core
-
-  - name: "Velociraptor Windows MSI"
-    enabled: true
-    type: github_release
-    repo: "Velocidex/velociraptor"
-    pattern: ".*windows-amd64\\.msi$"
-    category: core
-
-  - name: "Velociraptor Collector"
-    enabled: true
-    type: github_release
-    repo: "Velocidex/velociraptor"
-    pattern: "velociraptor-collector"
-    category: core
-
-  - name: "Velociraptor Linux x64"
-    enabled: true
-    type: github_release
-    repo: "Velocidex/velociraptor"
-    pattern: ".*linux-amd64$"
-    category: core
-
-  - name: "Velociraptor Windows x86"
-    enabled: true
-    type: github_release
-    repo: "Velocidex/velociraptor"
-    pattern: ".*windows-386\\.exe$"
-    category: core
-
-  - name: "Velociraptor Windows x86 MSI"
-    enabled: true
-    type: github_release
-    repo: "Velocidex/velociraptor"
-    pattern: ".*windows-386\\.msi$"
-    category: core
-
-  - name: "Velociraptor Debian"
-    enabled: true
-    type: github_release
-    repo: "Velocidex/velociraptor"
-    pattern: ".*_amd64\\.deb$"
-    category: core
-
-  - name: "Velociraptor RedHat"
-    enabled: true
-    type: github_release
-    repo: "Velocidex/velociraptor"
-    pattern: ".*\\.x86_64\\.rpm$"
-    category: core
-
-  - name: "Velociraptor macOS"
-    enabled: true
-    type: github_release
-    repo: "Velocidex/velociraptor"
-    pattern: ".*darwin-amd64$"
-    category: core
-
-  # NOTE: v0.74.1 binaries for Offline Collector are static in modules/nginx/html/downloads/
-  # They are NOT downloaded via maintenance (v0.75+ has CLI bug with Generic Collector)
+velociraptor_core: []
+# REMOVED: 9 redundant Velociraptor binary entries. The platform now
+# stages the binaries it actually needs in two other places:
+#   - modules/velociraptor/clients/{linux,mac,windows}/  (Dockerfile build)
+#   - modules/nginx/html/downloads/                       (offline-collector serving)
+# Pulling them a third time into /data/tools/ wasted ~385 MB at install
+# time and never served any feature. See services/upgrade/velociraptor.py
+# `_stage_binaries_for_build` for the staging contract.
 
 # ============================================================================
 # EVENT LOG ANALYSIS
@@ -113,13 +55,11 @@ event_log_tools:
     category: detection
     description: "EVTX parsing and analysis"
 
-  - name: "Chainsaw"
-    enabled: true
-    type: github_release
-    repo: "WithSecureLabs/chainsaw"
-    pattern: "chainsaw_all_platforms\\+rules.*\\.zip$"
-    category: detection
-    description: "Fast Windows event log analysis with SIGMA"
+  # Chainsaw removed — Velociraptor's Windows.EventLogs.Chainsaw
+  # artifact auto-fetches it via Server.Utils.GetDependency on first
+  # use, and the offline-collector bundler has its own self-contained
+  # download URL in services/offline_collector/constants.py. Saved
+  # ~45 MB of pre-positioning that nobody used at install time.
 
   - name: "Takajo"
     enabled: true
@@ -129,13 +69,9 @@ event_log_tools:
     category: detection
     description: "Hayabusa timeline analysis"
 
-  - name: "Zircolite"
-    enabled: true
-    type: direct_url
-    url: "https://github.com/wagga40/Zircolite/releases/download/2.40.0/zircolite_win_x64_2.40.0.7z"
-    filename: "zircolite_win_x64_2.40.0.7z"
-    category: detection
-    description: "SIGMA-based EVTX analyzer"
+  # Zircolite removed — overlaps with Hayabusa (kept) and Chainsaw
+  # (removed). The Velociraptor Zircolite artifact is rarely chosen
+  # over Hayabusa in practice.
 
 # ============================================================================
 # PERSISTENCE DETECTION
@@ -220,13 +156,9 @@ yara_tools:
     url: "https://github.com/mgreen27/DetectRaptor/raw/master/yara/yara-rules-full.yar"
     category: rules
 
-  - name: "Loki-RS"
-    enabled: true
-    type: github_release
-    repo: "Neo23x0/Loki-RS"
-    pattern: "loki-linux-x86_64.*\\.tar\\.gz$"
-    category: detection
-    description: "IOC and YARA scanner"
+  # Loki-RS removed — overlaps with the YARA rule bundles already
+  # downloaded by the yara_tools section. Standalone Loki scanning
+  # was redundant for our workflows.
 
 # ============================================================================
 # VELOCIRAPTOR ARTIFACTS & VQL
@@ -305,12 +237,9 @@ memory_tools:
     pattern: "winpmem_mini_x64.*\\.exe$"
     category: memory
 
-  - name: "Volatility"
-    enabled: true
-    type: direct_url
-    url: "https://github.com/volatilityfoundation/volatility/archive/master.zip"
-    filename: "volatility-master.zip"
-    category: memory
+  # Volatility (the original v2 framework) removed — we have VolWeb,
+  # which wraps Volatility 3 and is the supported memory-analysis path
+  # going forward. CLI volatility is no longer pre-positioned.
 
 # ============================================================================
 # NIRSOFT TOOLS
@@ -526,26 +455,17 @@ audit_tools:
     category: audit
     description: "Windows hardening checker"
 
-  - name: "Microsoft MRT"
-    enabled: true
-    type: direct_url
-    url: "https://go.microsoft.com/fwlink/?LinkId=212732"
-    filename: "Windows-KB890830-x64-MRT.exe"
-    category: audit
-    description: "Microsoft Malicious Software Removal Tool"
+  # Microsoft MRT removed — 212 MB binary that was almost never invoked
+  # in IR engagements. Can be fetched from Microsoft on demand if a
+  # specific investigation needs it.
 
 # ============================================================================
 # THREAT INTELLIGENCE / SCANNERS
 # ============================================================================
 threat_intel:
-  - name: "Thor Lite"
-    enabled: true
-    type: direct_url
-    url: "https://update1.nextron-systems.com/getupdate.php?product=thor10lite-win"
-    filename: "thor-lite-windows.zip"
-    cache_pattern: "thor-lite-windows.*\\.zip"
-    category: scanner
-    description: "YARA/IOC scanner (version changes with updates)"
+  # Thor Lite removed — 107 MB commercial scanner duplicated by the
+  # YARA rule bundles we already ship. Not required for any platform
+  # workflow.
 
 # ============================================================================
 # OSQUERY
@@ -646,9 +566,8 @@ velociraptor_inventory:
     file_pattern: "(?i)^hayabusa-.*-win-x64-live-response.zip$"
     enabled: true
 
-  - tool_name: "Chainsaw"
-    file_pattern: "(?i)^chainsaw_all_platforms.*.zip$"
-    enabled: true
+  # Chainsaw removed from server inventory — see top-level
+  # event_log_tools comment.
 
   - tool_name: "EvtxHussar17"
     file_pattern: "(?i)^EvtxHussar.*windows_amd64.zip$"
@@ -658,13 +577,8 @@ velociraptor_inventory:
     file_pattern: "(?i)^takajo-.*-win-x64.zip$"
     enabled: true
 
-  - tool_name: "Zircolite"
-    file_pattern: "(?i)^zircolite_win.*\\.7z$"
-    enabled: true
-
-  - tool_name: "Zircolite"
-    file_pattern: "(?i)^zircolite_win10.exe$"
-    enabled: true
+  # Zircolite removed from server inventory — see top-level
+  # event_log_tools comment.
 
   # YARA & Detection
   - tool_name: "FileYaraLinux"
@@ -815,13 +729,7 @@ velociraptor_inventory:
     file_pattern: "(?i)^windows_hardening.*\\.zip$"
     enabled: true
 
-  - tool_name: "ThorZIP"
-    file_pattern: "(?i)^thor.*\\.zip$"
-    enabled: true
-
-  - tool_name: "MSRT"
-    file_pattern: "(?i)^Windows-KB890830.*exe$"
-    enabled: true
+  # Thor / Microsoft MRT removed — see top-level threat_intel comment.
 
   - tool_name: "FTKImager"
     file_pattern: "(?i)^FTKImager-commandline.zip$"
@@ -835,9 +743,8 @@ velociraptor_inventory:
     file_pattern: "(?i)^winpmem.*\\.exe$"
     enabled: true
 
-  - tool_name: "Volatility"
-    file_pattern: "(?i)^volatility.*\\.zip$"
-    enabled: true
+  # Volatility removed from server inventory — see top-level
+  # memory_tools comment. Memory analysis goes through VolWeb now.
 
   # Velociraptor binaries
   - tool_name: "VelociraptorLinux"

@@ -55,8 +55,25 @@ _MACRO_INDEX: Dict[str, dict] = {}
 _ARTIFACT_MAP: Dict[str, object] = {"exact": {}, "patterns": []}
 _SKILLS_LOADED = False
 
-# Default skills directory: <agentic>/skills/. Overridable via env var.
-_DEFAULT_SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
+# Skills live in TWO places: the bundled tree under
+# `services/agentic/skills/` (read-only inside the container, ships
+# with the code) and a writable cache at `/app/data/skills/` that the
+# refresh service writes into. Prefer the cache when it has content
+# (operator has refreshed at least once); otherwise fall back to the
+# bundle so a fresh install still has skills. Resolved lazily inside
+# `load_skill_index_at_boot()` so the same process can re-scan after
+# a refresh without restart.
+_BUNDLED_SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
+_CACHE_SKILLS_DIR = "/app/data/skills"
+
+
+def _resolve_default_skills_dir() -> str:
+    if os.path.isdir(_CACHE_SKILLS_DIR) and os.listdir(_CACHE_SKILLS_DIR):
+        return _CACHE_SKILLS_DIR
+    return _BUNDLED_SKILLS_DIR
+
+
+_DEFAULT_SKILLS_DIR = _BUNDLED_SKILLS_DIR  # kept for back-compat; real value picked in loader
 
 
 def _approx_tokens(text: str) -> int:
@@ -265,7 +282,11 @@ def load_skill_index_at_boot(skills_dir: Optional[str] = None) -> Dict[str, dict
     if _SKILLS_LOADED:
         return _SKILL_INDEX
 
-    skills_dir = skills_dir or os.environ.get("AGENTIC_SKILLS_DIR") or _DEFAULT_SKILLS_DIR
+    skills_dir = (
+        skills_dir
+        or os.environ.get("AGENTIC_SKILLS_DIR")
+        or _resolve_default_skills_dir()
+    )
 
     if not os.path.isdir(skills_dir):
         logger.info("%s no skills dir at %s — skills disabled", LOG_PREFIX_SKILLS, skills_dir)

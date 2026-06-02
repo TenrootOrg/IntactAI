@@ -262,10 +262,18 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                 manifest["contents"]["include_source"] = True
 
             elif module == 'velociraptor':
-                # Download Velociraptor binary and build image for air-gap support
-                log("Downloading Velociraptor binary...", "info")
+                # Velociraptor packaging — internet REQUIRED here on the
+                # prepare side. The Dockerfile is pure COPY; all four
+                # binaries (linux server + mac/win clients) must be in
+                # the build context before `docker compose build`. We
+                # download them upstream, stage them into the module
+                # build context AND drop a copy into the package's
+                # binaries/ dir so the offline upgrade can re-stage on
+                # the target without network. If the build succeeds we
+                # also bake the image into images/<version>.tar so the
+                # target can `docker load` directly.
+                log("Downloading Velociraptor binaries (4 — linux server + mac/win clients)...", "info")
 
-                # Parse version
                 clean_version = version.lstrip('v')
                 parts = clean_version.split('.')
 
@@ -274,65 +282,122 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                     continue
 
                 release_tag = f"v{parts[0]}.{parts[1]}"
-                binary_name = f"velociraptor-v{clean_version}-linux-amd64"
-                url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}/{binary_name}"
+                base_url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}"
+                velo_tag = f"{parts[0]}.{parts[1]}"
+
+                # The four upstream filenames the Dockerfile needs.
+                # Keep them aligned with `_velociraptor_binary_set` in
+                # services/upgrade/velociraptor.py.
+                upstream_binaries = [
+                    f"velociraptor-v{clean_version}-linux-amd64",
+                    f"velociraptor-v{clean_version}-darwin-amd64",
+                    f"velociraptor-v{clean_version}-windows-amd64.exe",
+                    f"velociraptor-v{clean_version}-windows-amd64.msi",
+                ]
+
+                # Module build context dirs (mirror the COPY paths in
+                # modules/velociraptor/Dockerfile).
+                velo_dir = "/app/workdir/modules/velociraptor"
+                staging_map = {
+                    upstream_binaries[0]: os.path.join(velo_dir, 'clients', 'linux',   'velociraptor'),
+                    upstream_binaries[1]: os.path.join(velo_dir, 'clients', 'mac',     'velociraptor_client'),
+                    upstream_binaries[2]: os.path.join(velo_dir, 'clients', 'windows', 'velociraptor_client.exe'),
+                    upstream_binaries[3]: os.path.join(velo_dir, 'clients', 'windows', 'velociraptor_client.msi'),
+                }
 
                 log(f"  Version: {clean_version}", "info")
                 log(f"  Release tag: {release_tag}", "info")
-                log(f"  URL: {url}", "info")
 
-                binary_path = f"{package_dir}/binaries/{binary_name}"
-                result = run_command(
-                    f"curl -L -f -o {binary_path} {url}",
-                    timeout=300,
-                    logger=None
-                )
+                # Only the linux server binary is REQUIRED. Mac/Windows
+                # clients are convenience artifacts the entrypoint
+                # tries to repack with server config; if upstream
+                # doesn't publish them for this point release (e.g.
+                # v0.75.6 has no darwin-amd64), we stage zero-byte
+                # placeholders so the Dockerfile COPY still succeeds
+                # and the runtime repack silently no-ops on them.
+                required_binary = upstream_binaries[0]  # the linux-amd64 one
+                required_ok = False
+                missing_optional: list = []
 
-                if result['success']:
-                    os.chmod(binary_path, 0o755)
-                    size = os.path.getsize(binary_path)
-                    log(f"  Downloaded ({_format_size(size)})", "success")
-                    manifest["versions"]["velociraptor"] = clean_version
-                    manifest["contents"]["binaries"].append(binary_name)
-
-                    # Build and export image for air-gap support
-                    log("Building Velociraptor image for air-gap...", "info")
-                    velo_dir = "/app/workdir/modules/velociraptor"
-                    velo_bin_dest = os.path.join(velo_dir, "velociraptor", "velociraptor")
-
-                    # Copy binary to velociraptor directory for build
-                    run_command(f"cp {binary_path} {velo_bin_dest}", logger=None)
-                    run_command(f"chmod +x {velo_bin_dest}", logger=None)
-
-                    # Build image with specific tag
-                    # Use host paths for docker compose (container paths don't work for build context)
-                    host_velo_dir = velo_dir.replace(WORKDIR, HOST_PATH, 1)
-                    compose_file = f"{host_velo_dir}/docker-compose.yaml"
-
-                    image_tag = f"velociraptor-server:{clean_version}"
-                    velo_tag = f"{parts[0]}.{parts[1]}"
-                    build_result = run_command(
-                        f"VELOCIRAPTOR_VERSION={clean_version} VELOCIRAPTOR_TAG={velo_tag} "
-                        f"docker compose -f {compose_file} --project-directory {host_velo_dir} build "
-                        f"--build-arg VELOCIRAPTOR_VERSION={clean_version} --build-arg VELOCIRAPTOR_TAG={velo_tag}",
-                        timeout=600, logger=None
+                for fname in upstream_binaries:
+                    pkg_path = f"{package_dir}/binaries/{fname}"
+                    staged_dest = staging_map[fname]
+                    os.makedirs(os.path.dirname(staged_dest), exist_ok=True)
+                    url = f"{base_url}/{fname}"
+                    log(f"  Downloading: {fname}", "info")
+                    dl = run_command(
+                        f"curl -L -f --retry 5 --retry-delay 5 --retry-max-time 120 "
+                        f"-o {pkg_path} {url}",
+                        timeout=300, logger=None,
                     )
+                    ok = dl['success'] and os.path.exists(pkg_path) and os.path.getsize(pkg_path) > 0
+                    if not ok:
+                        if os.path.exists(pkg_path):
+                            os.remove(pkg_path)
+                        if fname == required_binary:
+                            log(f"  Failed to download REQUIRED {fname}: {dl.get('error','')[:120]}", "error")
+                            break
+                        log(f"  {fname} unavailable upstream — using empty placeholder", "warning")
+                        # zero-byte file in both the package and the
+                        # build-context staging dir, so the Dockerfile
+                        # COPY succeeds offline too.
+                        open(pkg_path, 'wb').close()
+                        open(staged_dest, 'wb').close()
+                        missing_optional.append(fname)
+                        continue
 
-                    if build_result['success']:
-                        # Export the built image
-                        output_path = f"{package_dir}/images/velociraptor-{clean_version}.tar"
-                        save_result = run_command(f"docker save -o {output_path} {image_tag}", timeout=300, logger=None)
-                        if save_result['success']:
-                            img_size = os.path.getsize(output_path)
-                            log(f"  Image exported ({_format_size(img_size)})", "success")
-                            manifest["contents"]["images"].append(f"velociraptor-{clean_version}.tar")
-                        else:
-                            log(f"  Failed to export image: {save_result.get('error', '')[:100]}", "warning")
+                    if not fname.endswith('.msi'):
+                        os.chmod(pkg_path, 0o755)
+                    log(f"  Done ({_format_size(os.path.getsize(pkg_path))})", "success")
+                    manifest["contents"]["binaries"].append(fname)
+
+                    run_command(f"cp {pkg_path} {staged_dest}", logger=None)
+                    if not fname.endswith('.msi'):
+                        run_command(f"chmod +x {staged_dest}", logger=None)
+                    if fname == required_binary:
+                        required_ok = True
+
+                if not required_ok:
+                    log("  Required linux server binary unavailable — skipping image bake.", "error")
+                    log("  Target machines will fail offline upgrade until the package is re-prepared.", "warning")
+                    continue
+                if missing_optional:
+                    log(f"  Note: placeholder(s) used for {len(missing_optional)} client binary(ies): {', '.join(missing_optional)}",
+                        "warning")
+
+                manifest["versions"]["velociraptor"] = clean_version
+
+                # Build the image with the now-staged binaries. The
+                # Dockerfile is COPY-only, so this is fast (~1s) and
+                # has zero network dependencies. If it still fails,
+                # something is structurally wrong (e.g., base image
+                # missing in local Docker), not a network issue.
+                log("Baking Velociraptor image for the target (offline-safe build)...", "info")
+                host_velo_dir = velo_dir.replace(WORKDIR, HOST_PATH, 1)
+                compose_file = f"{host_velo_dir}/docker-compose.yaml"
+                image_tag = f"velociraptor-server:{clean_version}"
+                build_result = run_command(
+                    f"VELOCIRAPTOR_VERSION={clean_version} VELOCIRAPTOR_TAG={velo_tag} "
+                    f"docker compose -f {compose_file} --project-directory {host_velo_dir} build "
+                    f"--build-arg VELOCIRAPTOR_VERSION={clean_version} --build-arg VELOCIRAPTOR_TAG={velo_tag}",
+                    timeout=600, logger=None,
+                )
+                if build_result['success']:
+                    output_path = f"{package_dir}/images/velociraptor-{clean_version}.tar"
+                    save_result = run_command(
+                        f"docker save -o {output_path} {image_tag}",
+                        timeout=300, logger=None,
+                    )
+                    if save_result['success']:
+                        img_size = os.path.getsize(output_path)
+                        log(f"  Image exported ({_format_size(img_size)})", "success")
+                        manifest["contents"]["images"].append(f"velociraptor-{clean_version}.tar")
                     else:
-                        log(f"  Failed to build image: {build_result.get('error', '')[:100]}", "warning")
-                        log("  Binary included but image not built - offline upgrade will require network", "warning")
+                        log(f"  Failed to export image: {save_result.get('error', '')[:120]}", "warning")
+                        log("  Target will rebuild locally from the staged binaries (still offline-safe).", "info")
                 else:
-                    log(f"  Failed to download: {result.get('error', '')[:100]}", "error")
+                    log(f"  Failed to build image: {build_result.get('error', '')[:160]}", "warning")
+                    log("  Target will rebuild locally from the staged binaries (still offline-safe).", "info")
 
             elif module in DOCKER_IMAGES:
                 # Pull and save Docker images

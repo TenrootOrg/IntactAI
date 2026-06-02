@@ -129,3 +129,14 @@ modules/nginx/package-lock.json
 # Timesketch upgrade DB dumps + migrations cache (created at upgrade time,
 # never committed — operators prune them manually)
 /backups/
+
+# Skill download cache — seeded from services/agentic/skills/ at runtime
+# by services/skills_download_service.py. Source-of-truth lives in
+# services/agentic/skills/ (committed); this dir is operator state.
+/data/skills/
+
+# Velociraptor build-context staging dir — populated at install/upgrade
+# time by `stage_velociraptor_client_binaries` in lib/docker.sh and the
+# Python equivalent in services/upgrade/velociraptor.py. Binaries are
+# downloaded from upstream, not source-controlled.
+/modules/velociraptor/clients/

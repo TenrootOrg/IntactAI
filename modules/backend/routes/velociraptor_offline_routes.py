@@ -144,6 +144,12 @@ def generate_offline_collector():
             return jsonify({"error": "legacy and musl are mutually exclusive — pick one"}), 400
         if musl and os_type != 'linux':
             return jsonify({"error": "musl variant is Linux-only"}), 400
+        # Velociraptor publishes no legacy darwin asset (the 0.7.x release
+        # series stopped before darwin shipping took off). Reject upfront
+        # so the run doesn't connect to gRPC, allocate state, and only
+        # then fail at the file-swap step with a cryptic ENOENT.
+        if legacy and os_type == 'darwin':
+            return jsonify({"error": "legacy variant is not available for macOS (no upstream darwin asset for v0.7.x)"}), 400
 
         # Get config name for workflow
         config = get_config(config_id)

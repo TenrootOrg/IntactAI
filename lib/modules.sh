@@ -594,6 +594,18 @@ deploy_velociraptor() {
     local velo_version=$(read_config "['versions']['velociraptor']")
     log_info "  Velociraptor version: ${velo_version:-latest}"
 
+    # Pre-stage the four binaries (linux server + mac/win clients) that
+    # the Dockerfile COPYs at build time. The Dockerfile no longer
+    # curls during build — it expects these files already in the build
+    # context, which is the contract for the offline-upgrade workflow.
+    # Initial install needs internet here; same as before, just at a
+    # different layer (host curl vs in-container curl).
+    if ! stage_velociraptor_client_binaries "$velo_version" "${SCRIPT_DIR}/modules/velociraptor"; then
+        log_error "  Failed to stage Velociraptor binaries — see warnings above."
+        track_module_failure "Velociraptor"
+        return 1
+    fi
+
     if ! run_docker_compose "up -d" "Velociraptor"; then
         log_error "  Docker compose failed!"
         track_module_failure "Velociraptor"
@@ -1027,10 +1039,11 @@ except Exception:
         fi
     }
 
+    # OpenRouter is the only catalog seeded at install — direct-provider
+    # paths (Anthropic / OpenAI / Gemini) are gated behind the UI and
+    # remain unused by default. Bootstrapping them produced "deferred"
+    # warnings on every install since no API keys were configured.
     _bootstrap_one_catalog "OpenRouter" "/api/maintenance/refresh-openrouter-models"
-    _bootstrap_one_catalog "Anthropic"  "/api/maintenance/refresh-anthropic-models"
-    _bootstrap_one_catalog "OpenAI"     "/api/maintenance/refresh-openai-models"
-    _bootstrap_one_catalog "Gemini"     "/api/maintenance/refresh-gemini-models"
 
     track_module_success "Backend API"
 }

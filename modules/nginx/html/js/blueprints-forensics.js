@@ -163,6 +163,7 @@ function toggleForensicsClient(clientId) {
     } else {
         forensicsSelectedClients.add(clientId);
     }
+    updateCrossClientToggleState();
 }
 
 function selectAllForensicsClients(select) {
@@ -171,6 +172,23 @@ function selectAllForensicsClients(select) {
         forensicsClientsCache.forEach(c => forensicsSelectedClients.add(c.client_id));
     }
     renderForensicsClients(forensicsClientsCache);
+    updateCrossClientToggleState();
+}
+
+// The "organization-wide synthesis" toggle only makes sense across 2+
+// clients — the server ignores it on single-client runs anyway. Lock
+// it to that selection state so the UI can't promise a synthesis run
+// that won't happen.
+function updateCrossClientToggleState() {
+    const wrapper = document.getElementById('forensics-cross-client-wrapper');
+    const toggle  = document.getElementById('forensics-cross-client-toggle');
+    if (!wrapper || !toggle) return;
+    const enabled = forensicsSelectedClients.size >= 2;
+    toggle.disabled = !enabled;
+    wrapper.classList.toggle('opacity-50', !enabled);
+    wrapper.classList.toggle('pointer-events-none', !enabled);
+    wrapper.title = enabled ? '' : 'Select 2+ clients to enable';
+    if (!enabled) toggle.checked = false;
 }
 
 let _forensicsSearchTimeout = null;
@@ -662,6 +680,7 @@ function onExistingIdChange(newValue) {
         if (typeof renderForensicsClients === 'function') {
             renderForensicsClients(forensicsClientsCache || []);
         }
+        updateCrossClientToggleState();
     }
     // Hunt-derived flow (`F.xxx.H`) — reload picker including offline
     // clients (data already collected, liveness irrelevant). Cache the

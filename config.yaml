@@ -21,15 +21,15 @@ options:
   # The installer detects this at runtime and logs a clear
   # "GitHub rate limit exhausted" warning; the install itself
   # continues normally using whatever versions are pinned below.
-  check_module_updates: true
+  check_module_updates: false
 
 modules:
   agentic:
     enabled: true
   aws:
-    enabled: true
+    enabled: false
   azure:
-    enabled: true
+    enabled: false
   cve_scan:
     enabled: true
   elk:
@@ -69,11 +69,8 @@ versions:
   # (anssi/dfir-o365rc). Upstream only publishes ':latest' (no version tags),
   # so we track latest — "upgrade" re-pulls the newest latest.
   azure_dfir_o365rc: 'latest'
-  # Legacy Velociraptor build for old Windows hosts (Server 2008 R2, Win 7)
-  # where the modern Go 1.22+ binary crashes with 0xc0000005. 0.7.1 is the
-  # last 0.7.x release built with Go 1.20 and runs cleanly on those OSes.
-  # install.sh downloads this version alongside the main binary so both
-  # the live-client (repack) and offline-collector flows can produce
-  # legacy-compatible installers without an internet round-trip at runtime.
-  velociraptor_legacy: '0.7.1'
+  # Legacy Velociraptor v0.7.x support (Server 2008 R2 / Win 7) was
+  # removed from the default install. If you need it back, re-pin
+  # `velociraptor_legacy:` here — lib/docker.sh:download_legacy_velociraptor_binaries
+  # gracefully skips when this key is unset.
   backend: '1.0.0'
