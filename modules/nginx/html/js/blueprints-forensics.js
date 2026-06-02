@@ -604,6 +604,7 @@ async function startForensicsCollection() {
             }
         } else {
             // Raw Velociraptor mode - use bestpractice endpoint with artifacts from blueprint
+            const perArtifact = document.getElementById('forensics-per-artifact-toggle')?.checked || false;
             const response = await fetch('/api/velociraptor/bestpractice', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -612,13 +613,18 @@ async function startForensicsCollection() {
                     blueprint_name: blueprint.name || 'Custom',
                     expire_minutes: blueprint.settings?.hunt_expiry || 120,
                     timeout_seconds: blueprint.settings?.timeout || 3600,
-                    cpu_limit: blueprint.settings?.cpu_limit || 90
+                    cpu_limit: blueprint.settings?.cpu_limit || 90,
+                    per_artifact: perArtifact,
                 })
             });
 
             const data = await response.json();
             if (response.ok) {
-                statusEl.innerHTML = `<span class="text-green-400">Hunt started! Run ID: ${data.run_id}</span><br>Redirecting to Workflows...`;
+                // Bulk path returns {run_id}; per-artifact path returns
+                // {run_ids: [...]}. Render either flavour cleanly.
+                const ids = data.run_ids || (data.run_id ? [data.run_id] : []);
+                const idsDisplay = ids.length > 1 ? `${ids.length} separate hunts dispatched` : `Run ID: ${ids[0] || '?'}`;
+                statusEl.innerHTML = `<span class="text-green-400">Hunt started! ${idsDisplay}</span><br>Redirecting to Workflows...`;
                 // Redirect to workflows tab after short delay
                 setTimeout(() => {
                     if (window.Alpine && Alpine.store('app')) {

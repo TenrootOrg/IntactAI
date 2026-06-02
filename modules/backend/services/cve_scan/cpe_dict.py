@@ -40,7 +40,19 @@ from typing import Callable, Dict, List, Optional, Tuple
 # Pulled from the NVD CPE dictionary by tiiuae/cpedict's GitHub Action.
 UPSTREAM_URL = "https://raw.githubusercontent.com/tiiuae/cpedict/main/data/cpes.csv"
 
-_DEFAULT_PATH = Path(__file__).parent / "data" / "cpes.csv"
+# Writable cache path — `/app/data/cve_cache/cpes.csv`. The backend's
+# `./services` mount is bound read-only inside the container (so live
+# code reloads on a host edit), so the daily refresh can't write next
+# to the source. The NVD local-db + cache JSON files already live
+# under `/app/data/cve_cache/`; we co-locate the CPE dictionary there
+# for symmetry.
+_DEFAULT_PATH = Path("/app/data/cve_cache/cpes.csv")
+# Vendored cold-start fallback — read-only copy that ships with the
+# repo. Used by `init_dictionary` when the writable path is missing
+# (first boot before the daily refresh has run). After the first
+# successful refresh, the writable copy supersedes this one and the
+# fallback is no longer consulted.
+_VENDORED_PATH = Path(__file__).parent / "data" / "cpes.csv"
 
 
 # Stopwords stripped from BOTH dictionary tokens (at index build time)
@@ -258,6 +270,13 @@ def init_dictionary(path: Optional[Path] = None, force: bool = False) -> int:
         if _loaded and not force:
             return len(_index)
         p = path or _DEFAULT_PATH
+        # Cold-start fallback: if the writable copy doesn't exist yet
+        # (first boot before any daily refresh has run), read the
+        # vendored read-only copy that ships with the repo. This keeps
+        # CVE matching working immediately even on a brand-new install
+        # whose maintenance script hasn't fired yet.
+        if not p.exists() and path is None and _VENDORED_PATH.exists():
+            p = _VENDORED_PATH
         if not p.exists():
             _index = []
             _postings = {}
