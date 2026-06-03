@@ -376,7 +376,15 @@ deploy_timesketch() {
             log_info "  ${base} already present (skip)"
         elif [[ -f "$ts_template" ]]; then
             cp "$ts_template" "$ts_out"
-            log_success "  ${base} created from template (api_key empty — set via Settings → Timesketch)"
+            # SECRET_KEY signs Timesketch's Flask session cookies and CSRF
+            # tokens — anyone with the value can forge any user's session,
+            # so it must be unique per install. Templates ship with a
+            # __SECRET_KEY__ placeholder; we replace it with 32 random
+            # bytes here, mirroring the IRIS_SECRET_KEY pattern above.
+            local random_key
+            random_key=$(openssl rand -hex 32)
+            sed -i "s|^SECRET_KEY = '[^']*'|SECRET_KEY = '${random_key}'|" "$ts_out"
+            log_success "  ${base} created from template (api_key empty — set via Settings → Timesketch; SECRET_KEY randomized)"
         else
             log_warn "  Template missing: $ts_template"
         fi

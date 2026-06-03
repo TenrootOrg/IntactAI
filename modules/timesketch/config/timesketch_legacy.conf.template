@@ -4,8 +4,13 @@
 DEBUG = False
 ENABLE_PROFILING = False
 
-# Key for signing cookies and for CSRF protection
-SECRET_KEY = 'b9d01d529e2a3e3f18f7c4c1e8b5a290d8e4f6a2c1b3d5e7f9a1b3c5d7e9f1a3'
+# Key for signing cookies and for CSRF protection. The literal value
+# here is a placeholder — install.sh's lib/modules.sh:render replaces it
+# with `openssl rand -hex 32` when the template is copied to
+# timesketch_legacy.conf. NEVER edit the rendered conf to use a static
+# value; every install MUST have a unique SECRET_KEY or anyone with
+# this repo can forge session cookies for any IntactAI deployment.
+SECRET_KEY = '__SECRET_KEY__'
 
 # Database
 SQLALCHEMY_DATABASE_URI = 'postgresql://timesketch:timesketch@intact_timesketch_postgres/timesketch'
