@@ -524,6 +524,7 @@ def start_multi_client_timesketch():
                 continue
 
             c['flow_id'] = flow_id
+            c['kape_started_at'] = time.time()
             add_log_to_run(run_id, f"[KAPE] Started on {c['client_name']} → flow {flow_id}", "info")
 
             # Register in jobs dict so the flow is visible/cancellable elsewhere,
@@ -568,11 +569,59 @@ def start_multi_client_timesketch():
         state = {'kape_done': 0, 'plaso_done': 0, 'plaso_in_flight': 0, 'total': len(live_clients)}
         state_lock = threading.Lock()
 
+        # KAPE typically wraps in 1–5 min for RegistryHives, up to 15+ min
+        # for _KapeTriage. Plaso + Timesketch import on a triage zip is
+        # usually 3–10 min. We don't get a real percentage from either, so
+        # the heartbeat asymptotes per-client fractional progress to 0.85
+        # over these soft deadlines — the final 0.15 fills in when the
+        # phase actually completes. Without this the bar sits at 2% (or
+        # 5%) for the entire KAPE+Plaso runtime and only jumps to 100%
+        # at the very end.
+        KAPE_SOFT_DEADLINE = 300.0
+        PLASO_SOFT_DEADLINE = 600.0
+
         def _bump_progress():
-            # KAPE phase weighted 40%, Plaso phase weighted 60%.
-            done_units = (state['kape_done'] * 0.4) + (state['plaso_done'] * 0.6)
+            # KAPE phase weighted 40%, Plaso phase weighted 60%. Per-client
+            # frac (0..1) lets the bar move mid-phase instead of jumping
+            # only when whole clients finish — the heartbeat thread updates
+            # frac periodically based on elapsed time.
+            with state_lock:
+                kape_units = sum(min(1.0, c.get('kape_frac', 0)) for c in live_clients)
+                plaso_units = sum(min(1.0, c.get('plaso_frac', 0)) for c in live_clients)
+            done_units = kape_units * 0.4 + plaso_units * 0.6
             pct = int(5 + (done_units / state['total']) * 95)
             update_run_status(run_id, "running", progress=min(pct, 99))
+
+        def _heartbeat():
+            """Smooth-progress ticker. Without this, a 1-client run sits at
+            2% for the entire KAPE+Plaso runtime and only jumps to 100%
+            at the very end."""
+            while True:
+                with state_lock:
+                    all_done = (state['kape_done'] >= state['total']
+                                and state['plaso_done'] >= state['total'])
+                if all_done:
+                    return
+                if cancel_event.is_set():
+                    return
+                now = time.time()
+                changed = False
+                with state_lock:
+                    for c in live_clients:
+                        if c.get('flow_id') and 'kape_started_at' in c and c.get('kape_frac', 0) < 1.0:
+                            est = min(0.85, (now - c['kape_started_at']) / KAPE_SOFT_DEADLINE)
+                            if est > c.get('kape_frac', 0):
+                                c['kape_frac'] = est
+                                changed = True
+                        if 'plaso_started_at' in c and c.get('plaso_frac', 0) < 1.0:
+                            est = min(0.85, (now - c['plaso_started_at']) / PLASO_SOFT_DEADLINE)
+                            if est > c.get('plaso_frac', 0):
+                                c['plaso_frac'] = est
+                                changed = True
+                if changed:
+                    _bump_progress()
+                if cancel_event.wait(10):
+                    return
 
         def _per_client_collect(c):
             """Monitor KAPE on one client and export its ZIP."""
@@ -607,7 +656,10 @@ def start_multi_client_timesketch():
                     return
 
                 # Hand off to the Plaso consumer in completion order.
-                plaso_queue.put({**c, 'zip_path': zip_path})
+                # c_ref pins the consumer to the SAME dict instance we
+                # update plaso_frac on — otherwise the spread copy diverges
+                # and the heartbeat would see stale frac values.
+                plaso_queue.put({**c, 'zip_path': zip_path, 'c_ref': c})
                 with state_lock:
                     # Number of clients ahead in the pipeline = the one currently
                     # being processed (if any) + everyone still queued in front
@@ -624,7 +676,8 @@ def start_multi_client_timesketch():
             finally:
                 with state_lock:
                     state['kape_done'] += 1
-                    _bump_progress()
+                    c['kape_frac'] = 1.0
+                _bump_progress()
 
         def _plaso_consumer():
             """Pull one ZIP at a time from the queue and run Plaso + upload."""
@@ -654,6 +707,7 @@ def start_multi_client_timesketch():
                 try:
                     with state_lock:
                         state['plaso_in_flight'] = 1
+                        item['c_ref']['plaso_started_at'] = time.time()
                     update_job(item['flow_id'], {'phase': 'Processing with Plaso + Timesketch import'})
                     add_log_to_run(run_id, f"[Plaso/{item['client_name']}] === Starting Plaso + Timesketch upload ===", "info")
                     settings = {
@@ -698,20 +752,26 @@ def start_multi_client_timesketch():
                     with state_lock:
                         state['plaso_done'] += 1
                         state['plaso_in_flight'] = 0
-                        _bump_progress()
+                        item['c_ref']['plaso_frac'] = 1.0
+                    _bump_progress()
                     plaso_queue.task_done()
 
         def _orchestrator():
             try:
-                # Spawn one collector thread per client + the single consumer.
+                # Spawn one collector thread per client + the single consumer
+                # + a heartbeat that smooths progress mid-phase so the bar
+                # isn't stuck at 2% for the whole KAPE+Plaso runtime.
                 collectors = [threading.Thread(target=_per_client_collect, args=(c,), daemon=True) for c in live_clients]
                 consumer   = threading.Thread(target=_plaso_consumer, daemon=True)
+                heartbeat  = threading.Thread(target=_heartbeat, daemon=True)
                 consumer.start()
+                heartbeat.start()
                 for t in collectors:
                     t.start()
                 for t in collectors:
                     t.join()
                 consumer.join()
+                heartbeat.join(timeout=12)
 
                 if cancel_event.is_set():
                     add_log_to_run(run_id, "Pipeline cancelled by user", "warning")

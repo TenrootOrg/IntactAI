@@ -363,20 +363,40 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                 required_ok = False
                 missing_optional: list = []
 
+                # The local install staged these same four binaries under
+                # modules/nginx/html/downloads/ at install time (see
+                # lib/docker.sh:download_offline_collector_binaries). On a
+                # box that's been installed and is now preparing an offline
+                # upgrade package, the binary is already on disk — using
+                # the local copy makes prepare work air-gapped AND
+                # immunizes it against the upstream curl flakes the user
+                # has been hitting (e.g. v0.76.5-linux-amd64 1-min hang).
+                local_downloads = f"{WORKDIR}/modules/nginx/html/downloads"
+
                 for fname in upstream_binaries:
                     pkg_path = f"{package_dir}/binaries/{fname}"
                     staged_dest = staging_map[fname]
                     os.makedirs(os.path.dirname(staged_dest), exist_ok=True)
-                    url = f"{base_url}/{fname}"
-                    log(f"  Downloading: {fname}", "info")
-                    dl = run_command(
-                        f"curl -L -f --retry 5 --retry-delay 5 --retry-max-time 120 "
-                        f"-o {pkg_path} {url}",
-                        timeout=300, logger=None, run_id=run_id,
-                    )
-                    if dl.get("cancelled"):
-                        return {"success": False, "error": "cancelled", "cancelled": True}
-                    ok = dl['success'] and os.path.exists(pkg_path) and os.path.getsize(pkg_path) > 0
+                    local_src = os.path.join(local_downloads, fname)
+
+                    # Local-first: same binary, no network round-trip.
+                    if os.path.exists(local_src) and os.path.getsize(local_src) > 0:
+                        log(f"  Using local: {fname} ({_format_size(os.path.getsize(local_src))})", "info")
+                        cp = run_command(f"cp {local_src} {pkg_path}", logger=None, run_id=run_id)
+                        if cp.get("cancelled"):
+                            return {"success": False, "error": "cancelled", "cancelled": True}
+                        ok = cp['success'] and os.path.exists(pkg_path) and os.path.getsize(pkg_path) > 0
+                    else:
+                        url = f"{base_url}/{fname}"
+                        log(f"  Downloading: {fname}", "info")
+                        dl = run_command(
+                            f"curl -L -f --retry 5 --retry-delay 5 --retry-max-time 120 "
+                            f"-o {pkg_path} {url}",
+                            timeout=300, logger=None, run_id=run_id,
+                        )
+                        if dl.get("cancelled"):
+                            return {"success": False, "error": "cancelled", "cancelled": True}
+                        ok = dl['success'] and os.path.exists(pkg_path) and os.path.getsize(pkg_path) > 0
                     if not ok:
                         if os.path.exists(pkg_path):
                             os.remove(pkg_path)
