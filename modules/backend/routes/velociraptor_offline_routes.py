@@ -209,8 +209,15 @@ def generate_offline_collector():
                     legacy_version=legacy_version,
                     legacy_source=legacy_source,
                     musl=musl,
+                    run_id=run_id,
                 )
 
+                if result.get('cancelled'):
+                    # request_stop() already wrote the "[Pipeline] Stop
+                    # requested by user" line and flipped status to
+                    # 'cancelled'. Nothing more to do here — leave it
+                    # clean (no success/failure logs).
+                    return
                 if result.get('success'):
                     file_size = result.get('file_size', 0)
                     file_name = result.get('file_name', 'collector')
@@ -232,6 +239,13 @@ def generate_offline_collector():
                     update_run_status(run_id, "failed", progress=0, error=error)
 
             except Exception as e:
+                # Cancellation can surface as an exception (subprocess killed
+                # by cleanup callback). If the workflow is already cancelled,
+                # don't write a failure log — request_stop has the last word.
+                from services.workflow_service import is_cancelled, get_automation_run
+                wf = get_automation_run(run_id) or {}
+                if is_cancelled(run_id) or wf.get('status') == 'cancelled':
+                    return
                 error_msg = str(e)
                 print(f"[OFFLINE] Background generation error: {error_msg}", flush=True)
                 traceback.print_exc()

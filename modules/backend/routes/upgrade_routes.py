@@ -315,6 +315,13 @@ def prepare_upgrade_package():
                     update_run_status(run_id, "failed", progress=0, error=result.get('error'))
 
             except Exception as e:
+                # If the user clicked Stop, the killed subprocess raised
+                # on its way out — that's not a real failure. Let the
+                # 'cancelled' state (already set by request_stop()) stand.
+                from services.workflow_service import is_cancelled, get_automation_run
+                wf = get_automation_run(run_id) or {}
+                if is_cancelled(run_id) or wf.get('status') == 'cancelled':
+                    return
                 add_log_to_run(run_id, f"Package preparation failed: {str(e)}", "error")
                 update_run_status(run_id, "failed", progress=0, error=str(e))
                 import traceback

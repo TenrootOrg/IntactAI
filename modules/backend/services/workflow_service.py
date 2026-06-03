@@ -191,6 +191,16 @@ def add_log_to_run(run_id, log_message, log_level="info"):
     with _get_run_log_lock(run_id):
         workflow = file_get_workflow(run_id)
         if workflow:
+            # Once a workflow is in the terminal 'cancelled' state,
+            # the "[Pipeline] Stop requested by user" warning is the
+            # last word. Any further logs are race-condition residue:
+            # subprocess wrap-up that landed between when the cancel
+            # event fired and when the background thread noticed.
+            # Drop them so the UI shows a clean "cancelled" timeline
+            # instead of confusing "success/failed" lines after Stop.
+            if workflow.get("status") == "cancelled":
+                return
+
             if "logs" not in workflow:
                 workflow["logs"] = []
 
@@ -225,6 +235,15 @@ def update_run_status(run_id, status, progress=None, error=None, details=None, f
     """
     workflow = file_get_workflow(run_id)
     if workflow:
+        # Cancellation is terminal: once request_stop() flips a run to
+        # 'cancelled', the background worker's killed-subprocess
+        # exception will try to mark it 'failed' on the way out. Silently
+        # ignore those late updates so the UI shows the clean cancelled
+        # state instead of a stack trace.
+        current = workflow.get("status")
+        if current == "cancelled" and status != "cancelled":
+            return
+
         # Safety net: refuse to mark a run with logged errors as
         # 'completed' unless the caller explicitly forces it.
         if status == "completed" and not force:

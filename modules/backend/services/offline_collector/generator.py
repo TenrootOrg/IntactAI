@@ -114,7 +114,11 @@ def get_blueprint_as_config(blueprint_id):
 
 def generate_collector(config_id, os_type="windows",
                        legacy=False, legacy_version=None, legacy_source="offline",
-                       musl=False):
+                       musl=False, run_id=None):
+    """`run_id` makes the call honour the workflow's Stop button — between
+    each phase (gRPC setup, collection wait, file copy, binary swap,
+    repack) we check the cancel event and abort cleanly. Without this,
+    Stop only renames the row to 'cancelled' while the work runs on."""
     """Generate an offline collector using Velociraptor's Generic Collector.
 
     The Generic Collector has NO size limit (unlike platform-specific collectors
@@ -143,7 +147,24 @@ def generate_collector(config_id, os_type="windows",
 
     print(f"[OFFLINE] Generating Generic Collector (no size limit) for config={config_id}", flush=True)
 
+    # Cancellation helper — returns True iff the workflow has been Stopped.
+    # Each phase boundary calls this; on True we bail with cancelled=True
+    # so the caller can short-circuit cleanly.
+    def _cancelled():
+        if not run_id:
+            return False
+        try:
+            from services.workflow_service import is_cancelled, get_cancel_event
+            ev = get_cancel_event(run_id)
+            if ev is not None and ev.is_set():
+                return True
+            return bool(is_cancelled(run_id))
+        except Exception:
+            return False
+
     try:
+        if _cancelled():
+            return {"success": False, "cancelled": True, "error": "cancelled"}
         # First try to load as a blueprint (unified forensics system)
         config = get_blueprint_as_config(config_id)
 
@@ -289,6 +310,10 @@ def generate_collector(config_id, os_type="windows",
         files_in_upload = []
 
         while elapsed < max_wait:
+            if _cancelled():
+                try: channel.close()
+                except Exception: pass
+                return {"success": False, "cancelled": True, "error": "cancelled"}
             time.sleep(poll_interval)
             elapsed += poll_interval
 
@@ -360,6 +385,10 @@ def generate_collector(config_id, os_type="windows",
         bundle_dir = os.path.join(COLLECTOR_OUTPUT_DIR, f"bundle_generic_{safe_name}_{int(time.time())}")
         os.makedirs(bundle_dir, exist_ok=True)
 
+        if _cancelled():
+            shutil.rmtree(bundle_dir, ignore_errors=True)
+            return {"success": False, "cancelled": True, "error": "cancelled"}
+
         # Copy the generic collector file
         collector_local = os.path.join(bundle_dir, "collector_config")
         copy_cmd = f"docker cp '{VELOCIRAPTOR_CONTAINER}:{collector_path_in_container}' '{collector_local}'"
@@ -383,6 +412,10 @@ def generate_collector(config_id, os_type="windows",
             velo_src = VELO_CLIENT_PATHS["linux"]
 
         velo_dest = os.path.join(bundle_dir, velo_binary_name)
+
+        if _cancelled():
+            shutil.rmtree(bundle_dir, ignore_errors=True)
+            return {"success": False, "cancelled": True, "error": "cancelled"}
 
         # Try to copy velociraptor binary
         if os.path.exists(velo_src) and os.path.getsize(velo_src) > 1000000:
@@ -553,6 +586,10 @@ echo "============================================"
                 f.write(script_content)
             os.chmod(script_path, 0o755)
 
+        if _cancelled():
+            shutil.rmtree(bundle_dir, ignore_errors=True)
+            return {"success": False, "cancelled": True, "error": "cancelled"}
+
         # Create final ZIP bundle
         output_filename = f"OfflineCollector_{safe_name}_{os_type}.zip"
         output_path = os.path.join(COLLECTOR_OUTPUT_DIR, output_filename)
@@ -575,6 +612,18 @@ echo "============================================"
 
         file_size = os.path.getsize(output_path)
         print(f"[OFFLINE] Verified file ready: {output_filename} ({file_size} bytes)", flush=True)
+
+        # Final cancel check — if the user clicked Stop while this
+        # function was wrapping up (gRPC done, file copy done, zip
+        # done), discard the output and report cancelled. Without
+        # this, the route would log "Collector generated successfully"
+        # AFTER the "Stop requested" line.
+        if _cancelled():
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+            return {"success": False, "cancelled": True, "error": "cancelled"}
 
         return {
             "success": True,
