@@ -62,6 +62,44 @@ TIMESTAMP_FIELDS = [
     # Velociraptor collection timestamps, birth time, etc.
     '_time', '_ts', 'AttrSystemTime', 'AttrTime', 'ExpiryTime',
     'Ctime', 'ctime', 'Btime', 'btime',
+
+    # ─── PRIORITY 7: PIPELINE-ADDED INTERNAL TIMESTAMPS ───
+    # Set by both Azure and on-prem collectors as they tag rows / wrap
+    # findings. Putting them here keeps every LLM prompt's timestamp
+    # format consistent across both pipelines.
+    '_timestamp', '_finding_time',
+
+    # ─── PRIORITY 8: MICROSOFT GRAPH / ENTRA cloud timestamps ───
+    # Names observed in `auditLogs/*`, `signIns`, `directoryAudits`, CA
+    # policy state, federation configs, identity protection. These don't
+    # appear in Velociraptor data so adding them is a no-op for the
+    # on-prem flow.
+    'lastModifiedDateTime', 'LastModifiedDateTime',
+    'modifiedDateTime', 'ModifiedDateTime',
+    'lastSignInDateTime', 'LastSignInDateTime',
+    'signInDateTime', 'SignInDateTime',
+    'lastNonInteractiveSignInDateTime', 'LastNonInteractiveSignInDateTime',
+    'lastPasswordChangeDateTime', 'LastPasswordChangeDateTime',
+    'lastUpdatedDateTime', 'LastUpdatedDateTime',
+    'expirationDateTime', 'ExpirationDateTime',
+    'deletedDateTime', 'DeletedDateTime',
+    'startDateTime', 'StartDateTime',
+    'endDateTime', 'EndDateTime',
+    'requestedDateTime', 'RequestedDateTime',
+    'tokenIssuedAtDateTime', 'TokenIssuedAtDateTime',
+    'validFrom', 'ValidFrom', 'validTo', 'ValidTo',
+    'effectiveDateTime', 'EffectiveDateTime',
+    'completedDateTime', 'CompletedDateTime',
+    'lastDirSyncTime', 'LastDirSyncTime',
+
+    # ─── PRIORITY 9: OFFICE 365 Management API nested timestamps ───
+    # Common in DFIR-O365RC's UAL pulls: AppAccessContext, Teams meeting
+    # events, SharePoint share sessions. Nested inside list elements,
+    # which `normalize_timestamps_recursive` walks via the list-recursion
+    # branch.
+    'TokenIssuedAtTime', 'IssuedAtTime', 'AuthTime',
+    'JoinTime', 'LeaveTime',
+    'StartTimestamp', 'EndTimestamp',
 ]
 
 # Fields that indicate important/interesting findings
@@ -194,19 +232,28 @@ def normalize_timestamp(value):
 
 
 def normalize_timestamps_recursive(row):
-    """Normalize all timestamp fields in a row (including nested objects).
-    Modifies row in-place and returns it."""
-    if not isinstance(row, dict):
-        return row
+    """Normalize all timestamp fields in a row (including nested objects + lists).
+    Modifies row in-place and returns it.
 
-    for key, value in list(row.items()):
-        # Check if this is a timestamp field
-        if key in TIMESTAMP_FIELDS:
-            row[key] = normalize_timestamp(value)
-        # Recurse into nested dicts
-        elif isinstance(value, dict):
-            normalize_timestamps_recursive(value)
-
+    Walks both dict values AND list elements that are dicts. Without the
+    list-walk Azure data with `targetResources[].StartTimestamp` or
+    `ArtifactShareSessions[].EndTimestamp` keep their raw ISO format and
+    leak into the LLM prompt.
+    """
+    if isinstance(row, dict):
+        for key, value in list(row.items()):
+            if key in TIMESTAMP_FIELDS:
+                row[key] = normalize_timestamp(value)
+            elif isinstance(value, dict):
+                normalize_timestamps_recursive(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, (dict, list)):
+                        normalize_timestamps_recursive(item)
+    elif isinstance(row, list):
+        for item in row:
+            if isinstance(item, (dict, list)):
+                normalize_timestamps_recursive(item)
     return row
 
 

@@ -18,6 +18,10 @@ from routes.db_routes import db_bp
 from routes.scheduler_routes import scheduler_bp
 from routes.upload_routes import upload_bp
 from routes.azure_routes import azure_bp
+from routes.aws_routes import aws_bp
+from routes.support_bundle_routes import support_bundle_bp
+from routes.engagement_routes import engagement_bp
+from routes.cve_routes import cve_bp
 
 __all__ = [
     'client_bp',
@@ -35,5 +39,9 @@ __all__ = [
     'db_bp',
     'scheduler_bp',
     'upload_bp',
-    'azure_bp'
+    'azure_bp',
+    'aws_bp',
+    'support_bundle_bp',
+    'engagement_bp',
+    'cve_bp',
 ]

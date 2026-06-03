@@ -27,7 +27,18 @@ def _transform_run(run):
         "updated_at": run.get("updated_at"),
         "logs": run.get("logs", []),
         "details": run.get("details", {}),
-        "error": run.get("error")
+        "error": run.get("error"),
+        # Auto-incremented by add_log_to_run() whenever level='error'.
+        # Drives the small "N errors" badge in the Workflows tab so
+        # operators can quickly see runs that finished with errors —
+        # even when status='completed' was forced through with force=True.
+        "error_count": int(run.get("error_count") or 0),
+        # Observability fields surfaced for the dashboard. Each is a JSON
+        # blob persisted by the pipeline; the frontend renders these into
+        # per-stage timing bar, LLM cost summary, and per-rule detection tally.
+        "phase_timings": run.get("phase_timings"),
+        "llm_metrics": run.get("llm_metrics"),
+        "sigma_rule_tally": run.get("sigma_rule_tally"),
     }
 
 

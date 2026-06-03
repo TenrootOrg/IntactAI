@@ -89,7 +89,11 @@ def create_tables():
             phase TEXT,
             error TEXT,
             created_at TEXT,
-            updated_at TEXT
+            updated_at TEXT,
+            phase_timings TEXT,
+            llm_metrics TEXT,
+            sigma_rule_tally TEXT,
+            error_count INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS blueprints_velociraptor (
@@ -171,6 +175,24 @@ def create_tables():
         );
     """)
     conn.commit()
+
+    # Lightweight schema migrations — ALTER TABLE columns added after the
+    # initial CREATE TABLE shipped. SQLite has no IF NOT EXISTS for ADD
+    # COLUMN, so we introspect via PRAGMA table_info and skip if present.
+    _ensure_column(conn, "workflows", "error_count", "INTEGER DEFAULT 0")
+
+
+def _ensure_column(conn, table: str, column: str, decl: str):
+    """Add `column decl` to `table` if it isn't already present.
+    Idempotent — safe to call on every startup."""
+    try:
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            conn.commit()
+            print(f"[STORAGE] Added column {table}.{column}", flush=True)
+    except Exception as e:
+        print(f"[STORAGE] Could not ensure column {table}.{column}: {e}", flush=True)
 
 
 def migrate_from_json():
@@ -364,6 +386,24 @@ def migrate_add_db_overwrite_column():
         print(f"[STORAGE] Error adding db_overwrite column: {e}", flush=True)
 
 
+def migrate_add_workflow_observability_columns():
+    """Add phase_timings/llm_metrics/sigma_rule_tally columns to workflows."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute("PRAGMA table_info(workflows)")
+        columns = {row[1] for row in cursor.fetchall()}
+        added = []
+        for col in ('phase_timings', 'llm_metrics', 'sigma_rule_tally'):
+            if col not in columns:
+                conn.execute(f"ALTER TABLE workflows ADD COLUMN {col} TEXT")
+                added.append(col)
+        if added:
+            conn.commit()
+            print(f"[STORAGE] Added workflow observability columns: {', '.join(added)}", flush=True)
+    except Exception as e:
+        print(f"[STORAGE] Error adding workflow observability columns: {e}", flush=True)
+
+
 def init_storage() -> bool:
     """Initialize SQLite database, create tables, and migrate from JSON if needed"""
     try:
@@ -372,6 +412,7 @@ def init_storage() -> bool:
         migrate_from_json()
         migrate_agentic_to_velociraptor()
         migrate_add_db_overwrite_column()
+        migrate_add_workflow_observability_columns()
         return True
     except Exception as e:
         print(f"[STORAGE] Failed to initialize: {e}", flush=True)

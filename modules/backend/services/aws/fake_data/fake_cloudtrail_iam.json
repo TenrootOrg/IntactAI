@@ -1,0 +1,107 @@
+[
+  {
+    "_note": "Fixture: admin creates an access key FOR ANOTHER user (backdoor). Designed to trigger SIGMA rule aws_iam_backdoor_users_keys.yml — selection_source matches and filter fails because admin.user != bob.smith.",
+    "eventTime": "2026-05-13T08:17:01Z",
+    "eventName": "CreateAccessKey",
+    "eventSource": "iam.amazonaws.com",
+    "awsRegion": "us-east-1",
+    "sourceIPAddress": "185.220.101.45",
+    "userIdentity": {
+      "type": "IAMUser",
+      "principalId": "AIDA4EXAMPLEADMIN",
+      "arn": "arn:aws:iam::123456789012:user/admin.user",
+      "accountId": "123456789012",
+      "userName": "admin.user"
+    },
+    "requestParameters": {
+      "userName": "bob.smith"
+    },
+    "responseElements": {
+      "accessKey": {
+        "userName": "bob.smith",
+        "accessKeyId": "AKIAIOSFODNN7EXAMPLE",
+        "status": "Active",
+        "createDate": "2026-05-13T08:17:01Z"
+      }
+    },
+    "eventID": "44444444-5555-6666-7777-888888888888"
+  },
+  {
+    "_note": "Privilege escalation: AttachUserPolicy of AdministratorAccess to a normal user.",
+    "eventTime": "2026-05-13T08:18:34Z",
+    "eventName": "AttachUserPolicy",
+    "eventSource": "iam.amazonaws.com",
+    "awsRegion": "us-east-1",
+    "sourceIPAddress": "185.220.101.45",
+    "userIdentity": {
+      "type": "IAMUser",
+      "arn": "arn:aws:iam::123456789012:user/admin.user",
+      "accountId": "123456789012",
+      "userName": "admin.user"
+    },
+    "requestParameters": {
+      "userName": "bob.smith",
+      "policyArn": "arn:aws:iam::aws:policy/AdministratorAccess"
+    },
+    "eventID": "55555555-6666-7777-8888-999999999999"
+  },
+  {
+    "_note": "Defense evasion: StopLogging on the main CloudTrail trail.",
+    "eventTime": "2026-05-13T08:21:55Z",
+    "eventName": "StopLogging",
+    "eventSource": "cloudtrail.amazonaws.com",
+    "awsRegion": "us-east-1",
+    "sourceIPAddress": "185.220.101.45",
+    "userIdentity": {
+      "type": "IAMUser",
+      "arn": "arn:aws:iam::123456789012:user/admin.user",
+      "accountId": "123456789012",
+      "userName": "admin.user"
+    },
+    "requestParameters": {
+      "name": "prod-org-trail"
+    },
+    "eventID": "66666666-7777-8888-9999-aaaaaaaaaaaa"
+  },
+  {
+    "_note": "CreateUser — new IAM user spun up shortly after compromise.",
+    "eventTime": "2026-05-13T08:25:42Z",
+    "eventName": "CreateUser",
+    "eventSource": "iam.amazonaws.com",
+    "awsRegion": "us-east-1",
+    "sourceIPAddress": "185.220.101.45",
+    "userIdentity": {
+      "type": "IAMUser",
+      "arn": "arn:aws:iam::123456789012:user/admin.user",
+      "accountId": "123456789012",
+      "userName": "admin.user"
+    },
+    "requestParameters": {
+      "userName": "service-backup-2026"
+    },
+    "responseElements": {
+      "user": {
+        "userName": "service-backup-2026",
+        "userId": "AIDA4EXAMPLENEW",
+        "arn": "arn:aws:iam::123456789012:user/service-backup-2026",
+        "createDate": "2026-05-13T08:25:42Z"
+      }
+    },
+    "eventID": "77777777-8888-9999-aaaa-bbbbbbbbbbbb"
+  },
+  {
+    "_note": "DeleteSAMLProvider — defense evasion, breaks federated auth.",
+    "eventTime": "2026-05-13T08:29:10Z",
+    "eventName": "DeleteSAMLProvider",
+    "eventSource": "iam.amazonaws.com",
+    "awsRegion": "us-east-1",
+    "userIdentity": {
+      "type": "IAMUser",
+      "arn": "arn:aws:iam::123456789012:user/admin.user"
+    },
+    "requestParameters": {
+      "sAMLProviderArn": "arn:aws:iam::123456789012:saml-provider/CorporateSSO"
+    },
+    "eventID": "88888888-9999-aaaa-bbbb-cccccccccccc"
+  }
+]

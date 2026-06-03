@@ -8,7 +8,7 @@ import os
 import json
 import shutil
 from datetime import datetime
-from typing import Dict, Callable, List
+from typing import Dict, Callable, List, Optional
 
 from .base import run_command, WORKDIR, HOST_PATH
 
@@ -32,6 +32,15 @@ DOCKER_IMAGES = {
         ('ghcr.io/dfir-iris/iriswebapp_app:{version}', 'iris-app-{version}.tar'),
         ('ghcr.io/dfir-iris/iriswebapp_nginx:{version}', 'iris-nginx-{version}.tar'),
         ('ghcr.io/dfir-iris/iriswebapp_db:{version}', 'iris-db-{version}.tar'),
+    ],
+    'aws': [
+        # Prowler image for AWS posture scans (run on demand, no live container)
+        ('toniblyx/prowler:{version}', 'prowler-{version}.tar'),
+    ],
+    'azure': [
+        # DFIR-O365RC image for Azure Unified Audit Log (run on demand). Upstream
+        # only ships ':latest', so {version} is normally 'latest'.
+        ('anssi/dfir-o365rc:{version}', 'dfir-o365rc-{version}.tar'),
     ],
 }
 
@@ -57,7 +66,8 @@ def _get_dir_size(path: str) -> int:
 
 
 def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
-                            logger: Callable, progress_interval: int = 10) -> Dict:
+                            logger: Callable, progress_interval: int = 10,
+                            run_id: Optional[str] = None) -> Dict:
     """Compress directory to tar.gz with progress updates.
 
     Args:
@@ -66,6 +76,9 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
         output_file: Output tar.gz path
         logger: Logging function
         progress_interval: Seconds between progress updates
+        run_id: When set, the tar subprocess is terminated immediately if
+                the workflow's Stop button is clicked (otherwise tar on
+                a ~1 GB package can ignore Stop for 30+ seconds).
 
     Returns:
         Dict with success status and error if failed
@@ -89,11 +102,40 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
         stderr=subprocess.PIPE
     )
 
+    # Wire Stop button → SIGTERM the tar subprocess. Without this, an
+    # operator clicking Stop watches the workflow row flip to
+    # "cancelled" but tar keeps writing the archive for tens of
+    # seconds to several minutes depending on package size.
+    cancel_event = None
+    if run_id:
+        try:
+            from services.workflow_service import (
+                get_cancel_event, register_cleanup, terminate_subprocess,
+            )
+            cancel_event = get_cancel_event(run_id)
+            if cancel_event is not None:
+                register_cleanup(run_id, lambda p=process: terminate_subprocess(p))
+        except Exception:
+            cancel_event = None
+
     last_update = time.time()
     last_size = 0
 
     # Poll for progress
     while process.poll() is None:
+        if cancel_event is not None and cancel_event.is_set():
+            log("  Compression cancelled by user", "warning")
+            try:
+                from services.workflow_service import terminate_subprocess as _ts
+                _ts(process)
+            except Exception:
+                process.terminate()
+            try:
+                os.remove(output_file)
+            except OSError:
+                pass
+            return {"success": False, "error": "cancelled", "cancelled": True}
+
         time.sleep(1)
 
         now = time.time()
@@ -123,20 +165,31 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
     return {"success": True}
 
 
-def _pull_and_save_image(image: str, output_path: str, logger: Callable) -> bool:
-    """Pull a Docker image and save it to a tar file."""
+def _pull_and_save_image(image: str, output_path: str, logger: Callable,
+                          run_id: Optional[str] = None) -> bool:
+    """Pull a Docker image and save it to a tar file.
+
+    `run_id` makes both subprocesses (docker pull, docker save)
+    interruptible — a Stop click during a 20-minute pull terminates
+    the docker CLI within a second instead of letting it run to
+    completion and only then noticing the cancel flag.
+    """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
     # Pull the image with output shown
     log(f"  Pulling {image}...", "info")
-    result = run_command(f"docker pull {image}", timeout=1200, logger=log)
+    result = run_command(f"docker pull {image}", timeout=1200, logger=log, run_id=run_id)
+    if result.get("cancelled"):
+        return False
     if not result['success']:
         log(f"  Failed to pull {image}: {result.get('error', '')[:200]}", "error")
         return False
 
     # Save the image (increased timeout for large images)
     log(f"  Saving to {os.path.basename(output_path)}...", "info")
-    result = run_command(f"docker save -o {output_path} {image}", timeout=1200, logger=None)
+    result = run_command(f"docker save -o {output_path} {image}", timeout=1200, logger=None, run_id=run_id)
+    if result.get("cancelled"):
+        return False
     if not result['success']:
         log(f"  Failed to save {image}: {result.get('error', '')[:200]}", "error")
         return False
@@ -253,10 +306,18 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                 manifest["contents"]["include_source"] = True
 
             elif module == 'velociraptor':
-                # Download Velociraptor binary and build image for air-gap support
-                log("Downloading Velociraptor binary...", "info")
+                # Velociraptor packaging — internet REQUIRED here on the
+                # prepare side. The Dockerfile is pure COPY; all four
+                # binaries (linux server + mac/win clients) must be in
+                # the build context before `docker compose build`. We
+                # download them upstream, stage them into the module
+                # build context AND drop a copy into the package's
+                # binaries/ dir so the offline upgrade can re-stage on
+                # the target without network. If the build succeeds we
+                # also bake the image into images/<version>.tar so the
+                # target can `docker load` directly.
+                log("Downloading Velociraptor binaries (4 — linux server + mac/win clients)...", "info")
 
-                # Parse version
                 clean_version = version.lstrip('v')
                 parts = clean_version.split('.')
 
@@ -265,65 +326,148 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                     continue
 
                 release_tag = f"v{parts[0]}.{parts[1]}"
-                binary_name = f"velociraptor-v{clean_version}-linux-amd64"
-                url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}/{binary_name}"
+                base_url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}"
+                velo_tag = f"{parts[0]}.{parts[1]}"
+
+                # The four upstream filenames the Dockerfile needs.
+                # Keep them aligned with `_velociraptor_binary_set` in
+                # services/upgrade/velociraptor.py.
+                upstream_binaries = [
+                    f"velociraptor-v{clean_version}-linux-amd64",
+                    f"velociraptor-v{clean_version}-darwin-amd64",
+                    f"velociraptor-v{clean_version}-windows-amd64.exe",
+                    f"velociraptor-v{clean_version}-windows-amd64.msi",
+                ]
+
+                # Module build context dirs (mirror the COPY paths in
+                # modules/velociraptor/Dockerfile).
+                velo_dir = "/app/workdir/modules/velociraptor"
+                staging_map = {
+                    upstream_binaries[0]: os.path.join(velo_dir, 'clients', 'linux',   'velociraptor'),
+                    upstream_binaries[1]: os.path.join(velo_dir, 'clients', 'mac',     'velociraptor_client'),
+                    upstream_binaries[2]: os.path.join(velo_dir, 'clients', 'windows', 'velociraptor_client.exe'),
+                    upstream_binaries[3]: os.path.join(velo_dir, 'clients', 'windows', 'velociraptor_client.msi'),
+                }
 
                 log(f"  Version: {clean_version}", "info")
                 log(f"  Release tag: {release_tag}", "info")
-                log(f"  URL: {url}", "info")
 
-                binary_path = f"{package_dir}/binaries/{binary_name}"
-                result = run_command(
-                    f"curl -L -f -o {binary_path} {url}",
-                    timeout=300,
-                    logger=None
-                )
+                # Only the linux server binary is REQUIRED. Mac/Windows
+                # clients are convenience artifacts the entrypoint
+                # tries to repack with server config; if upstream
+                # doesn't publish them for this point release (e.g.
+                # v0.75.6 has no darwin-amd64), we stage zero-byte
+                # placeholders so the Dockerfile COPY still succeeds
+                # and the runtime repack silently no-ops on them.
+                required_binary = upstream_binaries[0]  # the linux-amd64 one
+                required_ok = False
+                missing_optional: list = []
 
-                if result['success']:
-                    os.chmod(binary_path, 0o755)
-                    size = os.path.getsize(binary_path)
-                    log(f"  Downloaded ({_format_size(size)})", "success")
-                    manifest["versions"]["velociraptor"] = clean_version
-                    manifest["contents"]["binaries"].append(binary_name)
+                # The local install staged these same four binaries under
+                # modules/nginx/html/downloads/ at install time (see
+                # lib/docker.sh:download_offline_collector_binaries). On a
+                # box that's been installed and is now preparing an offline
+                # upgrade package, the binary is already on disk — using
+                # the local copy makes prepare work air-gapped AND
+                # immunizes it against the upstream curl flakes the user
+                # has been hitting (e.g. v0.76.5-linux-amd64 1-min hang).
+                local_downloads = f"{WORKDIR}/modules/nginx/html/downloads"
 
-                    # Build and export image for air-gap support
-                    log("Building Velociraptor image for air-gap...", "info")
-                    velo_dir = "/app/workdir/modules/velociraptor"
-                    velo_bin_dest = os.path.join(velo_dir, "velociraptor", "velociraptor")
+                for fname in upstream_binaries:
+                    pkg_path = f"{package_dir}/binaries/{fname}"
+                    staged_dest = staging_map[fname]
+                    os.makedirs(os.path.dirname(staged_dest), exist_ok=True)
+                    local_src = os.path.join(local_downloads, fname)
 
-                    # Copy binary to velociraptor directory for build
-                    run_command(f"cp {binary_path} {velo_bin_dest}", logger=None)
-                    run_command(f"chmod +x {velo_bin_dest}", logger=None)
-
-                    # Build image with specific tag
-                    # Use host paths for docker compose (container paths don't work for build context)
-                    host_velo_dir = velo_dir.replace(WORKDIR, HOST_PATH, 1)
-                    compose_file = f"{host_velo_dir}/docker-compose.yaml"
-
-                    image_tag = f"velociraptor-server:{clean_version}"
-                    velo_tag = f"{parts[0]}.{parts[1]}"
-                    build_result = run_command(
-                        f"VELOCIRAPTOR_VERSION={clean_version} VELOCIRAPTOR_TAG={velo_tag} "
-                        f"docker compose -f {compose_file} --project-directory {host_velo_dir} build "
-                        f"--build-arg VELOCIRAPTOR_VERSION={clean_version} --build-arg VELOCIRAPTOR_TAG={velo_tag}",
-                        timeout=600, logger=None
-                    )
-
-                    if build_result['success']:
-                        # Export the built image
-                        output_path = f"{package_dir}/images/velociraptor-{clean_version}.tar"
-                        save_result = run_command(f"docker save -o {output_path} {image_tag}", timeout=300, logger=None)
-                        if save_result['success']:
-                            img_size = os.path.getsize(output_path)
-                            log(f"  Image exported ({_format_size(img_size)})", "success")
-                            manifest["contents"]["images"].append(f"velociraptor-{clean_version}.tar")
-                        else:
-                            log(f"  Failed to export image: {save_result.get('error', '')[:100]}", "warning")
+                    # Local-first: same binary, no network round-trip.
+                    if os.path.exists(local_src) and os.path.getsize(local_src) > 0:
+                        log(f"  Using local: {fname} ({_format_size(os.path.getsize(local_src))})", "info")
+                        cp = run_command(f"cp {local_src} {pkg_path}", logger=None, run_id=run_id)
+                        if cp.get("cancelled"):
+                            return {"success": False, "error": "cancelled", "cancelled": True}
+                        ok = cp['success'] and os.path.exists(pkg_path) and os.path.getsize(pkg_path) > 0
                     else:
-                        log(f"  Failed to build image: {build_result.get('error', '')[:100]}", "warning")
-                        log("  Binary included but image not built - offline upgrade will require network", "warning")
+                        url = f"{base_url}/{fname}"
+                        log(f"  Downloading: {fname}", "info")
+                        dl = run_command(
+                            f"curl -L -f --retry 5 --retry-delay 5 --retry-max-time 120 "
+                            f"-o {pkg_path} {url}",
+                            timeout=300, logger=None, run_id=run_id,
+                        )
+                        if dl.get("cancelled"):
+                            return {"success": False, "error": "cancelled", "cancelled": True}
+                        ok = dl['success'] and os.path.exists(pkg_path) and os.path.getsize(pkg_path) > 0
+                    if not ok:
+                        if os.path.exists(pkg_path):
+                            os.remove(pkg_path)
+                        if fname == required_binary:
+                            log(f"  Failed to download REQUIRED {fname}: {dl.get('error','')[:120]}", "error")
+                            break
+                        log(f"  {fname} unavailable upstream — using empty placeholder", "warning")
+                        # zero-byte file in both the package and the
+                        # build-context staging dir, so the Dockerfile
+                        # COPY succeeds offline too.
+                        open(pkg_path, 'wb').close()
+                        open(staged_dest, 'wb').close()
+                        missing_optional.append(fname)
+                        continue
+
+                    if not fname.endswith('.msi'):
+                        os.chmod(pkg_path, 0o755)
+                    log(f"  Done ({_format_size(os.path.getsize(pkg_path))})", "success")
+                    manifest["contents"]["binaries"].append(fname)
+
+                    run_command(f"cp {pkg_path} {staged_dest}", logger=None)
+                    if not fname.endswith('.msi'):
+                        run_command(f"chmod +x {staged_dest}", logger=None)
+                    if fname == required_binary:
+                        required_ok = True
+
+                if not required_ok:
+                    log("  Required linux server binary unavailable — skipping image bake.", "error")
+                    log("  Target machines will fail offline upgrade until the package is re-prepared.", "warning")
+                    continue
+                if missing_optional:
+                    log(f"  Note: placeholder(s) used for {len(missing_optional)} client binary(ies): {', '.join(missing_optional)}",
+                        "warning")
+
+                manifest["versions"]["velociraptor"] = clean_version
+
+                # Build the image with the now-staged binaries. The
+                # Dockerfile is COPY-only, so this is fast (~1s) and
+                # has zero network dependencies. If it still fails,
+                # something is structurally wrong (e.g., base image
+                # missing in local Docker), not a network issue.
+                log("Baking Velociraptor image for the target (offline-safe build)...", "info")
+                host_velo_dir = velo_dir.replace(WORKDIR, HOST_PATH, 1)
+                compose_file = f"{host_velo_dir}/docker-compose.yaml"
+                image_tag = f"velociraptor-server:{clean_version}"
+                build_result = run_command(
+                    f"VELOCIRAPTOR_VERSION={clean_version} VELOCIRAPTOR_TAG={velo_tag} "
+                    f"docker compose -f {compose_file} --project-directory {host_velo_dir} build "
+                    f"--build-arg VELOCIRAPTOR_VERSION={clean_version} --build-arg VELOCIRAPTOR_TAG={velo_tag}",
+                    timeout=600, logger=None, run_id=run_id,
+                )
+                if build_result.get("cancelled"):
+                    return {"success": False, "error": "cancelled", "cancelled": True}
+                if build_result['success']:
+                    output_path = f"{package_dir}/images/velociraptor-{clean_version}.tar"
+                    save_result = run_command(
+                        f"docker save -o {output_path} {image_tag}",
+                        timeout=300, logger=None, run_id=run_id,
+                    )
+                    if save_result.get("cancelled"):
+                        return {"success": False, "error": "cancelled", "cancelled": True}
+                    if save_result['success']:
+                        img_size = os.path.getsize(output_path)
+                        log(f"  Image exported ({_format_size(img_size)})", "success")
+                        manifest["contents"]["images"].append(f"velociraptor-{clean_version}.tar")
+                    else:
+                        log(f"  Failed to export image: {save_result.get('error', '')[:120]}", "warning")
+                        log("  Target will rebuild locally from the staged binaries (still offline-safe).", "info")
                 else:
-                    log(f"  Failed to download: {result.get('error', '')[:100]}", "error")
+                    log(f"  Failed to build image: {build_result.get('error', '')[:160]}", "warning")
+                    log("  Target will rebuild locally from the staged binaries (still offline-safe).", "info")
 
             elif module in DOCKER_IMAGES:
                 # Pull and save Docker images
@@ -332,10 +476,54 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                     output_name = output_template.format(version=version)
                     output_path = f"{package_dir}/images/{output_name}"
 
-                    if _pull_and_save_image(image, output_path, log):
+                    if _pull_and_save_image(image, output_path, log, run_id=run_id):
                         manifest["contents"]["images"].append(output_name)
+                    # Honor cancel between images (fast-exit on Stop).
+                    try:
+                        from services.workflow_service import is_cancelled
+                        if is_cancelled(run_id):
+                            return {"success": False, "error": "cancelled", "cancelled": True}
+                    except Exception:
+                        pass
 
                 manifest["versions"][module] = version
+
+                # Timesketch-specific: bundle alembic migrations into the package
+                # so the offline upgrade doesn't need internet access. The
+                # installed Timesketch wheel doesn't ship migrations/; fetching
+                # from GitHub at upgrade time defeats the offline guarantee.
+                if module == 'timesketch':
+                    log("Bundling Timesketch alembic migrations...", "info")
+                    mig_url = f"https://github.com/google/timesketch/archive/refs/tags/{version}.tar.gz"
+                    src_tarball = f"{package_dir}/_ts_src_{version}.tar.gz"
+                    dl = run_command(f"curl -fLsS -o {src_tarball} {mig_url}", timeout=180, logger=None, run_id=run_id)
+                    if dl.get("cancelled"):
+                        return {"success": False, "error": "cancelled", "cancelled": True}
+                    if not dl['success'] or not os.path.exists(src_tarball) or os.path.getsize(src_tarball) < 1024:
+                        log(f"  Failed to download Timesketch source for migrations from {mig_url}", "warning")
+                        log("  Offline upgrade may fall back to GitHub for migrations at apply time", "warning")
+                    else:
+                        ts_mig_dir = f"{package_dir}/migrations/timesketch"
+                        os.makedirs(ts_mig_dir, exist_ok=True)
+                        # --strip-components=3 drops `timesketch-<ver>/timesketch/migrations/`
+                        # so extracted contents land as `versions/`, `env.py`,
+                        # `alembic.ini` etc. directly under ts_mig_dir — the
+                        # layout tsctl's `-d` flag expects.
+                        extract = run_command(
+                            f"tar -xzf {src_tarball} -C {ts_mig_dir} --wildcards "
+                            f"--strip-components=3 '*/timesketch/migrations/*'",
+                            timeout=60, logger=None
+                        )
+                        try:
+                            os.remove(src_tarball)
+                        except Exception:
+                            pass
+                        if extract['success'] and os.path.isdir(f"{ts_mig_dir}/versions"):
+                            mig_count = len([f for f in os.listdir(f"{ts_mig_dir}/versions") if f.endswith('.py')])
+                            log(f"  Migrations bundled ({mig_count} revision files)", "success")
+                            manifest["contents"].setdefault("migrations", []).append("timesketch")
+                        else:
+                            log(f"  Failed to extract migrations from source tarball", "warning")
             else:
                 log(f"  Unknown module: {module}", "warning")
 
@@ -365,9 +553,12 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
             source_name=package_name,
             output_file=output_file,
             logger=log,
-            progress_interval=10
+            progress_interval=10,
+            run_id=run_id,
         )
 
+        if result.get("cancelled"):
+            return {"success": False, "error": "cancelled", "cancelled": True}
         if not result['success']:
             raise Exception(f"Failed to create archive: {result.get('error', '')[:200]}")
 

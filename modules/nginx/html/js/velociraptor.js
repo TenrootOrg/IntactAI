@@ -338,7 +338,12 @@ async function deleteOfflineConfig(configId) {
 
 async function generateOfflineCollector() {
     const configId = document.getElementById('offline-gen-config').value;
-    const os = document.getElementById('offline-gen-os').value;
+    // The radio group encodes both OS and variant in a single value
+    // formatted "os:variant" (e.g. "linux:musl"). Six valid pairs
+    // total — see the index.html "Target build" block. No JS filtering
+    // is needed because the impossible combos simply aren't listed.
+    const targetVal = document.querySelector('input[name="offline-gen-target"]:checked')?.value || 'windows:standard';
+    const [os, variant] = targetVal.split(':');
 
     if (!configId) {
         alert('Please select a configuration');
@@ -347,13 +352,27 @@ async function generateOfflineCollector() {
 
     const statusEl = document.getElementById('offline-gen-status');
     statusEl.classList.remove('hidden');
-    statusEl.innerHTML = '<span class="text-yellow-400">Starting collector generation...</span>';
+    const variantTag = variant === 'standard'
+        ? ''
+        : ` <span class="text-${variant === 'legacy' ? 'purple' : 'orange'}-400">(${variant})</span>`;
+    statusEl.innerHTML = `<span class="text-yellow-400">Starting collector generation for ${os}...</span>${variantTag}`;
 
     try {
+        // Always use the install.sh-bundled binary (source=offline). The
+        // backend still accepts an `online` mode for power-users hitting
+        // the API directly, but the UI doesn't expose it — operators kept
+        // hitting the GitHub button by accident.
+        const body = { config_id: configId, os: os };
+        if (variant === 'legacy') {
+            body.legacy = true;
+            body.legacy_source = 'offline';
+        } else if (variant === 'musl') {
+            body.musl = true;
+        }
         const response = await fetch('/api/velociraptor/offline/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ config_id: configId, os: os })
+            body: JSON.stringify(body)
         });
 
         const data = await response.json();

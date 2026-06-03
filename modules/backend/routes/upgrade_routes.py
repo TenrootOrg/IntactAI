@@ -68,7 +68,7 @@ def get_upgrade_status():
         latest = get_latest_versions()
 
         versions = {}
-        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'intact']:
+        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure', 'intact']:
             versions[module] = {
                 'latest': latest.get(module, 'unknown')
             }
@@ -159,7 +159,7 @@ def start_offline_upgrade():
                     # Track progress based on module completion messages
                     if level == "success" and " upgrade completed" in msg:
                         first_word = msg.split()[0] if msg else ""
-                        if first_word.isupper() and first_word in ["ELK", "TIMESKETCH", "PLASO", "IRIS", "VELOCIRAPTOR", "Intact.AI"]:
+                        if first_word.isupper() and first_word in ["ELK", "TIMESKETCH", "PLASO", "IRIS", "VELOCIRAPTOR", "AWS", "AZURE", "Intact.AI"]:
                             completed_modules[0] += 1
                             # Estimate 6 modules max, progress from 5% to 95%
                             progress = 5 + min(completed_modules[0] * 15, 90)
@@ -221,6 +221,14 @@ def prepare_upgrade_package():
         if not modules:
             return jsonify({"error": "No modules selected for package"}), 400
 
+        # NOTE: no downgrade check here on purpose. The prepare-side
+        # machine is often DIFFERENT from the target — a build server
+        # at 0.76.5 may legitimately prepare a 0.75.6 package destined
+        # for a customer who's still on 0.74.0. The downgrade guard
+        # lives in services/upgrade/velociraptor.py where it checks
+        # the TARGET's .env at apply time, which is the only point
+        # where "current vs requested" has a meaningful answer.
+
         # Create workflow run
         run_id = create_automation_run(
             automation_type="prepare_package",
@@ -241,6 +249,8 @@ def prepare_upgrade_package():
         # - Plaso: 1 image
         # - IRIS: 2 images (app, nginx)
         # - Velociraptor: 1 binary download
+        # - AWS (Prowler): 1 image
+        # - Azure (DFIR-O365RC): 1 image
         # - Intact.AI: 2 source copies (backend, frontend)
         # Plus: manifest (1) + archive (1)
         steps_per_module = {
@@ -249,6 +259,8 @@ def prepare_upgrade_package():
             'plaso': 1,
             'iris': 2,
             'velociraptor': 1,
+            'aws': 1,
+            'azure': 1,
             'intact': 2
         }
         total_steps = sum(steps_per_module.get(m, 1) for m in modules.keys()) + 2  # +2 for manifest and archive
@@ -303,6 +315,13 @@ def prepare_upgrade_package():
                     update_run_status(run_id, "failed", progress=0, error=result.get('error'))
 
             except Exception as e:
+                # If the user clicked Stop, the killed subprocess raised
+                # on its way out — that's not a real failure. Let the
+                # 'cancelled' state (already set by request_stop()) stand.
+                from services.workflow_service import is_cancelled, get_automation_run
+                wf = get_automation_run(run_id) or {}
+                if is_cancelled(run_id) or wf.get('status') == 'cancelled':
+                    return
                 add_log_to_run(run_id, f"Package preparation failed: {str(e)}", "error")
                 update_run_status(run_id, "failed", progress=0, error=str(e))
                 import traceback

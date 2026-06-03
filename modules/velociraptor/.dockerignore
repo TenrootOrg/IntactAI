@@ -1,0 +1,27 @@
+# Slim the build context for `docker compose build`. The Velociraptor
+# module dir holds a runtime data subdirectory (velociraptor/) and
+# config files that have nothing to do with the image being built.
+# Everything the Dockerfile actually COPYs lives under `clients/` and
+# is listed explicitly below.
+
+# Runtime data — server artifact definitions, generated state files.
+# These are mounted into the running container via named volumes,
+# never copied into the image.
+velociraptor/
+
+# Config templates only used by the host-side installer scripts.
+config/
+
+# Operator scripts that the orchestrator runs, not the build.
+create_msi_clients.py
+get_clients.sh
+repack_clients.vql
+repack_msi_fix.sh
+
+# Environment files — context-specific, must not bake into an image.
+.env*
+
+# Editor / OS junk.
+*.swp
+.DS_Store
+__pycache__/

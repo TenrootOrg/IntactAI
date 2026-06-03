@@ -18,11 +18,21 @@ HOST_PATH = os.environ.get('INTACT_HOST_PATH', WORKDIR)
 MODULES_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def run_command(cmd: str, cwd: str = None, timeout: int = 300, logger: Callable = None) -> Dict:
+def run_command(cmd: str, cwd: str = None, timeout: int = 300, logger: Callable = None,
+                run_id: Optional[str] = None) -> Dict:
     """Run a shell command and return result.
 
     For docker compose commands, cwd should be the WORKDIR (container) path.
     The --project-directory flag with HOST_PATH is added automatically for compose commands.
+
+    When `run_id` is supplied, the subprocess is launched with Popen and
+    polled against the workflow's cancel event. If the operator clicks
+    Stop, the subprocess is SIGTERM'd (then SIGKILL'd) within ~1 second
+    and the call returns with success=False, error='cancelled'. Without
+    this, a long-running `docker pull` / `docker save` / `tar` would
+    block the workflow thread for minutes and ignore the cancel — which
+    is what made the Stop button feel broken on prepare_package and
+    download-tools.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     try:
@@ -34,6 +44,55 @@ def run_command(cmd: str, cwd: str = None, timeout: int = 300, logger: Callable 
                 cwd = None
 
         log(f"  Running: {cmd[:80]}...", "info")
+
+        # Cancellation-aware path: Popen + poll the cancel event every
+        # second so Stop is honoured DURING long-running subprocesses
+        # (docker pull, docker save, tar), not just between them.
+        if run_id:
+            try:
+                from services.workflow_service import (
+                    get_cancel_event, register_cleanup, terminate_subprocess,
+                )
+                cancel_event = get_cancel_event(run_id)
+            except Exception:
+                cancel_event = None
+            # Fall through to the blocking path if no event is registered
+            # for this run_id — keeps behaviour identical for callers that
+            # opt-in but happen to not have a registered run.
+            if cancel_event is not None:
+                process = subprocess.Popen(
+                    cmd, shell=True, cwd=cwd,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )
+                # Register cleanup so request_stop() can SIGTERM us instantly
+                # even before our next poll tick — terminate_subprocess is
+                # idempotent + safe-on-already-exited.
+                try:
+                    register_cleanup(run_id, lambda p=process: terminate_subprocess(p))
+                except Exception:
+                    pass
+
+                # Poll the event every second; check process every iter too.
+                # `timeout` still acts as a hard ceiling.
+                import time as _time
+                start = _time.time()
+                while process.poll() is None:
+                    if cancel_event.is_set():
+                        log("  Command cancelled by user", "warning")
+                        terminate_subprocess(process)
+                        return {"success": False, "error": "cancelled", "cancelled": True}
+                    if _time.time() - start > timeout:
+                        log(f"  Command timed out after {timeout}s", "error")
+                        terminate_subprocess(process)
+                        return {"success": False, "error": f"Command timed out after {timeout}s"}
+                    _time.sleep(1.0)
+                stdout, stderr = process.communicate()
+                if process.returncode != 0:
+                    log(f"  Command failed: {(stderr or '')[:200]}", "warning")
+                    return {"success": False, "error": stderr or "", "stdout": stdout or ""}
+                return {"success": True, "stdout": stdout or "", "stderr": stderr or ""}
+
+        # Legacy blocking path (callers that don't care about cancel).
         result = subprocess.run(
             cmd,
             shell=True,
@@ -218,22 +277,70 @@ def get_current_versions() -> Dict:
 
 
 def get_latest_versions() -> Dict:
-    """Return hardcoded latest versions for each module.
+    """Return the platform's currently-pinned versions for each module.
 
-    Update these values when new versions are released.
+    Single source of truth: `config.yaml`'s `versions:` block. The
+    function used to hold a parallel hardcoded dict that drifted out
+    of sync (e.g. velociraptor stuck at 0.75.6 while the platform was
+    actually pinned to 0.76.5) — which silently shipped stale defaults
+    in the Prepare Package modal. Reading config.yaml directly keeps
+    the modal's pre-fill aligned with whatever the operator pinned.
+
+    Falls back to the last-known good values if config.yaml is missing
+    or unparseable, so the modal still works on a half-broken install.
     """
-    return {
-        'elk': '9.3.1',
-        'timesketch': '20260311',
+    # config.yaml's `versions:` keys use module-specific names that
+    # don't all match the module IDs the prepare-modal speaks. Map
+    # them here so the JS gets back the same keys it expects.
+    config_key_map = {
+        'elk':          'elk',
+        'timesketch':   'timesketch',
+        'plaso':        'plaso',
+        'iris':         'iris',
+        'velociraptor': 'velociraptor',
+        'aws':          'aws_prowler',
+        'azure':        'azure_dfir_o365rc',
+        'intact':       'backend',
+    }
+    fallback = {
+        'elk': '9.3.3',
+        'timesketch': '20260326',
         'plaso': '20260119',
         'iris': 'v2.4.27',
-        'velociraptor': '0.75.6',
+        'velociraptor': '0.76.5',
+        'aws': '5.28.1',
+        'azure': 'latest',
         'intact': '1.0.0',
     }
 
+    # config.yaml lives at the repo root, which is mounted at WORKDIR
+    # inside the backend container.
+    config_path = os.path.join(WORKDIR, 'config.yaml')
+    if not os.path.exists(config_path):
+        return fallback
 
-def load_docker_image(image_tar: str, logger: Callable = None) -> Dict:
-    """Load a docker image from a tar file."""
+    try:
+        import yaml  # local import — yaml isn't used elsewhere in base.py
+        with open(config_path, 'r') as f:
+            cfg = yaml.safe_load(f) or {}
+        versions = cfg.get('versions') or {}
+        result = {}
+        for module_id, config_key in config_key_map.items():
+            val = versions.get(config_key)
+            result[module_id] = str(val) if val is not None else fallback[module_id]
+        return result
+    except Exception:
+        return fallback
+
+
+def load_docker_image(image_tar: str, logger: Callable = None,
+                      run_id: Optional[str] = None) -> Dict:
+    """Load a docker image from a tar file.
+
+    `run_id` makes the docker load interruptible — clicking Stop on
+    an offline upgrade now SIGTERMs the docker CLI immediately instead
+    of waiting for a multi-GB image to finish loading.
+    """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
     if not os.path.exists(image_tar):
@@ -241,7 +348,7 @@ def load_docker_image(image_tar: str, logger: Callable = None) -> Dict:
         return {"success": False, "error": f"Image file not found: {image_tar}"}
 
     log(f"  Loading image: {os.path.basename(image_tar)}...", "info")
-    result = run_command(f"docker load -i {image_tar}", logger=log, timeout=600)
+    result = run_command(f"docker load -i {image_tar}", logger=log, timeout=600, run_id=run_id)
 
     if result['success']:
         stdout = result.get('stdout', '')

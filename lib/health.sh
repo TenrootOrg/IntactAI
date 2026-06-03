@@ -127,7 +127,7 @@ verify_installation() {
     # false negatives even when the service was healthy.
     local ts_enabled=$(read_config "['modules']['timesketch']['enabled']")
     if is_enabled "$ts_enabled"; then
-        if curl -sf --max-time 30 http://localhost:5000 > /dev/null 2>&1; then
+        if curl -skf --max-time 30 https://localhost:5000 > /dev/null 2>&1; then
             log_success "TimeSketch: Running"
         else
             log_warn "TimeSketch: Not responding"
@@ -193,9 +193,9 @@ print_summary() {
     echo ""
     echo -e "  Dashboard:     ${BLUE}http://${domain}${NC}"
     echo -e "  Velociraptor:  ${BLUE}https://${domain}/velociraptor${NC}"
-    echo -e "  TimeSketch:    ${BLUE}http://${domain}:5000${NC}"
+    echo -e "  TimeSketch:    ${BLUE}https://${domain}:5000${NC}"
     echo -e "  IRIS:          ${BLUE}https://${domain}:8443${NC}"
-    echo -e "  Kibana:        ${BLUE}http://${domain}:5601${NC}"
+    echo -e "  Kibana:        ${BLUE}https://${domain}:5601${NC}"
     echo -e "  Portainer:     ${BLUE}https://${domain}:9443${NC}"
     echo ""
     echo "Next steps:"
@@ -358,7 +358,19 @@ print_final_issues_report() {
     if (( n_w > 0 )); then
         echo ""
         echo -e "${YELLOW}WARNINGS:${NC}"
+        # Count "↳ resolved: …" breadcrumbs that pull_compose_with_retry
+        # and _pull_image_with_retry leave when a retry attempt succeeds
+        # after an earlier failure. Surface them as a one-line summary so
+        # the operator can tell transient retries apart from real issues
+        # at a glance.
+        local resolved_count=0
         local entry
+        for entry in "${INSTALL_WARNINGS[@]}"; do
+            [[ "$entry" == *"↳ resolved:"* ]] && ((resolved_count++))
+        done
+        if (( resolved_count > 0 )); then
+            echo -e "${YELLOW}  (${resolved_count} of these were transient and already auto-resolved on retry — shown below as ↳ entries)${NC}"
+        fi
         for entry in "${INSTALL_WARNINGS[@]}"; do
             echo "  $entry"
         done

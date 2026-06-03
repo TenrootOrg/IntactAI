@@ -4,7 +4,7 @@
 import os
 import time
 import requests
-from typing import Dict, Callable
+from typing import Dict, Callable, Optional
 
 from .base import (
     WORKDIR, HOST_PATH,
@@ -108,7 +108,8 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
         }
 
 
-def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None) -> Dict:
+def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None,
+                          run_id: Optional[str] = None) -> Dict:
     """Upgrade IRIS from offline package with automatic rollback."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     work_dir = os.path.join(WORKDIR, 'modules', 'iris')
@@ -128,7 +129,7 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
     try:
         # Stop containers
         log("Stopping IRIS containers...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log)
+        result = run_command("docker compose down", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to stop IRIS: {result['error']}")
 
@@ -137,7 +138,7 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
         for img_name in ['iris-app', 'iris-nginx', 'iris-db']:
             tar_path = os.path.join(images_dir, f"{img_name}-{version}.tar")
             if os.path.exists(tar_path):
-                load_docker_image(tar_path, logger=log)
+                load_docker_image(tar_path, logger=log, run_id=run_id)
             else:
                 log(f"  Image not found: {tar_path}", "warning")
 
@@ -147,7 +148,7 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
 
         # Start containers
         log("Starting IRIS containers...", "info")
-        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
+        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to start IRIS: {result['error']}")
 

@@ -23,7 +23,17 @@ from services.upgrade.base import run_command, HOST_PATH
 
 CERT_PATH = "/app/data/azure_cert.pfx"
 CERT_PUBLIC_PATH = "/app/data/azure_cert_public.pem"
-DOCKER_IMAGE = "anssi/dfir-o365rc:latest"
+
+
+def _docker_image() -> str:
+    """DFIR-O365RC image ref, version-pinned via config.yaml -> backend .env.
+    Upstream only ships ':latest'; read fresh so an upgrade (re-pull of
+    latest) applies without a backend restart."""
+    try:
+        from config import get_dfir_o365rc_image
+        return get_dfir_o365rc_image()
+    except Exception:
+        return f"anssi/dfir-o365rc:{os.environ.get('DFIR_O365RC_VERSION', 'latest')}"
 
 
 def _cleanup_container(container_name: str):
@@ -64,7 +74,7 @@ def is_available() -> Dict[str, any]:
     }
 
     # Check Docker image
-    check = run_command(f"docker image inspect {DOCKER_IMAGE}", logger=None)
+    check = run_command(f"docker image inspect {_docker_image()}", logger=None)
     result['has_image'] = check.get('success', False)
 
     # Check certificate
@@ -165,6 +175,49 @@ def check_exchange_online_available(azure_config: Dict[str, str]) -> Dict[str, a
         return {'available': False, 'message': f'Exchange check failed: {str(e)[:200]}'}
 
 
+# =============================================================================
+# UAL collection-mode profiles
+# =============================================================================
+#
+# `ual_mode` selects which UAL records DFIR-O365RC pulls from Microsoft.
+# Big tenants generate millions of low-signal events (PowerBI activity,
+# Yammer, Sway, etc.) that bury the forensically interesting ones and
+# blow up collection time + LLM analysis cost. The two profiles are:
+#
+#   * "full"  — `-requestType Unfiltered`. Every record type. Default —
+#               matches behaviour before the dropdown was introduced.
+#               Right choice for small tenants and "I don't know what
+#               happened" hunts. Slow on large tenants (15-60+ min).
+#
+#   * "light" — `-requestType RecordTypes` filtered to a curated list of
+#               high-signal types covering the main initial-access /
+#               persistence / identity-takeover vectors. Skips PowerBI,
+#               Sway, Yammer, Stream, MicrosoftFlow, etc. Typically
+#               5-10x smaller dataset; matches the use case the operator
+#               flagged: "big organizations need light to avoid waiting".
+#
+# Identity filters (target_users / target_ips) take precedence over both
+# — they're more targeted than any RecordTypes filter — so the user/IP
+# scope wins and `ual_mode` is ignored when a filter is set. The mode
+# only changes the path when no identity filter is in play.
+LIGHT_RECORD_TYPES = [
+    # Identity / auth — the must-have core
+    "AzureActiveDirectory",            # Generic Azure AD events
+    "AzureActiveDirectoryStsLogon",    # STS logon events (interactive + non-interactive)
+    "AzureActiveDirectoryAccountLogon",# Account logon outcomes
+
+    # Persistence vectors
+    "ExchangeAdmin",                   # Mailbox config changes (forwarding rules, etc.)
+    "ApplicationAudit",                # OAuth app consent grants
+
+    # Threat-intel signals
+    "ThreatIntelligenceUrl",           # Malicious URL hits
+
+    # Compliance / security tooling activity (rare but high-signal)
+    "SecurityComplianceCenterEOPCmdlet",
+]
+
+
 def collect_unified_audit_log(
     tenant: str,
     app_id: str,
@@ -173,7 +226,8 @@ def collect_unified_audit_log(
     target_users: Optional[List[str]] = None,
     logger=None,
     azure_config: Optional[Dict[str, str]] = None,
-    run_id: str = None
+    run_id: str = None,
+    ual_mode: str = "full",
 ) -> Dict:
     """
     Collect Unified Audit Log via DFIR-O365RC Docker container.
@@ -185,6 +239,10 @@ def collect_unified_audit_log(
         end_date: End date (ISO format or MM/DD/YYYY)
         target_users: Optional list of user emails to filter
         logger: Logging function
+        ual_mode: "full" (every record type, default) or "light" (curated
+            high-signal record types only — recommended for large tenants).
+            Ignored when target_users or target_ips is set; identity
+            filters take precedence as they're more targeted.
 
     Returns:
         Dict with 'success', 'records' list, and 'error' if failed
@@ -217,6 +275,39 @@ def collect_unified_audit_log(
     log_file = f"/mnt/host/output/{session_name}.log"
     output_file = f"/mnt/host/output/{session_name}.json"
 
+    # Decide cmdlet invocation flags. When the operator scoped the scan to
+    # specific users, push that filter to Microsoft instead of pulling the
+    # whole tenant and discarding most of it client-side.
+    #
+    # Get-UnifiedAuditLogPurview's -requestType is one-of:
+    #   Unfiltered | Operations | RecordTypes | FreeText | IPAddresses | UserIds
+    # Each requestType carries its own scope parameter (e.g. UserIds takes
+    # -UserIds, IPAddresses takes -IPAddresses). You can only pick ONE
+    # dimension per call — there's no combined "Targeted" mode (we tried).
+    # Strategy: prefer user filter when both users and IPs are set; IP filter
+    # otherwise; fall back to Unfiltered when neither is set.
+    target_ips = None
+    if azure_config and azure_config.get('target_ips'):
+        target_ips = azure_config.get('target_ips')
+
+    if target_users:
+        users_arr = ",".join(f"'{u}'" for u in target_users)
+        scope_clause = f"-requestType UserIds -UserIds @({users_arr})"
+        scope_label = f"users={','.join(target_users)}"
+    elif target_ips:
+        ips_arr = ",".join(f"'{ip}'" for ip in target_ips)
+        scope_clause = f"-requestType IPAddresses -IPAddresses @({ips_arr})"
+        scope_label = f"ips={','.join(target_ips)}"
+    elif (ual_mode or "full").lower() == "light":
+        rec_arr = ",".join(f"'{r}'" for r in LIGHT_RECORD_TYPES)
+        scope_clause = f"-requestType RecordTypes -recordTypes @({rec_arr})"
+        scope_label = f"light:{len(LIGHT_RECORD_TYPES)} record types"
+    else:
+        scope_clause = "-requestType Unfiltered"
+        scope_label = None
+
+    verbose_flag = "" if os.environ.get("INTACT_DFIR_VERBOSE") == "0" else "-Verbose"
+
     # Build the PowerShell command to run in the container.
     # We run the cmdlet in a background job and use Get-Content -Wait to stream
     # the log file to stdout in real-time. This ensures docker logs -f captures
@@ -227,7 +318,7 @@ def collect_unified_audit_log(
         f"  try {{ "
         f"    Import-Module DFIR-O365RC; "
         f"    \\$cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new('/mnt/cert/azure_cert.pfx', '', 'Exportable,PersistKeySet'); "
-        f"    Get-UnifiedAuditLogPurview -requestType Unfiltered -sessionName '{session_name}' -startDate '{ps_start}' -endDate '{ps_end}' -certificate \\$cert -appId '{app_id}' -tenant '{tenant}' -logFile \\$args[0] -outputFile '{output_file}' "
+        f"    Get-UnifiedAuditLogPurview {scope_clause} -sessionName '{session_name}' -startDate '{ps_start}' -endDate '{ps_end}' -certificate \\$cert -appId '{app_id}' -tenant '{tenant}' -logFile \\$args[0] -outputFile '{output_file}' {verbose_flag} *>&1 "
         f"  }} catch {{ "
         f"    Write-Host \"[FATAL ERROR] \$_ \"; "
         f"    throw \$_; "
@@ -259,10 +350,20 @@ def collect_unified_audit_log(
         f"Receive-Job -Id \\$jobId"
     )
 
-    if target_users:
-        log(f"Collecting UAL (all events, will filter for {', '.join(target_users)} client-side)", "info")
+    if scope_label:
+        log(
+            f"Collecting UAL via Purview (server-side filter: {scope_label}) "
+            f"- expected to be much faster than Unfiltered",
+            "info",
+        )
+        if target_users and target_ips:
+            log(
+                "Note: Purview UAL accepts only one filter dimension per call; "
+                "applying user filter (IP filter omitted in this run).",
+                "warning",
+            )
     else:
-        log("Collecting UAL (all events) via Purview API", "info")
+        log("Collecting UAL (all events, no user/IP scope) via Purview API", "info")
 
     # Run DFIR-O365RC in Docker container with live log streaming
     host_data_dir = f"{HOST_PATH}/data"
@@ -278,7 +379,7 @@ def collect_unified_audit_log(
             f'docker run -d --name {container_name} '
             f'-v {host_output_dir}:/mnt/host/output '
             f'-v {host_data_dir}:/mnt/cert:ro '
-            f'{DOCKER_IMAGE} '
+            f'{_docker_image()} '
             f'pwsh -NonInteractive -Command "{ps_cmd}"',
             shell=True, capture_output=True, text=True, timeout=30
         )
@@ -345,6 +446,30 @@ def collect_unified_audit_log(
         fatal_error_seen = False
         fatal_error_message = None  # Stores the exact container line that triggered the fatal error
 
+        # Recoverable patterns: errors that DFIR-O365RC's internal retry harness
+        # is allowed to recover from. We track them so we can emit a clear
+        # "↳ retry succeeded" line when the next forward-progress line arrives.
+        # Without this the operator sees ERROR ... ERROR ... and can't tell at
+        # a glance whether the run actually recovered or stayed stuck.
+        RECOVERABLE_ERROR_PATTERNS = (
+            'Authentication needed. Please call Connect-MgGraph',
+            'Query status check failed',
+            'Connection reset by peer',
+            'A task was canceled',
+        )
+        # Forward-progress markers — any of these after a recoverable error
+        # means we recovered. "succeeded" is the Purview job state, "Connected"
+        # is the MgGraph reconnect signal, "Records collected" is the EXO
+        # path's progress line.
+        RECOVERY_PATTERNS = (
+            'status "succeeded"',
+            'Connected to Microsoft Graph',
+            'Connected.',
+            'Records collected',
+            'Successfully retrieved',
+        )
+        last_recoverable_err = None  # the recoverable pattern we last saw
+
         while True:
             elapsed = time.time() - start_time
 
@@ -381,6 +506,26 @@ def collect_unified_audit_log(
                                 # Log everything including raw JSON - nothing is skipped
                                 log(f"[CONTAINER] {line}", "info")
                             last_log_time = time.time()
+
+                            # Recoverable-error / recovery tracking. A
+                            # recoverable error sets the flag; the next
+                            # forward-progress line clears it and announces
+                            # the recovery so the operator sees a clean
+                            # "ERROR -> resolved" pair instead of just ERROR.
+                            for pat in RECOVERABLE_ERROR_PATTERNS:
+                                if pat in line:
+                                    last_recoverable_err = pat
+                                    break
+                            if last_recoverable_err is not None:
+                                for pat in RECOVERY_PATTERNS:
+                                    if pat in line:
+                                        log(
+                                            f"  ↳ resolved: recovered from "
+                                            f"\"{last_recoverable_err}\"",
+                                            "success",
+                                        )
+                                        last_recoverable_err = None
+                                        break
 
                             # Detect fatal errors and kill immediately
                             if not fatal_error_seen:
@@ -568,7 +713,7 @@ def _run_dfir_command(
             f'docker run -d --name {container_name} '
             f'-v {host_output_dir}:/mnt/host/output '
             f'-v {host_data_dir}:/mnt/cert:ro '
-            f'{DOCKER_IMAGE} '
+            f'{_docker_image()} '
             f'pwsh -NonInteractive -Command "{ps_cmd}"',
             shell=True, capture_output=True, text=True, timeout=30
         )

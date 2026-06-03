@@ -1,7 +1,8 @@
 Intact.AI agentic DFIR skills
 
-This subdirectory bundles 30 SKILL.md files copied verbatim from the upstream
-"Anthropic Cybersecurity Skills" repository:
+This subdirectory bundles a curated subset of SKILL.md files copied verbatim
+from the upstream "Anthropic Cybersecurity Skills" repository (which has 754
+skills total — see `MANIFEST.txt` for the list of skills bundled here):
 
     Project:   Anthropic Cybersecurity Skills
     Source:    https://github.com/mukul975/Anthropic-Cybersecurity-Skills

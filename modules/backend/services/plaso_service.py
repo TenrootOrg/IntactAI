@@ -24,6 +24,7 @@ independently.
 
 import subprocess
 import os
+import shlex
 import time
 
 from config import PLASO_OUTPUT_DIR, get_plaso_image, PLASO_CPUS, PLASO_MEMORY
@@ -68,6 +69,10 @@ def run_pinfo(plaso_file, logger=None, run_id=None):
         ]
 
         log(f"Running pinfo on {os.path.basename(plaso_file)}...")
+        # Log the literal command for forensic reproducibility — mirrors
+        # the pattern used by the log2timeline launcher in
+        # kape_upload_service.py.
+        log(f"$ {shlex.join(cmd)}")
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,

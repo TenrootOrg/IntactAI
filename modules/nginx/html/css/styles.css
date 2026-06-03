@@ -145,8 +145,13 @@ h1, h2, h3, .header-text {
     height: 1.5rem;
 }
 
+/* `.main-content-collapsed` was used when the sidebar was position:fixed
+   and main needed a manual margin to clear it. The sidebar is now a flex
+   sibling (`<div class="flex">` wraps it + main with `flex-1`), so the
+   margin is redundant. Keep the rule as a no-op anchor — JS still toggles
+   the class for the transition timing. */
 .main-content-collapsed {
-    margin-left: 72px !important;
+    /* intentionally empty */
 }
 
 .sidebar-logo {
@@ -254,7 +259,9 @@ h1, h2, h3, .header-text {
    MAIN CONTENT
    ============================================ */
 .main-content {
-    margin-left: 260px;
+    /* No margin-left: the parent <div class="flex"> already lays the
+       sidebar (260px) and this <main flex-1> as siblings. Adding a
+       260px margin on top creates a redundant gap. */
     background: transparent;
     min-height: 100vh;
     position: relative;
@@ -790,10 +797,11 @@ body.bg-gray-900 {
     100% { transform: rotate(360deg); }
 }
 
-.flex {
-    position: relative;
-    z-index: 1;
-}
+/* Removed accidental global override of Tailwind's `.flex` utility — it
+   was forcing `position: relative; z-index: 1` on every element with the
+   `flex` class, which broke any `fixed inset-0` overlay that also had
+   `flex items-center justify-center` (e.g. the workflow logs modal).
+   Tailwind's `.flex` should only set `display: flex`. */
 
 /* ============================================
    UTILITY CLASSES - Color & Effects
@@ -1088,3 +1096,37 @@ span.text-white {
 .flatpickr-months .flatpickr-next-month:hover svg {
     fill: #a78bfa !important;
 }
+
+/* ---------------------------------------------------------------------------
+ * Tailwind extensions — color shades NOT in the precompiled css/tailwind.css
+ * bundle. Added by hand because rebuilding Tailwind requires the node
+ * toolchain and these are just static color utilities. Values match
+ * Tailwind's default palette so they look identical to the compiled set.
+ *
+ * Used by:
+ *   - Action buttons (Data ZIP, CVE CSV, multi-client ZIP, Support Bundle)
+ *     for the "raw/data export" indigo grouping.
+ *   - getTypeColor() in js/app.js for the workflow-dashboard type chips.
+ * --------------------------------------------------------------------------- */
+.bg-indigo-600 { background-color: #4f46e5; }
+.bg-indigo-700 { background-color: #4338ca; }
+.bg-slate-700  { background-color: #334155; }
+.bg-amber-700  { background-color: #b45309; }
+.bg-rose-700   { background-color: #be123c; }
+.bg-teal-700   { background-color: #0f766e; }
+.bg-purple-700 { background-color: #6d28d9; }
+.hover\:bg-indigo-700:hover { background-color: #4338ca; }
+.hover\:bg-amber-800:hover  { background-color: #92400e; }
+.hover\:bg-rose-800:hover   { background-color: #9f1239; }
+
+/* Additional shade-800 utilities + hover variants used by the module-themed
+ * action buttons (AWS=orange, Azure=blue, agentic=green, etc.) so each row's
+ * primary/secondary actions can step from shade-600 → shade-700 → shade-800. */
+.bg-orange-800 { background-color: #9a3412; }
+.bg-yellow-800 { background-color: #854d0e; }
+.bg-green-800  { background-color: #166534; }
+.hover\:bg-orange-800:hover { background-color: #9a3412; }
+.hover\:bg-blue-800:hover   { background-color: #1e40af; }
+.hover\:bg-green-800:hover  { background-color: #166534; }
+.hover\:bg-yellow-700:hover { background-color: #a16207; }
+.hover\:bg-yellow-800:hover { background-color: #854d0e; }

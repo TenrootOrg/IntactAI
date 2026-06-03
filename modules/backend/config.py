@@ -100,6 +100,44 @@ def get_plaso_image():
                         return f"log2timeline/plaso:{version}"
     return PLASO_IMAGE  # fallback to static value
 
+
+def _fresh_image_from_env(var_name: str, image_fmt: str, fallback: str) -> str:
+    """Read a version var fresh from the backend .env and format the image
+    ref, so an upgrade takes effect without restarting the backend (same
+    trick as get_plaso_image). `image_fmt` is e.g. 'toniblyx/prowler:{}'."""
+    env_paths = [
+        '/app/workdir/modules/backend/.env',
+        os.path.join(os.path.dirname(__file__), '.env'),
+    ]
+    for env_file in env_paths:
+        if os.path.exists(env_file):
+            with open(env_file) as f:
+                for line in f:
+                    if line.startswith(f'{var_name}='):
+                        return image_fmt.format(line.strip().split('=', 1)[1])
+    return fallback
+
+
+# AWS Prowler configuration (posture scans run this image on demand)
+PROWLER_VERSION = os.environ.get('PROWLER_VERSION', '5.28.1')
+PROWLER_IMAGE = f"toniblyx/prowler:{PROWLER_VERSION}"
+
+
+def get_prowler_image():
+    """Prowler image, read fresh from .env so upgrades apply without restart."""
+    return _fresh_image_from_env('PROWLER_VERSION', 'toniblyx/prowler:{}', PROWLER_IMAGE)
+
+
+# Azure DFIR-O365RC configuration (Unified Audit Log collection on demand).
+# Upstream publishes only ':latest', so DFIR_O365RC_VERSION is normally 'latest'.
+DFIR_O365RC_VERSION = os.environ.get('DFIR_O365RC_VERSION', 'latest')
+DFIR_O365RC_IMAGE = f"anssi/dfir-o365rc:{DFIR_O365RC_VERSION}"
+
+
+def get_dfir_o365rc_image():
+    """DFIR-O365RC image, read fresh from .env so upgrades apply without restart."""
+    return _fresh_image_from_env('DFIR_O365RC_VERSION', 'anssi/dfir-o365rc:{}', DFIR_O365RC_IMAGE)
+
 # Velociraptor data path inside container (where collections are stored)
 VELOCIRAPTOR_DATA_PATH = "/var."
 

@@ -3,6 +3,7 @@
 Agentic Pipeline - Main orchestration for forensics analysis pipeline
 """
 
+import threading
 import traceback
 from datetime import datetime
 
@@ -10,8 +11,45 @@ from services.workflow_service import (
     add_log_to_run,
     update_run_status,
     is_cancelled,
-    unregister_cancel
+    unregister_cancel,
+    request_stop,
 )
+
+
+# Outer watchdog grace period: how long after the collection window the
+# pipeline may keep running for synthesis / report generation / IRIS
+# import before we force-kill it. The QA hang sat at "running" for
+# nearly an hour with no upper bound — this is the absolute backstop
+# even if every other safety check misses.
+_PIPELINE_SYNTHESIS_GRACE_SECONDS = 15 * 60  # 15 minutes
+
+
+def _start_watchdog(run_id: str, collection_minutes: int, label: str = "agentic"):
+    """Start a threading.Timer that calls request_stop(run_id) if the
+    pipeline outlives `collection_minutes * 60 + grace`. The cancel
+    event then propagates through every loop in collectors.py and
+    pipeline.py exits via its existing `except`. Returns the Timer
+    so the caller can .cancel() it in the finally block."""
+    deadline = max(int(collection_minutes), 1) * 60 + _PIPELINE_SYNTHESIS_GRACE_SECONDS
+
+    def _fire():
+        # Log loudly so the operator sees this in the run log instead
+        # of just a status flip.
+        try:
+            add_log_to_run(
+                run_id,
+                f"[Pipeline] Watchdog: {label} pipeline exceeded "
+                f"{deadline}s — forcing cancellation",
+                "error",
+            )
+            request_stop(run_id)
+        except Exception:
+            pass
+
+    t = threading.Timer(deadline, _fire)
+    t.daemon = True
+    t.start()
+    return t
 from services.file_storage_service import get_agentic_blueprint, get_workflow, save_workflow
 from services.data_anonymizer import DataAnonymizer
 
@@ -25,7 +63,10 @@ from services.agentic.reports import (
     generate_empty_report,
     save_report_content,
     generate_multi_client_reports,
-    create_report_package
+    create_report_package,
+    persist_per_client_reports,
+    get_client_hostname,
+    persist_pipeline_artifacts,
 )
 from services.agentic.utils import extract_timeline_events, filter_malicious_events
 
@@ -53,17 +94,41 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
     if anonymize_data:
         anonymizer = DataAnonymizer(custom_patterns=custom_patterns)
 
+    # Outer watchdog — the absolute backstop. Even if every other
+    # safety check misses, the run cannot exceed
+    # `collection_minutes + 15min synthesis grace`. See QA hang
+    # context: pipeline stayed "running" for ~1 hour after the LLM
+    # died because no outer timeout bounded the total wall-clock.
+    _watchdog = _start_watchdog(run_id, collection_minutes, label="agentic")
+
     try:
         update_run_status(run_id, "running", progress=2)
         add_log_to_run(run_id, "[Pipeline] Starting Agentic Forensics pipeline", "info")
 
         # Validate LLM configuration before starting
-        from services.agentic.analyzers import validate_llm_config
+        from services.agentic.analyzers import validate_llm_config, ping_llm
         try:
             validate_llm_config(llm_config)
         except ValueError as e:
             add_log_to_run(run_id, f"[Pipeline] Configuration error: {str(e)}", "error")
             update_run_status(run_id, "failed", progress=0, error=str(e))
+            return
+
+        # Pre-flight LLM reachability — fail fast (within ~30s) if the
+        # endpoint is unreachable, instead of triggering Velociraptor
+        # collection and discovering the problem 2+ minutes later when
+        # the first artifact analysis crashes.
+        add_log_to_run(run_id, "[Pipeline] Pre-flight LLM reachability check...", "info")
+        try:
+            ping_llm(llm_config, timeout_seconds=30)
+            add_log_to_run(run_id, "[Pipeline] ✓ LLM is reachable", "success")
+        except Exception as e:
+            err = f"LLM unreachable before pipeline start: {str(e)[:200]}"
+            add_log_to_run(run_id, f"[Pipeline] ✗ {err}", "error")
+            add_log_to_run(run_id,
+                "Check Settings > Agentic that your API key / Ollama URL is correct "
+                "and the endpoint is reachable from this host.", "error")
+            update_run_status(run_id, "failed", progress=0, error=err)
             return
 
         # Store report_types in workflow details for UI
@@ -73,6 +138,41 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                 workflow['details'] = {}
             workflow['details']['report_types'] = report_types
             save_workflow(workflow)
+
+        # Hostnames are stashed in workflow.details by agentic_routes when
+        # the run is created (resolve_hostnames is called there so the
+        # workflow name in the Workflows tab carries readable names from
+        # the moment the row appears). Pull the same map here so the
+        # report header + macro citations show those names instead of the
+        # bare client_ids.
+        hostnames = {}
+        # Cross-client synthesis is opt-in (stashed in details by the route).
+        # When False, multi-client runs still produce per-client reports
+        # but skip the org-wide macro pass — saves one LLM call and one
+        # markdown file (00_ORGANIZATION_SUMMARY.md) in the ZIP. When True,
+        # the macro pass runs as it always has. Single-client runs never
+        # generated a macro, so the flag is moot for N=1.
+        cross_client_synthesis = False
+        # Interactive-mode master prompt — present on re-runs triggered
+        # from the chat panel (POST /api/agentic/run/<run_id>/rerun). Stashed
+        # in details by the chat synthesis step; we thread it into every
+        # LLM-call surface so the operator's corrections influence both
+        # per-artifact analysis and report writing.
+        master_prompt = None
+        if workflow:
+            details = workflow.get('details') or {}
+            hostnames = details.get('hostnames') or {}
+            cross_client_synthesis = bool(details.get('cross_client_synthesis'))
+            master_prompt = details.get('master_prompt') or None
+        if not hostnames:
+            # Fallback: re-resolve. Cheap (one VQL call) and keeps this
+            # pipeline robust against older runs that pre-date the route
+            # change.
+            try:
+                from services.agentic.collectors import resolve_hostnames as _resolve_hn
+                hostnames = _resolve_hn(client_ids)
+            except Exception:
+                hostnames = {cid: cid for cid in client_ids}
 
         # 1. Get blueprint
         blueprint = get_agentic_blueprint(blueprint_id)
@@ -122,6 +222,27 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         success_collections = [c for c in collection_results if c['flow_id']]
         add_log_to_run(run_id, f"[Velociraptor] Created {len(success_collections)}/{len(client_ids)} collections ({len(artifacts)} artifacts each)", "info")
 
+        # Persist the flow IDs back into workflow.details so a future
+        # Full re-analysis (from the Interactive chat panel) can fetch
+        # the same data without launching a new collection. Without
+        # this stash, run_agentic_on_existing has nothing to point at
+        # and the full-scope re-run is impossible.
+        try:
+            launched_flow_ids = [c['flow_id'] for c in success_collections if c.get('flow_id')]
+            if launched_flow_ids:
+                _wf = get_workflow(run_id)
+                if _wf is not None:
+                    _wd = _wf.get('details') or {}
+                    if not isinstance(_wd, dict):
+                        _wd = {}
+                    _wd['flow_id'] = launched_flow_ids if len(launched_flow_ids) > 1 else launched_flow_ids[0]
+                    _wf['details'] = _wd
+                    save_workflow(_wf)
+        except Exception as _e:
+            # Best-effort — re-analysis falls back to "unavailable" if
+            # the stash misses; doesn't break the main pipeline.
+            print(f"[PIPELINE] Failed to stash flow_ids on {run_id}: {_e}", flush=True)
+
         if not success_collections:
             add_log_to_run(run_id, "[Velociraptor] No collections were created successfully", "error")
             update_run_status(run_id, "failed", progress=0, error="Failed to create any collections")
@@ -136,7 +257,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
             add_log_to_run(run_id, f"[Pipeline] Severity filter active: {min_severity}+ only", "info")
         _update_phase(run_id, "collecting", 10)
         all_results, artifact_summaries, timed_out, total_rows_before_filter = stream_collect_and_analyze(
-            run_id, success_collections, artifacts, collection_minutes, llm_config, anonymizer, _update_phase, min_severity, time_filter, cancel_event
+            run_id, success_collections, artifacts, collection_minutes, llm_config, anonymizer, _update_phase, min_severity, time_filter, cancel_event, master_prompt=master_prompt,
         )
 
         # 4. Cancel any remaining collections ONLY if we timed out
@@ -181,23 +302,59 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
 
         if total_rows == 0:
             if total_rows_before_filter > 0:
-                # Data existed but filters removed everything
+                # Data existed but filters removed everything — this is a
+                # configuration mismatch, not a fatal collection failure.
+                # Keep status='completed' (with the warning visible) so the
+                # operator notices the filter setting; auto-flip would
+                # otherwise hide the legit-but-empty report.
                 add_log_to_run(run_id, f"[Pipeline] Data was collected ({total_rows_before_filter} rows) but all rows were removed by filters (severity: {min_severity}+). Try lowering the severity filter or adjusting the time range.", "warning")
+                report_content = generate_empty_report(blueprint, client_ids, collection_minutes)
+                save_report_content(run_id, report_content)
+                _update_phase(run_id, "completed", 100)
+                update_run_status(run_id, "completed", progress=100, force=True)
+                return
             else:
-                # No data at all from Velociraptor
-                add_log_to_run(run_id, "[Pipeline] No data was returned from the selected clients. Possible causes:", "warning")
-                add_log_to_run(run_id, "  - Collection time too short - try increasing it", "warning")
-                add_log_to_run(run_id, "  - Artifacts not applicable to this system - try a different blueprint", "warning")
-                add_log_to_run(run_id, "  - Clients may be offline - verify client status in Velociraptor", "warning")
-            report_content = generate_empty_report(blueprint, client_ids, collection_minutes)
-            save_report_content(run_id, report_content)
-            _update_phase(run_id, "completed", 100)
-            update_run_status(run_id, "completed", progress=100)
-            return
+                # No data at all from Velociraptor — this IS a fatal
+                # outcome, not a recoverable warning. Promote the logs
+                # to 'error' level so the auto-flip in workflow_service
+                # picks it up AND the operator sees red, AND set status
+                # to 'failed' explicitly so future readers don't have
+                # to chase through the auto-flip logic.
+                add_log_to_run(run_id, "[Pipeline] No data was returned from the selected clients. Possible causes:", "error")
+                add_log_to_run(run_id, "  - Collection time too short - try increasing it", "error")
+                add_log_to_run(run_id, "  - Artifacts not applicable to this system - try a different blueprint", "error")
+                add_log_to_run(run_id, "  - Clients may be offline - verify client status in Velociraptor", "error")
+                update_run_status(
+                    run_id, "failed", progress=0,
+                    error="No data returned from selected clients during collection window",
+                )
+                return
 
         # 7. Generate report(s) - skip if no report types selected
         if cancel_event and cancel_event.is_set():
             return
+
+        # Pre-synthesis success check: if every artifact analysis failed
+        # (LLM was unreachable for the whole pipeline), skip synthesis —
+        # which would otherwise call call_llm again, hit the same dead
+        # endpoint, and hang for the full 600s timeout before failing.
+        # Better to fail loudly right here with a clear message.
+        if artifact_summaries:
+            real_summaries = {
+                k: v for k, v in artifact_summaries.items()
+                if v and not (isinstance(v, str) and v.startswith("Analysis failed:"))
+            }
+            if not real_summaries:
+                add_log_to_run(run_id,
+                    f"[Pipeline] All {len(artifact_summaries)} artifact analyses errored — "
+                    f"skipping synthesis (would hit the same dead LLM). "
+                    f"Check Settings > Agentic and the LLM endpoint, then re-run.",
+                    "error")
+                update_run_status(
+                    run_id, "failed", progress=0,
+                    error=f"All {len(artifact_summaries)} analyses failed — LLM unreachable",
+                )
+                return
 
         report_content = {}
         multi_reports = None
@@ -212,15 +369,42 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                 try:
                     multi_reports = generate_multi_client_reports(
                         run_id, blueprint, client_ids, collection_minutes,
-                        artifact_summaries, all_results, llm_config, anonymizer
+                        artifact_summaries, all_results, llm_config, anonymizer,
+                        hostnames=hostnames,
+                        generate_macro=cross_client_synthesis,
+                        master_prompt=master_prompt,
                     )
 
                     # Create ZIP package
                     zip_path = create_report_package(run_id, multi_reports)
                     add_log_to_run(run_id, f"[Report] Created ZIP package: {zip_path}", "info")
 
-                    # Save macro report as the main report (for backwards compatibility)
-                    report_content = {'technical': multi_reports['macro']}
+                    # Also drop per-client reports on disk so the chat
+                    # assistant can read them without unpacking the ZIP.
+                    persist_per_client_reports(
+                        run_id,
+                        multi_reports.get('per_client') or {},
+                        multi_reports.get('hostnames') or {},
+                    )
+
+                    # Save macro report as the main report (for backwards
+                    # compatibility with the single-report download endpoint).
+                    # When the operator didn't opt in to cross-client synthesis,
+                    # multi_reports['macro'] is None — use a friendly pointer
+                    # to the ZIP's per-client files instead, so /api/agentic/
+                    # run/<run_id>/download?type=technical never returns empty.
+                    macro_md = multi_reports.get('macro')
+                    if not macro_md:
+                        hn_list = list((multi_reports.get('hostnames') or {}).values())
+                        macro_md = (
+                            "# Multi-client run — per-client reports only\n\n"
+                            "The organization-wide synthesis was not enabled for this run "
+                            "(checkbox 'Generate organization-wide synthesis' was off).\n\n"
+                            f"Per-host reports for the {len(multi_reports.get('per_client', {}))} "
+                            f"client(s) are inside the ZIP — download it from the workflow row.\n\n"
+                            f"Hosts: {', '.join(hn_list) if hn_list else '(unknown)'}.\n"
+                        )
+                    report_content = {'technical': macro_md}
                     save_report_content(run_id, report_content)
 
                     # Store multi-client info in workflow
@@ -252,7 +436,9 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                 try:
                     report_content = generate_final_report(
                         run_id, blueprint, client_ids, collection_minutes,
-                        artifact_summaries, all_results, llm_config, report_types, anonymizer
+                        artifact_summaries, all_results, llm_config, report_types, anonymizer,
+                        hostnames=hostnames,
+                        master_prompt=master_prompt,
                     )
                     # 8. Save report
                     save_report_content(run_id, report_content)
@@ -346,6 +532,15 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                 add_log_to_run(run_id, f"[IRIS] Import error: {str(e)}", "warning")
                 # Don't fail the pipeline for IRIS import failure
 
+        # Save artifact summaries + raw row data for interactive-mode
+        # re-runs (chat → master prompt → reports-only regenerate). Cheap
+        # to write, best-effort: failures are logged but don't fail the
+        # pipeline.
+        try:
+            persist_pipeline_artifacts(run_id, artifact_summaries, all_results)
+        except Exception as _e:
+            print(f"[AGENTIC] persist_pipeline_artifacts failed (non-fatal): {_e}", flush=True)
+
         _update_phase(run_id, "completed", 100)
         add_log_to_run(run_id, "[Pipeline] Analysis complete! Report ready for download.", "success")
         if not is_cancelled(run_id):
@@ -361,6 +556,10 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         add_log_to_run(run_id, traceback.format_exc(), "error")
         update_run_status(run_id, "failed", error=str(e))
     finally:
+        try:
+            _watchdog.cancel()
+        except Exception:
+            pass
         unregister_cancel(run_id)
 
 
@@ -405,9 +604,19 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
     if anonymize_data:
         anonymizer = DataAnonymizer(custom_patterns=custom_patterns)
 
+    # Outer watchdog — same backstop as the main pipeline. This path
+    # has no Velociraptor collection window so we charge the whole
+    # synthesis-grace budget for analyse + report + IRIS import.
+    _watchdog = _start_watchdog(run_id, collection_minutes=1, label="agentic-existing")
+
     try:
         update_run_status(run_id, "running", progress=2)
-        collection_id = flow_id or hunt_id
+        # flow_id may be a list (multi-flow run). Render as comma-joined for
+        # any user-facing string; the collector below accepts either shape.
+        if isinstance(flow_id, list):
+            collection_id = ', '.join(flow_id)
+        else:
+            collection_id = flow_id or hunt_id
         collection_type = "flow" if flow_id else "hunt"
         add_log_to_run(run_id, f"[Pipeline] Analyzing existing {collection_type}: {collection_id}", "info")
 
@@ -443,12 +652,29 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                 add_log_to_run(run_id, f"[Pipeline] Time filter: {time_filter.get('start_datetime')} to {time_filter.get('end_datetime', 'now')}", "info")
 
         # Validate LLM configuration before starting
-        from services.agentic.analyzers import validate_llm_config
+        from services.agentic.analyzers import validate_llm_config, ping_llm
         try:
             validate_llm_config(llm_config)
         except ValueError as e:
             add_log_to_run(run_id, f"[Pipeline] Configuration error: {str(e)}", "error")
             update_run_status(run_id, "failed", progress=0, error=str(e))
+            return
+
+        # Pre-flight LLM reachability — fail fast (within ~30s) if the
+        # endpoint is unreachable, instead of triggering Velociraptor
+        # collection and discovering the problem 2+ minutes later when
+        # the first artifact analysis crashes.
+        add_log_to_run(run_id, "[Pipeline] Pre-flight LLM reachability check...", "info")
+        try:
+            ping_llm(llm_config, timeout_seconds=30)
+            add_log_to_run(run_id, "[Pipeline] ✓ LLM is reachable", "success")
+        except Exception as e:
+            err = f"LLM unreachable before pipeline start: {str(e)[:200]}"
+            add_log_to_run(run_id, f"[Pipeline] ✗ {err}", "error")
+            add_log_to_run(run_id,
+                "Check Settings > Agentic that your API key / Ollama URL is correct "
+                "and the endpoint is reachable from this host.", "error")
+            update_run_status(run_id, "failed", progress=0, error=err)
             return
 
         _update_phase(run_id, "fetching_results", 5)
@@ -460,8 +686,23 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         )
 
         if not all_results:
-            add_log_to_run(run_id, f"[Pipeline] No data found in {collection_type} {collection_id}. The collection returned no results - try running a new collection with more artifacts or a longer time window.", "warning")
-            update_run_status(run_id, "completed", progress=100)
+            # This is the case the user reported as wrongly marked
+            # 'completed' (UI showed green even though the Velociraptor
+            # flow couldn't be found / had no rows). Promote to 'error'
+            # so the auto-flip in workflow_service catches anything
+            # downstream that calls update_run_status('completed'), and
+            # mark 'failed' explicitly here so the intent is obvious.
+            add_log_to_run(
+                run_id,
+                f"[Pipeline] No data found in {collection_type} {collection_id}. "
+                f"The collection returned no results - try running a new collection "
+                f"with more artifacts or a longer time window.",
+                "error",
+            )
+            update_run_status(
+                run_id, "failed", progress=0,
+                error=f"No data found in {collection_type} {collection_id}",
+            )
             return
 
         total_rows = sum(len(rows) for rows in all_results.values())
@@ -567,8 +808,19 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
 
         add_log_to_run(run_id, "[LLM] Starting artifact analysis...", "info")
         _update_phase(run_id, "analyzing", 20)
+        # Read master_prompt early (same pattern the main pipeline uses)
+        # so analyze_artifacts can thread it into every per-artifact call.
+        # Re-reads happen later for the report-generation step, but that's
+        # cheap (in-memory dict access on the workflow row).
+        _wf_for_mp = get_workflow(run_id)
+        _master_prompt_early = (((_wf_for_mp or {}).get('details') or {}).get('master_prompt')) or None
+        if _master_prompt_early:
+            add_log_to_run(run_id, "[Pipeline] Master prompt active — operator corrections will be applied to all LLM calls.", "info")
         from services.agentic.analyzers import analyze_artifacts
-        artifact_summaries = analyze_artifacts(run_id, all_results, llm_config, anonymizer)
+        artifact_summaries = analyze_artifacts(
+            run_id, all_results, llm_config, anonymizer,
+            master_prompt=_master_prompt_early,
+        )
         add_log_to_run(run_id, f"[LLM] Analysis complete: {len(artifact_summaries)} artifact summaries", "success")
         _update_phase(run_id, "analyzing", 80)
 
@@ -581,9 +833,30 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         if cancel_event and cancel_event.is_set():
             return
 
+        # Pre-synthesis success check — same rationale as the main
+        # pipeline path: don't waste another LLM call on a dead endpoint
+        # when every analysis already failed.
+        if artifact_summaries:
+            real_summaries = {
+                k: v for k, v in artifact_summaries.items()
+                if v and not (isinstance(v, str) and v.startswith("Analysis failed:"))
+            }
+            if not real_summaries:
+                add_log_to_run(run_id,
+                    f"[Pipeline] All {len(artifact_summaries)} artifact analyses errored — "
+                    f"skipping synthesis (would hit the same dead LLM). "
+                    f"Check Settings > Agentic and the LLM endpoint, then re-run.",
+                    "error")
+                update_run_status(
+                    run_id, "failed", progress=0,
+                    error=f"All {len(artifact_summaries)} analyses failed — LLM unreachable",
+                )
+                return
+
         report_content = {}
+        multi_reports = None
+        zip_path = None
         if report_types:
-            add_log_to_run(run_id, f"[Report] Generating {' + '.join(report_types)} report(s)...", "info")
             _update_phase(run_id, "generating_report", 85)
 
             # Build pseudo-blueprint for report generation
@@ -592,24 +865,126 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
                 "description": f"Analysis of {collection_type} {collection_id}",
                 "artifacts": artifacts
             }
+            client_ids_list = list(client_info.keys())
 
-            try:
-                report_content = generate_final_report(
-                    run_id, pseudo_blueprint, list(client_info.keys()), 0,
-                    artifact_summaries, all_results, llm_config, report_types, anonymizer
-                )
-                save_report_content(run_id, report_content)
-            except Exception as report_error:
-                add_log_to_run(run_id, f"[Report] Error generating report: {str(report_error)}", "warning")
-                print(f"[AGENTIC] Report generation error: {report_error}", flush=True)
-                traceback.print_exc()
-                # Create fallback report
-                fallback_content = "# Analysis Report (Partial)\n\n"
-                fallback_content += "**Note:** Report generation encountered an error. Raw summaries below.\n\n"
-                for artifact, summary in artifact_summaries.items():
-                    fallback_content += f"## {artifact}\n{summary}\n\n"
-                report_content = {'technical': fallback_content}
-                save_report_content(run_id, report_content)
+            # Same details-read pattern as the main pipeline path. cross_client_
+            # synthesis + master_prompt are stashed in workflow.details by the
+            # route. Read once here and thread into both report-generation
+            # variants below.
+            _existing_workflow = get_workflow(run_id)
+            _existing_details = (_existing_workflow.get('details') or {}) if _existing_workflow else {}
+            existing_cross_client = bool(_existing_details.get('cross_client_synthesis'))
+            existing_master_prompt = _existing_details.get('master_prompt') or None
+
+            # Hostnames for the report header. Two-tier resolution:
+            # 1. Prefer row-derived (`_hostname` tag from the original
+            #    collection) — works in air-gap / uploaded-data scenarios.
+            # 2. For any client that returned zero rows (so no _hostname
+            #    to extract), fall back to a live VQL query against the
+            #    Velociraptor server. Without the fallback the report
+            #    header shows the ugly "Client-3653059e5f15efc6" stub
+            #    for any client that didn't deliver data.
+            existing_hostnames = {}
+            needs_live_lookup = []
+            for cid in client_ids_list:
+                hn = get_client_hostname(cid, all_results)
+                if hn and not hn.startswith('Client-'):
+                    existing_hostnames[cid] = hn
+                else:
+                    needs_live_lookup.append(cid)
+            if needs_live_lookup:
+                try:
+                    from services.agentic.collectors import resolve_hostnames as _rh
+                    live = _rh(needs_live_lookup)
+                    for cid in needs_live_lookup:
+                        existing_hostnames[cid] = live.get(cid) or get_client_hostname(cid, all_results)
+                except Exception:
+                    for cid in needs_live_lookup:
+                        existing_hostnames[cid] = get_client_hostname(cid, all_results)
+
+            # Multi-client: generate per-client reports + macro summary + ZIP.
+            # Mirrors the new-collection pipeline's multi-client branch
+            # (~L209-246) so an analyze-existing run that pulled rows from
+            # >1 client gets the same per-client + macro-level outputs and
+            # downloadable ZIP package, not just a single merged report.
+            if len(client_ids_list) > 1:
+                add_log_to_run(run_id, f"[Report] Multi-client mode: {len(client_ids_list)} clients", "info")
+                try:
+                    multi_reports = generate_multi_client_reports(
+                        run_id, pseudo_blueprint, client_ids_list, 0,
+                        artifact_summaries, all_results, llm_config, anonymizer,
+                        hostnames=existing_hostnames,
+                        # Note: this used to reference an undefined
+                        # `cross_client_synthesis` (lived in the main
+                        # pipeline's scope, not here). Use the
+                        # `existing_cross_client` value read from
+                        # workflow.details a few lines up.
+                        generate_macro=existing_cross_client,
+                        master_prompt=existing_master_prompt,
+                    )
+
+                    # Create ZIP package (per-client MDs + macro summary)
+                    zip_path = create_report_package(run_id, multi_reports)
+                    add_log_to_run(run_id, f"[Report] Created ZIP package: {zip_path}", "info")
+
+                    # Disk copy of per-client reports for the chat assistant.
+                    persist_per_client_reports(
+                        run_id,
+                        multi_reports.get('per_client') or {},
+                        multi_reports.get('hostnames') or {},
+                    )
+
+                    # Save macro report as the main report (back-compat with
+                    # the single-report download endpoint)
+                    report_content = {'technical': multi_reports['macro']}
+                    save_report_content(run_id, report_content)
+
+                    # Update workflow details so the UI surfaces per-client
+                    # download buttons and the multi-client badge.
+                    workflow = get_workflow(run_id)
+                    if workflow:
+                        if 'details' not in workflow:
+                            workflow['details'] = {}
+                        workflow['details']['multi_client'] = True
+                        workflow['details']['report_zip'] = zip_path
+                        workflow['details']['client_count'] = len(client_ids_list)
+                        workflow['details']['hostnames'] = multi_reports.get('hostnames', {})
+                        save_workflow(workflow)
+                except Exception as report_error:
+                    add_log_to_run(run_id, f"[Report] Error generating multi-client report: {str(report_error)}", "warning")
+                    print(f"[AGENTIC] Multi-client report error: {report_error}", flush=True)
+                    traceback.print_exc()
+                    # Fallback: raw summaries glued together so the operator
+                    # still has SOMETHING to read.
+                    fallback_content = "# Multi-Client Analysis (Partial)\n\n"
+                    fallback_content += "**Note:** Report generation encountered an error. Raw summaries below.\n\n"
+                    for artifact, summary in artifact_summaries.items():
+                        fallback_content += f"## {artifact}\n{summary}\n\n"
+                    report_content = {'technical': fallback_content}
+                    save_report_content(run_id, report_content)
+
+            # Single client: existing behaviour preserved verbatim.
+            else:
+                add_log_to_run(run_id, f"[Report] Generating {' + '.join(report_types)} report(s)...", "info")
+                try:
+                    report_content = generate_final_report(
+                        run_id, pseudo_blueprint, client_ids_list, 0,
+                        artifact_summaries, all_results, llm_config, report_types, anonymizer,
+                        hostnames=existing_hostnames,
+                        master_prompt=existing_master_prompt,
+                    )
+                    save_report_content(run_id, report_content)
+                except Exception as report_error:
+                    add_log_to_run(run_id, f"[Report] Error generating report: {str(report_error)}", "warning")
+                    print(f"[AGENTIC] Report generation error: {report_error}", flush=True)
+                    traceback.print_exc()
+                    # Create fallback report
+                    fallback_content = "# Analysis Report (Partial)\n\n"
+                    fallback_content += "**Note:** Report generation encountered an error. Raw summaries below.\n\n"
+                    for artifact, summary in artifact_summaries.items():
+                        fallback_content += f"## {artifact}\n{summary}\n\n"
+                    report_content = {'technical': fallback_content}
+                    save_report_content(run_id, report_content)
 
         # Import to IRIS if enabled
         if import_to_iris:
@@ -673,6 +1048,14 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
             except Exception as e:
                 add_log_to_run(run_id, f"[IRIS] Import error: {str(e)}", "warning")
 
+        # Persist artifact summaries + raw row data so interactive-mode
+        # re-runs on this workflow can use the cheap reports-only path.
+        # Mirrors the main pipeline's persistence step.
+        try:
+            persist_pipeline_artifacts(run_id, artifact_summaries, all_results)
+        except Exception as _e:
+            print(f"[AGENTIC] persist_pipeline_artifacts failed (non-fatal): {_e}", flush=True)
+
         _update_phase(run_id, "completed", 100)
         add_log_to_run(run_id, "[Pipeline] Analysis complete! Report ready.", "success")
         if not is_cancelled(run_id):
@@ -687,4 +1070,8 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         add_log_to_run(run_id, error_msg, "error")
         update_run_status(run_id, "failed", error=str(e))
     finally:
+        try:
+            _watchdog.cancel()
+        except Exception:
+            pass
         unregister_cancel(run_id)

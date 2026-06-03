@@ -1,0 +1,65 @@
+[
+  {
+    "_note": "Fixture: a successful console login WITHOUT MFA. Designed to trigger SIGMA rule aws_cloudtrail_console_login_success_without_mfa.yml.",
+    "eventTime": "2026-05-13T08:14:22Z",
+    "eventName": "ConsoleLogin",
+    "eventSource": "signin.amazonaws.com",
+    "awsRegion": "us-east-1",
+    "sourceIPAddress": "185.220.101.45",
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "userIdentity": {
+      "type": "IAMUser",
+      "principalId": "AIDA4EXAMPLE7Z3N5C",
+      "arn": "arn:aws:iam::123456789012:user/bob.smith",
+      "accountId": "123456789012",
+      "userName": "bob.smith"
+    },
+    "responseElements": {
+      "ConsoleLogin": "Success"
+    },
+    "additionalEventData": {
+      "MFAUsed": "NO",
+      "LoginTo": "https://console.aws.amazon.com/"
+    },
+    "eventID": "11111111-2222-3333-4444-555555555555",
+    "readOnly": false
+  },
+  {
+    "_note": "Successful console login WITH MFA — should NOT trigger the no-MFA rule.",
+    "eventTime": "2026-05-13T08:42:11Z",
+    "eventName": "ConsoleLogin",
+    "eventSource": "signin.amazonaws.com",
+    "awsRegion": "us-east-1",
+    "sourceIPAddress": "203.0.113.50",
+    "userIdentity": {
+      "type": "IAMUser",
+      "principalId": "AIDA4EXAMPLE7Z3N5D",
+      "arn": "arn:aws:iam::123456789012:user/alice.jones",
+      "accountId": "123456789012",
+      "userName": "alice.jones"
+    },
+    "responseElements": {
+      "ConsoleLogin": "Success"
+    },
+    "additionalEventData": {
+      "MFAUsed": "YES"
+    },
+    "eventID": "22222222-3333-4444-5555-666666666666"
+  },
+  {
+    "_note": "Failed console login — sanity record for LLM context.",
+    "eventTime": "2026-05-13T08:55:03Z",
+    "eventName": "ConsoleLogin",
+    "eventSource": "signin.amazonaws.com",
+    "awsRegion": "us-east-1",
+    "sourceIPAddress": "185.220.101.45",
+    "responseElements": {
+      "ConsoleLogin": "Failure"
+    },
+    "additionalEventData": {
+      "MFAUsed": "NO"
+    },
+    "errorMessage": "Failed authentication",
+    "eventID": "33333333-4444-5555-6666-777777777777"
+  }
+]

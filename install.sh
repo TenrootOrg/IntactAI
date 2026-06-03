@@ -31,6 +31,7 @@ source "${SCRIPT_DIR}/lib/config.sh"
 source "${SCRIPT_DIR}/lib/docker.sh"
 source "${SCRIPT_DIR}/lib/modules.sh"
 source "${SCRIPT_DIR}/lib/health.sh"
+source "${SCRIPT_DIR}/lib/upgrade_check.sh"
 
 # ============================================================================
 # Main Installation Flow
@@ -57,6 +58,22 @@ main() {
     if ! check_network_connectivity; then
         log_error "Network connectivity check failed - aborting installation"
         exit 1
+    fi
+
+    # -------------------------------------------------------------------------
+    # Optional: poll upstream for newer module releases and offer to bump
+    # the pinned versions in config.yaml. Controlled by
+    # options.check_module_updates in config.yaml; default false so an
+    # unattended install never blocks on a prompt. Must run AFTER
+    # check_config (config.yaml exists + parses) and AFTER the network
+    # check (we're about to hit api.github.com), but BEFORE any module
+    # is deployed, so the new pins drive the install.
+    # -------------------------------------------------------------------------
+    local check_updates_flag
+    check_updates_flag=$(read_config "['options']['check_module_updates']")
+    if [[ "$check_updates_flag" == "True" ]]; then
+        check_module_updates
+        echo ""
     fi
 
     # -------------------------------------------------------------------------
@@ -96,6 +113,7 @@ main() {
     # Forensic Collection (Velociraptor/Offline Collector) - Air-gap Support
     # -------------------------------------------------------------------------
     download_offline_collector_binaries
+    download_legacy_velociraptor_binaries
     create_velociraptor_collector
     pull_velociraptor_base_image
 
@@ -111,6 +129,14 @@ main() {
     download_sigma_rules
     pull_dfir_o365rc_image
     generate_azure_certificate
+
+    # -------------------------------------------------------------------------
+    # AWS Security Tools (Prowler posture image)
+    # -------------------------------------------------------------------------
+    # boto3 for the IAM enumeration (CloudFox-equivalent) is installed
+    # into the backend container by install_deps.py — driven off the
+    # `aws` module entry in config.yaml + requirements-aws.txt.
+    pull_prowler_image
 
     # -------------------------------------------------------------------------
     # Configuration

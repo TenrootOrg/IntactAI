@@ -16,30 +16,50 @@ from pathlib import Path
 SIGMA_RULES_DIR = os.getenv('SIGMA_RULES_DIR', '/opt/sigma-rules')
 AZURE_RULES_PATH = os.path.join(SIGMA_RULES_DIR, 'rules', 'cloud', 'azure')
 M365_RULES_PATH = os.path.join(SIGMA_RULES_DIR, 'rules', 'cloud', 'm365')
+AWS_RULES_PATH = os.path.join(SIGMA_RULES_DIR, 'rules', 'cloud', 'aws')
+
+# Cloud category → default rule directory set. Used by load_cloud_rules().
+CLOUD_RULE_DIRS = {
+    'azure': [AZURE_RULES_PATH, M365_RULES_PATH],
+    'aws':   [AWS_RULES_PATH],
+}
 
 
 # =============================================================================
 # Rule Loading
 # =============================================================================
 
-def load_azure_rules(
+def load_cloud_rules(
+    category: str = 'azure',
     rule_dirs: Optional[List[str]] = None,
-    categories: Optional[List[str]] = None
+    categories: Optional[List[str]] = None,
 ) -> List[Dict]:
     """
-    Load SIGMA rules for Azure/M365 from the rules directory.
+    Load SIGMA rules for a cloud provider category ('azure' or 'aws') from
+    the SigmaHQ rules directory.
 
     Args:
-        rule_dirs: Custom rule directories (default: Azure + M365 from SigmaHQ)
-        categories: Filter by categories (e.g., ['authentication', 'privilege_escalation'])
+        category: 'azure' (default — Azure + M365) or 'aws'. Selects which
+            default rule subtrees under /opt/sigma-rules/rules/cloud/ to
+            load.
+        rule_dirs: Override directories. If provided, `category` is
+            ignored.
+        categories: Filter loaded rules by tag substring (e.g.
+            ['authentication', 'privilege_escalation']).
 
     Returns:
-        List of parsed SIGMA rules as dicts
+        List of parsed SIGMA rules as dicts. Each rule has `_file_path` +
+        `_file_name` added for downstream provenance.
     """
     if rule_dirs is None:
-        rule_dirs = [AZURE_RULES_PATH, M365_RULES_PATH]
+        rule_dirs = CLOUD_RULE_DIRS.get(category)
+        if rule_dirs is None:
+            raise ValueError(
+                f"Unknown SIGMA cloud category: {category!r}. "
+                f"Supported: {list(CLOUD_RULE_DIRS)}"
+            )
 
-    rules = []
+    rules: List[Dict] = []
 
     for rule_dir in rule_dirs:
         if not os.path.exists(rule_dir):
@@ -63,8 +83,25 @@ def load_azure_rules(
                     except Exception as e:
                         print(f"[SIGMA] Warning: Failed to load {rule_path}: {e}")
 
-    print(f"[SIGMA] Loaded {len(rules)} Azure/M365 detection rules")
+    label = {'azure': 'Azure/M365', 'aws': 'AWS'}.get(category, category)
+    print(f"[SIGMA] Loaded {len(rules)} {label} detection rules")
     return rules
+
+
+def load_azure_rules(
+    rule_dirs: Optional[List[str]] = None,
+    categories: Optional[List[str]] = None
+) -> List[Dict]:
+    """Back-compat thin wrapper around `load_cloud_rules('azure', …)`."""
+    return load_cloud_rules('azure', rule_dirs=rule_dirs, categories=categories)
+
+
+def load_aws_rules(
+    rule_dirs: Optional[List[str]] = None,
+    categories: Optional[List[str]] = None
+) -> List[Dict]:
+    """Convenience wrapper for the AWS rule subtree."""
+    return load_cloud_rules('aws', rule_dirs=rule_dirs, categories=categories)
 
 
 def load_single_rule(rule_path: str) -> Optional[Dict]:
@@ -121,7 +158,11 @@ def run_sigma_rules(
         'rules_count': len(rules),
         'logs_count': sum(len(v) for v in logs.values()),
         'sources_processed': list(logs.keys()),
-        'matches_by_severity': {'informational': 0, 'low': 0, 'medium': 0, 'high': 0, 'critical': 0}
+        'matches_by_severity': {'informational': 0, 'low': 0, 'medium': 0, 'high': 0, 'critical': 0},
+        # rule_tally maps rule_title -> hit_count. Surfaces "rule X fired N times"
+        # to the dashboard so the operator sees the shape of detection at a
+        # glance instead of just a flat total.
+        'rule_tally': {}
     }
 
     findings = {}
@@ -153,6 +194,8 @@ def run_sigma_rules(
                 finding = create_finding(rule, match)
                 findings[source_key].append(finding)
                 status['matches_by_severity'][rule_level] += 1
+
+            status['rule_tally'][rule_name] = status['rule_tally'].get(rule_name, 0) + len(rule_matches)
 
     status['execution_end'] = datetime.utcnow().isoformat()
     status['total_findings'] = sum(len(v) for v in findings.values())
@@ -208,7 +251,31 @@ def is_source_relevant(source_name: str, product: str, service: str) -> bool:
         if 'azure' in source_lower or 'entra' in source_lower:
             return True
 
-    # Service-specific matching
+    # AWS product matching — SigmaHQ AWS rules have `logsource.product: aws`
+    # and a service like `cloudtrail` / `guardduty`. Records collected by
+    # the AWS pipeline are grouped under sigma_prefix keys like
+    # `AWS.CloudTrail`, `AWS.GuardDuty`, `AWS.AccessAnalyzer`, `AWS.Prowler`
+    # — match any of those when the rule targets AWS.
+    if product == 'aws':
+        if 'aws' in source_lower:
+            return True
+        # Service-specific match for AWS even if the prefix doesn't include "aws"
+        aws_service_mappings = {
+            'cloudtrail':     ['cloudtrail', 'trail'],
+            'guardduty':      ['guardduty', 'gd'],
+            'iam':            ['iam'],
+            's3':             ['s3', 'bucket'],
+            'ec2':            ['ec2'],
+            'lambda':         ['lambda'],
+            'eks':            ['eks'],
+            'accessanalyzer': ['accessanalyzer'],
+            'sts':            ['sts', 'assumerole'],
+        }
+        for svc, keywords in aws_service_mappings.items():
+            if service == svc and any(kw in source_lower for kw in keywords):
+                return True
+
+    # Service-specific matching (Azure)
     service_mappings = {
         'signinlogs': ['signin', 'sign-in', 'authentication'],
         'auditlogs': ['audit', 'directory'],

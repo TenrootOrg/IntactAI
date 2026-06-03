@@ -41,14 +41,52 @@ DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_BACKOFF = 5  # seconds, then 2x, 3x
 
 
+# The backend image bind-mounts `services/` read-only for live code
+# reloads, so the bundled skills under `services/agentic/skills/` are
+# NOT writable from inside the container. Refresh has to write somewhere
+# else — `/app/data` is the writable volume already used by the LLM
+# catalog and tools inventory, so we cache skills there.
+#
+# Reader (`services.agentic.skills`) picks up `AGENTIC_SKILLS_DIR` from
+# the environment; the backend compose sets that to `/app/data/skills`
+# so both ends agree.
+_BUNDLED_SKILLS_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "agentic", "skills"
+)
+_CACHE_SKILLS_DIR = os.environ.get("AGENTIC_SKILLS_DIR", "/app/data/skills")
+
+
 def _skills_dir() -> str:
-    """Resolve the skills directory relative to this file (services/.../agentic/skills)."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(here, "agentic", "skills")
+    """Writable skill cache. Seeded from the bundled tree on first use
+    so MANIFEST, artifact maps, and any unchanged-since-bundle skills
+    are present even if the upstream fetch fails."""
+    if not os.path.isdir(_CACHE_SKILLS_DIR) or not os.listdir(_CACHE_SKILLS_DIR):
+        try:
+            os.makedirs(os.path.dirname(_CACHE_SKILLS_DIR), exist_ok=True)
+            if os.path.isdir(_BUNDLED_SKILLS_DIR):
+                # copytree refuses an existing target; copy into the empty dir
+                shutil.copytree(_BUNDLED_SKILLS_DIR, _CACHE_SKILLS_DIR,
+                                dirs_exist_ok=True)
+                logger.info(
+                    "[Skills] Seeded cache %s from bundle %s",
+                    _CACHE_SKILLS_DIR, _BUNDLED_SKILLS_DIR,
+                )
+            else:
+                os.makedirs(_CACHE_SKILLS_DIR, exist_ok=True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[Skills] cache seed failed: %s", e)
+            os.makedirs(_CACHE_SKILLS_DIR, exist_ok=True)
+    return _CACHE_SKILLS_DIR
 
 
 def _manifest_path() -> str:
-    return os.path.join(_skills_dir(), "MANIFEST.txt")
+    """MANIFEST.txt ships with the code — read from the bundle. The cache
+    gets its own seeded copy via _skills_dir(), but on a fresh install
+    the bundle is the only place that's guaranteed to have it."""
+    cache_manifest = os.path.join(_CACHE_SKILLS_DIR, "MANIFEST.txt")
+    if os.path.exists(cache_manifest):
+        return cache_manifest
+    return os.path.join(_BUNDLED_SKILLS_DIR, "MANIFEST.txt")
 
 
 def _read_manifest() -> List[Tuple[str, str]]:

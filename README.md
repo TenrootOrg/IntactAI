@@ -4,6 +4,36 @@ A comprehensive security platform integrating Velociraptor EDR, ELK Stack, TimeS
 
 <!-- readme propagation test 2026-04-29 -->
 
+## License
+
+Intact.AI is licensed under the **GNU Affero General Public License v3.0
+(AGPL-3.0)**. See [LICENSE](./LICENSE) for the full license text.
+
+> If you run a modified version of this software as a network service
+> (e.g. accessible to remote users), AGPL-3.0 requires you to offer the
+> source of your modifications to those users.
+
+## Notice
+
+**This version is a modified version of the original code.** Intact.AI is
+built on top of and incorporates code from several upstream open-source
+projects, including (but not limited to):
+
+| Upstream project | License |
+|---|---|
+| [Velociraptor](https://github.com/Velocidex/velociraptor) | AGPL-3.0 |
+| [Timesketch](https://github.com/google/timesketch) | Apache-2.0 |
+| [Plaso](https://github.com/log2timeline/plaso) | Apache-2.0 |
+| [DFIR-IRIS](https://github.com/dfir-iris/iris-web) | LGPL-3.0 |
+| [DFIR-O365RC](https://github.com/ANSSI-FR/DFIR-O365RC) | GPL-3.0 |
+| [DetectRaptor](https://github.com/mgreen27/DetectRaptor) | Apache-2.0 |
+| [Sigma rules](https://github.com/SigmaHQ/sigma) | DRL-1.1 |
+| [Anthropic Cybersecurity Skills](https://github.com/mukul975/Anthropic-Cybersecurity-Skills) | Apache-2.0 |
+
+The versions of these projects shipped here have been modified for
+integration into the Intact platform. Full attribution and per-component
+license details are recorded in [NOTICE](./NOTICE). Refer to each
+upstream project's repository for the unmodified original.
 
 ## Requirements
 
@@ -123,6 +153,40 @@ sudo bash scripts/repair_modules.sh elk
 
 Available modules: `elk`, `timesketch`, `velociraptor`, `iris`, `portainer`, `backend`, `nginx`
 
+### Change Platform IP
+
+Repoint an already-installed platform to a new IP (e.g. after moving the
+VM to a different network). `config.yaml`'s `domain:` is the single
+source of truth; this script updates it and re-runs the same propagation
+the installer uses, then restarts the affected containers.
+
+```bash
+# Interactive (asks for confirmation)
+sudo bash scripts/change_ip.sh 192.168.120.11
+
+# Non-interactive
+sudo bash scripts/change_ip.sh 192.168.120.11 --yes
+```
+
+What it does:
+1. Sets `domain: <NEW_IP>` in `config.yaml`
+2. Re-propagates the IP into `modules/velociraptor/.env`
+3. Sweeps `modules/` + `scripts/` for any stray old-IP literals and replaces them
+4. Regenerates the TLS certificates with `CN=<NEW_IP>` (nginx + IRIS)
+5. Patches the Velociraptor server config, restarts it so the client
+   config + API config regenerate, and restarts the backend
+6. Refreshes the nginx containers (clears upstream DNS cache + serves the new cert)
+7. Regenerates the Velociraptor client installers in `client_installers/`
+
+It is idempotent (re-running with the current IP is a no-op) and safe to
+re-run if interrupted.
+
+> **Note:** Velociraptor agents already deployed on endpoints have the
+> old server IP baked in and will **not** reconnect. Redeploy those
+> endpoints with the freshly generated installers in `client_installers/`,
+> or keep the old IP reachable as an alias. Browser TLS warnings are
+> expected (self-signed certificate).
+
 ### Clean/Uninstall
 
 To remove Intact.AI components (containers, volumes, data):
@@ -155,44 +219,13 @@ Available options:
 
 For distributing Intact.AI as a pre-configured VM image (OVA) to clients, including air-gapped environments.
 
-### Prepare Image for Export
-
-Before exporting the VM, clean all development artifacts:
-
-```bash
-# Preview what will be deleted (dry-run)
-sudo bash scripts/prepare-image.sh --dry-run
-
-# Clean everything for distribution
-sudo bash scripts/prepare-image.sh
-
-# Keep Claude Code files (for debugging)
-sudo bash scripts/prepare-image.sh --keep-claude
-
-# Keep .git and .ssh (for pushing fixes before final export)
-sudo bash scripts/prepare-image.sh --keep-git
-```
-
-**What gets cleaned:**
-- Docker containers and volumes (client/case data)
-- SQLite databases and reports
-- SSL certificates (regenerated on first-init)
-- Client installers (regenerated on first-init)
-- Log files, caches, history
-- SSH keys, Claude Code files, VSCode server
-
-**What stays:**
-- `config.yaml` (client edits this)
-- `data/tools/` (forensic tools for air-gapped)
-- All source code
-
 ### Client First Boot
 
 After client imports the VM and edits `config.yaml`:
 
 ```bash
 # Initialize all services
-sudo bash scripts/first-init.sh
+sudo bash install.sh
 ```
 
 **What it does:**
@@ -204,17 +237,83 @@ sudo bash scripts/first-init.sh
 
 ### Distribution Workflow
 
-1. **Prepare:** `sudo bash scripts/prepare-image.sh`
-2. **Export:** Create OVA/snapshot in your hypervisor
-3. **Deliver:** Transfer OVA to client (network or USB)
-4. **Client Setup:**
+1. **Export:** Create OVA/snapshot in your hypervisor
+2. **Deliver:** Transfer OVA to client (network or USB)
+3. **Client Setup:**
    - Import OVA
    - Edit `config.yaml` (set IP/domain and passwords)
-   - Run `sudo bash scripts/first-init.sh`
+   - Run `sudo bash install.sh`
    - Access dashboard at `http://CLIENT_IP`
 
----
+## Agentic skill audits
 
-## License
+The DFIR skills bundled with the agentic pipeline are audited on every
+update. Latest results:
 
-Internal use only.
+- 🔒 **Security scan** ([`cisco_scan.csv`](modules/backend/services/agentic/skills/audits/cisco_scan.csv))
+  — scanned with [Cisco AI Defense Skill Scanner](https://github.com/cisco-ai-defense/skill-scanner).
+  **0 malicious · 6 false_positive · 63 safe** (69 total).
+- 📈 **Value evaluation** ([`value_evaluation.csv`](modules/backend/services/agentic/skills/audits/value_evaluation.csv))
+  — each skill runs through a baseline-vs-skilled LLM-as-judge comparison.
+  **38 high_value · 30 moderate_value · 1 low_value · 0 worse**.
+
+Methodology + per-skill detail: [`modules/backend/services/agentic/skills/README.md`](modules/backend/services/agentic/skills/README.md).
+
+## Third-party data
+
+The CVE Scan module (Automation → On-Prem → CVE Scan) uses two
+locally-cached, upstream-refreshable feeds so scans are fast and
+work fully offline once populated:
+
+1. **CPE vendor:product dictionary** — at
+   [`modules/backend/services/cve_scan/data/cpes.csv`](modules/backend/services/cve_scan/data/cpes.csv).
+   Resolves installed-software names to CPE identifiers. Vendored
+   from [**tiiuae/cpedict**](https://github.com/tiiuae/cpedict)
+   (daily-rebuilt from NVD's official
+   [CPE Dictionary](https://nvd.nist.gov/products/cpe)).
+2. **Local CVE mirror** — a SQLite index at
+   `/app/data/cve_cache/cves.db` covering NVD's full CVE corpus
+   (~350,000 entries). Populated from the community-maintained
+   [**fkie-cad/nvd-json-data-feeds**](https://github.com/fkie-cad/nvd-json-data-feeds)
+   project, which reconstructs the per-year compressed JSON files
+   NIST retired in Dec 2023 and refreshes them every 2 hours.
+   Replaces per-product NVD REST calls — a 1,000-product scan that
+   used to take 10-30 minutes now finishes in seconds.
+
+Both refresh paths:
+- **Fresh install**: the backend bootstraps both on first start
+  (`init_db()` is cheap; the ~50 MB CVE-feed download runs in a
+  background thread so the API serves immediately and scans
+  transparently fall back to NVD REST until the bulk load finishes).
+- **Manual refresh**: Settings → Maintenance → Task 3.5 refreshes
+  both in place without a restart.
+
+Live CVE metadata at scan time still comes from the
+[NVD REST API 2.0](https://nvd.nist.gov/developers/vulnerabilities)
+as a fallback when the local DB hasn't seen a product yet, with an
+optional operator-supplied API key (Settings → CVE Scan) for the
+50 req/30 s rate tier.
+
+### Attribution & terms
+
+The downstream data we redistribute (the cached CVE records, CPE
+bindings, CVSS scores) is sourced from MITRE's CVE List and NIST's
+National Vulnerability Database. Both are public-domain U.S.
+Government records governed by their own terms of use:
+
+- **CVE records** — © MITRE Corporation, under the
+  [CVE Terms of Use](https://www.cve.org/Legal/TermsOfUse). Public
+  data; redistribution requires the "as-is, no warranties" notice.
+- **NVD enrichment** (CPE, CVSS, descriptions) — © NIST, under the
+  [NVD Terms of Use](https://nvd.nist.gov/developers/terms-of-use).
+  Public data; users must acknowledge NVD as the source.
+- **fkie-cad/nvd-json-data-feeds** (community redistribution
+  pipeline) — the upstream project does not state a separate
+  license; it explicitly notes "uses and redistributes data from
+  the NVD API but is neither endorsed nor certified by the NVD."
+  We rely on the same disclaimer for our local cache.
+- **tiiuae/cpedict** — same pattern; redistributes NVD CPE entries
+  under NVD's TOU.
+
+Intact does not modify the CVE descriptions, IDs, or CVSS scores
+during scanning; it only matches installed products against them.

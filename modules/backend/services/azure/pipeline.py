@@ -24,7 +24,8 @@ from services.azure.reports import generate_azure_report, save_azure_report
 from services.agentic.utils import (
     extract_timeline_events,
     filter_results_by_time,
-    create_time_filter_func
+    create_time_filter_func,
+    normalize_all_results,
 )
 from services.iris_service import import_to_iris
 from services.workflow_logger import add_log_to_run
@@ -40,95 +41,382 @@ def _set_progress(run_id: str, pct: int) -> None:
             pass
 
 
-def _build_findings_report(blueprint: Dict, collected_data: Dict, findings: Dict, time_filter: Dict) -> str:
-    """Build a structured markdown report listing findings without LLM analysis.
+def _make_phase_timer(run_id: str):
+    """Build phase_start/phase_end helpers bound to a run_id.
 
-    Used when LLM is disabled. Each finding gets the SIGMA/UAL metadata laid out
-    so a human (or downstream LLM) can act on it.
+    Each phase_end call persists `time.monotonic() - start` onto the workflow
+    row's phase_timings dict. Helpers swallow exceptions so timing never breaks
+    the pipeline. If the same phase name is started twice without an end the
+    first start is silently overwritten — the timing dashboard would show only
+    the second run, but real phases never re-enter.
     """
-    lines = []
-    lines.append("# Azure Security Findings Report")
-    lines.append("")
-    lines.append(f"**Scan Date:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    lines.append(f"**Blueprint:** {blueprint.get('name', 'Custom')}")
-    lines.append(f"**Sources:** {', '.join(collected_data.keys()) or 'none'}")
-    total_events = sum(len(v) for v in collected_data.values())
-    total_findings = sum(len(v) for v in findings.values())
-    lines.append(f"**Total Events Collected:** {total_events:,}")
-    lines.append(f"**Total Findings:** {total_findings:,}")
-    lines.append(f"**Finding Categories:** {len(findings)}")
+    import time as _time
+
+    starts: Dict[str, float] = {}
+
+    def phase_start(name: str) -> None:
+        starts[name] = _time.monotonic()
+
+    def phase_end(name: str) -> None:
+        t0 = starts.pop(name, None)
+        if t0 is None or not run_id:
+            return
+        try:
+            from services.workflow_service import record_phase_timing
+            record_phase_timing(run_id, name, _time.monotonic() - t0)
+        except Exception as ex:
+            print(f"[PIPELINE] phase timing failed for {name}: {ex}", flush=True)
+
+    return phase_start, phase_end
+
+
+def _run_post_collection_phases(
+    run_id: str,
+    collected_data: Dict[str, List[Dict]],
+    options: Dict[str, Any],
+    *,
+    blueprint: Dict,
+    azure_config: Dict,
+    enable_llm: bool,
+    llm_config: Dict,
+    bp_settings: Dict,
+    phase_start,
+    phase_end,
+    result: Dict,
+) -> Dict:
+    """Phases 3 through 7 of the Azure pipeline.
+
+    Single source of truth shared by the online (`run_azure_pipeline`)
+    and offline (`run_azure_on_existing`) entry points. The caller is
+    responsible for getting `collected_data` populated — by collection
+    against the live tenant, or by parsing uploaded files. Everything
+    after that is identical:
+
+      * Phase 3 — time filter
+      * Timestamp normalisation (same canonical format on every path)
+      * Phase 4 — SIGMA detection (with `scope_mode`)
+      * Phase 4b — UAL operation-string pre-detection
+      * Phase 4c — state-snapshot wrapping (CA policies, federation)
+      * Phase 5 — LLM analysis (with `pipeline_kind="azure"`)
+      * Phase 6 — Azure-formatted report (`generate_azure_report`)
+      * Phase 7 — optional IRIS import
+
+    `result` is mutated in place: phases dict, findings, analysis,
+    reports, has_report, status. Returned for callers that want to
+    chain.
+    """
+    from services.workflow_service import is_cancelled, record_sigma_rule_tally, update_run_status
+
+    # Pick up operator-supplied master prompt from workflow.details
+    # if interactive mode populated one. Threaded into both the
+    # per-rule LLM analyse step and the report-synthesis step.
+    master_prompt = None
+    try:
+        from services.file_storage_service import get_workflow as _get_wf
+        _wf = _get_wf(run_id) or {}
+        master_prompt = ((_wf.get('details') or {}).get('master_prompt') or '').strip() or None
+    except Exception:
+        master_prompt = None
+
+    # Apply timestamp normalisation right at the entry — every downstream
+    # phase (SIGMA matching, LLM prompt, report writer) sees one canonical
+    # format. Same helper the on-prem (Velociraptor) flow uses.
+    try:
+        normalize_all_results(collected_data)
+        add_log_to_run(run_id, "[AZURE] Normalized timestamps across all sources", "info")
+    except Exception as ex:
+        add_log_to_run(run_id, f"[AZURE] Timestamp normalization failed (non-fatal): {ex}", "warning")
+
+    if is_cancelled(run_id):
+        return result
+
+    # ---- Phase 3: Time filter ----
+    time_filter = options.get('time_filter')
     if time_filter:
-        lines.append(f"**Time Filter:** `{time_filter}`")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-    lines.append("> **Note:** This report was generated without LLM analysis. "
-                 "Enable LLM in the scan options for forensic narrative + recommended actions.")
-    lines.append("")
+        add_log_to_run(run_id, f"[AZURE] Applying time filter: {time_filter}", "info")
+        time_filter_func = create_time_filter_func(time_filter)
+        if time_filter_func:
+            collected_data = filter_results_by_time(collected_data, time_filter_func)
+            filtered_count = sum(len(v) for v in collected_data.values())
+            add_log_to_run(run_id, f"[AZURE] After time filter: {filtered_count} records", "info")
 
-    # Summary table
-    lines.append("## Findings Summary")
-    lines.append("")
-    lines.append("| Category / Rule | Count | Severity |")
-    lines.append("|---|---|---|")
-    for key, items in sorted(findings.items(), key=lambda kv: -len(kv[1])):
-        if not items:
-            continue
-        # Get most common severity in this category
-        sev_counts = {}
-        for item in items:
-            sev = item.get('severity') or item.get('_severity') or 'unknown'
-            sev_counts[sev] = sev_counts.get(sev, 0) + 1
-        sev_str = ", ".join(f"{k}={v}" for k, v in sorted(sev_counts.items(), key=lambda x: -x[1]))
-        lines.append(f"| {key} | {len(items)} | {sev_str} |")
-    lines.append("")
+    result['collected_data'] = collected_data
+    _set_progress(run_id, 60)
 
-    # Detailed findings per category
-    lines.append("## Findings Detail")
-    lines.append("")
-    for key, items in sorted(findings.items(), key=lambda kv: -len(kv[1])):
-        if not items:
-            continue
-        lines.append(f"### {key} ({len(items)} events)")
-        lines.append("")
-        for i, item in enumerate(items[:50], 1):  # cap at 50 per category
-            record = item.get('matched_record', item)
-            ts = item.get('_timestamp') or record.get('CreationTime') or record.get('createdDateTime') or '?'
-            sev = item.get('severity') or item.get('_severity') or '?'
-            cat = item.get('_category') or record.get('_category') or '?'
-            desc = item.get('_description') or record.get('_description') or item.get('rule_title', '')
+    if is_cancelled(run_id):
+        return result
 
-            # Extract actor from various possible field shapes
-            actor = (
-                record.get('UserId')
-                or record.get('userPrincipalName')
-                or record.get('Actor')
+    # ---- Phase 4: SIGMA detection ----
+    add_log_to_run(run_id, "[AZURE] Phase 4: Running SIGMA detection rules...", "info")
+    _set_progress(run_id, 65)
+    phase_start("detection")
+
+    min_severity = options.get('min_severity') or bp_settings.get('min_severity', 'low')
+    add_log_to_run(run_id, f"[AZURE] Minimum severity filter: {min_severity}+", "info")
+    findings, detection_status = run_sigma_rules(
+        logs=collected_data,
+        min_level=min_severity,
+    )
+
+    result['phases']['detection'] = {
+        'status': 'complete',
+        'rules_executed': detection_status.get('rules_count', 0),
+        'total_findings': detection_status.get('total_findings', 0),
+        'findings_by_severity': detection_status.get('matches_by_severity', {}),
+        'rule_tally': detection_status.get('rule_tally', {}),
+    }
+
+    rule_tally = detection_status.get('rule_tally') or {}
+    if rule_tally:
+        try:
+            record_sigma_rule_tally(run_id, rule_tally)
+        except Exception as ex:
+            print(f"[PIPELINE] sigma tally persist failed: {ex}", flush=True)
+
+    add_log_to_run(
+        run_id,
+        f"[AZURE] SIGMA detection complete: {detection_status.get('total_findings', 0)} findings",
+        "info",
+    )
+    for rname, rcount in sorted(rule_tally.items(), key=lambda kv: -kv[1]):
+        add_log_to_run(run_id, f"[AZURE]   {rname}: {rcount}", "info")
+
+    # ---- Phase 4b: UAL pre-detected findings ----
+    SEVERITY_RANK = {'informational': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
+    min_rank = SEVERITY_RANK.get(min_severity, 1)
+
+    ual_events = collected_data.get('Azure.UnifiedAudit', [])
+    ual_findings_added = 0
+    if ual_events:
+        filtered = [e for e in ual_events
+                    if SEVERITY_RANK.get(e.get('_severity', 'low'), 1) >= min_rank]
+        by_category = {}
+        for event in filtered:
+            cat = event.get('_category', 'unknown')
+            if cat == 'unknown':
+                continue
+            key = f"UAL.{cat}"
+            if key not in by_category:
+                by_category[key] = []
+            by_category[key].append({
+                '_source': 'Azure.UnifiedAudit',
+                '_severity': event.get('_severity'),
+                '_category': event.get('_category'),
+                '_description': event.get('_description'),
+                '_timestamp': event.get('CreationTime') or event.get('_timestamp'),
+                'rule_title': f"UAL: {event.get('_description', cat)}",
+                'severity': event.get('_severity'),
+                'matched_record': event,
+                '_finding_time': datetime.utcnow().isoformat(),
+            })
+        for key, items in by_category.items():
+            findings[key] = items
+            ual_findings_added += len(items)
+        if ual_findings_added > 0:
+            add_log_to_run(
+                run_id,
+                f"[AZURE] Added {ual_findings_added} UAL pre-detected findings "
+                f"in {len(by_category)} categories (severity >= {min_severity})",
+                "info",
             )
-            initiated_by = record.get('initiatedBy')
-            if not actor and isinstance(initiated_by, dict):
-                user_info = initiated_by.get('user') or {}
-                if isinstance(user_info, dict):
-                    actor = user_info.get('userPrincipalName')
-            # UAL Actor field can be a list like [{Type:0, ID:"user@x.com"}]
-            if not actor and isinstance(record.get('Actor'), list):
-                for a in record['Actor']:
-                    if isinstance(a, dict) and a.get('ID'):
-                        actor = a['ID']
-                        break
-            actor = actor or '?'
 
-            op = record.get('Operation') or record.get('activityDisplayName') or '?'
-            lines.append(f"**{i}.** `{ts}` | **{sev.upper()}** | `{cat}`")
-            lines.append(f"   - Operation: `{op}`")
-            lines.append(f"   - Actor: `{actor}`")
-            if desc and desc != op:
-                lines.append(f"   - Description: {desc}")
-            lines.append("")
-        if len(items) > 50:
-            lines.append(f"_(... {len(items) - 50} more events truncated, see raw data)_")
-            lines.append("")
+    # ---- Phase 4c: state-snapshot findings ----
+    STATE_SOURCE_MAP = {
+        'Azure.CAPolicy': 'INV.ca_policies',
+        'Azure.Federation': 'INV.federation',
+    }
+    state_findings_added = 0
+    for src_key, finding_key in STATE_SOURCE_MAP.items():
+        records = collected_data.get(src_key, [])
+        if not records:
+            continue
+        filtered = [r for r in records
+                    if SEVERITY_RANK.get(r.get('_severity', 'low'), 1) >= min_rank]
+        if not filtered:
+            continue
+        findings[finding_key] = [
+            {
+                '_source': src_key,
+                '_severity': r.get('_severity'),
+                '_category': r.get('_category'),
+                '_description': r.get('_description'),
+                '_timestamp': None,
+                'rule_title': f"State: {r.get('_description', finding_key)}",
+                'rule_description': f'Current configuration of {src_key} (state snapshot, not an event)',
+                'severity': r.get('_severity'),
+                'matched_record': r,
+                '_finding_time': datetime.utcnow().isoformat(),
+                '_state_snapshot': True,
+            }
+            for r in filtered
+        ]
+        state_findings_added += len(filtered)
+    if state_findings_added > 0:
+        add_log_to_run(
+            run_id,
+            f"[AZURE] Added {state_findings_added} state-snapshot findings "
+            f"from {len([k for k in STATE_SOURCE_MAP if STATE_SOURCE_MAP[k] in findings])} sources",
+            "info",
+        )
 
-    return "\n".join(lines)
+    result['findings'] = findings
+    _set_progress(run_id, 70)
+    phase_end("detection")
+
+    if is_cancelled(run_id):
+        return result
+
+    # ---- Phase 5: LLM analysis ----
+    analysis_results = {}
+    if enable_llm and findings:
+        add_log_to_run(run_id, "[AZURE] Phase 5: Running LLM analysis...", "info")
+        _set_progress(run_id, 75)
+        phase_start("analysis")
+        try:
+            analysis_results = analyze_artifacts(
+                run_id=run_id,
+                all_results=findings,
+                llm_config=llm_config,
+                anonymizer=options.get('anonymizer'),
+                pipeline_kind="azure",
+                master_prompt=master_prompt,
+            )
+            result['phases']['analysis'] = {
+                'status': 'complete',
+                'artifacts_analyzed': len(analysis_results),
+            }
+            add_log_to_run(
+                run_id,
+                f"[AZURE] LLM analysis complete: {len(analysis_results)} summaries",
+                "info",
+            )
+            # Persist analyse outputs to disk so Interactive Reports-only
+            # rerun can replay them cheaply without re-running per-rule
+            # LLM calls. Same shape as agentic/aws.
+            try:
+                from services.agentic.reports import persist_pipeline_artifacts as _persist
+                _persist(run_id, analysis_results, findings)
+            except Exception as _pe:
+                print(f"[AZURE] Failed to persist pipeline artifacts: {_pe}", flush=True)
+        except Exception as e:
+            add_log_to_run(run_id, f"[AZURE] LLM analysis failed: {e}", "error")
+            result['phases']['analysis'] = {'status': 'error', 'error': str(e)}
+        phase_end("analysis")
+    else:
+        skip_reason = "LLM disabled" if not enable_llm else "no findings"
+        result['phases']['analysis'] = {'status': 'skipped', 'reason': skip_reason}
+        add_log_to_run(run_id, f"[AZURE] LLM analysis skipped: {skip_reason}", "warning")
+
+    result['analysis'] = analysis_results
+    _set_progress(run_id, 90)
+
+    if is_cancelled(run_id):
+        return result
+
+    # ---- Phase 6: Report generation ----
+    # We only generate a "report" when LLM ran. Without an LLM pass,
+    # the only thing we could produce is a markdown rendering of the
+    # findings — which is just a worse view of the raw Data ZIP, so we
+    # skip it entirely and let the user pull the Data button. The
+    # workflow row records `llm_enabled=False` so the dashboard
+    # surfaces this state instead of offering a misleading button.
+    llm_skipped = not (enable_llm and analysis_results)
+    if findings and not llm_skipped:
+        add_log_to_run(run_id, "[AZURE] Phase 6: Generating reports...", "info")
+        _set_progress(run_id, 95)
+        phase_start("reporting")
+        try:
+            reports = generate_azure_report(
+                run_id=run_id,
+                blueprint=blueprint,
+                collected_data=collected_data,
+                findings=findings,
+                analysis_results=analysis_results,
+                llm_config=llm_config,
+                scan_metadata={
+                    'tenant_id': azure_config.get('tenant_id', ''),
+                    'time_filter': options.get('time_filter', {}),
+                    'sources': list(collected_data.keys()),
+                },
+                master_prompt=master_prompt,
+            )
+            result['reports'] = reports
+            result['phases']['reporting'] = {'status': 'complete'}
+            result['has_report'] = True
+            result['llm_enabled'] = True
+            result['report_kind'] = 'full'
+            save_azure_report(run_id, reports)
+            update_run_status(run_id, "running", details={
+                'has_report': True,
+                'llm_enabled': True,
+                'report_kind': 'full',
+            })
+            add_log_to_run(run_id, "[AZURE] Reports generated successfully", "info")
+        except Exception as e:
+            add_log_to_run(run_id, f"[AZURE] Report generation failed: {e}", "error")
+            result['phases']['reporting'] = {'status': 'error', 'error': str(e)}
+        phase_end("reporting")
+    else:
+        # No report file. Two distinct skip reasons — log the right one
+        # and tag the workflow row so the dashboard knows whether to
+        # show the "no LLM" indicator vs. just no Report button at all.
+        if not findings:
+            skip_reason = "no findings"
+        else:
+            skip_reason = "LLM disabled — raw data is available via the Data button, no synthesis to render"
+        result['phases']['reporting'] = {'status': 'skipped', 'reason': skip_reason}
+        result['has_report'] = False
+        result['llm_enabled'] = bool(enable_llm and analysis_results)
+        result['report_kind'] = None
+        update_run_status(run_id, "running", details={
+            'has_report': False,
+            'llm_enabled': result['llm_enabled'],
+            'report_kind': None,
+        })
+        add_log_to_run(run_id, f"[AZURE] Report generation skipped: {skip_reason}", "warning")
+
+    # ---- Phase 7: IRIS import ----
+    iris_config = options.get('iris_config')
+    if not iris_config:
+        iris_skip_reason = "iris_config not provided in scan payload"
+    elif not iris_config.get('enabled'):
+        iris_skip_reason = "iris_config.enabled is false"
+    elif not iris_config.get('url'):
+        iris_skip_reason = "iris_config.url missing"
+    elif not iris_config.get('api_key'):
+        iris_skip_reason = "iris_config.api_key missing"
+    else:
+        iris_skip_reason = None
+
+    if iris_skip_reason is None:
+        add_log_to_run(run_id, "[AZURE] Phase 7: Importing to IRIS...", "info")
+        phase_start("iris")
+        try:
+            timeline_events = extract_timeline_events(findings, include_no_timestamp=True)
+            iris_result = import_to_iris(
+                iris_config=iris_config,
+                all_results=findings,
+                timeline_events=timeline_events,
+                report_content=result.get('reports', {}).get('technical', ''),
+                case_name=f"Azure Investigation - {datetime.utcnow().strftime('%Y-%m-%d')}",
+                case_description=f"Azure security analysis from {blueprint.get('name', 'Unknown')} blueprint",
+            )
+            result['phases']['iris'] = {
+                'status': 'complete',
+                'case_id': iris_result.get('case_id'),
+                'case_url': iris_result.get('case_url'),
+                'events_imported': iris_result.get('events_imported', 0),
+            }
+            add_log_to_run(run_id, f"[AZURE] IRIS import complete: {iris_result.get('case_url', 'N/A')}", "info")
+        except Exception as e:
+            add_log_to_run(run_id, f"[AZURE] IRIS import failed: {e}", "error")
+            result['phases']['iris'] = {'status': 'error', 'error': str(e)}
+        phase_end("iris")
+    else:
+        result['phases']['iris'] = {'status': 'skipped', 'reason': iris_skip_reason}
+        add_log_to_run(run_id, f"[AZURE] IRIS import skipped: {iris_skip_reason}", "warning")
+
+    return result
 
 
 # =============================================================================
@@ -161,10 +449,13 @@ def run_azure_pipeline(
         'phases': {}
     }
 
+    phase_start, phase_end = _make_phase_timer(run_id)
+
     try:
         # =====================================================================
         # Phase 1: Validate Configuration
         # =====================================================================
+        phase_start("validation")
         # Log scan configuration summary
         bp_settings = blueprint.get('settings', {})
         target_users = options.get('target_users', [])
@@ -207,12 +498,14 @@ def run_azure_pipeline(
 
         result['phases']['validation'] = {'status': 'complete'}
         _set_progress(run_id, 10)
+        phase_end("validation")
 
         # =====================================================================
         # Phase 2: Collection
         # =====================================================================
         add_log_to_run(run_id, "[AZURE] Phase 2: Collecting logs from Azure...", "info")
         _set_progress(run_id, 15)
+        phase_start("collection")
 
         sources = bp_settings.get('sources', ['all'])
         time_range_days = bp_settings.get('time_range_days', 7)
@@ -283,7 +576,8 @@ def run_azure_pipeline(
             target_ips=target_ips,
             pivot_mode=pivot_mode,
             logger=collection_logger,
-            run_id=run_id
+            run_id=run_id,
+            ual_mode=options.get('ual_mode', 'full'),
         )
 
         result['phases']['collection'] = {
@@ -314,298 +608,46 @@ def run_azure_pipeline(
                 add_log_to_run(run_id, "[AZURE] No data collected. Some sources were skipped - check license tier and API permissions.", "warning")
             else:
                 add_log_to_run(run_id, "[AZURE] No events found in the selected time range.", "warning")
+            # Tag the workflow row so the dashboard renders the right
+            # state (LLM-disabled badge when the operator opted out,
+            # plain "no report" otherwise). Without this the row sits
+            # at llm_enabled=None and the Interactive button keeps
+            # showing for a run that has no analyses to refine.
+            result['has_report'] = False
+            result['llm_enabled'] = bool(enable_llm)
+            _update_run_status(run_id, "running", details={
+                'has_report': False,
+                'llm_enabled': result['llm_enabled'],
+                'report_kind': None,
+            })
             result['status'] = 'completed'
             result['message'] = 'No data collected'
+            phase_end("collection")
             return result
 
-        from services.workflow_service import is_cancelled
-        if is_cancelled(run_id):
-            return result
+        phase_end("collection")
 
-        # =====================================================================
-        # Phase 3: Time Filtering (if enabled)
-        # =====================================================================
-        time_filter = options.get('time_filter')
-        if time_filter:
-            add_log_to_run(run_id, f"[AZURE] Applying time filter: {time_filter}", "info")
-            time_filter_func = create_time_filter_func(time_filter)
-            if time_filter_func:
-                collected_data = filter_results_by_time(collected_data, time_filter_func)
-                filtered_count = sum(len(v) for v in collected_data.values())
-                add_log_to_run(run_id, f"[AZURE] After time filter: {filtered_count} records", "info")
-
-        # Store collected data for API access
-        result['collected_data'] = collected_data
-        _set_progress(run_id, 60)
-
-        if is_cancelled(run_id):
-            return result
-
-        # =====================================================================
-        # Phase 4: SIGMA Detection
-        # =====================================================================
-        add_log_to_run(run_id, "[AZURE] Phase 4: Running SIGMA detection rules...", "info")
-        _set_progress(run_id, 65)
-
-        min_severity = options.get('min_severity') or bp_settings.get('min_severity', 'low')
-        add_log_to_run(run_id, f"[AZURE] Minimum severity filter: {min_severity}+", "info")
-        findings, detection_status = run_sigma_rules(
-            logs=collected_data,
-            min_level=min_severity
-        )
-
-        result['phases']['detection'] = {
-            'status': 'complete',
-            'rules_executed': detection_status.get('rules_count', 0),
-            'total_findings': detection_status.get('total_findings', 0),
-            'findings_by_severity': detection_status.get('matches_by_severity', {})
-        }
-
-        add_log_to_run(
-            run_id,
-            f"[AZURE] SIGMA detection complete: {detection_status.get('total_findings', 0)} findings",
-            "info"
+        # ---- Phases 3-7 are shared with the offline pipeline. ----
+        # Single source of truth lives in `_run_post_collection_phases`.
+        _run_post_collection_phases(
+            run_id=run_id,
+            collected_data=collected_data,
+            options=options,
+            blueprint=blueprint,
+            azure_config=azure_config,
+            enable_llm=enable_llm,
+            llm_config=llm_config,
+            bp_settings=bp_settings,
+            phase_start=phase_start,
+            phase_end=phase_end,
+            result=result,
         )
 
         # =====================================================================
-        # Phase 4b: UAL Severity-Tagged Events as Pre-Detected Findings
-        # =====================================================================
-        # The UAL filter (filter_and_score_ual_records) already does detection:
-        # it tags events with _severity, _category, _description.
-        # These are pre-detected findings — they don't need SIGMA rules.
-        # Group them by category so each category becomes one "finding bucket".
-        SEVERITY_RANK = {'informational': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
-        min_rank = SEVERITY_RANK.get(min_severity, 1)
-
-        ual_events = collected_data.get('Azure.UnifiedAudit', [])
-        ual_findings_added = 0
-        if ual_events:
-            # Filter by min_severity (respecting the UI choice)
-            filtered = [e for e in ual_events
-                        if SEVERITY_RANK.get(e.get('_severity', 'low'), 1) >= min_rank]
-
-            # Group by category for clean LLM artifact buckets
-            by_category = {}
-            for event in filtered:
-                cat = event.get('_category', 'unknown')
-                if cat == 'unknown':
-                    continue  # Skip unknown ops to reduce noise
-                key = f"UAL.{cat}"
-                if key not in by_category:
-                    by_category[key] = []
-                # Wrap as a finding (matches SIGMA finding shape so LLM treats it the same)
-                by_category[key].append({
-                    '_source': 'Azure.UnifiedAudit',
-                    '_severity': event.get('_severity'),
-                    '_category': event.get('_category'),
-                    '_description': event.get('_description'),
-                    '_timestamp': event.get('CreationTime') or event.get('_timestamp'),
-                    'rule_title': f"UAL: {event.get('_description', cat)}",
-                    'severity': event.get('_severity'),
-                    'matched_record': event,
-                    '_finding_time': datetime.utcnow().isoformat()
-                })
-
-            # Merge into findings dict
-            for key, items in by_category.items():
-                findings[key] = items
-                ual_findings_added += len(items)
-
-            if ual_findings_added > 0:
-                add_log_to_run(
-                    run_id,
-                    f"[AZURE] Added {ual_findings_added} UAL pre-detected findings "
-                    f"in {len(by_category)} categories (severity >= {min_severity})",
-                    "info"
-                )
-
-        # =====================================================================
-        # Phase 4c: State-Snapshot Sources (CA policies, federation)
-        # =====================================================================
-        # These are NOT events — they're current configuration. They bypass
-        # SIGMA entirely (no rule will match a config dump). Each state source
-        # becomes its own INV.* finding bucket and goes straight to the LLM
-        # with the "state snapshot" framing.
-        STATE_SOURCE_MAP = {
-            'Azure.CAPolicy': 'INV.ca_policies',
-            'Azure.Federation': 'INV.federation',
-        }
-        state_findings_added = 0
-        for src_key, finding_key in STATE_SOURCE_MAP.items():
-            records = collected_data.get(src_key, [])
-            if not records:
-                continue
-            # Filter by min_severity — same UI ladder used for everything else
-            filtered = [r for r in records
-                        if SEVERITY_RANK.get(r.get('_severity', 'low'), 1) >= min_rank]
-            if not filtered:
-                continue
-            # Wrap each filtered record as a finding (same shape as SIGMA findings)
-            findings[finding_key] = [
-                {
-                    '_source': src_key,
-                    '_severity': r.get('_severity'),
-                    '_category': r.get('_category'),
-                    '_description': r.get('_description'),
-                    '_timestamp': None,  # state snapshot — no event time
-                    'rule_title': f"State: {r.get('_description', finding_key)}",
-                    'rule_description': f'Current configuration of {src_key} (state snapshot, not an event)',
-                    'severity': r.get('_severity'),
-                    'matched_record': r,
-                    '_finding_time': datetime.utcnow().isoformat(),
-                    '_state_snapshot': True,
-                }
-                for r in filtered
-            ]
-            state_findings_added += len(filtered)
-
-        if state_findings_added > 0:
-            add_log_to_run(
-                run_id,
-                f"[AZURE] Added {state_findings_added} state-snapshot findings "
-                f"from {len([k for k in STATE_SOURCE_MAP if STATE_SOURCE_MAP[k] in findings])} sources",
-                "info"
-            )
-
-        # Store findings for API access
-        result['findings'] = findings
-
-        _set_progress(run_id, 70)
-
-        if is_cancelled(run_id):
-            return result
-
-        # =====================================================================
-        # Phase 5: LLM Analysis (if enabled)
-        # =====================================================================
-        analysis_results = {}
-        if enable_llm and findings:
-            add_log_to_run(run_id, "[AZURE] Phase 5: Running LLM analysis...", "info")
-            _set_progress(run_id, 75)
-
-            try:
-                # Analyze findings (not raw logs)
-                analysis_results = analyze_artifacts(
-                    run_id=run_id,
-                    all_results=findings,
-                    llm_config=llm_config,
-                    anonymizer=options.get('anonymizer')
-                )
-
-                result['phases']['analysis'] = {
-                    'status': 'complete',
-                    'artifacts_analyzed': len(analysis_results)
-                }
-
-                add_log_to_run(
-                    run_id,
-                    f"[AZURE] LLM analysis complete: {len(analysis_results)} summaries",
-                    "info"
-                )
-            except Exception as e:
-                add_log_to_run(run_id, f"[AZURE] LLM analysis failed: {e}", "error")
-                result['phases']['analysis'] = {'status': 'error', 'error': str(e)}
-        else:
-            result['phases']['analysis'] = {'status': 'skipped', 'reason': 'LLM disabled or no findings'}
-
-        result['analysis'] = analysis_results
-        _set_progress(run_id, 90)
-
-        if is_cancelled(run_id):
-            return result
-
-        # =====================================================================
-        # Phase 6: Report Generation (always, even without LLM)
-        # =====================================================================
-        if findings:
-            add_log_to_run(run_id, "[AZURE] Phase 6: Generating reports...", "info")
-            _set_progress(run_id, 95)
-
-            try:
-                if enable_llm and analysis_results:
-                    # Full LLM-narrated report
-                    reports = generate_azure_report(
-                        run_id=run_id,
-                        blueprint=blueprint,
-                        collected_data=collected_data,
-                        findings=findings,
-                        analysis_results=analysis_results,
-                        llm_config=llm_config,
-                        scan_metadata={
-                            'tenant_id': azure_config.get('tenant_id', ''),
-                            'time_filter': options.get('time_filter', {}),
-                            'sources': list(collected_data.keys()),
-                        }
-                    )
-                else:
-                    # Structured findings list (no LLM tokens spent)
-                    reports = {
-                        'technical': _build_findings_report(
-                            blueprint=blueprint,
-                            collected_data=collected_data,
-                            findings=findings,
-                            time_filter=options.get('time_filter', {}),
-                        )
-                    }
-
-                result['reports'] = reports
-                result['phases']['reporting'] = {'status': 'complete'}
-                result['has_report'] = True
-
-                # Save reports to storage
-                save_azure_report(run_id, reports)
-
-                # Mark workflow as having a report (for UI button visibility)
-                from services.workflow_service import update_run_status
-                update_run_status(run_id, "running", details={'has_report': True})
-
-                add_log_to_run(run_id, "[AZURE] Reports generated successfully", "info")
-            except Exception as e:
-                add_log_to_run(run_id, f"[AZURE] Report generation failed: {e}", "error")
-                result['phases']['reporting'] = {'status': 'error', 'error': str(e)}
-        else:
-            result['phases']['reporting'] = {'status': 'skipped'}
-
-        # =====================================================================
-        # Phase 7: IRIS Import (if configured)
-        # =====================================================================
-        iris_config = options.get('iris_config')
-        if iris_config and iris_config.get('enabled'):
-            add_log_to_run(run_id, "[AZURE] Phase 7: Importing to IRIS...", "info")
-
-            try:
-                # Extract timeline events for IRIS
-                timeline_events = extract_timeline_events(findings, include_no_timestamp=True)
-
-                iris_result = import_to_iris(
-                    iris_config=iris_config,
-                    all_results=findings,
-                    timeline_events=timeline_events,
-                    report_content=result.get('reports', {}).get('technical', ''),
-                    case_name=f"Azure Investigation - {datetime.utcnow().strftime('%Y-%m-%d')}",
-                    case_description=f"Azure security analysis from {blueprint.get('name', 'Unknown')} blueprint"
-                )
-
-                result['phases']['iris'] = {
-                    'status': 'complete',
-                    'case_id': iris_result.get('case_id'),
-                    'case_url': iris_result.get('case_url'),
-                    'events_imported': iris_result.get('events_imported', 0)
-                }
-
-                add_log_to_run(run_id, f"[AZURE] IRIS import complete: {iris_result.get('case_url', 'N/A')}", "info")
-            except Exception as e:
-                add_log_to_run(run_id, f"[AZURE] IRIS import failed: {e}", "error")
-                result['phases']['iris'] = {'status': 'error', 'error': str(e)}
-        else:
-            result['phases']['iris'] = {'status': 'skipped'}
-
-        # =====================================================================
-        # Complete
+        # Complete (phases 3-7 ran in _run_post_collection_phases above)
         # =====================================================================
         result['status'] = 'complete'
         result['end_time'] = datetime.utcnow().isoformat()
-
         add_log_to_run(run_id, "[AZURE] Pipeline completed successfully", "info")
 
     except Exception as e:
@@ -613,10 +655,10 @@ def run_azure_pipeline(
         result['error'] = str(e)
         result['traceback'] = traceback.format_exc()
         result['end_time'] = datetime.utcnow().isoformat()
-
         add_log_to_run(run_id, f"[AZURE] Pipeline failed: {e}", "error")
 
     return result
+
 
 
 def run_azure_on_existing(
@@ -627,10 +669,17 @@ def run_azure_on_existing(
     """
     Run Azure pipeline on uploaded/existing logs (offline mode).
 
+    Thin wrapper around the shared post-collection helper. The customer
+    runs collection-only on their machine, hands us a ZIP of the raw
+    `Azure.<source>.json` files, and the analyst's server picks up here:
+    timestamp normalisation → time filter → SIGMA → UAL pre-detection →
+    state-snapshot wrapping → LLM analysis → Azure report → IRIS.
+
     Args:
         run_id: Workflow run ID for logging
         uploaded_data: Dict of source_name → log records (already parsed)
-        options: Pipeline options (enable_llm, time_filter, etc.)
+        options: Pipeline options (enable_llm, time_filter, llm_config,
+                 min_severity, scope_mode, iris_config, ...)
 
     Returns:
         Pipeline result dict
@@ -640,144 +689,68 @@ def run_azure_on_existing(
         'mode': 'offline',
         'status': 'running',
         'start_time': datetime.utcnow().isoformat(),
-        'phases': {}
+        'phases': {},
     }
+
+    phase_start, phase_end = _make_phase_timer(run_id)
 
     try:
         add_log_to_run(run_id, "[AZURE] Starting offline analysis pipeline", "info")
 
-        # Validate we have data
         if not uploaded_data:
             raise ValueError("No log data provided")
 
         total_records = sum(len(v) for v in uploaded_data.values())
-        add_log_to_run(run_id, f"[AZURE] Processing {total_records} uploaded records", "info")
+        add_log_to_run(
+            run_id,
+            f"[AZURE] Processing {total_records} uploaded records across {len(uploaded_data)} sources",
+            "info",
+        )
+        for source_key, records in uploaded_data.items():
+            add_log_to_run(run_id, f"[AZURE] {source_key}: {len(records)} records", "success")
 
         result['phases']['upload'] = {
             'status': 'complete',
             'sources': list(uploaded_data.keys()),
-            'total_records': total_records
+            'total_records': total_records,
         }
-
-        # Store for API access
         result['collected_data'] = uploaded_data
 
-        # =====================================================================
-        # Time Filtering (if enabled)
-        # =====================================================================
-        time_filter = options.get('time_filter')
-        if time_filter:
-            add_log_to_run(run_id, f"[AZURE] Applying time filter: {time_filter}", "info")
-            time_filter_func = create_time_filter_func(time_filter)
-            if time_filter_func:
-                uploaded_data = filter_results_by_time(uploaded_data, time_filter_func)
-                filtered_count = sum(len(v) for v in uploaded_data.values())
-                add_log_to_run(run_id, f"[AZURE] After time filter: {filtered_count} records", "info")
-
-        # =====================================================================
-        # SIGMA Detection
-        # =====================================================================
-        add_log_to_run(run_id, "[AZURE] Running SIGMA detection rules...", "info")
-
-        min_severity = options.get('min_severity', 'low')
-        findings, detection_status = run_sigma_rules(
-            logs=uploaded_data,
-            min_level=min_severity
-        )
-
-        result['phases']['detection'] = {
-            'status': 'complete',
-            'rules_executed': detection_status.get('rules_count', 0),
-            'total_findings': detection_status.get('total_findings', 0)
+        # ---- Phases 3-7 are shared with the online pipeline. ----
+        # Stub blueprint / azure_config / bp_settings — offline mode has
+        # no tenant credentials and no per-blueprint overrides.
+        blueprint = {
+            'name': 'Azure Offline Analysis',
+            'id': 'azure_offline',
         }
+        bp_settings: Dict[str, Any] = {}
+        azure_config: Dict[str, Any] = {}
+        enable_llm = bool(options.get('enable_llm', False))
+        llm_config = options.get('llm_config') or {}
 
-        result['findings'] = findings
-
-        add_log_to_run(
-            run_id,
-            f"[AZURE] Detection complete: {detection_status.get('total_findings', 0)} findings",
-            "info"
+        _run_post_collection_phases(
+            run_id=run_id,
+            collected_data=uploaded_data,
+            options=options,
+            blueprint=blueprint,
+            azure_config=azure_config,
+            enable_llm=enable_llm,
+            llm_config=llm_config,
+            bp_settings=bp_settings,
+            phase_start=phase_start,
+            phase_end=phase_end,
+            result=result,
         )
-
-        # =====================================================================
-        # LLM Analysis (if enabled)
-        # =====================================================================
-        enable_llm = options.get('enable_llm', False)
-        llm_config = options.get('llm_config', {})
-
-        if enable_llm and findings:
-            add_log_to_run(run_id, "[AZURE] Running LLM analysis...", "info")
-
-            try:
-                analysis_results = analyze_artifacts(
-                    all_results=findings,
-                    llm_config=llm_config,
-                    anonymizer=options.get('anonymizer')
-                )
-
-                result['analysis'] = analysis_results
-                result['phases']['analysis'] = {
-                    'status': 'complete',
-                    'artifacts_analyzed': len(analysis_results)
-                }
-
-                # Generate reports
-                timeline_events = extract_timeline_events(findings)
-                reports = generate_final_report(
-                    artifact_summaries=analysis_results,
-                    timeline_events=timeline_events,
-                    llm_config=llm_config,
-                    metadata={
-                        'platform': 'Azure',
-                        'mode': 'offline',
-                        'sources': list(uploaded_data.keys()),
-                        'findings_count': detection_status.get('total_findings', 0)
-                    }
-                )
-                result['reports'] = reports
-                result['phases']['reporting'] = {'status': 'complete'}
-
-            except Exception as e:
-                add_log_to_run(run_id, f"[AZURE] LLM analysis failed: {e}", "error")
-                result['phases']['analysis'] = {'status': 'error', 'error': str(e)}
-        else:
-            result['phases']['analysis'] = {'status': 'skipped'}
-            result['phases']['reporting'] = {'status': 'skipped'}
-
-        # =====================================================================
-        # IRIS Import (if configured)
-        # =====================================================================
-        iris_config = options.get('iris_config')
-        if iris_config and iris_config.get('enabled') and findings:
-            try:
-                timeline_events = extract_timeline_events(findings, include_no_timestamp=True)
-                iris_result = import_to_iris(
-                    iris_config=iris_config,
-                    all_results=findings,
-                    timeline_events=timeline_events,
-                    report_content=result.get('reports', {}).get('technical', ''),
-                    case_name=f"Azure Analysis (Offline) - {datetime.utcnow().strftime('%Y-%m-%d')}",
-                    case_description="Azure security analysis from uploaded logs"
-                )
-                result['phases']['iris'] = {
-                    'status': 'complete',
-                    'case_id': iris_result.get('case_id')
-                }
-            except Exception as e:
-                result['phases']['iris'] = {'status': 'error', 'error': str(e)}
-        else:
-            result['phases']['iris'] = {'status': 'skipped'}
 
         result['status'] = 'complete'
         result['end_time'] = datetime.utcnow().isoformat()
-
         add_log_to_run(run_id, "[AZURE] Offline analysis completed", "info")
 
     except Exception as e:
         result['status'] = 'error'
         result['error'] = str(e)
+        result['traceback'] = traceback.format_exc()
         result['end_time'] = datetime.utcnow().isoformat()
-
         add_log_to_run(run_id, f"[AZURE] Pipeline failed: {e}", "error")
 
     return result
@@ -902,6 +875,137 @@ def get_azure_blueprints() -> List[Dict]:
             'min_severity': 'informational',
         }
     ]
+
+
+def _filter_azure_findings_by_severity(findings: Dict, analysis_results: Dict, min_severity: str, run_id: str):
+    """Defensively drop sub-threshold records from cached findings + analysis.
+
+    Mirrors the AWS rerun helper — scan-time already applied the same
+    threshold (see SEVERITY_RANK use elsewhere in this module), but a
+    rerun is a cheap moment to re-enforce. Rules whose records all drop
+    out are removed; `analysis_results` is pruned to surviving rule keys."""
+    from services.workflow_service import add_log_to_run as _log
+    _RANK = {'informational': 0, 'info': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
+    min_rank = _RANK.get((min_severity or 'low').lower(), 1)
+    out_findings = {}
+    dropped = 0
+    for rule_key, records in (findings or {}).items():
+        if not isinstance(records, list):
+            out_findings[rule_key] = records
+            continue
+        kept = []
+        for r in records:
+            sev = 'low'
+            if isinstance(r, dict):
+                sev = (r.get('_severity') or r.get('severity') or 'low').lower()
+            if _RANK.get(sev, 1) >= min_rank:
+                kept.append(r)
+            else:
+                dropped += 1
+        if kept:
+            out_findings[rule_key] = kept
+    out_analysis = {k: v for k, v in (analysis_results or {}).items() if k in out_findings}
+    if dropped:
+        _log(run_id, f"[RERUN] Dropped {dropped} sub-threshold record(s) below {min_severity}", "info")
+    return out_findings, out_analysis
+
+
+def _run_azure_reanalyze(run_id: str, master_prompt: str, llm_config: Dict, scope: str = 'reports_only', original_filters: Dict = None) -> Dict:
+    """Re-run Azure analysis on the run's persisted JSON, with the
+    operator's master prompt threaded through every LLM prompt.
+
+    scope='reports_only': rebuild only the report markdown from the
+    cached `analysis` dict + master prompt. One LLM call.
+
+    scope='full': re-run `analyze_artifacts` over cached findings
+    first, then rebuild the report. One LLM call per rule that fired.
+
+    original_filters: filters captured at dispatch (min_severity,
+    time_filter, target_users, target_ips). Applied to cached findings
+    before re-analysis so the rerun reflects the operator's scope.
+
+    Called by /api/azure/run/<id>/rerun in a background thread."""
+    import json as _json
+    import os as _os
+    from .reports import generate_azure_report, save_azure_report
+    from services.workflow_service import update_run_status as _upd, add_log_to_run as _log
+
+    data_path = f"/app/data/azure_runs/{run_id}.json"
+    if not _os.path.exists(data_path):
+        raise FileNotFoundError(
+            f"No persisted Azure run data at {data_path} — cannot re-analyse."
+        )
+    with open(data_path, 'r') as f:
+        run_data = _json.load(f)
+
+    collected_data = run_data.get('collected_data') or {}
+    findings = run_data.get('findings') or {}
+    analysis_results = run_data.get('analysis') or {}
+    blueprint = run_data.get('blueprint') or {'name': run_data.get('blueprint_name') or 'Azure Re-run'}
+    scan_metadata = run_data.get('scan_metadata') or {}
+
+    if original_filters and original_filters.get('min_severity'):
+        tf = original_filters.get('time_filter')
+        tf_desc = f", time_filter={tf}" if tf else ''
+        _log(run_id, f"[RERUN] Re-applying original filters: min_severity={original_filters['min_severity']}{tf_desc}", "info")
+        findings, analysis_results = _filter_azure_findings_by_severity(
+            findings, analysis_results, original_filters['min_severity'], run_id
+        )
+
+    if scope == 'full':
+        if not findings:
+            raise RuntimeError("No findings on file to re-analyse.")
+        _log(run_id, f"[AZURE] Re-running LLM analysis on {len(findings)} rule(s) with master prompt", "info")
+        _upd(run_id, 'running', progress=30)
+        analysis_results = analyze_artifacts(
+            run_id=run_id,
+            all_results=findings,
+            llm_config=llm_config,
+            pipeline_kind="azure",
+            master_prompt=master_prompt,
+        )
+        try:
+            from services.agentic.reports import persist_pipeline_artifacts as _persist
+            _persist(run_id, analysis_results, findings)
+        except Exception as _pe:
+            print(f"[AZURE] reanalyse: failed to refresh sidecars: {_pe}", flush=True)
+    else:
+        # reports_only: prefer the on-disk sidecar (if a fresh pipeline
+        # has written it), otherwise lean on whatever's in the persisted
+        # run dict.
+        sidecar = f"/data/downloads/{run_id}/artifact_summaries.json"
+        if _os.path.exists(sidecar):
+            try:
+                with open(sidecar) as f:
+                    analysis_results = _json.load(f) or analysis_results
+            except Exception:
+                pass
+        _log(run_id, "[AZURE] Reports-only re-run — replaying cached analyses with master prompt", "info")
+
+    _upd(run_id, 'running', progress=80)
+    _log(run_id, "[AZURE] Re-generating report with master prompt applied…", "info")
+    reports = generate_azure_report(
+        run_id=run_id,
+        blueprint=blueprint,
+        collected_data=collected_data,
+        findings=findings,
+        analysis_results=analysis_results,
+        llm_config=llm_config,
+        scan_metadata=scan_metadata,
+        master_prompt=master_prompt,
+    )
+    save_azure_report(run_id, reports)
+
+    try:
+        run_data['analysis'] = analysis_results
+        run_data['reports'] = reports
+        with open(data_path, 'w') as f:
+            _json.dump(run_data, f, default=str)
+    except Exception as _e:
+        print(f"[AZURE] reanalyse: failed to update persisted run data: {_e}", flush=True)
+
+    _upd(run_id, 'running', progress=95)
+    return reports
 
 
 def get_available_sources() -> List[Dict]:

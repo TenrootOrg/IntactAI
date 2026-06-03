@@ -37,25 +37,44 @@ async function loadTimesketchBlueprintsDropdown() {
     }
 }
 
-// Handle blueprint selection change
+// Handle blueprint selection change.
+//
+// In Upload Triage mode the operator has already collected the
+// artifacts (KAPE or Velociraptor offline) — the blueprint's
+// kape_target setting only matters during live collection, so the
+// "Triage: _KapeTriage" badge is misleading noise in upload mode.
+// Hide it (and tweak the descriptor sentence above the badges)
+// when the current mode is `upload`.
 function onTimesketchBlueprintChange() {
     const select = document.getElementById('timesketch-blueprint-select');
     const infoDiv = document.getElementById('timesketch-blueprint-info');
     const kapeSpan = document.getElementById('ts-blueprint-kape');
     const plasoSpan = document.getElementById('ts-blueprint-plaso');
+    const descP = select ? select.parentElement.querySelector('p.text-xs') : null;
 
     if (!select || !infoDiv) return;
 
     const blueprintId = select.value;
     const blueprint = window.timesketchBlueprintsCache.find(bp => bp.id === blueprintId);
 
-    if (blueprint && blueprint.settings) {
-        kapeSpan.textContent = `Triage: ${blueprint.settings.kape_target || 'N/A'}`;
-        plasoSpan.textContent = `Plaso: ${blueprint.settings.plaso_parser || 'N/A'}`;
-        infoDiv.classList.remove('hidden');
-    } else {
+    if (!blueprint || !blueprint.settings) {
         infoDiv.classList.add('hidden');
+        return;
     }
+
+    const modeEl = document.querySelector('input[name="ts-mode"]:checked');
+    const isUpload = modeEl && modeEl.value === 'upload';
+
+    if (isUpload) {
+        kapeSpan.classList.add('hidden');
+        if (descP) descP.textContent = 'Select a blueprint to configure Plaso processing settings';
+    } else {
+        kapeSpan.classList.remove('hidden');
+        kapeSpan.textContent = `Triage: ${blueprint.settings.kape_target || 'N/A'}`;
+        if (descP) descP.textContent = 'Select a blueprint to configure triage target and Plaso processing settings';
+    }
+    plasoSpan.textContent = `Plaso: ${blueprint.settings.plaso_parser || 'N/A'}`;
+    infoDiv.classList.remove('hidden');
 }
 
 // Get current blueprint settings
@@ -161,58 +180,43 @@ async function runTimeSketchWorkflow() {
     }
 
     try {
-        let successCount = 0;
-        for (let i = 0; i < selectedClients.length; i++) {
-            const clientId = clientIds[i];
-            const hostname = selectedClients[i].dataset.hostname;
+        const blueprintId = document.getElementById('timesketch-blueprint-select').value;
 
-            // Step 1: Start triage collection
-            const blueprintId = document.getElementById('timesketch-blueprint-select').value;
-            const kapeResponse = await fetch('/api/velociraptor/timesketch', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    client_id: clientId,
-                    client_name: hostname,
-                    kape_target: kapeTarget,
-                    timeout_seconds: timeoutSeconds,
-                    cpu_limit: cpuLimit,
-                    blueprint_id: blueprintId,
-                    blueprint: blueprintName
-                })
-            });
+        // One backend call → one workflow row. The /api/timesketch/start-multi
+        // endpoint creates a single run_id, kicks off KAPE on all clients in
+        // parallel, and serializes Plaso + Timesketch upload in
+        // first-finished-first-processed order.
+        const clientsPayload = selectedClients.map((cb, i) => ({
+            client_id: cb.value,
+            client_name: cb.dataset.hostname
+        }));
 
-            const kapeData = await kapeResponse.json();
-            if (!kapeResponse.ok) {
-                console.error(`Failed to start KAPE for ${hostname}:`, kapeData.error);
-                continue;
-            }
+        const response = await fetch('/api/timesketch/start-multi', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                clients: clientsPayload,
+                kape_target: kapeTarget,
+                timeout_seconds: timeoutSeconds,
+                cpu_limit: cpuLimit,
+                blueprint_id: blueprintId,
+                blueprint: blueprintName,
+                sketch_name: sketchName,
+                monitor_timeout: monitorTimeout,
+                plaso_parser: plasoParser,
+                plaso_workers: plasoWorkers,
+                plaso_hasher: plasoHasher,
+                plaso_hasher_size_mb: plasoHasherSizeMb
+            })
+        });
 
-            // Step 2: Start full import pipeline
-            const importResponse = await fetch('/api/timesketch/import', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    flow_id: kapeData.flow_id,
-                    client_id: clientId,
-                    client_name: hostname,
-                    sketch_name: sketchName,
-                    timeline_name: `${hostname}_${new Date().toISOString().slice(0,10).replace(/-/g, '')}_${new Date().toISOString().slice(11,19).replace(/:/g, '')}`,
-                    monitor_timeout: monitorTimeout,
-                    // Plaso settings from blueprint
-                    plaso_parser: plasoParser,
-                    plaso_workers: plasoWorkers,
-                    plaso_hasher: plasoHasher,
-                    plaso_hasher_size_mb: plasoHasherSizeMb
-                })
-            });
-
-            if (importResponse.ok) {
-                successCount++;
-            }
+        const result = await response.json();
+        if (!response.ok) {
+            alert(`Failed to start workflow: ${result.error || 'Unknown error'}`);
+            return;
         }
 
-        alert(`✓ Timesketch pipeline started for ${successCount} client(s)!\n\nSketch: ${sketchName}\nBlueprint: ${blueprintName}\nTriage Target: ${kapeTarget}\n\nCheck the Workflows tab to monitor progress.`);
+        alert(`✓ Timesketch pipeline started for ${clientsPayload.length} client(s) under ONE workflow!\n\nSketch: ${sketchName}\nBlueprint: ${blueprintName}\nTriage Target: ${kapeTarget}\n\nKAPE collections run in parallel; Plaso processing runs one at a time (first finished, first processed).\n\nCheck the Workflows tab to monitor progress.`);
 
         switchTab('workflows');
 
@@ -242,6 +246,9 @@ function toggleTimesketchMode() {
         uploadSection.classList.remove('hidden');
         initTimesketchUploadDropzone();
     }
+    // Re-render the blueprint badges + descriptor so the KAPE-triage
+    // badge appears/disappears the instant the operator switches modes.
+    onTimesketchBlueprintChange();
 }
 
 // Initialize upload dropzone

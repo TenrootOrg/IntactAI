@@ -19,6 +19,12 @@ class ClientManager {
         this.totalClients = 0;
         this.filteredCount = 0;
         this._searchTimeout = null;
+        // Once the user has touched the picker (Select All / Select None /
+        // any individual checkbox), we stop the "auto-check online" smart
+        // default on re-renders. Otherwise the 10-second auto-refresh
+        // re-selects everything the user just deselected.
+        this._userHasInteracted = false;
+        this._listenerAttached = false;
     }
 
     /**
@@ -27,6 +33,19 @@ class ClientManager {
     async load(search = '') {
         const container = document.getElementById(this.containerId);
         if (!container) return;
+
+        // Idempotently attach a delegated change listener so we know when
+        // the user has clicked any checkbox. Re-renders replace the
+        // checkbox elements but the container itself persists, so the
+        // listener stays valid across renders.
+        if (!this._listenerAttached) {
+            container.addEventListener('change', (e) => {
+                if (e.target && e.target.classList && e.target.classList.contains(this.checkboxClass)) {
+                    this._userHasInteracted = true;
+                }
+            });
+            this._listenerAttached = true;
+        }
 
         try {
             let url = `/api/clients?limit=${this.limit}`;
@@ -101,7 +120,14 @@ class ClientManager {
         const renderClient = (client) => {
             const isOnline = this._isOnline(client, now);
             const wasSelected = selectedIds.includes(client.client_id);
-            const shouldCheck = wasSelected || (this.autoSelectOnline && isOnline && !search);
+            // Smart-default ONCE: on first load, auto-check online clients.
+            // After the user has touched the picker, preserve their exact
+            // selection across refreshes — never re-add a client they
+            // explicitly deselected. Fixes the "Select None then wait 10s
+            // and everything is back" bug.
+            const shouldCheck = this._userHasInteracted
+                ? wasSelected
+                : (wasSelected || (this.autoSelectOnline && isOnline && !search));
             const dot = isOnline
                 ? '<span class="inline-block w-2 h-2 bg-green-400 rounded-full"></span>'
                 : '<span class="inline-block w-2 h-2 bg-gray-500 rounded-full"></span>';
@@ -162,10 +188,13 @@ class ClientManager {
     }
 
     /**
-     * Select/deselect all visible clients
+     * Select/deselect all visible clients. Counts as a user interaction —
+     * subsequent re-renders will preserve this exact selection instead of
+     * resetting to the "auto-check online" default.
      */
     selectAll(checked) {
         document.querySelectorAll(`.${this.checkboxClass}`).forEach(cb => cb.checked = checked);
+        this._userHasInteracted = true;
     }
 
     /**

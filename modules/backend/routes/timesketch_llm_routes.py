@@ -4,11 +4,17 @@ Timesketch LLM Routes - LLM configuration and settings for Timesketch
 """
 
 from flask import Blueprint, jsonify, request
+import io
+import os
 import re
+import shutil
 import subprocess
-import time
+import tempfile
 import threading
+import time
 import traceback
+import urllib.request
+import zipfile
 
 from services import (
     create_automation_run,
@@ -19,6 +25,88 @@ from services import (
 timesketch_llm_bp = Blueprint('timesketch_llm', __name__)
 
 TIMESKETCH_CONFIG_PATH = '/app/config/timesketch/timesketch.conf'
+TIMESKETCH_CONFIG_DIR = os.path.dirname(TIMESKETCH_CONFIG_PATH)
+DFIQ_DATA_DIR = os.path.join(TIMESKETCH_CONFIG_DIR, 'dfiq')
+DFIQ_ZIP_URL = 'https://github.com/google/dfiq/archive/refs/heads/main.zip'
+DFIQ_SUBDIRS = ('scenarios', 'facets', 'questions')
+
+
+def _dfiq_data_present():
+    """True if every expected subdir exists and has at least one YAML."""
+    for sub in DFIQ_SUBDIRS:
+        d = os.path.join(DFIQ_DATA_DIR, sub)
+        if not os.path.isdir(d):
+            return False
+        if not any(f.endswith(('.yaml', '.yml')) for f in os.listdir(d)):
+            return False
+    return True
+
+
+def _ensure_dfiq_data(run_id):
+    """Self-heal: download google/dfiq YAML data if any subdir is missing.
+
+    Non-fatal — if the download fails the LLM key save still completes; the
+    DFIQ sidebar will just be empty until the operator populates it or retries.
+    """
+    if _dfiq_data_present():
+        add_log_to_run(run_id, 'DFIQ data already present — skipping fetch')
+        return True
+
+    add_log_to_run(run_id, f'DFIQ data missing — fetching from {DFIQ_ZIP_URL}')
+    try:
+        req = urllib.request.Request(DFIQ_ZIP_URL, headers={'User-Agent': 'intactai-installer/1.0'})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            zip_bytes = resp.read()
+        with tempfile.TemporaryDirectory() as tmp:
+            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+                z.extractall(tmp)
+            # Archive shape: dfiq-main/dfiq/data/{scenarios,facets,questions}/*.yaml
+            src_data = None
+            for entry in os.listdir(tmp):
+                cand = os.path.join(tmp, entry, 'dfiq', 'data')
+                if os.path.isdir(cand):
+                    src_data = cand
+                    break
+            if not src_data:
+                add_log_to_run(run_id, 'DFIQ archive layout unexpected — skipping', 'warning')
+                return False
+            os.makedirs(DFIQ_DATA_DIR, exist_ok=True)
+            copied = {}
+            for sub in DFIQ_SUBDIRS:
+                src = os.path.join(src_data, sub)
+                dst = os.path.join(DFIQ_DATA_DIR, sub)
+                if not os.path.isdir(src):
+                    continue
+                if os.path.isdir(dst):
+                    shutil.rmtree(dst)
+                shutil.copytree(src, dst)
+                copied[sub] = len([f for f in os.listdir(dst) if f.endswith(('.yaml', '.yml'))])
+            add_log_to_run(
+                run_id,
+                f'DFIQ data populated: {copied}',
+                'success'
+            )
+            return True
+    except Exception as e:
+        add_log_to_run(
+            run_id,
+            f'DFIQ fetch failed (non-fatal — sidebar will be empty until retried): {e}',
+            'warning'
+        )
+        return False
+
+
+def _ensure_conf_from_template(run_id):
+    """Self-heal: if timesketch.conf is missing, recreate from template."""
+    if os.path.isfile(TIMESKETCH_CONFIG_PATH):
+        return True
+    template = TIMESKETCH_CONFIG_PATH + '.template'
+    if not os.path.isfile(template):
+        add_log_to_run(run_id, f'Config missing and no template found at {template}', 'error')
+        return False
+    add_log_to_run(run_id, 'timesketch.conf missing — recreating from template')
+    shutil.copyfile(template, TIMESKETCH_CONFIG_PATH)
+    return True
 
 
 @timesketch_llm_bp.route('/api/timesketch/config/llm', methods=['GET'])
@@ -76,6 +164,16 @@ def _run_timesketch_settings_workflow(run_id, config_data):
     ollama_model = config_data.get('ollama_model', '')
 
     try:
+        # Phase 0: Self-heal — make sure the conf file and DFIQ data exist
+        # before we try to read/edit. Covers the fresh-install edge case
+        # where the operator hit Settings before install.sh finished, or
+        # where network was down during install (DFIQ clone skipped).
+        update_run_status(run_id, "running", progress=5)
+        if not _ensure_conf_from_template(run_id):
+            update_run_status(run_id, "failed", error="timesketch.conf and template both missing")
+            return
+        _ensure_dfiq_data(run_id)
+
         # Phase 1: Read existing config
         update_run_status(run_id, "running", progress=10)
         add_log_to_run(run_id, "Reading existing Timesketch configuration...")
@@ -89,12 +187,15 @@ def _run_timesketch_settings_workflow(run_id, config_data):
         update_run_status(run_id, "running", progress=20)
         add_log_to_run(run_id, "Building new LLM configuration...")
 
-        # Build new LLM_PROVIDER_CONFIGS section
+        # Build new LLM_PROVIDER_CONFIGS section. NL2Q must use the same
+        # aistudio provider + key as summarize/synthesize — the previous
+        # vertexai default with an empty project_id leaves the "AI
+        # generated queries" toggle greyed out as "requires LLM provider".
         new_llm_config = f'''LLM_PROVIDER_CONFIGS = {{
     'nl2q': {{
-        'vertexai': {{
-            'model': 'gemini-2.5-flash',
-            'project_id': '',
+        'aistudio': {{
+            'model': '{google_ai_model}',
+            'api_key': '{google_ai_key}',
         }},
     }},
     'llm_summarize': {{
@@ -136,6 +237,25 @@ def _run_timesketch_settings_workflow(run_id, config_data):
             content += '\n\n' + new_llm_config
             add_log_to_run(run_id, "Added new LLM_PROVIDER_CONFIGS section")
 
+        # Defensively force the feature flags this UI controls to True. If a
+        # prior install / hand-edit left any of these False, the customer's
+        # key would land but the feature still wouldn't show up. Settings →
+        # Timesketch is the single source of truth, so it normalizes them.
+        feature_flags = {
+            'DFIQ_ENABLED': 'True',
+            'YETI_DFIQ_ENABLED': 'True',
+            'ENABLE_EXPERIMENTAL_UI': 'True',
+            'ENABLE_V3_INVESTIGATION_VIEW': 'True',
+        }
+        for flag, target in feature_flags.items():
+            flag_pattern = rf"^{flag}\s*=\s*\S+"
+            replacement = f"{flag} = {target}"
+            if re.search(flag_pattern, content, flags=re.MULTILINE):
+                content = re.sub(flag_pattern, replacement, content, flags=re.MULTILINE)
+            else:
+                content += f"\n{replacement}\n"
+        add_log_to_run(run_id, f"Forced feature flags ON: {', '.join(feature_flags)}")
+
         # Phase 3: Write config file
         update_run_status(run_id, "running", progress=30)
         add_log_to_run(run_id, "Writing updated configuration to file...")
@@ -153,7 +273,7 @@ def _run_timesketch_settings_workflow(run_id, config_data):
 
         # Phase 4: Restart containers
         update_run_status(run_id, "running", progress=40)
-        containers = ['intact_timesketch_web', 'intact_timesketch_worker']
+        containers = ['intact_timesketch_web', 'intact_timesketch_worker', 'intact_timesketch_web_legacy']
 
         for i, container in enumerate(containers):
             add_log_to_run(run_id, f"Restarting container: {container}...")

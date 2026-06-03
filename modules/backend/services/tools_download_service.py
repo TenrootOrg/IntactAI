@@ -34,10 +34,85 @@ def load_tools_config() -> Optional[Dict]:
         try:
             if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
-                    return yaml.safe_load(f)
+                    cfg = yaml.safe_load(f)
+                if cfg:
+                    _warn_dangling_inventory_refs(cfg, config_path)
+                return cfg
         except Exception as e:
             print(f"[TOOLS] Error loading {config_path}: {e}", flush=True)
     return None
+
+
+def _warn_dangling_inventory_refs(cfg: Dict, config_path: str) -> None:
+    """Cross-check `velociraptor_inventory` entries against the
+    download-source sections. A `tool_name` registered with the
+    Velociraptor server that no download path provides will fail at
+    runtime when the artifact tries to use it — log a clear warning
+    here so the inconsistency surfaces at startup, not first use.
+
+    Non-fatal: this is purely a developer-quality-of-life check.
+    `velociraptor_inventory` matches files by regex pattern, not by
+    name, so we use a prefix heuristic: strip a trailing version-like
+    suffix (`-1.2.3`, `_v2`) from both inventory tool names and
+    download names, then match on either-contains-the-other.
+    """
+    import re
+
+    inv = cfg.get('velociraptor_inventory') or []
+    download_sections = [
+        'velociraptor_core', 'event_log_tools', 'persistence_tools',
+        'yara_tools', 'velociraptor_artifacts', 'memory_tools',
+        'nirsoft_tools', 'zimmerman_tools', 'sysinternals_tools',
+        'imaging_tools', 'audit_tools', 'threat_intel',
+        'osquery_tools', 'network_tools', 'linux_tools', 'optional_large',
+    ]
+
+    # Strip trailing "-1.2.3", "_v0.7", "-rev2", and similar so
+    # version-pinned tool_names like "Hayabusa-2.14.0" reduce to
+    # "hayabusa" and match the generic "Hayabusa" download entry.
+    _VER_SUFFIX = re.compile(r'[-_](?:v?\d+(?:\.\d+)*|\d+).*$', re.IGNORECASE)
+
+    def _base(s: str) -> str:
+        return _VER_SUFFIX.sub('', s.lower())
+
+    download_bases = set()
+    for section in download_sections:
+        for entry in (cfg.get(section) or []):
+            if isinstance(entry, dict):
+                for key in ('name', 'filename'):
+                    val = entry.get(key)
+                    if isinstance(val, str):
+                        download_bases.add(_base(val))
+
+    missing: list = []
+    for inv_entry in inv:
+        if not isinstance(inv_entry, dict):
+            continue
+        tool = inv_entry.get('tool_name', '')
+        if not tool:
+            continue
+        # Velociraptor binaries are intentionally satisfied by the
+        # staging path under modules/velociraptor/clients/, not by a
+        # tools_inventory download. Don't flag those.
+        if tool.lower().startswith('velociraptor'):
+            continue
+        base = _base(tool)
+        # Match if any download base contains the tool base OR
+        # vice versa (handles plural/singular + minor name variations).
+        if any(base in d or d in base for d in download_bases if d and base):
+            continue
+        missing.append(tool)
+
+    if missing:
+        seen = set()
+        uniq = [m for m in missing if not (m in seen or seen.add(m))]
+        print(
+            f"[TOOLS] WARNING: {len(uniq)} velociraptor_inventory entries "
+            f"in {config_path} reference tools with no download source: "
+            f"{', '.join(uniq[:10])}"
+            f"{'...' if len(uniq) > 10 else ''}",
+            flush=True,
+        )
 
 
 def get_github_release_url(repo: str, pattern: str, logger: Callable = None) -> Optional[str]:
@@ -83,12 +158,28 @@ def get_github_release_url(repo: str, pattern: str, logger: Callable = None) -> 
 
 
 def download_file(url: str, dest_path: str, filename: Optional[str] = None,
-                  logger: Callable = None, timeout: int = 300) -> Optional[str]:
-    """Download a file from URL to destination path."""
+                  logger: Callable = None, timeout: int = 300,
+                  run_id: Optional[str] = None) -> Optional[str]:
+    """Download a file from URL to destination path.
+
+    `run_id` makes the chunked stream interruptible: when the operator
+    clicks Stop, the very next chunk write checks the cancel event and
+    aborts mid-file (and removes the partial). Without this, a 100 MB
+    download running over a slow link kept going long after Stop.
+    """
     def log(msg):
         if logger:
             logger(msg)
         print(f"[TOOLS-DL] {msg}", flush=True)
+
+    # Hook the cancel event for this run if available
+    cancel_event = None
+    if run_id:
+        try:
+            from services.workflow_service import get_cancel_event
+            cancel_event = get_cancel_event(run_id)
+        except Exception:
+            cancel_event = None
 
     try:
         # Determine filename
@@ -126,6 +217,14 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
         # Write file
         with open(full_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
+                if cancel_event is not None and cancel_event.is_set():
+                    log(f"  ✗ Cancelled mid-download: {filename}")
+                    try:
+                        f.close()
+                        os.remove(full_path)
+                    except OSError:
+                        pass
+                    return None
                 if chunk:
                     f.write(chunk)
 
@@ -141,8 +240,14 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
 
 
 def download_tools_from_config(tools_dir: str, config: Dict,
-                                logger: Callable = None) -> Dict:
-    """Download all enabled tools from configuration."""
+                                logger: Callable = None,
+                                run_id: Optional[str] = None) -> Dict:
+    """Download all enabled tools from configuration.
+
+    Threads run_id into per-file `download_file` calls so a Stop click
+    interrupts the in-flight download immediately. Also checks the
+    cancel event between tools to exit cleanly between large items.
+    """
     def log(msg, level="info"):
         if logger:
             logger(msg, level)
@@ -193,6 +298,19 @@ def download_tools_from_config(tools_dir: str, config: Dict,
         log(f"Processing {section}: {len(enabled_tools)} tools")
 
         for tool in enabled_tools:
+            # Honour Stop between tools — quick exit for the case where
+            # we're partway through a big inventory and the operator
+            # already pressed Stop.
+            if run_id:
+                try:
+                    from services.workflow_service import is_cancelled
+                    if is_cancelled(run_id):
+                        log("Tool download cancelled by user")
+                        results["cancelled"] = True
+                        return results
+                except Exception:
+                    pass
+
             tool_name = tool.get('name', 'Unknown')
             tool_type = tool.get('type', '')
 
@@ -247,7 +365,7 @@ def download_tools_from_config(tools_dir: str, config: Dict,
 
                 # Download the file
                 result = download_file(
-                    download_url, tools_dir, filename, log
+                    download_url, tools_dir, filename, log, run_id=run_id
                 )
 
                 if result:
@@ -527,50 +645,71 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None) -
 
 
 def ensure_offline_collector_binaries(downloads_dir: str, logger: Callable = None) -> Dict:
-    """Check that Velociraptor v0.74.1 binaries exist for Offline Collector.
+    """Verify a Velociraptor offline-collector binary is present for each
+    supported platform (windows / linux / darwin).
 
-    v0.74.x is required because v0.75+ broke the -- pseudo-flag in Generic Collector.
-    These binaries are downloaded by install.sh during installation (when internet is available).
-    This function only checks their presence - it does NOT download (supports air-gap environments).
+    Discovery is version-agnostic: any `velociraptor-v<X>-<platform>` file
+    counts. This matches the runtime behaviour of
+    `services.offline_collector.constants:VELO_CLIENT_PATHS`, which picks
+    the highest-version binary per platform from this same directory.
+
+    install.sh's `download_offline_collector_binaries` (in `lib/docker.sh`)
+    is what actually downloads the files; this function only reports
+    presence so the operator can spot a broken air-gap setup.
     """
     def log(msg, level="info"):
         if logger:
             logger(msg, level)
-        print(f"[TOOLS-074] {msg}", flush=True)
+        print(f"[TOOLS] {msg}", flush=True)
+
+    import glob as _glob
 
     results = {"already_exists": [], "missing": []}
 
-    binaries = [
-        "velociraptor-v0.74.1-windows-amd64.exe",
-        "velociraptor-v0.74.1-linux-amd64",
-        "velociraptor-v0.74.1-darwin-amd64"
-    ]
+    # platform_label -> filename suffix glob
+    platforms = {
+        "windows": "windows-amd64.exe",
+        "linux":   "linux-amd64",
+        "darwin":  "darwin-amd64",
+    }
 
-    for binary in binaries:
-        dest_path = os.path.join(downloads_dir, binary)
-
-        # Check if file exists and has content
-        if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
-            results["already_exists"].append(binary)
+    for label, suffix in platforms.items():
+        pattern = os.path.join(downloads_dir, f"velociraptor-v*-{suffix}")
+        # Filter to non-empty regular files; ignore detached signatures.
+        matches = [
+            p for p in _glob.glob(pattern)
+            if os.path.isfile(p)
+            and os.path.getsize(p) > 0
+            and not p.endswith(".sig")
+        ]
+        if matches:
+            # Newest by mtime is good enough here — operators who keep
+            # multiple versions around will see them all in the "found"
+            # list.
+            for p in matches:
+                results["already_exists"].append(os.path.basename(p))
         else:
-            log(f"  Missing: {binary} (should be downloaded by install.sh)", "warning")
-            results["missing"].append(binary)
+            label_str = f"velociraptor-v*-{suffix}"
+            log(f"  Missing for {label}: no {label_str} in {downloads_dir} (run install.sh's offline-collector download step)", "warning")
+            results["missing"].append(label_str)
 
     exist_count = len(results["already_exists"])
     missing_count = len(results["missing"])
 
     if missing_count > 0:
-        log(f"Offline Collector binaries: {exist_count} found, {missing_count} missing", "warning")
+        log(f"Offline Collector binaries: {exist_count} present, {missing_count} platform(s) missing", "warning")
     else:
-        log(f"Offline Collector binaries: all {exist_count} present")
+        log(f"Offline Collector binaries: all {len(platforms)} platforms present ({exist_count} file(s))")
 
     return results
 
 
-def download_and_configure_tools(logger: Callable = None) -> Dict:
+def download_and_configure_tools(logger: Callable = None, run_id: Optional[str] = None) -> Dict:
     """Main function: Download tools and configure Velociraptor inventory.
 
     This is the function called from maintenance workflow.
+    `run_id` propagates the workflow's cancel event into the per-file
+    HTTP streams + the per-tool loop so Stop is honoured immediately.
     """
     def log(msg, level="info"):
         if logger:
@@ -579,10 +718,12 @@ def download_and_configure_tools(logger: Callable = None) -> Dict:
 
     log("Starting tool download and configuration...")
 
-    # Ensure Offline Collector v0.74.1 binaries exist
+    # Ensure Offline Collector binaries are present (any version — pin
+    # comes from config.yaml's `versions.velociraptor` and is enforced by
+    # install.sh; this just verifies the files actually landed).
     # These go to /app/downloads which maps to modules/nginx/html/downloads/
     downloads_dir = "/app/downloads"
-    log("Checking Velociraptor v0.74.1 binaries for Offline Collector...")
+    log("Checking Velociraptor offline-collector binaries...")
     offline_results = ensure_offline_collector_binaries(downloads_dir, log)
 
     exist_count = len(offline_results.get('already_exists', []))
@@ -615,7 +756,10 @@ def download_and_configure_tools(logger: Callable = None) -> Dict:
     log("PHASE 1: Downloading tools from GitHub/URLs")
     log("=" * 50)
 
-    download_results = download_tools_from_config(host_tools_dir, config, log)
+    download_results = download_tools_from_config(host_tools_dir, config, log, run_id=run_id)
+    if download_results.get("cancelled"):
+        return {"success": False, "cancelled": True, "download_results": download_results,
+                "summary": "Cancelled by user"}
 
     downloaded = len(download_results.get('downloaded', []))
     already = len(download_results.get('already_exists', []))

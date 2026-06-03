@@ -4,7 +4,7 @@
 import os
 import time
 import requests
-from typing import Dict, Callable
+from typing import Dict, Callable, Optional
 
 from .base import (
     WORKDIR, HOST_PATH,
@@ -102,6 +102,16 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
                 raise Exception(f"Elasticsearch failed to start - container status: {container_status}")
             log("Elasticsearch health check: TIMEOUT (containers may still be starting)", "warning")
 
+        # Re-ensure the Kibana 'artifact_*' data view — it can be lost when
+        # Kibana migrates/recreates saved objects across an upgrade. Idempotent;
+        # same helper install.sh's post-install maintenance uses. Best-effort.
+        log("Re-ensuring Kibana data view (post-upgrade init)...", "info")
+        try:
+            from services.kibana_init import ensure_kibana_data_view
+            ensure_kibana_data_view(log, wait=True)
+        except Exception as _e:
+            log(f"  Kibana data view re-init skipped: {str(_e)[:80]}", "warning")
+
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
         log(f"ELK upgrade completed: {current_version} -> {version}", "success")
@@ -128,7 +138,8 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
         }
 
 
-def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None) -> Dict:
+def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None,
+                         run_id: Optional[str] = None) -> Dict:
     """Upgrade ELK from offline package (pre-saved docker images) with automatic rollback."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     work_dir = os.path.join(WORKDIR, 'modules', 'elk')
@@ -148,7 +159,7 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None)
     try:
         # Stop containers
         log("Stopping ELK containers...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log)
+        result = run_command("docker compose down", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to stop ELK: {result['error']}")
 
@@ -157,7 +168,7 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None)
         for img_name in ['elasticsearch', 'kibana', 'logstash']:
             tar_path = os.path.join(images_dir, f"{img_name}-{version}.tar")
             if os.path.exists(tar_path):
-                result = load_docker_image(tar_path, logger=log)
+                result = load_docker_image(tar_path, logger=log, run_id=run_id)
                 if not result['success']:
                     log(f"  Warning: Failed to load {img_name}", "warning")
             else:
@@ -170,7 +181,7 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None)
 
         # Start containers
         log("Starting ELK containers...", "info")
-        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
+        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to start ELK: {result['error']}")
 
@@ -202,6 +213,14 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None)
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"Elasticsearch failed to start - container status: {container_status}")
             log("Elasticsearch health check: TIMEOUT (containers may still be starting)", "warning")
+
+        # Re-ensure the Kibana 'artifact_*' data view (see online path).
+        log("Re-ensuring Kibana data view (post-upgrade init)...", "info")
+        try:
+            from services.kibana_init import ensure_kibana_data_view
+            ensure_kibana_data_view(log, wait=True)
+        except Exception as _e:
+            log(f"  Kibana data view re-init skipped: {str(_e)[:80]}", "warning")
 
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)

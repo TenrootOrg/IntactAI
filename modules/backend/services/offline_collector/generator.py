@@ -26,10 +26,23 @@ from services.offline_collector.config import get_config
 def get_blueprint_as_config(blueprint_id):
     """Try to load a blueprint as an offline collector config.
 
-    This allows using unified forensics blueprints for offline collector generation.
+    Supports three blueprint families:
+      - velociraptor_*  : list of artifacts, no per-artifact env
+      - agentic_*       : list of artifacts, no per-artifact env
+      - timesketch_*    : single KAPE artifact (Windows.Triage.Targets) with
+                          the kape_* settings mapped onto the artifact's env
+                          (Targets, MaxFileSize, MaxHashSize, CollectionPolicy).
+                          The resulting offline ZIP runs the same triage the
+                          live Timesketch automation runs - drop on a target
+                          host, double-click, get a collection ZIP back.
     """
     try:
-        from routes.blueprint_routes import load_velociraptor_blueprints, load_agentic_blueprints
+        import json as _json
+        from routes.blueprint_routes import (
+            load_velociraptor_blueprints,
+            load_agentic_blueprints,
+            load_timesketch_blueprints,
+        )
 
         # Check velociraptor blueprints
         velo_blueprints = load_velociraptor_blueprints()
@@ -59,13 +72,53 @@ def get_blueprint_as_config(blueprint_id):
                     }
                 }
 
+        # Check Timesketch blueprints. These ARE KAPE blueprints, so they
+        # map to a single artifact (Windows.Triage.Targets) and carry the
+        # kape_* env knobs the live automation already honours.
+        ts_blueprints = load_timesketch_blueprints()
+        for bp in ts_blueprints:
+            if bp.get('id') == blueprint_id:
+                s = bp.get('settings', {}) or {}
+                kape_target = s.get('kape_target', '_KapeTriage')
+                # env values are passed to the VQL artifact as STRINGS — same
+                # serialization the live kape_service uses (json-encoded array
+                # for Targets, str() for the size knobs).
+                artifact_env = {
+                    'Targets': _json.dumps([kape_target]),
+                    'MaxFileSize': str(int(s.get('kape_max_file_size', 10737418240))),
+                    'MaxHashSize': str(int(s.get('kape_max_hash_size', 0))),
+                    'CollectionPolicy': s.get('kape_collection_policy', 'ExcludeSigned'),
+                }
+                return {
+                    'config_id': bp['id'],
+                    'config_name': bp.get('name', blueprint_id),
+                    'artifacts': ['Windows.Triage.Targets'],
+                    'parameters': {
+                        'CpuLimit': s.get('cpu_limit', 80),
+                        'MaxExecutionTimeInSeconds': s.get('collection_timeout',
+                                                           s.get('timeout', 100000)),
+                    },
+                    # Per-artifact env dict. generator picks this up and inlines
+                    # it into the Server.Utils.CreateCollector spec.
+                    'artifact_env': {'Windows.Triage.Targets': artifact_env},
+                    # Flag so the BAT/launcher generator can pick a sensible
+                    # output filename suffix.
+                    'kind': 'kape',
+                }
+
         return None
     except Exception as e:
         print(f"[OFFLINE] Error loading blueprint {blueprint_id}: {e}", flush=True)
         return None
 
 
-def generate_collector(config_id, os_type="windows"):
+def generate_collector(config_id, os_type="windows",
+                       legacy=False, legacy_version=None, legacy_source="offline",
+                       musl=False, run_id=None):
+    """`run_id` makes the call honour the workflow's Stop button — between
+    each phase (gRPC setup, collection wait, file copy, binary swap,
+    repack) we check the cancel event and abort cleanly. Without this,
+    Stop only renames the row to 'cancelled' while the work runs on."""
     """Generate an offline collector using Velociraptor's Generic Collector.
 
     The Generic Collector has NO size limit (unlike platform-specific collectors
@@ -75,6 +128,15 @@ def generate_collector(config_id, os_type="windows"):
     Args:
         config_id: The configuration ID or blueprint ID to use
         os_type: Target OS (windows, linux, darwin) - used for naming only
+        legacy: when True, swap the bundled Velociraptor binary for the
+            legacy build (v0.7.x by default) so the resulting collector runs
+            on Server 2008 R2 / Windows 7 hosts that the modern Go 1.22+
+            binary crashes on. The embedded collector_config is platform-
+            agnostic and is understood by both modern and legacy binaries.
+        legacy_version: explicit legacy version (default: pulled from
+            versions.velociraptor_legacy in config.yaml).
+        legacy_source: 'offline' uses the binary install.sh pre-downloaded;
+            'online' fetches from GitHub at request time.
 
     Returns:
         dict with success status, file_id, file_name, file_path
@@ -85,7 +147,24 @@ def generate_collector(config_id, os_type="windows"):
 
     print(f"[OFFLINE] Generating Generic Collector (no size limit) for config={config_id}", flush=True)
 
+    # Cancellation helper — returns True iff the workflow has been Stopped.
+    # Each phase boundary calls this; on True we bail with cancelled=True
+    # so the caller can short-circuit cleanly.
+    def _cancelled():
+        if not run_id:
+            return False
+        try:
+            from services.workflow_service import is_cancelled, get_cancel_event
+            ev = get_cancel_event(run_id)
+            if ev is not None and ev.is_set():
+                return True
+            return bool(is_cancelled(run_id))
+        except Exception:
+            return False
+
     try:
+        if _cancelled():
+            return {"success": False, "cancelled": True, "error": "cancelled"}
         # First try to load as a blueprint (unified forensics system)
         config = get_blueprint_as_config(config_id)
 
@@ -145,8 +224,26 @@ def generate_collector(config_id, os_type="windows"):
         )
         stub = api_pb2_grpc.APIStub(channel)
 
-        # Build artifacts list as VQL array
-        artifacts_vql = "[" + ", ".join(f'"{a}"' for a in filtered_artifacts) + "]"
+        # Server.Utils.CreateCollector declares both `artifacts` and
+        # `parameters` as type=json / json_array. The artifact dispatcher
+        # expects them as JSON-encoded STRINGS — passing a VQL list / dict
+        # literal silently coerces to "null" (we proved this by decoding
+        # the resulting collector_config: Artifacts came through as "null"
+        # and the collection ran with no artifacts in 100ms).
+        #
+        # Fix: serialize both fields to JSON in Python and inline them as
+        # VQL string literals via triple-quoting.
+        artifacts_json = json.dumps(filtered_artifacts)
+        artifacts_vql = f"'''{artifacts_json}'''"
+
+        # `parameters` is a JSON dict keyed by artifact name -> dict of
+        # parameter overrides. Currently only Timesketch (KAPE) blueprints
+        # carry artifact_env; other blueprint families just leave it empty.
+        artifact_env = config.get("artifact_env") or {}
+        params_json = json.dumps(artifact_env)
+        params_vql = f"'''{params_json}'''"
+        if artifact_env:
+            print(f"[OFFLINE] Inlining parameter overrides for {len(artifact_env)} artifact(s): {list(artifact_env.keys())}", flush=True)
 
         # Use "Generic" OS type - this has NO size limit and embeds tools
         vql_query = f'''SELECT collect_client(
@@ -156,7 +253,7 @@ def generate_collector(config_id, os_type="windows"):
                 `Server.Utils.CreateCollector`=dict(
                     OS="Generic",
                     artifacts={artifacts_vql},
-                    parameters=dict(),
+                    parameters={params_vql},
                     target="ZIP",
                     target_args=dict(Filename="Collector_{safe_name}"),
                     opt_verbose="Y",
@@ -213,6 +310,10 @@ def generate_collector(config_id, os_type="windows"):
         files_in_upload = []
 
         while elapsed < max_wait:
+            if _cancelled():
+                try: channel.close()
+                except Exception: pass
+                return {"success": False, "cancelled": True, "error": "cancelled"}
             time.sleep(poll_interval)
             elapsed += poll_interval
 
@@ -284,6 +385,10 @@ def generate_collector(config_id, os_type="windows"):
         bundle_dir = os.path.join(COLLECTOR_OUTPUT_DIR, f"bundle_generic_{safe_name}_{int(time.time())}")
         os.makedirs(bundle_dir, exist_ok=True)
 
+        if _cancelled():
+            shutil.rmtree(bundle_dir, ignore_errors=True)
+            return {"success": False, "cancelled": True, "error": "cancelled"}
+
         # Copy the generic collector file
         collector_local = os.path.join(bundle_dir, "collector_config")
         copy_cmd = f"docker cp '{VELOCIRAPTOR_CONTAINER}:{collector_path_in_container}' '{collector_local}'"
@@ -308,6 +413,10 @@ def generate_collector(config_id, os_type="windows"):
 
         velo_dest = os.path.join(bundle_dir, velo_binary_name)
 
+        if _cancelled():
+            shutil.rmtree(bundle_dir, ignore_errors=True)
+            return {"success": False, "cancelled": True, "error": "cancelled"}
+
         # Try to copy velociraptor binary
         if os.path.exists(velo_src) and os.path.getsize(velo_src) > 1000000:
             shutil.copy2(velo_src, velo_dest)
@@ -315,6 +424,75 @@ def generate_collector(config_id, os_type="windows"):
         else:
             shutil.rmtree(bundle_dir, ignore_errors=True)
             return {"success": False, "error": f"Velociraptor binary not found: {velo_src}"}
+
+        # If the caller asked for a legacy-compatible collector (for Server
+        # 2008 R2 / Win 7 hosts), overwrite the just-copied binary with the
+        # legacy one. The collector_config produced above is platform-
+        # agnostic and 0.7.x's --embedded_config consumes it the same way
+        # 0.76+ does, so the swap is invisible to the rest of this fn.
+        # If the caller asked for the MODERN musl-static variant (Linux only)
+        # — swap the just-copied bundled binary for the musl one. Same
+        # version as the modern build, but statically linked against musl
+        # libc so it runs on any-glibc Linux. Mutually exclusive with
+        # legacy; the route already rejects "both" requests.
+        if musl and os_type == "linux":
+            try:
+                from services.legacy_velociraptor_service import (
+                    _read_modern_velociraptor_version, _binary_filename, DOWNLOADS_DIR,
+                )
+                mv = _read_modern_velociraptor_version()
+                musl_src = os.path.join(DOWNLOADS_DIR, _binary_filename(mv, "linux-amd64-musl"))
+                if not os.path.exists(musl_src):
+                    shutil.rmtree(bundle_dir, ignore_errors=True)
+                    return {"success": False, "error":
+                        f"modern musl binary not present at {musl_src}. "
+                        f"Re-run install.sh's download_offline_collector_binaries "
+                        f"(it now fetches the -musl variant alongside the regular ones)."}
+                shutil.copy2(musl_src, velo_dest)
+                print(f"[OFFLINE] Swapped in modern musl-static linux binary v{mv}: {musl_src}", flush=True)
+                safe_name = f"{safe_name}_musl"
+            except Exception as e:
+                shutil.rmtree(bundle_dir, ignore_errors=True)
+                return {"success": False, "error": f"musl binary swap failed: {e}"}
+
+        if legacy:
+            try:
+                from services.legacy_velociraptor_service import (
+                    get_legacy_binary, _read_default_legacy_version,
+                )
+                lv = legacy_version or _read_default_legacy_version()
+                # For linux we prefer the musl-static variant — same
+                # rationale as the live-client route:
+                # services/legacy_velociraptor_service.py:_TARGET_MAP. The
+                # plain linux-amd64 build links to GLIBC_2.28 and won't
+                # load on CentOS 7 / RHEL 7 / Ubuntu 16.04 (glibc 2.17).
+                # The musl variant is statically linked, zero glibc deps.
+                # Fall back to plain linux-amd64 if musl isn't cached.
+                if os_type == "linux":
+                    plat_candidates = ["linux-amd64-musl", "linux-amd64"]
+                elif os_type == "darwin":
+                    plat_candidates = ["darwin-amd64"]
+                else:  # windows
+                    plat_candidates = ["windows-amd64"]
+                legacy_bin = None
+                last_err = None
+                for plat in plat_candidates:
+                    try:
+                        legacy_bin = get_legacy_binary(lv, plat, legacy_source)
+                        chosen_plat = plat
+                        break
+                    except FileNotFoundError as e:
+                        last_err = e
+                if legacy_bin is None:
+                    raise last_err or RuntimeError("no legacy binary candidates available")
+                shutil.copy2(legacy_bin, velo_dest)
+                print(f"[OFFLINE] Swapped in legacy binary v{lv} ({chosen_plat}, {legacy_source}): {legacy_bin}", flush=True)
+                # Tag the safe_name so the resulting filename + file_id
+                # don't collide with the modern variant.
+                safe_name = f"{safe_name}_legacy_v{lv.replace('.', '_')}"
+            except Exception as e:
+                shutil.rmtree(bundle_dir, ignore_errors=True)
+                return {"success": False, "error": f"legacy binary swap failed: {e}"}
 
         # Create launch script
         if os_type == "windows":
@@ -408,6 +586,10 @@ echo "============================================"
                 f.write(script_content)
             os.chmod(script_path, 0o755)
 
+        if _cancelled():
+            shutil.rmtree(bundle_dir, ignore_errors=True)
+            return {"success": False, "cancelled": True, "error": "cancelled"}
+
         # Create final ZIP bundle
         output_filename = f"OfflineCollector_{safe_name}_{os_type}.zip"
         output_path = os.path.join(COLLECTOR_OUTPUT_DIR, output_filename)
@@ -430,6 +612,18 @@ echo "============================================"
 
         file_size = os.path.getsize(output_path)
         print(f"[OFFLINE] Verified file ready: {output_filename} ({file_size} bytes)", flush=True)
+
+        # Final cancel check — if the user clicked Stop while this
+        # function was wrapping up (gRPC done, file copy done, zip
+        # done), discard the output and report cancelled. Without
+        # this, the route would log "Collector generated successfully"
+        # AFTER the "Stop requested" line.
+        if _cancelled():
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+            return {"success": False, "cancelled": True, "error": "cancelled"}
 
         return {
             "success": True,

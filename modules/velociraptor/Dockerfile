@@ -2,32 +2,46 @@ FROM ubuntu:22.04
 
 # VELOCIRAPTOR_TAG = release tag (e.g., 0.75)
 # VELOCIRAPTOR_VERSION = binary version (e.g., 0.75.6)
-ARG VELOCIRAPTOR_TAG=0.75
-ARG VELOCIRAPTOR_VERSION=0.75.6
+ARG VELOCIRAPTOR_TAG
+ARG VELOCIRAPTOR_VERSION
 
 LABEL description="Velociraptor server"
 LABEL version="Velociraptor ${VELOCIRAPTOR_VERSION}"
 
-# Install dependencies
+# Binaries are staged into the build context by the install/upgrade
+# orchestrator BEFORE invoking `docker compose build`. Both modes
+# (fresh install + online upgrade) download from GitHub on the host
+# side; offline upgrade copies them out of the upgrade package. Either
+# way the Dockerfile sees them as plain files and just COPYs — no
+# network at build time.
+#
+# Earlier versions of this Dockerfile curled directly from
+# github.com/Velocidex during build, which made every build network-
+# dependent and outright impossible during offline upgrade. See
+# services/upgrade/velociraptor.py:_stage_velociraptor_binaries for
+# the staging contract.
+# ca-certificates is the ONLY runtime dep we need: the Velociraptor
+# server's `Server.Utils.GetDependency` fetches tools on-demand from
+# HTTPS endpoints (GitHub releases, etc.) and Ubuntu 22.04 base ships
+# with no CA bundle — without this every fetch fails with
+# "x509: certificate signed by unknown authority". apt-get needs
+# network at BUILD time only; the resulting image runs fully offline.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-      rsync curl ca-certificates && \
-    mkdir -p /opt/velociraptor/linux && \
-    mkdir -p /opt/velociraptor/mac && \
-    mkdir -p /opt/velociraptor/windows && \
-    # Download Velociraptor binaries using direct URLs (no API rate limits)
-    curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 120 -o /opt/velociraptor/linux/velociraptor \
-      "https://github.com/Velocidex/velociraptor/releases/download/v${VELOCIRAPTOR_TAG}/velociraptor-v${VELOCIRAPTOR_VERSION}-linux-amd64" && \
-    chmod +x /opt/velociraptor/linux/velociraptor && \
-    curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 120 -o /opt/velociraptor/mac/velociraptor_client \
-      "https://github.com/Velocidex/velociraptor/releases/download/v${VELOCIRAPTOR_TAG}/velociraptor-v${VELOCIRAPTOR_VERSION}-darwin-amd64" && \
-    curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 120 -o /opt/velociraptor/windows/velociraptor_client.exe \
-      "https://github.com/Velocidex/velociraptor/releases/download/v${VELOCIRAPTOR_TAG}/velociraptor-v${VELOCIRAPTOR_VERSION}-windows-amd64.exe" && \
-    curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 120 -o /opt/velociraptor/windows/velociraptor_client.msi \
-      "https://github.com/Velocidex/velociraptor/releases/download/v${VELOCIRAPTOR_TAG}/velociraptor-v${VELOCIRAPTOR_VERSION}-windows-amd64.msi" && \
-    # Cleanup
+    apt-get install -y --no-install-recommends ca-certificates && \
     apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /opt/velociraptor/linux \
+             /opt/velociraptor/mac \
+             /opt/velociraptor/windows
+
+COPY clients/linux/velociraptor                /opt/velociraptor/linux/velociraptor
+COPY clients/mac/velociraptor_client           /opt/velociraptor/mac/velociraptor_client
+COPY clients/windows/velociraptor_client.exe   /opt/velociraptor/windows/velociraptor_client.exe
+COPY clients/windows/velociraptor_client.msi   /opt/velociraptor/windows/velociraptor_client.msi
+
+RUN chmod +x /opt/velociraptor/linux/velociraptor \
+             /opt/velociraptor/mac/velociraptor_client \
+             /opt/velociraptor/windows/velociraptor_client.exe
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

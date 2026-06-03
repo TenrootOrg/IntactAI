@@ -5,6 +5,7 @@ Velociraptor Service - gRPC connection, VQL queries, client operations
 
 import subprocess
 import json
+import shlex
 import time
 import yaml
 import os
@@ -776,31 +777,39 @@ def export_flow_to_zip(client_id: str, flow_id: str, out_path: str, logger=None,
         log("Velociraptor did not return a successful download path", "warning")
         # Proceed anyway — the ZIP might still be on disk from a previous run.
 
-    # The ZIP lives inside the Velociraptor container. Pull it out via a throwaway helper container
-    # that has the Velociraptor volumes mounted.
+    # The ZIP lives inside the Velociraptor container. Pull it out with
+    # `docker exec` (to locate the actual filename) + `docker cp` (to
+    # stream it to the host). The previous alpine sidecar approach
+    # (`docker run --rm --volumes-from intact_velociraptor alpine ...`)
+    # broke on airgapped boxes because docker would try to pull
+    # `alpine:latest` from Docker Hub at runtime. exec+cp uses only the
+    # already-running container — zero network dependency.
     out_dir = os.path.dirname(out_path) or "/tmp"
-    out_file = os.path.basename(out_path)
     os.makedirs(out_dir, exist_ok=True)
 
-    copy_script = (
-        "set -e; "
-        f"src_dir=/var./downloads/{client_id}/{flow_id}; "
-        "zip_src=$(ls -1 ${src_dir}/*.zip 2>/dev/null | head -1); "
-        "if [ -z \"$zip_src\" ]; then echo 'No ZIP found in '${src_dir} >&2; exit 1; fi; "
-        f"cp \"$zip_src\" /out/{out_file}; "
-        f"chmod 644 /out/{out_file}"
-    )
-
+    src_dir = f"/var./downloads/{client_id}/{flow_id}"
+    locate_cmd = [
+        "docker", "exec", VELOCIRAPTOR_CONTAINER, "sh", "-c",
+        f"ls -1 {src_dir}/*.zip 2>/dev/null | head -1",
+    ]
+    log(f"$ {shlex.join(locate_cmd)}")
     try:
-        result = subprocess.run(
-            [
-                "docker", "run", "--rm",
-                "--volumes-from", VELOCIRAPTOR_CONTAINER,
-                "-v", f"{out_dir}:/out",
-                "alpine", "sh", "-c", copy_script,
-            ],
-            capture_output=True, text=True, timeout=180
-        )
+        locate = subprocess.run(locate_cmd, capture_output=True, text=True, timeout=30)
+        zip_src = locate.stdout.strip()
+        if locate.returncode != 0 or not zip_src:
+            log(f"No ZIP found in {src_dir}: {locate.stderr.strip() or '(empty result)'}", "error")
+            return False
+    except subprocess.TimeoutExpired:
+        log(f"Timed out locating ZIP in {src_dir}", "error")
+        return False
+    except Exception as e:
+        log(f"docker exec failed locating ZIP: {e}", "error")
+        return False
+
+    cp_cmd = ["docker", "cp", f"{VELOCIRAPTOR_CONTAINER}:{zip_src}", out_path]
+    log(f"$ {shlex.join(cp_cmd)}")
+    try:
+        result = subprocess.run(cp_cmd, capture_output=True, text=True, timeout=180)
         if result.returncode != 0:
             log(f"Failed to copy ZIP out of Velociraptor container: {result.stderr.strip()}", "error")
             return False
@@ -808,8 +817,13 @@ def export_flow_to_zip(client_id: str, flow_id: str, out_path: str, logger=None,
         log("Timed out copying ZIP from Velociraptor container", "error")
         return False
     except Exception as e:
-        log(f"docker run failed copying ZIP: {e}", "error")
+        log(f"docker cp failed copying ZIP: {e}", "error")
         return False
+
+    try:
+        os.chmod(out_path, 0o644)
+    except OSError:
+        pass
 
     if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
         log(f"Export completed but output file missing or empty: {out_path}", "error")
@@ -838,13 +852,17 @@ def cleanup_flow_export(client_id: str, flow_id: str, logger=None) -> None:
     script = (
         f"rm -rf /var./downloads/{client_id}/{flow_id} 2>/dev/null || true"
     )
+    # docker exec into the running container instead of spinning up an
+    # alpine sidecar — same reasoning as export_flow_to_zip(): airgapped
+    # boxes don't have alpine pre-pulled and `docker run alpine` would
+    # try to reach Docker Hub at runtime.
+    cleanup_cmd = [
+        "docker", "exec", VELOCIRAPTOR_CONTAINER, "sh", "-c", script,
+    ]
+    log(f"$ {shlex.join(cleanup_cmd)}")
     try:
         subprocess.run(
-            [
-                "docker", "run", "--rm",
-                "--volumes-from", VELOCIRAPTOR_CONTAINER,
-                "alpine", "sh", "-c", script,
-            ],
+            cleanup_cmd,
             capture_output=True, text=True, timeout=60
         )
         log(f"Removed Velociraptor-side export dir for flow {flow_id}")

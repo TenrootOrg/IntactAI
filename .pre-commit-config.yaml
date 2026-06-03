@@ -1,0 +1,33 @@
+# Pre-commit hook config for IntactAI.
+#
+# To activate locally:
+#   pip install pre-commit
+#   pre-commit install
+#
+# Once activated, every `git commit` runs gitleaks on the staged diff
+# and blocks the commit if a secret is detected. Install it once per
+# developer clone with `pip install pre-commit && pre-commit install`.
+#
+# We use a `local` hook (not the upstream gitleaks pre-commit hook
+# repo) on purpose:
+#  1. The upstream golang hook compiles gitleaks into pre-commit's
+#     cache dir and runs it from there — gitleaks then can't find our
+#     `.gitleaks.toml` (it auto-discovers in CWD only). Result: hook
+#     reports "no leaks found" while the leak slips through.
+#  2. Pre-commit's `args:` field APPENDS to upstream's `entry:`,
+#     producing a duplicated nonsense command line.
+# Both bugs verified during testing — local hook with explicit entry
+# is the only configuration that actually catches what we want.
+#
+# Tradeoff: requires gitleaks to be on PATH. Devs install it once with:
+#   curl -sL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+#     | tar xz -C ~/.local/bin gitleaks
+
+repos:
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks (block commit on detected secret)
+        entry: gitleaks protect --staged --redact --config .gitleaks.toml
+        language: system
+        pass_filenames: false

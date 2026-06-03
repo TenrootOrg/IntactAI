@@ -7,8 +7,8 @@
 window.baseHost = window.location.hostname;
 window.services = {
     velociraptor: { path: '/velociraptor/', protocol: 'https' },
-    timesketch: { port: 5000, protocol: 'http' },
-    kibana: { port: 5601, protocol: 'http' },
+    timesketch: { port: 5000, protocol: 'https' },
+    kibana: { port: 5601, protocol: 'https' },
     iris: { port: 8443, protocol: 'https' },
     portainer: { port: 9443, protocol: 'https' }
 };
@@ -17,7 +17,7 @@ window.defaultConfig = {
     agentic: {
         llm_mode: "offline",
         offline_llm: { provider: "ollama", model: "llama3.3:70b", url: "http://localhost:11434", batch_size: 100 },
-        online_llm: { provider: "claude", api_key: "", model: "claude-sonnet-4-6", batch_size: 100 },
+        online_llm: { provider: "claude", api_key: "", model: "claude-sonnet-latest", batch_size: 100 },
     }
 };
 
@@ -198,11 +198,7 @@ document.addEventListener('alpine:init', () => {
                 this.selectedRun = await response.json();
                 this.modalOpen = true;
                 this.currentRunId = runId;
-
-                // Start auto-refresh every 2 seconds
                 this.startAutoRefresh(runId);
-
-                // Scroll to bottom if autoScroll enabled
                 this.scrollToBottom();
             } catch (e) {
                 console.error('Failed to load logs:', e);
@@ -308,8 +304,43 @@ document.addEventListener('alpine:init', () => {
         },
 
         getTypeColor(type) {
-            const colors = { timesketch: 'bg-purple-600', velociraptor_hunt: 'bg-green-600', hunt: 'bg-orange-600', artifact: 'bg-blue-600', agentic: 'bg-pink-600', maintenance: 'bg-yellow-600', velociraptor_offline_collector: 'bg-teal-600', velociraptor_offline_import: 'bg-teal-600', offline_collector: 'bg-teal-600', offline_import: 'bg-teal-600', settings: 'bg-red-600' };
-            return colors[type] || 'bg-gray-600';
+            // Module-themed palette so each chip reflects which module produced
+            // the run. Velociraptor family (incl. agentic + CVE) = green;
+            // Timesketch = purple (avoids blue since Azure owns blue);
+            // Settings / system actions = red; AWS = orange; Azure = blue;
+            // Engagement Report = yellow (customer-facing deliverable).
+            // Fallback is slate-700 — never gray-600, which reads black-on-dark.
+            const colors = {
+                // Velociraptor (incl. agentic + CVE-mgmt scans + offline collectors)
+                agentic: 'bg-green-600',
+                velociraptor_hunt: 'bg-green-700',
+                velociraptor_upload: 'bg-green-700',
+                velociraptor_offline_collector: 'bg-green-700',
+                velociraptor_offline_import: 'bg-green-700',
+                offline_collector: 'bg-green-700',
+                offline_import: 'bg-green-700',
+                hunt: 'bg-green-700',
+                cve_scan: 'bg-green-700',
+                artifact: 'bg-green-600',
+                // Timesketch (and IRIS, when its runs get a workflow row)
+                timesketch: 'bg-purple-600',
+                timesketch_upload: 'bg-purple-700',
+                iris: 'bg-purple-600',
+                // AWS / Azure cloud scans
+                aws_scan: 'bg-orange-600',
+                azure_scan: 'bg-blue-600',
+                // Settings + system-level actions (all red — destructive or
+                // platform-affecting in nature)
+                settings: 'bg-red-600',
+                system_purge: 'bg-red-700',
+                prepare_package: 'bg-red-700',
+                upgrade: 'bg-red-700',
+                support_bundle: 'bg-red-700',
+                maintenance: 'bg-red-700',
+                // Customer-facing reporting
+                engagement_report: 'bg-yellow-600',
+            };
+            return colors[type] || 'bg-slate-700';
         },
 
         getLogColor(level) {
@@ -348,7 +379,7 @@ document.addEventListener('alpine:init', () => {
             agentic: {
                 llm_mode: 'offline',
                 offline_llm: { provider: 'ollama', model: 'llama3.3:70b', url: 'http://localhost:11434', batch_size: 100 },
-                online_llm: { provider: 'claude', api_key: '', model: 'claude-sonnet-4-6', batch_size: 100 },
+                online_llm: { provider: 'claude', api_key: '', model: 'claude-sonnet-latest', batch_size: 100 },
                 max_concurrent_requests: 5,
                 max_response_tokens: 16384,
                 ollama_context_size: 65536,
@@ -375,6 +406,9 @@ document.addEventListener('alpine:init', () => {
                     client_secret: '',
                     subscription_id: ''
                 }
+            },
+            cve_scan: {
+                nvd_api_key: ''
             }
         },
         saving: false,
@@ -422,6 +456,19 @@ document.addEventListener('alpine:init', () => {
                     };
                 }
 
+                // CVE Scan settings come back via the same /api/config
+                // payload (frontend_config blob) — agenticResponse above
+                // already has the full doc.
+                try {
+                    const r = await fetch('/api/config');
+                    if (r.ok) {
+                        const d = await r.json();
+                        this.config.cve_scan = {
+                            nvd_api_key: (d.cve_scan && d.cve_scan.nvd_api_key) || ''
+                        };
+                    }
+                } catch (e) { /* best-effort */ }
+
                 window.currentConfig = this.config;
             } catch (e) {
                 console.error('Failed to load settings:', e);
@@ -439,6 +486,25 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok) {
                     window.currentConfig = this.config;
                     this.showMessage('Agentic settings saved', 'success');
+                    // Fire-and-forget catalog refresh for the just-saved
+                    // provider so the model dropdown picks up the full
+                    // live list (Anthropic / OpenAI / Gemini /v1/models
+                    // require an API key, which we just persisted). Then
+                    // dispatch an event so the combobox re-queries.
+                    const provider = this.config.agentic?.online_llm?.provider;
+                    const providerToRoute = {
+                        openrouter: 'refresh-openrouter-models',
+                        claude:     'refresh-anthropic-models',
+                        openai:     'refresh-openai-models',
+                        gemini:     'refresh-gemini-models'
+                    };
+                    const route = providerToRoute[provider];
+                    if (route) {
+                        try {
+                            await fetch('/api/maintenance/' + route, { method: 'POST' });
+                        } catch (e) { /* best-effort */ }
+                        window.dispatchEvent(new CustomEvent('llm-catalog-refreshed', { detail: { provider } }));
+                    }
                 } else {
                     this.showMessage('Failed to save Agentic config', 'error');
                 }
@@ -491,6 +557,35 @@ document.addEventListener('alpine:init', () => {
             this.saving = false;
         },
 
+        // CVE Scan settings — currently just the NVD API key. The
+        // /api/config PUT endpoint replaces the whole frontend_config
+        // doc, so we read-modify-write to preserve everything else
+        // (agentic, timesketch refs etc.).
+        async saveCveScan() {
+            this.saving = true;
+            try {
+                const r = await fetch('/api/config');
+                const cfg = r.ok ? (await r.json()) : {};
+                cfg.cve_scan = Object.assign({}, cfg.cve_scan || {}, {
+                    nvd_api_key: (this.config.cve_scan && this.config.cve_scan.nvd_api_key) || ''
+                });
+                const save = await fetch('/api/config', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(cfg)
+                });
+                if (save.ok) {
+                    window.currentConfig = this.config;
+                    this.showMessage('CVE Scan settings saved', 'success');
+                } else {
+                    this.showMessage('Failed to save CVE Scan config', 'error');
+                }
+            } catch (e) {
+                this.showMessage('Error: ' + e.message, 'error');
+            }
+            this.saving = false;
+        },
+
         showMessage(msg, type) {
             this.message = msg;
             this.messageType = type;
@@ -531,6 +626,25 @@ document.addEventListener('alpine:init', () => {
                 }
             } catch (e) {
                 this.showMessage('Skills refresh error: ' + e.message, 'error');
+            }
+        },
+
+        async generateSupportBundle() {
+            this.saving = true;
+            this.showMessage('Support bundle workflow starting...', 'info');
+            try {
+                const response = await fetch('/api/support-bundle/prepare', { method: 'POST' });
+                const result = await response.json();
+                if (response.ok && result.success) {
+                    this.showMessage('Bundle generation started - redirecting to Workflows', 'success');
+                    setTimeout(() => { Alpine.store('app').switchTab('workflows'); }, 500);
+                } else {
+                    this.showMessage('Bundle start failed: ' + (result.error || 'Unknown error'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Bundle start error: ' + e.message, 'error');
+            } finally {
+                this.saving = false;
             }
         },
 
@@ -576,6 +690,8 @@ document.addEventListener('alpine:init', () => {
             { id: 'plaso', name: 'Plaso (Timeline)', targetVersion: '', enabled: false, fallback: '20240308' },
             { id: 'iris', name: 'IRIS', targetVersion: '', enabled: false, fallback: 'v2.4.19' },
             { id: 'velociraptor', name: 'Velociraptor', targetVersion: '', enabled: false, fallback: '0.73.4' },
+            { id: 'aws', name: 'AWS (Prowler)', targetVersion: '', enabled: false, fallback: '5.28.1' },
+            { id: 'azure', name: 'Azure (DFIR-O365RC)', targetVersion: '', enabled: false, fallback: 'latest' },
             { id: 'intact', name: 'Intact.AI Source Code', targetVersion: '1.0.0', enabled: false, fallback: '1.0.0' },
         ],
 
@@ -729,17 +845,51 @@ document.addEventListener('alpine:init', () => {
             event.target.value = ''; // Reset input for next upload
         },
 
-        onProviderChange() {
-            // Set default model based on provider (using friendly aliases)
-            const modelDefaults = {
-                'openai': 'gpt-4o',
-                'claude': 'claude-sonnet',
-                'gemini': 'gemini-flash',
-                'openrouter': 'claude-sonnet'
-            };
-            const defaultModel = modelDefaults[this.config.agentic.online_llm.provider];
-            if (defaultModel) {
-                this.config.agentic.online_llm.model = defaultModel;
+        async onProviderChange() {
+            // Pick a sensible default model when the operator switches
+            // provider, plus auto-fill max_response_tokens from it.
+            //
+            // Per provider we prefer the higher-tier `*-latest` family
+            // alias since those auto-update when the vendor ships a new
+            // model and don't lock the operator to a specific version.
+            // If the preferred id isn't in the catalog (older snapshot,
+            // catalog filtered it out), fall back to results[0]
+            // (newest entry by `created`).
+            //
+            // Route name mapping: the UI uses `claude` but the catalog
+            // route is `/api/config/anthropic/models` — translate.
+            const provider = this.config.agentic.online_llm.provider;
+            const route = provider === 'claude' ? 'anthropic' : provider;
+            const preferredId = {
+                'claude':     'claude-sonnet-latest',
+                'openai':     'gpt-latest',
+                'gemini':     'gemini-pro-latest',
+                'openrouter': '~anthropic/claude-sonnet-latest'
+            }[provider];
+
+            try {
+                const resp = await fetch('/api/config/' + route + '/models?limit=30');
+                const data = await resp.json();
+                const list = data.models || [];
+                let picked = preferredId ? list.find(m => m.id === preferredId) : null;
+                if (!picked) picked = list[0];
+                if (picked) {
+                    this.config.agentic.online_llm.model = picked.id;
+                    if (picked.max_output_tokens) {
+                        this.config.agentic.max_response_tokens = picked.max_output_tokens;
+                    }
+                }
+            } catch (e) {
+                // Network/parse failure → fall back to a sensible
+                // hardcoded default so the field isn't left stale from
+                // the previous provider.
+                const fallback = {
+                    'openai':     'gpt-latest',
+                    'claude':     'claude-sonnet-latest',
+                    'gemini':     'gemini-pro-latest',
+                    'openrouter': '~anthropic/claude-sonnet-latest'
+                }[provider];
+                if (fallback) this.config.agentic.online_llm.model = fallback;
             }
         }
     });
@@ -753,11 +903,16 @@ document.addEventListener('DOMContentLoaded', () => {
         Alpine.store('services').checkAll();
         Alpine.store('services').loadClients();
 
-        // Handle URL hash
-        const hash = window.location.hash.replace('#', '');
-        if (hash) {
-            Alpine.store('app').switchTab(hash);
-        }
+        // Handle URL hash on initial load + on any subsequent change
+        // (manual edit in URL bar, browser back/forward between hashes).
+        // switchTab() writes the same hash value (line 54) so this never
+        // loops.
+        const applyHash = () => {
+            const tab = window.location.hash.replace('#', '') || 'dashboard';
+            Alpine.store('app').switchTab(tab);
+        };
+        if (window.location.hash) applyHash();
+        window.addEventListener('hashchange', applyHash);
 
         // Load blueprints for all modules
         loadBlueprints('velociraptor').then(() => {

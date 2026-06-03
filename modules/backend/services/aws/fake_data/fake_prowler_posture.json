@@ -1,0 +1,53 @@
+[
+  {
+    "_note": "Posture finding shape mirrors Prowler OCSF-style output. Each entry is one check result.",
+    "check_id": "iam_root_hardware_mfa_enabled",
+    "check_title": "Ensure hardware MFA is enabled for the root account",
+    "service_name": "iam",
+    "severity": "CRITICAL",
+    "status_code": "FAIL",
+    "resource_arn": "arn:aws:iam::123456789012:root",
+    "resource_id": "<root_account>",
+    "region": "us-east-1",
+    "remediation": "Enable a hardware MFA device on the root account. Console: IAM → Security Credentials.",
+    "compliance": {"cis": "1.6", "nist": "AC-2(1)"}
+  },
+  {
+    "check_id": "cloudtrail_multi_region_enabled",
+    "check_title": "Ensure CloudTrail is enabled in all regions",
+    "service_name": "cloudtrail",
+    "severity": "HIGH",
+    "status_code": "FAIL",
+    "resource_arn": "arn:aws:cloudtrail:us-east-1:123456789012:trail/prod-org-trail",
+    "region": "us-east-1",
+    "remediation": "Update the trail to capture events from all regions: aws cloudtrail update-trail --name prod-org-trail --is-multi-region-trail",
+    "compliance": {"cis": "3.1"}
+  },
+  {
+    "check_id": "s3_bucket_public_access",
+    "check_title": "Ensure S3 buckets do not allow public read access",
+    "service_name": "s3",
+    "severity": "CRITICAL",
+    "status_code": "FAIL",
+    "resource_arn": "arn:aws:s3:::company-customer-data",
+    "region": "us-east-1",
+    "remediation": "Remove the public read statement from the bucket policy; enable S3 Block Public Access at account level."
+  },
+  {
+    "check_id": "iam_user_access_key_age",
+    "check_title": "IAM access keys should be rotated every 90 days",
+    "service_name": "iam",
+    "severity": "MEDIUM",
+    "status_code": "FAIL",
+    "resource_arn": "arn:aws:iam::123456789012:user/bob.smith",
+    "metadata": {"access_key_age_days": 412}
+  },
+  {
+    "check_id": "guardduty_enabled_all_regions",
+    "check_title": "Ensure GuardDuty is enabled in all active regions",
+    "service_name": "guardduty",
+    "severity": "HIGH",
+    "status_code": "PASS",
+    "region": "us-east-1"
+  }
+]

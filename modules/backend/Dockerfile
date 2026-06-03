@@ -2,9 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install Docker CLI and compose plugin for upgrade operations
+# Install Docker CLI, compose plugin, and Pango/Cairo system libraries
+# (the latter are required by WeasyPrint for engagement-report PDF
+# rendering — the customer-facing IR deliverable).
 RUN apt-get update && \
-    apt-get install -y docker.io curl ca-certificates && \
+    apt-get install -y \
+        docker.io curl ca-certificates \
+        libpango-1.0-0 libpangoft2-1.0-0 libcairo2 libffi8 \
+        shared-mime-info fonts-dejavu && \
     mkdir -p /usr/local/lib/docker/cli-plugins && \
     curl -SL https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose && \

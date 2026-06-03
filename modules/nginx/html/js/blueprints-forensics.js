@@ -163,6 +163,7 @@ function toggleForensicsClient(clientId) {
     } else {
         forensicsSelectedClients.add(clientId);
     }
+    updateCrossClientToggleState();
 }
 
 function selectAllForensicsClients(select) {
@@ -171,6 +172,23 @@ function selectAllForensicsClients(select) {
         forensicsClientsCache.forEach(c => forensicsSelectedClients.add(c.client_id));
     }
     renderForensicsClients(forensicsClientsCache);
+    updateCrossClientToggleState();
+}
+
+// The "organization-wide synthesis" toggle only makes sense across 2+
+// clients — the server ignores it on single-client runs anyway. Lock
+// it to that selection state so the UI can't promise a synthesis run
+// that won't happen.
+function updateCrossClientToggleState() {
+    const wrapper = document.getElementById('forensics-cross-client-wrapper');
+    const toggle  = document.getElementById('forensics-cross-client-toggle');
+    if (!wrapper || !toggle) return;
+    const enabled = forensicsSelectedClients.size >= 2;
+    toggle.disabled = !enabled;
+    wrapper.classList.toggle('opacity-50', !enabled);
+    wrapper.classList.toggle('pointer-events-none', !enabled);
+    wrapper.title = enabled ? '' : 'Select 2+ clients to enable';
+    if (!enabled) toggle.checked = false;
 }
 
 let _forensicsSearchTimeout = null;
@@ -547,6 +565,9 @@ async function startForensicsCollection() {
             const irisCaseName = document.getElementById('forensics-iris-case-name')?.value || '';
             const minSeverity = document.getElementById('forensics-min-severity')?.value || 'informational';
             const timeFilter = getForensicsTimeFilterSettings();
+            // Cross-client synthesis (multi-client only) — default OFF.
+            // The backend ignores this when len(client_ids) == 1.
+            const crossClientSynthesis = document.getElementById('forensics-cross-client-toggle')?.checked || false;
 
             // Validate time filter settings
             if (timeFilter && timeFilter.enabled) {
@@ -578,7 +599,8 @@ async function startForensicsCollection() {
                     iris_case_name: irisCaseName,
                     time_filter: timeFilter,
                     min_severity: minSeverity,
-                    external_files: externalFiles
+                    external_files: externalFiles,
+                    cross_client_synthesis: crossClientSynthesis
                 })
             });
 
@@ -600,6 +622,7 @@ async function startForensicsCollection() {
             }
         } else {
             // Raw Velociraptor mode - use bestpractice endpoint with artifacts from blueprint
+            const perArtifact = document.getElementById('forensics-per-artifact-toggle')?.checked || false;
             const response = await fetch('/api/velociraptor/bestpractice', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -608,13 +631,18 @@ async function startForensicsCollection() {
                     blueprint_name: blueprint.name || 'Custom',
                     expire_minutes: blueprint.settings?.hunt_expiry || 120,
                     timeout_seconds: blueprint.settings?.timeout || 3600,
-                    cpu_limit: blueprint.settings?.cpu_limit || 90
+                    cpu_limit: blueprint.settings?.cpu_limit || 90,
+                    per_artifact: perArtifact,
                 })
             });
 
             const data = await response.json();
             if (response.ok) {
-                statusEl.innerHTML = `<span class="text-green-400">Hunt started! Run ID: ${data.run_id}</span><br>Redirecting to Workflows...`;
+                // Bulk path returns {run_id}; per-artifact path returns
+                // {run_ids: [...]}. Render either flavour cleanly.
+                const ids = data.run_ids || (data.run_id ? [data.run_id] : []);
+                const idsDisplay = ids.length > 1 ? `${ids.length} separate hunts dispatched` : `Run ID: ${ids[0] || '?'}`;
+                statusEl.innerHTML = `<span class="text-green-400">Hunt started! ${idsDisplay}</span><br>Redirecting to Workflows...`;
                 // Redirect to workflows tab after short delay
                 setTimeout(() => {
                     if (window.Alpine && Alpine.store('app')) {
@@ -652,6 +680,7 @@ function onExistingIdChange(newValue) {
         if (typeof renderForensicsClients === 'function') {
             renderForensicsClients(forensicsClientsCache || []);
         }
+        updateCrossClientToggleState();
     }
     // Hunt-derived flow (`F.xxx.H`) — reload picker including offline
     // clients (data already collected, liveness irrelevant). Cache the

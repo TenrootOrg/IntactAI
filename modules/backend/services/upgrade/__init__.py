@@ -35,6 +35,8 @@ from .iris import upgrade_iris, upgrade_iris_offline
 from .velociraptor import upgrade_velociraptor, upgrade_velociraptor_offline
 from .intact import upgrade_intact, upgrade_intact_offline
 from .plaso import upgrade_plaso, upgrade_plaso_offline
+from .aws import upgrade_aws, upgrade_aws_offline
+from .azure import upgrade_azure, upgrade_azure_offline
 
 # Storage functions for two-phase upgrade state
 from services.storage.base import (
@@ -54,10 +56,17 @@ RESET_VOLUMES = {
 
 
 def reset_module_database(module_name: str, logger: Callable = None) -> bool:
-    """Remove database volumes for fresh install (new schema).
+    """DESTRUCTIVE: delete a module's data volumes for a fresh/empty install.
 
-    This is needed when upgrading between versions with incompatible
-    database schemas (e.g., Timesketch 2024 -> 2026 with DFIQ columns).
+    This is NOT required for schema upgrades. Schema changes between versions
+    are applied by database migrations (e.g. Timesketch's alembic
+    `tsctl db upgrade`, verified to preserve all sketches + events across a
+    2024 -> 2026 jump) — the normal upgrade keeps every row and index.
+
+    Only call this when the operator has EXPLICITLY asked to start that module
+    from scratch (db_overwrite flag). It permanently removes all data:
+    Timesketch sketches + every timeline event in OpenSearch, IRIS cases,
+    ELK indices, etc. There is no automatic backup of these volumes.
 
     Args:
         module_name: Name of the module (timesketch, iris, elk)
@@ -70,7 +79,10 @@ def reset_module_database(module_name: str, logger: Callable = None) -> bool:
         return True
 
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    log(f"Fresh install: removing {module_name} database for new schema...", "warning")
+    log(f"⚠️ FRESH INSTALL: PERMANENTLY DELETING all {module_name} data "
+        f"(volumes: {', '.join(RESET_VOLUMES[module_name])}). This is not "
+        f"needed for schema upgrades — migrations handle those without data loss.",
+        "warning")
 
     # Get module directory
     module_dir = os.path.join(HOST_PATH, 'modules', module_name)
@@ -195,13 +207,15 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
     db_overwrite = db_overwrite or {}
 
     # Intact.AI must be first so backend code is updated before modules
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure']
     upgrade_functions = {
         'elk': upgrade_elk,
         'timesketch': upgrade_timesketch,
         'plaso': upgrade_plaso,
         'iris': upgrade_iris,
         'velociraptor': upgrade_velociraptor,
+        'aws': upgrade_aws,
+        'azure': upgrade_azure,
         'intact': upgrade_intact,
     }
 
@@ -419,7 +433,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             package_dir = package_dir_raw
             extract_dir = package_dir_raw
 
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure']
 
     # Use online or offline functions based on mode
     if mode == 'offline':
@@ -429,6 +443,8 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'plaso': lambda v, **kw: upgrade_plaso_offline(package_dir, v, **kw),
             'iris': lambda v, **kw: upgrade_iris_offline(package_dir, v, **kw),
             'velociraptor': lambda v, **kw: upgrade_velociraptor_offline(package_dir, v, **kw),
+            'aws': lambda v, **kw: upgrade_aws_offline(package_dir, v, **kw),
+            'azure': lambda v, **kw: upgrade_azure_offline(package_dir, v, **kw),
             'intact': lambda **kw: upgrade_intact_offline(package_dir, **kw),
         }
     else:
@@ -625,11 +641,13 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
         'plaso': upgrade_plaso_offline,
         'iris': upgrade_iris_offline,
         'velociraptor': upgrade_velociraptor_offline,
+        'aws': upgrade_aws_offline,
+        'azure': upgrade_azure_offline,
         'intact': upgrade_intact_offline,
     }
 
     # Intact.AI must be first so backend code is updated before modules
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure']
 
     results = {}
     total = 0
@@ -689,12 +707,23 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
                 overall_status = "completed_with_errors"
                 continue
 
+            # Check Stop before each module — gives a quick exit even when
+            # the per-module function isn't fully cancellation-aware.
+            try:
+                from services.workflow_service import is_cancelled
+                if run_id and is_cancelled(run_id):
+                    log("Offline upgrade cancelled by user before module dispatch", "warning")
+                    overall_status = "cancelled"
+                    break
+            except Exception:
+                pass
+
             try:
                 if module_name == 'intact':
-                    result = upgrade_fn(package_dir, logger=log)
+                    result = upgrade_fn(package_dir, logger=log, run_id=run_id)
                 else:
                     # Note: Plaso is handled as its own module, not bundled with Timesketch
-                    result = upgrade_fn(package_dir, version, logger=log)
+                    result = upgrade_fn(package_dir, version, logger=log, run_id=run_id)
 
                 results[module_name] = result
                 if not result.get('skipped'):
@@ -843,6 +872,8 @@ __all__ = [
     'upgrade_plaso',
     'upgrade_iris',
     'upgrade_velociraptor',
+    'upgrade_aws',
+    'upgrade_azure',
     'upgrade_intact',
     # Offline upgrade functions
     'upgrade_elk_offline',
@@ -850,6 +881,8 @@ __all__ = [
     'upgrade_plaso_offline',
     'upgrade_iris_offline',
     'upgrade_velociraptor_offline',
+    'upgrade_aws_offline',
+    'upgrade_azure_offline',
     'upgrade_intact_offline',
     # Workflow functions
     'run_upgrade_workflow',

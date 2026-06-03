@@ -78,7 +78,8 @@ def run_system_maintenance():
                     from services.tools_download_service import download_and_configure_tools
 
                     tool_results = download_and_configure_tools(
-                        logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
+                        logger=lambda msg, level="info": add_log_to_run(run_id, msg, level),
+                        run_id=run_id,
                     )
 
                     if tool_results.get('success'):
@@ -103,6 +104,57 @@ def run_system_maintenance():
                     add_log_to_run(run_id, f"Tool download error: {str(e)}", "warning")
                     import traceback
                     traceback.print_exc()
+
+                # =========================================================
+                # Task 2.5: Refresh LLM model catalogs (5%)
+                # =========================================================
+                # Persisted catalogs at /app/data/{openrouter,anthropic,
+                # openai,gemini}_models.json drive the dashboard's model
+                # selector. OpenRouter goes first because the three
+                # direct-provider refreshes enrich their entries against
+                # it. Each is best-effort — if a provider is unreachable
+                # or its API key isn't configured, the existing on-disk
+                # file keeps serving the UI and the others still run.
+                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
+                add_log_to_run(run_id, "TASK 2.5: Refresh LLM Model Catalogs", "info")
+                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
+
+                from services.llm_catalogs import openrouter as _or_cat
+                from services.llm_catalogs import anthropic as _ant_cat
+                from services.llm_catalogs import openai as _oai_cat
+                from services.llm_catalogs import gemini as _gem_cat
+
+                # OpenRouter first — it's the enrichment source for the
+                # other three. Enrichment failures degrade gracefully but
+                # quality is much better when this finishes first.
+                _CATALOG_TASKS = [
+                    ("OpenRouter", _or_cat),
+                    ("Anthropic", _ant_cat),
+                    ("OpenAI", _oai_cat),
+                    ("Gemini", _gem_cat),
+                ]
+                for label, mod in _CATALOG_TASKS:
+                    try:
+                        cat_result = mod.refresh_catalog(
+                            logger=lambda msg, level="info": add_log_to_run(run_id, f"  [{label}] {msg}", level)
+                        )
+                        if cat_result.get('success'):
+                            unenriched = cat_result.get('unenriched_count', 0)
+                            extra = f" ({unenriched} un-enriched)" if unenriched else ""
+                            add_log_to_run(
+                                run_id,
+                                f"{label} catalog: {cat_result['model_count']} models cached{extra}",
+                                "success",
+                            )
+                        else:
+                            add_log_to_run(
+                                run_id,
+                                f"{label} catalog skipped: {cat_result.get('error', 'unknown')} "
+                                "(existing on-disk catalog still serves the UI)",
+                                "warning",
+                            )
+                    except Exception as e:
+                        add_log_to_run(run_id, f"{label} catalog error: {e}", "warning")
 
                 update_run_status(run_id, "running", progress=60)
 
@@ -135,6 +187,77 @@ def run_system_maintenance():
                         )
                 except Exception as e:
                     add_log_to_run(run_id, f"Skills refresh error: {str(e)}", "warning")
+                    import traceback
+                    traceback.print_exc()
+
+                update_run_status(run_id, "running", progress=68)
+
+                # =========================================================
+                # Task 3.5: Refresh CVE Scan databases (CPE dict + local
+                # CVE mirror) (~3%)
+                # =========================================================
+                # Two refreshes back-to-back, both best-effort:
+                #   a) CPE dictionary CSV from tiiuae/cpedict — drives
+                #      the product → CPE resolver.
+                #   b) Local CVE mirror from fkie-cad/nvd-json-data-feeds
+                #      — eliminates per-product NVD REST calls at scan
+                #      time. Initial run takes ~10-30 min; subsequent
+                #      runs are incremental (skip unchanged year-files).
+                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
+                add_log_to_run(run_id, "TASK 3.5/4: Refresh CVE Scan databases (CPE dict + local CVE mirror)", "info")
+                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
+
+                # --- 3.5a: CPE dictionary ---
+                try:
+                    from services.cve_scan.cpe_dict import refresh_dictionary_from_upstream
+                    cpe_dict_result = refresh_dictionary_from_upstream(
+                        logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
+                    )
+                    if cpe_dict_result.get("ok"):
+                        add_log_to_run(
+                            run_id,
+                            f"CPE dictionary refresh: {cpe_dict_result.get('message')}",
+                            "success",
+                        )
+                    else:
+                        add_log_to_run(
+                            run_id,
+                            f"CPE dictionary refresh had issues: {cpe_dict_result.get('message')}",
+                            "warning",
+                        )
+                except Exception as e:
+                    add_log_to_run(run_id, f"CPE dictionary refresh error: {str(e)}", "warning")
+                    import traceback
+                    traceback.print_exc()
+
+                # --- 3.5b: local CVE mirror ---
+                try:
+                    from services.cve_scan import local_db as _local_db
+                    add_log_to_run(
+                        run_id,
+                        "[LOCAL_DB] Refreshing local CVE mirror "
+                        "(initial run ~10-30 min, incremental ~minutes)…",
+                        "info",
+                    )
+                    bulk_result = _local_db.bulk_load(
+                        logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
+                    )
+                    if bulk_result.get("ok"):
+                        add_log_to_run(
+                            run_id,
+                            f"Local CVE mirror: {bulk_result.get('cve_count')} CVEs indexed, "
+                            f"{bulk_result.get('db_size_mb', 0):.0f} MB on disk, "
+                            f"{bulk_result.get('elapsed_seconds', 0):.0f}s elapsed",
+                            "success",
+                        )
+                    else:
+                        add_log_to_run(
+                            run_id,
+                            "Local CVE mirror refresh had issues — scans will fall back to REST",
+                            "warning",
+                        )
+                except Exception as e:
+                    add_log_to_run(run_id, f"Local CVE mirror refresh error: {str(e)}", "warning")
                     import traceback
                     traceback.print_exc()
 
@@ -219,6 +342,69 @@ def run_system_maintenance():
         return jsonify({"error": str(e)}), 500
 
 
+@maintenance_bp.route('/api/maintenance/openrouter-catalog', methods=['GET'])
+def openrouter_catalog_status():
+    """Return on-disk OpenRouter catalog summary (model count, fetch
+    time, file presence). UI shows this so the operator knows when
+    the dashboard's model selector list was last refreshed."""
+    from services.llm_catalogs.openrouter import catalog_status
+    return jsonify(catalog_status())
+
+
+def _refresh_one_catalog(catalog_module):
+    """Standalone synchronous refresh wrapper used by the four per-provider
+    refresh endpoints. Returns (json_dict, http_status)."""
+    try:
+        result = catalog_module.refresh_catalog()
+        if result.get('success'):
+            return result, 200
+        return result, 502  # upstream fetch problem, not our bug
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 500
+
+
+@maintenance_bp.route('/api/maintenance/refresh-openrouter-models', methods=['POST'])
+def refresh_openrouter_models():
+    """Refresh `data/openrouter_models.json` from
+    https://openrouter.ai/api/v1/models. Standalone counterpart to the
+    catalog refresh that runs as Task 2.5 of `/api/maintenance/run`.
+
+    Synchronous — the fetch is small (~few hundred KB) and finishes in
+    a second or two. No workflow row needed for that timescale.
+    """
+    from services.llm_catalogs import openrouter as catalog_module
+    body, status = _refresh_one_catalog(catalog_module)
+    return jsonify(body), status
+
+
+@maintenance_bp.route('/api/maintenance/refresh-anthropic-models', methods=['POST'])
+def refresh_anthropic_models():
+    """Refresh `data/anthropic_models.json` from Anthropic's `/v1/models`
+    endpoint, then enrich each entry against the OpenRouter catalog."""
+    from services.llm_catalogs import anthropic as catalog_module
+    body, status = _refresh_one_catalog(catalog_module)
+    return jsonify(body), status
+
+
+@maintenance_bp.route('/api/maintenance/refresh-openai-models', methods=['POST'])
+def refresh_openai_models():
+    """Refresh `data/openai_models.json` from OpenAI's `/v1/models`
+    endpoint, filter to chat-capable, enrich from OpenRouter."""
+    from services.llm_catalogs import openai as catalog_module
+    body, status = _refresh_one_catalog(catalog_module)
+    return jsonify(body), status
+
+
+@maintenance_bp.route('/api/maintenance/refresh-gemini-models', methods=['POST'])
+def refresh_gemini_models():
+    """Refresh `data/gemini_models.json` from Google's `/v1beta/models`
+    endpoint. Native max_output_tokens / context_length come from the
+    response; pricing is enriched from OpenRouter."""
+    from services.llm_catalogs import gemini as catalog_module
+    body, status = _refresh_one_catalog(catalog_module)
+    return jsonify(body), status
+
+
 @maintenance_bp.route('/api/maintenance/refresh-skills', methods=['POST'])
 def refresh_dfir_skills():
     """Re-download DFIR / agentic skill markdown files from the upstream
@@ -291,7 +477,8 @@ def download_velociraptor_tools():
         def run_download():
             try:
                 result = download_and_configure_tools(
-                    logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
+                    logger=lambda msg, level="info": add_log_to_run(run_id, msg, level),
+                    run_id=run_id,
                 )
                 if result.get('success'):
                     add_log_to_run(run_id, f"Tool download completed: {result.get('summary', '')}", "success")

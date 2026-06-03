@@ -93,55 +93,11 @@ def main():
     # =========================================================================
     log("Task 3/4: Setting up Kibana data view...")
     try:
-        import requests
-
-        kibana_url = "http://intact_kibana:5601"
-        headers = {"kbn-xsrf": "true", "Content-Type": "application/json"}
-
-        # Check if Kibana is reachable
-        kibana_health = requests.get(f"{kibana_url}/api/status", timeout=10)
-
-        if kibana_health.status_code == 200:
-            # First check if data view already exists
-            existing = requests.get(
-                f"{kibana_url}/api/data_views",
-                headers=headers,
-                timeout=10
-            )
-
-            if existing.status_code == 200:
-                data_views = existing.json().get('data_view', [])
-                already_exists = any(dv.get('title') == 'artifact_*' for dv in data_views)
-
-                if already_exists:
-                    log("  Kibana: Data view 'Velociraptor Artifacts' already exists", "info")
-                else:
-                    # Create data view for Velociraptor artifacts
-                    data_view_payload = {
-                        "data_view": {
-                            "title": "artifact_*",
-                            "name": "Velociraptor Artifacts",
-                            "timeFieldName": "@timestamp"
-                        }
-                    }
-
-                    response = requests.post(
-                        f"{kibana_url}/api/data_views/data_view",
-                        json=data_view_payload,
-                        headers=headers,
-                        timeout=10
-                    )
-
-                    if response.status_code in [200, 201]:
-                        log("  Kibana: Created 'Velociraptor Artifacts' data view", "success")
-                    elif response.status_code == 409:
-                        log("  Kibana: Data view already exists", "info")
-                    else:
-                        log(f"  Kibana: Could not create data view ({response.status_code})", "warning")
-            else:
-                log("  Kibana: Could not check existing data views", "warning")
-        else:
-            log("  Kibana: Not ready yet", "info")
+        # Kibana serves HTTPS (self-signed); the shared helper handles the
+        # scheme + idempotent create. Same helper the ELK upgrade calls so the
+        # data view is re-ensured after an upgrade.
+        from services.kibana_init import ensure_kibana_data_view
+        ensure_kibana_data_view(log, wait=False)
     except Exception as e:
         log(f"  Kibana: {str(e)[:50]}", "info")
 

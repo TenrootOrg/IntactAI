@@ -18,13 +18,17 @@ from services.azure.pipeline import (
     run_azure_pipeline,
     run_azure_on_existing,
     get_azure_blueprints,
-    get_available_sources
+    get_available_sources,
+    _run_azure_reanalyze,
 )
 from services.azure.collectors import parse_uploaded_logs
 from services.azure.sigma_runner import validate_rules_directory, get_available_rules_count
 from services.workflow_logger import add_log_to_run
 from routes.config_routes import _load_cloud_config
 from config import is_module_enabled
+from services.workflow_service import update_run_status, get_automation_run
+from services.agentic import chat as interactive_chat
+import threading
 
 azure_bp = Blueprint('azure', __name__)
 
@@ -33,11 +37,16 @@ _azure_runs = {}
 
 # Upload configuration
 UPLOAD_FOLDER = '/tmp/azure_uploads'
-ALLOWED_EXTENSIONS = {'json', 'jsonl', 'csv'}
+ALLOWED_EXTENSIONS = {'json', 'jsonl', 'csv', 'zip'}
+PARSEABLE_EXTENSIONS = {'json', 'jsonl', 'csv'}
 
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def _parseable(filename: str) -> bool:
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in PARSEABLE_EXTENSIONS
 
 
 # =============================================================================
@@ -149,6 +158,29 @@ def start_scan():
     else:
         blueprint_display = str(blueprint_id)
 
+    # scope_mode: "targeted" (default) requires target_users or target_ips, runs
+    # the fast server-side-filtered UAL path. "tenant_wide" pulls every event in
+    # the window — for periodic baselines or unknown-attacker hunts.
+    target_users = data.get('target_users', []) or []
+    target_ips = data.get('target_ips', []) or []
+    scope_mode = (data.get('scope_mode') or "targeted").lower()
+    if scope_mode not in ("targeted", "tenant_wide"):
+        return jsonify({"error": f"Invalid scope_mode: {scope_mode!r}. Use 'targeted' or 'tenant_wide'."}), 400
+    if scope_mode == "targeted" and not (target_users or target_ips):
+        return jsonify({
+            "error": "scope_mode='targeted' requires at least one target_user or target_ip. "
+                     "Pass scope_mode='tenant_wide' to hunt across the whole tenant."
+        }), 400
+
+    # ual_mode: "full" (default — every UAL record type) or "light" (curated
+    # high-signal record types only — recommended for large tenants where
+    # full collection is slow and most events are PowerBI/Yammer/Sway noise).
+    # Ignored when target_users / target_ips is set: those identity filters
+    # take precedence (they're more targeted than any RecordTypes filter).
+    ual_mode = (data.get('ual_mode') or "full").lower()
+    if ual_mode not in ("full", "light"):
+        return jsonify({"error": f"Invalid ual_mode: {ual_mode!r}. Use 'full' or 'light'."}), 400
+
     run_id = create_automation_run(
         automation_type="azure_scan",
         name=f"Azure Scan: {blueprint_display}",
@@ -156,8 +188,15 @@ def start_scan():
             "trigger": "manual",
             "blueprint": blueprint_id,
             "mode": "online",
-            "target_users": data.get('target_users', []),
-            "target_ips": data.get('target_ips', []),
+            "scope_mode": scope_mode,
+            "target_users": target_users,
+            "target_ips": target_ips,
+            "ual_mode": ual_mode,
+            # Persisted so /rerun can re-apply the same scope on the
+            # cached findings instead of regenerating reports over
+            # informational/low + out-of-window noise.
+            "min_severity": data.get('min_severity', 'medium'),
+            "time_filter": data.get('time_filter'),
         }
     )
     update_run_status(run_id, "running", progress=5)
@@ -210,11 +249,30 @@ def start_scan():
                 'time_filter': data.get('time_filter'),
                 'min_severity': data.get('min_severity', 'medium'),
                 'iris_config': data.get('iris_config'),
-                'target_users': data.get('target_users', []),
-                'target_ips': data.get('target_ips', []),
+                'scope_mode': scope_mode,
+                'target_users': target_users,
+                'target_ips': target_ips,
                 'pivot_mode': data.get('pivot_mode', False),
+                'ual_mode': ual_mode,
                 'anonymizer': None
             }
+            add_log_to_run(
+                run_id,
+                f"[AZURE] Scope: {scope_mode}"
+                + (f" (users={','.join(target_users)})" if target_users else "")
+                + (f" (ips={','.join(target_ips)})" if target_ips else ""),
+                "info",
+            )
+            # Log the UAL collection mode separately so it's obvious in the
+            # workflow log when an operator picked "light" and why some
+            # record types are missing from the result set.
+            if not target_users and not target_ips:
+                add_log_to_run(
+                    run_id,
+                    f"[AZURE] UAL collection mode: {ual_mode}"
+                    + (" (curated high-signal record types only)" if ual_mode == "light" else " (every record type)"),
+                    "info",
+                )
 
             result = run_azure_pipeline(
                 run_id=run_id,
@@ -294,27 +352,87 @@ def upload_logs():
         uploaded_files = []
         parsed_data = {}
 
+        def _ingest(parsed_path, hint):
+            """Parse one log file and merge it into parsed_data, preserving
+            existing records when the same source_prefix shows up twice
+            (e.g. multi-day UAL split across files)."""
+            data, parse_status = parse_uploaded_logs(parsed_path, filename_hint=hint)
+            for src_prefix, records in data.items():
+                if src_prefix in parsed_data:
+                    parsed_data[src_prefix].extend(records)
+                else:
+                    parsed_data[src_prefix] = records
+            return parse_status
+
         for file in files:
-            if file and file.filename and allowed_file(file.filename):
-                filename = secure_filename(file.filename)
-                file_path = os.path.join(run_dir, filename)
-                file.save(file_path)
+            if not (file and file.filename and allowed_file(file.filename)):
+                continue
+            filename = secure_filename(file.filename)
+            file_path = os.path.join(run_dir, filename)
+            file.save(file_path)
 
-                # Parse the file
+            ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+
+            if ext == 'zip':
+                # Extract every parseable JSON/JSONL/CSV inside; use each
+                # member's basename as the filename hint so files named
+                # `Azure.<source>.json` are tagged correctly.
+                import zipfile as _zf
+                extracted_dir = os.path.join(run_dir, 'extracted')
+                os.makedirs(extracted_dir, exist_ok=True)
                 try:
-                    data, parse_status = parse_uploaded_logs(file_path)
-                    parsed_data.update(data)
+                    with _zf.ZipFile(file_path, 'r') as zf:
+                        for member in zf.namelist():
+                            base = os.path.basename(member)
+                            if not base or member.endswith('/'):
+                                continue
+                            if not _parseable(base):
+                                continue
+                            # Skip findings/analysis sub-dirs — only the
+                            # raw `collected/` records feed the offline
+                            # pipeline. Anything else from the ZIP is
+                            # derived data we'd recompute. Also skip
+                            # `metadata.json` — that's a manifest, not data.
+                            if member.startswith(('findings/', 'analysis/')):
+                                continue
+                            if base == 'metadata.json':
+                                continue
+                            target = os.path.join(extracted_dir, base)
+                            with zf.open(member) as src, open(target, 'wb') as dst:
+                                dst.write(src.read())
+                            try:
+                                ps = _ingest(target, base)
+                                uploaded_files.append({
+                                    'filename': f"{filename}:{base}",
+                                    'records': ps.get('record_count', 0),
+                                    'source_type': ps.get('detected_source'),
+                                    'sigma_prefix': ps.get('sigma_prefix'),
+                                })
+                            except Exception as ex:
+                                uploaded_files.append({
+                                    'filename': f"{filename}:{base}",
+                                    'error': str(ex),
+                                })
+                except _zf.BadZipFile as ex:
+                    uploaded_files.append({
+                        'filename': filename,
+                        'error': f"Invalid ZIP file: {ex}",
+                    })
+                continue
 
-                    uploaded_files.append({
-                        'filename': filename,
-                        'records': parse_status.get('record_count', 0),
-                        'source_type': parse_status.get('detected_source')
-                    })
-                except Exception as e:
-                    uploaded_files.append({
-                        'filename': filename,
-                        'error': str(e)
-                    })
+            try:
+                ps = _ingest(file_path, filename)
+                uploaded_files.append({
+                    'filename': filename,
+                    'records': ps.get('record_count', 0),
+                    'source_type': ps.get('detected_source'),
+                    'sigma_prefix': ps.get('sigma_prefix'),
+                })
+            except Exception as e:
+                uploaded_files.append({
+                    'filename': filename,
+                    'error': str(e),
+                })
 
         # Store parsed data
         _azure_runs[run_id] = {
@@ -325,6 +443,41 @@ def upload_logs():
             'total_records': sum(len(v) for v in parsed_data.values()),
             'upload_time': datetime.utcnow().isoformat()
         }
+
+        # Register the workflow row right at upload so the dashboard
+        # tracks this run from the moment files arrive. We mint the row
+        # ourselves (rather than via `create_automation_run`, which auto-
+        # generates its own run_id) so the same `azure_offline_*` ID
+        # carries through to `analyze-offline` — logs, phase timings,
+        # findings all land on one row.
+        try:
+            from services.file_storage_service import save_workflow
+            from services.workflow_service import update_run_status
+            save_workflow({
+                'run_id': run_id,
+                'automation_type': 'azure_scan',
+                'name': f"Azure Offline Analysis ({len(parsed_data)} sources, {sum(len(v) for v in parsed_data.values())} records)",
+                'details': {
+                    'trigger': 'upload',
+                    'mode': 'offline',
+                    'sources': list(parsed_data.keys()),
+                    'uploaded_files': [f.get('filename') for f in uploaded_files],
+                },
+                'status': 'pending',
+                'progress': 0,
+                'logs': [],
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat(),
+            })
+            update_run_status(run_id, "uploaded", progress=10)
+            add_log_to_run(run_id, f"[AZURE] Uploaded {sum(len(v) for v in parsed_data.values())} records across {len(parsed_data)} sources", "info")
+            for f in uploaded_files:
+                if f.get('error'):
+                    add_log_to_run(run_id, f"[AZURE] {f['filename']}: {f['error']}", "warning")
+                else:
+                    add_log_to_run(run_id, f"[AZURE] {f['filename']}: {f.get('records',0)} records -> {f.get('sigma_prefix','?')}", "success")
+        except Exception as ex:
+            print(f"[AZURE] workflow row create failed: {ex}", flush=True)
 
         return jsonify({
             'run_id': run_id,
@@ -367,32 +520,84 @@ def analyze_offline():
         if not uploaded_data:
             return jsonify({'error': 'No data found for this run_id'}), 400
 
-        # Build options
+        # LLM config: prefer the body, fall back to the saved frontend
+        # config — same source the online scan uses, so the analyst
+        # doesn't need to repeat it on every request.
+        llm_config = data.get('llm_config') or {}
+        if not llm_config:
+            try:
+                from services.file_storage_service import load_frontend_config
+                llm_config = load_frontend_config() or {}
+            except Exception:
+                llm_config = {}
+
+        # LLM is always on for offline analysis: the whole point of
+        # uploading collected data into this endpoint is to get the
+        # forensic narrative — without LLM the user already has
+        # everything they uploaded. We hard-pin enable_llm here so a
+        # stray `false` from the client doesn't produce a useless run.
         options = {
-            'enable_llm': data.get('enable_llm', False),
-            'llm_config': data.get('llm_config', {}),
+            'enable_llm': True,
+            'llm_config': llm_config,
             'time_filter': data.get('time_filter'),
             'min_severity': data.get('min_severity', 'low'),
-            'iris_config': data.get('iris_config')
+            'iris_config': data.get('iris_config'),
+            'anonymizer': None,
         }
 
         add_log_to_run(run_id, "[AZURE] Starting offline analysis", "info")
 
-        # Run analysis pipeline
-        result = run_azure_on_existing(
-            run_id=run_id,
-            uploaded_data=uploaded_data,
-            options=options
+        from services.workflow_service import (
+            update_run_status,
+            register_cancel_event,
+            unregister_cancel,
+            is_cancelled,
         )
+        register_cancel_event(run_id)
+        update_run_status(run_id, "running", progress=15)
 
-        # Update stored data
-        _azure_runs[run_id].update(result)
+        import threading
+
+        def run_analysis():
+            try:
+                result = run_azure_on_existing(
+                    run_id=run_id,
+                    uploaded_data=uploaded_data,
+                    options=options,
+                )
+                _azure_runs[run_id].update(result)
+
+                # Persist raw data to disk so it survives restart and the
+                # dashboard's Data button can pull it back. Same shape as
+                # the online pipeline writes — same downstream code reads it.
+                try:
+                    persist_dir = "/app/data/azure_runs"
+                    os.makedirs(persist_dir, exist_ok=True)
+                    with open(f"{persist_dir}/{run_id}.json", 'w') as f:
+                        json.dump(result, f, default=str)
+                except Exception as persist_err:
+                    print(f"[AZURE] Warning: Could not persist raw data: {persist_err}", flush=True)
+
+                if is_cancelled(run_id):
+                    return
+                if result.get('status') in ('failed', 'error'):
+                    update_run_status(run_id, "failed", error=result.get('error', 'Unknown error'))
+                else:
+                    update_run_status(run_id, "completed", progress=100, details={'has_report': bool(result.get('has_report'))})
+            except Exception as e:
+                if not is_cancelled(run_id):
+                    add_log_to_run(run_id, f"[AZURE] Offline analysis failed: {e}", "error")
+                    update_run_status(run_id, "failed", error=str(e))
+                traceback.print_exc()
+            finally:
+                unregister_cancel(run_id)
+
+        threading.Thread(target=run_analysis, daemon=True).start()
 
         return jsonify({
             'run_id': run_id,
-            'status': result.get('status'),
-            'findings_count': result.get('phases', {}).get('detection', {}).get('total_findings', 0),
-            'message': 'Analysis complete' if result.get('status') == 'complete' else result.get('error', 'Analysis failed')
+            'status': 'running',
+            'message': 'Offline analysis started — track progress on the dashboard.',
         })
 
     except Exception as e:
@@ -413,6 +618,21 @@ def get_run_status(run_id):
 
         run_data = _azure_runs[run_id]
 
+        # Pull observability fields from the persisted workflow row (the
+        # in-memory _azure_runs dict tracks pipeline state, not these).
+        phase_timings = None
+        llm_metrics = None
+        sigma_rule_tally = None
+        try:
+            from services import get_automation_run as _get_workflow
+            wf = _get_workflow(run_id)
+            if wf:
+                phase_timings = wf.get('phase_timings')
+                llm_metrics = wf.get('llm_metrics')
+                sigma_rule_tally = wf.get('sigma_rule_tally')
+        except Exception:
+            pass
+
         return jsonify({
             'run_id': run_id,
             'status': run_data.get('status'),
@@ -420,7 +640,10 @@ def get_run_status(run_id):
             'phases': run_data.get('phases', {}),
             'start_time': run_data.get('start_time'),
             'end_time': run_data.get('end_time'),
-            'error': run_data.get('error')
+            'error': run_data.get('error'),
+            'phase_timings': phase_timings,
+            'llm_metrics': llm_metrics,
+            'sigma_rule_tally': sigma_rule_tally,
         })
 
     except Exception as e:
@@ -707,3 +930,154 @@ def delete_run(run_id):
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Interactive mode: same shape as agentic + aws — chat about the report,
+# synthesise a master prompt, re-run with operator corrections applied.
+# ---------------------------------------------------------------------------
+
+
+def _azure_load_llm_config():
+    from services.file_storage_service import load_frontend_config
+    return load_frontend_config() or {}
+
+
+@azure_bp.route('/api/azure/run/<run_id>/chat', methods=['GET'])
+def get_azure_chat(run_id):
+    """Snapshot of chat state + scope availability for the Azure run."""
+    try:
+        run = get_automation_run(run_id)
+        if not run:
+            return jsonify({"error": "Run not found"}), 404
+        return jsonify(interactive_chat.get_chat_state(run_id))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@azure_bp.route('/api/azure/run/<run_id>/chat', methods=['POST'])
+def post_azure_chat(run_id):
+    """Append an operator turn; get the assistant reply."""
+    if not is_module_enabled('azure'):
+        return jsonify({"error": "Azure module is not enabled."}), 400
+    try:
+        run = get_automation_run(run_id)
+        if not run:
+            return jsonify({"error": "Run not found"}), 404
+        data = request.get_json() or {}
+        try:
+            reply = interactive_chat.send_chat_message(run_id, data.get('message', ''), _azure_load_llm_config())
+        except ValueError as ve:
+            return jsonify({"error": str(ve)}), 400
+        except RuntimeError as re_:
+            return jsonify({"error": str(re_)}), 502
+        return jsonify({"assistant": reply})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@azure_bp.route('/api/azure/run/<run_id>/chat', methods=['DELETE'])
+def clear_azure_chat(run_id):
+    """Wipe chat transcript + synthesised master prompt."""
+    try:
+        run = get_automation_run(run_id)
+        if not run:
+            return jsonify({"error": "Run not found"}), 404
+        interactive_chat.clear_chat(run_id)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@azure_bp.route('/api/azure/run/<run_id>/rerun', methods=['POST'])
+def rerun_azure(run_id):
+    """Re-run the Azure analysis with chat-synthesised master prompt.
+
+    Body: {scope: "reports_only" | "full"}
+      - reports_only: re-call report-synthesis LLM only. ~1 LLM call.
+      - full: re-call analyze_artifacts over cached findings, then
+        re-synthesise the report. One LLM call per rule fired.
+    """
+    if not is_module_enabled('azure'):
+        return jsonify({"error": "Azure module is not enabled."}), 400
+    try:
+        run = get_automation_run(run_id)
+        if not run:
+            return jsonify({"error": "Run not found"}), 404
+        if run.get('automation_type') != 'azure_scan':
+            return jsonify({"error": "Re-run is only supported for Azure scan runs"}), 400
+        if run.get('status') == 'running':
+            return jsonify({"error": "Run is already in progress"}), 409
+
+        data = request.get_json() or {}
+        scope = (data.get('scope') or 'reports_only').strip()
+        if scope not in ('reports_only', 'full'):
+            return jsonify({"error": "scope must be 'reports_only' or 'full'"}), 400
+
+        details = run.get('details') or {}
+        if not (details.get('chat_messages') or []):
+            return jsonify({
+                "error": "No chat history — send at least one message "
+                         "describing what to correct or investigate."
+            }), 400
+
+        data_path = f"/app/data/azure_runs/{run_id}.json"
+        if not os.path.exists(data_path):
+            return jsonify({
+                "error": "No persisted Azure run data on file — this run "
+                         "predates the interactive-mode plumbing or its "
+                         "data has been pruned."
+            }), 409
+
+        llm_config = _azure_load_llm_config()
+        add_log_to_run(run_id, f"[Pipeline] Interactive re-run (scope={scope}) starting", "info")
+
+        original_filters = {
+            'min_severity': details.get('min_severity'),
+            'time_filter': details.get('time_filter'),
+            'target_users': details.get('target_users') or [],
+            'target_ips': details.get('target_ips') or [],
+        }
+        if original_filters['min_severity']:
+            tf = original_filters['time_filter']
+            tf_desc = f", time_filter={tf}" if tf else ''
+            add_log_to_run(
+                run_id,
+                f"[RERUN] Re-applying original filters: min_severity={original_filters['min_severity']}{tf_desc}",
+                "info",
+            )
+        else:
+            add_log_to_run(
+                run_id,
+                "[RERUN] Original run has no persisted filters — running with full data. "
+                "Re-dispatch the scan to enable filtered reruns.",
+                "warning",
+            )
+            original_filters = None
+
+        update_run_status(run_id, 'running', progress=5)
+
+        def _worker():
+            try:
+                add_log_to_run(run_id, "[Interactive] Synthesising master prompt from chat…", "info")
+                mp = interactive_chat.synthesize_master_prompt(run_id, llm_config)
+                mp = (mp or '').strip()
+                if not mp:
+                    raise RuntimeError("synthesised master prompt was empty — add more detail to the chat")
+                _run_azure_reanalyze(run_id, mp, llm_config, scope=scope, original_filters=original_filters)
+                update_run_status(run_id, 'completed', progress=100, force=True)
+                add_log_to_run(run_id, f"[Pipeline] Azure re-run ({scope}) complete", "success")
+            except FileNotFoundError as fe:
+                add_log_to_run(run_id, f"[Pipeline] Azure re-run aborted: {fe}", "warning")
+                update_run_status(run_id, run.get('status') or 'completed', force=True)
+            except Exception as e:
+                traceback.print_exc()
+                add_log_to_run(run_id, f"[Pipeline] Azure re-run failed: {e}", "error")
+                update_run_status(run_id, 'failed', error=str(e))
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return jsonify({"run_id": run_id, "scope": scope, "status": "started"})
+
+    except Exception as e:
+        print(f"[AZURE] Re-run error: {e}", flush=True)
+        return jsonify({"error": str(e)}), 500

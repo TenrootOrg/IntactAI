@@ -107,6 +107,28 @@ def run_timesketch_collection():
         add_log_to_run(run_id, f"Collection timeout: {timeout_seconds}s, CPU limit: {cpu_limit}%", "info")
         update_run_status(run_id, "running", progress=5)
 
+        # Register cancel event so Stop can cancel the velociraptor
+        # flow + abort the downstream /api/timesketch/import monitor.
+        # The downstream import endpoint already has its own cancel
+        # registration; this one covers the gap between KAPE dispatch
+        # and the operator calling import.
+        from services.workflow_service import register_cancel_event, register_cleanup
+        register_cancel_event(run_id)
+        # Cleanup callback cancels the Velociraptor flow when Stop is
+        # clicked — so the endpoint stops collecting + uploading too.
+        def _cancel_velo_flow(cid=client_id, fid=flow_id):
+            try:
+                import subprocess as _sp
+                _sp.run(
+                    f"docker exec intact_velociraptor /velociraptor/velociraptor "
+                    f"--api_config /velociraptor/api.config.yaml --nobanner query "
+                    f"\"SELECT cancel_flow(client_id='{cid}', flow_id='{fid}') FROM scope()\"",
+                    shell=True, capture_output=True, timeout=10
+                )
+            except Exception:
+                pass
+        register_cleanup(run_id, _cancel_velo_flow)
+
         # Track the job with run_id
         add_job(flow_id, {
             "flow_id": flow_id,
@@ -145,9 +167,73 @@ def run_timesketch_collection():
         return jsonify({"error": str(e)}), 500
 
 
+def _create_single_velo_hunt(stub, artifacts, hunt_desc, expire_seconds, timeout_seconds,
+                             cpu_limit, flow_max_rows, flow_max_bytes, log_fn):
+    """Build + send the VQL `hunt()` call against the Velociraptor gRPC
+    stub for a given artifact list, return `(hunt_id, error_str)`.
+
+    Used by both the bulk path (artifacts = full list) and the
+    per-artifact path (artifacts = a one-element list). Keeps the gRPC
+    plumbing in one place."""
+    artifacts_list = json.dumps(artifacts)
+    spec_parts = ", ".join([f"`{a}`=dict()" for a in artifacts])
+    # max_logs is rejected by hunt() (collect_client-only) so we omit.
+    query = f"""
+LET collection = hunt(
+    description={json.dumps(hunt_desc)},
+    artifacts={artifacts_list},
+    spec=dict({spec_parts}),
+    expires=now() + {expire_seconds},
+    timeout={timeout_seconds},
+    max_rows={flow_max_rows},
+    max_bytes={flow_max_bytes},
+    cpu_limit={cpu_limit}
+)
+SELECT HuntId FROM collection
+"""
+    request_obj = api_pb2.VQLCollectorArgs(
+        max_wait=30,
+        max_row=100,
+        Query=[api_pb2.VQLRequest(VQL=query)],
+    )
+    hunt_id = None
+    response_errors = []
+    response_count = 0
+    for response in stub.Query(request_obj, timeout=120):
+        response_count += 1
+        if response.log:
+            log_fn(f"Velociraptor log: {response.log}",
+                   "warning" if "error" in response.log.lower() else "info")
+        if response.Response:
+            try:
+                resp_data = json.loads(response.Response)
+                if resp_data:
+                    hunt_id = (resp_data[0] or {}).get('HuntId') or hunt_id
+            except Exception as parse_err:
+                response_errors.append(f"parse: {parse_err}")
+    if hunt_id:
+        return hunt_id, None
+    reasons = []
+    if response_count == 0:
+        reasons.append("no responses from Velociraptor")
+    if response_errors:
+        reasons.append("; ".join(response_errors))
+    if not reasons:
+        reasons.append("no HuntId in any response")
+    return None, " | ".join(reasons)
+
+
 @velociraptor_bp.route('/api/velociraptor/bestpractice', methods=['POST'])
 def run_bestpractice_hunts():
-    """Run multiple artifacts as hunts (BestPractice workflow)"""
+    """Run multiple artifacts as hunts (BestPractice workflow).
+
+    Two dispatch modes controlled by `per_artifact`:
+      - false (default): one bulk hunt with every artifact in one
+        Velociraptor hunt object + one workflow row.
+      - true: one hunt PER artifact — N Velociraptor hunts + N workflow
+        rows so the operator can monitor / cancel / re-run each
+        artifact independently.
+    """
     try:
         data = request.get_json()
         artifacts = data.get('artifacts', [])
@@ -155,6 +241,7 @@ def run_bestpractice_hunts():
         expire_minutes = data.get('expire_minutes', 120)
         timeout_seconds = data.get('timeout_seconds', 10000)
         cpu_limit = data.get('cpu_limit', 80)
+        per_artifact = bool(data.get('per_artifact', False))
         # Optional blueprint_id lets us pull resource caps from the stored
         # blueprint settings (instead of inheriting old hardcoded defaults).
         # When absent, the request body can override directly via flow_max_*
@@ -182,9 +269,81 @@ def run_bestpractice_hunts():
 
         print(f"\n{'='*80}", flush=True)
         print(f"[HUNT] Starting Velociraptor hunt: {blueprint_name}", flush=True)
-        print(f"[HUNT] Artifacts: {len(artifacts)} artifacts", flush=True)
+        print(f"[HUNT] Artifacts: {len(artifacts)} artifacts (per_artifact={per_artifact})", flush=True)
         print(f"[HUNT] Expire: {expire_minutes}m, Timeout: {timeout_seconds}s, CPU: {cpu_limit}%", flush=True)
         print(f"{'='*80}\n", flush=True)
+
+        # ───────────────────────────────────────────────────────────────
+        # PER-ARTIFACT BRANCH — one workflow row + one Velociraptor hunt
+        # per artifact. Branches off the bulk path entirely so the rest
+        # of this function is the unchanged bulk behaviour.
+        # ───────────────────────────────────────────────────────────────
+        if per_artifact:
+            expire_seconds = expire_minutes * 60
+            channel = setup_velociraptor_connection()
+            if not channel:
+                return jsonify({"error": "Failed to connect to Velociraptor"}), 500
+            stub = api_pb2_grpc.APIStub(channel)
+            results = []
+            run_ids = []
+            # Register cancel for each row up front so the operator can
+            # Stop the per-artifact dispatch loop mid-flight (e.g. when
+            # they picked 30 artifacts and want to cancel after 3 hunts).
+            from services.workflow_service import register_cancel_event, is_cancelled
+            try:
+                for a in artifacts:
+                    rid = create_automation_run(
+                        automation_type="velociraptor_hunt",
+                        name=f"{blueprint_name} · {a}",
+                        details={
+                            "blueprint": blueprint_name,
+                            "artifact_count": 1,
+                            "artifact": a,
+                            "expire_minutes": expire_minutes,
+                            "timeout_seconds": timeout_seconds,
+                            "cpu_limit": cpu_limit,
+                            "per_artifact": True,
+                        },
+                    )
+                    run_ids.append(rid)
+                    register_cancel_event(rid)
+                    # Honour Stop on THIS row before dispatching the
+                    # next hunt. We can't kill an already-dispatched
+                    # Velociraptor hunt from here (those run on the
+                    # server side), but we can stop creating more.
+                    if is_cancelled(rid):
+                        update_run_status(rid, "cancelled")
+                        results.append({"artifact": a, "run_id": rid, "hunt_id": None, "status": "cancelled"})
+                        continue
+                    add_log_to_run(rid, f"Starting per-artifact hunt for `{a}`")
+                    add_log_to_run(rid, f"Settings: Expire={expire_minutes}m, Timeout={timeout_seconds}s, CPU={cpu_limit}%")
+                    hunt_desc = f"{blueprint_name} · {a}"
+                    hunt_id, err = _create_single_velo_hunt(
+                        stub, [a], hunt_desc, expire_seconds, timeout_seconds,
+                        cpu_limit, flow_max_rows, flow_max_bytes,
+                        log_fn=lambda m, lvl='info', _rid=rid: add_log_to_run(_rid, m, lvl),
+                    )
+                    if hunt_id:
+                        add_log_to_run(rid, f"Hunt created: {hunt_id}")
+                        update_run_status(rid, "completed", progress=100)
+                        results.append({"artifact": a, "run_id": rid, "hunt_id": hunt_id, "status": "success"})
+                    else:
+                        # Don't log error if this row got cancelled mid-create
+                        if is_cancelled(rid):
+                            results.append({"artifact": a, "run_id": rid, "hunt_id": None, "status": "cancelled"})
+                            continue
+                        add_log_to_run(rid, f"Failed: {err}", "error")
+                        update_run_status(rid, "failed", progress=0)
+                        results.append({"artifact": a, "run_id": rid, "hunt_id": None, "status": "failed", "error": err})
+            finally:
+                channel.close()
+            success_n = sum(1 for r in results if r['status'] == 'success')
+            print(f"[HUNT] Per-artifact dispatch: {success_n}/{len(artifacts)} hunts created", flush=True)
+            return jsonify({
+                "message": f"Dispatched {success_n}/{len(artifacts)} per-artifact hunts",
+                "run_ids": run_ids,
+                "results": results,
+            })
 
         # Create workflow run entry
         run_id = create_automation_run(

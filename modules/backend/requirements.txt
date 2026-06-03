@@ -13,3 +13,10 @@ PyYAML==6.0.3
 # Scheduler
 APScheduler==3.11.2
 SQLAlchemy==2.0.46
+
+# Engagement Report PDF rendering — markdown → styled HTML → PDF
+# via Cairo/Pango (system libs installed in the Dockerfile).
+weasyprint==60.2
+pydyf<0.9  # Pin: WeasyPrint 60 expects pydyf 0.8.x; 0.9+ broke transform API.
+markdown==3.7
+pymdown-extensions==10.11

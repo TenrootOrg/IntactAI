@@ -336,11 +336,25 @@ _pull_image_with_retry() {
     local max_attempts=3
     local delay=5
     local attempt=1
+    # See pull_compose_with_retry — same "↳ resolved" breadcrumb pattern,
+    # so an operator scanning the end-of-install ATTENTION block can tell
+    # transient retries from terminal failures at a glance.
+    local had_failure=0
 
     while (( attempt <= max_attempts )); do
-        if docker pull "$image" 2>> "$LOG_FILE"; then
-            return 0
+        # Stream progress to BOTH terminal and log file. Operator needs
+        # to see the per-layer download bytes so a slow pull doesn't
+        # look like a hang.
+        if docker pull "$image" 2>&1 | tee -a "$LOG_FILE"; then
+            if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+                if (( had_failure > 0 )); then
+                    log_success "  $image pulled on attempt $attempt (previous failure was transient)"
+                    INSTALL_WARNINGS+=("  ↳ resolved: $image pull succeeded on attempt $attempt")
+                fi
+                return 0
+            fi
         fi
+        had_failure=1
         if (( attempt < max_attempts )); then
             log_warn "  Pull failed for $image (attempt $attempt/$max_attempts); retrying in ${delay}s..."
             sleep "$delay"
@@ -363,8 +377,12 @@ pull_plaso_image() {
     fi
 
     log_info "Downloading $plaso_image (this may take a few minutes)..."
-    if docker pull "$plaso_image" 2>> "$LOG_FILE"; then
-        log_success "Plaso image pulled successfully: $plaso_image"
+    if docker pull "$plaso_image" 2>&1 | tee -a "$LOG_FILE"; then
+        if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            log_success "Plaso image pulled successfully: $plaso_image"
+        else
+            log_warn "Failed to pull Plaso image - it will be downloaded on first use"
+        fi
     else
         log_warn "Failed to pull Plaso image - it will be downloaded on first use"
     fi
@@ -384,8 +402,12 @@ pull_python_alpine_image() {
     fi
 
     log_info "  Downloading $image..."
-    if docker pull "$image" 2>> "$LOG_FILE"; then
-        log_success "  Python Alpine image pulled successfully"
+    if docker pull "$image" 2>&1 | tee -a "$LOG_FILE"; then
+        if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            log_success "  Python Alpine image pulled successfully"
+        else
+            log_warn "  Failed to pull $image - Plaso decompression may fail offline"
+        fi
     else
         log_warn "  Failed to pull $image - Plaso decompression may fail offline"
     fi
@@ -398,33 +420,78 @@ download_timesketch_packages() {
 }
 
 download_offline_collector_binaries() {
-    # Velociraptor v0.74.1 binaries for Offline Collector
-    # NOTE: v0.74.x required because v0.75+ broke the -- pseudo-flag in Generic Collector
-    # GitHub tag is "v0.74" but files contain "v0.74.1" in the filename
+    # Velociraptor offline-collector binaries — version follows
+    # `versions.velociraptor` in `config.yaml` (single source of truth,
+    # same pin used to build the server image). Bump that one value and
+    # both the server and the offline-collector binaries move together
+    # on the next install.
+    #
+    # Old binaries from a previous version pin are removed so the
+    # downloads dir doesn't accumulate stale files. The backend's
+    # offline-collector code (`services/offline_collector/constants.py`)
+    # auto-discovers whatever binaries are present, so the cleanup +
+    # download here is what drives which version actually gets used.
+
+    local velo_version
+    velo_version=$(read_config "['versions']['velociraptor']")
+    if [[ -z "$velo_version" || "$velo_version" == "None" ]]; then
+        log_error "Offline-Collector: versions.velociraptor is not set in config.yaml — cannot determine which binaries to download"
+        return 0
+    fi
+    # GitHub tag is the major.minor (e.g. "v0.76"); patch versions live as
+    # release assets within that tag.
+    local velo_tag
+    velo_tag=$(echo "$velo_version" | sed 's/^\([0-9]*\.[0-9]*\).*/\1/')
 
     local downloads_dir="${SCRIPT_DIR}/modules/nginx/html/downloads"
-    local base_url="https://github.com/Velocidex/velociraptor/releases/download/v0.74"
+    local base_url="https://github.com/Velocidex/velociraptor/releases/download/v${velo_tag}"
 
-    log_info "Checking Velociraptor v0.74.1 binaries for Offline Collector..."
+    log_info "Checking Velociraptor v${velo_version} binaries for Offline Collector..."
 
     mkdir -p "$downloads_dir"
 
+    # Why the -musl variant for the modern version:
+    # Even Velociraptor's current build (linux-amd64) imports GLIBC_2.28
+    # symbols, so it crashes at load on any host with glibc < 2.28
+    # (CentOS 7, RHEL 7, Sophos UTM, Ubuntu 16.04, etc.). The -musl
+    # variant is statically linked against musl libc with zero shared-
+    # library deps — runs on ANY Linux x86_64 with kernel >= 2.6.32.
+    # The new "Linux (musl)" download button on the dashboard serves
+    # this variant repacked with the live client.config.
     local binaries=(
-        "velociraptor-v0.74.1-windows-amd64.exe"
-        "velociraptor-v0.74.1-linux-amd64"
-        "velociraptor-v0.74.1-darwin-amd64"
+        "velociraptor-v${velo_version}-windows-amd64.exe"
+        "velociraptor-v${velo_version}-linux-amd64"
+        "velociraptor-v${velo_version}-linux-amd64-musl"
+        "velociraptor-v${velo_version}-darwin-amd64"
     )
+
+    # Clean up any prior-version binaries so the downloads dir reflects
+    # the current pin. Pattern matches `velociraptor-v<X>-<platform>`
+    # for any version <X> — the loop below deletes only files whose
+    # version segment differs from the configured one.
+    local stale=0
+    for old in "$downloads_dir"/velociraptor-v*-windows-amd64.exe \
+               "$downloads_dir"/velociraptor-v*-linux-amd64 \
+               "$downloads_dir"/velociraptor-v*-linux-amd64-musl \
+               "$downloads_dir"/velociraptor-v*-darwin-amd64; do
+        [[ -f "$old" ]] || continue
+        if [[ "$old" != *"-v${velo_version}-"* ]]; then
+            log_info "  Removing stale binary: $(basename "$old")"
+            rm -f "$old"
+            ((stale++))
+        fi
+    done
+    if (( stale > 0 )); then
+        log_info "  Cleaned up $stale stale offline-collector binar(y/ies) from prior version pin"
+    fi
 
     local downloaded=0
     local skipped=0
-    # Minimum credible binary size — kept very permissive (1 MB) so any
-    # legitimate binary, even if upstream slimmed it down, passes. We're
-    # only trying to catch the failure modes that today's empty-but-not-
-    # empty `[[ -s ]]` check misses: HTTP 404 HTML pages (a few KB),
-    # GitHub rate-limit JSON responses (under 1 KB), and badly-aborted
-    # partial transfers. Real binaries are 65-75 MB; anything truly
-    # under 1 MB is broken regardless of version.
-    local min_size=$((1 * 1024 * 1024))   # 1 MB
+    # Minimum credible binary size — permissive (1 MB) so legitimate
+    # binaries pass even if upstream slims them down. The 1 MB floor
+    # only catches HTTP 404 HTML pages, GitHub rate-limit JSON, and
+    # badly-aborted partial transfers. Real binaries are 65-85 MB.
+    local min_size=$((1 * 1024 * 1024))
 
     for binary in "${binaries[@]}"; do
         local dest_path="${downloads_dir}/${binary}"
@@ -444,13 +511,11 @@ download_offline_collector_binaries() {
         fi
     done
 
-    # Post-condition validation — the function used to exit 0 even when
-    # every download failed (only log_warn on failure, no final check).
-    # The result was a "successful" install with an empty downloads/
-    # directory; the offline-collector path then failed at runtime
-    # weeks later. This block makes the failure loud during install
-    # without turning it into an abort (operator constraint: don't
-    # introduce new failure paths in fresh installs).
+    # Post-condition validation — function used to exit 0 even when every
+    # download failed; the install would "succeed" with an empty downloads/
+    # directory and the offline-collector path failed silently at runtime.
+    # Loud errors here + the end-of-install ATTENTION report make the issue
+    # visible without aborting installs that were going to succeed anyway.
     local missing=0
     for binary in "${binaries[@]}"; do
         local p="${downloads_dir}/${binary}"
@@ -458,24 +523,237 @@ download_offline_collector_binaries() {
         [[ -f "$p" ]] && sz=$(stat -c%s "$p" 2>/dev/null || echo 0)
         if [[ ! -s "$p" ]] || (( sz < min_size )); then
             log_error "Offline-Collector binary missing or undersized: $binary"
-            log_error "  Expected ≥1 MB at $p — got $sz bytes (real binaries are 65-75 MB)"
+            log_error "  Expected ≥1 MB at $p — got $sz bytes (real binaries are 65-85 MB)"
             log_error "  Manual fix: curl -fsSL ${base_url}/${binary} -o $p && chmod +x $p"
             ((missing++))
         fi
     done
     if (( missing > 0 )); then
-        log_error "Offline-Collector: $missing/${#binaries[@]} binaries unusable. Velociraptor offline-collector generation will fail until fixed (see commands above)."
+        log_error "Offline-Collector: $missing/${#binaries[@]} binaries unusable. Offline-collector generation will fail until fixed."
     fi
 
     if [[ $downloaded -gt 0 ]]; then
-        log_success "Offline Collector binaries: $downloaded downloaded, $skipped already existed"
+        log_success "Offline Collector binaries (v${velo_version}): $downloaded downloaded, $skipped already existed"
     else
-        log_info "Offline Collector binaries: all $skipped binaries already exist"
+        log_info "Offline Collector binaries (v${velo_version}): all $skipped binaries already exist"
     fi
-    # Always return 0 — install flow stays unchanged regardless of outcome.
-    # Loud errors above + the end-of-install ATTENTION report ensure the
-    # operator sees the issue without aborting installs that were already
-    # going to succeed.
+    return 0
+}
+
+stage_velociraptor_client_binaries() {
+    # Stage the four binaries the Velociraptor Dockerfile COPYs at
+    # build time. Without these, `docker compose build` fails because
+    # the Dockerfile is pure COPY (intentionally — see Dockerfile
+    # comments for why we moved off in-container curl).
+    #
+    # Args:
+    #   $1 = full version, e.g. "0.75.6"
+    #   $2 = velociraptor module dir (the docker build context)
+    #
+    # Side effects:
+    #   Populates $module_dir/clients/{linux,mac,windows}/...
+    #
+    # Returns 0 on success, 1 if any required binary couldn't be
+    # downloaded.
+
+    local velo_version="$1"
+    local module_dir="$2"
+
+    if [[ -z "$velo_version" || -z "$module_dir" ]]; then
+        log_error "stage_velociraptor_client_binaries: version + module_dir required"
+        return 1
+    fi
+
+    local parts
+    IFS='.' read -r -a parts <<< "$velo_version"
+    if (( ${#parts[@]} < 2 )); then
+        log_error "stage_velociraptor_client_binaries: malformed version '$velo_version' — need at least major.minor"
+        return 1
+    fi
+    local release_tag="v${parts[0]}.${parts[1]}"
+    local base_url="https://github.com/Velocidex/velociraptor/releases/download/${release_tag}"
+
+    local linux_dir="${module_dir}/clients/linux"
+    local mac_dir="${module_dir}/clients/mac"
+    local win_dir="${module_dir}/clients/windows"
+    mkdir -p "$linux_dir" "$mac_dir" "$win_dir"
+
+    # Pairs of "dest_path|upstream_filename" — must mirror
+    # services/upgrade/velociraptor.py:_velociraptor_binary_set.
+    local items=(
+        "${linux_dir}/velociraptor|velociraptor-v${velo_version}-linux-amd64"
+        "${mac_dir}/velociraptor_client|velociraptor-v${velo_version}-darwin-amd64"
+        "${win_dir}/velociraptor_client.exe|velociraptor-v${velo_version}-windows-amd64.exe"
+        "${win_dir}/velociraptor_client.msi|velociraptor-v${velo_version}-windows-amd64.msi"
+    )
+
+    local min_size=$((1 * 1024 * 1024))  # 1 MB floor — under that = HTTP 404 / rate-limit / partial
+    local required_dest="${linux_dir}/velociraptor"
+    local required_ok=0
+    local placeholders=0
+
+    for item in "${items[@]}"; do
+        local dest="${item%%|*}"
+        local fname="${item##*|}"
+        local is_required=0
+        [[ "$dest" == "$required_dest" ]] && is_required=1
+
+        if [[ -f "$dest" ]] && [[ $(stat -c%s "$dest" 2>/dev/null || echo 0) -ge $min_size ]]; then
+            log_info "  Already staged: $(basename "$dest")"
+            (( is_required )) && required_ok=1
+            continue
+        fi
+
+        log_info "  Staging: $fname  (from ${base_url}/${fname})"
+        local sz=0
+        if curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 120 \
+                "${base_url}/${fname}" -o "$dest" 2>> "$LOG_FILE"; then
+            sz=$(stat -c%s "$dest" 2>/dev/null || echo 0)
+        else
+            sz=0
+            rm -f "$dest"
+        fi
+
+        if (( sz < min_size )); then
+            if (( is_required )); then
+                log_error "  REQUIRED binary unavailable upstream: $fname"
+                return 1
+            fi
+            # Optional client binary missing (e.g. v0.75.6 has no
+            # darwin-amd64). Drop a zero-byte placeholder so the
+            # Dockerfile COPY still succeeds; entrypoint's repack
+            # step silently no-ops on the empty file.
+            log_warn "  $fname unavailable upstream — using empty placeholder (no pre-repacked client for this platform)"
+            : > "$dest"
+            ((placeholders++))
+            continue
+        fi
+
+        if [[ "$dest" != *.msi ]]; then
+            chmod +x "$dest" 2>/dev/null || true
+        fi
+        log_success "  Staged: $(basename "$dest") (${sz} bytes)"
+        (( is_required )) && required_ok=1
+    done
+
+    if (( required_ok != 1 )); then
+        log_error "stage_velociraptor_client_binaries: linux server binary not staged. Install/upgrade cannot continue."
+        return 1
+    fi
+
+    if (( placeholders > 0 )); then
+        log_warn "stage_velociraptor_client_binaries: ${placeholders} optional client binary placeholder(s) inserted — image build will succeed, those platforms just won't have a pre-repacked client."
+    fi
+    return 0
+}
+
+download_legacy_velociraptor_binaries() {
+    # Legacy Velociraptor binary for old Windows hosts (Server 2008 R2 SP1,
+    # Win 7). Pin lives in `versions.velociraptor_legacy` in config.yaml.
+    # Distinct namespace from the main pin so they coexist in the same
+    # downloads dir — the legacy binary keeps its full GitHub-style filename
+    # (e.g. velociraptor-v0.7.1-windows-amd64.exe) so the cleanup pattern in
+    # download_offline_collector_binaries() (matches `*-v<MAIN_VER>-*`) does
+    # NOT delete it. The two installs don't fight.
+
+    local legacy_version
+    legacy_version=$(read_config "['versions']['velociraptor_legacy']")
+    if [[ -z "$legacy_version" || "$legacy_version" == "None" ]]; then
+        log_info "Legacy Velociraptor: versions.velociraptor_legacy not set — skipping"
+        return 0
+    fi
+    # Legacy releases (≤0.7.x) use FULL-version tags on GitHub (e.g. v0.7.1),
+    # unlike modern releases (≥0.72) which use major.minor tags (e.g. v0.76).
+    # The download_offline_collector_binaries() function above truncates to
+    # major.minor because that matches the modern pin; here we keep the full
+    # version because that matches the legacy pin.
+    local legacy_tag="${legacy_version}"
+
+    local downloads_dir="${SCRIPT_DIR}/modules/nginx/html/downloads"
+    local base_url="https://github.com/Velocidex/velociraptor/releases/download/v${legacy_tag}"
+
+    log_info "Checking Velociraptor LEGACY v${legacy_version} binaries..."
+    mkdir -p "$downloads_dir"
+
+    # Why -musl for linux:
+    # The plain velociraptor-vX.Y.Z-linux-amd64 build is dynamically linked
+    # and (even in v0.7.1) imports GLIBC_2.28 symbols, so it fails to load
+    # on glibc-2.17 hosts (CentOS 7, RHEL 7, Ubuntu 16.04). The -musl
+    # variant is statically linked against musl-libc with zero shared-lib
+    # deps — runs on ANY Linux x86_64 with kernel >= 2.6.32. The legacy
+    # service prefers -musl for the linux-legacy target; the non-musl
+    # build is kept too for parity / debug.
+    local binaries=(
+        "velociraptor-v${legacy_version}-windows-amd64.exe"
+        "velociraptor-v${legacy_version}-linux-amd64"
+        "velociraptor-v${legacy_version}-linux-amd64-musl"
+        "velociraptor-v${legacy_version}-darwin-amd64"
+    )
+
+    # Clean up stale legacy binaries from prior pin changes. Pattern is the
+    # same as the main downloader but constrained to versions OLDER than the
+    # current main version (anything <0.74 is legacy-territory in practice).
+    # Simpler heuristic: just match "velociraptor-v0.7.*-*" and skip the
+    # configured one.
+    local stale=0
+    for old in "$downloads_dir"/velociraptor-v0.[67].*-windows-amd64.exe \
+               "$downloads_dir"/velociraptor-v0.[67].*-linux-amd64 \
+               "$downloads_dir"/velociraptor-v0.[67].*-linux-amd64-musl \
+               "$downloads_dir"/velociraptor-v0.[67].*-darwin-amd64; do
+        [[ -f "$old" ]] || continue
+        if [[ "$old" != *"-v${legacy_version}-"* ]]; then
+            log_info "  Removing stale legacy binary: $(basename "$old")"
+            rm -f "$old"
+            ((stale++))
+        fi
+    done
+    (( stale > 0 )) && log_info "  Cleaned up $stale stale legacy binar(y/ies)"
+
+    local downloaded=0
+    local skipped=0
+    local min_size=$((1 * 1024 * 1024))   # 1 MB floor — real legacy bins are ~50 MB
+
+    for binary in "${binaries[@]}"; do
+        local dest_path="${downloads_dir}/${binary}"
+        if [[ -f "$dest_path" ]] && [[ -s "$dest_path" ]]; then
+            log_info "  Already exists: $binary"
+            ((skipped++))
+        else
+            log_info "  Downloading: $binary"
+            if curl -fsSL "${base_url}/${binary}" -o "$dest_path" 2>> "$LOG_FILE"; then
+                chmod +x "$dest_path" 2>/dev/null || true
+                log_success "  Downloaded: $binary"
+                ((downloaded++))
+            else
+                log_warn "  Failed to download: $binary (legacy support for that OS will require online mode)"
+            fi
+        fi
+    done
+
+    # Validate the two binaries the dashboard's legacy buttons actually
+    # serve: Windows .exe (windows-legacy-exe) and Linux musl (linux-legacy).
+    # macOS legacy is a "nice to have" — not validated; no UI button uses it.
+    for plat_check in \
+        "Windows:velociraptor-v${legacy_version}-windows-amd64.exe" \
+        "Linux (musl-static):velociraptor-v${legacy_version}-linux-amd64-musl"; do
+        local label="${plat_check%%:*}"
+        local fname="${plat_check##*:}"
+        local p="${downloads_dir}/${fname}"
+        local sz=0
+        [[ -f "$p" ]] && sz=$(stat -c%s "$p" 2>/dev/null || echo 0)
+        if [[ ! -s "$p" ]] || (( sz < min_size )); then
+            log_warn "Legacy Velociraptor: ${label} binary missing/undersized at $p ($sz bytes)."
+            log_warn "  Manual fix: curl -fsSL ${base_url}/${fname} -o $p"
+        else
+            log_success "Legacy Velociraptor (v${legacy_version}): ${label} binary ready ($(numfmt --to=iec $sz))"
+        fi
+    done
+
+    if [[ $downloaded -gt 0 ]]; then
+        log_success "Legacy Velociraptor (v${legacy_version}): $downloaded downloaded, $skipped already existed"
+    else
+        log_info "Legacy Velociraptor (v${legacy_version}): all $skipped binaries already exist"
+    fi
     return 0
 }
 
@@ -591,17 +869,69 @@ pull_dfir_o365rc_image() {
         return 0
     fi
 
-    log_info "Pulling DFIR-O365RC image (Unified Audit Log collection)..."
+    # Version pin from config.yaml (upstream only ships ':latest').
+    local o365rc_version=$(read_config "['versions']['azure_dfir_o365rc']")
+    [[ -z "$o365rc_version" ]] && o365rc_version="latest"
+    local o365rc_image="anssi/dfir-o365rc:${o365rc_version}"
 
-    if docker image inspect anssi/dfir-o365rc:latest > /dev/null 2>&1; then
+    log_info "Pulling DFIR-O365RC image (${o365rc_image}, Unified Audit Log collection)..."
+
+    if docker image inspect "$o365rc_image" > /dev/null 2>&1; then
         log_info "DFIR-O365RC image already present"
         return 0
     fi
 
-    if docker pull anssi/dfir-o365rc:latest 2>> "$LOG_FILE"; then
-        log_success "DFIR-O365RC image pulled successfully"
+    if docker pull "$o365rc_image" 2>&1 | tee -a "$LOG_FILE"; then
+        if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            log_success "DFIR-O365RC image pulled successfully"
+        else
+            log_warn "Failed to pull DFIR-O365RC image - Unified Audit Log collection will not be available"
+            return 1
+        fi
     else
         log_warn "Failed to pull DFIR-O365RC image - Unified Audit Log collection will not be available"
+        return 1
+    fi
+}
+
+
+pull_prowler_image() {
+    # Pull Prowler image for AWS posture-scanning (used by
+    # services/aws/prowler_runner.py). Mirrors pull_dfir_o365rc_image
+    # so the install flow gates the pre-pull on the module being
+    # enabled in config.yaml and reports the same way.
+    #
+    # The image is ~3.5 GB so it's worth front-loading at install time
+    # — at runtime the first scan would otherwise stall for several
+    # minutes waiting for the pull on a fresh customer machine.
+
+    local aws_enabled=$(read_config "['modules']['aws']['enabled']")
+    if ! is_enabled "$aws_enabled"; then
+        log_info "AWS module disabled, skipping Prowler image"
+        return 0
+    fi
+
+    # Version pin from config.yaml for reproducible installs.
+    local prowler_version=$(read_config "['versions']['aws_prowler']")
+    [[ -z "$prowler_version" ]] && prowler_version="5.28.1"
+    local prowler_image="toniblyx/prowler:${prowler_version}"
+
+    log_info "Pulling Prowler image (${prowler_image}, AWS posture scans, ~3.5 GB)..."
+
+    if docker image inspect "$prowler_image" > /dev/null 2>&1; then
+        log_info "Prowler image already present"
+        return 0
+    fi
+
+    if docker pull "$prowler_image" 2>&1 | tee -a "$LOG_FILE"; then
+        if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            log_success "Prowler image pulled successfully"
+        else
+            log_warn "Failed to pull Prowler image - AWS posture scans will fall back to fixture data"
+            return 1
+        fi
+    else
+        log_warn "Failed to pull Prowler image - AWS posture scans will fall back to fixture data"
         return 1
     fi
 }

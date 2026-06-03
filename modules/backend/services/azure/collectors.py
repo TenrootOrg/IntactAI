@@ -15,6 +15,16 @@ from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 
 
+# Note: an earlier version of this module had _dedup_ual_aad_events() that
+# dropped UAL records whose RecordType was in {8, 9, 15} (AAD-flavoured),
+# on the theory that those events were redundant with Graph's
+# directoryAudits/signins. That helper hid those events from SIGMA and
+# from the UAL.persistence pre-detector — both of which depend on UAL data
+# to catch app-credential / persistence attacks. Dedup now happens at
+# *prompt-rendering* time inside analyzers._analyze_timeline, keyed on
+# Microsoft's own correlationId. SIGMA always sees the full data.
+
+
 # =============================================================================
 # Constants
 # =============================================================================
@@ -307,7 +317,8 @@ def collect_azure_logs(
     pivot_mode: bool = False,
     output_dir: Optional[str] = None,
     logger=None,
-    run_id: str = None
+    run_id: str = None,
+    ual_mode: str = "full",
 ) -> Tuple[Dict[str, List[Dict]], Dict[str, str]]:
     """
     Collect Azure/M365 logs from Microsoft Graph API with identity filters.
@@ -387,11 +398,15 @@ def collect_azure_logs(
                             target_users=target_users,
                             logger=log,
                             azure_config=azure_config,
-                            run_id=run_id
+                            run_id=run_id,
+                            ual_mode=ual_mode,
                         )
                         if ual_result.get('skipped'):
                             log(f"{source_name} skipped: {ual_result.get('reason', 'Exchange Online not available')}", "info")
                         elif ual_result['success'] and ual_result['records']:
+                            # No collector-side dedup; SIGMA needs full data.
+                            # Dedup happens at prompt-rendering time keyed
+                            # on correlationId (analyzers._analyze_timeline).
                             normalized = normalize_logs(ual_result['records'], source_info.get('sigma_prefix', source))
                             collected_data[source_info['sigma_prefix']] = normalized
                             log(f"Collected {len(normalized)} records from {source_name}", "success")
@@ -655,7 +670,8 @@ def get_available_sources(requested: List[str], license_tier: str) -> List[str]:
 
 def parse_uploaded_logs(
     file_path: str,
-    source_type: Optional[str] = None
+    source_type: Optional[str] = None,
+    filename_hint: Optional[str] = None,
 ) -> Tuple[Dict[str, List[Dict]], Dict[str, Any]]:
     """
     Parse uploaded log files (JSON, JSONL, CSV).
@@ -663,6 +679,12 @@ def parse_uploaded_logs(
     Args:
         file_path: Path to uploaded file
         source_type: Optional source type hint (auto-detected if not provided)
+        filename_hint: Optional filename to guide detection. When the file
+            comes from our own download endpoint it's named
+            `Azure.<source>.json` — that prefix wins over field-shape
+            detection (which can't tell, e.g., a CA-policy from a
+            random object). Falls back to shape detection if absent or
+            unrecognised.
 
     Returns:
         Tuple of (parsed_data dict, parse_status dict)
@@ -691,17 +713,50 @@ def parse_uploaded_logs(
         status['errors'].append(f"Parse error: {str(e)}")
         data = []
 
+    # Filename hint takes precedence: a file we produced via the download
+    # endpoint is named `Azure.<source>.json` and the prefix is canonical.
+    sigma_prefix = None
+    if source_type is None and filename_hint:
+        sigma_prefix = _sigma_prefix_from_filename(filename_hint)
+        if sigma_prefix:
+            for key, meta in LOG_SOURCES.items():
+                if meta.get('sigma_prefix') == sigma_prefix:
+                    source_type = key
+                    break
+
     if source_type is None and data:
         source_type = detect_source_type(data[0])
 
-    sigma_prefix = LOG_SOURCES.get(source_type, {}).get('sigma_prefix', 'Azure.Unknown')
+    if not sigma_prefix:
+        sigma_prefix = LOG_SOURCES.get(source_type, {}).get('sigma_prefix', 'Azure.Unknown')
+
     normalized = normalize_logs(data, sigma_prefix)
 
     status['parse_end'] = datetime.utcnow().isoformat()
     status['record_count'] = len(normalized)
     status['detected_source'] = source_type
+    status['sigma_prefix'] = sigma_prefix
 
     return {sigma_prefix: normalized}, status
+
+
+def _sigma_prefix_from_filename(filename: str) -> Optional[str]:
+    """Extract the `Azure.<source>` prefix from our download-endpoint
+    filenames (e.g. `Azure.CAPolicy.json` → `Azure.CAPolicy`). Returns
+    None if the filename doesn't match the expected pattern.
+    """
+    base = Path(filename).name
+    # Strip extension(s) — handle `.json`, `.jsonl`, `.csv`, `.json.gz`...
+    stem = base
+    for ext in ('.json', '.jsonl', '.csv'):
+        if stem.lower().endswith(ext):
+            stem = stem[: -len(ext)]
+            break
+    if stem.startswith('Azure.') and stem.count('.') >= 1:
+        # Take only the first two segments — `Azure.CAPolicy.extra` → `Azure.CAPolicy`
+        parts = stem.split('.')
+        return f"{parts[0]}.{parts[1]}"
+    return None
 
 
 def parse_json_file(file_path: str) -> List[Dict]:
@@ -760,6 +815,16 @@ def detect_source_type(sample_record: Dict) -> Optional[str]:
     """Auto-detect log source type from record fields."""
     fields = set(sample_record.keys())
 
+    # Check state-snapshot shapes first — they have very distinctive
+    # nested objects that won't appear in event logs.
+    ca_policy_fields = {'state', 'conditions', 'grantControls'}
+    if ca_policy_fields.issubset(fields) or {'conditions', 'grantControls'}.issubset(fields):
+        return 'ca_policies'
+
+    federation_fields = {'signingCertificate', 'issuerUri', 'passiveSignInUri'}
+    if federation_fields & fields:
+        return 'federation'
+
     signin_fields = {'userPrincipalName', 'ipAddress', 'clientAppUsed', 'conditionalAccessStatus'}
     if signin_fields & fields:
         return 'signin_logs'
@@ -787,6 +852,72 @@ def detect_source_type(sample_record: Dict) -> Optional[str]:
 # Data Normalization
 # =============================================================================
 
+def _graph_to_sigma_aliases(record: Dict, source_prefix: str) -> None:
+    """Add `properties.*` aliases so the public Sigma corpus matches our Graph data.
+
+    Public Azure Sigma rules (e.g. `azure_app_credential_added.yml`) match
+    fields like `properties.message`, `properties.category`,
+    `properties.identity`. Microsoft Graph's `auditLogs/directoryAudits`
+    and `auditLogs/signIns` endpoints return the same semantic data under
+    different field names (`activityDisplayName`, `category`,
+    `initiatedBy.user.userPrincipalName`, etc.).
+
+    Without this shim, the rules never fire on Graph data — which is
+    exactly the bug we hit on `azure_scan_1778062490900` where four
+    "Update application – Certificates and secrets management" events
+    were collected but no rule matched them.
+
+    This is additive: original fields are kept, only `properties.*` is
+    added. Generic to *any* attack pattern — works for any rule the
+    public corpus has.
+    """
+    if not isinstance(record, dict):
+        return
+
+    # Preserve any existing `properties` (some Graph endpoints already
+    # populate this for richer events).
+    props = dict(record.get('properties') or {})
+
+    if source_prefix == 'Azure.Audit':
+        # Directory audit log shape
+        if record.get('activityDisplayName') and 'message' not in props:
+            props['message'] = record['activityDisplayName']
+            props['operationName'] = record['activityDisplayName']
+        if record.get('category') and 'category' not in props:
+            props['category'] = record['category']
+        if record.get('result') and 'resultStatus' not in props:
+            props['resultStatus'] = record['result']
+        if record.get('operationType') and 'operationType' not in props:
+            props['operationType'] = record['operationType']
+        # Identity — Sigma rules use both `identity` and `initiatingUser`.
+        ib = record.get('initiatedBy') or {}
+        user = ib.get('user') or {}
+        upn = user.get('userPrincipalName')
+        if upn:
+            props.setdefault('identity', upn)
+            props.setdefault('initiatingUser', upn)
+        # Target resources pass-through (some rules walk these)
+        if record.get('targetResources') and 'targetResources' not in props:
+            props['targetResources'] = record['targetResources']
+
+    elif source_prefix == 'Azure.SignIn':
+        # Sign-in log shape — Sigma rules in cloud/azure/signinlogs/
+        for src_key in (
+            'userPrincipalName', 'userId', 'userDisplayName',
+            'appId', 'appDisplayName', 'clientAppUsed',
+            'ipAddress', 'conditionalAccessStatus',
+            'riskLevelDuringSignIn', 'riskState', 'riskLevelAggregated',
+            'status', 'deviceDetail', 'location',
+            'authenticationRequirement', 'authenticationProtocol',
+            'isInteractive', 'tokenIssuerType',
+        ):
+            if record.get(src_key) is not None and src_key not in props:
+                props[src_key] = record[src_key]
+
+    if props:
+        record['properties'] = props
+
+
 def normalize_logs(records: List[Dict], source_prefix: str) -> List[Dict]:
     """Normalize log records to standard format for SIGMA processing."""
     normalized = []
@@ -797,6 +928,11 @@ def normalize_logs(records: List[Dict], source_prefix: str) -> List[Dict]:
             '_original': record.copy()
         }
         norm_record.update(record)
+
+        # Add `properties.*` aliases so public Sigma rules can match Graph
+        # records. Only Azure.Audit and Azure.SignIn currently have
+        # mappings; others are unchanged.
+        _graph_to_sigma_aliases(norm_record, source_prefix)
 
         timestamp = extract_timestamp(record)
         if timestamp:

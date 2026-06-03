@@ -121,6 +121,12 @@ generate_certificates() {
     else
         log_info "  Nginx SSL certificate exists, skipping"
     fi
+    # Make the key group-readable (640, group root/gid 0) so containers that
+    # run as a non-root uid but are members of gid 0 — notably Kibana (uid
+    # 1000) which serves HTTPS natively from this same shared cert — can read
+    # it. Still NOT world-readable. openssl creates the key 600 by default, so
+    # this must run on every (re)generation, including change_ip.sh's regen.
+    [[ -f "$nginx_ssl/nginx-cert.key" ]] && chmod 640 "$nginx_ssl/nginx-cert.key" 2>/dev/null || true
 
     # IRIS Root CA
     local iris_ca="${SCRIPT_DIR}/modules/iris/config/certificates/rootCA"
@@ -219,17 +225,45 @@ pull_compose_with_retry() {
     local max_attempts=3
     local delays=(5 15 45)
     local attempt=1
+    # Track whether any earlier attempt failed, so a subsequent
+    # successful attempt can leave a "↳ resolved" breadcrumb in
+    # INSTALL_WARNINGS — operator sees inline that the warning is no
+    # longer actionable, instead of having to reason about it.
+    local had_failure=0
 
     while [[ $attempt -le $max_attempts ]]; do
-        log_info "  Pulling images for ${module_name} (attempt ${attempt}/${max_attempts})..."
-        if docker compose pull 2>&1 | tee -a "$LOG_FILE" | \
-                grep -vE "^\s*[0-9a-f]{12} (Downloading|Extracting|Waiting|Download complete|Pull complete|Pulling fs layer) " >/dev/null; then
-            # PIPESTATUS[0] is docker compose pull's exit code
+        log_info "  Pulling images for ${module_name} (attempt ${attempt}/${max_attempts}) — this can take 5-15 min on first install for big images (ELK / IRIS)..."
+
+        # Stream docker pull progress to BOTH the operator's terminal
+        # and the log file. The previous version filtered the per-layer
+        # progress lines (`<id> Downloading|Extracting|Pull complete …`)
+        # and discarded everything to /dev/null, so an install that hung
+        # for 10 minutes during a multi-GB pull looked completely silent
+        # and operators thought it had crashed.
+        #
+        # `--progress=plain` is critical: docker's default `auto` mode
+        # emits ANSI escape codes that overwrite the same terminal line.
+        # That's nice on a TTY but fills the log file with garbage and
+        # produces no useful output when install.sh's stdout is itself
+        # piped/teed elsewhere. `plain` gives one-line-per-event output
+        # that's readable both on screen and in install_*.log.
+        #
+        # PIPESTATUS[0] is the docker exit code (tee's success doesn't
+        # mask a failed pull). Don't use `set -o pipefail` here — we
+        # want to keep the existing per-attempt retry semantics.
+        if docker compose --progress=plain pull 2>&1 | tee -a "$LOG_FILE"; then
             if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+                if (( had_failure > 0 )); then
+                    log_success "  ${module_name} pull succeeded on attempt ${attempt} (previous failure was transient)"
+                    INSTALL_WARNINGS+=("  ↳ resolved: ${module_name} pull succeeded on attempt ${attempt}")
+                else
+                    log_success "  ${module_name} images pulled"
+                fi
                 return 0
             fi
         fi
 
+        had_failure=1
         if [[ $attempt -lt $max_attempts ]]; then
             local delay=${delays[$((attempt - 1))]}
             log_warn "  ${module_name} pull attempt ${attempt} failed; retrying in ${delay}s..."
@@ -328,6 +362,34 @@ deploy_timesketch() {
     local ts_version=$(read_config "['versions']['timesketch']")
     log_info "  TimeSketch version: ${ts_version:-latest}"
 
+    # Copy timesketch.conf / timesketch_legacy.conf from templates BEFORE
+    # docker compose up — the conf files are bind-mounted into the
+    # containers, so they must exist by the time the containers come up.
+    # Templates ship with empty api_key fields; the operator fills them in
+    # via the dashboard Settings → Timesketch tab (no env var, no secret
+    # baked into install). Idempotent: existing conf is preserved so
+    # post-install edits (manual or via the Settings UI) survive re-runs.
+    for base in timesketch.conf timesketch_legacy.conf; do
+        local ts_template="${SCRIPT_DIR}/modules/timesketch/config/${base}.template"
+        local ts_out="${SCRIPT_DIR}/modules/timesketch/config/${base}"
+        if [[ -f "$ts_out" ]]; then
+            log_info "  ${base} already present (skip)"
+        elif [[ -f "$ts_template" ]]; then
+            cp "$ts_template" "$ts_out"
+            # SECRET_KEY signs Timesketch's Flask session cookies and CSRF
+            # tokens — anyone with the value can forge any user's session,
+            # so it must be unique per install. Templates ship with a
+            # __SECRET_KEY__ placeholder; we replace it with 32 random
+            # bytes here, mirroring the IRIS_SECRET_KEY pattern above.
+            local random_key
+            random_key=$(openssl rand -hex 32)
+            sed -i "s|^SECRET_KEY = '[^']*'|SECRET_KEY = '${random_key}'|" "$ts_out"
+            log_success "  ${base} created from template (api_key empty — set via Settings → Timesketch; SECRET_KEY randomized)"
+        else
+            log_warn "  Template missing: $ts_template"
+        fi
+    done
+
     if ! pull_compose_with_retry "TimeSketch"; then
         track_module_failure "TimeSketch"
         return 1
@@ -356,13 +418,13 @@ deploy_timesketch() {
     fi
 
     # Wait for TimeSketch API to be ready (check from host, not container - no curl in container)
-    log_info "  Waiting for TimeSketch API (http://localhost:5000)..."
+    log_info "  Waiting for TimeSketch API (https://localhost:5000)..."
     local ts_ready=false
     local ts_wait=0
     local ts_max_wait=90
 
     while [[ $ts_wait -lt $ts_max_wait ]]; do
-        local http_code=$(curl -s --max-time 5 "http://localhost:5000/" -o /dev/null -w "%{http_code}" 2>/dev/null)
+        local http_code=$(curl -sk --max-time 5 "https://localhost:5000/" -o /dev/null -w "%{http_code}" 2>/dev/null)
         if [[ "$http_code" =~ ^(200|301|302|303|307|308)$ ]]; then
             ts_ready=true
             log_success "  TimeSketch API is ready! (HTTP $http_code, ${ts_wait}s)"
@@ -384,23 +446,12 @@ deploy_timesketch() {
     local ts_user=$(read_config "['modules']['timesketch']['id']")
     local ts_pass=$(read_config "['modules']['timesketch']['password']")
 
-    # STEP A — Force schema migration BEFORE creating the user.
-    # Background: previously `tsctl db upgrade` ran AFTER create-user,
-    # so the user table didn't fully exist when create-user tried to
-    # INSERT into it. tsctl exits 0 anyway, install reports SUCCESS,
-    # the user-row write is silently dropped. Running db upgrade here
-    # eliminates the race — create-user always sees the migrated
-    # schema. This was the actual root cause of the
-    # "[SUCCESS] TimeSketch user 'tenroot' ready" lie that broke a
-    # fresh install end-to-end.
-    log_info "  Migrating TimeSketch DB schema (tsctl db upgrade) before user creation..."
-    docker exec intact_timesketch_web tsctl db upgrade 2>&1 | tee -a "$LOG_FILE" || \
-        log_warn "  tsctl db upgrade returned non-zero — continuing, will verify table exists below"
-
-    # STEP B — Wait until the postgres "user" table actually exists.
-    # tsctl db upgrade should have created it, but the migration runs
-    # async to postgres' own startup; poll until the table is visible
-    # before any create-user attempts.
+    # STEP A — Wait until the postgres "user" table actually exists.
+    # The Timesketch container image doesn't ship Alembic migrations
+    # (no /migrations directory), so `tsctl db upgrade` is a no-op that
+    # prints a misleading ERROR. The schema is auto-created by the web
+    # container's own startup (SQLAlchemy create_all), so we just poll
+    # until the user table is visible before attempting create-user.
     log_info "  Waiting for TimeSketch postgres 'user' table to materialize..."
     local table_wait=0
     local table_ready=false
@@ -418,9 +469,9 @@ deploy_timesketch() {
         ((table_wait+=2))
     done
     if [[ "$table_ready" != "true" ]]; then
-        log_error "  TimeSketch postgres 'user' table did not appear after migration"
+        log_error "  TimeSketch postgres 'user' table did not appear after 60s — schema auto-create may have failed"
         log_error "  Manual diagnosis: docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c \"SELECT to_regclass('public.\\\"user\\\"');\""
-        capture_diagnostic_logs "TimeSketch DB migration" \
+        capture_diagnostic_logs "TimeSketch schema bring-up" \
             intact_timesketch_web intact_timesketch_postgres
     fi
 
@@ -468,11 +519,42 @@ deploy_timesketch() {
             log_warn "  Manual fix: docker exec intact_timesketch_web tsctl enable-user ${ts_user}"
         fi
 
-        # Enable DFIQ after successful deployment (requires db migration for schema)
+        # Enable DFIQ after successful deployment.
+        # (Historically also ran `tsctl db upgrade` here; the current
+        # Timesketch image doesn't ship Alembic migrations, so the call
+        # was a no-op and produced misleading errors. Removed.)
         log_info "  Enabling DFIQ..."
-        docker exec intact_timesketch_web tsctl db upgrade 2>/dev/null || true
         sed -i 's/DFIQ_ENABLED = False/DFIQ_ENABLED = True/' "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf"
         log_success "  DFIQ enabled"
+
+        # Populate /etc/timesketch/dfiq/ with the upstream Google DFIQ
+        # YAML files. The Timesketch image does NOT ship these — the
+        # DFIQ_ENABLED flag alone is useless without the 126 question /
+        # facet / scenario YAMLs at DFIQ_PATH. Wiping the volume (e.g.
+        # docker compose down -v) clears the rendered conf but the
+        # bind-mounted config dir survives, so this only really runs on
+        # first install or when /modules/timesketch/config/dfiq/ is empty.
+        local dfiq_dir="${SCRIPT_DIR}/modules/timesketch/config/dfiq"
+        if [[ ! -f "${dfiq_dir}/scenarios/$(ls "${dfiq_dir}/scenarios" 2>/dev/null | head -1)" || -z "$(ls "${dfiq_dir}/scenarios" 2>/dev/null)" ]]; then
+            log_info "  Fetching DFIQ data from google/dfiq..."
+            local _tmp
+            _tmp="$(mktemp -d)"
+            if git clone --depth 1 --quiet https://github.com/google/dfiq.git "${_tmp}/repo" 2>/dev/null; then
+                rm -rf "${dfiq_dir}"
+                mkdir -p "${dfiq_dir}"
+                mv "${_tmp}/repo/dfiq/data"/* "${dfiq_dir}/"
+                rm -rf "${_tmp}"
+                local _yaml_count
+                _yaml_count="$(find "${dfiq_dir}" -name '*.yaml' | wc -l)"
+                log_success "  DFIQ data installed (${_yaml_count} YAML files in ${dfiq_dir})"
+            else
+                log_warn "  Could not clone google/dfiq (network?); DFIQ UI will be empty until you populate ${dfiq_dir} manually."
+            fi
+        else
+            local _yaml_count
+            _yaml_count="$(find "${dfiq_dir}" -name '*.yaml' | wc -l)"
+            log_info "  DFIQ data already present (${_yaml_count} YAML files) — skipping clone."
+        fi
 
         # Raise OpenSearch / import timeouts so large .plaso imports don't false-fail
         # (upstream defaults are 10s and 180s — too aggressive under disk/memory pressure)
@@ -483,28 +565,6 @@ deploy_timesketch() {
         sed -i 's/^OPENSEARCH_INDEX_WAIT_TIMEOUT = 10$/OPENSEARCH_INDEX_WAIT_TIMEOUT = 300/' "$ts_conf"
         sed -i 's/^TIMEOUT_FOR_EVENT_IMPORT = 180$/TIMEOUT_FOR_EVENT_IMPORT = 600/'       "$ts_conf"
         log_success "  Timeouts raised (OpenSearch 10->300s, event import 180->600s)"
-
-        # NL2Q defaults to vertexai with an empty project_id, which makes the
-        # "AI generated queries" toggle in the sketch settings sit greyed-out
-        # as "requires LLM provider". Swap it to aistudio and reuse the Gemini
-        # api_key already wired into the llm_summarize block so it works on a
-        # fresh install without manual editing. Idempotent — re-running on an
-        # already-converted block is a no-op.
-        log_info "  Wiring Timesketch nl2q to Gemini AI Studio..."
-        local gemini_key
-        gemini_key=$(awk "/'llm_summarize':/,/},/" "$ts_conf" \
-            | grep -oE "'api_key': '[^']+'" \
-            | head -1 \
-            | sed -E "s/'api_key': '([^']+)'/\1/")
-        if [[ -n "$gemini_key" ]]; then
-            sed -i "/    'nl2q': {/,/    },/ {
-                s/'vertexai':/'aistudio':/
-                s|'project_id': ''|'api_key': '$gemini_key'|
-            }" "$ts_conf"
-            log_success "  nl2q wired to aistudio"
-        else
-            log_warning "  Could not read Gemini api_key from llm_summarize; nl2q left as-is"
-        fi
 
         # Restart the Timesketch containers that bind-mount timesketch.conf so both
         # DFIQ and the timeout bumps take effect. Worker + web_legacy matter too —
@@ -541,6 +601,18 @@ deploy_velociraptor() {
 
     local velo_version=$(read_config "['versions']['velociraptor']")
     log_info "  Velociraptor version: ${velo_version:-latest}"
+
+    # Pre-stage the four binaries (linux server + mac/win clients) that
+    # the Dockerfile COPYs at build time. The Dockerfile no longer
+    # curls during build — it expects these files already in the build
+    # context, which is the contract for the offline-upgrade workflow.
+    # Initial install needs internet here; same as before, just at a
+    # different layer (host curl vs in-container curl).
+    if ! stage_velociraptor_client_binaries "$velo_version" "${SCRIPT_DIR}/modules/velociraptor"; then
+        log_error "  Failed to stage Velociraptor binaries — see warnings above."
+        track_module_failure "Velociraptor"
+        return 1
+    fi
 
     if ! run_docker_compose "up -d" "Velociraptor"; then
         log_error "  Docker compose failed!"
@@ -728,13 +800,12 @@ deploy_iris() {
         track_module_success "IRIS"
     fi
 
-    # Persist the IRIS administrator's API key into the backend's secrets
-    # table so IRIS automation doesn't have to docker-exec into iris-db
-    # at runtime (which fails when the container name drifts, docker.sock
-    # isn't mounted, or the iris-db is briefly unhealthy). The key is
-    # never written to config.yaml or any export — it lives only in the
-    # backend's SQLite secrets table.
-    bootstrap_iris_api_key
+    # bootstrap_iris_api_key is intentionally NOT called here — it writes
+    # via `docker exec intact_backend …`, but Backend is deployed AFTER
+    # IRIS in start_services. Calling it here meant set_secret failed
+    # 100% of the time on fresh installs ("no such container") and the
+    # backend silently fell back to the slow runtime docker-exec lookup.
+    # The bootstrap now runs from start_services, after deploy_backend.
 }
 
 bootstrap_iris_api_key() {
@@ -924,19 +995,64 @@ deploy_backend() {
     log_info "  Waiting for Backend API health check (http://localhost:5001/api/health)..."
     local be_wait=0
     local be_max_wait=60
+    local be_healthy=false
     while [[ $be_wait -lt $be_max_wait ]]; do
         if curl -sf --max-time 5 "http://localhost:5001/api/health" > /dev/null 2>&1; then
             log_success "  Backend API is healthy! (${be_wait}s)"
-            track_module_success "Backend API"
-            return 0
+            be_healthy=true
+            break
         fi
         sleep 5
         ((be_wait+=5))
         log_info "  Waiting for Backend API... (${be_wait}/${be_max_wait}s)"
     done
 
-    log_warn "  Backend API started but health check not responding yet"
-    capture_diagnostic_logs "Backend API (post-deploy timeout)" intact_backend
+    if [[ "$be_healthy" != "true" ]]; then
+        log_warn "  Backend API started but health check not responding yet"
+        capture_diagnostic_logs "Backend API (post-deploy timeout)" intact_backend
+        track_module_success "Backend API"
+        return 0
+    fi
+
+    # ---- Bootstrap LLM model catalogs ----------------------------------
+    # Persists each provider's model catalog to /app/data/<provider>_models.json
+    # so the dashboard's model selector has results immediately on first
+    # open. Best-effort: if a provider's API is unreachable (or the
+    # operator hasn't configured an API key for that provider yet) the
+    # bootstrap simply skips it and the on-demand fetch in the API
+    # endpoint retries the next time Settings is opened. The maintenance
+    # workflow refreshes all four catalogs later.
+    #
+    # Order matters: OpenRouter goes first because the three direct-
+    # provider refreshes enrich their entries from the OpenRouter catalog.
+    log_info "  Bootstrapping LLM model catalogs (best-effort)..."
+
+    _bootstrap_one_catalog() {
+        local label="$1"
+        local route="$2"
+        local resp count
+        resp=$(curl -s --max-time 30 -X POST "http://localhost:5001${route}" 2>/dev/null)
+        count=$(echo "$resp" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('model_count', 0) if d.get('success') else 0)
+except Exception:
+    print(0)
+" 2>/dev/null)
+        if [[ "${count:-0}" -gt 0 ]]; then
+            log_success "    ${label}: ${count} models cached"
+        else
+            log_warn "    ${label}: deferred (no API key, network issue, or provider unreachable)"
+        fi
+    }
+
+    # OpenRouter is the only catalog seeded at install — direct-provider
+    # paths (Anthropic / OpenAI / Gemini) are gated behind the UI and
+    # remain unused by default. Bootstrapping them produced "deferred"
+    # warnings on every install since no API keys were configured.
+    _bootstrap_one_catalog "OpenRouter" "/api/maintenance/refresh-openrouter-models"
+
     track_module_success "Backend API"
 }
 
@@ -1006,6 +1122,15 @@ start_services() {
     deploy_portainer
     echo ""
     deploy_backend
+    echo ""
+    # IRIS api_key bootstrap — runs HERE (not inside deploy_iris) because
+    # it writes into the backend container's SQLite secrets DB via
+    # `docker exec intact_backend …`. Calling it before deploy_backend
+    # meant intact_backend didn't exist yet and set_secret failed 100% of
+    # the time on fresh installs. The IRIS-DB read inside the function
+    # blocks until the admin row is populated, so it's safe to run here
+    # even if IRIS's own migrations are still finishing.
+    bootstrap_iris_api_key
     echo ""
     deploy_nginx
     echo ""

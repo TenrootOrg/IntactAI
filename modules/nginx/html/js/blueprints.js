@@ -648,40 +648,55 @@ function renderAgenticArtifactPreview(containerId, artifacts) {
 // ============================================================================
 
 async function loadOfflineCollectorBlueprints() {
-    // Use unified forensics blueprints for offline collector
-    const blueprints = await loadBlueprints('forensics');
     const select = document.getElementById('offline-gen-config');
-    if (select) {
-        select.innerHTML = '<option value="">-- Select Blueprint --</option>';
+    if (!select) return;
 
-        // Find default blueprint: [Agentic] Full Triage, or fall back to first
-        let defaultBpId = null;
-        let firstBpId = null;
-        blueprints.forEach(bp => {
+    // Parallel fetch of forensics (velociraptor + agentic) AND timesketch
+    // blueprints. Timesketch blueprints are KAPE-style triage collections
+    // (Windows.Triage.Targets with the kape_* env); the backend collector
+    // generator now accepts them and emits a Velociraptor offline ZIP that
+    // runs the same triage the live Timesketch hunt would.
+    const [forensicsBp, timesketchBp] = await Promise.all([
+        loadBlueprints('forensics'),
+        loadBlueprints('timesketch'),
+    ]);
+
+    select.innerHTML = '<option value="">-- Select Blueprint --</option>';
+
+    // Group A: forensics (velociraptor + agentic) — artifact-count badge
+    const forensicsGroup = document.createElement('optgroup');
+    forensicsGroup.label = 'Velociraptor / Agentic';
+    let defaultBpId = null;
+    let firstBpId = null;
+    forensicsBp.forEach(bp => {
+        const opt = document.createElement('option');
+        opt.value = bp.id;
+        opt.textContent = `${bp.name} (${bp.artifacts?.length || 0} artifacts)`;
+        opt.dataset.type = bp.blueprint_type;
+        forensicsGroup.appendChild(opt);
+        if (!firstBpId) firstBpId = bp.id;
+        if (bp.name && bp.name.includes('[Agentic] Full Triage')) defaultBpId = bp.id;
+    });
+    select.appendChild(forensicsGroup);
+
+    // Group B: Timesketch — KAPE triage collections, badge by kape_target
+    if (timesketchBp.length) {
+        const tsGroup = document.createElement('optgroup');
+        tsGroup.label = 'Timesketch (KAPE Triage)';
+        timesketchBp.forEach(bp => {
+            const target = bp.settings?.kape_target || '_KapeTriage';
             const opt = document.createElement('option');
             opt.value = bp.id;
-            opt.textContent = `${bp.name} (${bp.artifacts?.length || 0} artifacts)`;
-            opt.dataset.type = bp.blueprint_type;
-            select.appendChild(opt);
-
-            // Track first blueprint as fallback
-            if (!firstBpId) {
-                firstBpId = bp.id;
-            }
-
-            // Check for preferred default
-            if (bp.name && bp.name.includes('[Agentic] Full Triage')) {
-                defaultBpId = bp.id;
-            }
+            opt.textContent = `${bp.name} [KAPE: ${target}]`;
+            opt.dataset.type = 'timesketch';
+            tsGroup.appendChild(opt);
         });
-
-        // Set default selection: prefer Full Triage, fallback to first blueprint
-        if (defaultBpId) {
-            select.value = defaultBpId;
-        } else if (firstBpId) {
-            select.value = firstBpId;
-        }
+        select.appendChild(tsGroup);
     }
+
+    // Default selection: prefer Agentic Full Triage, fall back to first
+    if (defaultBpId) select.value = defaultBpId;
+    else if (firstBpId) select.value = firstBpId;
 }
 
 // ============================================================================

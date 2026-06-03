@@ -23,6 +23,7 @@ from services.offline_collector import (
     import_results
 )
 from services.file_storage_service import get_agentic_blueprint, get_velociraptor_blueprint
+from services.storage.blueprint_store import get_timesketch_blueprint
 
 velociraptor_offline_bp = Blueprint('velociraptor_offline', __name__)
 
@@ -120,6 +121,15 @@ def generate_offline_collector():
         data = request.get_json()
         config_id = data.get('config_id')
         os_type = data.get('os', 'windows')
+        # Binary variant — three mutually-exclusive modes:
+        #   legacy=True   → swap in legacy v0.7.x build (Server 2008 R2 / Win 7)
+        #   musl=True     → swap in MODERN musl-static linux build (any-glibc Linux)
+        #   neither       → default standard build
+        # legacy + musl together is rejected as inconsistent.
+        legacy = bool(data.get('legacy'))
+        musl   = bool(data.get('musl'))
+        legacy_source = (data.get('legacy_source') or 'offline').lower()
+        legacy_version = data.get('legacy_version') or None
 
         if not config_id:
             return jsonify({"error": "config_id is required"}), 400
@@ -127,24 +137,59 @@ def generate_offline_collector():
         if os_type not in ['windows', 'linux', 'darwin']:
             return jsonify({"error": "os must be windows, linux, or darwin"}), 400
 
+        if legacy and legacy_source not in ('offline', 'online'):
+            return jsonify({"error": "legacy_source must be 'offline' or 'online'"}), 400
+
+        if legacy and musl:
+            return jsonify({"error": "legacy and musl are mutually exclusive — pick one"}), 400
+        if musl and os_type != 'linux':
+            return jsonify({"error": "musl variant is Linux-only"}), 400
+        # Velociraptor publishes no legacy darwin asset (the 0.7.x release
+        # series stopped before darwin shipping took off). Reject upfront
+        # so the run doesn't connect to gRPC, allocate state, and only
+        # then fail at the file-swap step with a cryptic ENOENT.
+        if legacy and os_type == 'darwin':
+            return jsonify({"error": "legacy variant is not available for macOS (no upstream darwin asset for v0.7.x)"}), 400
+
         # Get config name for workflow
         config = get_config(config_id)
         config_name = config.get('config_name', config_id) if config else config_id
 
-        # Look up blueprint display name from blueprints tables
-        blueprint = get_agentic_blueprint(config_id) or get_velociraptor_blueprint(config_id)
+        # Look up blueprint display name from blueprints tables. Timesketch
+        # blueprints (KAPE triage) now also flow through the offline collector
+        # generator — check that store too so the workflow row shows the
+        # human-readable blueprint name in the dashboard.
+        blueprint = (
+            get_agentic_blueprint(config_id)
+            or get_velociraptor_blueprint(config_id)
+            or get_timesketch_blueprint(config_id)
+        )
         blueprint_display_name = blueprint.get('name', config_name) if blueprint else config_name
 
         # Create workflow run for tracking
+        if legacy:
+            suffix = " [legacy]"
+        elif musl:
+            suffix = " [musl]"
+        else:
+            suffix = ""
         run_id = create_automation_run(
             automation_type="velociraptor_offline_collector",
-            name=f"Generate Collector: {blueprint_display_name} ({os_type})",
-            details={"config_id": config_id, "os": os_type, "config_name": config_name, "blueprint": blueprint_display_name, "blueprint_id": config_id}
+            name=f"Generate Collector: {blueprint_display_name} ({os_type}){suffix}",
+            details={"config_id": config_id, "os": os_type, "config_name": config_name,
+                     "blueprint": blueprint_display_name, "blueprint_id": config_id,
+                     "legacy": legacy, "musl": musl,
+                     "legacy_source": legacy_source,
+                     "legacy_version": legacy_version},
         )
 
         add_log_to_run(run_id, f"Starting offline collector generation", "info")
         add_log_to_run(run_id, f"Configuration: {config_name}", "info")
         add_log_to_run(run_id, f"Target OS: {os_type}", "info")
+        if legacy:
+            add_log_to_run(run_id, f"Legacy mode: binary={legacy_version or 'default'} source={legacy_source}", "info")
+        elif musl:
+            add_log_to_run(run_id, "Musl-static mode: swap in modern musl Linux binary (zero glibc deps)", "info")
         update_run_status(run_id, "running", progress=10)
 
         from services.workflow_service import register_cancel_event, unregister_cancel
@@ -158,8 +203,21 @@ def generate_offline_collector():
                 add_log_to_run(run_id, "Connecting to Velociraptor...", "info")
                 update_run_status(run_id, "running", progress=20)
 
-                result = generate_collector(config_id, os_type)
+                result = generate_collector(
+                    config_id, os_type,
+                    legacy=legacy,
+                    legacy_version=legacy_version,
+                    legacy_source=legacy_source,
+                    musl=musl,
+                    run_id=run_id,
+                )
 
+                if result.get('cancelled'):
+                    # request_stop() already wrote the "[Pipeline] Stop
+                    # requested by user" line and flipped status to
+                    # 'cancelled'. Nothing more to do here — leave it
+                    # clean (no success/failure logs).
+                    return
                 if result.get('success'):
                     file_size = result.get('file_size', 0)
                     file_name = result.get('file_name', 'collector')
@@ -181,6 +239,13 @@ def generate_offline_collector():
                     update_run_status(run_id, "failed", progress=0, error=error)
 
             except Exception as e:
+                # Cancellation can surface as an exception (subprocess killed
+                # by cleanup callback). If the workflow is already cancelled,
+                # don't write a failure log — request_stop has the last word.
+                from services.workflow_service import is_cancelled, get_automation_run
+                wf = get_automation_run(run_id) or {}
+                if is_cancelled(run_id) or wf.get('status') == 'cancelled':
+                    return
                 error_msg = str(e)
                 print(f"[OFFLINE] Background generation error: {error_msg}", flush=True)
                 traceback.print_exc()

@@ -130,7 +130,13 @@ def create_automation_run(automation_type, name, details=None):
     """Create a new automation run entry with logging"""
     run_id = f"{automation_type}_{int(time.time() * 1000)}"
 
-    # Create workflow run structure
+    # Create workflow run structure. `error_count` is incremented every
+    # time add_log_to_run() is called with level='error'; it surfaces as
+    # a small "N errors" badge in the Workflows tab so an operator can
+    # quickly spot runs that finished with status='completed' but
+    # actually had fatal errors logged. See the QA bug context — a
+    # Velociraptor flow logged "Could not find flow ... No data found"
+    # at error level and the run still went green.
     workflow_data = {
         "run_id": run_id,
         "automation_type": automation_type,
@@ -139,6 +145,7 @@ def create_automation_run(automation_type, name, details=None):
         "status": "pending",
         "progress": 0,
         "logs": [],
+        "error_count": 0,
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat()
     }
@@ -175,10 +182,25 @@ def add_log_to_run(run_id, log_message, log_level="info"):
 
     Thread-safe per run_id: load-modify-save is serialized so concurrent
     worker threads do not silently overwrite each other's log appends.
+
+    Also auto-increments `error_count` when log_level == 'error'. The
+    counter is read at terminal-status time so a pipeline that logs a
+    fatal error mid-run can't accidentally end up marked 'completed'
+    — see update_run_status() for the auto-flip rule.
     """
     with _get_run_log_lock(run_id):
         workflow = file_get_workflow(run_id)
         if workflow:
+            # Once a workflow is in the terminal 'cancelled' state,
+            # the "[Pipeline] Stop requested by user" warning is the
+            # last word. Any further logs are race-condition residue:
+            # subprocess wrap-up that landed between when the cancel
+            # event fired and when the background thread noticed.
+            # Drop them so the UI shows a clean "cancelled" timeline
+            # instead of confusing "success/failed" lines after Stop.
+            if workflow.get("status") == "cancelled":
+                return
+
             if "logs" not in workflow:
                 workflow["logs"] = []
 
@@ -187,14 +209,65 @@ def add_log_to_run(run_id, log_message, log_level="info"):
                 "level": log_level,
                 "message": log_message
             })
+            if log_level == "error":
+                workflow["error_count"] = int(workflow.get("error_count") or 0) + 1
             workflow["updated_at"] = datetime.now().isoformat()
 
             save_workflow(workflow)
 
-def update_run_status(run_id, status, progress=None, error=None, details=None):
-    """Update automation run status and optionally merge additional details"""
+def update_run_status(run_id, status, progress=None, error=None, details=None, force=False):
+    """Update automation run status and optionally merge additional details.
+
+    Safety net: when `status='completed'` is requested on a run that
+    already accumulated `error_count > 0` (any call to
+    `add_log_to_run(..., 'error')`), the status is auto-flipped to
+    'failed' and a clear summary log line is added. This catches the
+    long-standing pattern where pipelines log fatal errors mid-run but
+    still reach `update_run_status('completed')` at the end (e.g. the
+    'No data found in flow' / 'Could not find flow' Velociraptor cases
+    that left runs green in the UI despite producing nothing useful).
+
+    Pipelines that legitimately log error-level entries but should
+    still complete (e.g. one of N clients failed in a multi-client
+    fan-out where the others succeeded) can pass `force=True` to opt
+    out of the auto-flip. Use sparingly — the default is the safer
+    behaviour.
+    """
     workflow = file_get_workflow(run_id)
     if workflow:
+        # Cancellation is terminal: once request_stop() flips a run to
+        # 'cancelled', the background worker's killed-subprocess
+        # exception will try to mark it 'failed' on the way out. Silently
+        # ignore those late updates so the UI shows the clean cancelled
+        # state instead of a stack trace.
+        current = workflow.get("status")
+        if current == "cancelled" and status != "cancelled":
+            return
+
+        # Safety net: refuse to mark a run with logged errors as
+        # 'completed' unless the caller explicitly forces it.
+        if status == "completed" and not force:
+            n_errors = int(workflow.get("error_count") or 0)
+            if n_errors > 0:
+                # Demote to 'failed' so the UI shows red instead of
+                # green and the operator notices the run had real
+                # problems even if the pipeline thought it was done.
+                summary = (
+                    f"[Workflow] Status auto-set to 'failed' because "
+                    f"{n_errors} error-level log entr"
+                    f"{'y was' if n_errors == 1 else 'ies were'} recorded "
+                    f"during this run."
+                )
+                workflow["logs"] = workflow.get("logs") or []
+                workflow["logs"].append({
+                    "timestamp": datetime.now().isoformat(),
+                    "level": "error",
+                    "message": summary,
+                })
+                status = "failed"
+                if not error:
+                    error = f"{n_errors} fatal error(s) logged during the run"
+
         workflow["status"] = status
         if progress is not None:
             workflow["progress"] = progress
@@ -209,38 +282,134 @@ def update_run_status(run_id, status, progress=None, error=None, details=None):
 
         save_workflow(workflow)
 
+
+def record_phase_timing(run_id, phase, seconds):
+    """Append a per-phase elapsed time (seconds, float) to the workflow row.
+
+    Stored as a dict {phase: seconds} so the dashboard can render
+    "Collection: 11m, Detection: 3m, Analysis: 5m" without re-parsing logs.
+    """
+    with _get_run_log_lock(run_id):
+        workflow = file_get_workflow(run_id)
+        if not workflow:
+            return
+        timings = workflow.get("phase_timings") or {}
+        if not isinstance(timings, dict):
+            timings = {}
+        # Sum if the phase ran more than once; rare but harmless
+        timings[phase] = round(timings.get(phase, 0.0) + float(seconds), 2)
+        workflow["phase_timings"] = timings
+        workflow["updated_at"] = datetime.now().isoformat()
+        save_workflow(workflow)
+
+
+def record_llm_metrics(run_id, *, calls=0, input_tokens=0, output_tokens=0, cost_usd=0.0, model=None):
+    """Accumulate LLM usage onto the workflow row.
+
+    Each invocation adds to running totals. The analyzer calls this per LLM call
+    (see analyzers.call_llm) so the final totals reflect the whole pipeline.
+    """
+    with _get_run_log_lock(run_id):
+        workflow = file_get_workflow(run_id)
+        if not workflow:
+            return
+        m = workflow.get("llm_metrics") or {}
+        if not isinstance(m, dict):
+            m = {}
+        m["calls"] = m.get("calls", 0) + int(calls)
+        m["input_tokens"] = m.get("input_tokens", 0) + int(input_tokens)
+        m["output_tokens"] = m.get("output_tokens", 0) + int(output_tokens)
+        m["cost_usd"] = round(m.get("cost_usd", 0.0) + float(cost_usd), 6)
+        if model:
+            # Track the most-recently-used model. Pipelines that mix models can
+            # still see the per-call records in logs.
+            m["model"] = model
+        workflow["llm_metrics"] = m
+        workflow["updated_at"] = datetime.now().isoformat()
+        save_workflow(workflow)
+
+
+def record_sigma_rule_tally(run_id, tally):
+    """Set the per-SIGMA-rule hit counts on the workflow row.
+
+    `tally` is a dict {rule_name: hit_count}. Replaces (does not merge) — the
+    SIGMA stage runs once per workflow.
+    """
+    if not isinstance(tally, dict):
+        return
+    with _get_run_log_lock(run_id):
+        workflow = file_get_workflow(run_id)
+        if not workflow:
+            return
+        workflow["sigma_rule_tally"] = tally
+        workflow["updated_at"] = datetime.now().isoformat()
+        save_workflow(workflow)
+
 def cleanup_orphan_workflows():
-    """Mark workflows as failed if they've been running for more than 10 hours"""
+    """Mark workflows as failed if they look orphaned — `running`/`pending`
+    with no activity (no log lines, no status updates) for more than the
+    idle threshold.
+
+    Historically this checked `created_at`, which broke the interactive
+    re-run flow: an agentic workflow completed days ago can be put back
+    into `running` momentarily by a Re-run on the chat panel, and the
+    watchdog would see "created >10h ago + status=running" and slay it
+    mid-rerun. Switched to `updated_at` (and the most recent log entry
+    as a second-best fallback) so the semantics is "stale", not "old".
+    A genuinely orphaned crash still has an ancient `updated_at` and
+    still gets caught.
+    """
     now = datetime.now()
-    max_runtime_hours = 10
+    max_idle_hours = 10
+
+    def _last_activity(wf):
+        """Most recent of updated_at + last log timestamp; falls back to
+        created_at when neither is parseable so we don't accidentally
+        spare a row with garbage timestamps forever."""
+        candidates = []
+        for fld in ('updated_at', 'created_at'):
+            v = wf.get(fld)
+            if v:
+                try:
+                    candidates.append(datetime.fromisoformat(str(v).replace('Z', '+00:00')).replace(tzinfo=None))
+                except Exception:
+                    pass
+        logs = wf.get('logs') or []
+        if logs:
+            last_log_ts = logs[-1].get('timestamp')
+            if last_log_ts:
+                try:
+                    candidates.append(datetime.fromisoformat(str(last_log_ts).replace('Z', '+00:00')).replace(tzinfo=None))
+                except Exception:
+                    pass
+        return max(candidates) if candidates else None
 
     # Clean up SQLite workflows
     sqlite_workflows = load_workflows()
     for workflow in sqlite_workflows:
         if workflow.get('status') in ['running', 'pending']:
-            created_at = workflow.get('created_at', '')
-            if created_at:
-                try:
-                    start_time = datetime.fromisoformat(created_at)
-                    elapsed_hours = (now - start_time).total_seconds() / 3600
+            last_active = _last_activity(workflow)
+            if last_active is None:
+                continue
+            try:
+                idle_hours = (now - last_active).total_seconds() / 3600
+                if idle_hours > max_idle_hours:
+                    workflow['status'] = 'failed'
+                    workflow['error'] = f'Workflow idle for {idle_hours:.1f}h with no updates (max: {max_idle_hours}h)'
+                    workflow['updated_at'] = now.isoformat()
 
-                    if elapsed_hours > max_runtime_hours:
-                        workflow['status'] = 'failed'
-                        workflow['error'] = f'Workflow timed out after {elapsed_hours:.1f} hours (max: {max_runtime_hours}h)'
-                        workflow['updated_at'] = now.isoformat()
+                    if 'logs' not in workflow:
+                        workflow['logs'] = []
+                    workflow['logs'].append({
+                        'timestamp': now.isoformat(),
+                        'level': 'error',
+                        'message': f'Workflow automatically marked as failed - idle for {idle_hours:.1f}h (max: {max_idle_hours}h)'
+                    })
 
-                        if 'logs' not in workflow:
-                            workflow['logs'] = []
-                        workflow['logs'].append({
-                            'timestamp': now.isoformat(),
-                            'level': 'error',
-                            'message': f'Workflow automatically marked as failed - exceeded {max_runtime_hours} hour timeout'
-                        })
-
-                        save_workflow(workflow)
-                        print(f"[WORKFLOW] Marked SQLite orphan workflow as failed: {workflow.get('run_id')}", flush=True)
-                except Exception as e:
-                    print(f"[WORKFLOW] Error checking SQLite workflow age: {e}", flush=True)
+                    save_workflow(workflow)
+                    print(f"[WORKFLOW] Marked SQLite orphan workflow as failed: {workflow.get('run_id')}", flush=True)
+            except Exception as e:
+                print(f"[WORKFLOW] Error checking SQLite workflow age: {e}", flush=True)
 
     # Clean up Elasticsearch workflows
     if ES_AVAILABLE:
@@ -248,22 +417,21 @@ def cleanup_orphan_workflows():
             es_workflows = es_get_all_workflows(size=200)
             for workflow in es_workflows:
                 if workflow.get('status') in ['running', 'pending']:
-                    started_at = workflow.get('started_at', workflow.get('created_at', ''))
-                    if started_at:
-                        try:
-                            start_time = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
-                            elapsed_hours = (now - start_time.replace(tzinfo=None)).total_seconds() / 3600
-
-                            if elapsed_hours > max_runtime_hours:
-                                run_id = workflow.get('run_id', workflow.get('id'))
-                                es_update_workflow_status(
-                                    run_id,
-                                    status='failed',
-                                    error=f'Workflow timed out after {elapsed_hours:.1f} hours (max: {max_runtime_hours}h)'
-                                )
-                                print(f"[WORKFLOW] Marked ES orphan workflow as failed: {run_id}", flush=True)
-                        except Exception as e:
-                            print(f"[WORKFLOW] Error checking ES workflow age: {e}", flush=True)
+                    last_active = _last_activity(workflow)
+                    if last_active is None:
+                        continue
+                    try:
+                        idle_hours = (now - last_active).total_seconds() / 3600
+                        if idle_hours > max_idle_hours:
+                            run_id = workflow.get('run_id', workflow.get('id'))
+                            es_update_workflow_status(
+                                run_id,
+                                status='failed',
+                                error=f'Workflow idle for {idle_hours:.1f}h with no updates (max: {max_idle_hours}h)'
+                            )
+                            print(f"[WORKFLOW] Marked ES orphan workflow as failed: {run_id}", flush=True)
+                    except Exception as e:
+                        print(f"[WORKFLOW] Error checking ES workflow age: {e}", flush=True)
         except Exception as e:
             print(f"[WORKFLOW] Error cleaning ES workflows: {e}", flush=True)
 
