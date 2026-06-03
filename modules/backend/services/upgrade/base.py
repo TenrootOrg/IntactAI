@@ -218,20 +218,60 @@ def get_current_versions() -> Dict:
 
 
 def get_latest_versions() -> Dict:
-    """Return hardcoded latest versions for each module.
+    """Return the platform's currently-pinned versions for each module.
 
-    Update these values when new versions are released.
+    Single source of truth: `config.yaml`'s `versions:` block. The
+    function used to hold a parallel hardcoded dict that drifted out
+    of sync (e.g. velociraptor stuck at 0.75.6 while the platform was
+    actually pinned to 0.76.5) — which silently shipped stale defaults
+    in the Prepare Package modal. Reading config.yaml directly keeps
+    the modal's pre-fill aligned with whatever the operator pinned.
+
+    Falls back to the last-known good values if config.yaml is missing
+    or unparseable, so the modal still works on a half-broken install.
     """
-    return {
-        'elk': '9.3.1',
-        'timesketch': '20260311',
+    # config.yaml's `versions:` keys use module-specific names that
+    # don't all match the module IDs the prepare-modal speaks. Map
+    # them here so the JS gets back the same keys it expects.
+    config_key_map = {
+        'elk':          'elk',
+        'timesketch':   'timesketch',
+        'plaso':        'plaso',
+        'iris':         'iris',
+        'velociraptor': 'velociraptor',
+        'aws':          'aws_prowler',
+        'azure':        'azure_dfir_o365rc',
+        'intact':       'backend',
+    }
+    fallback = {
+        'elk': '9.3.3',
+        'timesketch': '20260326',
         'plaso': '20260119',
         'iris': 'v2.4.27',
-        'velociraptor': '0.75.6',
+        'velociraptor': '0.76.5',
         'aws': '5.28.1',
         'azure': 'latest',
         'intact': '1.0.0',
     }
+
+    # config.yaml lives at the repo root, which is mounted at WORKDIR
+    # inside the backend container.
+    config_path = os.path.join(WORKDIR, 'config.yaml')
+    if not os.path.exists(config_path):
+        return fallback
+
+    try:
+        import yaml  # local import — yaml isn't used elsewhere in base.py
+        with open(config_path, 'r') as f:
+            cfg = yaml.safe_load(f) or {}
+        versions = cfg.get('versions') or {}
+        result = {}
+        for module_id, config_key in config_key_map.items():
+            val = versions.get(config_key)
+            result[module_id] = str(val) if val is not None else fallback[module_id]
+        return result
+    except Exception:
+        return fallback
 
 
 def load_docker_image(image_tar: str, logger: Callable = None) -> Dict:

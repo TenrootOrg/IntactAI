@@ -330,7 +330,9 @@ def _fetch_migrations_dir(version: str, logger: Callable = None) -> Optional[str
     return migrations_path
 
 
-def _bootstrap_alembic_if_needed(current_version: str, logger: Callable = None) -> bool:
+def _bootstrap_alembic_if_needed(current_version: str, logger: Callable = None,
+                                  local_migrations_dir: Optional[str] = None,
+                                  offline: bool = False) -> bool:
     """If the DB has no alembic_version row, stamp it to the CURRENT version's
     migration head — anchoring alembic to the schema actually on disk before
     the upgrade starts. This must run BEFORE `docker compose down` so the old
@@ -375,9 +377,24 @@ def _bootstrap_alembic_if_needed(current_version: str, logger: Callable = None) 
     # Need to stamp. Use the CURRENT version's migrations against the
     # still-running OLD web container.
     log(f"Bootstrapping alembic by stamping head of current version ({current_version})...", "info")
-    mig_path = _fetch_migrations_dir(current_version, logger=log)
+
+    # Prefer bundled migrations (offline-safe). Offline upgrades MUST
+    # use bundled and never network — the apply machine is air-gapped.
+    # Online upgrades may fall back to GitHub if nothing is bundled.
+    mig_path = None
+    if local_migrations_dir and os.path.isdir(local_migrations_dir) \
+            and os.path.isdir(os.path.join(local_migrations_dir, 'versions')):
+        log(f"  Using bundled migrations from package: {local_migrations_dir}", "info")
+        mig_path = local_migrations_dir
+    elif offline:
+        log(f"  Offline upgrade requires bundled migrations under package_dir/migrations/timesketch/", "error")
+        log(f"  Re-prepare the upgrade package on a machine with internet access.", "error")
+        return False
+    else:
+        mig_path = _fetch_migrations_dir(current_version, logger=log)
+
     if not mig_path:
-        log(f"Could not download {current_version} migrations for bootstrap — "
+        log(f"Could not obtain {current_version} migrations for bootstrap — "
             f"upgrade will likely fail to apply schema deltas", "error")
         return False
 
@@ -738,7 +755,18 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
     # Bootstrap alembic against the still-running OLD container — same fix
     # as the online path. Without this, the post-upgrade `tsctl db upgrade`
     # would refuse to blind-stamp head and the upgrade would abort+rollback.
-    if not _bootstrap_alembic_if_needed(current_version, logger=log):
+    #
+    # Offline path: use the bundled migrations under the upgrade package
+    # (prep step downloaded them on the prep machine). The apply machine
+    # is air-gapped so we never reach for GitHub here — `offline=True`
+    # makes the bootstrap fail loudly rather than try and silently break.
+    bundled_mig = os.path.join(package_dir, 'migrations', 'timesketch')
+    if not _bootstrap_alembic_if_needed(
+        current_version,
+        logger=log,
+        local_migrations_dir=bundled_mig,
+        offline=True,
+    ):
         log("Alembic bootstrap failed — refusing to continue", "error")
         raise Exception("Could not bootstrap alembic tracking before upgrade")
 
