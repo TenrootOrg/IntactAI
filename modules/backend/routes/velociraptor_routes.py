@@ -107,6 +107,28 @@ def run_timesketch_collection():
         add_log_to_run(run_id, f"Collection timeout: {timeout_seconds}s, CPU limit: {cpu_limit}%", "info")
         update_run_status(run_id, "running", progress=5)
 
+        # Register cancel event so Stop can cancel the velociraptor
+        # flow + abort the downstream /api/timesketch/import monitor.
+        # The downstream import endpoint already has its own cancel
+        # registration; this one covers the gap between KAPE dispatch
+        # and the operator calling import.
+        from services.workflow_service import register_cancel_event, register_cleanup
+        register_cancel_event(run_id)
+        # Cleanup callback cancels the Velociraptor flow when Stop is
+        # clicked — so the endpoint stops collecting + uploading too.
+        def _cancel_velo_flow(cid=client_id, fid=flow_id):
+            try:
+                import subprocess as _sp
+                _sp.run(
+                    f"docker exec intact_velociraptor /velociraptor/velociraptor "
+                    f"--api_config /velociraptor/api.config.yaml --nobanner query "
+                    f"\"SELECT cancel_flow(client_id='{cid}', flow_id='{fid}') FROM scope()\"",
+                    shell=True, capture_output=True, timeout=10
+                )
+            except Exception:
+                pass
+        register_cleanup(run_id, _cancel_velo_flow)
+
         # Track the job with run_id
         add_job(flow_id, {
             "flow_id": flow_id,
@@ -264,6 +286,10 @@ def run_bestpractice_hunts():
             stub = api_pb2_grpc.APIStub(channel)
             results = []
             run_ids = []
+            # Register cancel for each row up front so the operator can
+            # Stop the per-artifact dispatch loop mid-flight (e.g. when
+            # they picked 30 artifacts and want to cancel after 3 hunts).
+            from services.workflow_service import register_cancel_event, is_cancelled
             try:
                 for a in artifacts:
                     rid = create_automation_run(
@@ -280,6 +306,15 @@ def run_bestpractice_hunts():
                         },
                     )
                     run_ids.append(rid)
+                    register_cancel_event(rid)
+                    # Honour Stop on THIS row before dispatching the
+                    # next hunt. We can't kill an already-dispatched
+                    # Velociraptor hunt from here (those run on the
+                    # server side), but we can stop creating more.
+                    if is_cancelled(rid):
+                        update_run_status(rid, "cancelled")
+                        results.append({"artifact": a, "run_id": rid, "hunt_id": None, "status": "cancelled"})
+                        continue
                     add_log_to_run(rid, f"Starting per-artifact hunt for `{a}`")
                     add_log_to_run(rid, f"Settings: Expire={expire_minutes}m, Timeout={timeout_seconds}s, CPU={cpu_limit}%")
                     hunt_desc = f"{blueprint_name} · {a}"
@@ -293,6 +328,10 @@ def run_bestpractice_hunts():
                         update_run_status(rid, "completed", progress=100)
                         results.append({"artifact": a, "run_id": rid, "hunt_id": hunt_id, "status": "success"})
                     else:
+                        # Don't log error if this row got cancelled mid-create
+                        if is_cancelled(rid):
+                            results.append({"artifact": a, "run_id": rid, "hunt_id": None, "status": "cancelled"})
+                            continue
                         add_log_to_run(rid, f"Failed: {err}", "error")
                         update_run_status(rid, "failed", progress=0)
                         results.append({"artifact": a, "run_id": rid, "hunt_id": None, "status": "failed", "error": err})

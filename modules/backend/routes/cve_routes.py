@@ -293,11 +293,19 @@ def upload_scan():
             "info",
         )
 
+        from services.workflow_service import register_cancel_event, is_cancelled as _ic, get_automation_run as _gar
+        register_cancel_event(run_id)
+
         def _worker():
             try:
+                if _ic(run_id):
+                    return
                 run_cve_scan(run_id, saved, name=run_name, mode=scan_mode)
             except Exception:
-                pass
+                # Cancellation residue — request_stop already locked
+                # state to 'cancelled'. Don't add an error.
+                if _ic(run_id) or (_gar(run_id) or {}).get('status') == 'cancelled':
+                    return
         threading.Thread(target=_worker, daemon=True).start()
 
         return jsonify({'run_id': run_id, 'status': 'started', 'extracted': len(saved), 'scan_mode': scan_mode})
@@ -337,12 +345,21 @@ def from_flow_scan():
         run_dir = os.path.join(UPLOAD_ROOT, run_id)
         os.makedirs(run_dir, exist_ok=True)
 
+        from services.workflow_service import register_cancel_event, is_cancelled as _ic2, get_automation_run as _gar2
+        register_cancel_event(run_id)
+
         def _worker():
             try:
                 update_run_status(run_id, 'running', progress=2)
+                if _ic2(run_id):
+                    return
                 csvs = pull_from_velociraptor(run_id, flow_id, hunt_id, Path(run_dir))
+                if _ic2(run_id):
+                    return
                 run_cve_scan(run_id, csvs, name=name, mode=scan_mode)
             except Exception as e:
+                if _ic2(run_id) or (_gar2(run_id) or {}).get('status') == 'cancelled':
+                    return
                 add_log_to_run(run_id, f"[CVE] from-flow dispatch failed: {e}", "error")
                 update_run_status(run_id, 'failed', error=str(e))
         threading.Thread(target=_worker, daemon=True).start()
@@ -474,9 +491,16 @@ def _wait_for_hunt(run_id: str, hunt_id: str, timeout_seconds: int = 7200, poll_
     from services.velociraptor_service import setup_velociraptor_connection
     from pyvelociraptor import api_pb2, api_pb2_grpc
 
+    from services.workflow_service import is_cancelled as _is_cancelled
+
     start = _time.time()
     last_state = None
     while _time.time() - start < timeout_seconds:
+        # Honour Stop during the 30s polling loop — without this, an
+        # operator clicking Stop on a chain-mode CVE scan would still
+        # have to wait up to 30s for the next poll tick to notice.
+        if _is_cancelled(run_id):
+            return False
         try:
             channel = setup_velociraptor_connection()
             if channel:
@@ -558,9 +582,17 @@ def run_cve_hunt():
         add_log_to_run(run_id, f"[CVE] Dispatching hunt with {len(_CVE_HUNT_ARTIFACTS)} artifacts "
                               f"({'will auto-scan when finished' if chain else 'hunt-only'})", "info")
 
+        # Register cancel event so the Stop button on the workflow row
+        # actually interrupts this multi-phase pipeline (hunt dispatch
+        # → poll → CSV pull → CVE scan).
+        from services.workflow_service import register_cancel_event, is_cancelled, get_automation_run as _get_run
+        register_cancel_event(run_id)
+
         def _worker():
             try:
                 update_run_status(run_id, 'running', progress=5)
+                if is_cancelled(run_id):
+                    return
                 # Pass the operator's max_wait through so the hunt's
                 # `expires` matches the polling window — no orphan hunt
                 # left running after we've already stopped watching.
@@ -625,8 +657,16 @@ def run_cve_hunt():
                         f"[CVE] Pulled partial results from {len(csvs)} CSV(s) — running NVD scan on partial data.",
                         "info",
                     )
+                if is_cancelled(run_id):
+                    return
                 run_cve_scan(run_id, csvs, name=(f"{run_name} (partial)" if partial else run_name), mode=scan_mode)
             except Exception as e:
+                # If the operator clicked Stop, the killed-subprocess
+                # exception that bubbles up is not a real failure —
+                # request_stop() already wrote the cancellation banner
+                # and locked the status. Don't overwrite with an error.
+                if is_cancelled(run_id) or (_get_run(run_id) or {}).get('status') == 'cancelled':
+                    return
                 add_log_to_run(run_id, f"[CVE] run-hunt dispatch failed: {e}", "error")
                 update_run_status(run_id, 'failed', error=str(e))
 
