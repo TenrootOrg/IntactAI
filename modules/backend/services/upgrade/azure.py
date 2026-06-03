@@ -12,7 +12,7 @@ backend restart. Mirrors the Plaso upgrader.
 """
 
 import os
-from typing import Dict, Callable
+from typing import Dict, Callable, Optional
 
 from .base import (
     WORKDIR,
@@ -64,7 +64,8 @@ def upgrade_azure(version: str, logger: Callable = None) -> Dict:
         }
 
 
-def upgrade_azure_offline(package_dir: str, version: str, logger: Callable = None) -> Dict:
+def upgrade_azure_offline(package_dir: str, version: str, logger: Callable = None,
+                            run_id: Optional[str] = None) -> Dict:
     """Upgrade DFIR-O365RC from an offline package with automatic rollback."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
@@ -82,7 +83,7 @@ def upgrade_azure_offline(package_dir: str, version: str, logger: Callable = Non
         o365rc_tar = os.path.join(images_dir, f"dfir-o365rc-{version}.tar")
         if os.path.exists(o365rc_tar):
             log("Loading DFIR-O365RC image from package...", "info")
-            result = load_docker_image(o365rc_tar, logger=log)
+            result = load_docker_image(o365rc_tar, logger=log, run_id=run_id)
             if not result['success']:
                 raise Exception(f"Failed to load DFIR-O365RC image: {result.get('error', 'unknown')}")
         else:

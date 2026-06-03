@@ -158,12 +158,28 @@ def get_github_release_url(repo: str, pattern: str, logger: Callable = None) -> 
 
 
 def download_file(url: str, dest_path: str, filename: Optional[str] = None,
-                  logger: Callable = None, timeout: int = 300) -> Optional[str]:
-    """Download a file from URL to destination path."""
+                  logger: Callable = None, timeout: int = 300,
+                  run_id: Optional[str] = None) -> Optional[str]:
+    """Download a file from URL to destination path.
+
+    `run_id` makes the chunked stream interruptible: when the operator
+    clicks Stop, the very next chunk write checks the cancel event and
+    aborts mid-file (and removes the partial). Without this, a 100 MB
+    download running over a slow link kept going long after Stop.
+    """
     def log(msg):
         if logger:
             logger(msg)
         print(f"[TOOLS-DL] {msg}", flush=True)
+
+    # Hook the cancel event for this run if available
+    cancel_event = None
+    if run_id:
+        try:
+            from services.workflow_service import get_cancel_event
+            cancel_event = get_cancel_event(run_id)
+        except Exception:
+            cancel_event = None
 
     try:
         # Determine filename
@@ -201,6 +217,14 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
         # Write file
         with open(full_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
+                if cancel_event is not None and cancel_event.is_set():
+                    log(f"  ✗ Cancelled mid-download: {filename}")
+                    try:
+                        f.close()
+                        os.remove(full_path)
+                    except OSError:
+                        pass
+                    return None
                 if chunk:
                     f.write(chunk)
 
@@ -216,8 +240,14 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
 
 
 def download_tools_from_config(tools_dir: str, config: Dict,
-                                logger: Callable = None) -> Dict:
-    """Download all enabled tools from configuration."""
+                                logger: Callable = None,
+                                run_id: Optional[str] = None) -> Dict:
+    """Download all enabled tools from configuration.
+
+    Threads run_id into per-file `download_file` calls so a Stop click
+    interrupts the in-flight download immediately. Also checks the
+    cancel event between tools to exit cleanly between large items.
+    """
     def log(msg, level="info"):
         if logger:
             logger(msg, level)
@@ -268,6 +298,19 @@ def download_tools_from_config(tools_dir: str, config: Dict,
         log(f"Processing {section}: {len(enabled_tools)} tools")
 
         for tool in enabled_tools:
+            # Honour Stop between tools — quick exit for the case where
+            # we're partway through a big inventory and the operator
+            # already pressed Stop.
+            if run_id:
+                try:
+                    from services.workflow_service import is_cancelled
+                    if is_cancelled(run_id):
+                        log("Tool download cancelled by user")
+                        results["cancelled"] = True
+                        return results
+                except Exception:
+                    pass
+
             tool_name = tool.get('name', 'Unknown')
             tool_type = tool.get('type', '')
 
@@ -322,7 +365,7 @@ def download_tools_from_config(tools_dir: str, config: Dict,
 
                 # Download the file
                 result = download_file(
-                    download_url, tools_dir, filename, log
+                    download_url, tools_dir, filename, log, run_id=run_id
                 )
 
                 if result:
@@ -661,10 +704,12 @@ def ensure_offline_collector_binaries(downloads_dir: str, logger: Callable = Non
     return results
 
 
-def download_and_configure_tools(logger: Callable = None) -> Dict:
+def download_and_configure_tools(logger: Callable = None, run_id: Optional[str] = None) -> Dict:
     """Main function: Download tools and configure Velociraptor inventory.
 
     This is the function called from maintenance workflow.
+    `run_id` propagates the workflow's cancel event into the per-file
+    HTTP streams + the per-tool loop so Stop is honoured immediately.
     """
     def log(msg, level="info"):
         if logger:
@@ -711,7 +756,10 @@ def download_and_configure_tools(logger: Callable = None) -> Dict:
     log("PHASE 1: Downloading tools from GitHub/URLs")
     log("=" * 50)
 
-    download_results = download_tools_from_config(host_tools_dir, config, log)
+    download_results = download_tools_from_config(host_tools_dir, config, log, run_id=run_id)
+    if download_results.get("cancelled"):
+        return {"success": False, "cancelled": True, "download_results": download_results,
+                "summary": "Cancelled by user"}
 
     downloaded = len(download_results.get('downloaded', []))
     already = len(download_results.get('already_exists', []))

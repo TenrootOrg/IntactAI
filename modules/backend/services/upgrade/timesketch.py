@@ -725,7 +725,8 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
         }
 
 
-def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: str = None, logger: Callable = None) -> Dict:
+def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: str = None, logger: Callable = None,
+                                run_id: Optional[str] = None) -> Dict:
     """Upgrade Timesketch from offline package with automatic rollback."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     work_dir = os.path.join(WORKDIR, 'modules', 'timesketch')
@@ -782,7 +783,7 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
     try:
         # Stop containers
         log("Stopping Timesketch containers...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log)
+        result = run_command("docker compose down", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to stop Timesketch: {result['error']}")
 
@@ -794,12 +795,12 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
         log("Loading docker images from package...", "info")
         ts_tar = os.path.join(images_dir, f"timesketch-{version}.tar")
         if os.path.exists(ts_tar):
-            load_docker_image(ts_tar, logger=log)
+            load_docker_image(ts_tar, logger=log, run_id=run_id)
 
         if plaso_version:
             plaso_tar = os.path.join(images_dir, f"plaso-{plaso_version}.tar")
             if os.path.exists(plaso_tar):
-                load_docker_image(plaso_tar, logger=log)
+                load_docker_image(plaso_tar, logger=log, run_id=run_id)
             log(f"Updating Plaso version to {plaso_version}...", "info")
             update_env_file(backend_env, 'PLASO_VERSION', plaso_version, logger=log)
 
@@ -809,7 +810,7 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
 
         # Start containers
         log("Starting Timesketch containers...", "info")
-        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
+        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to start Timesketch: {result['error']}")
 

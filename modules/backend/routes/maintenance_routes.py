@@ -78,7 +78,8 @@ def run_system_maintenance():
                     from services.tools_download_service import download_and_configure_tools
 
                     tool_results = download_and_configure_tools(
-                        logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
+                        logger=lambda msg, level="info": add_log_to_run(run_id, msg, level),
+                        run_id=run_id,
                     )
 
                     if tool_results.get('success'):
@@ -476,7 +477,8 @@ def download_velociraptor_tools():
         def run_download():
             try:
                 result = download_and_configure_tools(
-                    logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
+                    logger=lambda msg, level="info": add_log_to_run(run_id, msg, level),
+                    run_id=run_id,
                 )
                 if result.get('success'):
                     add_log_to_run(run_id, f"Tool download completed: {result.get('summary', '')}", "success")

@@ -707,12 +707,23 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
                 overall_status = "completed_with_errors"
                 continue
 
+            # Check Stop before each module — gives a quick exit even when
+            # the per-module function isn't fully cancellation-aware.
+            try:
+                from services.workflow_service import is_cancelled
+                if run_id and is_cancelled(run_id):
+                    log("Offline upgrade cancelled by user before module dispatch", "warning")
+                    overall_status = "cancelled"
+                    break
+            except Exception:
+                pass
+
             try:
                 if module_name == 'intact':
-                    result = upgrade_fn(package_dir, logger=log)
+                    result = upgrade_fn(package_dir, logger=log, run_id=run_id)
                 else:
                     # Note: Plaso is handled as its own module, not bundled with Timesketch
-                    result = upgrade_fn(package_dir, version, logger=log)
+                    result = upgrade_fn(package_dir, version, logger=log, run_id=run_id)
 
                 results[module_name] = result
                 if not result.get('skipped'):

@@ -8,7 +8,7 @@ import os
 import json
 import shutil
 from datetime import datetime
-from typing import Dict, Callable, List
+from typing import Dict, Callable, List, Optional
 
 from .base import run_command, WORKDIR, HOST_PATH
 
@@ -66,7 +66,8 @@ def _get_dir_size(path: str) -> int:
 
 
 def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
-                            logger: Callable, progress_interval: int = 10) -> Dict:
+                            logger: Callable, progress_interval: int = 10,
+                            run_id: Optional[str] = None) -> Dict:
     """Compress directory to tar.gz with progress updates.
 
     Args:
@@ -75,6 +76,9 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
         output_file: Output tar.gz path
         logger: Logging function
         progress_interval: Seconds between progress updates
+        run_id: When set, the tar subprocess is terminated immediately if
+                the workflow's Stop button is clicked (otherwise tar on
+                a ~1 GB package can ignore Stop for 30+ seconds).
 
     Returns:
         Dict with success status and error if failed
@@ -98,11 +102,40 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
         stderr=subprocess.PIPE
     )
 
+    # Wire Stop button → SIGTERM the tar subprocess. Without this, an
+    # operator clicking Stop watches the workflow row flip to
+    # "cancelled" but tar keeps writing the archive for tens of
+    # seconds to several minutes depending on package size.
+    cancel_event = None
+    if run_id:
+        try:
+            from services.workflow_service import (
+                get_cancel_event, register_cleanup, terminate_subprocess,
+            )
+            cancel_event = get_cancel_event(run_id)
+            if cancel_event is not None:
+                register_cleanup(run_id, lambda p=process: terminate_subprocess(p))
+        except Exception:
+            cancel_event = None
+
     last_update = time.time()
     last_size = 0
 
     # Poll for progress
     while process.poll() is None:
+        if cancel_event is not None and cancel_event.is_set():
+            log("  Compression cancelled by user", "warning")
+            try:
+                from services.workflow_service import terminate_subprocess as _ts
+                _ts(process)
+            except Exception:
+                process.terminate()
+            try:
+                os.remove(output_file)
+            except OSError:
+                pass
+            return {"success": False, "error": "cancelled", "cancelled": True}
+
         time.sleep(1)
 
         now = time.time()
@@ -132,20 +165,31 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
     return {"success": True}
 
 
-def _pull_and_save_image(image: str, output_path: str, logger: Callable) -> bool:
-    """Pull a Docker image and save it to a tar file."""
+def _pull_and_save_image(image: str, output_path: str, logger: Callable,
+                          run_id: Optional[str] = None) -> bool:
+    """Pull a Docker image and save it to a tar file.
+
+    `run_id` makes both subprocesses (docker pull, docker save)
+    interruptible — a Stop click during a 20-minute pull terminates
+    the docker CLI within a second instead of letting it run to
+    completion and only then noticing the cancel flag.
+    """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
     # Pull the image with output shown
     log(f"  Pulling {image}...", "info")
-    result = run_command(f"docker pull {image}", timeout=1200, logger=log)
+    result = run_command(f"docker pull {image}", timeout=1200, logger=log, run_id=run_id)
+    if result.get("cancelled"):
+        return False
     if not result['success']:
         log(f"  Failed to pull {image}: {result.get('error', '')[:200]}", "error")
         return False
 
     # Save the image (increased timeout for large images)
     log(f"  Saving to {os.path.basename(output_path)}...", "info")
-    result = run_command(f"docker save -o {output_path} {image}", timeout=1200, logger=None)
+    result = run_command(f"docker save -o {output_path} {image}", timeout=1200, logger=None, run_id=run_id)
+    if result.get("cancelled"):
+        return False
     if not result['success']:
         log(f"  Failed to save {image}: {result.get('error', '')[:200]}", "error")
         return False
@@ -328,8 +372,10 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                     dl = run_command(
                         f"curl -L -f --retry 5 --retry-delay 5 --retry-max-time 120 "
                         f"-o {pkg_path} {url}",
-                        timeout=300, logger=None,
+                        timeout=300, logger=None, run_id=run_id,
                     )
+                    if dl.get("cancelled"):
+                        return {"success": False, "error": "cancelled", "cancelled": True}
                     ok = dl['success'] and os.path.exists(pkg_path) and os.path.getsize(pkg_path) > 0
                     if not ok:
                         if os.path.exists(pkg_path):
@@ -380,14 +426,18 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                     f"VELOCIRAPTOR_VERSION={clean_version} VELOCIRAPTOR_TAG={velo_tag} "
                     f"docker compose -f {compose_file} --project-directory {host_velo_dir} build "
                     f"--build-arg VELOCIRAPTOR_VERSION={clean_version} --build-arg VELOCIRAPTOR_TAG={velo_tag}",
-                    timeout=600, logger=None,
+                    timeout=600, logger=None, run_id=run_id,
                 )
+                if build_result.get("cancelled"):
+                    return {"success": False, "error": "cancelled", "cancelled": True}
                 if build_result['success']:
                     output_path = f"{package_dir}/images/velociraptor-{clean_version}.tar"
                     save_result = run_command(
                         f"docker save -o {output_path} {image_tag}",
-                        timeout=300, logger=None,
+                        timeout=300, logger=None, run_id=run_id,
                     )
+                    if save_result.get("cancelled"):
+                        return {"success": False, "error": "cancelled", "cancelled": True}
                     if save_result['success']:
                         img_size = os.path.getsize(output_path)
                         log(f"  Image exported ({_format_size(img_size)})", "success")
@@ -406,8 +456,15 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                     output_name = output_template.format(version=version)
                     output_path = f"{package_dir}/images/{output_name}"
 
-                    if _pull_and_save_image(image, output_path, log):
+                    if _pull_and_save_image(image, output_path, log, run_id=run_id):
                         manifest["contents"]["images"].append(output_name)
+                    # Honor cancel between images (fast-exit on Stop).
+                    try:
+                        from services.workflow_service import is_cancelled
+                        if is_cancelled(run_id):
+                            return {"success": False, "error": "cancelled", "cancelled": True}
+                    except Exception:
+                        pass
 
                 manifest["versions"][module] = version
 
@@ -419,7 +476,9 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                     log("Bundling Timesketch alembic migrations...", "info")
                     mig_url = f"https://github.com/google/timesketch/archive/refs/tags/{version}.tar.gz"
                     src_tarball = f"{package_dir}/_ts_src_{version}.tar.gz"
-                    dl = run_command(f"curl -fLsS -o {src_tarball} {mig_url}", timeout=180, logger=None)
+                    dl = run_command(f"curl -fLsS -o {src_tarball} {mig_url}", timeout=180, logger=None, run_id=run_id)
+                    if dl.get("cancelled"):
+                        return {"success": False, "error": "cancelled", "cancelled": True}
                     if not dl['success'] or not os.path.exists(src_tarball) or os.path.getsize(src_tarball) < 1024:
                         log(f"  Failed to download Timesketch source for migrations from {mig_url}", "warning")
                         log("  Offline upgrade may fall back to GitHub for migrations at apply time", "warning")
@@ -474,9 +533,12 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
             source_name=package_name,
             output_file=output_file,
             logger=log,
-            progress_interval=10
+            progress_interval=10,
+            run_id=run_id,
         )
 
+        if result.get("cancelled"):
+            return {"success": False, "error": "cancelled", "cancelled": True}
         if not result['success']:
             raise Exception(f"Failed to create archive: {result.get('error', '')[:200]}")
 

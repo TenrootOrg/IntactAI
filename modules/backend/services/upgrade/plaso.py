@@ -2,7 +2,7 @@
 """Plaso upgrade functions."""
 
 import os
-from typing import Dict, Callable
+from typing import Dict, Callable, Optional
 
 from .base import (
     WORKDIR, HOST_PATH,
@@ -63,7 +63,8 @@ def upgrade_plaso(version: str, logger: Callable = None) -> Dict:
         }
 
 
-def upgrade_plaso_offline(package_dir: str, version: str, logger: Callable = None) -> Dict:
+def upgrade_plaso_offline(package_dir: str, version: str, logger: Callable = None,
+                            run_id: Optional[str] = None) -> Dict:
     """Upgrade Plaso from offline package with automatic rollback."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
@@ -85,7 +86,7 @@ def upgrade_plaso_offline(package_dir: str, version: str, logger: Callable = Non
         plaso_tar = os.path.join(images_dir, f"plaso-{version}.tar")
         if os.path.exists(plaso_tar):
             log(f"Loading Plaso image from package...", "info")
-            result = load_docker_image(plaso_tar, logger=log)
+            result = load_docker_image(plaso_tar, logger=log, run_id=run_id)
             if not result['success']:
                 raise Exception(f"Failed to load Plaso image: {result.get('error', 'unknown')}")
         else:

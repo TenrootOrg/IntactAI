@@ -10,7 +10,7 @@ Plaso upgrader.
 """
 
 import os
-from typing import Dict, Callable
+from typing import Dict, Callable, Optional
 
 from .base import (
     WORKDIR,
@@ -62,7 +62,8 @@ def upgrade_aws(version: str, logger: Callable = None) -> Dict:
         }
 
 
-def upgrade_aws_offline(package_dir: str, version: str, logger: Callable = None) -> Dict:
+def upgrade_aws_offline(package_dir: str, version: str, logger: Callable = None,
+                          run_id: Optional[str] = None) -> Dict:
     """Upgrade Prowler from an offline package with automatic rollback."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
@@ -80,7 +81,7 @@ def upgrade_aws_offline(package_dir: str, version: str, logger: Callable = None)
         prowler_tar = os.path.join(images_dir, f"prowler-{version}.tar")
         if os.path.exists(prowler_tar):
             log("Loading Prowler image from package...", "info")
-            result = load_docker_image(prowler_tar, logger=log)
+            result = load_docker_image(prowler_tar, logger=log, run_id=run_id)
             if not result['success']:
                 raise Exception(f"Failed to load Prowler image: {result.get('error', 'unknown')}")
         else:

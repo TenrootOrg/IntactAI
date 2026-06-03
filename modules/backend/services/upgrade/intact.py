@@ -2,7 +2,7 @@
 """Intact.AI Platform upgrade functions - combines backend and frontend."""
 
 import os
-from typing import Dict, Callable
+from typing import Dict, Callable, Optional
 
 from .base import WORKDIR, run_command
 
@@ -40,7 +40,8 @@ def upgrade_intact(version: str = None, logger: Callable = None) -> Dict:
     return {"success": True, "message": "Code updated"}
 
 
-def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callable = None) -> Dict:
+def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callable = None,
+                            run_id: Optional[str] = None) -> Dict:
     """Upgrade Intact.AI Platform from offline package source files.
 
     NOTE: This runs INSIDE the backend container. The upgrade orchestrator
@@ -66,12 +67,12 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
     # Copy backend source files
     if has_backend:
         log("Copying backend source files...", "info")
-        run_command(f"cp -a {backend_source}/* {backend_dir}/", logger=log)
+        run_command(f"cp -a {backend_source}/* {backend_dir}/", logger=log, run_id=run_id)
 
     # Copy frontend files
     if has_frontend:
         log("Copying frontend files...", "info")
-        run_command(f"cp -a {frontend_source}/* {nginx_html}/", logger=log)
+        run_command(f"cp -a {frontend_source}/* {nginx_html}/", logger=log, run_id=run_id)
 
     # Fix file permissions (files copied by root need correct ownership for future upgrades)
     log("Fixing file permissions...", "info")

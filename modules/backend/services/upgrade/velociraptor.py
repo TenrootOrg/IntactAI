@@ -180,7 +180,8 @@ def get_velociraptor_download_url(version: str, logger: Callable = None) -> Tupl
     return download_url, clean_version
 
 
-def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
+def upgrade_velociraptor(version: str, logger: Callable = None,
+                          run_id: Optional[str] = None) -> Dict:
     """Upgrade Velociraptor to specified version with automatic rollback on failure."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     work_dir = os.path.join(WORKDIR, 'modules', 'velociraptor')
@@ -332,7 +333,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
 
         # Start container
         log("Starting Velociraptor container...", "info")
-        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
+        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to start Velociraptor: {result['error']}")
 
@@ -340,6 +341,12 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
         log("Waiting for Velociraptor container to be up...", "info")
         healthy = False
         for i in range(30):  # 30 * 2s = 60s max
+            try:
+                from services.workflow_service import is_cancelled
+                if run_id and is_cancelled(run_id):
+                    raise Exception("Cancelled during health check wait")
+            except ImportError:
+                pass
             log(f"  Checking Velociraptor container... ({i*2}s)", "info")
             result = run_command(f"docker exec {container_name} pgrep -f velociraptor", logger=None, timeout=10)
             if result['success']:
@@ -397,7 +404,8 @@ def upgrade_velociraptor(version: str, logger: Callable = None) -> Dict:
         }
 
 
-def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callable = None) -> Dict:
+def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callable = None,
+                                   run_id: Optional[str] = None) -> Dict:
     """Upgrade Velociraptor from offline package with automatic rollback."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     work_dir = os.path.join(WORKDIR, 'modules', 'velociraptor')
@@ -479,7 +487,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
     try:
         # Stop container
         log("Stopping Velociraptor container...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log)
+        result = run_command("docker compose down", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to stop Velociraptor: {result['error']}")
 
@@ -567,15 +575,15 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
 
         if os.path.exists(image_path):
             log("Loading pre-built Velociraptor image...", "info")
-            result = load_docker_image(image_path, logger=log)
+            result = load_docker_image(image_path, logger=log, run_id=run_id)
             if not result['success']:
                 log(f"  Image load failed, falling back to local build: {result.get('error', '')[:80]}", "warning")
-                build = run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
+                build = run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log, run_id=run_id)
                 if not build['success']:
                     raise Exception(f"docker compose build failed: {build.get('error','')[:200]}")
         else:
             log("No pre-built image in package — building locally (offline-safe).", "info")
-            build = run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
+            build = run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log, run_id=run_id)
             if not build['success']:
                 raise Exception(f"docker compose build failed: {build.get('error','')[:200]}")
 
@@ -591,7 +599,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
 
         # Start container
         log("Starting Velociraptor container...", "info")
-        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
+        result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to start Velociraptor: {result['error']}")
 
@@ -599,6 +607,12 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         log("Waiting for Velociraptor container to be up...", "info")
         healthy = False
         for i in range(30):  # 30 * 2s = 60s max
+            try:
+                from services.workflow_service import is_cancelled
+                if run_id and is_cancelled(run_id):
+                    raise Exception("Cancelled during health check wait")
+            except ImportError:
+                pass
             log(f"  Checking Velociraptor container... ({i*2}s)", "info")
             result = run_command(f"docker exec {container_name} pgrep -f velociraptor", logger=None, timeout=10)
             if result['success']:
