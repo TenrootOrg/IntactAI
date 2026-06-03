@@ -51,6 +51,20 @@ services:
     ports:
       - "5001:5001"
     restart: unless-stopped
+    # Flask + celery workers cache one SQLite connection per worker
+    # thread in threading.local() (services/storage/base.py,
+    # services/cve_scan/local_db.py). Over a long-lived backend the
+    # thread pool grows under load and each thread holds a conn open
+    # against intact.db, intact.db-wal, cves.db, cves.db-wal — easily
+    # 1000+ FDs total. The Docker default of 1024 soft-nofile gets
+    # exhausted and the backend wedges with "Too many open files",
+    # spinning at 100% CPU retrying every operation while the UI
+    # times out. 65536 leaves comfortable headroom; the hard limit
+    # stays at the kernel default (524288).
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     networks:
       - intact_network
     healthcheck:
