@@ -419,13 +419,16 @@ def _bootstrap_alembic_if_needed(current_version: str, logger: Callable = None,
 
 
 def _run_db_schema_upgrade(target_version: str, logger: Callable = None,
-                            local_migrations_dir: Optional[str] = None) -> bool:
+                            local_migrations_dir: Optional[str] = None,
+                            offline: bool = False) -> bool:
     """Run `tsctl db upgrade` inside the (already-upgraded) web container.
 
     Migrations resolution order:
       1. `local_migrations_dir` if supplied (offline upgrade passes the path
          to the migrations bundled inside the upgrade package — no internet).
       2. Otherwise fetch from GitHub at the matching version tag (online).
+         Skipped entirely when `offline=True` so air-gapped targets never
+         touch the network.
 
     The installed Timesketch wheel doesn't ship migrations/ so one of these
     two paths has to provide them. Idempotent — a patch-level upgrade with
@@ -433,9 +436,15 @@ def _run_db_schema_upgrade(target_version: str, logger: Callable = None,
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
-    if local_migrations_dir and os.path.isdir(local_migrations_dir):
+    if local_migrations_dir and os.path.isdir(local_migrations_dir) \
+            and os.path.isdir(os.path.join(local_migrations_dir, 'versions')):
         log(f"Using bundled migrations from package: {local_migrations_dir}", "info")
         migrations_host_path = local_migrations_dir
+    elif offline:
+        log("Offline upgrade requires bundled migrations under "
+            "package_dir/migrations/timesketch/ — none found. "
+            "Re-prepare the upgrade package on a machine with internet.", "error")
+        return False
     else:
         if local_migrations_dir:
             log(f"Bundled migrations not found at {local_migrations_dir} — falling back to GitHub fetch", "warning")
@@ -835,10 +844,13 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
             log("Timesketch health check: TIMEOUT (containers may still be starting)", "warning")
 
         # Apply alembic schema migration. Offline upgrades use the migrations
-        # bundled in the package (no internet); the prepare step downloads and
-        # bundles them. Fall back to GitHub only if the bundle is missing.
+        # bundled in the package (no internet) — `offline=True` makes the
+        # function refuse to fall back to GitHub if the bundle is missing,
+        # which is the right behavior for an air-gapped target.
         bundled_mig = os.path.join(package_dir, 'migrations', 'timesketch')
-        if not _run_db_schema_upgrade(version, logger=log, local_migrations_dir=bundled_mig):
+        if not _run_db_schema_upgrade(version, logger=log,
+                                       local_migrations_dir=bundled_mig,
+                                       offline=True):
             raise Exception("tsctl db upgrade failed — DB schema is not in sync with new code")
 
         # Verify ALL persistent rows survived the offline upgrade.
