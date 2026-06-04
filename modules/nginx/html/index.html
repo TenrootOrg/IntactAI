@@ -142,6 +142,17 @@
                                     </svg>
                                     <span>CVE Scan</span>
                                 </div>
+                                <!-- Memory Forensics — Velociraptor memory acquisition → VolWeb (Volatility 3
+                                     + yarascan) → LLM-synthesised findings report. Three modes:
+                                     layered (default) / yara-only / plugin-only. -->
+                                <div class="nav-item flex items-center gap-3 py-2 text-sm"
+                                     :class="{ 'active': $store.app.currentTab === 'modules-memory' }"
+                                     @click.stop="$store.app.switchTab('modules-memory')">
+                                    <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                                    </svg>
+                                    <span>Memory</span>
+                                </div>
                             </div>
                         </div>
 
@@ -1762,6 +1773,192 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                 </div>
             </div>
 
+            <!-- Memory Forensics Tab — kept deliberately simple. No blueprints,
+                 no advanced section: pick a mode, pick a client, set an
+                 investigation name (auto-defaults to "Memory YYYY-MM-DD"),
+                 hit Acquire & Analyze. -->
+            <div x-show="$store.app.currentTab === 'modules-memory'" x-transition class="tab-content">
+                <div class="flex items-center justify-between mb-2">
+                    <h2 class="text-3xl font-bold text-white">Memory Forensics</h2>
+                </div>
+
+                <div class="max-w-3xl">
+                    <p class="text-gray-400 mb-6 text-sm">
+                        Capture Windows physical memory via Velociraptor, run Volatility 3 plugins
+                        + YARA scanning in
+                        <a href="https://github.com/forensicxlab/VolWeb" target="_blank" rel="noreferrer"
+                           class="text-indigo-300 hover:text-indigo-200 underline">VolWeb</a>,
+                        and ask an LLM to synthesise an engagement-ready findings report.
+                    </p>
+
+                    <!-- Card 1 — Analysis mode + Investigation name -->
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Analysis mode</label>
+                        <div class="flex flex-col gap-2 text-sm">
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" x-model="$store.memory.mode" value="layered"
+                                       class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                <span class="text-gray-300">Layered <span class="text-gray-500">— Vol3 plugins + YARA (default)</span></span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" x-model="$store.memory.mode" value="yara"
+                                       class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                <span class="text-gray-300">YARA only <span class="text-gray-500">— ~20× cheaper, scale-out triage</span></span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" x-model="$store.memory.mode" value="plugin"
+                                       class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                <span class="text-gray-300">Plugins only <span class="text-gray-500">— behavioural context, no signatures</span></span>
+                            </label>
+                        </div>
+
+                        <div class="mt-5 pt-4 border-t border-gray-700">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Investigation name</label>
+                            <input type="text" x-model="$store.memory.caseName"
+                                   class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                        </div>
+
+                        <!-- LLM toggle — operator-controlled. Default ON.
+                             When OFF the pipeline still runs acquire + upload
+                             + extract + yarascan, but skips the LLM-synthesis
+                             phase and emits an extraction-only report. -->
+                        <div class="mt-4 pt-4 border-t border-gray-700">
+                            <label class="flex items-center gap-3 cursor-pointer">
+                                <input type="checkbox" x-model="$store.memory.useLlm"
+                                       class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                <div>
+                                    <div class="text-sm font-medium text-gray-300">Run LLM analysis</div>
+                                    <div class="text-xs text-gray-500">Uncheck to skip the LLM call and get a plain extraction report (cheaper / works without an API key).</div>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Card 2 — Target client picker (Timesketch-style markup) -->
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                        <div class="flex items-center justify-between mb-2">
+                            <label class="block text-sm font-medium text-gray-300">Select Client for Acquisition</label>
+                            <button @click="$store.memory.refreshClients()"
+                                    class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Refresh</button>
+                        </div>
+                        <input type="text" x-model="$store.memory.clientFilter"
+                               placeholder="Filter clients by name..."
+                               class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-purple-500 focus:outline-none">
+                        <div class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
+                            <template x-for="c in $store.memory.filteredClients()" :key="c.client_id">
+                                <label class="flex items-center justify-between gap-3 cursor-pointer hover:bg-gray-800 rounded px-2 py-1">
+                                    <div class="flex items-center gap-3">
+                                        <input type="radio" :value="c.client_id" x-model="$store.memory.selectedClient"
+                                               class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                        <div>
+                                            <div class="text-sm text-gray-200" x-text="c.hostname || '(unknown)'"></div>
+                                            <div class="text-xs text-gray-500 font-mono" x-text="c.client_id"></div>
+                                        </div>
+                                    </div>
+                                    <div class="text-xs" :class="{'text-green-400': $store.memory.isFresh(c), 'text-gray-500': !$store.memory.isFresh(c)}"
+                                         x-text="$store.memory.ageLabel(c)"></div>
+                                </label>
+                            </template>
+                            <p x-show="!$store.memory.filteredClients().length" class="text-sm text-gray-500">
+                                No clients match the filter.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Dispatch (live acquire) -->
+                    <div class="flex items-center justify-end gap-3 mb-6">
+                        <span x-show="$store.memory.lastStatus" class="text-xs text-gray-400" x-text="$store.memory.lastStatus"></span>
+                        <button @click="$store.memory.startRun()"
+                                :disabled="!$store.memory.selectedClient || $store.memory.dispatching"
+                                class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
+                            <span x-show="!$store.memory.dispatching">Acquire &amp; Analyze</span>
+                            <span x-show="$store.memory.dispatching">Starting…</span>
+                        </button>
+                    </div>
+
+                    <!-- ──────────────────────────────────────────────────
+                         OR — Upload an already-acquired dump (offline path)
+                         ────────────────────────────────────────────────── -->
+                    <div class="flex items-center gap-3 my-2 text-xs text-gray-500">
+                        <div class="flex-1 h-px bg-gray-700"></div>
+                        <span>OR — upload an already-acquired dump</span>
+                        <div class="flex-1 h-px bg-gray-700"></div>
+                    </div>
+
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                        <label class="block text-sm font-medium text-gray-300 mb-1">Memory dump file</label>
+                        <p class="text-xs text-gray-500 mb-3">
+                            Accepts a raw memory image (<code class="text-indigo-300">.raw</code>,
+                            <code class="text-indigo-300">.bin</code>, <code class="text-indigo-300">.mem</code>,
+                            <code class="text-indigo-300">.dmp</code>) or a Velociraptor
+                            <em>Prepare Download</em> / offline-collector ZIP. We'll detect the
+                            <code class="text-indigo-300">PhysicalMemory</code> file inside the ZIP automatically.
+                        </p>
+                        <div class="flex items-center gap-3 bg-gray-900 border border-dashed border-gray-600 rounded px-4 py-4">
+                            <input type="file"
+                                   accept=".raw,.bin,.mem,.dmp,.zip"
+                                   @change="$store.memory.setUploadFile($event.target.files[0])"
+                                   class="flex-1 text-sm text-gray-300 file:mr-3 file:py-2 file:px-4 file:rounded file:border-0 file:bg-indigo-600 file:text-white file:hover:bg-indigo-700 file:cursor-pointer">
+                            <span x-show="$store.memory.uploadFile" class="text-xs text-teal-400 whitespace-nowrap"
+                                  x-text="$store.memory.uploadFile ? ($store.memory.uploadFile.name + ' — ' + $store.memory.uploadSizeLabel()) : ''"></span>
+                        </div>
+
+                        <!-- Upload progress (visible during XHR) -->
+                        <div x-show="$store.memory.uploadProgress > 0 && $store.memory.uploadProgress < 100" class="mt-4">
+                            <div class="flex justify-between text-xs text-gray-400 mb-1">
+                                <span>Uploading…</span>
+                                <span x-text="$store.memory.uploadProgress + '%'"></span>
+                            </div>
+                            <div class="bg-gray-700 rounded-full h-2 overflow-hidden">
+                                <div class="bg-indigo-500 h-full transition-all"
+                                     :style="`width: ${$store.memory.uploadProgress}%`"></div>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center justify-end gap-3 pt-4 mt-4 border-t border-gray-700">
+                            <span x-show="$store.memory.uploadStatus" class="text-xs text-gray-400"
+                                  x-text="$store.memory.uploadStatus"></span>
+                            <button @click="$store.memory.startUpload()"
+                                    :disabled="!$store.memory.uploadFile || $store.memory.uploading"
+                                    class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
+                                <span x-show="!$store.memory.uploading">Upload &amp; Analyze</span>
+                                <span x-show="$store.memory.uploading">Uploading…</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Mini status pane for the most recent run dispatched here. -->
+                    <div x-show="$store.memory.currentRunId" class="bg-gray-800 rounded-lg p-4 border border-gray-700 mb-4">
+                        <div class="flex items-center justify-between mb-2">
+                            <div>
+                                <div class="text-xs text-gray-500">Run</div>
+                                <div class="text-sm font-mono text-gray-200" x-text="$store.memory.currentRunId"></div>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-xs text-gray-500">Status</div>
+                                <div class="text-sm" x-text="$store.memory.currentStatus"></div>
+                            </div>
+                        </div>
+                        <div class="w-full bg-gray-700 rounded-full h-2 overflow-hidden mb-3">
+                            <div class="h-full bg-blue-500 transition-all" :style="`width:${$store.memory.currentProgress}%`"></div>
+                        </div>
+                        <div class="flex flex-wrap gap-2 text-sm">
+                            <button @click="$store.workflows.viewLogs($store.memory.currentRunId)"
+                                    class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded text-xs">View logs</button>
+                            <button x-show="$store.memory.currentStatus === 'running'"
+                                    @click="$store.memory.stopRun()"
+                                    class="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white rounded text-xs">Stop</button>
+                            <button x-show="$store.memory.currentStatus === 'completed'"
+                                    @click="$store.memory.downloadReport()"
+                                    class="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded text-xs">Download report</button>
+                            <button x-show="$store.memory.currentStatus === 'completed'"
+                                    @click="$store.memory.openChat()"
+                                    class="px-3 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-white rounded text-xs">Validate (chat)</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Blueprints Tab -->
             <div x-show="$store.app.currentTab === 'blueprints'" x-transition class="tab-content">
                 <div class="flex items-center justify-between mb-6">
@@ -3112,23 +3309,116 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 </div>
                             </div>
 
-                            <!-- System Purge -->
+                            <!-- System Purge — section-aware. Operator clicks
+                                 the button, modal opens with per-section
+                                 sizes + checkboxes + a live total. Nothing
+                                 is purged until the operator submits a
+                                 non-empty selection. -->
                             <div class="p-4 bg-gray-900 rounded-lg border border-red-900/50">
                                 <div class="flex items-center justify-between">
                                     <div>
                                         <h4 class="text-red-400 font-medium">System Purge</h4>
-                                        <p class="text-gray-400 text-sm">Remove all workflows, reports, uploads, temp files, and Velociraptor hunt data</p>
+                                        <p class="text-gray-400 text-sm">Reclaim disk by removing accumulated module data. Pick which sections to clear after seeing each one's size.</p>
                                     </div>
-                                    <button @click="$store.settings.runPurge()"
-                                            :disabled="$store.settings.saving"
-                                            class="bg-red-600 hover:bg-red-700 disabled:bg-red-800 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <button @click="$store.settings.openPurgeModal()"
+                                            class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
                                         </svg>
-                                        <span x-text="$store.settings.saving ? 'Running...' : 'Purge Data'"></span>
+                                        <span>Purge…</span>
                                     </button>
                                 </div>
                             </div>
+
+                            <!-- Purge modal — full-screen near-opaque overlay.
+                                 TELEPORTED to <body> via x-teleport so the
+                                 modal's stacking context isn't trapped inside
+                                 the <main> element (the sidebar uses
+                                 z-index: 9999 and was painting OVER the modal
+                                 because the modal's parent chain capped its
+                                 effective z-index). With teleport the modal
+                                 renders as a direct body child and the
+                                 inline z-index: 10000 actually wins. -->
+                            <template x-teleport="body">
+                            <div x-show="$store.settings.purgeModalOpen"
+                                 x-transition.opacity
+                                 style="z-index: 10000;"
+                                 class="fixed inset-0 bg-gray-950/95 flex items-center justify-center p-4"
+                                 @click.self="$store.settings.purgeModalOpen = false">
+                                <div style="max-width: 64rem;" class="bg-gray-900 border border-gray-700 rounded-lg shadow-2xl w-full max-h-[90vh] flex flex-col">
+                                    <div style="padding: 1rem 2.5rem;" class="border-b border-gray-700 flex items-center justify-between">
+                                        <div>
+                                            <h3 class="text-lg font-semibold text-red-400">System Purge — choose sections</h3>
+                                            <p class="text-xs text-gray-500">Tick the sections you want removed. Nothing is deleted until you click Purge.</p>
+                                        </div>
+                                        <button @click="$store.settings.purgeModalOpen = false"
+                                                class="text-gray-500 hover:text-gray-300 text-2xl leading-none">×</button>
+                                    </div>
+
+                                    <!-- Grand-total summary strip — shows live disk usage
+                                         across all modules so the operator sees the "if I tick
+                                         everything, what would I free?" number up-front. -->
+                                    <div style="padding: 0.75rem 2.5rem;" class="border-b border-gray-700 bg-gray-800/40 flex items-center justify-between">
+                                        <div class="text-sm text-gray-300">
+                                            <span class="text-gray-500">Total disk usage across all modules:</span>
+                                            <span class="font-mono text-base text-gray-100 ml-2"
+                                                  x-text="$store.settings.purgeGrandTotalLabel()"></span>
+                                        </div>
+                                        <div class="flex gap-2">
+                                            <button @click="$store.settings.purgeSelectAll(true)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">All</button>
+                                            <button @click="$store.settings.purgeSelectAll(false)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">None</button>
+                                            <button @click="$store.settings.refreshPurgeSizes()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Refresh</button>
+                                        </div>
+                                    </div>
+
+                                    <div style="padding: 0.5rem 2.5rem;" class="border-b border-gray-800 text-xs text-gray-500">
+                                        <span x-show="$store.settings.purgeScanning">Scanning module sizes…</span>
+                                        <span x-show="!$store.settings.purgeScanning && !$store.settings.purgeError">Click a row to toggle.</span>
+                                        <span x-show="$store.settings.purgeError" class="text-red-400" x-text="$store.settings.purgeError"></span>
+                                    </div>
+
+                                    <div style="padding: 1rem 2.5rem;" class="overflow-y-auto flex-1 space-y-2">
+                                        <template x-for="s in $store.settings.purgeSections" :key="s.id">
+                                            <label style="padding: 0.75rem 1.25rem;" class="flex items-center justify-between gap-4 bg-gray-800 rounded cursor-pointer hover:bg-gray-700/60">
+                                                <div class="flex items-center gap-3 min-w-0 flex-1">
+                                                    <input type="checkbox" :value="s.id" x-model="$store.settings.purgeSelected[s.id]"
+                                                           class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-red-500 focus:ring-red-500">
+                                                    <div class="min-w-0">
+                                                        <div class="text-sm text-gray-200" x-text="s.label"></div>
+                                                        <div class="text-xs text-gray-500 truncate" x-text="s.detail || '—'"></div>
+                                                    </div>
+                                                </div>
+                                                <div class="text-sm font-mono text-gray-300 whitespace-nowrap"
+                                                     :class="{'text-gray-600': s.size_bytes === 0}"
+                                                     x-text="s.size_label"></div>
+                                            </label>
+                                        </template>
+                                        <div x-show="!$store.settings.purgeScanning && !$store.settings.purgeSections.length"
+                                             class="text-sm text-gray-500 text-center py-6">No sections returned.</div>
+                                    </div>
+
+                                    <div style="padding: 1rem 2.5rem;" class="border-t border-gray-700 flex items-center justify-between">
+                                        <div class="text-sm text-gray-300">
+                                            <span x-text="$store.settings.purgeSelectedCount()"></span> section(s) selected —
+                                            <span class="font-medium text-emerald-400">~<span x-text="$store.settings.purgeSelectedTotalLabel()"></span></span>
+                                            will be freed
+                                        </div>
+                                        <div class="flex gap-2">
+                                            <button @click="$store.settings.purgeModalOpen = false"
+                                                    class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm">Cancel</button>
+                                            <button @click="$store.settings.runPurgeSelected()"
+                                                    :disabled="$store.settings.purgeRunning || $store.settings.purgeSelectedCount() === 0"
+                                                    class="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-900/50 disabled:cursor-not-allowed rounded text-sm font-medium flex items-center gap-2">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                                </svg>
+                                                <span x-text="$store.settings.purgeRunning ? 'Purging…' : 'Purge selected'"></span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            </template>
                         </div>
                     </div>
 
@@ -3710,6 +4000,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
     <script src="js/agentic-chat.js?v=8"></script>
     <script src="js/engagement.js?v=14"></script>
     <script src="js/cve-scan.js?v=8"></script>
+    <script src="js/memory.js?v=6"></script>
     <script src="js/scheduler.js"></script>
     <!-- Azure date pickers -->
     <script>

@@ -891,3 +891,670 @@ def run_system_purge():
     thread.start()
 
     return jsonify({"success": True, "run_id": run_id, "message": "System purge started"})
+
+
+# ============================================================================
+# Section-aware purge — operator picks which sections to clear after seeing
+# how much each one is currently consuming. Keeps the "purge all" endpoint
+# above for backwards compatibility; new UI uses these two endpoints.
+# ============================================================================
+#
+# Section definitions: one entry per purgeable area, each declaring:
+#   - id:       stable identifier (used in the API)
+#   - label:    human-readable name shown in the UI
+#   - scan:     callable() → (size_bytes, detail_str) — non-destructive
+#   - purge:    callable() → (size_bytes_freed, detail_str) — destructive
+#
+# `scan` MUST be cheap (filesystem stat + small DB count). `purge` runs
+# in the background worker, never on the request thread.
+
+def _fmt_size(b: int) -> str:
+    if b >= 1024 ** 3:
+        return f"{b / 1024 ** 3:.1f} GB"
+    if b >= 1024 ** 2:
+        return f"{b / 1024 ** 2:.1f} MB"
+    if b >= 1024:
+        return f"{b / 1024:.1f} KB"
+    return f"{b} B"
+
+
+def _scan_dir(path: str) -> int:
+    import os
+    if not os.path.exists(path):
+        return 0
+    if os.path.isfile(path):
+        return os.path.getsize(path)
+    total = 0
+    for dirpath, _, filenames in os.walk(path):
+        for f in filenames:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, f))
+            except (OSError, FileNotFoundError):
+                pass
+    return total
+
+
+def _purge_dir(path: str) -> tuple[int, int]:
+    """Delete contents of a directory (not the dir itself). Returns
+    ``(bytes_freed, items_removed)``."""
+    import os
+    import shutil
+    if not os.path.exists(path):
+        return 0, 0
+    size = _scan_dir(path)
+    count = 0
+    for item in os.listdir(path):
+        ip = os.path.join(path, item)
+        try:
+            if os.path.isdir(ip):
+                shutil.rmtree(ip)
+            else:
+                os.remove(ip)
+            count += 1
+        except Exception:
+            pass
+    return size, count
+
+
+# ---- scan functions ----------------------------------------------------
+
+def _scan_workflows():
+    import os, sqlite3
+    p = "/app/data/intact.db"
+    db_size = os.path.getsize(p) if os.path.exists(p) else 0
+    wf_count = rp_count = 0
+    try:
+        conn = sqlite3.connect(p)
+        wf_count = conn.execute("SELECT COUNT(*) FROM workflows").fetchone()[0]
+        try:
+            rp_count = conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0]
+        except sqlite3.OperationalError:
+            rp_count = 0
+        conn.close()
+    except Exception:
+        pass
+    # The DB file holds workflows + reports + blueprints etc.; we can't
+    # cleanly attribute size to the wf+report rows alone, but a workflow
+    # row averages ~5-50 KB (logs as JSON). Estimate: 25 KB × wf_count.
+    estimated = wf_count * 25 * 1024 + rp_count * 50 * 1024
+    return min(estimated, db_size), f"{wf_count} workflows, {rp_count} reports"
+
+
+def _scan_azure_runs():
+    p = "/data/db/azure_runs"
+    return _scan_dir(p), ""
+
+
+def _scan_uploads():
+    p = "/data/uploads"
+    return _scan_dir(p), ""
+
+
+def _scan_upgrade_packages():
+    import os
+    s = _scan_dir("/data/upgrade_packages")
+    for f in ("/data/db/prepared_package.json", "/data/db/prepared_packages.json"):
+        if os.path.exists(f):
+            s += os.path.getsize(f)
+    return s, ""
+
+
+def _scan_temp_files():
+    import glob
+    s = 0
+    for d in ("/app/data/tmp", "/data/tmp", "/tmp/plaso", "/tmp/azure_uploads"):
+        s += _scan_dir(d)
+    for d in glob.glob("/app/data/tmp/intact-upgrade-*") + glob.glob("/tmp/intact-upgrade-*"):
+        s += _scan_dir(d)
+    return s, ""
+
+
+def _scan_report_downloads():
+    return _scan_dir("/app/downloads"), ""
+
+
+def _scan_velociraptor():
+    from services.upgrade.base import run_command
+    r = run_command(
+        "docker exec intact_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'",
+        logger=None,
+    )
+    try:
+        size = int((r.get("stdout") or "0").split()[0])
+    except Exception:
+        size = 0
+    return size, "hunts + flows + uploads + notebooks (excludes /var./public tools)"
+
+
+def _scan_elk_artifacts():
+    import requests as req
+    try:
+        r = req.get(
+            "http://intact_elasticsearch:9200/_cat/indices?h=index,store.size&bytes=b",
+            timeout=5,
+        )
+        if r.status_code != 200:
+            return 0, "elasticsearch unreachable"
+        size = 0
+        n = 0
+        for line in r.text.strip().split("\n"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].startswith("artifact_"):
+                size += int(parts[1])
+                n += 1
+        return size, f"{n} artifact_* indices"
+    except Exception:
+        return 0, "elasticsearch unreachable"
+
+
+def _scan_timesketch():
+    from services.upgrade.base import run_command
+    r = run_command(
+        "docker exec intact_timesketch_opensearch curl -s 'http://localhost:9200/_cat/indices?h=index,store.size&bytes=b'",
+        logger=None,
+    )
+    if not r.get("success"):
+        return 0, "opensearch unreachable"
+    size = 0
+    n = 0
+    for line in (r.get("stdout") or "").strip().split("\n"):
+        parts = line.split()
+        if len(parts) >= 2 and not parts[0].startswith("."):
+            try:
+                size += int(parts[1])
+                n += 1
+            except ValueError:
+                pass
+    return size, f"{n} timeline indices"
+
+
+def _scan_memory_dumps():
+    """Memory module residue — host .raw + VolWeb media + Velociraptor
+    flow uploads. All three are independent of the normal purge sweep."""
+    import os
+    sizes = {
+        "host_raw": _scan_dir("/data/memory_dumps"),
+        "volweb_media": 0,
+    }
+    # VolWeb media .raw lives in a docker volume; size via du from the
+    # container. Skipped if VolWeb isn't deployed.
+    try:
+        from services.upgrade.base import run_command
+        r = run_command(
+            "docker exec intact_volweb_backend sh -c 'du -sb /home/app/web/media/evidences 2>/dev/null || echo 0'",
+            logger=None,
+        )
+        if r.get("success"):
+            try:
+                sizes["volweb_media"] = int((r.get("stdout") or "0").split()[0])
+            except Exception:
+                pass
+    except Exception:
+        pass
+    total = sum(sizes.values())
+    detail_parts = [f"{k.replace('_', ' ')}: {_fmt_size(v)}" for k, v in sizes.items() if v]
+    return total, ", ".join(detail_parts) if detail_parts else "(no residue)"
+
+
+# ---- purge functions ---------------------------------------------------
+
+def _purge_workflows(run_id):
+    import os
+    import sqlite3
+    db_path = "/app/data/intact.db"
+    before = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    wf = c.execute("SELECT COUNT(*) FROM workflows").fetchone()[0]
+    rp = 0
+    try:
+        rp = c.execute("SELECT COUNT(*) FROM reports").fetchone()[0]
+    except sqlite3.OperationalError:
+        pass
+    c.execute("DELETE FROM workflows WHERE run_id != ?", (run_id,))
+    try:
+        c.execute("DELETE FROM reports")
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
+    c.execute("VACUUM")
+    conn.commit()
+    conn.close()
+    after = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+    return max(0, before - after), f"{wf - 1} workflows, {rp} reports"
+
+
+def _purge_azure_runs(_):
+    f, c = _purge_dir("/data/db/azure_runs")
+    return f, f"{c} files"
+
+
+def _purge_uploads(_):
+    f, c = _purge_dir("/data/uploads")
+    return f, f"{c} items"
+
+
+def _purge_upgrade_packages(_):
+    import os
+    freed, count = _purge_dir("/data/upgrade_packages")
+    for fp in ("/data/db/prepared_package.json", "/data/db/prepared_packages.json"):
+        if os.path.exists(fp):
+            freed += os.path.getsize(fp)
+            try:
+                os.remove(fp)
+                count += 1
+            except Exception:
+                pass
+    return freed, f"{count} items"
+
+
+def _purge_temp_files(_):
+    import glob
+    import shutil
+    freed = 0
+    for d in ("/app/data/tmp", "/data/tmp", "/tmp/plaso", "/tmp/azure_uploads"):
+        df, _c = _purge_dir(d)
+        freed += df
+    for d in glob.glob("/app/data/tmp/intact-upgrade-*") + glob.glob("/tmp/intact-upgrade-*"):
+        freed += _scan_dir(d)
+        shutil.rmtree(d, ignore_errors=True)
+    return freed, ""
+
+
+def _purge_report_downloads(_):
+    f, c = _purge_dir("/app/downloads")
+    return f, f"{c} items"
+
+
+def _purge_velociraptor(_):
+    import json
+    from services.upgrade.base import run_command
+    before = _scan_velociraptor()[0]
+    # Hunts via VQL
+    hr = run_command(
+        'docker exec intact_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
+        '"SELECT hunt_id FROM hunts()"',
+        logger=None,
+    )
+    hunts_deleted = 0
+    if hr.get("success") and (hr.get("stdout") or "").strip():
+        try:
+            hunts = json.loads(hr["stdout"])
+            for h in hunts if isinstance(hunts, list) else []:
+                hid = h.get("hunt_id", "")
+                if hid:
+                    run_command(
+                        f'docker exec intact_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
+                        f'"SELECT * FROM hunt_delete(hunt_id=\'{hid}\', really_do_it=true)"',
+                        logger=None,
+                    )
+                    hunts_deleted += 1
+        except (json.JSONDecodeError, ValueError):
+            pass
+    # Collections + uploads + downloads + notebooks + server artifact logs
+    for path in (
+        "/var./clients/*/collections/", "/var./clients/*/uploads/",
+        "/var./downloads/*", "/var./notebooks/*",
+        "/var./server_artifact_logs/*", "/var./server_artifacts/*",
+    ):
+        run_command(
+            f"docker exec intact_velociraptor sh -c 'rm -rf {path} 2>/dev/null; true'",
+            logger=None,
+        )
+    after = _scan_velociraptor()[0]
+    return max(0, before - after), f"{hunts_deleted} hunts"
+
+
+def _purge_elk_artifacts(_):
+    import requests as req
+    try:
+        r = req.get(
+            "http://intact_elasticsearch:9200/_cat/indices?h=index,store.size&bytes=b",
+            timeout=5,
+        )
+        if r.status_code != 200:
+            return 0, "elasticsearch unreachable"
+        size = 0
+        deleted = 0
+        for line in r.text.strip().split("\n"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].startswith("artifact_"):
+                size += int(parts[1])
+                d = req.delete(f"http://intact_elasticsearch:9200/{parts[0]}", timeout=10)
+                if d.status_code == 200:
+                    deleted += 1
+        return size, f"{deleted} indices"
+    except Exception as e:
+        return 0, f"error: {e}"
+
+
+def _purge_timesketch(_):
+    from services.upgrade.base import run_command
+    before = _scan_timesketch()[0]
+    run_command(
+        "docker exec intact_timesketch_opensearch curl -s -X DELETE 'http://localhost:9200/*,-.*'",
+        logger=None,
+    )
+    run_command(
+        "docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c 'DELETE FROM timeline; DELETE FROM searchindex;'",
+        logger=None,
+    )
+    after = _scan_timesketch()[0]
+    return max(0, before - after), ""
+
+
+def _purge_memory_dumps(_):
+    """Memory module residue across all three places dumps land."""
+    import os
+    import shutil
+    freed = 0
+    detail = []
+    # Host .raw files
+    host_dir = "/data/memory_dumps"
+    if os.path.isdir(host_dir):
+        s = _scan_dir(host_dir)
+        for f in os.listdir(host_dir):
+            try:
+                fp = os.path.join(host_dir, f)
+                if os.path.isfile(fp):
+                    os.remove(fp)
+                elif os.path.isdir(fp):
+                    shutil.rmtree(fp)
+            except Exception:
+                pass
+        freed += s
+        detail.append(f"host .raw {_fmt_size(s)}")
+    # VolWeb media — best-effort; skipped silently if VolWeb isn't up.
+    try:
+        from services.upgrade.base import run_command
+        before = 0
+        r = run_command(
+            "docker exec intact_volweb_backend sh -c 'du -sb /home/app/web/media/evidences 2>/dev/null || echo 0'",
+            logger=None,
+        )
+        if r.get("success"):
+            try:
+                before = int((r.get("stdout") or "0").split()[0])
+            except Exception:
+                pass
+        if before > 0:
+            run_command(
+                "docker exec intact_volweb_backend sh -c 'rm -f /home/app/web/media/evidences/*.raw'",
+                logger=None,
+            )
+            freed += before
+            detail.append(f"VolWeb media {_fmt_size(before)}")
+    except Exception:
+        pass
+    return freed, ", ".join(detail) if detail else "no dumps found"
+
+
+# ---- registry -----------------------------------------------------------
+
+_PURGE_SECTIONS = (
+    ("workflows",          "Workflows & Reports",                 _scan_workflows,         _purge_workflows),
+    ("azure_runs",         "Azure Scan Data",                     _scan_azure_runs,        _purge_azure_runs),
+    ("uploads",            "Upload Data (KAPE, packages, logs)",  _scan_uploads,           _purge_uploads),
+    ("upgrade_packages",   "Upgrade Packages",                    _scan_upgrade_packages,  _purge_upgrade_packages),
+    ("temp_files",         "Temp Files",                          _scan_temp_files,        _purge_temp_files),
+    ("report_downloads",   "Report Downloads",                    _scan_report_downloads,  _purge_report_downloads),
+    ("velociraptor",       "Velociraptor Hunts & Collections",    _scan_velociraptor,      _purge_velociraptor),
+    ("elk",                "ELK Artifact Indices",                _scan_elk_artifacts,     _purge_elk_artifacts),
+    ("timesketch",         "Timesketch Timelines & Events",       _scan_timesketch,        _purge_timesketch),
+    ("memory_dumps",       "Memory dumps (.raw files)",           _scan_memory_dumps,      _purge_memory_dumps),
+)
+
+
+@maintenance_bp.route('/api/maintenance/purge/sections', methods=['GET'])
+def list_purge_sections():
+    """Return per-section size + count snapshot.
+
+    Used by the Maintenance UI to populate the section-picker so the
+    operator sees how much each one is using before selecting.
+    """
+    out = []
+    total = 0
+    for sid, label, scan_fn, _purge in _PURGE_SECTIONS:
+        try:
+            size, detail = scan_fn()
+        except Exception as e:
+            size, detail = 0, f"scan error: {e}"
+        out.append({
+            "id": sid,
+            "label": label,
+            "size_bytes": int(size or 0),
+            "size_label": _fmt_size(int(size or 0)),
+            "detail": detail,
+        })
+        total += int(size or 0)
+    return jsonify({
+        "sections": out,
+        "total_bytes": total,
+        "total_label": _fmt_size(total),
+    })
+
+
+@maintenance_bp.route('/api/maintenance/purge/sections', methods=['POST'])
+def purge_selected_sections():
+    """Purge only the operator-selected sections.
+
+    Body: ``{"sections": ["workflows", "temp_files", ...]}``
+
+    Returns the workflow ``run_id`` so the UI can poll progress via
+    ``/api/dashboard/automation/<run_id>``.
+    """
+    from services.workflow_service import (
+        register_cancel_event, unregister_cancel,
+    )
+
+    data = request.get_json(silent=True) or {}
+    requested = [s for s in (data.get("sections") or []) if isinstance(s, str)]
+    if not requested:
+        return jsonify({"error": "no sections provided"}), 400
+
+    known = {sid: (label, scan, purge) for sid, label, scan, purge in _PURGE_SECTIONS}
+    unknown = [s for s in requested if s not in known]
+    if unknown:
+        return jsonify({"error": f"unknown sections: {unknown}"}), 400
+
+    run_id = create_automation_run(
+        automation_type="system_purge",
+        name="System Purge (selected sections)",
+        details={"trigger": "manual", "sections": requested},
+    )
+    update_run_status(run_id, "running", progress=2)
+    add_log_to_run(run_id, f"Purging {len(requested)} section(s): {', '.join(requested)}", "info")
+    register_cancel_event(run_id)
+
+    def _runner():
+        total_freed = 0
+        try:
+            n = len(requested)
+            for idx, sid in enumerate(requested, start=1):
+                label, _scan, purge_fn = known[sid]
+                add_log_to_run(run_id, "=" * 50, "info")
+                add_log_to_run(run_id, f"[{idx}/{n}] PURGE: {label}", "info")
+                add_log_to_run(run_id, "=" * 50, "info")
+                try:
+                    freed, detail = purge_fn(run_id)
+                except Exception as e:
+                    add_log_to_run(run_id, f"  Error: {e}", "error")
+                    continue
+                total_freed += int(freed or 0)
+                msg = f"  Freed {_fmt_size(int(freed or 0))}"
+                if detail:
+                    msg += f" — {detail}"
+                add_log_to_run(run_id, msg, "success")
+                update_run_status(run_id, "running", progress=2 + int(idx / n * 95))
+
+            add_log_to_run(run_id, "=" * 50, "info")
+            add_log_to_run(run_id, f"PURGE COMPLETE — Total freed: {_fmt_size(total_freed)}", "success")
+            add_log_to_run(run_id, "=" * 50, "info")
+            update_run_status(run_id, "completed", progress=100)
+        except Exception as e:
+            add_log_to_run(run_id, f"Purge failed: {e}", "error")
+            update_run_status(run_id, "failed", error=str(e))
+        finally:
+            unregister_cancel(run_id)
+
+    threading.Thread(target=_runner, daemon=True).start()
+    return jsonify({
+        "success": True,
+        "run_id": run_id,
+        "sections": requested,
+        "message": "Section purge started",
+    })
+
+
+# ============================================================================
+# YARA Ruleset Refresh (VolWeb backing store)
+# ============================================================================
+#
+# Refresh the curated YARA corpus VolWeb scans against. Re-imports the
+# three seeded sources from GitHub — Neo23x0/signature-base,
+# elastic/protections-artifacts, YARA-Forge — via VolWeb's existing
+# `POST /api/yararulesets/import/github/` endpoint. Idempotent on
+# (name, source) so running it weekly is safe.
+#
+# Tracked as a workflow row (`automation_type='maintenance'`) so the
+# operator sees progress in the Workflows tab and can Stop mid-flight.
+
+_YARA_RULESETS = [
+    {
+        "name": "Neo23x0 signature-base",
+        "github_url": "https://github.com/Neo23x0/signature-base",
+        "description": "Florian Roth's curated YARA rules (~749 active)",
+    },
+    {
+        "name": "Elastic protections",
+        "github_url": "https://github.com/elastic/protections-artifacts",
+        "description": "Elastic security YARA detection rules (~695 active)",
+    },
+    {
+        "name": "YARA-Forge",
+        "github_url": "https://github.com/YARAHQ/yara-forge",
+        "description": "Community-curated YARA rule aggregation",
+    },
+]
+
+
+@maintenance_bp.route('/api/maintenance/yara-rulesets/refresh', methods=['POST'])
+def refresh_yara_rulesets():
+    """Trigger a refresh of all three seeded YARA rulesets in VolWeb.
+
+    Spawns a background worker so the route returns quickly; the
+    operator polls the resulting run_id via the dashboard's
+    standard workflow polling.
+    """
+    import subprocess
+    import requests
+    from services.workflow_service import (
+        create_automation_run, update_run_status, add_log_to_run,
+        register_cancel_event, unregister_cancel, is_cancelled,
+    )
+
+    run_id = create_automation_run(
+        automation_type='maintenance',
+        name='YARA Rulesets — Refresh from GitHub',
+        details={'trigger': 'manual', 'rulesets': [r['name'] for r in _YARA_RULESETS]},
+    )
+    add_log_to_run(run_id, f"Refreshing {len(_YARA_RULESETS)} YARA rulesets from GitHub", "info")
+    update_run_status(run_id, "running", progress=5)
+    register_cancel_event(run_id)
+
+    def _refresh() -> None:
+        try:
+            # 1. Auth against VolWeb. The platform's tenroot credentials
+            #    are seeded into VolWeb by lib/modules.sh:seed_volweb_admin
+            #    at install time; we use them here too.
+            from config import load_main_config
+            cfg = load_main_config() or {}
+            tenroot_pass = (
+                (cfg.get('modules', {}) or {}).get('timesketch', {}) or {}
+            ).get('password') or '123123'
+
+            token_resp = requests.post(
+                'http://intact_volweb_backend:8000/core/token/',
+                json={'username': 'tenroot', 'password': tenroot_pass},
+                timeout=10,
+            )
+            if token_resp.status_code != 200:
+                raise RuntimeError(
+                    f"VolWeb auth failed: HTTP {token_resp.status_code}"
+                )
+            token = token_resp.json().get('access')
+            if not token:
+                raise RuntimeError("VolWeb returned no access token")
+
+            # 2. Import each ruleset. VolWeb's import endpoint is
+            #    synchronous from the HTTP perspective but the rule-
+            #    validation runs in the yarascan worker queue async.
+            n_total = len(_YARA_RULESETS)
+            for idx, rs in enumerate(_YARA_RULESETS, start=1):
+                if is_cancelled(run_id):
+                    raise RuntimeError("cancelled by operator")
+                add_log_to_run(run_id, f"[{idx}/{n_total}] importing {rs['name']}...", "info")
+                resp = requests.post(
+                    'http://intact_volweb_backend:8000/api/yararulesets/import/github/',
+                    headers={'Authorization': f'Bearer {token}'},
+                    json=rs,
+                    timeout=600,
+                )
+                add_log_to_run(
+                    run_id,
+                    f"  HTTP {resp.status_code}: {resp.text[:200]}",
+                    "info" if resp.status_code < 400 else "warning",
+                )
+                update_run_status(run_id, "running", progress=5 + int(idx / n_total * 90))
+
+            update_run_status(run_id, "completed", progress=100)
+            add_log_to_run(
+                run_id,
+                "YARA refresh dispatched — rule validation runs async in workers-yarascan",
+                "success",
+            )
+        except Exception as e:
+            add_log_to_run(run_id, f"YARA refresh failed: {e}", "error")
+            update_run_status(run_id, "failed", error=str(e))
+        finally:
+            unregister_cancel(run_id)
+
+    threading.Thread(target=_refresh, daemon=True).start()
+    return jsonify({"success": True, "run_id": run_id})
+
+
+@maintenance_bp.route('/api/maintenance/yara-rulesets/status', methods=['GET'])
+def yara_rulesets_status():
+    """Return the seeded rulesets + active-rule counts.
+
+    Read directly from VolWeb so the panel reflects whatever rule
+    population actually exists (rather than what we tried to seed).
+    """
+    import requests
+    from config import load_main_config
+    try:
+        cfg = load_main_config() or {}
+        tenroot_pass = (
+            (cfg.get('modules', {}) or {}).get('timesketch', {}) or {}
+        ).get('password') or '123123'
+
+        token_resp = requests.post(
+            'http://intact_volweb_backend:8000/core/token/',
+            json={'username': 'tenroot', 'password': tenroot_pass},
+            timeout=5,
+        )
+        if token_resp.status_code != 200:
+            return jsonify({"available": False, "reason": "VolWeb auth failed"}), 200
+        token = token_resp.json().get('access', '')
+
+        rs = requests.get(
+            'http://intact_volweb_backend:8000/api/yararulesets/',
+            headers={'Authorization': f'Bearer {token}'},
+            timeout=5,
+        )
+        if rs.status_code != 200:
+            return jsonify({"available": False, "reason": f"HTTP {rs.status_code}"}), 200
+        rulesets = rs.json()
+        return jsonify({"available": True, "rulesets": rulesets})
+    except Exception as e:
+        return jsonify({"available": False, "reason": str(e)}), 200

@@ -133,6 +133,33 @@ def seed_default_blueprints():
                 save_timesketch_blueprint(existing)
                 print(f"[BLUEPRINTS] Updated timesketch default: {bp['id']}", flush=True)
 
+    # Memory-forensics blueprints
+    from services.storage.blueprint_store import (
+        load_memory_blueprints,
+        save_memory_blueprint,
+    )
+    mem_defaults = blueprints.get('memory', [])
+    existing_mem = load_memory_blueprints()
+
+    if not existing_mem:
+        for bp in mem_defaults:
+            save_memory_blueprint(bp)
+        print(f"[BLUEPRINTS] Seeded {len(mem_defaults)} memory blueprints from YAML", flush=True)
+    else:
+        existing_map = {bp.get('id'): bp for bp in existing_mem}
+        for default_bp in mem_defaults:
+            existing = existing_map.get(default_bp['id'])
+            if not existing:
+                save_memory_blueprint(default_bp)
+                print(f"[BLUEPRINTS] Re-seeded missing memory default: {default_bp['id']}", flush=True)
+            elif existing.get('is_default'):
+                # Sync defaults from YAML — operator's custom blueprints stay untouched.
+                existing['name'] = default_bp['name']
+                existing['description'] = default_bp.get('description', '')
+                existing['settings'] = default_bp.get('settings', existing.get('settings', {}))
+                save_memory_blueprint(existing)
+                print(f"[BLUEPRINTS] Synced memory default from YAML: {default_bp['id']}", flush=True)
+
 
 # Seed on module load
 seed_default_blueprints()

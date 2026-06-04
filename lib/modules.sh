@@ -963,6 +963,179 @@ deploy_portainer() {
 }
 
 # ============================================================================
+# VolWeb Module (memory-forensics analysis stack)
+# ============================================================================
+
+deploy_volweb() {
+    local volweb_enabled=$(read_config "['modules']['memory']['enabled']")
+    if ! is_enabled "$volweb_enabled"; then
+        log_info "[5b/7] VolWeb: SKIPPED (memory module disabled in config)"
+        return
+    fi
+
+    log_info "[5b/7] Starting VolWeb (memory-forensics)..."
+    log_info "  Directory: ${SCRIPT_DIR}/modules/volweb"
+    cd "${SCRIPT_DIR}/modules/volweb"
+
+    # Render modules/volweb/.env from the template + config.yaml pins.
+    # Idempotent: existing .env is preserved across re-installs so the
+    # operator's rotated DJANGO_SECRET + postgres password persist.
+    local env_out="${SCRIPT_DIR}/modules/volweb/.env"
+    local env_tmpl="${SCRIPT_DIR}/modules/volweb/.env.template"
+
+    if [[ -f "$env_out" ]]; then
+        log_info "  modules/volweb/.env already present (skip render — secrets preserved)"
+    elif [[ -f "$env_tmpl" ]]; then
+        local backend_ver=$(read_config "['versions']['volweb_backend']")
+        local frontend_ver=$(read_config "['versions']['volweb_frontend']")
+        local pg_ver=$(read_config "['versions']['volweb_postgres']")
+        local redis_ver=$(read_config "['versions']['volweb_redis']")
+        local domain=$(read_config "['domain']")
+        # Per-install random secrets. Mirrors the IRIS_SECRET_KEY +
+        # Timesketch SECRET_KEY pattern shipped earlier this session.
+        local django_secret=$(openssl rand -hex 32)
+        local pg_password=$(openssl rand -hex 24)
+        # CSRF: the IntactAI dashboard hits VolWeb through intact_nginx
+        # AND from the backend container. Cover both shapes.
+        local csrf="https://${domain},http://intact_nginx,http://intact_backend:5001,http://intact_volweb_backend:8000"
+
+        cp "$env_tmpl" "$env_out"
+        sed -i \
+            -e "s|__VOLWEB_BACKEND_VERSION__|${backend_ver:-latest}|g" \
+            -e "s|__VOLWEB_FRONTEND_VERSION__|${frontend_ver:-latest}|g" \
+            -e "s|__VOLWEB_POSTGRES_VERSION__|${pg_ver:-14.1}|g" \
+            -e "s|__VOLWEB_REDIS_VERSION__|${redis_ver:-7}|g" \
+            -e "s|__VOLWEB_DJANGO_SECRET__|${django_secret}|g" \
+            -e "s|__VOLWEB_POSTGRES_PASSWORD__|${pg_password}|g" \
+            -e "s|__VOLWEB_CSRF_TRUSTED_ORIGINS__|${csrf}|g" \
+            "$env_out"
+        log_success "  modules/volweb/.env rendered (per-install secrets generated)"
+    else
+        log_warn "  modules/volweb/.env.template missing — skipping VolWeb"
+        return 1
+    fi
+
+    if ! pull_compose_with_retry "VolWeb"; then
+        track_module_failure "VolWeb"
+        return 1
+    fi
+
+    if ! run_docker_compose "up -d" "VolWeb"; then
+        log_error "  Docker compose failed!"
+        track_module_failure "VolWeb"
+        return 1
+    fi
+
+    # Wait for the backend's healthcheck endpoint. Daphne takes a few
+    # seconds to bind after the container starts.
+    log_info "  Waiting for VolWeb backend to be ready..."
+    local volweb_wait=0
+    while [[ $volweb_wait -lt 90 ]]; do
+        if docker exec intact_volweb_backend curl -sf -o /dev/null \
+            http://localhost:8000/api/health 2>/dev/null \
+            || docker exec intact_volweb_backend curl -sI -o /dev/null \
+            -w "%{http_code}" http://localhost:8000/ 2>/dev/null | grep -qE "^(200|301|302|404)$"; then
+            log_success "  VolWeb backend ready (${volweb_wait}s)"
+            break
+        fi
+        sleep 5
+        ((volweb_wait+=5))
+    done
+    if [[ $volweb_wait -ge 90 ]]; then
+        log_warn "  VolWeb backend not responding after 90s"
+        capture_diagnostic_logs "VolWeb (backend start timeout)" intact_volweb_backend
+    fi
+
+    # Seed VolWeb admin user with the platform's tenroot credentials so
+    # the IntactAI backend can auth without baking a second password
+    # into ops. Idempotent — re-runs harmlessly skip.
+    if ! seed_volweb_admin; then
+        log_warn "  VolWeb admin seeding had issues — operator may need to do it manually"
+    fi
+
+    # Seed YARA rulesets via the VolWeb GitHub-import API. ~50 MB of
+    # text into VolWeb's postgres; ~3 min on a fast link. Idempotent
+    # — VolWeb dedupes on the (name, source) tuple.
+    if ! seed_yara_rulesets; then
+        log_warn "  YARA ruleset seeding had issues — refresh via Maintenance later"
+    fi
+
+    track_module_success "VolWeb"
+}
+
+
+seed_volweb_admin() {
+    # Use the platform's admin creds (tenroot:<config password>) so
+    # the IntactAI backend can talk to VolWeb without a separate
+    # secret store entry. POST /api/users/create/ is idempotent on
+    # username collision.
+    local tenroot_user="tenroot"
+    local tenroot_pass=$(read_config "['modules']['timesketch']['password']")
+    [[ -z "$tenroot_pass" ]] && tenroot_pass="123123"
+
+    log_info "  Seeding VolWeb admin user (${tenroot_user})..."
+    docker exec intact_volweb_backend python3 manage.py shell <<EOF 2>&1 | tail -3
+from django.contrib.auth import get_user_model
+U = get_user_model()
+u, created = U.objects.get_or_create(username='${tenroot_user}', defaults={'is_superuser': True, 'is_staff': True})
+u.is_superuser = True
+u.is_staff = True
+u.set_password('${tenroot_pass}')
+u.save()
+print('CREATED' if created else 'UPDATED', 'admin', u.username)
+EOF
+    return $?
+}
+
+
+seed_yara_rulesets() {
+    # Three sources for the curated YARA corpus. Each is POSTed to
+    # /api/yararulesets/import/github/ which clones the repo +
+    # ingests every .yar / .yara file recursively.
+    local volweb_pass=$(read_config "['modules']['timesketch']['password']")
+    [[ -z "$volweb_pass" ]] && volweb_pass="123123"
+
+    log_info "  Seeding YARA rulesets (~3 min)..."
+
+    # Get a JWT for the admin user we just seeded.
+    local token=$(docker exec intact_volweb_backend curl -s -X POST \
+        -H 'Content-Type: application/json' \
+        -d "{\"username\":\"tenroot\",\"password\":\"${volweb_pass}\"}" \
+        http://localhost:8000/core/token/ \
+        | python3 -c 'import sys,json; print(json.load(sys.stdin).get("access",""))' 2>/dev/null)
+    if [[ -z "$token" ]]; then
+        log_warn "    Could not get VolWeb JWT — skipping YARA seed"
+        return 1
+    fi
+
+    # Tuples: name | github url | description
+    local rulesets=(
+        "Neo23x0 signature-base|https://github.com/Neo23x0/signature-base|Florian Roth's curated YARA rules (~749 active)"
+        "Elastic protections|https://github.com/elastic/protections-artifacts|Elastic security YARA detection rules (~695 active)"
+        "YARA-Forge|https://github.com/YARAHQ/yara-forge|Community-curated YARA rule aggregation"
+    )
+
+    for entry in "${rulesets[@]}"; do
+        local name="${entry%%|*}"
+        local rest="${entry#*|}"
+        local url="${rest%%|*}"
+        local desc="${rest#*|}"
+
+        log_info "    - ${name}..."
+        local resp=$(docker exec intact_volweb_backend curl -s -X POST \
+            -H "Authorization: Bearer ${token}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"name\":\"${name}\",\"github_url\":\"${url}\",\"description\":\"${desc}\"}" \
+            http://localhost:8000/api/yararulesets/import/github/)
+        log_info "      ${resp:0:200}"
+    done
+
+    log_success "  YARA seeding dispatched (rule validation runs async in workers-yarascan)"
+    return 0
+}
+
+
+# ============================================================================
 # Backend API Module
 # ============================================================================
 
@@ -1120,6 +1293,8 @@ start_services() {
     deploy_iris
     echo ""
     deploy_portainer
+    echo ""
+    deploy_volweb
     echo ""
     deploy_backend
     echo ""

@@ -382,3 +382,80 @@ azure:
         - unified_audit
       time_range_days: 30
       min_severity: low
+
+
+# ============================================================================
+# Memory Forensics Blueprints
+# ============================================================================
+# Three modes that share the same Velociraptor acquisition + VolWeb
+# extraction backbone but differ in what gets fed to the LLM:
+#
+#   * memory_layered_default     — both Vol3 plugins AND yarascan (default)
+#   * memory_yara_only_triage    — yarascan only; ~20x cheaper LLM bill
+#   * memory_plugin_only         — Vol3 plugins only; behavioural context
+#                                  without a signature corpus
+#
+# The 12-plugin curated set (excludes HollowProcesses — known to take
+# 12+ min on a 5 GB dump) is the empirically validated sweet spot from
+# the PoC at ~/volweb-poc/.
+memory:
+
+  - id: memory_layered_default
+    name: "Layered (recommended)"
+    description: "Both Vol3 plugins AND yarascan, fed to the LLM with a tiered prompt. Best for single-host deep analysis — attributes YARA hits to specific PIDs."
+    is_default: true
+    settings:
+      mode: layered
+      plugin_set:
+        - volatility3.plugins.windows.pslist.PsList
+        - volatility3.plugins.windows.psscan.PsScan
+        - volatility3.plugins.windows.pstree.PsTree
+        - volatility3.plugins.windows.cmdline.CmdLine
+        - volatility3.plugins.windows.dlllist.DllList
+        - volatility3.plugins.windows.malfind.Malfind
+        - volatility3.plugins.windows.svcscan.SvcScan
+        - volatility3.plugins.windows.mutantscan.MutantScan
+        - volatility3.plugins.windows.netscan.NetScan
+        - volatility3.plugins.windows.netstat.NetStat
+        - volatility3.plugins.windows.registry.userassist.UserAssist
+        - volatility3.plugins.windows.registry.printkey.PrintKey
+      yara_rulesets: []           # empty = all seeded
+      compression: "None"         # MUST stay None — see services/memory/defaults.py
+      max_bytes: 68719476736      # 64 GiB cap
+      cpu_limit: 80
+
+  - id: memory_yara_only_triage
+    name: "YARA-only (scale-out triage)"
+    description: "Yarascan hits only, ~20x cheaper LLM bill. Use for fan-out hunting across many hosts. Graduates to layered analysis only on hosts with multiple distinct rule families."
+    is_default: true
+    settings:
+      mode: yara
+      plugin_set: []              # plugin extraction is skipped in this mode
+      yara_rulesets: []
+      compression: "None"
+      max_bytes: 68719476736
+      cpu_limit: 80
+
+  - id: memory_plugin_only
+    name: "Plugins only (no signatures)"
+    description: "Vol3 plugin output only — behavioural context without a signature corpus. Use when YARA would add no signal (e.g. zero-day or living-off-the-land suspected) or when no LLM API key is configured."
+    is_default: true
+    settings:
+      mode: plugin
+      plugin_set:
+        - volatility3.plugins.windows.pslist.PsList
+        - volatility3.plugins.windows.psscan.PsScan
+        - volatility3.plugins.windows.pstree.PsTree
+        - volatility3.plugins.windows.cmdline.CmdLine
+        - volatility3.plugins.windows.dlllist.DllList
+        - volatility3.plugins.windows.malfind.Malfind
+        - volatility3.plugins.windows.svcscan.SvcScan
+        - volatility3.plugins.windows.mutantscan.MutantScan
+        - volatility3.plugins.windows.netscan.NetScan
+        - volatility3.plugins.windows.netstat.NetStat
+        - volatility3.plugins.windows.registry.userassist.UserAssist
+        - volatility3.plugins.windows.registry.printkey.PrintKey
+      yara_rulesets: []
+      compression: "None"
+      max_bytes: 68719476736
+      cpu_limit: 80

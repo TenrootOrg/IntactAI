@@ -22,6 +22,7 @@ from routes.aws_routes import aws_bp
 from routes.support_bundle_routes import support_bundle_bp
 from routes.engagement_routes import engagement_bp
 from routes.cve_routes import cve_bp
+from routes.memory_routes import memory_bp
 
 __all__ = [
     'client_bp',
@@ -44,4 +45,5 @@ __all__ = [
     'support_bundle_bp',
     'engagement_bp',
     'cve_bp',
+    'memory_bp',
 ]

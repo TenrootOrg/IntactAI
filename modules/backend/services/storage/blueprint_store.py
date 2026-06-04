@@ -14,6 +14,7 @@ from .base import get_connection, row_to_dict
 _BLUEPRINT_CONFIGS = {
     'velociraptor': {'table': 'blueprints_velociraptor', 'has_artifacts': True, 'json_fields': ['artifacts', 'settings']},
     'timesketch': {'table': 'blueprints_timesketch', 'has_artifacts': False, 'json_fields': ['settings']},
+    'memory': {'table': 'blueprints_memory', 'has_artifacts': False, 'json_fields': ['settings']},
 }
 
 
@@ -157,3 +158,44 @@ def get_timesketch_blueprint(blueprint_id: str) -> Optional[Dict[str, Any]]:
 
 def delete_timesketch_blueprint(blueprint_id: str) -> bool:
     return _delete_blueprint('timesketch', blueprint_id)
+
+
+# ============================================================================
+# Memory-forensics Blueprint Storage
+# ============================================================================
+
+def save_memory_blueprint(blueprint_data: Dict[str, Any]) -> bool:
+    return _save_blueprint('memory', blueprint_data)
+
+def load_memory_blueprints() -> List[Dict[str, Any]]:
+    return _load_blueprints('memory')
+
+def get_memory_blueprint(blueprint_id: str) -> Optional[Dict[str, Any]]:
+    return _get_blueprint('memory', blueprint_id)
+
+def delete_memory_blueprint(blueprint_id: str) -> bool:
+    return _delete_blueprint('memory', blueprint_id)
+
+
+# ============================================================================
+# Public type-dispatch wrappers (used by routes that know the type at runtime)
+# ============================================================================
+
+def save_blueprint(blueprint_type: str, blueprint_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Save and return the saved blueprint (or None on failure)."""
+    ok = _save_blueprint(blueprint_type, blueprint_data)
+    if not ok:
+        return None
+    return _get_blueprint(blueprint_type, blueprint_data.get('id'))
+
+
+def list_blueprints(blueprint_type: str) -> List[Dict[str, Any]]:
+    return _load_blueprints(blueprint_type)
+
+
+def get_blueprint(blueprint_type: str, blueprint_id: str) -> Optional[Dict[str, Any]]:
+    return _get_blueprint(blueprint_type, blueprint_id)
+
+
+def delete_blueprint(blueprint_type: str, blueprint_id: str) -> bool:
+    return _delete_blueprint(blueprint_type, blueprint_id)

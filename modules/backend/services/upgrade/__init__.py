@@ -37,6 +37,7 @@ from .intact import upgrade_intact, upgrade_intact_offline
 from .plaso import upgrade_plaso, upgrade_plaso_offline
 from .aws import upgrade_aws, upgrade_aws_offline
 from .azure import upgrade_azure, upgrade_azure_offline
+from .volweb import upgrade_volweb, upgrade_volweb_offline
 
 # Storage functions for two-phase upgrade state
 from services.storage.base import (
@@ -207,7 +208,7 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
     db_overwrite = db_overwrite or {}
 
     # Intact.AI must be first so backend code is updated before modules
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure', 'volweb']
     upgrade_functions = {
         'elk': upgrade_elk,
         'timesketch': upgrade_timesketch,
@@ -216,6 +217,7 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
         'velociraptor': upgrade_velociraptor,
         'aws': upgrade_aws,
         'azure': upgrade_azure,
+        'volweb': upgrade_volweb,
         'intact': upgrade_intact,
     }
 
@@ -445,6 +447,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'velociraptor': lambda v, **kw: upgrade_velociraptor_offline(package_dir, v, **kw),
             'aws': lambda v, **kw: upgrade_aws_offline(package_dir, v, **kw),
             'azure': lambda v, **kw: upgrade_azure_offline(package_dir, v, **kw),
+            'volweb': lambda v, **kw: upgrade_volweb_offline(package_dir, v, **kw),
             'intact': lambda **kw: upgrade_intact_offline(package_dir, **kw),
         }
     else:

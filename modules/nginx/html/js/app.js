@@ -648,21 +648,114 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        async runPurge() {
-            if (!confirm('This will delete ALL workflows, reports, uploads, temp files, and Velociraptor hunt data.\n\nThis cannot be undone. Continue?')) return;
-            this.saving = true;
+        // ===== Section-aware purge =====
+        // Two-step UX: (1) operator clicks "Purge…" → modal opens,
+        // we GET /api/maintenance/purge/sections to populate per-section
+        // sizes + counts. Operator ticks the sections they want gone.
+        // (2) operator clicks "Purge selected" → POST with the chosen IDs.
+        purgeModalOpen: false,
+        purgeSections: [],
+        purgeSelected: {},          // {section_id: bool}
+        purgeScanning: false,
+        purgeRunning: false,
+        purgeError: '',
+
+        /** Open the modal and scan sizes. */
+        async openPurgeModal() {
+            this.purgeModalOpen = true;
+            this.purgeError = '';
+            this.purgeSelected = {};
+            await this.refreshPurgeSizes();
+        },
+
+        async refreshPurgeSizes() {
+            this.purgeScanning = true;
+            this.purgeError = '';
             try {
-                const response = await fetch('/api/maintenance/purge', { method: 'POST' });
-                const result = await response.json();
-                if (result.run_id) {
-                    this.showMessage('Purge started - redirecting to Workflows', 'info');
-                    setTimeout(() => { Alpine.store('app').switchTab('workflows'); }, 500);
+                const r = await fetch('/api/maintenance/purge/sections');
+                const j = await r.json();
+                if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+                this.purgeSections = j.sections || [];
+                // Default-checked: nothing. Operator must pick explicitly.
+                if (Object.keys(this.purgeSelected).length === 0) {
+                    for (const s of this.purgeSections) this.purgeSelected[s.id] = false;
                 }
             } catch (e) {
-                this.showMessage('Purge error: ' + e.message, 'error');
+                this.purgeError = 'Scan failed: ' + e.message;
+            } finally {
+                this.purgeScanning = false;
             }
-            this.saving = false;
         },
+
+        /** Sum of currently-checked sections — shown live in the footer. */
+        purgeSelectedTotalBytes() {
+            return (this.purgeSections || [])
+                .filter(s => this.purgeSelected[s.id])
+                .reduce((acc, s) => acc + (s.size_bytes || 0), 0);
+        },
+
+        _fmtBytes(b) {
+            if (b >= 1024**3) return (b / 1024**3).toFixed(1) + ' GB';
+            if (b >= 1024**2) return (b / 1024**2).toFixed(1) + ' MB';
+            if (b >= 1024)    return (b / 1024).toFixed(1) + ' KB';
+            return b + ' B';
+        },
+
+        purgeSelectedTotalLabel() {
+            return this._fmtBytes(this.purgeSelectedTotalBytes());
+        },
+
+        /** Grand total of every section's size — shown in the modal
+         *  header strip so the operator sees the "if I purge
+         *  everything" number before they tick anything. */
+        purgeGrandTotalLabel() {
+            const total = (this.purgeSections || [])
+                .reduce((acc, s) => acc + (s.size_bytes || 0), 0);
+            return this._fmtBytes(total);
+        },
+
+        purgeSelectedCount() {
+            return Object.values(this.purgeSelected).filter(Boolean).length;
+        },
+
+        purgeSelectAll(value) {
+            for (const s of this.purgeSections) this.purgeSelected[s.id] = !!value;
+        },
+
+        async runPurgeSelected() {
+            const ids = (this.purgeSections || [])
+                .filter(s => this.purgeSelected[s.id])
+                .map(s => s.id);
+            if (!ids.length) {
+                this.purgeError = 'Pick at least one section.';
+                return;
+            }
+            const total = this.purgeSelectedTotalLabel();
+            if (!confirm(`Purge ${ids.length} section(s) — frees ~${total}. This cannot be undone. Continue?`)) return;
+
+            this.purgeRunning = true;
+            this.purgeError = '';
+            try {
+                const r = await fetch('/api/maintenance/purge/sections', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sections: ids }),
+                });
+                const j = await r.json();
+                if (!r.ok || !j.run_id) throw new Error(j.error || `HTTP ${r.status}`);
+                this.showMessage(`Purging ${ids.length} section(s) — redirecting to Workflows`, 'info');
+                this.purgeModalOpen = false;
+                setTimeout(() => { Alpine.store('app').switchTab('workflows'); }, 500);
+            } catch (e) {
+                this.purgeError = 'Purge error: ' + e.message;
+            } finally {
+                this.purgeRunning = false;
+            }
+        },
+
+        // Kept for backwards compat — old callsites (if any) still work.
+        // The button itself now invokes `openPurgeModal`.
+        async runPurge() { await this.openPurgeModal(); },
 
         // Fresh install flags (per module) - removes DB volumes for new schema
         dbOverwriteTimesketch: false,

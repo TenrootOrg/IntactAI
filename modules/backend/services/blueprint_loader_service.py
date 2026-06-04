@@ -54,13 +54,14 @@ def load_user_overrides() -> Dict[str, List[Dict]]:
     """Load user override blueprints from /data/blueprints/ directory."""
     overrides = {
         'velociraptor': [],
-        'timesketch': []
+        'timesketch': [],
+        'memory': [],
     }
 
     if not os.path.exists(USER_OVERRIDES_DIR):
         return overrides
 
-    for filename in ['velociraptor.yaml', 'timesketch.yaml']:
+    for filename in ['velociraptor.yaml', 'timesketch.yaml', 'memory.yaml']:
         path = os.path.join(USER_OVERRIDES_DIR, filename)
         data = _load_yaml_file(path)
         if data and isinstance(data, list):
@@ -84,17 +85,18 @@ def get_all_blueprints() -> Dict[str, List[Dict]]:
     # Build result directly from YAML (no more $references)
     result = {
         'velociraptor': [],
-        'timesketch': []
+        'timesketch': [],
+        'memory': [],
     }
 
-    for bp_type in ['velociraptor', 'timesketch']:
+    for bp_type in ['velociraptor', 'timesketch', 'memory']:
         for bp in defaults.get(bp_type, []):
             result[bp_type].append(deepcopy(bp))
 
     # Load and merge user overrides
     overrides = load_user_overrides()
 
-    for bp_type in ['velociraptor', 'timesketch']:
+    for bp_type in ['velociraptor', 'timesketch', 'memory']:
         override_list = overrides.get(bp_type, [])
         if not override_list:
             continue

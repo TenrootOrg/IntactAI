@@ -42,6 +42,15 @@ DOCKER_IMAGES = {
         # only ships ':latest', so {version} is normally 'latest'.
         ('anssi/dfir-o365rc:{version}', 'dfir-o365rc-{version}.tar'),
     ],
+    'volweb': [
+        # VolWeb backend image (memory-forensics analysis stack).
+        # The frontend / postgres / redis images are independent — they
+        # follow their own pins (volweb_frontend, volweb_postgres,
+        # volweb_redis in config.yaml) and bundle separately when those
+        # pins change. The backend image is the only one whose version
+        # changes routinely across releases.
+        ('forensicxlab/volweb-backend:{version}', 'volweb-backend-{version}.tar'),
+    ],
 }
 
 

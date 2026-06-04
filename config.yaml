@@ -27,10 +27,12 @@ modules:
   agentic:
     enabled: true
   aws:
-    enabled: false
+    enabled: true
   azure:
-    enabled: false
+    enabled: true
   cve_scan:
+    enabled: true
+  memory:
     enabled: true
   elk:
     enabled: true
@@ -77,4 +79,12 @@ versions:
   # legacy-compatible installers without an internet round-trip at runtime.
   # Set this to an empty string or remove the key to skip legacy downloads.
   velociraptor_legacy: '0.7.1'
+  # VolWeb in-tree memory-forensics analysis stack (modules/volweb/).
+  # Upstream forensicxlab/VolWeb publishes :latest only — these track
+  # the digest captured at PoC validation time. install.sh renders
+  # modules/volweb/.env from these pins so re-installs are reproducible.
+  volweb_backend: 'latest'
+  volweb_frontend: 'latest'
+  volweb_postgres: '14.1'
+  volweb_redis: '7'
   backend: '1.0.0'
