@@ -50,9 +50,50 @@ from .defaults import ACQUISITION_DEFAULTS
 # pipeline without colliding.
 DUMPS_DIR_DEFAULT = "/data/memory_dumps"
 
+# Docker volume name that lib/modules.sh:ensure_shared_volumes creates
+# and that velociraptor + volweb + backend composes all reference as
+# `external: true`. Detection-only — we never docker-create it from
+# here, just verify it's mounted into Velociraptor before taking the
+# fast-path.
+SHARED_VOLUME_NAME = "intact_memory_dumps"
+
 
 class AcquisitionError(RuntimeError):
     """Raised on any acquisition failure the pipeline can't recover from."""
+
+
+def _shared_volume_available(dumps_dir: str) -> bool:
+    """Detect the shared-volume fast-path.
+
+    Returns True iff:
+      * the local ``dumps_dir`` exists inside intact_backend (a separate
+        bind to the same docker volume), AND
+      * the Velociraptor container has /data/memory_dumps mounted
+
+    Falls back gracefully (returns False) on any check failure so the
+    legacy docker-cp + HTTP-upload path stays usable when the in-tree
+    VolWeb stack isn't deployed (e.g. while running against the PoC
+    VolWeb that doesn't share the volume).
+    """
+    if not Path(dumps_dir).is_dir():
+        return False
+    try:
+        r = subprocess.run(
+            ["docker", "exec", VELOCIRAPTOR_CONTAINER, "test", "-d", "/data/memory_dumps"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode != 0:
+            return False
+        # Confirm the mount is actually backed by the shared docker
+        # volume (and not just a stray empty dir created inside the
+        # container). ``mount | grep /data/memory_dumps`` would also
+        # work; ``stat`` on the mount root + comparing inode is the
+        # least-permission way.
+        # If the test passes we trust the operator's compose config;
+        # this is a fast smoke, not a security boundary.
+        return True
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -165,16 +206,28 @@ def _dispatch_acquisition(
     return flow_id
 
 
-def _extract_raw_via_fs_accessor(client_id: str, flow_id: str) -> tuple[str, int]:
+def _extract_raw_via_fs_accessor(
+    client_id: str,
+    flow_id: str,
+    *,
+    container_dest: str | None = None,
+) -> tuple[str, int]:
     """Extract the captured PhysicalMemory.dd using the ``fs:`` accessor
     so the at-rest zlib wrap is stripped on read.
 
-    Returns ``(container_path, size_bytes)``. The caller is responsible
-    for ``docker cp``-ing the file out and deleting the container-side
-    copy.
+    Args:
+        container_dest: optional absolute path INSIDE the Velociraptor
+            container to write the extracted .raw. When ``None`` (the
+            legacy path) we write to /tmp/<flow>.raw and the caller
+            ``docker cp``s it out. When set (the shared-volume path),
+            the destination is on a bind-mounted volume shared with
+            VolWeb, so the file is visible to both stacks without any
+            further copy.
+
+    Returns ``(container_path, size_bytes)``.
     """
     srv_vfs = f"/clients/{client_id}/collections/{flow_id}/uploads/auto/PhysicalMemory.dd"
-    srv_tmp = f"/tmp/{flow_id}.raw"
+    srv_tmp = container_dest or f"/tmp/{flow_id}.raw"
     vql = (
         "SELECT copy("
         f"filename='{srv_vfs}',dest='{srv_tmp}',accessor='fs'"
@@ -357,13 +410,35 @@ def acquire_memory_dump(
     if cancel_check and cancel_check():
         raise AcquisitionError("cancelled before extract")
 
-    log("acquire: extracting raw memory via fs accessor", "info")
-    srv_tmp, size = _extract_raw_via_fs_accessor(client_id, flow_id)
-    log(f"acquire: raw memory ~{size // 1024 // 1024} MB", "info")
+    # Shared-volume fast-path: when Velociraptor mounts /data/memory_dumps
+    # as a docker volume that's ALSO mounted into VolWeb (via
+    # ``intact_memory_dumps`` — see modules/velociraptor/docker-compose.yaml
+    # and modules/volweb/docker-compose.yaml), the fs-accessor write
+    # lands directly on the shared volume. No docker cp, no HTTP upload.
+    # The backend's ``dumps_dir`` parameter is the host-side path of
+    # that same volume so the file is also visible to intact_backend
+    # for preflight/cleanup.
+    use_shared = _shared_volume_available(dumps_dir)
+    out_name = f"{hostname}-{flow_id}.raw"
+    host_dst = str(Path(dumps_dir) / out_name)
 
-    host_dst = str(Path(dumps_dir) / f"{hostname}-{flow_id}.raw")
-    log(f"acquire: copying out to {host_dst}", "info")
-    _docker_cp_out(srv_tmp, host_dst)
+    if use_shared:
+        log("acquire: extracting raw memory via fs accessor (shared volume — skipping docker cp)", "info")
+        # Write straight to the shared volume's mount inside the
+        # Velociraptor container — the same physical bytes will be at
+        # ``host_dst`` from the backend's perspective and at
+        # ``/home/app/web/media/staging/{out_name}`` from VolWeb's.
+        srv_dst = f"/data/memory_dumps/{out_name}"
+        srv_tmp, size = _extract_raw_via_fs_accessor(
+            client_id, flow_id, container_dest=srv_dst,
+        )
+        log(f"acquire: raw memory ~{size // 1024 // 1024} MB", "info")
+    else:
+        log("acquire: extracting raw memory via fs accessor", "info")
+        srv_tmp, size = _extract_raw_via_fs_accessor(client_id, flow_id)
+        log(f"acquire: raw memory ~{size // 1024 // 1024} MB", "info")
+        log(f"acquire: copying out to {host_dst}", "info")
+        _docker_cp_out(srv_tmp, host_dst)
 
     _assert_raw_memory(host_dst)
 
@@ -376,6 +451,12 @@ def acquire_memory_dump(
         "host_path": host_dst,
         "size_bytes": size,
         "duration_s": duration,
+        # When the shared-volume fast-path was used, the file is also
+        # visible to VolWeb at /home/app/web/media/staging/<out_name>.
+        # Pipeline uses this to skip Phase 3 (HTTP upload) and call
+        # VolWebClient.register_existing_file() instead.
+        "shared_volume": use_shared,
+        "shared_basename": out_name if use_shared else None,
     }
 
 

@@ -1473,9 +1473,13 @@ def refresh_yara_rulesets():
                 (cfg.get('modules', {}) or {}).get('timesketch', {}) or {}
             ).get('password') or '123123'
 
+            # Host: localhost override — Django rejects underscored
+            # hostnames per RFC 1034/1035 (DisallowedHost). The TCP
+            # connection still resolves via docker DNS.
             token_resp = requests.post(
                 'http://intact_volweb_backend:8000/core/token/',
                 json={'username': 'tenroot', 'password': tenroot_pass},
+                headers={'Host': 'localhost'},
                 timeout=10,
             )
             if token_resp.status_code != 200:
@@ -1496,7 +1500,7 @@ def refresh_yara_rulesets():
                 add_log_to_run(run_id, f"[{idx}/{n_total}] importing {rs['name']}...", "info")
                 resp = requests.post(
                     'http://intact_volweb_backend:8000/api/yararulesets/import/github/',
-                    headers={'Authorization': f'Bearer {token}'},
+                    headers={'Authorization': f'Bearer {token}', 'Host': 'localhost'},
                     json=rs,
                     timeout=600,
                 )
@@ -1541,6 +1545,7 @@ def yara_rulesets_status():
         token_resp = requests.post(
             'http://intact_volweb_backend:8000/core/token/',
             json={'username': 'tenroot', 'password': tenroot_pass},
+            headers={'Host': 'localhost'},
             timeout=5,
         )
         if token_resp.status_code != 200:
@@ -1549,7 +1554,7 @@ def yara_rulesets_status():
 
         rs = requests.get(
             'http://intact_volweb_backend:8000/api/yararulesets/',
-            headers={'Authorization': f'Bearer {token}'},
+            headers={'Authorization': f'Bearer {token}', 'Host': 'localhost'},
             timeout=5,
         )
         if rs.status_code != 200:

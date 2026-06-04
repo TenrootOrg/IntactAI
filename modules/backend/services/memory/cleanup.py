@@ -50,13 +50,18 @@ def _remove_volweb_media_raw(
     volume. Django's ``DELETE /api/evidences/<id>/`` does not always
     cascade the on-disk file (observed orphan 5 GB ``.raw`` files in
     the PoC after the row went away).
+
+    Tries both candidate locations: ``evidences/`` (legacy HTTP-upload
+    path) and ``staging/`` (shared-volume fast-path). Whichever exists
+    gets removed; the other rm is silently no-op.
     """
     if not evidence_filename:
         return
     container = _backend_container_name()
     cmd = [
-        "docker", "exec", container,
-        "rm", "-f", f"/home/app/web/media/evidences/{evidence_filename}",
+        "docker", "exec", container, "sh", "-c",
+        f"rm -f /home/app/web/media/evidences/{evidence_filename} "
+        f"/home/app/web/media/staging/{evidence_filename}",
     ]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -67,7 +72,7 @@ def _remove_volweb_media_raw(
                 "warning",
             )
         else:
-            log(f"cleanup: removed VolWeb media {evidence_filename}", "info")
+            log(f"cleanup: removed VolWeb media {evidence_filename} (evidences/ + staging/)", "info")
     except FileNotFoundError:
         log("cleanup: docker CLI not available — skipped media rm", "warning")
     except subprocess.TimeoutExpired:

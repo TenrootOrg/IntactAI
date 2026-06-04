@@ -30,6 +30,12 @@ services:
       - velociraptor_datastore:/var.:rw
       - velociraptor_tmp:/tmp:rw
       - ${TOOLS_PATH:-../../data/tools}:/tools:ro  # Persistent tools directory
+      # Shared memory-dump staging — see modules/volweb/docker-compose.yaml
+      # for the matching bind on VolWeb's side. The memory pipeline writes
+      # the extracted .raw here once instead of: docker-cp host → HTTP
+      # upload → VolWeb media. Saves ~9 min and ~10 GB transient disk per
+      # 5 GB dump. The host directory is created by install.sh.
+      - memory_dumps_shared:/data/memory_dumps:rw
     ports:
       - "8889:8889"   # GUI (HTTP)
       - "8000:8000"   # TLS Frontend (client connections)
@@ -42,6 +48,12 @@ volumes:
   velociraptor_data:
   velociraptor_datastore:
   velociraptor_tmp:
+  # Shared with modules/backend + modules/volweb. The volume is
+  # pre-created by install.sh:ensure_shared_volumes() so every stack
+  # treats it as `external` and nobody fights over ownership.
+  memory_dumps_shared:
+    external: true
+    name: intact_memory_dumps
 
 networks:
   intact_network:

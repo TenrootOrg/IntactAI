@@ -41,6 +41,13 @@ services:
       - ./config/default_blueprints.yaml:/app/config/default_blueprints.yaml:ro  # Live blueprint updates
       - /app/logs  # Logs directory
       - upload_data:/data/uploads  # Shared volume for tus uploads
+      # Shared memory-dump staging — same `intact_memory_dumps` docker
+      # volume mounted into Velociraptor + VolWeb. Lets the backend's
+      # memory pipeline coordinate (preflight disk check, cleanup) on
+      # the same files the other two containers operate on. Created by
+      # install.sh:ensure_shared_volumes() so it exists at compose-up
+      # time on a fresh box.
+      - memory_dumps_shared:/data/memory_dumps:rw
       - ../..:/app/workdir:rw  # Intact.AI root for upgrade operations
       # Also mount at the install's real host path so `docker run -v ${host}:...`
       # calls issued from inside the backend (Plaso, DFIR-O365RC, etc.) resolve
@@ -97,7 +104,12 @@ services:
 
 volumes:
   upload_data:
-    driver: local
+  # Shared memory-dump staging — pre-created externally by install.sh
+  # so the backend can come up even when Velociraptor + VolWeb composes
+  # haven't run yet on a fresh install.
+  memory_dumps_shared:
+    external: true
+    name: intact_memory_dumps
 
 networks:
   intact_network:

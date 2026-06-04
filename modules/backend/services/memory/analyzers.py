@@ -143,10 +143,25 @@ def _build_yara_payload(
     Returns ``(hits, total_count)``. ``total_count`` comes from the
     history endpoint and is the authoritative count even when we cap
     the returned list at ``max_hits``.
+
+    A scan that ran with zero active rules (fresh install pre-seeding)
+    or simply matched nothing returns no history row + a 404 from
+    /yarascan/results/. Both are valid "0 hits" states — we return
+    ``([], 0)`` rather than letting the 404 crash the pipeline. The
+    analyzer's prompt builder will then produce a clean report
+    explaining that no rules were active.
     """
+    from .volweb_client import VolWebError
     history = client.yarascan_history(evidence_id)
     total = int((history[0] if history else {}).get("count", 0)) if history else 0
-    raw = client.yarascan_results(evidence_id, max_hits=max_hits)
+    try:
+        raw = client.yarascan_results(evidence_id, max_hits=max_hits)
+    except VolWebError as e:
+        # 404 / "No YARA scan found" is the expected shape when zero
+        # rules were active — treat as a clean empty result.
+        if "404" in str(e) or "No YARA scan" in str(e):
+            return [], total
+        raise
     hits = [_trim_hit(h) for h in raw if isinstance(h, dict)]
     return hits, total
 

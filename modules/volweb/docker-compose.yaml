@@ -88,6 +88,13 @@ services:
     volumes:
       - volweb_staticfiles:/home/app/web/staticfiles
       - volweb_media:/home/app/web/media
+      # Shared memory-dump staging — same `intact_memory_dumps` volume
+      # mounted into Velociraptor at /data/memory_dumps. Lets the
+      # acquired .raw be visible to VolWeb workers without going through
+      # HTTP upload. The DB `evidence.file` field is set to
+      # `staging/<name>.raw` (relative to MEDIA_ROOT=/home/app/web/media)
+      # so Django's storage layer finds the file at /home/app/web/media/staging/<name>.raw.
+      - memory_dumps_shared:/home/app/web/media/staging:rw
     networks:
       - intact_network
     logging:
@@ -125,6 +132,13 @@ services:
       - BROKER_PORT=6379
     volumes:
       - volweb_media:/home/app/web/media
+      # Shared memory-dump staging — same `intact_memory_dumps` volume
+      # mounted into Velociraptor at /data/memory_dumps. Lets the
+      # acquired .raw be visible to VolWeb workers without going through
+      # HTTP upload. The DB `evidence.file` field is set to
+      # `staging/<name>.raw` (relative to MEDIA_ROOT=/home/app/web/media)
+      # so Django's storage layer finds the file at /home/app/web/media/staging/<name>.raw.
+      - memory_dumps_shared:/home/app/web/media/staging:rw
     networks:
       - intact_network
     logging:
@@ -162,6 +176,13 @@ services:
       - BROKER_PORT=6379
     volumes:
       - volweb_media:/home/app/web/media
+      # Shared memory-dump staging — same `intact_memory_dumps` volume
+      # mounted into Velociraptor at /data/memory_dumps. Lets the
+      # acquired .raw be visible to VolWeb workers without going through
+      # HTTP upload. The DB `evidence.file` field is set to
+      # `staging/<name>.raw` (relative to MEDIA_ROOT=/home/app/web/media)
+      # so Django's storage layer finds the file at /home/app/web/media/staging/<name>.raw.
+      - memory_dumps_shared:/home/app/web/media/staging:rw
     networks:
       - intact_network
     logging:
@@ -177,10 +198,10 @@ services:
     # walks the dump page-by-page. Memory-heavy step; 2 GiB cap covers
     # the 1,444-rule corpus tested in the PoC with room for the dump's
     # active-page working set.
-    mem_limit: 2g
     deploy:
       resources:
         limits:
+          memory: 2g
           cpus: "${VOLWEB_YARASCAN_CPU_LIMIT:-1.0}"
 
   intact_volweb_frontend:
@@ -194,6 +215,13 @@ services:
     volumes:
       - volweb_staticfiles:/home/app/web/staticfiles
       - volweb_media:/home/app/web/media
+      # Shared memory-dump staging — same `intact_memory_dumps` volume
+      # mounted into Velociraptor at /data/memory_dumps. Lets the
+      # acquired .raw be visible to VolWeb workers without going through
+      # HTTP upload. The DB `evidence.file` field is set to
+      # `staging/<name>.raw` (relative to MEDIA_ROOT=/home/app/web/media)
+      # so Django's storage layer finds the file at /home/app/web/media/staging/<name>.raw.
+      - memory_dumps_shared:/home/app/web/media/staging:rw
     networks:
       - intact_network
     logging:
@@ -211,6 +239,15 @@ volumes:
   volweb_redis_data:
   volweb_staticfiles:
   volweb_media:
+  # Cross-stack shared volume. Declared `external: true` because the
+  # Velociraptor compose creates it (memory_dumps_shared with name
+  # `intact_memory_dumps`). Both stacks reference it by the same docker
+  # name so `docker volume inspect intact_memory_dumps` from either side
+  # returns the same volume. If Velociraptor isn't up yet, install.sh
+  # pre-creates the volume.
+  memory_dumps_shared:
+    external: true
+    name: intact_memory_dumps
 
 networks:
   intact_network:

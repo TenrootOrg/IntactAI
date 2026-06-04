@@ -277,6 +277,33 @@ pull_compose_with_retry() {
 }
 
 # ============================================================================
+# Shared volumes — created BEFORE any compose runs so every module can
+# treat them as `external: true` and nobody fights over ownership.
+# ============================================================================
+
+ensure_shared_volumes() {
+    log_info "Ensuring shared docker volumes exist..."
+
+    # intact_memory_dumps — shared between Velociraptor (writes the
+    # acquired .raw at /data/memory_dumps), VolWeb backend + workers
+    # (read the .raw at /home/app/web/media/staging), and intact_backend
+    # (preflight + cleanup). Created once here so the per-module compose
+    # files only need `external: true name: intact_memory_dumps`.
+    if docker volume inspect intact_memory_dumps >/dev/null 2>&1; then
+        log_info "  intact_memory_dumps: already exists"
+    else
+        if docker volume create intact_memory_dumps >/dev/null; then
+            log_success "  intact_memory_dumps: created"
+        else
+            log_error "  intact_memory_dumps: docker volume create FAILED"
+            track_module_failure "shared-volumes"
+            return 1
+        fi
+    fi
+}
+
+
+# ============================================================================
 # Helper: Show container status
 # ============================================================================
 
@@ -1074,7 +1101,7 @@ seed_volweb_admin() {
     [[ -z "$tenroot_pass" ]] && tenroot_pass="123123"
 
     log_info "  Seeding VolWeb admin user (${tenroot_user})..."
-    docker exec intact_volweb_backend python3 manage.py shell <<EOF 2>&1 | tail -3
+    docker exec --user app -w /home/app/web -i intact_volweb_backend python3 manage.py shell <<EOF 2>&1 | tail -3
 from django.contrib.auth import get_user_model
 U = get_user_model()
 u, created = U.objects.get_or_create(username='${tenroot_user}', defaults={'is_superuser': True, 'is_staff': True})
@@ -1281,6 +1308,8 @@ start_services() {
     generate_portainer_secrets
     echo ""
     generate_certificates
+    echo ""
+    ensure_shared_volumes
     echo ""
 
     # Deploy modules in order (7 modules now, not 8)

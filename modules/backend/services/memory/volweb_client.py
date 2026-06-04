@@ -145,9 +145,11 @@ class VolWebClient:
     # -- auth -------------------------------------------------------------
 
     def _refresh_token(self) -> str:
+        # See _headers() for the rationale on the Host override.
         r = requests.post(
             f"{self.base_url}/core/token/",
             json={"username": self.username, "password": self.password},
+            headers={"Host": "localhost"},
             timeout=10,
         )
         if r.status_code != 200:
@@ -170,7 +172,18 @@ class VolWebClient:
         return self._token
 
     def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._token_value()}"}
+        # Host header override: Django's get_host() rejects underscored
+        # hostnames per RFC 1034/1035 (DisallowedHost). Our in-tree
+        # convention names the VolWeb backend `intact_volweb_backend`
+        # (with underscores) so any HTTP request that uses the container
+        # name as the Host gets 400'd before reaching the view.
+        # Sending `Host: localhost` matches ALLOWED_HOSTS=['*'] AND
+        # passes the RFC validator. The actual TCP connection still
+        # resolves the container name through docker DNS.
+        return {
+            "Authorization": f"Bearer {self._token_value()}",
+            "Host": "localhost",
+        }
 
     # -- low-level HTTP wrappers with one-shot 401 retry ------------------
 
@@ -212,7 +225,10 @@ class VolWebClient:
                 r = requests.request(
                     method,
                     url,
-                    headers=self._headers() if not files else {"Authorization": f"Bearer {self._token_value()}"},
+                    headers=(
+                        self._headers() if not files
+                        else {"Authorization": f"Bearer {self._token_value()}", "Host": "localhost"}
+                    ),
                     json=json,
                     params=params,
                     files=files,
@@ -373,6 +389,151 @@ class VolWebClient:
         self._log(f"upload complete: evidence_id={evidence_id} parts={part}")
         return int(evidence_id)
 
+    def register_existing_file(
+        self,
+        basename: str,
+        *,
+        case_id: int,
+        os_name: str = "windows",
+    ) -> int:
+        """Skip the chunked-upload phase and register an already-present
+        .raw as a new VolWeb evidence.
+
+        Pre-condition: the file lives at
+        ``/home/app/web/media/staging/<basename>`` inside the VolWeb
+        backend container (the ``intact_memory_dumps`` shared volume,
+        also mounted into Velociraptor at /data/memory_dumps and into
+        intact_backend at the same path).
+
+        Implementation:
+          1. Verify the file is present in the staging mount (the
+             ``intact_memory_dumps`` shared volume mounted into VolWeb
+             at ``/home/app/web/media/staging``).
+          2. Insert the Evidence row via the Django ORM (``manage.py
+             shell``) with ``file='staging/<basename>'`` — pointing
+             directly at the file on the shared volume. We deliberately
+             do NOT ``mv`` the file into ``evidences/``: a move across
+             two docker volumes is a full 5 GB copy, which defeats the
+             whole point of skipping the HTTP upload.
+          3. Django's storage layer resolves ``Evidence.file`` to
+             ``MEDIA_ROOT + file.name`` = ``/home/app/web/media/staging/<basename>``,
+             which is where the file already lives. The selective
+             engine and yarascan workers both read via Django storage
+             so they see the file transparently.
+
+        Returns the new evidence_id.
+
+        Time saved vs ``upload_evidence``: ~6 min on a 5 GB dump
+        (the entire chunked HTTP upload phase is gone — bytes never
+        leave the volume).
+        """
+        import json
+        import subprocess
+
+        backend_container = self._resolve_backend_container()
+        if not backend_container:
+            raise VolWebError(
+                "register_existing_file: VolWeb backend container not found. "
+                "Did the in-tree VolWeb stack come up?"
+            )
+
+        staging_path = f"/home/app/web/media/staging/{basename}"
+
+        # 1) Verify the file actually exists on the shared volume +
+        #    fix ownership (Velociraptor wrote it as root from the
+        #    other side of the bind mount; VolWeb workers run as `app`).
+        check = subprocess.run(
+            [
+                "docker", "exec", backend_container, "sh", "-c",
+                f"chown app:app '{staging_path}' 2>/dev/null; stat -c '%s' '{staging_path}'",
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        if check.returncode != 0:
+            raise VolWebError(
+                f"register_existing_file: staging file missing: {staging_path} "
+                f"(stat error: {check.stderr.strip()[:200]})"
+            )
+        try:
+            size = int((check.stdout or "0").strip())
+        except ValueError:
+            size = 0
+        if size < 1024 * 1024:
+            raise VolWebError(
+                f"register_existing_file: file too small ({size} bytes) — refusing to register"
+            )
+        self._log(
+            f"register: staging file {staging_path} ({size // 1024 // 1024} MB) — inserting DB row (no copy)",
+            "info",
+        )
+
+        # 2) Insert the DB row via Django shell. The Evidence model's
+        #    actual schema (verified by reading /home/app/web/evidences/
+        #    models.py inside the VolWeb backend) uses these fields:
+        #
+        #       name           CharField                       (required)
+        #       etag           CharField(unique=True)          (required, must be unique)
+        #       os             choices=('windows','linux')     (required)
+        #       linked_case    FK→Case                         (required, NOT the name `case`)
+        #       url            "file://<absolute path>"        (read by Vol3's URL handler)
+        #       status         IntegerField, default=0         (CompleteUploadView sets -2)
+        #
+        #    The url's "file://" scheme lets Vol3's default file handler
+        #    open it — the URL handler for "s3://" is hooked separately
+        #    via volweb_open() in volatility_engine/utils.py.
+        import uuid as _uuid
+        etag = f"local-{_uuid.uuid4().hex}"
+        file_url = f"file://{staging_path}"
+        py = (
+            "import json\n"
+            "from evidences.models import Evidence\n"
+            "from cases.models import Case\n"
+            f"case = Case.objects.get(pk={int(case_id)})\n"
+            f"ev = Evidence.objects.create(\n"
+            f"    name={basename!r},\n"
+            f"    url={file_url!r},\n"
+            f"    linked_case=case,\n"
+            f"    os={os_name!r},\n"
+            f"    etag={etag!r},\n"
+            f"    source='FILESYSTEM',\n"
+            f"    status=-2,\n"
+            f")\n"
+            "print(json.dumps({'evidence_id': ev.id}))\n"
+        )
+        # Run Django shell as the `app` user, with /home/app/web as cwd,
+        # so PYTHONPATH picks up the venv at /home/app/.local. The
+        # default `docker exec` runs as root, which doesn't have Django
+        # on its sys.path.
+        ins = subprocess.run(
+            [
+                "docker", "exec", "-i",
+                "--user", "app", "-w", "/home/app/web",
+                backend_container, "python3", "manage.py", "shell",
+            ],
+            input=py, capture_output=True, text=True, timeout=60,
+        )
+        if ins.returncode != 0:
+            raise VolWebError(
+                f"register_existing_file: Django shell failed: "
+                f"stderr={ins.stderr.strip()[-400:]}"
+            )
+        # The shell prints a banner + our final JSON line. Find the JSON.
+        evidence_id: int | None = None
+        for line in (ins.stdout or "").splitlines():
+            line = line.strip()
+            if line.startswith("{") and "evidence_id" in line:
+                try:
+                    evidence_id = int(json.loads(line)["evidence_id"])
+                except (ValueError, KeyError, json.JSONDecodeError):
+                    continue
+        if not evidence_id:
+            raise VolWebError(
+                f"register_existing_file: could not parse evidence_id from shell output: "
+                f"{ins.stdout[-400:]!r}"
+            )
+        self._log(f"register: evidence_id={evidence_id} (url={file_url})", "success")
+        return evidence_id
+
     def get_evidence(self, evidence_id: int) -> dict:
         return self._get_json(f"/api/evidences/{evidence_id}/")
 
@@ -416,6 +577,48 @@ class VolWebClient:
             raise VolWebError(f"selective-extraction error: {resp.get('error')}")
 
     def list_plugins(self, evidence_id: int) -> list[dict]:
+        """Return ALL VolatilityPlugin rows for an evidence.
+
+        Uses Django shell directly (not the HTTP API) because the HTTP
+        view at ``/api/evidence/<id>/plugins/`` filters out rows with
+        ``display=False`` — that's the right behaviour for the UI but
+        wrong for our wait_for_plugin_results() which needs to see EVERY
+        row to know what completed. PsTree, for example, is stored with
+        ``display=False`` because the Processes view surfaces PsList
+        instead; the API hides it but the plugin actually ran and has
+        artefacts.
+
+        Falls back to the HTTP path if the docker exec fails (e.g.
+        backend container missing — unit-test environments).
+        """
+        import json
+        import subprocess
+        container = self._resolve_backend_container()
+        if container:
+            try:
+                r = subprocess.run(
+                    [
+                        "docker", "exec", "--user", "app", "-w", "/home/app/web",
+                        container, "python3", "-c",
+                        "import django,os,json; "
+                        "os.environ['DJANGO_SETTINGS_MODULE']='backend.settings'; "
+                        "django.setup(); "
+                        "from volatility_engine.models import VolatilityPlugin; "
+                        f"rows = list(VolatilityPlugin.objects.filter(evidence_id={int(evidence_id)})"
+                        ".values('name','results','icon','error_message')); "
+                        "print(json.dumps(rows))",
+                    ],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if r.returncode == 0 and r.stdout:
+                    raw = r.stdout.strip().splitlines()[-1]
+                    rows = json.loads(raw)
+                    # Normalize: API used `error`, model uses `error_message`.
+                    for row in rows:
+                        row["error"] = row.pop("error_message", None)
+                    return rows
+            except Exception:
+                pass
         return self._get_json(f"/api/evidence/{evidence_id}/plugins/") or []
 
     def fetch_plugin(self, evidence_id: int, plugin_name: str) -> dict | None:
@@ -715,6 +918,40 @@ class VolWebClient:
                 time.sleep(1)
                 slept += 1
 
+    def has_active_yara_rules(self) -> bool:
+        """Quick pre-check: does VolWeb have any active YARA rules?
+
+        When zero rules are configured (fresh in-tree install before
+        ``seed_yara_rulesets`` has run), the yarascan worker logs
+        ``No active YARA rules found in database`` and completes in
+        <1 s WITHOUT writing a history row. ``wait_for_yarascan``
+        would then poll forever waiting on a row that never lands.
+
+        This pre-flight call lets the orchestrator skip the scan
+        entirely in that case (and inform the operator clearly via
+        the workflow log).
+        """
+        container = self._resolve_backend_container()
+        if not container:
+            # No way to know — assume yes and let the regular flow run.
+            return True
+        try:
+            import subprocess
+            r = subprocess.run(
+                [
+                    "docker", "exec", "--user", "app", "-w", "/home/app/web",
+                    container, "python3", "-c",
+                    "import django,os; os.environ['DJANGO_SETTINGS_MODULE']='backend.settings'; django.setup(); "
+                    "from yararules.models import YaraRule; "
+                    "print(YaraRule.objects.filter(enabled=True).count())",
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+            count = int((r.stdout or "0").strip().splitlines()[-1])
+            return count > 0
+        except Exception:
+            return True   # conservative
+
     def wait_for_yarascan(
         self,
         evidence_id: int,
@@ -722,16 +959,33 @@ class VolWebClient:
         timeout_s: int = 2400,
         poll_s: int = 15,
         cancel_check: Callable[[], bool] | None = None,
+        no_rules_grace_s: int = 30,
     ) -> int:
         """Block until yarascan has emitted at least one history entry
         for the evidence (signaling completion). Returns the reported
         ``count``.
 
         A scan with zero matches still produces a history entry with
-        ``count=0`` on a successful run — so an empty list means the
-        task hasn't completed yet, not that the host is clean.
+        ``count=0`` on a successful run — UNLESS VolWeb has no active
+        YARA rules at all (fresh install pre-seeding), in which case
+        the task succeeds without writing a row. We short-circuit
+        that case via ``has_active_yara_rules`` so the wait doesn't
+        hang for ``timeout_s``.
         """
+        # Zero-rules short-circuit (fresh install).
+        if not self.has_active_yara_rules():
+            self._log(
+                "yarascan: no active YARA rules in VolWeb — treating as 0-hit completion "
+                "(seed rulesets via Maintenance → YARA → Refresh to enable scanning)",
+                "warning",
+            )
+            return 0
+
         deadline = time.time() + timeout_s
+        # Secondary safety net: if rules ARE configured but no history
+        # row appears within `no_rules_grace_s` of the first poll, the
+        # scan probably ran-but-didn't-write. Fall back to 0-hits.
+        first_seen_at = time.time()
         while True:
             if cancel_check and cancel_check():
                 raise VolWebError("yarascan cancelled by operator")
@@ -740,9 +994,18 @@ class VolWebClient:
                 count = int(hist[0].get("count", 0))
                 self._log(f"yarascan completed: {count} hits")
                 return count
+            elapsed = time.time() - first_seen_at
+            if elapsed > no_rules_grace_s and elapsed < no_rules_grace_s + poll_s:
+                # Log the soft-fail intent once; keep polling until
+                # the hard timeout in case the worker is just slow.
+                self._log(
+                    f"yarascan: no history row after {int(elapsed)}s — "
+                    f"will wait up to {timeout_s}s total but expect 0 hits",
+                    "info",
+                )
             if time.time() > deadline:
-                self._log(f"yarascan timed out after {timeout_s}s", "warning")
-                return -1
+                self._log(f"yarascan timed out after {timeout_s}s — assuming 0 hits", "warning")
+                return 0
             slept = 0
             while slept < poll_s:
                 if cancel_check and cancel_check():

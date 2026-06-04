@@ -101,7 +101,13 @@ def _disk_preflight(
     except OSError as e:
         add_log_to_run(run_id, f"preflight: disk_usage failed: {e}", "warning")
         return
-    est = mem_bytes_estimate or (8 * 1024 * 1024 * 1024)
+    # Default 4 GiB if Velociraptor doesn't expose total_memory_bytes.
+    # Most observed in-prod dumps run 3-5 GB on Win10/11 clients with
+    # 4-8 GB RAM; using 4 GiB as the assumption keeps preflight from
+    # rejecting installs with ~10 GB free disk while still catching
+    # the dangerous "out of disk while dumping" case. The multiplier
+    # in DISK_PREFLIGHT_MULTIPLIER provides the safety margin.
+    est = mem_bytes_estimate or (4 * 1024 * 1024 * 1024)
     required = int(est * DISK_PREFLIGHT_MULTIPLIER)
     add_log_to_run(
         run_id,
@@ -441,22 +447,38 @@ def run_memory_pipeline(
                 raise RuntimeError("cancelled after acquire")
 
             # ------------------------------------------------------------
-            # Phase 3 — Upload to VolWeb
+            # Phase 3 — Register / Upload to VolWeb
+            #
+            # If acquire used the shared-volume fast-path (in-tree
+            # Velociraptor + in-tree VolWeb), the .raw is already
+            # visible to VolWeb at /home/app/web/media/staging/<name>.
+            # We just move it to evidences/ + insert the DB row.
+            # Otherwise (PoC VolWeb, no shared volume) fall back to
+            # the original chunked HTTP upload.
             # ------------------------------------------------------------
-            log(f"pipeline: upload — chunked to VolWeb case={case_name!r}", "info")
             case_id = client.ensure_case(case_name)
-            evidence_id = client.upload_evidence(
-                host_path,
-                case_id=case_id,
-                os_name="windows",
-                cancel_check=cancel,
-                progress_cb=lambda sent, total, mbps: add_log_to_run(
-                    run_id,
-                    f"upload: {sent//1024//1024}/{total//1024//1024} MB  ({mbps:.1f} MB/s)",
-                    "info",
-                ),
-            )
-            evidence_filename = client.get_evidence(evidence_id).get("name")
+            if acq.get("shared_volume"):
+                log("pipeline: register — using shared volume (no HTTP upload)", "info")
+                evidence_id = client.register_existing_file(
+                    acq["shared_basename"],
+                    case_id=case_id,
+                    os_name="windows",
+                )
+                evidence_filename = acq["shared_basename"]
+            else:
+                log(f"pipeline: upload — chunked to VolWeb case={case_name!r}", "info")
+                evidence_id = client.upload_evidence(
+                    host_path,
+                    case_id=case_id,
+                    os_name="windows",
+                    cancel_check=cancel,
+                    progress_cb=lambda sent, total, mbps: add_log_to_run(
+                        run_id,
+                        f"upload: {sent//1024//1024}/{total//1024//1024} MB  ({mbps:.1f} MB/s)",
+                        "info",
+                    ),
+                )
+                evidence_filename = client.get_evidence(evidence_id).get("name")
             cumulative += _PHASE_WEIGHTS["upload"]
             _bump(run_id, cumulative, f"upload: evidence_id={evidence_id}")
             if cancel():
