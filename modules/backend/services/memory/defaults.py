@@ -102,8 +102,11 @@ ACQUISITION_DEFAULTS: dict = {
 #   * VolWeb media copy                   ~3 GB
 #   total transient peak                  ~7.5 GB  (~2x the dump size)
 #
-# 2.0 is the safety floor; the 8 GiB default mem_estimate combined
-# with the 3x cap was over-conservative (required 24 GB free for a
-# host that produces a 3 GB dump). 2.0 × 8 GiB = 16 GB free which
-# comfortably covers worst-case + headroom.
-DISK_PREFLIGHT_MULTIPLIER: float = 2.0
+# 1.5 is the practical floor — covers the three-copy worst-case
+# above with a 50% margin, which is enough for the 4 GiB default
+# mem_estimate (= 6 GiB required free). 2.0 was over-conservative
+# on small-RAM hosts (< 4 GiB free on a 90% full disk would block
+# every memory run). The shared-volume fast-path also halves the
+# real transient footprint by skipping the docker-cp middle step,
+# so 1.5 has a real margin even without it.
+DISK_PREFLIGHT_MULTIPLIER: float = 1.5

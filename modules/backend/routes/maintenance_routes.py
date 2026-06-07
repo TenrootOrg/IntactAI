@@ -1096,6 +1096,156 @@ def _scan_memory_dumps():
     return total, ", ".join(detail_parts) if detail_parts else "(no residue)"
 
 
+# ---- Docker storage scanners --------------------------------------------
+#
+# The IntactAI working-tree scanners cover < 3 GB on a typical box. The
+# real disk hog is Docker itself (~20 GB on a mature install: 12 GB
+# images + 7 GB volumes + build cache). Without these three sections the
+# operator can run the Purge UI to 0% and the disk is still full because
+# the dashboard can't see /var/lib/docker.
+#
+# `docker system df --format '{{json .}}'` returns one JSON line per
+# resource type with `Reclaimable` parsed as a string ("619.1MB (9%)").
+# We parse that into bytes so the scan can mirror the other sections'
+# return shape.
+
+def _parse_size_string(s: str) -> int:
+    """Turn '12.91GB' / '619.1MB' / '0B' into a byte int.
+
+    Docker's `--format '{{json .}}'` emits Reclaimable like
+    `"619.1MB (9%)"` — strip the `( … )` suffix first.
+    """
+    if not s:
+        return 0
+    s = s.split("(")[0].strip()
+    units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4,
+             "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+    for unit_len in (2, 1):
+        if len(s) > unit_len and s[-unit_len:].upper() in units:
+            try:
+                return int(float(s[:-unit_len]) * units[s[-unit_len:].upper()])
+            except ValueError:
+                return 0
+    try:
+        return int(float(s))
+    except ValueError:
+        return 0
+
+
+def _docker_system_df():
+    """Return parsed `docker system df` rows keyed by `Type`.
+
+    Result e.g.:
+      {'Images': {'TotalCount': '22', 'Active': '21',
+                  'Size': '12.91GB', 'Reclaimable': '480.3MB (3%)'},
+       'Containers': {...}, 'Local Volumes': {...}, 'Build Cache': {...}}
+    """
+    import json
+    from services.upgrade.base import run_command
+    r = run_command(
+        "docker system df --format '{{json .}}'",
+        logger=None,
+    )
+    out = (r.get("stdout") or "").strip()
+    rows = {}
+    for line in out.split("\n"):
+        if not line.strip():
+            continue
+        try:
+            j = json.loads(line)
+            rows[j.get("Type", "?")] = j
+        except Exception:
+            continue
+    return rows
+
+
+def _scan_docker_images():
+    """Reclaimable image bytes (= unused images = what `image prune -a`
+    would drop). The dashboard already shows in-use containers and their
+    images stay tied to running services; only orphans are touched."""
+    rows = _docker_system_df()
+    row = rows.get("Images") or {}
+    bytes_ = _parse_size_string(row.get("Reclaimable", "0B"))
+    total_count = row.get("TotalCount", "?")
+    active = row.get("Active", "?")
+    detail = f"{active}/{total_count} active; rest reclaimable on next deploy"
+    return bytes_, detail
+
+
+def _scan_docker_volumes():
+    rows = _docker_system_df()
+    row = rows.get("Local Volumes") or {}
+    bytes_ = _parse_size_string(row.get("Reclaimable", "0B"))
+    total_count = row.get("TotalCount", "?")
+    active = row.get("Active", "?")
+    detail = f"{active}/{total_count} active; orphan volumes only"
+    return bytes_, detail
+
+
+def _scan_docker_build_cache():
+    rows = _docker_system_df()
+    # Docker's row label is "Build Cache" — fall back if Docker renames it.
+    row = rows.get("Build Cache") or rows.get("Build cache") or {}
+    bytes_ = _parse_size_string(row.get("Reclaimable", "0B"))
+    total_count = row.get("TotalCount", "?")
+    detail = f"{total_count} layer cache entries"
+    return bytes_, detail
+
+
+def _scan_docker_deep():
+    """Deep prune estimate — `docker system prune -a --volumes -f`.
+
+    This is a strict superset of the 3 individual docker_* sections
+    above (images, volumes, build cache). It also drops stopped
+    containers' writable layers, which the per-resource scans don't
+    cover. On boxes where image upgrades have orphaned overlay layers
+    (`/var/lib/docker/overlay2` much larger than what `docker system
+    df` reports), this is the section that actually recovers the
+    "missing" disk.
+
+    Scan returns the sum of all reclaimable across image / volume /
+    build-cache layers as a conservative LOWER bound — actual freed
+    may be 2-10× higher because the per-resource API undercounts
+    orphan overlay layers.
+    """
+    rows = _docker_system_df()
+    bytes_ = 0
+    for type_key in ("Images", "Local Volumes", "Build Cache"):
+        row = rows.get(type_key) or {}
+        bytes_ += _parse_size_string(row.get("Reclaimable", "0B"))
+    detail = (
+        "All unused images + orphan volumes + build cache + stopped-container "
+        "layers. Active services keep running; their images re-pull on next "
+        "`docker compose up`. Often frees more than the individual rows report."
+    )
+    return bytes_, detail
+
+
+def _scan_system_journal():
+    """systemd journal disk usage — `/var/log/journal` accumulation.
+
+    Probed by a one-shot Ubuntu container with /var/log/journal
+    mounted, since the IntactAI backend container doesn't ship
+    journalctl. Returns 0 (and a benign note) on hosts without
+    systemd journal storage.
+    """
+    from services.upgrade.base import run_command
+    r = run_command(
+        "docker run --rm -v /var/log/journal:/var/log/journal:ro "
+        "ubuntu:22.04 sh -c 'journalctl --disk-usage 2>/dev/null | "
+        "grep -oE \"[0-9.]+[KMGT]?B\" | head -1' 2>/dev/null",
+        logger=None,
+    )
+    raw = (r.get("stdout") or "").strip()
+    if not raw:
+        return 0, "no systemd journal storage (or backend can't access it)"
+    bytes_ = _parse_size_string(raw)
+    # Vacuum target is 200 MB — anything above that is reclaimable.
+    target = 200 * 1024 * 1024
+    reclaimable = max(0, bytes_ - target)
+    return reclaimable, f"current {raw}; vacuum to 200 MB"
+
+
 # ---- purge functions ---------------------------------------------------
 
 def _purge_workflows(run_id):
@@ -1326,6 +1476,80 @@ def _purge_memory_dumps(_):
     return freed, ", ".join(detail) if detail else "no dumps found"
 
 
+# ---- Docker storage purgers ---------------------------------------------
+
+def _purge_docker_images(_):
+    """`docker image prune -a -f` — drop every image no running container
+    depends on. The next `docker compose up` will re-pull anything still
+    referenced by a compose file, which is the expected operator path
+    after a disk-pressure cleanup."""
+    from services.upgrade.base import run_command
+    before, _ = _scan_docker_images()
+    run_command("docker image prune -a -f", logger=None)
+    after, _ = _scan_docker_images()
+    return max(0, before - after), ""
+
+
+def _purge_docker_volumes(_):
+    from services.upgrade.base import run_command
+    before, _ = _scan_docker_volumes()
+    run_command("docker volume prune -f", logger=None)
+    after, _ = _scan_docker_volumes()
+    return max(0, before - after), ""
+
+
+def _purge_docker_build_cache(_):
+    from services.upgrade.base import run_command
+    before, _ = _scan_docker_build_cache()
+    # `-a` includes inactive cache entries; `-f` skips the prompt.
+    run_command("docker builder prune -af", logger=None)
+    after, _ = _scan_docker_build_cache()
+    return max(0, before - after), ""
+
+
+def _purge_docker_deep(_):
+    """`docker system prune -a --volumes -f` — single-shot deep clean.
+
+    Drops every unused image (not just dangling), every orphan volume,
+    every stopped container's layer, and the entire build cache. The
+    canonical recipe for clawing back overlay2 space that's leaked
+    over time via failed builds, image upgrades, container churn.
+
+    To measure actual savings we compare the host's total docker
+    storage footprint via `docker system df` (sum of in-use + reclaimable
+    across all types) before and after. That captures the orphan
+    overlay layers the per-type API undercounts.
+    """
+    from services.upgrade.base import run_command
+
+    def _docker_total_bytes():
+        rows = _docker_system_df()
+        n = 0
+        for row in rows.values():
+            n += _parse_size_string(row.get("Size", "0B"))
+        return n
+
+    before = _docker_total_bytes()
+    run_command("docker system prune -a --volumes -f", logger=None)
+    after = _docker_total_bytes()
+    return max(0, before - after), ""
+
+
+def _purge_system_journal(_):
+    """`journalctl --vacuum-size=200M` via a one-shot Ubuntu container
+    with /var/log/journal mounted read-write. Trims old archived
+    journals; keeps the active journal + the most recent ~200 MB."""
+    from services.upgrade.base import run_command
+    before, _ = _scan_system_journal()
+    run_command(
+        "docker run --rm -v /var/log/journal:/var/log/journal:rw "
+        "ubuntu:22.04 journalctl --vacuum-size=200M 2>&1 | tail -1",
+        logger=None,
+    )
+    after, _ = _scan_system_journal()
+    return max(0, before - after), ""
+
+
 # ---- registry -----------------------------------------------------------
 
 _PURGE_SECTIONS = (
@@ -1339,6 +1563,19 @@ _PURGE_SECTIONS = (
     ("elk",                "ELK Artifact Indices",                _scan_elk_artifacts,     _purge_elk_artifacts),
     ("timesketch",         "Timesketch Timelines & Events",       _scan_timesketch,        _purge_timesketch),
     ("memory_dumps",       "Memory dumps (.raw files)",           _scan_memory_dumps,      _purge_memory_dumps),
+    # Docker-side disk hogs — typically dwarf everything above on a
+    # mature install (12 GB+ of unused images is common). The
+    # registry's UI is auto-discovered so no frontend changes needed.
+    ("docker_images",      "Docker Images (unused)",              _scan_docker_images,     _purge_docker_images),
+    ("docker_volumes",     "Docker Volumes (orphan)",             _scan_docker_volumes,    _purge_docker_volumes),
+    ("docker_build_cache", "Docker Build Cache",                  _scan_docker_build_cache, _purge_docker_build_cache),
+    # Deep clean — strict superset of the 3 docker_* rows. Use when
+    # `/var/lib/docker/overlay2` is much larger than `docker system df`
+    # reports (orphan layers from image upgrades, failed builds,
+    # crashed containers). Safe for running services.
+    ("docker_deep",        "Docker Deep Prune (recover orphan layers)", _scan_docker_deep, _purge_docker_deep),
+    # Systemd journal — accumulates over time on long-running boxes.
+    ("system_journal",     "System Journal (archived)",           _scan_system_journal,    _purge_system_journal),
 )
 
 
