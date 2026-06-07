@@ -30,6 +30,13 @@ document.addEventListener('alpine:init', () => {
         caseName: 'Memory ' + new Date().toISOString().split('T')[0],
         clientFilter: '',
         selectedClient: '',
+        // Advanced-timeouts disclosure (closed by default). Operators
+        // bump these for very large dumps or slow hardware. Blank or
+        // zero → use server-side default.
+        timeoutsOpen: false,
+        acquireTimeoutS: null,
+        pluginTimeoutS: null,
+        yarascanTimeoutS: null,
 
         // --------------------------------------------------------------
         // Caches
@@ -118,6 +125,15 @@ document.addEventListener('alpine:init', () => {
                     use_llm: !!this.useLlm,
                     case_name: this.caseName || ('Memory ' + new Date().toISOString().split('T')[0]),
                 };
+                // Only send timeouts the operator actually overrode —
+                // sending nulls / zeros would defeat the server-side
+                // "fall back to default" path.
+                if (this.acquireTimeoutS && this.acquireTimeoutS > 0)
+                    body.acquire_flow_timeout_s = this.acquireTimeoutS;
+                if (this.pluginTimeoutS && this.pluginTimeoutS > 0)
+                    body.plugin_timeout_s = this.pluginTimeoutS;
+                if (this.yarascanTimeoutS && this.yarascanTimeoutS > 0)
+                    body.yarascan_timeout_s = this.yarascanTimeoutS;
 
                 const r = await fetch('/api/memory/run', {
                     method: 'POST',
@@ -262,18 +278,25 @@ document.addEventListener('alpine:init', () => {
         },
 
         openChat() {
-            if (!this.currentRunId) return;
-            // Reuse the existing agentic chat modal — set its run_id +
-            // module so it POSTs to the right endpoints. If the project
-            // ever splits the chat modal per-module this is the seam.
-            if (Alpine.store('agenticChat') && typeof Alpine.store('agenticChat').openForRun === 'function') {
-                Alpine.store('agenticChat').openForRun(this.currentRunId, { module: 'memory' });
-            } else {
-                // Fallback: redirect to the workflows tab where chat
-                // is accessible from the row's 3-dot menu.
-                if (Alpine.store('app') && typeof Alpine.store('app').switchTab === 'function') {
-                    Alpine.store('app').switchTab('workflows');
-                }
+            this.openChatForRun(this.currentRunId);
+        },
+
+        /** Open the shared agentic chat modal for a memory run.
+         *  Called from the Memory page's mini status pane (current
+         *  run only) AND from the Workflows table row actions (any
+         *  completed memory run, scoped to that run's id).
+         *
+         *  The agentic-chat store handles all the transport — we just
+         *  hand it a runId + automationType='memory' and it switches
+         *  its _urlBase() to /api/memory/run/<id>. */
+        openChatForRun(runId) {
+            if (!runId) return;
+            const chat = Alpine.store('agenticChat');
+            if (chat && typeof chat.open === 'function') {
+                chat.open(runId, 'memory');
+            } else if (Alpine.store('app')?.switchTab) {
+                // Fallback: chat store not loaded for some reason.
+                Alpine.store('app').switchTab('workflows');
             }
         },
     });

@@ -21,7 +21,10 @@ SERVICE_CONTAINERS = {
     'timesketch': 'intact_timesketch_web',
     'kibana': 'intact_kibana',
     'iris': 'intact_iris_app',
-    'portainer': 'intact_portainer'
+    'portainer': 'intact_portainer',
+    # VolWeb in-tree memory-forensics stack — the backend is the
+    # representative container (frontend + workers depend on it).
+    'volweb': 'intact_volweb_backend',
 }
 
 @system_bp.route('/api/test', methods=['GET', 'POST'])

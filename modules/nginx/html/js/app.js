@@ -10,7 +10,11 @@ window.services = {
     timesketch: { port: 5000, protocol: 'https' },
     kibana: { port: 5601, protocol: 'https' },
     iris: { port: 8443, protocol: 'https' },
-    portainer: { port: 9443, protocol: 'https' }
+    portainer: { port: 9443, protocol: 'https' },
+    // VolWeb — main nginx terminates TLS on host port 8002 and
+    // proxies to the internal intact_volweb_frontend:80. URL stays
+    // clean (no sub-path) so Vue's hardcoded /assets/ paths work.
+    volweb: { port: 8002, protocol: 'https' }
 };
 
 window.defaultConfig = {

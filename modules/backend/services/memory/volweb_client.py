@@ -833,6 +833,20 @@ class VolWebClient:
 
             done: dict[str, dict] = {}
             errored: dict[str, dict] = {}
+            # VolWeb writes a `VolWebSelective` row with results=True the
+            # moment the celery selective-extraction task finishes (see
+            # volatility_engine/engine.py inside the VolWeb image). This
+            # is the AUTHORITATIVE "task done" signal — far better than
+            # the 5-min idle-grace fallback because it fires the second
+            # the worker actually completes. Whatever curated plugins
+            # haven't surfaced by now genuinely won't (they either
+            # crashed in Vol3 automagic without inserting a row, or ran
+            # with empty results which the row already captures).
+            task_done = any(
+                (r.get("name") or "").endswith("VolWebSelective") and r.get("results")
+                for r in rows
+            )
+
             for r in rows:
                 name = r.get("name") or ""
                 if name not in wanted:
@@ -869,6 +883,22 @@ class VolWebClient:
                     on_progress(len(done), len(wanted))
                 except Exception:
                     pass
+
+            # Fast-exit: the worker's terminal-marker row says we're done.
+            # Anything still missing from the curated set isn't coming —
+            # log what's missing so the operator sees it, then return.
+            if task_done:
+                missing = sorted(
+                    w.rsplit(".", 1)[-1]
+                    for w in wanted - set(done.keys()) - set(errored.keys())
+                )
+                if missing:
+                    self._log(
+                        f"plugin extract: VolWeb task finished — {len(done)}/{len(wanted)} done, "
+                        f"missing (no row or empty results): {', '.join(missing)}",
+                        "warning",
+                    )
+                return done
 
             # All wanted plugins reached a terminal state — done.
             if len(done) + len(errored) >= len(wanted):
@@ -943,7 +973,8 @@ class VolWebClient:
                     container, "python3", "-c",
                     "import django,os; os.environ['DJANGO_SETTINGS_MODULE']='backend.settings'; django.setup(); "
                     "from yararules.models import YaraRule; "
-                    "print(YaraRule.objects.filter(enabled=True).count())",
+                    # Field is `is_active` (not `enabled`) on this VolWeb release.
+                    "print(YaraRule.objects.filter(is_active=True).count())",
                 ],
                 capture_output=True, text=True, timeout=10,
             )

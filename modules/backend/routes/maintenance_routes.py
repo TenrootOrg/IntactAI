@@ -1467,48 +1467,34 @@ def refresh_yara_rulesets():
             # 1. Auth against VolWeb. The platform's tenroot credentials
             #    are seeded into VolWeb by lib/modules.sh:seed_volweb_admin
             #    at install time; we use them here too.
-            from config import load_main_config
-            cfg = load_main_config() or {}
-            tenroot_pass = (
-                (cfg.get('modules', {}) or {}).get('timesketch', {}) or {}
-            ).get('password') or '123123'
-
-            # Host: localhost override — Django rejects underscored
-            # hostnames per RFC 1034/1035 (DisallowedHost). The TCP
-            # connection still resolves via docker DNS.
-            token_resp = requests.post(
-                'http://intact_volweb_backend:8000/core/token/',
-                json={'username': 'tenroot', 'password': tenroot_pass},
-                headers={'Host': 'localhost'},
-                timeout=10,
+            # Use VolWebClient — it handles the JWT, the Host header
+            # override (Django rejects underscored hostnames), the
+            # 4-attempt retry-with-backoff, and reads credentials from
+            # frontend_config.memory.volweb (same auth path the pipeline
+            # uses). No duplicated config-resolution logic.
+            from services.memory.volweb_client import VolWebClient
+            client = VolWebClient(
+                logger=lambda m, level="info": add_log_to_run(run_id, m, level),
             )
-            if token_resp.status_code != 200:
-                raise RuntimeError(
-                    f"VolWeb auth failed: HTTP {token_resp.status_code}"
-                )
-            token = token_resp.json().get('access')
-            if not token:
-                raise RuntimeError("VolWeb returned no access token")
 
-            # 2. Import each ruleset. VolWeb's import endpoint is
-            #    synchronous from the HTTP perspective but the rule-
-            #    validation runs in the yarascan worker queue async.
             n_total = len(_YARA_RULESETS)
             for idx, rs in enumerate(_YARA_RULESETS, start=1):
                 if is_cancelled(run_id):
                     raise RuntimeError("cancelled by operator")
                 add_log_to_run(run_id, f"[{idx}/{n_total}] importing {rs['name']}...", "info")
-                resp = requests.post(
-                    'http://intact_volweb_backend:8000/api/yararulesets/import/github/',
-                    headers={'Authorization': f'Bearer {token}', 'Host': 'localhost'},
-                    json=rs,
-                    timeout=600,
-                )
-                add_log_to_run(
-                    run_id,
-                    f"  HTTP {resp.status_code}: {resp.text[:200]}",
-                    "info" if resp.status_code < 400 else "warning",
-                )
+                try:
+                    resp = client._post_json(
+                        "/api/yararulesets/import/github/",
+                        rs,
+                        timeout=600,
+                    )
+                    add_log_to_run(
+                        run_id,
+                        f"  imported: {str(resp)[:200]}",
+                        "info",
+                    )
+                except Exception as e:
+                    add_log_to_run(run_id, f"  failed: {e}", "warning")
                 update_run_status(run_id, "running", progress=5 + int(idx / n_total * 90))
 
             update_run_status(run_id, "completed", progress=100)
@@ -1534,32 +1520,10 @@ def yara_rulesets_status():
     Read directly from VolWeb so the panel reflects whatever rule
     population actually exists (rather than what we tried to seed).
     """
-    import requests
-    from config import load_main_config
     try:
-        cfg = load_main_config() or {}
-        tenroot_pass = (
-            (cfg.get('modules', {}) or {}).get('timesketch', {}) or {}
-        ).get('password') or '123123'
-
-        token_resp = requests.post(
-            'http://intact_volweb_backend:8000/core/token/',
-            json={'username': 'tenroot', 'password': tenroot_pass},
-            headers={'Host': 'localhost'},
-            timeout=5,
-        )
-        if token_resp.status_code != 200:
-            return jsonify({"available": False, "reason": "VolWeb auth failed"}), 200
-        token = token_resp.json().get('access', '')
-
-        rs = requests.get(
-            'http://intact_volweb_backend:8000/api/yararulesets/',
-            headers={'Authorization': f'Bearer {token}', 'Host': 'localhost'},
-            timeout=5,
-        )
-        if rs.status_code != 200:
-            return jsonify({"available": False, "reason": f"HTTP {rs.status_code}"}), 200
-        rulesets = rs.json()
+        from services.memory.volweb_client import VolWebClient
+        client = VolWebClient()
+        rulesets = client._get_json("/api/yararulesets/")
         return jsonify({"available": True, "rulesets": rulesets})
     except Exception as e:
         return jsonify({"available": False, "reason": str(e)}), 200

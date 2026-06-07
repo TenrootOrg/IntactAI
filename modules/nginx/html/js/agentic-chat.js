@@ -61,6 +61,7 @@ document.addEventListener('alpine:init', () => {
                 case 'aws_scan':          return `/api/aws/run/${this.runId}`;
                 case 'azure_scan':        return `/api/azure/run/${this.runId}`;
                 case 'engagement_report': return `/api/engagement/run/${this.runId}`;
+                case 'memory':            return `/api/memory/run/${this.runId}`;
                 case 'agentic':
                 default:                  return `/api/agentic/run/${this.runId}`;
             }

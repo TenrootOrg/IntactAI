@@ -256,7 +256,7 @@
                         <div class="flex justify-between items-start">
                             <div>
                                 <p class="text-sm text-gray-400">Total Services</p>
-                                <p class="text-4xl font-bold mt-2 text-white">5</p>
+                                <p class="text-4xl font-bold mt-2 text-white">6</p>
                             </div>
                             <svg class="w-10 h-10 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path>
@@ -399,6 +399,30 @@
                         </div>
                         <button onclick="openService('portainer')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
                             Open Portainer
+                        </button>
+                    </div>
+
+                    <!-- VolWeb — in-tree memory-forensics analysis stack.
+                         Powers the Memory tab; this card exposes the native
+                         VolWeb UI for plugin/yarascan deep-dive that the
+                         IntactAI UI doesn't surface directly. -->
+                    <div class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="flex items-center gap-3">
+                                <div class="bg-blue-600 p-3 rounded-lg">
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">VolWeb</h3>
+                                    <p class="text-sm text-gray-400">Memory Forensics (Volatility 3 + YARA)</p>
+                                </div>
+                            </div>
+                            <div :class="$store.services.getStatusClass('volweb')"></div>
+                        </div>
+                        <button onclick="openService('volweb')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
+                            Open VolWeb
                         </button>
                     </div>
                 </div>
@@ -633,11 +657,11 @@
                                                     </a>
                                                 </template>
                                                 <!-- Interactive: chat about findings + re-run pipeline with operator corrections.
-                                                     Available for agentic, AWS scan, Azure scan, and Engagement Report runs.
-                                                     For AWS/Azure, hidden when LLM was disabled — there are no analyses
-                                                     to refine, so the chat-driven rerun has nothing to work on. Agentic
-                                                     and Engagement Report runs are unaffected (they don't gate on this flag). -->
-                                                <template x-if="(run.type === 'agentic' || run.type === 'aws_scan' || run.type === 'azure_scan' || run.type === 'engagement_report') && run.status === 'completed' && (run.type === 'agentic' || run.type === 'engagement_report' || run.details?.llm_enabled !== false)">
+                                                     Available for agentic, AWS scan, Azure scan, Engagement Report,
+                                                     and Memory runs. For AWS/Azure, hidden when LLM was disabled — no
+                                                     analyses to refine. Memory uses `details.use_llm` (its own flag);
+                                                     agentic/engagement_report don't gate on the LLM flag. -->
+                                                <template x-if="(run.type === 'agentic' || run.type === 'aws_scan' || run.type === 'azure_scan' || run.type === 'engagement_report' || run.type === 'memory') && run.status === 'completed' && (run.type === 'agentic' || run.type === 'engagement_report' || (run.type === 'memory' ? run.details?.use_llm !== false : run.details?.llm_enabled !== false))">
                                                     <button @click="$store.agenticChat.open(run.id, run.type)" class="bg-teal-600 hover:bg-teal-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Open interactive chat: refine the report with operator notes, then re-run">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
                                                         Interactive
@@ -668,6 +692,21 @@
                                                         </svg>
                                                         Stop
                                                     </button>
+                                                </template>
+                                                <!-- Memory module: completed runs expose the LLM
+                                                     report download + the validation chat. The
+                                                     chat reuses the agentic chat modal (same
+                                                     transcript model lives on workflow.details). -->
+                                                <template x-if="run.type === 'memory' && run.status === 'completed' && run.details?.report_md">
+                                                    <a :href="'/api/memory/run/' + run.id + '/download'"
+                                                       download
+                                                       class="bg-emerald-600 hover:bg-emerald-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white"
+                                                       title="Download the LLM-generated findings report">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                                        </svg>
+                                                        Report
+                                                    </a>
                                                 </template>
                                                 <button @click.stop="$store.workflows.viewLogs(run.id)" style="color:#fff;background-color:#475569;" class="hover:bg-slate-600 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1">
                                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1831,6 +1870,47 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                     <div class="text-xs text-gray-500">Uncheck to skip the LLM call and get a plain extraction report (cheaper / works without an API key).</div>
                                 </div>
                             </label>
+                        </div>
+
+                        <!-- Advanced timeouts — collapsed by default. Operators
+                             bump these for huge dumps (32 GB+) or slower
+                             extraction hardware. Leave blank to use defaults. -->
+                        <div class="mt-4 pt-4 border-t border-gray-700">
+                            <div class="flex items-center justify-between cursor-pointer"
+                                 @click="$store.memory.timeoutsOpen = !$store.memory.timeoutsOpen">
+                                <span class="text-xs font-medium text-gray-400">Advanced timeouts</span>
+                                <svg class="w-3 h-3 text-gray-500 transition-transform"
+                                     :class="{'rotate-180': $store.memory.timeoutsOpen}"
+                                     fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                </svg>
+                            </div>
+                            <div x-show="$store.memory.timeoutsOpen" x-transition class="mt-3 grid grid-cols-3 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Acquire timeout (sec)</label>
+                                    <input type="number" min="60" max="86400" step="60"
+                                           x-model.number="$store.memory.acquireTimeoutS"
+                                           :placeholder="'default 5400'"
+                                           class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <p class="text-[10px] text-gray-500 mt-0.5">Velociraptor flow + extract. Default 90 min.</p>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Plugin extract timeout (sec)</label>
+                                    <input type="number" min="60" max="86400" step="60"
+                                           x-model.number="$store.memory.pluginTimeoutS"
+                                           :placeholder="'default 1800'"
+                                           class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <p class="text-[10px] text-gray-500 mt-0.5">Vol3 selective-extraction cap. Default 30 min.</p>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">YARA scan timeout (sec)</label>
+                                    <input type="number" min="60" max="86400" step="60"
+                                           x-model.number="$store.memory.yarascanTimeoutS"
+                                           :placeholder="'default 2400'"
+                                           class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <p class="text-[10px] text-gray-500 mt-0.5">Yarascan worker cap. Default 40 min.</p>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -4000,7 +4080,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
     <script src="js/agentic-chat.js?v=8"></script>
     <script src="js/engagement.js?v=14"></script>
     <script src="js/cve-scan.js?v=8"></script>
-    <script src="js/memory.js?v=6"></script>
+    <script src="js/memory.js?v=8"></script>
     <script src="js/scheduler.js"></script>
     <!-- Azure date pickers -->
     <script>

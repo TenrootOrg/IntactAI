@@ -274,7 +274,18 @@ def _call_llm_for_memory(
 
 
 def _extract_markdown_from_llm_response(resp: Any) -> str:
-    """Unify Claude SDK + OpenAI/OpenRouter SDK + Ollama dict shapes."""
+    """Unify Claude SDK + OpenAI/OpenRouter SDK + Ollama dict shapes.
+
+    ``services.agentic.analyzers.call_llm`` ALREADY extracts the final
+    markdown string for the online providers (Anthropic, OpenAI,
+    OpenRouter, Gemini all return ``str``). This function only needs
+    to fall back to SDK-object extraction when call_llm hands us a raw
+    response object — that path exists for future provider additions
+    and unit tests.
+    """
+    # Fast path: call_llm returned plain text directly.
+    if isinstance(resp, str):
+        return resp
     # Anthropic SDK: response.content is a list of content blocks.
     content = getattr(resp, "content", None)
     if isinstance(content, list) and content:

@@ -232,7 +232,22 @@ def run_memory_pipeline(
     rerun_from_evidence: int | None = None,
     from_upload_path: str | None = None,
     use_llm: bool = True,
+    timeouts: dict | None = None,
 ) -> None:
+    # Resolved timeouts in seconds. Operator override (UI textbox)
+    # wins over blueprint.settings, which wins over defaults. Defaults
+    # are tuned for a typical 4-8 GB Win10/11 client; bigger dumps or
+    # slower hardware benefit from bumping these up.
+    _to = dict(timeouts or {})
+    bp_settings = (blueprint or {}).get("settings") or {}
+    def _t(key: str, default: int) -> int:
+        try:
+            return int(_to.get(key) or bp_settings.get(key) or default)
+        except (TypeError, ValueError):
+            return default
+    acquire_flow_timeout_s = _t("acquire_flow_timeout_s", 5400)   # 90 min
+    plugin_timeout_s       = _t("plugin_timeout_s",       1800)   # 30 min
+    yarascan_timeout_s     = _t("yarascan_timeout_s",     2400)   # 40 min
     """Run a memory-forensics pipeline end-to-end.
 
     Contract: takes a pre-created workflow ``run_id`` (the route
@@ -381,7 +396,7 @@ def run_memory_pipeline(
             client.wait_for_plugin_results(
                 evidence_id,
                 plugins_to_run,
-                timeout_s=1800,
+                timeout_s=plugin_timeout_s,
                 cancel_check=cancel,
                 on_progress=lambda done, total: _bump(
                     run_id,
@@ -398,7 +413,7 @@ def run_memory_pipeline(
             yara_started = time.time()
             hit_count = client.wait_for_yarascan(
                 evidence_id,
-                timeout_s=2400,
+                timeout_s=yarascan_timeout_s,
                 cancel_check=cancel,
             )
             cumulative += _PHASE_WEIGHTS["yarascan"]
@@ -433,6 +448,8 @@ def run_memory_pipeline(
                 logger=lambda m, level="info": add_log_to_run(run_id, m, level),
                 run_id=run_id,
                 cancel_check=cancel,
+                flow_timeout=acquire_flow_timeout_s,
+                poll_max_min=max(5, acquire_flow_timeout_s // 60),
                 **overrides,
             )
             flow_id = acq["flow_id"]
@@ -514,7 +531,7 @@ def run_memory_pipeline(
             client.wait_for_plugin_results(
                 evidence_id,
                 plugins_to_run,
-                timeout_s=1800,
+                timeout_s=plugin_timeout_s,
                 cancel_check=cancel,
                 on_progress=lambda done, total: _bump(
                     run_id,
@@ -533,7 +550,7 @@ def run_memory_pipeline(
             yara_started = time.time()
             hit_count = client.wait_for_yarascan(
                 evidence_id,
-                timeout_s=2400,
+                timeout_s=yarascan_timeout_s,
                 cancel_check=cancel,
             )
             cumulative += _PHASE_WEIGHTS["yarascan"]

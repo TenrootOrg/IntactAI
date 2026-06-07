@@ -14,6 +14,10 @@ services:
       - "80:80"
       - "8080:8080"
       - "443:443"
+      # VolWeb dashboard tile opens https://<host>:8002/ — main nginx
+      # terminates TLS here and proxies to intact_volweb_frontend:80.
+      # See modules/nginx/config/nginx.conf for the matching server block.
+      - "8002:8002"
     restart: unless-stopped
     networks:
       - intact_network

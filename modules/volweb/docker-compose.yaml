@@ -67,6 +67,16 @@ services:
     image: "forensicxlab/volweb-backend:${VOLWEB_BACKEND_VERSION}"
     command: daphne -b 0.0.0.0 -p 8000 backend.asgi:application
     restart: unless-stopped
+    # Network alias `volweb-backend` keeps the frontend image's
+    # hardcoded internal-nginx config (which proxies /api/ to
+    # http://volweb-backend:8000) working without rebuilding the
+    # upstream image. Without this the frontend nginx logs
+    # "host not found in upstream 'volweb-backend'" and the
+    # container restarts in a loop.
+    networks:
+      intact_network:
+        aliases:
+          - volweb-backend
     depends_on:
       - intact_volweb_postgresdb
       - intact_volweb_redis
@@ -95,8 +105,6 @@ services:
       # `staging/<name>.raw` (relative to MEDIA_ROOT=/home/app/web/media)
       # so Django's storage layer finds the file at /home/app/web/media/staging/<name>.raw.
       - memory_dumps_shared:/home/app/web/media/staging:rw
-    networks:
-      - intact_network
     logging:
       driver: "json-file"
       options:
@@ -210,8 +218,11 @@ services:
     restart: unless-stopped
     depends_on:
       - intact_volweb_backend
+    # No host port — the frontend stays on the internal docker
+    # network. The main IntactAI nginx terminates TLS on host port
+    # 8002 (see modules/nginx/config/nginx.conf) and proxies through.
     expose:
-      - 3000
+      - 80
     volumes:
       - volweb_staticfiles:/home/app/web/staticfiles
       - volweb_media:/home/app/web/media

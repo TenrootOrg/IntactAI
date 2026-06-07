@@ -165,6 +165,19 @@ def start_memory_run():
         use_llm = True
     use_llm = bool(use_llm)
 
+    # Optional per-run timeout overrides (seconds). Each is honored in
+    # the pipeline if provided; otherwise blueprint.settings → defaults.
+    # Front-end UI lets the operator bump these for huge dumps or
+    # slow hardware without touching defaults.
+    timeouts = {}
+    for k in ("acquire_flow_timeout_s", "plugin_timeout_s", "yarascan_timeout_s"):
+        v = data.get(k)
+        if v is not None:
+            try:
+                timeouts[k] = int(v)
+            except (TypeError, ValueError):
+                return jsonify({"error": f"{k} must be an integer (seconds)"}), 400
+
     label = client_name or client_id
     name = f"Memory ({mode}) — {label}"
     details = {
@@ -176,12 +189,14 @@ def start_memory_run():
         "blueprint_id": bp_id or None,
         "blueprint": (blueprint or {}).get("name") if blueprint else None,
         "use_llm": use_llm,
+        "timeouts": timeouts or None,
     }
 
     run_id = create_automation_run(automation_type="memory", name=name, details=details)
     add_log_to_run(
         run_id,
-        f"memory: queued client={client_id} mode={mode} use_llm={use_llm}",
+        f"memory: queued client={client_id} mode={mode} use_llm={use_llm}"
+        + (f" timeouts={timeouts}" if timeouts else ""),
         "info",
     )
     update_run_status(run_id, "running", progress=1)
@@ -194,6 +209,7 @@ def start_memory_run():
         case_name=case_name,
         blueprint=blueprint,
         use_llm=use_llm,
+        timeouts=timeouts or None,
     )
 
     return jsonify({
