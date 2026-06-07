@@ -74,18 +74,20 @@ nano config.yaml
 sudo bash install.sh
 ```
 
-## Components
+## Services
 
-| Service | Description | Port |
-|---------|-------------|------|
-| **Dashboard** | Web UI (workflows, blueprints, reports) | 80, 443 |
-| **Velociraptor** | DFIR / endpoint forensics | 8889 (GUI), 8000 (clients), 8001 (gRPC API) |
-| **ELK Stack** | Log analytics (Elasticsearch + Kibana) | 9200 (ES), 5601 (Kibana) |
-| **TimeSketch** | Timeline analysis | 5000 |
-| **IRIS** | Incident response & case management | 8443 |
-| **VolWeb** | Memory forensics (Volatility 3 + YARA) | 8002 |
-| **Backend API** | Management API | 5001 |
-| **Portainer** | Container management | 9443 |
+All services terminate TLS through the main nginx. Detailed port allocations (internal docker-network ports, agent comms, install/runtime egress) are in the [Network / Firewall Ports](#network--firewall-ports) section below.
+
+| Service | Description | Access |
+|---------|-------------|--------|
+| **Dashboard** | Web UI — workflows, blueprints, reports, settings | `https://YOUR_IP` |
+| **Velociraptor** | DFIR / endpoint forensics. Reverse-proxied through main nginx — direct access to the upstream GUI port (8889) is intentionally not exposed (a past header-handling bug caused redirect loops; the proxy is the supported entry point). | `https://YOUR_IP/velociraptor/` |
+| **TimeSketch** | Timeline analysis | `https://YOUR_IP:5000` |
+| **ELK Stack** | Log analytics (Elasticsearch + Kibana). Only Kibana is operator-facing; Elasticsearch is internal to the docker network. | `https://YOUR_IP:5601` (Kibana) |
+| **IRIS** | Incident response & case management | `https://YOUR_IP:8443` |
+| **VolWeb** | Memory forensics (Volatility 3 + YARA) | `https://YOUR_IP:8002` |
+| **Portainer** | Container management | `https://YOUR_IP:9443` |
+| **Backend API** | Management API — used by the dashboard and the CLI tools. Not browsed to directly. | internal (`http://intact_backend:5001`, proxied as `/api/`) |
 
 ## Configuration
 
@@ -123,20 +125,6 @@ versions:
   timesketch: '20260209'
   velociraptor: '0.75'
 ```
-
-## Accessing Services
-
-After installation (all services terminate TLS through the main nginx):
-
-| Service | URL | Notes |
-|---------|-----|-------|
-| Dashboard | `https://YOUR_IP` | |
-| Velociraptor | `https://YOUR_IP/velociraptor/` | Reverse-proxied through main nginx. Direct access to Velociraptor's own GUI port (8889) is intentionally not exposed — a past header-handling bug caused redirect loops, the proxy path is the supported entry point. |
-| TimeSketch | `https://YOUR_IP:5000` | |
-| Kibana | `https://YOUR_IP:5601` | |
-| IRIS | `https://YOUR_IP:8443` | |
-| VolWeb | `https://YOUR_IP:8002` | |
-| Portainer | `https://YOUR_IP:9443` | |
 
 ## Network / Firewall Ports
 
