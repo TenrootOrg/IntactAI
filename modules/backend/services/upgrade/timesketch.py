@@ -916,3 +916,19 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
             "restored_version": current_version,
             "db_backup": db_backup_path,
         }
+
+
+def install_timesketch_offline(package_dir: str, version: str, logger=None, run_id=None) -> Dict:
+    """Fresh-install Timesketch — picked when intact_timesketch_web absent."""
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    from .base import install_module_compose_up
+    work_dir = os.path.join(WORKDIR, 'modules', 'timesketch')
+    env_file = os.path.join(work_dir, '.env')
+    log(f"Installing Timesketch (first-time) -> {version or 'tracked default'}...", "info")
+    if os.path.exists(env_file) and version:
+        update_env_file(env_file, 'TIMESKETCH_VERSION', version, logger=log)
+    return install_module_compose_up(
+        'timesketch', package_dir, version,
+        image_tar_prefixes=['timesketch'],
+        logger=log, run_id=run_id,
+    )

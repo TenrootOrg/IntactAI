@@ -37,7 +37,11 @@ from .intact import upgrade_intact, upgrade_intact_offline
 from .plaso import upgrade_plaso, upgrade_plaso_offline
 from .aws import upgrade_aws, upgrade_aws_offline
 from .azure import upgrade_azure, upgrade_azure_offline
-from .volweb import upgrade_volweb, upgrade_volweb_offline
+from .volweb import upgrade_volweb, upgrade_volweb_offline, install_volweb_offline
+from .elk import install_elk_offline
+from .timesketch import install_timesketch_offline
+from .velociraptor import install_velociraptor_offline
+from .iris import install_iris_offline
 
 # Storage functions for two-phase upgrade state
 from services.storage.base import (
@@ -647,10 +651,30 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
         'aws': upgrade_aws_offline,
         'azure': upgrade_azure_offline,
         'intact': upgrade_intact_offline,
+        'volweb': upgrade_volweb_offline,
     }
 
-    # Intact.AI must be first so backend code is updated before modules
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure']
+    # Fresh-install functions — picked by the dispatcher when the module's
+    # primary container is absent. Modules not listed here fall back to
+    # their upgrade function (or have no install/upgrade decision —
+    # aws/azure/plaso/intact don't deploy a standalone container stack).
+    offline_install_functions = {
+        'elk':          install_elk_offline,
+        'timesketch':   install_timesketch_offline,
+        'iris':         install_iris_offline,
+        'velociraptor': install_velociraptor_offline,
+        'volweb':       install_volweb_offline,
+    }
+
+    # Container existence detector — reuses _MODULE_PRIMARY_CONTAINERS
+    # from base.py. Falls back to True ("module is installed") for
+    # modules without a container concept.
+    from .base import _module_container_exists
+
+    # Intact.AI must be first so backend code is updated before modules.
+    # VolWeb is at the end so its install (a multi-container compose) runs
+    # last when the operator is adding VolWeb to an existing install.
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure', 'volweb']
 
     results = {}
     total = 0
@@ -707,16 +731,30 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
             elif not version:
                 continue
 
+            # Install-or-upgrade detection: pick the install function
+            # (when registered) if the module's primary container is
+            # absent on the host. Otherwise use the upgrade function as
+            # before. This is what lets an operator package a module
+            # their current install doesn't have and have it deployed
+            # cleanly via the same Apply Upgrade flow.
+            install_fn = offline_install_functions.get(module_name)
+            module_present = _module_container_exists(module_name)
+            if install_fn and module_present is False:
+                action_word = "INSTALLING"
+                upgrade_fn = install_fn
+            else:
+                action_word = "UPGRADING"
+                upgrade_fn = offline_upgrade_functions.get(module_name)
+
             log("", "info")
             log(f"{'='*50}", "info")
-            log(f"UPGRADING: {module_name.upper()} -> {version or 'from source'}", "info")
+            log(f"{action_word}: {module_name.upper()} -> {version or 'from source'}", "info")
             log(f"{'='*50}", "info")
 
             # Fresh install: remove database volumes if requested for this module
             if db_overwrite.get(module_name, False):
                 reset_module_database(module_name, logger=log)
 
-            upgrade_fn = offline_upgrade_functions.get(module_name)
             if not upgrade_fn:
                 log(f"Unknown module: {module_name}", "error")
                 results[module_name] = {"success": False, "error": "Unknown module"}

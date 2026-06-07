@@ -207,3 +207,58 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
             "rolled_back": True,
             "restored_version": current_version
         }
+
+
+def install_iris_offline(package_dir: str, version: str, logger=None, run_id=None) -> Dict:
+    """Fresh-install IRIS — picked when intact_iris_app absent.
+
+    Generates the secret files lib/modules.sh:generate_iris_secrets
+    would otherwise create (IRIS_ADM_PASSWORD from config.yaml,
+    IRIS_SECRET_KEY + IRIS_SECURITY_PASSWORD_SALT as `openssl rand -hex 32`
+    equivalents, POSTGRES_* passwords).
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    from .base import install_module_compose_up
+    import secrets as _secrets
+
+    work_dir = os.path.join(WORKDIR, 'modules', 'iris')
+    env_file = os.path.join(work_dir, '.env')
+    secrets_dir = os.path.join(work_dir, 'secrets')
+    os.makedirs(secrets_dir, exist_ok=True)
+
+    log(f"Installing IRIS (first-time) -> {version or 'tracked default'}...", "info")
+    if os.path.exists(env_file) and version:
+        update_env_file(env_file, 'IRIS_VERSION', version, logger=log)
+
+    iris_admin_pw = '123123'
+    try:
+        from config import load_main_config
+        cfg = load_main_config() or {}
+        v = (cfg.get('modules', {}) or {}).get('iris', {}).get('password')
+        if v:
+            iris_admin_pw = str(v)
+    except Exception:
+        pass
+
+    secret_specs = [
+        ('IRIS_ADM_PASSWORD', iris_admin_pw),
+        ('IRIS_SECRET_KEY', _secrets.token_hex(32)),
+        ('IRIS_SECURITY_PASSWORD_SALT', _secrets.token_hex(32)),
+        ('POSTGRES_ADMIN_PASSWORD', _secrets.token_hex(32)),
+        ('POSTGRES_PASSWORD', _secrets.token_hex(32)),
+    ]
+    for name, val in secret_specs:
+        path = os.path.join(secrets_dir, name)
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            log(f"  {name}: already present, keeping existing", "info")
+            continue
+        with open(path, 'w') as f:
+            f.write(val or '')
+        os.chmod(path, 0o600)
+        log(f"  Generated {name}", "info")
+
+    return install_module_compose_up(
+        'iris', package_dir, version,
+        image_tar_prefixes=['iris', 'rabbitmq', 'postgres'],
+        logger=log, run_id=run_id,
+    )

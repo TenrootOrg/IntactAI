@@ -153,4 +153,88 @@ def upgrade_volweb_offline(
     return {"success": True, "version": version}
 
 
-__all__ = ["upgrade_volweb", "upgrade_volweb_offline"]
+# ---------------------------------------------------------------------------
+# Fresh-install path — picked by the apply orchestrator when the
+# intact_volweb_backend container is absent on the host.
+# ---------------------------------------------------------------------------
+
+def install_volweb_offline(
+    package_dir: str,
+    version: str,
+    logger: Callable = None,
+    run_id: str | None = None,
+) -> Dict:
+    """Fresh install of VolWeb from an offline upgrade package.
+
+    Mirrors what lib/modules.sh:deploy_volweb does at install time,
+    scoped to what's reachable from inside the backend container:
+      1. Render modules/volweb/.env from .env.template with random
+         per-install secrets (DJANGO_SECRET, POSTGRES_PASSWORD).
+      2. Pre-create the intact_memory_dumps shared docker volume.
+      3. Load bundled images from the offline package if present.
+      4. docker compose up -d.
+
+    Post-install seeding (YARA rulesets, VolWeb admin user) is left
+    to the operator — Maintenance → Refresh YARA Rulesets handles
+    it once the stack is up.
+    """
+    log = logger or _log_default
+    import secrets as _secrets
+
+    log("VolWeb not currently installed — running first-time install...", "info")
+
+    env_template = os.path.join(_VOLWEB_DIR, ".env.template")
+    if not os.path.exists(env_template):
+        return {
+            "success": False,
+            "error": (
+                f".env.template missing at {env_template} — upgrade the "
+                "Intact.AI source first so the VolWeb template lands on disk"
+            ),
+        }
+    if not os.path.exists(_VOLWEB_ENV):
+        log(f"  Rendering {_VOLWEB_ENV} from .env.template...", "info")
+        with open(env_template) as f:
+            content = f.read()
+        substitutions = {
+            "__VOLWEB_BACKEND_VERSION__":  version or 'latest',
+            "__VOLWEB_FRONTEND_VERSION__": version or 'latest',
+            "__VOLWEB_POSTGRES_VERSION__": "15",
+            "__VOLWEB_REDIS_VERSION__":    "7",
+            "__VOLWEB_POSTGRES_PASSWORD__": _secrets.token_hex(24),
+            "__VOLWEB_DJANGO_SECRET__":    _secrets.token_hex(32),
+            "__VOLWEB_CSRF_TRUSTED_ORIGINS__": "http://localhost:3000,https://localhost",
+        }
+        for ph, val in substitutions.items():
+            content = content.replace(ph, val)
+        with open(_VOLWEB_ENV, "w") as f:
+            f.write(content)
+        log("  .env rendered", "success")
+
+    log("  Ensuring shared volume `intact_memory_dumps`...", "info")
+    run_command("docker volume create intact_memory_dumps", logger=None)
+
+    # Load bundled images from offline package if present
+    for tag in ("backend", "frontend"):
+        image_tar = os.path.join(package_dir, "images", f"volweb-{tag}-{version}.tar")
+        if os.path.exists(image_tar):
+            log(f"  Loading bundled image: {image_tar}", "info")
+            loaded = load_docker_image(image_tar, logger=log, run_id=run_id)
+            if not loaded.get("success"):
+                log(f"  Image load failed (continuing): {loaded.get('error')}", "warning")
+
+    log("  docker compose up -d ...", "info")
+    up = _compose_up(log, run_id=run_id)
+    if not up.get("success"):
+        return {"success": False, "error": f"compose up failed: {up.get('error')}"}
+
+    log("VolWeb first-time install complete", "success")
+    log(
+        "  Next step (operator): Settings → Maintenance → 'Refresh YARA Rulesets' "
+        "to seed the YARA corpus (3 sources, ~3 min, idempotent).",
+        "info",
+    )
+    return {"success": True, "version": version, "first_install": True}
+
+
+__all__ = ["upgrade_volweb", "upgrade_volweb_offline", "install_volweb_offline"]

@@ -217,60 +217,90 @@ def compare_versions(v1: str, v2: str) -> int:
 
 
 def get_current_versions() -> Dict:
-    """Get current versions from .env files for all modules."""
+    """Get current versions for all modules.
+
+    Each module reports as:
+      - 'Not installed' — primary container is absent (module never
+        deployed on this host)
+      - actual version string — read from the module's .env
+      - 'unknown' — module deployed but version key missing or
+        unreadable (most likely a stale install where .env got hand-
+        edited)
+    """
     versions = {}
 
-    # ELK
     elk_env = os.path.join(WORKDIR, 'modules', 'elk', '.env')
-    elk_vars = read_env_file(elk_env)
     versions['elk'] = {
-        'current': elk_vars.get('ELASTIC_VERSION', 'unknown'),
-        'env_file': elk_env
+        'current': _read_module_version('elk', elk_env, 'ELASTIC_VERSION'),
+        'env_file': elk_env,
     }
 
-    # Timesketch
     ts_env = os.path.join(WORKDIR, 'modules', 'timesketch', '.env')
-    ts_vars = read_env_file(ts_env)
     versions['timesketch'] = {
-        'current': ts_vars.get('TIMESKETCH_VERSION', 'unknown'),
-        'env_file': ts_env
+        'current': _read_module_version('timesketch', ts_env, 'TIMESKETCH_VERSION'),
+        'env_file': ts_env,
     }
 
-    # Plaso - read from backend .env
+    # Plaso pin lives in the backend .env (no standalone container);
+    # always shows the configured value.
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
     backend_vars = read_env_file(backend_env)
     versions['plaso'] = {
         'current': backend_vars.get('PLASO_VERSION', 'unknown'),
-        'env_file': backend_env
+        'env_file': backend_env,
     }
 
-    # IRIS
     iris_env = os.path.join(WORKDIR, 'modules', 'iris', '.env')
-    iris_vars = read_env_file(iris_env)
     versions['iris'] = {
-        'current': iris_vars.get('IRIS_VERSION', 'unknown'),
-        'env_file': iris_env
+        'current': _read_module_version('iris', iris_env, 'IRIS_VERSION'),
+        'env_file': iris_env,
     }
 
-    # Velociraptor
     velo_env = os.path.join(WORKDIR, 'modules', 'velociraptor', '.env')
-    velo_vars = read_env_file(velo_env)
     versions['velociraptor'] = {
-        'current': velo_vars.get('VELOCIRAPTOR_VERSION', 'unknown'),
-        'env_file': velo_env
+        'current': _read_module_version('velociraptor', velo_env, 'VELOCIRAPTOR_VERSION'),
+        'env_file': velo_env,
     }
 
-    # Intact.AI Platform - use git describe or fallback
-    try:
-        result = subprocess.run(
-            ['git', 'describe', '--tags', '--always'],
-            cwd=MODULES_DIR,
-            capture_output=True,
-            text=True
-        )
-        intact_version = result.stdout.strip() if result.returncode == 0 else 'unknown'
-    except:
-        intact_version = 'unknown'
+    # VolWeb — newer module, was missing from the version map before. Reports
+    # 'Not installed' when the operator never deployed it.
+    volweb_env = os.path.join(WORKDIR, 'modules', 'volweb', '.env')
+    versions['volweb'] = {
+        'current': _read_module_version('volweb', volweb_env, 'VOLWEB_BACKEND_VERSION'),
+        'env_file': volweb_env,
+    }
+
+    # Intact.AI Platform — read from VERSION file at repo root (stamped by
+    # .github/workflows/stamp-version-on-release.yml on every release, AND
+    # re-stamped by services/upgrade/package.py at prepare time as a
+    # belt-and-suspenders for non-release refs / pre-Action releases).
+    # Falls back to the running container's image tag for installs that
+    # predate the VERSION-file mechanism. 'Not installed' when the
+    # intact_backend container itself is absent.
+    if _module_container_exists('intact') is False:
+        intact_version = 'Not installed'
+    else:
+        intact_version = None
+        version_file = os.path.join(WORKDIR, 'VERSION')
+        if os.path.exists(version_file):
+            try:
+                with open(version_file) as f:
+                    v = f.read().strip()
+                if v:
+                    intact_version = v
+            except Exception:
+                pass
+        if not intact_version:
+            try:
+                result = subprocess.run(
+                    ['docker', 'inspect', 'intact_backend',
+                     '--format', '{{.Config.Image}}'],
+                    capture_output=True, text=True, timeout=5,
+                )
+                image = (result.stdout or '').strip()
+                intact_version = image.split(':', 1)[1] if ':' in image else (image or 'unknown')
+            except Exception:
+                intact_version = 'unknown'
     versions['intact'] = {'current': intact_version}
 
     return versions
@@ -439,3 +469,113 @@ def get_package_info(package_path: str) -> Dict:
         return {"success": False, "error": "manifest.json not found in package"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Module install/upgrade routing — used by services/upgrade/__init__.py
+# to detect whether the orchestrator should run the install or upgrade
+# path per module, and by get_current_versions() to distinguish "module
+# is installed but version unreadable" from "module never installed".
+# ---------------------------------------------------------------------------
+
+_MODULE_PRIMARY_CONTAINERS = {
+    'elk':          'intact_elasticsearch',
+    'iris':         'intact_iris_app',
+    'portainer':    'intact_portainer',
+    'timesketch':   'intact_timesketch_web',
+    'velociraptor': 'intact_velociraptor',
+    'volweb':       'intact_volweb_backend',
+    'intact':       'intact_backend',
+}
+
+
+def _module_container_exists(module_id: str) -> Optional[bool]:
+    """True iff the module's primary container exists (running or stopped).
+    Returns None for modules with no container concept (aws/azure/plaso).
+    Callers should treat None as 'always installed' since those modules
+    don't deploy a standalone container stack."""
+    name = _MODULE_PRIMARY_CONTAINERS.get(module_id)
+    if not name:
+        return None
+    try:
+        result = subprocess.run(
+            ['docker', 'ps', '-a', '--filter', f'name=^{name}$',
+             '--format', '{{.Names}}'],
+            capture_output=True, text=True, timeout=5,
+        )
+        return name in (result.stdout or '')
+    except Exception:
+        return None
+
+
+def _read_module_version(module_id: str, env_path: str, version_key: str) -> str:
+    """Resolve a single module's current version:
+       - 'Not installed': module has a primary container concept + the
+         container is absent (operator skipped this module at install time)
+       - actual version string: container exists + .env has the key
+       - 'unknown': container exists / no detection logic but .env key
+         missing or unreadable"""
+    present = _module_container_exists(module_id)
+    if present is False:
+        return 'Not installed'
+    if os.path.exists(env_path):
+        v = read_env_file(env_path).get(version_key)
+        if v:
+            return v
+    return 'unknown'
+
+
+def install_module_compose_up(
+    module_id: str,
+    package_dir: str,
+    version: str,
+    image_tar_prefixes: list = None,
+    logger: Callable = None,
+    run_id: str = None,
+) -> Dict:
+    """Generic fresh-install helper for modules whose first-time setup
+    is just "load bundled images + docker compose up -d". Modules with
+    extra first-time setup (volweb's .env render + shared volume; iris's
+    secret generation) layer that BEFORE calling this helper."""
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    work_dir = os.path.join(WORKDIR, 'modules', module_id)
+    if not os.path.exists(work_dir):
+        return {
+            "success": False,
+            "error": (
+                f"module directory missing at {work_dir} — upgrade the "
+                "Intact.AI source first so the new module's compose file "
+                "lands on disk"
+            ),
+        }
+
+    # Load any bundled images from the offline package
+    images_dir = os.path.join(package_dir, 'images')
+    if image_tar_prefixes and os.path.isdir(images_dir):
+        for prefix in image_tar_prefixes:
+            for fn in os.listdir(images_dir):
+                if fn.startswith(prefix) and fn.endswith('.tar'):
+                    image_tar = os.path.join(images_dir, fn)
+                    log(f"  Loading bundled image: {fn}", "info")
+                    loaded = load_docker_image(image_tar, logger=log, run_id=run_id)
+                    if not loaded.get('success'):
+                        log(
+                            f"  Image load failed (continuing — compose will "
+                            f"try to pull): {loaded.get('error')}",
+                            "warning",
+                        )
+
+    # The docker CLI we exec'd against /var/run/docker.sock sees the host
+    # filesystem, not the container's — translate WORKDIR → HOST_PATH.
+    host_work_dir = work_dir.replace(WORKDIR, HOST_PATH, 1)
+    log(f"  docker compose up -d on {module_id}...", "info")
+    r = run_command(
+        f"docker compose -f {host_work_dir}/docker-compose.yaml "
+        f"--project-directory {host_work_dir} up -d",
+        timeout=300, logger=log, run_id=run_id,
+    )
+    if not r.get('success'):
+        return {"success": False, "error": f"compose up failed: {r.get('error')}"}
+
+    log(f"{module_id} first-time install complete", "success")
+    return {"success": True, "version": version, "first_install": True}

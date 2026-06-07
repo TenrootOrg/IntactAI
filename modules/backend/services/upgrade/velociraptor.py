@@ -667,3 +667,25 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
             "rolled_back": True,
             "restored_version": current_version
         }
+
+
+def install_velociraptor_offline(package_dir: str, version: str, logger=None, run_id=None) -> Dict:
+    """Fresh-install Velociraptor — picked when intact_velociraptor absent.
+
+    Velociraptor's entrypoint generates its own server config + datastore
+    on first boot, so no Python-side cert / config rendering is needed.
+    The tracked `.env` carries the VELOX_USER / VELOX_PASSWORD defaults
+    from config.yaml that lib/modules.sh:deploy_velociraptor would use.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    from .base import install_module_compose_up
+    work_dir = os.path.join(WORKDIR, 'modules', 'velociraptor')
+    env_file = os.path.join(work_dir, '.env')
+    log(f"Installing Velociraptor (first-time) -> {version or 'tracked default'}...", "info")
+    if os.path.exists(env_file) and version:
+        update_env_file(env_file, 'VELOCIRAPTOR_VERSION', version, logger=log)
+    return install_module_compose_up(
+        'velociraptor', package_dir, version,
+        image_tar_prefixes=['velociraptor-server'],
+        logger=log, run_id=run_id,
+    )

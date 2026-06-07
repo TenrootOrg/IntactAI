@@ -412,6 +412,26 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                     f"github.com/{repo}@{version}"
                 )
 
+                # Belt-and-suspenders: stamp the VERSION file inside the
+                # packaged source tree with the GitHub ref the operator
+                # typed. The release-time GitHub Action keeps VERSION
+                # up-to-date on `development` — so on release tags this
+                # is usually a no-op overwrite. But it also covers cases
+                # the workflow can't (branches, commit SHAs, release
+                # tags from before the Action existed). When the apply
+                # step's `cp -a source/intact/* WORKDIR/` runs, this
+                # VERSION lands at the install root where
+                # get_current_versions reads it.
+                try:
+                    intact_source_root = f"{package_dir}/source/intact"
+                    if os.path.isdir(intact_source_root):
+                        version_file = f"{intact_source_root}/VERSION"
+                        with open(version_file, "w") as vf:
+                            vf.write(version.strip() + "\n")
+                        log(f"  Stamped source/intact/VERSION -> {version}", "info")
+                except Exception as e:
+                    log(f"  Could not stamp VERSION file: {e}", "warning")
+
             elif module == 'velociraptor':
                 # Velociraptor packaging — internet REQUIRED here on the
                 # prepare side. The Dockerfile is pure COPY; all four

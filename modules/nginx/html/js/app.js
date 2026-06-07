@@ -789,6 +789,12 @@ document.addEventListener('alpine:init', () => {
             { id: 'velociraptor', name: 'Velociraptor', targetVersion: '', enabled: false, fallback: '0.73.4' },
             { id: 'aws', name: 'AWS (Prowler)', targetVersion: '', enabled: false, fallback: '5.28.1' },
             { id: 'azure', name: 'Azure (DFIR-O365RC)', targetVersion: '', enabled: false, fallback: 'latest' },
+            // VolWeb — apply orchestrator picks install_volweb_offline vs
+            // upgrade_volweb_offline automatically based on whether
+            // intact_volweb_backend exists on the host. Lets operators
+            // package + deploy a module that wasn't selected at install
+            // time without re-running install.sh.
+            { id: 'volweb', name: 'VolWeb (Memory Forensics)', targetVersion: '', enabled: false, fallback: 'latest' },
             { id: 'intact', name: 'Intact.AI Source Code', targetVersion: 'intact-20260604', enabled: false, fallback: 'intact-20260604' },
         ],
 

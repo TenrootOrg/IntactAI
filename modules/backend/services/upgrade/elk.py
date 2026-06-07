@@ -246,3 +246,27 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None,
             "rolled_back": True,
             "restored_version": current_version
         }
+
+
+def install_elk_offline(package_dir: str, version: str, logger=None, run_id=None) -> Dict:
+    """Fresh-install ELK from an offline package — picked by the apply
+    orchestrator when intact_elasticsearch is not present on the host.
+
+    Reuses the existing tracked `.env` (which ships with the platform's
+    default ELASTIC_PASSWORD / KIBANA_PASSWORD) and bumps the version
+    pins. Then loads bundled images if present and compose-ups the stack.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    from .base import install_module_compose_up
+    work_dir = os.path.join(WORKDIR, 'modules', 'elk')
+    env_file = os.path.join(work_dir, '.env')
+    version = (version or '').lstrip('v')
+    log(f"Installing ELK (first-time) -> {version or 'tracked default'}...", "info")
+    if os.path.exists(env_file) and version:
+        update_env_file(env_file, 'ELASTIC_VERSION', version, logger=log)
+        update_env_file(env_file, 'KIBANA_VERSION', version, logger=log)
+    return install_module_compose_up(
+        'elk', package_dir, version,
+        image_tar_prefixes=['elasticsearch', 'kibana'],
+        logger=log, run_id=run_id,
+    )

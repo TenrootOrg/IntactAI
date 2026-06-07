@@ -1,0 +1,64 @@
+name: Stamp VERSION on release
+
+# Updates the repo's `VERSION` file every time a new release is
+# published on GitHub. This is the canonical version source the
+# `services/upgrade/base.py:get_current_versions` reader consults
+# at install time — when an operator applies an upgrade package,
+# the `source/intact/VERSION` file lands at `WORKDIR/VERSION` and
+# the dashboard's Settings → System page reports the new release
+# automatically.
+#
+# Why a workflow + commit, not just a release artifact:
+#   We want offline operators to get the right version too. The
+#   prepare-package flow pulls the source tarball at the release
+#   tag the operator types into the modal — that tarball is the
+#   GitHub-served source tree, so whatever VERSION lives in the
+#   tree at that tag is what ships. By committing the update
+#   BEFORE the release is published (workflow runs on
+#   `release: published` and commits to development), the next
+#   release that gets cut from development carries the stamped
+#   VERSION at its own ref.
+#
+# Belt-and-suspenders: `services/upgrade/package.py` ALSO writes
+# VERSION into the package's source tree during prepare, so even
+# packages targeting branches or commit SHAs (where VERSION isn't
+# pre-stamped) carry the correct value.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  stamp:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout development
+        uses: actions/checkout@v4
+        with:
+          # We commit back to development, not to the release branch
+          # itself. Tags are immutable; the next release cut from
+          # development will carry the stamp.
+          ref: development
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Write VERSION file
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          echo "Stamping VERSION as: ${tag}"
+          echo "${tag}" > VERSION
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [[ -z "$(git status --porcelain VERSION)" ]]; then
+            echo "VERSION already up to date — nothing to commit."
+            exit 0
+          fi
+          git add VERSION
+          git commit -m "chore: stamp VERSION as ${{ github.event.release.tag_name }} [skip ci]"
+          git push origin development
