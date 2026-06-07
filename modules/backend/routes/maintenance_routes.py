@@ -1229,16 +1229,53 @@ def _purge_elk_artifacts(_):
 
 
 def _purge_timesketch(_):
+    """Purge Timesketch sketches + timelines + all dependent state.
+
+    Three layers to wipe so the UI shows a true clean slate:
+
+    1. OpenSearch indices — the actual event data (timeline_*)
+    2. Postgres `sketch` table (TRUNCATE CASCADE)
+       Every per-sketch child table in Timesketch's schema has
+       `ON DELETE NO ACTION`, so plain DELETE would error on FK
+       violations. TRUNCATE CASCADE bypasses that and clears every
+       table that references `sketch` transitively (timeline,
+       searchindex, view, story, aggregation, event, graph,
+       analysis, scenario, investigativequestion, facet, attribute,
+       searchhistory, plus their *_comment / *_label / *_status /
+       *_accesscontrolentry siblings).
+    3. searchindex + timeline get cleared anyway via the CASCADE
+       from #2 — listed explicitly for clarity.
+
+    User accounts, groups, and YARA rule rows are intentionally NOT
+    touched — the operator's login + customization survives the
+    purge. Only investigation state is dropped.
+    """
     from services.upgrade.base import run_command
     before = _scan_timesketch()[0]
+
+    # 1) OpenSearch indices
     run_command(
         "docker exec intact_timesketch_opensearch curl -s -X DELETE 'http://localhost:9200/*,-.*'",
         logger=None,
     )
+
+    # 2) Postgres sketch tree — TRUNCATE CASCADE from the roots.
+    #    RESTART IDENTITY resets auto-increment so new sketches start
+    #    from id=1 again (matches the visible "fresh install" feel).
+    #
+    #    Both `sketch` AND `searchindex` are roots — searchindex is
+    #    NOT a child of sketch (it stores OpenSearch index pointers
+    #    that timelines reference). Without TRUNCATEing it separately,
+    #    9-ish orphan rows survive and accumulate every purge cycle.
+    #    `datasource` cascades automatically (FK to searchindex).
+    truncate_sql = (
+        "TRUNCATE TABLE sketch, searchindex RESTART IDENTITY CASCADE;"
+    )
     run_command(
-        "docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c 'DELETE FROM timeline; DELETE FROM searchindex;'",
+        f"docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c \"{truncate_sql}\"",
         logger=None,
     )
+
     after = _scan_timesketch()[0]
     return max(0, before - after), ""
 

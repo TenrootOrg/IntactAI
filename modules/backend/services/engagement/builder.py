@@ -60,6 +60,16 @@ def _load_source_report(run_id: str, automation_type: str) -> Optional[str]:
                 return payload.get('technical') or None
             except Exception:
                 return raw  # treat as bare markdown if the row wasn't JSON
+        if automation_type == 'memory':
+            # Memory module stores its single LLM report directly on
+            # the workflow row's details.report_md (no per-host fan-out,
+            # no reports table). The report already follows the
+            # `**Severity:** X` + `**Evidence (FACT):**` format the
+            # engagement fact-extractor parses, so IOCs + findings
+            # plug into the assembled report transparently.
+            from services.file_storage_service import get_workflow
+            wf = get_workflow(run_id) or {}
+            return ((wf.get('details') or {}).get('report_md')) or None
     except Exception as e:
         print(f"[ENGAGEMENT] Failed to load report for {run_id}: {e}", flush=True)
     return None
