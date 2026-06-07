@@ -1092,12 +1092,13 @@ deploy_volweb() {
 
 
 seed_volweb_admin() {
-    # Use the platform's admin creds (tenroot:<config password>) so
-    # the IntactAI backend can talk to VolWeb without a separate
-    # secret store entry. POST /api/users/create/ is idempotent on
-    # username collision.
-    local tenroot_user="tenroot"
-    local tenroot_pass=$(read_config "['modules']['timesketch']['password']")
+    # Use the platform's VolWeb admin creds from config.yaml. Reads
+    # ``modules.volweb.id`` + ``modules.volweb.password`` so VolWeb
+    # has its own settable creds (instead of borrowing Timesketch's).
+    # Falls back to ``tenroot:123123`` only if the keys are missing.
+    local tenroot_user=$(read_config "['modules']['volweb']['id']")
+    [[ -z "$tenroot_user" ]] && tenroot_user="tenroot"
+    local tenroot_pass=$(read_config "['modules']['volweb']['password']")
     [[ -z "$tenroot_pass" ]] && tenroot_pass="123123"
 
     log_info "  Seeding VolWeb admin user (${tenroot_user})..."
@@ -1119,7 +1120,9 @@ seed_yara_rulesets() {
     # Three sources for the curated YARA corpus. Each is POSTed to
     # /api/yararulesets/import/github/ which clones the repo +
     # ingests every .yar / .yara file recursively.
-    local volweb_pass=$(read_config "['modules']['timesketch']['password']")
+    local volweb_user=$(read_config "['modules']['volweb']['id']")
+    [[ -z "$volweb_user" ]] && volweb_user="tenroot"
+    local volweb_pass=$(read_config "['modules']['volweb']['password']")
     [[ -z "$volweb_pass" ]] && volweb_pass="123123"
 
     log_info "  Seeding YARA rulesets (~3 min)..."
@@ -1127,7 +1130,7 @@ seed_yara_rulesets() {
     # Get a JWT for the admin user we just seeded.
     local token=$(docker exec intact_volweb_backend curl -s -X POST \
         -H 'Content-Type: application/json' \
-        -d "{\"username\":\"tenroot\",\"password\":\"${volweb_pass}\"}" \
+        -d "{\"username\":\"${volweb_user}\",\"password\":\"${volweb_pass}\"}" \
         http://localhost:8000/core/token/ \
         | python3 -c 'import sys,json; print(json.load(sys.stdin).get("access",""))' 2>/dev/null)
     if [[ -z "$token" ]]; then

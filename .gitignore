@@ -110,6 +110,15 @@ data/tmp/
 !.env.example
 !modules/*/.env
 
+# VolWeb is the exception to the per-module .env rule: its .env is
+# RENDERED at install time from `.env.template` with per-install
+# secrets (DJANGO_SECRET, POSTGRES_PASSWORD = `openssl rand` values).
+# Tracking it would either ship those random secrets or revert them
+# on every pull. Keep the template tracked; the rendered file is
+# operator-machine-only.
+modules/volweb/.env
+!modules/volweb/.env.template
+
 # Rendered configs — the .template files stay tracked, the rendered
 # output (which holds the live API key) does not.
 modules/timesketch/config/timesketch.conf

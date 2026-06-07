@@ -86,12 +86,35 @@ def _volweb_base() -> str:
     return _config_value("base_url", default=VOLWEB_BASE_DEFAULT).rstrip("/")
 
 
+def _config_yaml_volweb(key: str) -> str:
+    """Read `modules.volweb.<key>` from the platform `config.yaml`.
+
+    Why we go here instead of hardcoding ``admin:password``:
+    `install.sh:seed_volweb_admin` creates the admin user with the
+    creds in ``config.yaml:modules.volweb.{id,password}`` (default
+    ``tenroot:123123``). The backend has to authenticate against
+    the SAME creds — otherwise every fresh install would need an
+    extra Settings → Memory → VolWeb step before the pipeline
+    works. By reading config.yaml here, fresh installs Just Work.
+    """
+    try:
+        from config import load_main_config
+        cfg = load_main_config() or {}
+        node = (cfg.get("modules") or {}).get("volweb") or {}
+        val = node.get(key)
+        if isinstance(val, str):
+            return val
+    except Exception:
+        pass
+    return ""
+
+
 def _volweb_user() -> str:
-    return _config_value("username", default="admin")
+    return _config_value("username", default=_config_yaml_volweb("id") or "tenroot")
 
 
 def _volweb_pass() -> str:
-    return _config_value("password", default="password")
+    return _config_value("password", default=_config_yaml_volweb("password") or "123123")
 
 
 # ---------------------------------------------------------------------------
