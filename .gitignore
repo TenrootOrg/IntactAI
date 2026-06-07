@@ -140,3 +140,9 @@ modules/nginx/package-lock.json
 # Python equivalent in services/upgrade/velociraptor.py. Binaries are
 # downloaded from upstream, not source-controlled.
 /modules/velociraptor/clients/
+
+# Belt-and-suspenders: never track SQLite DB files (defense-in-depth
+# after the data/mssp.db blob leak — see git filter-repo run on 2026-06-07)
+data/*.db
+data/*.db-shm
+data/*.db-wal
