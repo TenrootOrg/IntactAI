@@ -78,13 +78,14 @@ sudo bash install.sh
 
 | Service | Description | Port |
 |---------|-------------|------|
-| **Dashboard** | Web interface | 80 |
-| **Velociraptor** | EDR/Forensics | 8000 (GUI), 8001 (Frontend) |
-| **ELK Stack** | Log Analytics | 9200 (ES), 5601 (Kibana) |
-| **TimeSketch** | Timeline Analysis | 5000 |
-| **IRIS** | Incident Response | 443 |
+| **Dashboard** | Web UI (workflows, blueprints, reports) | 80, 443 |
+| **Velociraptor** | DFIR / endpoint forensics | 8889 (GUI), 8000 (clients), 8001 (gRPC API) |
+| **ELK Stack** | Log analytics (Elasticsearch + Kibana) | 9200 (ES), 5601 (Kibana) |
+| **TimeSketch** | Timeline analysis | 5000 |
+| **IRIS** | Incident response & case management | 8443 |
+| **VolWeb** | Memory forensics (Volatility 3 + YARA) | 8002 |
 | **Backend API** | Management API | 5001 |
-| **Portainer** | Container Management | 9443 |
+| **Portainer** | Container management | 9443 |
 
 ## Configuration
 
@@ -125,15 +126,16 @@ versions:
 
 ## Accessing Services
 
-After installation:
+After installation (all services terminate TLS through the main nginx):
 
 | Service | URL |
 |---------|-----|
-| Dashboard | `http://YOUR_IP` |
-| Velociraptor | `http://YOUR_IP/velociraptor/` |
-| TimeSketch | `http://YOUR_IP:5000` |
-| Kibana | `http://YOUR_IP:5601` |
-| IRIS | `https://YOUR_IP:443` |
+| Dashboard | `https://YOUR_IP` |
+| Velociraptor | `https://YOUR_IP/velociraptor/` |
+| TimeSketch | `https://YOUR_IP:5000` |
+| Kibana | `https://YOUR_IP:5601` |
+| IRIS | `https://YOUR_IP:8443` |
+| VolWeb | `https://YOUR_IP:8002` |
 | Portainer | `https://YOUR_IP:9443` |
 
 ## Scripts
