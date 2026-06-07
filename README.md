@@ -81,13 +81,12 @@ All services terminate TLS through the main nginx. Detailed port allocations (in
 | Service | Description | Access |
 |---------|-------------|--------|
 | **Dashboard** | Web UI — workflows, blueprints, reports, settings | `https://YOUR_IP` |
-| **Velociraptor** | DFIR / endpoint forensics. Reverse-proxied through main nginx — direct access to the upstream GUI port (8889) is intentionally not exposed (a past header-handling bug caused redirect loops; the proxy is the supported entry point). | `https://YOUR_IP/velociraptor/` |
-| **TimeSketch** | Timeline analysis | `https://YOUR_IP:5000` |
-| **ELK Stack** | Log analytics (Elasticsearch + Kibana). Only Kibana is operator-facing; Elasticsearch is internal to the docker network. | `https://YOUR_IP:5601` (Kibana) |
-| **IRIS** | Incident response & case management | `https://YOUR_IP:8443` |
+| **Velociraptor** | Endpoint forensics + remote collection (reverse-proxied — use `/velociraptor/`, not the upstream port directly) | `https://YOUR_IP/velociraptor/` |
+| **TimeSketch** | Timeline analysis — ingest Plaso super-timelines and pivot across multi-host investigations from a single view | `https://YOUR_IP:5000` |
+| **ELK Stack** | Searchable log store + visualization. Indexes Velociraptor artifact hunts and Sigma rule matches; Kibana is the analyst-facing dashboard. | `https://YOUR_IP:5601` (Kibana) |
+| **IRIS** | Case management — track open incidents, assignees, evidence chains, and IR runbook progress across the engagement | `https://YOUR_IP:8443` |
 | **VolWeb** | Memory forensics (Volatility 3 + YARA) | `https://YOUR_IP:8002` |
-| **Portainer** | Container management | `https://YOUR_IP:9443` |
-| **Backend API** | Management API — used by the dashboard and the CLI tools. Not browsed to directly. | internal (`http://intact_backend:5001`, proxied as `/api/`) |
+| **Portainer** | Container management — inspect, restart, and tail logs of the IntactAI service containers from a web UI | `https://YOUR_IP:9443` |
 
 ## Configuration
 
