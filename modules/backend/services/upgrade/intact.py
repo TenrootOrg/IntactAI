@@ -51,8 +51,19 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     backend_dir = os.path.join(WORKDIR, 'modules', 'backend')
     nginx_html = os.path.join(WORKDIR, 'modules', 'nginx', 'html')
-    backend_source = os.path.join(package_dir, 'source', 'backend')
-    frontend_source = os.path.join(package_dir, 'source', 'frontend')
+
+    # Layout resolution: packages built after the "GitHub release" Prepare
+    # change ship the WHOLE repo at `source/intact/` (mirroring the GitHub
+    # tree). Older packages ship just the two narrow paths at
+    # `source/backend` and `source/frontend`. Prefer the new layout; fall
+    # back so operators with an old package on disk still upgrade cleanly.
+    intact_root = os.path.join(package_dir, 'source', 'intact')
+    if os.path.isdir(intact_root):
+        backend_source = os.path.join(intact_root, 'modules', 'backend')
+        frontend_source = os.path.join(intact_root, 'modules', 'nginx', 'html')
+    else:
+        backend_source = os.path.join(package_dir, 'source', 'backend')
+        frontend_source = os.path.join(package_dir, 'source', 'frontend')
 
     log("Starting Intact.AI Platform offline upgrade...", "info")
 

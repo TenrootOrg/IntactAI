@@ -280,39 +280,137 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
             log(f"=== {module.upper()} ({version}) ===", "info")
 
             if module == 'intact':
-                # Copy source files from local machine
-                # TODO: Future - pull from GitHub like other modules (currently private repo)
-                # Should work like: download specific version/tag from repo
-                log("Copying Intact.AI source files...", "info")
+                # Download Intact.AI source from the public GitHub repo at the
+                # specific ref (tag / branch / SHA) the operator entered in the
+                # Prepare Upgrade modal. Previously this copied the running
+                # backend container's mounted source — which meant any local
+                # untracked edits leaked into the upgrade package and there was
+                # no way to ship a known-good upstream release without first
+                # checking it out on the running box. Now the operator types a
+                # release tag (e.g. `intact-20260604`) and the package gets
+                # exactly that snapshot, every time.
+                #
+                # Uses GitHub's codeload tarball endpoint, which resolves any
+                # ref (tag / branch / full SHA) under the same URL shape — no
+                # git binary required in the backend container.
 
-                backend_src = os.path.join(WORKDIR, 'modules', 'backend')
-                frontend_src = os.path.join(WORKDIR, 'modules', 'nginx', 'html')
+                if not version:
+                    raise ValueError(
+                        "Intact.AI source requires a GitHub ref (release tag, "
+                        "branch name, or commit SHA) — type one in the "
+                        "'Intact.AI Source Code' version field"
+                    )
 
-                if os.path.isdir(backend_src):
-                    log("  Copying backend source...", "info")
+                import urllib.request
+                import urllib.error
+                import tarfile
+
+                repo = "TenrootOrg/IntactAI"
+                tar_url = (
+                    f"https://codeload.github.com/{repo}/tar.gz/{version}"
+                )
+                tar_path = f"{package_dir}/_intact_source.tar.gz"
+                extract_dir = f"{package_dir}/_intact_extracted"
+
+                log(
+                    f"Downloading Intact.AI source from "
+                    f"github.com/{repo} @ '{version}'...",
+                    "info",
+                )
+                try:
+                    urllib.request.urlretrieve(tar_url, tar_path)
+                except urllib.error.HTTPError as e:
+                    raise RuntimeError(
+                        f"GitHub ref '{version}' not found at {repo} "
+                        f"(HTTP {e.code}). Make sure the release tag exists "
+                        f"at https://github.com/{repo}/releases."
+                    ) from e
+                except urllib.error.URLError as e:
+                    raise RuntimeError(
+                        f"Could not reach github.com to download the "
+                        f"Intact.AI source: {e}. The Prepare Upgrade flow "
+                        f"requires internet on the box running the prepare."
+                    ) from e
+
+                size_mb = os.path.getsize(tar_path) / (1024 * 1024)
+                log(f"  Downloaded {size_mb:.1f} MB", "info")
+
+                # Extract — GitHub tarballs unpack into a single top-level
+                # directory shaped like `IntactAI-<sha-or-tag>/`.
+                os.makedirs(extract_dir, exist_ok=True)
+                with tarfile.open(tar_path, "r:gz") as tar:
+                    tar.extractall(extract_dir)
+
+                tops = [
+                    d for d in os.listdir(extract_dir)
+                    if os.path.isdir(os.path.join(extract_dir, d))
+                ]
+                if not tops:
+                    raise RuntimeError(
+                        f"Downloaded tarball from {tar_url} had no top-level "
+                        "directory — corrupt download?"
+                    )
+                extracted_root = os.path.join(extract_dir, tops[0])
+
+                # Copy the WHOLE repo (matches the GitHub layout — `modules/`,
+                # `lib/`, `scripts/`, `install.sh`, `config.yaml`, etc.) to
+                # `source/intact/`. The apply step targets the specific
+                # directories that need swapping into the running install
+                # (backend code, frontend HTML); the rest of the tree is
+                # included so operators can inspect / port the release
+                # without re-cloning from GitHub. ~30 MB of repo content.
+                log("  Copying full repo into package source/intact/ ...", "info")
+                shutil.copytree(
+                    extracted_root,
+                    f"{package_dir}/source/intact",
+                    dirs_exist_ok=True,
+                    # `.git/` should not be there in a tarball but if it is,
+                    # don't ship it. Also drop any accidentally-present
+                    # operator state.
+                    ignore=shutil.ignore_patterns(
+                        '__pycache__', '*.pyc', '.env*', '*.db*',
+                        '.git', 'data', 'backups',
+                    ),
+                )
+                log("  Full repo copied", "success")
+
+                # Mirror the historical `source/backend` and `source/frontend`
+                # entry points so the apply side (services/upgrade/intact.py +
+                # __init__.py) keeps working unchanged for the offline
+                # upgrade flow that ships backend + frontend HTML into the
+                # running install. The apply side prefers the new
+                # `source/intact/` paths when present (see intact.py edit)
+                # but falls back to these for older packages.
+                backend_src_in_repo = os.path.join(extracted_root, 'modules', 'backend')
+                frontend_src_in_repo = os.path.join(extracted_root, 'modules', 'nginx', 'html')
+
+                if os.path.isdir(backend_src_in_repo):
                     shutil.copytree(
-                        backend_src,
+                        backend_src_in_repo,
                         f"{package_dir}/source/backend",
                         dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.env*', '*.db*')
+                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.env*', '*.db*'),
                     )
-                    log("  Backend source copied", "success")
-                else:
-                    log(f"  Backend source not found at {backend_src}", "warning")
-
-                if os.path.isdir(frontend_src):
-                    log("  Copying frontend source...", "info")
+                if os.path.isdir(frontend_src_in_repo):
                     shutil.copytree(
-                        frontend_src,
+                        frontend_src_in_repo,
                         f"{package_dir}/source/frontend",
-                        dirs_exist_ok=True
+                        dirs_exist_ok=True,
                     )
-                    log("  Frontend source copied", "success")
-                else:
-                    log(f"  Frontend source not found at {frontend_src}", "warning")
+
+                # Tear down the temp tarball + extraction so they don't end up
+                # inside the final .tar.gz output.
+                try:
+                    os.remove(tar_path)
+                    shutil.rmtree(extract_dir)
+                except Exception:
+                    pass
 
                 manifest["versions"]["intact"] = version
                 manifest["contents"]["include_source"] = True
+                manifest["contents"]["source_origin"] = (
+                    f"github.com/{repo}@{version}"
+                )
 
             elif module == 'velociraptor':
                 # Velociraptor packaging — internet REQUIRED here on the

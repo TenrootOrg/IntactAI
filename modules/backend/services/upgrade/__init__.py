@@ -663,9 +663,17 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
     # Build modules dict for state tracking
     modules_dict = {k: v for k, v in versions.items()}
     if 'intact' not in modules_dict:
-        # Check if intact source exists in package (not just empty dirs)
-        backend_source = os.path.join(package_dir, 'source', 'backend')
-        frontend_source = os.path.join(package_dir, 'source', 'frontend')
+        # Check if intact source exists in package (not just empty dirs).
+        # Try the new GitHub-tarball layout first (`source/intact/`) and
+        # fall back to the legacy `source/backend` + `source/frontend`
+        # split for packages built before that change.
+        intact_root = os.path.join(package_dir, 'source', 'intact')
+        if os.path.isdir(intact_root):
+            backend_source = os.path.join(intact_root, 'modules', 'backend')
+            frontend_source = os.path.join(intact_root, 'modules', 'nginx', 'html')
+        else:
+            backend_source = os.path.join(package_dir, 'source', 'backend')
+            frontend_source = os.path.join(package_dir, 'source', 'frontend')
         has_backend = os.path.exists(backend_source) and os.listdir(backend_source)
         has_frontend = os.path.exists(frontend_source) and os.listdir(frontend_source)
         if has_backend or has_frontend:
@@ -685,10 +693,15 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
         for module_name in upgrade_order:
             version = versions.get(module_name)
 
-            # For intact, check if source exists
+            # For intact, check if source exists — try new layout first.
             if module_name == 'intact':
-                backend_source = os.path.join(package_dir, 'source', 'backend')
-                frontend_source = os.path.join(package_dir, 'source', 'frontend')
+                intact_root = os.path.join(package_dir, 'source', 'intact')
+                if os.path.isdir(intact_root):
+                    backend_source = os.path.join(intact_root, 'modules', 'backend')
+                    frontend_source = os.path.join(intact_root, 'modules', 'nginx', 'html')
+                else:
+                    backend_source = os.path.join(package_dir, 'source', 'backend')
+                    frontend_source = os.path.join(package_dir, 'source', 'frontend')
                 if not os.path.exists(backend_source) and not os.path.exists(frontend_source):
                     continue
             elif not version:

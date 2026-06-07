@@ -1500,15 +1500,15 @@ def _assemble_markdown(name, notes, loaded_sources, synthesis_md, *, tlp='AMBER'
         meta = s.get('metadata') or {}
         atype = s.get('automation_type') or '?'
         if atype == 'agentic':
-            tool = "IntactAI Agentic Pipeline (Velociraptor + Hayabusa + LLM analysis)"
+            tool = "Intact.AI Agentic Pipeline (Velociraptor + Hayabusa + LLM analysis)"
         elif atype == 'aws_scan':
-            tool = "IntactAI AWS Scan (CloudTrail + Prowler + GuardDuty + LLM)"
+            tool = "Intact.AI AWS Scan (CloudTrail + Prowler + GuardDuty + LLM)"
         elif atype == 'azure_scan':
-            tool = "IntactAI Azure Scan (DFIR-O365RC + SIGMA + LLM analysis)"
+            tool = "Intact.AI Azure Scan (DFIR-O365RC + SIGMA + LLM analysis)"
         elif atype == 'cve_scan':
-            tool = "IntactAI CVE Scan (Velociraptor inventory + local NVD mirror + CPE/Publisher resolver)"
+            tool = "Intact.AI CVE Scan (Velociraptor inventory + local NVD mirror + CPE/Publisher resolver)"
         else:
-            tool = "IntactAI workflow"
+            tool = "Intact.AI workflow"
         blueprint = meta.get('blueprint') or meta.get('blueprint_id') or '—'
         note_bits = []
         if meta.get('anonymize_data'):

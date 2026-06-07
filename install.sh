@@ -222,7 +222,28 @@ main "$@"
 #   - any deployed module didn't pass its end-to-end health probe
 #     (UNHEALTHY_MODULES). Previously the script exited 0 in that case,
 #     which lied about the actual state of the platform.
+#
+# When we DO exit non-zero, list which modules tripped the gate so the
+# operator doesn't have to re-grep the install log. Previously this was
+# a silent `exit 1` which is unfriendly for both humans and CI logs.
 if [[ ${#FAILED_MODULES[@]} -gt 0 ]] || [[ ${#UNHEALTHY_MODULES[@]} -gt 0 ]]; then
+    log_error "=============================================="
+    log_error "Installation finished with critical failures"
+    log_error "=============================================="
+    if [[ ${#FAILED_MODULES[@]} -gt 0 ]]; then
+        log_error "Failed to deploy (${#FAILED_MODULES[@]} module(s)):"
+        for m in "${FAILED_MODULES[@]}"; do
+            log_error "  - $m"
+        done
+    fi
+    if [[ ${#UNHEALTHY_MODULES[@]} -gt 0 ]]; then
+        log_error "Deployed but unhealthy (${#UNHEALTHY_MODULES[@]} module(s)):"
+        for m in "${UNHEALTHY_MODULES[@]}"; do
+            log_error "  - $m"
+        done
+    fi
+    log_error "Fix the underlying issue and re-run install.sh."
+    log_error "Install log: $LOG_FILE"
     exit 1
 fi
 exit 0

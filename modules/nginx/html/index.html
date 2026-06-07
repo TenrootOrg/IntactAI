@@ -177,7 +177,7 @@
                                     <svg class="w-4 h-4 flex-shrink-0 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
                                         <path d="M13.05 4.24L6.56 18.05a.5.5 0 00.46.7h8.48l-2.45 5.01h-8.6a2.5 2.5 0 01-2.3-3.48L9.95 4.24h3.1z"/>
                                     </svg>
-                                    <span>Azure</span>
+                                    <span>Microsoft 365</span>
                                 </div>
                                 <!-- AWS -->
                                 <div class="nav-item flex items-center gap-3 py-2 text-sm"
@@ -445,7 +445,7 @@
                                  guaranteed regardless of CDN/JIT timing issues. -->
                             <button @click="$store.engagement.openComposeModal()"
                                     :disabled="$store.engagement.selectedRunIds.length === 0"
-                                    :title="$store.engagement.selectedRunIds.length === 0 ? 'Tick the checkboxes next to one or more completed Agentic / AWS / Azure runs to enable.' : 'Generate a combined engagement report from the ' + $store.engagement.selectedRunIds.length + ' selected workflow(s).'"
+                                    :title="$store.engagement.selectedRunIds.length === 0 ? 'Tick the checkboxes next to one or more completed Agentic / AWS / Microsoft 365 runs to enable.' : 'Generate a combined engagement report from the ' + $store.engagement.selectedRunIds.length + ' selected workflow(s).'"
                                     :style="$store.engagement.selectedRunIds.length === 0 ? 'background-color:#374151; cursor:not-allowed;' : 'background-color:#4f46e5;'"
                                     class="h-10 px-4 rounded-lg text-sm font-medium text-white flex items-center gap-2 hover:brightness-110 transition">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#ffffff;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
@@ -464,7 +464,7 @@
                                     <option value="">All Types</option>
                                     <option value="engagement_report">Engagement Report</option>
                                     <option value="aws_scan">AWS Scan</option>
-                                    <option value="azure_scan">Azure Scan</option>
+                                    <option value="azure_scan">Microsoft 365 Scan</option>
                                     <option value="agentic">Agentic</option>
                                     <option value="cve_scan">CVE Scan</option>
                                     <option value="timesketch">TimeSketch</option>
@@ -501,7 +501,7 @@
                             <thead class="bg-gray-900">
                                 <tr class="text-left text-gray-400 text-sm">
                                     <th class="px-3 py-4 font-medium w-12 text-center"
-                                        title="Tick to include a completed Agentic / AWS / Azure run in the next Engagement Report build">
+                                        title="Tick to include a completed Agentic / AWS / Microsoft 365 run in the next Engagement Report build">
                                         <svg class="w-4 h-4 inline-block text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
                                         </svg>
@@ -3032,8 +3032,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                  }"
                  x-init="checkAzureStatus()">
 
-                <h2 class="text-3xl font-bold text-white mb-2">Azure Security Automation</h2>
-                <p class="text-gray-400 mb-6">Collect Azure/M365 logs and run SIGMA detection rules with LLM analysis</p>
+                <h2 class="text-3xl font-bold text-white mb-2">Microsoft 365 Security Automation</h2>
+                <p class="text-gray-400 mb-6">Collect Microsoft 365 logs and run SIGMA detection rules with LLM analysis</p>
 
                 <!-- Status Banner -->
                 <div x-show="azureStatus" class="mb-6 p-3 rounded-lg"
@@ -3044,7 +3044,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                         <span class="text-gray-400">|</span>
                         <span class="text-gray-400">SIGMA Rules: <span :class="azureStatus?.sigma_rules?.available ? 'text-green-400' : 'text-red-400'" x-text="azureStatus?.sigma_rules?.available ? 'Available' : 'Not Found'"></span></span>
                         <span class="text-gray-400">|</span>
-                        <span class="text-gray-400">Azure Credentials: <span :class="azureStatus?.azure_credentials?.configured ? 'text-green-400' : 'text-yellow-400'" x-text="azureStatus?.azure_credentials?.configured ? 'Configured' : 'Not Set'"></span></span>
+                        <span class="text-gray-400">Microsoft 365 Credentials: <span :class="azureStatus?.azure_credentials?.configured ? 'text-green-400' : 'text-yellow-400'" x-text="azureStatus?.azure_credentials?.configured ? 'Configured' : 'Not Set'"></span></span>
                     </div>
                 </div>
 
@@ -3248,12 +3248,12 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 :disabled="azureRunning || !azureStatus?.azure_credentials?.configured"
                                 class="w-full py-3 rounded-lg font-medium transition-colors"
                                 :class="azureRunning || !azureStatus?.azure_credentials?.configured ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'">
-                            <span x-show="!azureRunning">Start Azure Scan</span>
+                            <span x-show="!azureRunning">Start Microsoft 365 Scan</span>
                             <span x-show="azureRunning">Scanning...</span>
                         </button>
 
                         <p x-show="!azureStatus?.azure_credentials?.configured" class="text-yellow-400 text-sm">
-                            Configure Azure credentials in Settings to use online mode.
+                            Configure Microsoft 365 credentials in Settings to use online mode.
                         </p>
                     </div>
 
@@ -3277,7 +3277,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 <svg class="w-12 h-12 mx-auto text-gray-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
                                 </svg>
-                                <p class="text-gray-300" x-text="azureRunning ? 'Uploading…' : 'Click to upload Azure/M365 logs'"></p>
+                                <p class="text-gray-300" x-text="azureRunning ? 'Uploading…' : 'Click to upload Microsoft 365 logs'"></p>
                                 <p class="text-gray-500 text-sm mt-1">JSON / JSONL / CSV, or a ZIP from the Data button of an online run</p>
                             </label>
                         </div>
@@ -4036,14 +4036,20 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                            class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer">
                                     <div class="flex-1 min-w-0">
                                         <span class="text-white font-medium" x-text="module.name"></span>
-                                        <span x-show="module.id === 'intact'" class="text-blue-400 text-xs ml-2">(backend + frontend)</span>
+                                        <span x-show="module.id === 'intact'" class="text-blue-400 text-xs ml-2">(GitHub: TenrootOrg/IntactAI)</span>
                                     </div>
+                                    <!-- Per-module version textbox. For the `intact` module this is
+                                         now a GitHub ref (release tag, branch, or full commit SHA)
+                                         — the backend pulls the source tarball from
+                                         github.com/TenrootOrg/IntactAI@<ref> instead of copying
+                                         the running container's mounted source. Other modules use
+                                         this for the upstream docker-image tag. -->
                                     <input type="text" x-model="module.targetVersion"
                                            :disabled="!module.enabled"
-                                           x-show="module.id !== 'intact'"
                                            @click.stop
-                                           class="w-28 bg-gray-700 text-white text-sm px-2 py-1.5 rounded border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                                           placeholder="Version">
+                                           class="bg-gray-700 text-white text-sm px-2 py-1.5 rounded border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                           :class="module.id === 'intact' ? 'w-44' : 'w-28'"
+                                           :placeholder="module.id === 'intact' ? 'e.g. intact-20260604' : 'Version'">
                                 </label>
                             </template>
                         </div>
@@ -4471,7 +4477,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                           'text-blue-400':   src.automation_type === 'aws_scan',
                                           'text-cyan-400':   src.automation_type === 'azure_scan'
                                       }"
-                                      x-text="src.automation_type === 'aws_scan' ? 'AWS' : (src.automation_type === 'azure_scan' ? 'Azure' : 'Agentic')"></span>
+                                      x-text="src.automation_type === 'aws_scan' ? 'AWS' : (src.automation_type === 'azure_scan' ? 'Microsoft 365' : 'Agentic')"></span>
                                 <div class="flex-1 min-w-0">
                                     <div class="text-gray-200 truncate" x-text="src.name"></div>
                                     <div class="text-gray-500 text-xs" x-text="src.run_id"></div>
@@ -4490,7 +4496,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                     <span class="text-xs text-blue-300 px-2 py-1 rounded bg-blue-900/30 border border-blue-800/60">→ AWS section</span>
                                 </template>
                                 <template x-if="src.automation_type === 'azure_scan'">
-                                    <span class="text-xs text-cyan-300 px-2 py-1 rounded bg-cyan-900/30 border border-cyan-800/60">→ Azure section</span>
+                                    <span class="text-xs text-cyan-300 px-2 py-1 rounded bg-cyan-900/30 border border-cyan-800/60">→ Microsoft 365 section</span>
                                 </template>
                                 <button @click="$store.engagement.remove(src.run_id)"
                                         class="text-gray-500 hover:text-red-300 text-xs" title="Remove from selection">

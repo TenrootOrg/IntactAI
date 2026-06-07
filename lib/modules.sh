@@ -7,6 +7,16 @@
 # ============================================================================
 
 generate_iris_secrets() {
+    # IRIS-disabled guard — without this, fresh installs with
+    # `modules.iris.enabled: false` still write 5 secret files into
+    # `modules/iris/secrets/` and pull config values for a module the
+    # operator turned off. Same `is_enabled` pattern as the rest.
+    local iris_enabled
+    iris_enabled=$(read_config "['modules']['iris']['enabled']")
+    if ! is_enabled "$iris_enabled"; then
+        log_info "Generating IRIS secrets: SKIPPED (disabled in config)"
+        return 0
+    fi
     log_info "Generating IRIS secrets..."
     local secrets_dir="${SCRIPT_DIR}/modules/iris/secrets"
     mkdir -p "$secrets_dir"
@@ -128,34 +138,43 @@ generate_certificates() {
     # this must run on every (re)generation, including change_ip.sh's regen.
     [[ -f "$nginx_ssl/nginx-cert.key" ]] && chmod 640 "$nginx_ssl/nginx-cert.key" 2>/dev/null || true
 
-    # IRIS Root CA
-    local iris_ca="${SCRIPT_DIR}/modules/iris/config/certificates/rootCA"
-    mkdir -p "$iris_ca"
-    if [[ ! -f "$iris_ca/irisRootCACert.pem" ]]; then
-        log_info "  Generating IRIS Root CA..."
-        openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-            -keyout "$iris_ca/irisRootCAKey.pem" \
-            -out "$iris_ca/irisRootCACert.pem" \
-            -subj "/CN=IRIS Root CA/O=Intact.AI/C=US" 2>/dev/null
-        log_success "  Generated IRIS Root CA"
+    # IRIS Root CA + web cert sync — gated on iris.enabled so disabled
+    # installs don't end up with a CA + a cert pair on disk for a module
+    # they explicitly turned off. Nginx + Portainer cert generation above
+    # stays unconditional.
+    local iris_enabled
+    iris_enabled=$(read_config "['modules']['iris']['enabled']")
+    if is_enabled "$iris_enabled"; then
+        local iris_ca="${SCRIPT_DIR}/modules/iris/config/certificates/rootCA"
+        mkdir -p "$iris_ca"
+        if [[ ! -f "$iris_ca/irisRootCACert.pem" ]]; then
+            log_info "  Generating IRIS Root CA..."
+            openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+                -keyout "$iris_ca/irisRootCAKey.pem" \
+                -out "$iris_ca/irisRootCACert.pem" \
+                -subj "/CN=IRIS Root CA/O=Intact.AI/C=US" 2>/dev/null
+            log_success "  Generated IRIS Root CA"
+        else
+            log_info "  IRIS Root CA exists, skipping"
+        fi
+
+        # IRIS Web Cert — shared with Nginx (same cert, copied to IRIS path)
+        local iris_web="${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates"
+        mkdir -p "$iris_web"
+        if [[ -f "$nginx_ssl/nginx-cert.crt" ]]; then
+            log_info "  Copying shared TLS certificate to IRIS..."
+            cp "$nginx_ssl/nginx-cert.crt" "$iris_web/iris_dev_cert.pem"
+            cp "$nginx_ssl/nginx-cert.key" "$iris_web/iris_dev_key.pem"
+            chmod 644 "$iris_web"/*.pem
+            log_success "  IRIS web certificate synced with Nginx certificate"
+        fi
+
+        # Ensure IRIS certificates are readable (fix permissions if needed)
+        if [[ -d "$iris_web" ]]; then
+            chmod 644 "$iris_web"/*.pem 2>/dev/null || true
+        fi
     else
-        log_info "  IRIS Root CA exists, skipping"
-    fi
-
-    # IRIS Web Cert — shared with Nginx (same cert, copied to IRIS path)
-    local iris_web="${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates"
-    mkdir -p "$iris_web"
-    if [[ -f "$nginx_ssl/nginx-cert.crt" ]]; then
-        log_info "  Copying shared TLS certificate to IRIS..."
-        cp "$nginx_ssl/nginx-cert.crt" "$iris_web/iris_dev_cert.pem"
-        cp "$nginx_ssl/nginx-cert.key" "$iris_web/iris_dev_key.pem"
-        chmod 644 "$iris_web"/*.pem
-        log_success "  IRIS web certificate synced with Nginx certificate"
-    fi
-
-    # Ensure IRIS certificates are readable (fix permissions if needed)
-    if [[ -d "$iris_web" ]]; then
-        chmod 644 "$iris_web"/*.pem 2>/dev/null || true
+        log_info "  IRIS disabled — skipping IRIS Root CA + web cert sync"
     fi
 }
 
@@ -836,6 +855,16 @@ deploy_iris() {
 }
 
 bootstrap_iris_api_key() {
+    # IRIS-disabled guard — added in the install-hardening pass after
+    # the June 7 log showed 5 minutes of dead-wait polling for an
+    # `intact_iris_db` container that never started because IRIS was
+    # off. Mirrors the same pattern `deploy_iris` already uses.
+    local iris_enabled
+    iris_enabled=$(read_config "['modules']['iris']['enabled']")
+    if ! is_enabled "$iris_enabled"; then
+        log_info "  IRIS disabled — skipping API key bootstrap"
+        return 0
+    fi
     # Idempotent: skip if the secret is already in the backend DB. Doing
     # the check via the backend container guarantees we use the same
     # storage layer the runtime uses. If intact_backend isn't up yet we
@@ -994,9 +1023,16 @@ deploy_portainer() {
 # ============================================================================
 
 deploy_volweb() {
-    local volweb_enabled=$(read_config "['modules']['memory']['enabled']")
+    # Gate on the dedicated `modules.volweb.enabled` key (added in
+    # commit 96b8a8f). Previously read `modules.memory.enabled`, which
+    # silently coupled the backend Memory feature flag to the VolWeb
+    # docker stack. Operators who want Memory without VolWeb (e.g.
+    # using an external Volatility installation) had no way to express
+    # that.
+    local volweb_enabled
+    volweb_enabled=$(read_config "['modules']['volweb']['enabled']")
     if ! is_enabled "$volweb_enabled"; then
-        log_info "[5b/7] VolWeb: SKIPPED (memory module disabled in config)"
+        log_info "[5b/7] VolWeb: SKIPPED (volweb disabled in config)"
         return
     fi
 
@@ -1211,10 +1247,18 @@ deploy_backend() {
     done
 
     if [[ "$be_healthy" != "true" ]]; then
-        log_warn "  Backend API started but health check not responding yet"
+        # Honest failure: the backend container started but its
+        # /api/health endpoint never responded within 60s. Previously
+        # this called `track_module_success "Backend API"` — a literal
+        # falsehood that masked the failure and let install.sh print
+        # "Installation Complete!" with exit 0 (see install_20260607
+        # log). Switching to `track_module_failure` populates
+        # FAILED_MODULES so the end-of-run summary in install.sh can
+        # honestly report the install as failed and exit non-zero.
+        log_error "  Backend API never responded to /api/health after 60s"
         capture_diagnostic_logs "Backend API (post-deploy timeout)" intact_backend
-        track_module_success "Backend API"
-        return 0
+        track_module_failure "Backend API"
+        return 1
     fi
 
     # ---- Bootstrap LLM model catalogs ----------------------------------
