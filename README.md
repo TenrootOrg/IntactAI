@@ -128,15 +128,94 @@ versions:
 
 After installation (all services terminate TLS through the main nginx):
 
-| Service | URL |
-|---------|-----|
-| Dashboard | `https://YOUR_IP` |
-| Velociraptor | `https://YOUR_IP/velociraptor/` |
-| TimeSketch | `https://YOUR_IP:5000` |
-| Kibana | `https://YOUR_IP:5601` |
-| IRIS | `https://YOUR_IP:8443` |
-| VolWeb | `https://YOUR_IP:8002` |
-| Portainer | `https://YOUR_IP:9443` |
+| Service | URL | Notes |
+|---------|-----|-------|
+| Dashboard | `https://YOUR_IP` | |
+| Velociraptor | `https://YOUR_IP/velociraptor/` | Reverse-proxied through main nginx. Direct access to Velociraptor's own GUI port (8889) is intentionally not exposed — a past header-handling bug caused redirect loops, the proxy path is the supported entry point. |
+| TimeSketch | `https://YOUR_IP:5000` | |
+| Kibana | `https://YOUR_IP:5601` | |
+| IRIS | `https://YOUR_IP:8443` | |
+| VolWeb | `https://YOUR_IP:8002` | |
+| Portainer | `https://YOUR_IP:9443` | |
+
+## Network / Firewall Ports
+
+The IntactAI server needs the ports below open for the platform to work end-to-end. Listed by direction so a customer's network team can build the firewall rules without reverse-engineering the install.
+
+### Inbound — operator / analyst access to the dashboard
+
+These are the ports your SOC analysts hit from their workstations:
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 80 | TCP | HTTP → HTTPS redirect (the dashboard itself is on 443) |
+| 443 | TCP | Dashboard + `/velociraptor/` reverse proxy + `/api/` backend proxy. **The one port that matters most.** |
+| 5000 | TCP | TimeSketch web UI (HTTPS) |
+| 5601 | TCP | Kibana web UI (HTTPS) |
+| 8002 | TCP | VolWeb memory-forensics UI (HTTPS) |
+| 8443 | TCP | IRIS case-management UI (HTTPS) |
+| 9443 | TCP | Portainer container-management UI (HTTPS) |
+
+You can lock 5000 / 5601 / 8002 / 8443 / 9443 down to your analyst subnet if you don't expose them externally. 443 is the only one that has to be widely reachable from analyst desktops.
+
+### Inbound — Velociraptor agents calling home
+
+Every endpoint you deploy the Velociraptor agent to needs to reach the server on these ports. **This is the path that's easy to forget and breaks silently** — the dashboard looks fine, but no agents check in.
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 8000 | TCP (TLS) | **Required.** Velociraptor client → server frontend. Every Windows / Linux / macOS endpoint connects out to this port over TLS. Survives NAT — agents poll, server doesn't dial back. |
+| 8001 | TCP | gRPC API. Used by the IntactAI backend and CLI tools. Keep on the server's local network only — does **not** need to be reachable from agents. |
+
+If 8000 is blocked at the endpoint's perimeter (corporate firewall, host-based firewall, EDR rules), the agent shows up in the installer log but never appears in the dashboard's Clients list.
+
+### Outbound — server reaching the internet
+
+The IntactAI server needs to reach the internet on TCP/443 for these. If you run in an air-gapped environment, build an offline package with `Settings → Prepare Upgrade Package` from an online box and use `Settings → Import Package` on the air-gapped one.
+
+**Install-time only:**
+
+| Endpoint | Purpose |
+|----------|---------|
+| `download.docker.com` | Docker engine + GPG key |
+| `registry-1.docker.io`, `production.cloudflare.docker.com` | Pulling container images (ELK, IRIS, Velociraptor, VolWeb, Postgres, etc.) |
+| `github.com`, `raw.githubusercontent.com`, `codeload.github.com` | Cloning SIGMA rules, YARA rulesets (Neo23x0, Elastic, YARA-Forge), Velociraptor binaries, plugin artifacts |
+| `archive.ubuntu.com`, `security.ubuntu.com` | apt packages |
+| `pypi.org`, `files.pythonhosted.org` | Backend Python dependencies during image build |
+| `nvd.nist.gov` (optional) | First CVE feed sync if you enable the CVE module |
+
+**Runtime — only the ones you opt into:**
+
+| Endpoint | Purpose | Required by |
+|----------|---------|-------------|
+| `openrouter.ai` (or `api.anthropic.com`, `api.openai.com`, `generativelanguage.googleapis.com`) | LLM analysis for Agentic / AWS / Azure / Memory engagement reports | Agentic module when `llm_mode: online` |
+| `login.microsoftonline.com`, `graph.microsoft.com`, `outlook.office365.com` | OAuth + Microsoft Graph + Office 365 audit log pulls | Azure scan module |
+| `*.amazonaws.com` (region-specific) | AWS API for Prowler posture scans + custom collectors | AWS scan module |
+| `github.com` | YARA ruleset refresh (Maintenance → Refresh YARA Rules) | VolWeb / Memory module |
+
+### Internal — between containers on the IntactAI server
+
+These are not firewall rules — they're just the docker-network ports the services use to talk to each other. Listed here so you know what the `docker ps` and `docker network inspect intact_network` output should look like:
+
+| Container | Internal port | Talks to |
+|-----------|---------------|----------|
+| `intact_backend` | 5001 | Nginx, Velociraptor gRPC (8001), IRIS API, VolWeb API (8000), TimeSketch API, ELK (9200) |
+| `intact_velociraptor` | 8000 / 8001 / 8889 | Agents (8000), backend (8001), proxied GUI (8889) |
+| `intact_volweb_backend` | 8000 | Backend, frontend |
+| `intact_iris_app` | 8000 (HTTPS via iris-web on 8443) | Backend |
+| `intact_elasticsearch` | 9200 | Backend, Kibana |
+| `intact_timesketch_web` | 5000 | Backend, nginx |
+| `intact_timesketch_opensearch` | 9200 | timesketch_web |
+
+### Quick "minimum viable" firewall summary
+
+If you want to deploy in a tightly-restricted environment and are willing to use only the agent-collection + on-prem analysis flow (no cloud scans, no online LLM), open only:
+
+- **Inbound:** TCP 443 from analyst subnet · TCP 8000 from endpoint subnets
+- **Outbound at install:** TCP 443 to docker / github / ubuntu / pypi (use the offline package if you can't)
+- **Outbound at runtime:** none required
+
+Everything else is feature-specific and can be opened as you turn each module on.
 
 ## Scripts
 
