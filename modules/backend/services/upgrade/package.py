@@ -173,6 +173,36 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
     if returncode != 0:
         return {"success": False, "error": stderr[:200]}
 
+    # Post-write integrity check. `tar -czf` returning 0 is not enough —
+    # we've seen tar produce structurally-corrupt gzip streams under
+    # disk pressure / concurrent writes that pass tar's own exit code
+    # but fail the operator's apply step with a raw zlib error at
+    # extract time. `gzip -t` reads the whole file and validates every
+    # deflate block, so a corrupt archive fails here instead of on a
+    # different machine 5 minutes later. Cost: one full re-read of the
+    # archive (~10-30 sec on a 4 GB file) — small price for the
+    # operator confidence.
+    log("  Verifying archive integrity (gzip -t)...", "info")
+    verify = subprocess.run(
+        ["gzip", "-t", output_file],
+        capture_output=True, text=True,
+    )
+    if verify.returncode != 0:
+        try:
+            os.remove(output_file)
+        except OSError:
+            pass
+        err = (verify.stderr or "").strip() or "gzip integrity check failed"
+        return {
+            "success": False,
+            "error": (
+                "Output tar.gz failed gzip integrity check: "
+                f"{err[:200]}. Likely cause: disk pressure or concurrent "
+                "writes during compression. Free up /data and re-run prepare."
+            ),
+        }
+    log("  Archive integrity OK", "success")
+
     return {"success": True}
 
 
@@ -233,17 +263,30 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
     package_name = f"intact-upgrade-{timestamp}"
     package_dir = f"/tmp/{package_name}"  # Temp work directory
 
-    # Store final package in persistent location (always use same filename - overwrite previous)
+    # Store final package in persistent location with an atomic-swap
+    # workflow:
+    #   1. write the new archive to `<output_file>.new`
+    #   2. validate it (gzip -t inside _compress_with_progress)
+    #   3. os.replace() the validated `.new` over `<output_file>`
+    # The previous good package stays on disk untouched throughout the
+    # whole prepare run — if anything fails (compression, integrity
+    # check, cancel, disk full), the operator's last working archive
+    # is still there to fall back to. Previous code wiped the
+    # directory upfront which left operators with NO valid package
+    # when prepare failed mid-run.
     packages_dir = "/data/upgrade_packages"
     os.makedirs(packages_dir, exist_ok=True)
 
-    # Remove any existing packages (keep only latest)
-    for old_file in os.listdir(packages_dir):
-        old_path = os.path.join(packages_dir, old_file)
-        if os.path.isfile(old_path):
-            os.remove(old_path)
-
     output_file = f"{packages_dir}/intact-upgrade-latest.tar.gz"
+    output_file_tmp = f"{output_file}.new"
+
+    # Clean any stale `.new` leftover from a previous interrupted run
+    # before we start writing — but leave the existing `.tar.gz` alone.
+    if os.path.exists(output_file_tmp):
+        try:
+            os.remove(output_file_tmp)
+        except OSError:
+            pass
 
     log("=" * 50, "info")
     log("PREPARING UPGRADE PACKAGE", "info")
@@ -571,6 +614,27 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                 host_velo_dir = velo_dir.replace(WORKDIR, HOST_PATH, 1)
                 compose_file = f"{host_velo_dir}/docker-compose.yaml"
                 image_tag = f"velociraptor-server:{clean_version}"
+
+                # Probe `docker compose` first. The user's prepare run
+                # surfaced `unknown shorthand flag: 'f' in -f / See
+                # 'docker --help'.` — the error came from `docker`
+                # itself (not `docker compose`) because the compose
+                # plugin isn't installed in the backend container.
+                # Without the plugin, `docker` parses `compose` as a
+                # positional and `-f` as a global flag it doesn't
+                # recognize. Skip the bake cleanly instead of spewing
+                # that misleading error; the apply step rebuilds the
+                # image locally from the staged binaries anyway.
+                compose_probe = run_command(
+                    "docker compose version",
+                    timeout=10, logger=None, run_id=run_id,
+                )
+                if not compose_probe.get("success"):
+                    log("  `docker compose` plugin not available in this container — "
+                        "skipping image bake.", "info")
+                    log("  Target will rebuild locally from the staged binaries (still offline-safe).", "info")
+                    continue
+
                 build_result = run_command(
                     f"VELOCIRAPTOR_VERSION={clean_version} VELOCIRAPTOR_TAG={velo_tag} "
                     f"docker compose -f {compose_file} --project-directory {host_velo_dir} build "
@@ -600,6 +664,8 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
 
             elif module in DOCKER_IMAGES:
                 # Pull and save Docker images
+                declared = len(DOCKER_IMAGES[module])
+                bundled_for_module = 0
                 for image_template, output_template in DOCKER_IMAGES[module]:
                     image = image_template.format(version=version)
                     output_name = output_template.format(version=version)
@@ -607,6 +673,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
 
                     if _pull_and_save_image(image, output_path, log, run_id=run_id):
                         manifest["contents"]["images"].append(output_name)
+                        bundled_for_module += 1
                     # Honor cancel between images (fast-exit on Stop).
                     try:
                         from services.workflow_service import is_cancelled
@@ -614,6 +681,21 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                             return {"success": False, "error": "cancelled", "cancelled": True}
                     except Exception:
                         pass
+
+                # Sanity log — if a multi-image module didn't bundle
+                # everything declared in DOCKER_IMAGES, surface that.
+                # Apply-side install functions for multi-container
+                # modules (volweb in particular) expect every declared
+                # tar to be present; a silent partial bundle reaches
+                # the target as "frontend image failed to load" much
+                # later — operators deserve to know on the prepare
+                # side instead.
+                if bundled_for_module < declared:
+                    log(
+                        f"  WARNING: {module} bundled {bundled_for_module}/{declared} images — "
+                        "the target may fail to start a container at apply time.",
+                        "warning",
+                    )
 
                 manifest["versions"][module] = version
 
@@ -677,19 +759,60 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
         log("=== Creating Package Archive ===", "info")
         log("  Compressing package (this may take a few minutes)...", "info")
 
+        # Disk-space preflight — refuse to start compression if the
+        # output volume doesn't have enough room. Tar's gzip stream
+        # can silently truncate under disk pressure (the operator's
+        # 2026-06-08 prepare run produced a 4 GB tar.gz that failed
+        # zlib decompression — the proximate cause was no space-check
+        # before the compressor started writing). source_dir/package_name
+        # is already populated at this point so we know the input size.
+        source_path_check = os.path.join("/tmp", package_name)
+        try:
+            source_size_check = _get_dir_size(source_path_check)
+            free_bytes = shutil.disk_usage(packages_dir).free
+            required = int(source_size_check * 1.2)
+            if free_bytes < required:
+                msg = (
+                    f"Not enough free space in {packages_dir} — "
+                    f"need ≥{_format_size(required)} "
+                    f"(source × 1.2), have {_format_size(free_bytes)}. "
+                    "Free disk and re-run prepare."
+                )
+                log(msg, "error")
+                raise Exception(msg)
+        except FileNotFoundError:
+            # source dir gone — extraction failures upstream will
+            # surface their own error; don't mask them with a disk
+            # message.
+            pass
+
         result = _compress_with_progress(
             source_dir="/tmp",
             source_name=package_name,
-            output_file=output_file,
+            output_file=output_file_tmp,
             logger=log,
             progress_interval=10,
             run_id=run_id,
         )
 
         if result.get("cancelled"):
+            # Cancellation already removes output_file_tmp inside the
+            # compressor's cancel branch; previous good package is
+            # untouched.
             return {"success": False, "error": "cancelled", "cancelled": True}
         if not result['success']:
+            # `_compress_with_progress` already deleted the corrupt
+            # tmp file (on tar failure or gzip-t failure). The
+            # previous `output_file` — if any — is still in place.
             raise Exception(f"Failed to create archive: {result.get('error', '')[:200]}")
+
+        # Atomic swap: rename the validated `.new` over the canonical
+        # filename. os.replace is atomic on POSIX so a concurrent
+        # apply-upgrade reader always sees either the old file or the
+        # new file, never a partial. After this point the previous
+        # package is gone — but only after we KNOW the new one is good.
+        os.replace(output_file_tmp, output_file)
+        log("  Swapped new archive into place (atomic)", "success")
 
         package_size = os.path.getsize(output_file)
         log(f"  Package created: {_format_size(package_size)}", "success")
@@ -715,9 +838,14 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
     except Exception as e:
         log(f"Package preparation failed: {str(e)}", "error")
 
-        # Remove failed output file
-        if os.path.exists(output_file):
-            os.remove(output_file)
+        # Remove ONLY the in-progress `.new` file — leave the
+        # previously-good `output_file` (if any) intact so the
+        # operator's apply-upgrade flow still has a working archive.
+        if os.path.exists(output_file_tmp):
+            try:
+                os.remove(output_file_tmp)
+            except OSError:
+                pass
 
         return {
             "success": False,

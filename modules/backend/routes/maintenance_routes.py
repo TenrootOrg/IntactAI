@@ -652,6 +652,12 @@ def run_system_purge():
         import sqlite3
 
         total_freed = 0
+        # Sections that couldn't run because their module isn't
+        # deployed (e.g. Velociraptor purge skipped on a
+        # backend-only install). Surfaced in the end-of-run summary
+        # so operators see why a section freed 0 bytes — was there
+        # nothing to clean, or could it not even attempt to?
+        skipped_sections: list[str] = []
 
         def get_dir_size(path):
             total = 0
@@ -785,63 +791,75 @@ def run_system_purge():
             add_log_to_run(run_id, "=" * 50, "info")
             update_run_status(run_id, "running", progress=70)
 
-            try:
-                from services.upgrade.base import run_command
-                import json as json_mod
+            # Skip the whole section cleanly when Velociraptor isn't
+            # deployed. Without this guard, every docker-exec below
+            # fails with "No such container: intact_velociraptor",
+            # the section reports 0 bytes freed, the workflow ends
+            # as `completed`, and the operator can't tell whether
+            # there was nothing to clean or whether the section
+            # couldn't even attempt it. Track in skipped_sections so
+            # the end-of-run summary surfaces what didn't run.
+            if not container_running('intact_velociraptor'):
+                add_log_to_run(run_id, "  Skipped: intact_velociraptor not deployed (nothing to purge)", "info")
+                skipped_sections.append("velociraptor")
+            else:
+                try:
+                    from services.upgrade.base import run_command
+                    import json as json_mod
 
-                # Velociraptor datastore is at /var./ (configured in server.config.yaml)
-                # Measure before (exclude /var./public/ which contains forensic tools)
-                du_before = run_command("docker exec intact_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'", logger=None)
-                size_before = int(du_before.get('stdout', '0').split()[0]) if du_before.get('success') else 0
-                add_log_to_run(run_id, f"  Datastore size: {fmt(size_before)}", "info")
+                    # Velociraptor datastore is at /var./ (configured in server.config.yaml)
+                    # Measure before (exclude /var./public/ which contains forensic tools)
+                    du_before = run_command("docker exec intact_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'", logger=None)
+                    size_before = int(du_before.get('stdout', '0').split()[0]) if du_before.get('success') else 0
+                    add_log_to_run(run_id, f"  Datastore size: {fmt(size_before)}", "info")
 
-                # Delete all hunts via VQL
-                add_log_to_run(run_id, "  Deleting hunts...", "info")
-                list_result = run_command(
-                    'docker exec intact_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
-                    '"SELECT hunt_id, state FROM hunts()"',
-                    logger=None
-                )
-                hunt_count = 0
-                if list_result.get('success') and list_result.get('stdout', '').strip():
-                    try:
-                        hunts = json_mod.loads(list_result['stdout'])
-                        for hunt in (hunts if isinstance(hunts, list) else []):
-                            hunt_id = hunt.get('hunt_id', '')
-                            if hunt_id:
-                                run_command(
-                                    f'docker exec intact_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
-                                    f'"SELECT * FROM hunt_delete(hunt_id=\'{hunt_id}\', really_do_it=true)"',
-                                    logger=None
-                                )
-                                hunt_count += 1
-                    except (json_mod.JSONDecodeError, ValueError):
-                        pass
-                add_log_to_run(run_id, f"  Deleted {hunt_count} hunts", "info")
+                    # Delete all hunts via VQL
+                    add_log_to_run(run_id, "  Deleting hunts...", "info")
+                    list_result = run_command(
+                        'docker exec intact_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
+                        '"SELECT hunt_id, state FROM hunts()"',
+                        logger=None
+                    )
+                    hunt_count = 0
+                    if list_result.get('success') and list_result.get('stdout', '').strip():
+                        try:
+                            hunts = json_mod.loads(list_result['stdout'])
+                            for hunt in (hunts if isinstance(hunts, list) else []):
+                                hunt_id = hunt.get('hunt_id', '')
+                                if hunt_id:
+                                    run_command(
+                                        f'docker exec intact_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
+                                        f'"SELECT * FROM hunt_delete(hunt_id=\'{hunt_id}\', really_do_it=true)"',
+                                        logger=None
+                                    )
+                                    hunt_count += 1
+                        except (json_mod.JSONDecodeError, ValueError):
+                            pass
+                    add_log_to_run(run_id, f"  Deleted {hunt_count} hunts", "info")
 
-                # Clean client collection data (flows/uploads)
-                add_log_to_run(run_id, "  Cleaning client collections & uploads...", "info")
-                run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./clients/*/collections/ /var./clients/*/uploads/ 2>/dev/null; true'", logger=None)
+                    # Clean client collection data (flows/uploads)
+                    add_log_to_run(run_id, "  Cleaning client collections & uploads...", "info")
+                    run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./clients/*/collections/ /var./clients/*/uploads/ 2>/dev/null; true'", logger=None)
 
-                # Clean downloads
-                add_log_to_run(run_id, "  Cleaning downloads...", "info")
-                run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./downloads/* 2>/dev/null; true'", logger=None)
+                    # Clean downloads
+                    add_log_to_run(run_id, "  Cleaning downloads...", "info")
+                    run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./downloads/* 2>/dev/null; true'", logger=None)
 
-                # Clean notebooks
-                add_log_to_run(run_id, "  Cleaning notebooks...", "info")
-                run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./notebooks/* 2>/dev/null; true'", logger=None)
+                    # Clean notebooks
+                    add_log_to_run(run_id, "  Cleaning notebooks...", "info")
+                    run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./notebooks/* 2>/dev/null; true'", logger=None)
 
-                # Clean server artifact logs and server artifacts
-                run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./server_artifact_logs/* /var./server_artifacts/* 2>/dev/null; true'", logger=None)
+                    # Clean server artifact logs and server artifacts
+                    run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./server_artifact_logs/* /var./server_artifacts/* 2>/dev/null; true'", logger=None)
 
-                # Measure after (exclude /var./public/ which contains forensic tools)
-                du_after = run_command("docker exec intact_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'", logger=None)
-                size_after = int(du_after.get('stdout', '0').split()[0]) if du_after.get('success') else 0
-                freed = max(0, size_before - size_after)
-                total_freed += freed
-                add_log_to_run(run_id, f"  Freed: {fmt(freed)}", "success")
-            except Exception as e:
-                add_log_to_run(run_id, f"  Velociraptor cleanup error: {e}", "warning")
+                    # Measure after (exclude /var./public/ which contains forensic tools)
+                    du_after = run_command("docker exec intact_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'", logger=None)
+                    size_after = int(du_after.get('stdout', '0').split()[0]) if du_after.get('success') else 0
+                    freed = max(0, size_before - size_after)
+                    total_freed += freed
+                    add_log_to_run(run_id, f"  Freed: {fmt(freed)}", "success")
+                except Exception as e:
+                    add_log_to_run(run_id, f"  Velociraptor cleanup error: {e}", "warning")
 
             # === 8. ELK (Velociraptor Artifacts) ===
             add_log_to_run(run_id, "=" * 50, "info")
@@ -849,36 +867,40 @@ def run_system_purge():
             add_log_to_run(run_id, "=" * 50, "info")
             update_run_status(run_id, "running", progress=80)
 
-            try:
-                import requests as req
-                # Get size before
-                es_resp = req.get("http://intact_elasticsearch:9200/_cat/indices?h=index,store.size&bytes=b", timeout=5)
-                es_size_before = 0
-                es_index_count = 0
-                if es_resp.status_code == 200:
-                    for line in es_resp.text.strip().split('\n'):
-                        parts = line.split()
-                        if len(parts) >= 2 and parts[0].startswith('artifact_'):
-                            es_size_before += int(parts[1])
-                            es_index_count += 1
+            if not container_running('intact_elasticsearch'):
+                add_log_to_run(run_id, "  Skipped: intact_elasticsearch not deployed (nothing to purge)", "info")
+                skipped_sections.append("elk")
+            else:
+                try:
+                    import requests as req
+                    # Get size before
+                    es_resp = req.get("http://intact_elasticsearch:9200/_cat/indices?h=index,store.size&bytes=b", timeout=5)
+                    es_size_before = 0
+                    es_index_count = 0
+                    if es_resp.status_code == 200:
+                        for line in es_resp.text.strip().split('\n'):
+                            parts = line.split()
+                            if len(parts) >= 2 and parts[0].startswith('artifact_'):
+                                es_size_before += int(parts[1])
+                                es_index_count += 1
 
-                add_log_to_run(run_id, f"  Found {es_index_count} artifact indices ({fmt(es_size_before)})", "info")
+                    add_log_to_run(run_id, f"  Found {es_index_count} artifact indices ({fmt(es_size_before)})", "info")
 
-                if es_index_count > 0:
-                    # Delete each index individually (wildcard delete is disabled by default)
-                    deleted = 0
-                    for line in es_resp.text.strip().split('\n'):
-                        parts = line.split()
-                        if len(parts) >= 2 and parts[0].startswith('artifact_'):
-                            del_resp = req.delete(f"http://intact_elasticsearch:9200/{parts[0]}", timeout=10)
-                            if del_resp.status_code == 200:
-                                deleted += 1
-                    add_log_to_run(run_id, f"  Deleted {deleted}/{es_index_count} indices", "info")
-                    total_freed += es_size_before
+                    if es_index_count > 0:
+                        # Delete each index individually (wildcard delete is disabled by default)
+                        deleted = 0
+                        for line in es_resp.text.strip().split('\n'):
+                            parts = line.split()
+                            if len(parts) >= 2 and parts[0].startswith('artifact_'):
+                                del_resp = req.delete(f"http://intact_elasticsearch:9200/{parts[0]}", timeout=10)
+                                if del_resp.status_code == 200:
+                                    deleted += 1
+                        add_log_to_run(run_id, f"  Deleted {deleted}/{es_index_count} indices", "info")
+                        total_freed += es_size_before
 
-                add_log_to_run(run_id, f"  Freed: {fmt(es_size_before)}", "success")
-            except Exception as e:
-                add_log_to_run(run_id, f"  ELK cleanup error: {e}", "warning")
+                    add_log_to_run(run_id, f"  Freed: {fmt(es_size_before)}", "success")
+                except Exception as e:
+                    add_log_to_run(run_id, f"  ELK cleanup error: {e}", "warning")
 
             # === 9. Timesketch (Timelines & Events) ===
             add_log_to_run(run_id, "=" * 50, "info")
@@ -886,47 +908,62 @@ def run_system_purge():
             add_log_to_run(run_id, "=" * 50, "info")
             update_run_status(run_id, "running", progress=85)
 
-            try:
-                # Get OpenSearch size before (exclude system indices starting with .)
-                os_resp = run_command(
-                    "docker exec intact_timesketch_opensearch curl -s 'http://localhost:9200/_cat/indices?h=index,store.size&bytes=b'",
-                    logger=None
-                )
-                os_size_before = 0
-                os_index_count = 0
-                if os_resp.get('success'):
-                    for line in os_resp.get('stdout', '').strip().split('\n'):
-                        parts = line.split()
-                        if len(parts) >= 2 and not parts[0].startswith('.'):
-                            try:
-                                os_size_before += int(parts[1])
-                                os_index_count += 1
-                            except ValueError:
-                                pass
-
-                add_log_to_run(run_id, f"  Found {os_index_count} timeline indices ({fmt(os_size_before)})", "info")
-
-                if os_index_count > 0:
-                    # Delete timeline indices from OpenSearch
-                    run_command(
-                        "docker exec intact_timesketch_opensearch curl -s -X DELETE 'http://localhost:9200/*,-.*'",
+            # Timesketch purge spans TWO containers (opensearch +
+            # postgres). Skip the whole section unless the opensearch
+            # container is up — the postgres-only cleanup without
+            # the index delete leaves the stack in an inconsistent
+            # state, so all-or-nothing is the right policy.
+            if not container_running('intact_timesketch_opensearch'):
+                add_log_to_run(run_id, "  Skipped: intact_timesketch_opensearch not deployed (nothing to purge)", "info")
+                skipped_sections.append("timesketch")
+            else:
+                try:
+                    # Get OpenSearch size before (exclude system indices starting with .)
+                    os_resp = run_command(
+                        "docker exec intact_timesketch_opensearch curl -s 'http://localhost:9200/_cat/indices?h=index,store.size&bytes=b'",
                         logger=None
                     )
-                    # Clear PostgreSQL timeline data
-                    run_command(
-                        "docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c 'DELETE FROM timeline; DELETE FROM searchindex;'",
-                        logger=None
-                    )
-                    add_log_to_run(run_id, f"  Deleted {os_index_count} indices and cleared timeline database", "info")
-                    total_freed += os_size_before
+                    os_size_before = 0
+                    os_index_count = 0
+                    if os_resp.get('success'):
+                        for line in os_resp.get('stdout', '').strip().split('\n'):
+                            parts = line.split()
+                            if len(parts) >= 2 and not parts[0].startswith('.'):
+                                try:
+                                    os_size_before += int(parts[1])
+                                    os_index_count += 1
+                                except ValueError:
+                                    pass
 
-                add_log_to_run(run_id, f"  Freed: {fmt(os_size_before)}", "success")
-            except Exception as e:
-                add_log_to_run(run_id, f"  Timesketch cleanup error: {e}", "warning")
+                    add_log_to_run(run_id, f"  Found {os_index_count} timeline indices ({fmt(os_size_before)})", "info")
+
+                    if os_index_count > 0:
+                        # Delete timeline indices from OpenSearch
+                        run_command(
+                            "docker exec intact_timesketch_opensearch curl -s -X DELETE 'http://localhost:9200/*,-.*'",
+                            logger=None
+                        )
+                        # Clear PostgreSQL timeline data
+                        run_command(
+                            "docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c 'DELETE FROM timeline; DELETE FROM searchindex;'",
+                            logger=None
+                        )
+                        add_log_to_run(run_id, f"  Deleted {os_index_count} indices and cleared timeline database", "info")
+                        total_freed += os_size_before
+
+                    add_log_to_run(run_id, f"  Freed: {fmt(os_size_before)}", "success")
+                except Exception as e:
+                    add_log_to_run(run_id, f"  Timesketch cleanup error: {e}", "warning")
 
             # === SUMMARY ===
             add_log_to_run(run_id, "=" * 50, "info")
             add_log_to_run(run_id, f"PURGE COMPLETE - Total freed: {fmt(total_freed)}", "success")
+            if skipped_sections:
+                add_log_to_run(
+                    run_id,
+                    f"Sections skipped (module not deployed): {', '.join(skipped_sections)}",
+                    "info",
+                )
             add_log_to_run(run_id, "=" * 50, "info")
             update_run_status(run_id, "completed", progress=100)
 

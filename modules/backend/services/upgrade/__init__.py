@@ -321,11 +321,19 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                     if run_id:
                         update_upgrade_phase(run_id, 'phase1', completed_modules)
                 else:
-                    log(f"{module_name.upper()} upgrade failed: {result.get('error', 'unknown')}", "error")
+                    log(f"MODULE_FAILED: {module_name.upper()} — {result.get('error', 'unknown')}", "error")
+                    log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                     overall_status = "completed_with_errors"
 
             except Exception as e:
-                log(f"{module_name.upper()} upgrade error: {str(e)}", "error")
+                # Per-module try/except is what gives the apply step
+                # cascade resilience: one module's crash never kills
+                # the run. The MODULE_FAILED log marker is what
+                # operators grep for in the install log.
+                import traceback as _tb
+                log(f"MODULE_FAILED: {module_name.upper()} — exception: {str(e)}", "error")
+                log(f"  Traceback: {_tb.format_exc()[:600]}", "error")
+                log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                 results[module_name] = {"success": False, "error": str(e)}
                 overall_status = "completed_with_errors"
 
@@ -517,11 +525,19 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
 
                     update_upgrade_phase(run_id, 'phase2', list(completed_modules))
                 else:
-                    log(f"{module_name.upper()} upgrade failed: {result.get('error', 'unknown')}", "error")
+                    log(f"MODULE_FAILED: {module_name.upper()} — {result.get('error', 'unknown')}", "error")
+                    log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                     overall_status = "completed_with_errors"
 
             except Exception as e:
-                log(f"{module_name.upper()} upgrade error: {str(e)}", "error")
+                # Per-module try/except is what gives the apply step
+                # cascade resilience: one module's crash never kills
+                # the run. The MODULE_FAILED log marker is what
+                # operators grep for in the install log.
+                import traceback as _tb
+                log(f"MODULE_FAILED: {module_name.upper()} — exception: {str(e)}", "error")
+                log(f"  Traceback: {_tb.format_exc()[:600]}", "error")
+                log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                 results[module_name] = {"success": False, "error": str(e)}
                 overall_status = "completed_with_errors"
 
@@ -779,6 +795,14 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
                     # Note: Plaso is handled as its own module, not bundled with Timesketch
                     result = upgrade_fn(package_dir, version, logger=log, run_id=run_id)
 
+                # Defensive: if a module function returns None (bug)
+                # treat it as a failure rather than crashing on
+                # .get(). Without this guard, a buggy upgrade_fn
+                # takes down the whole orchestrator and leaves later
+                # modules un-attempted.
+                if result is None:
+                    result = {"success": False, "error": f"{module_name} returned None (bug in upgrade function)"}
+
                 results[module_name] = result
                 if not result.get('skipped'):
                     completed += 1
@@ -827,11 +851,19 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
                     if run_id:
                         update_upgrade_phase(run_id, 'phase1', completed_modules)
                 else:
-                    log(f"{module_name.upper()} upgrade failed: {result.get('error', 'unknown')}", "error")
+                    log(f"MODULE_FAILED: {module_name.upper()} — {result.get('error', 'unknown')}", "error")
+                    log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                     overall_status = "completed_with_errors"
 
             except Exception as e:
-                log(f"{module_name.upper()} upgrade error: {str(e)}", "error")
+                # Per-module try/except is what gives the apply step
+                # cascade resilience: one module's crash never kills
+                # the run. The MODULE_FAILED log marker is what
+                # operators grep for in the install log.
+                import traceback as _tb
+                log(f"MODULE_FAILED: {module_name.upper()} — exception: {str(e)}", "error")
+                log(f"  Traceback: {_tb.format_exc()[:600]}", "error")
+                log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                 results[module_name] = {"success": False, "error": str(e)}
                 overall_status = "completed_with_errors"
 
@@ -873,10 +905,23 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
             if run_id:
                 clear_upgrade_state(run_id)
 
-            # Print summary
+            # Print summary with explicit succeeded/failed/skipped
+            # counts so the operator can see at a glance which of N
+            # modules made it. A "completed_with_errors" run that
+            # successfully deployed 5/6 modules is very different from
+            # one that failed all 6 — the count surfaces the difference
+            # the status field alone can't.
+            succeeded = [m for m, r in results.items()
+                         if not m.startswith("_") and r.get('success') and not r.get('skipped')]
+            failed = [m for m, r in results.items()
+                      if not m.startswith("_") and not r.get('success') and not r.get('skipped')]
+            skipped = [m for m, r in results.items()
+                       if not m.startswith("_") and r.get('skipped')]
+
             log("", "info")
             log(f"{'='*50}", "info")
             log(f"OFFLINE UPGRADE COMPLETE - Status: {overall_status}", "info")
+            log(f"  succeeded: {len(succeeded)}    failed: {len(failed)}    skipped: {len(skipped)}", "info")
             log(f"{'='*50}", "info")
 
             for module_name, result in results.items():

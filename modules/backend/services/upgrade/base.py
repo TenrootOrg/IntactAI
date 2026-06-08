@@ -409,6 +409,32 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
     if not os.path.exists(package_path):
         return {"success": False, "error": f"Package not found: {package_path}"}
 
+    # Pre-extract integrity check. Catches archives that were
+    # produced corrupt by an old prepare (pre-`gzip -t` fix) or
+    # truncated in transit during upload. Without this, the operator
+    # sees a raw zlib `Error -3 while decompressing data: invalid
+    # code lengths set` mid-extraction with no actionable message.
+    # `gzip -t` reads the whole file and validates every deflate
+    # block — corrupt archives fail HERE with a clear instruction
+    # to re-prepare, before we touch the filesystem.
+    log("Verifying package integrity (gzip -t)...", "info")
+    import subprocess as _subprocess
+    verify = _subprocess.run(
+        ["gzip", "-t", package_path],
+        capture_output=True, text=True,
+    )
+    if verify.returncode != 0:
+        err = (verify.stderr or "").strip() or "gzip integrity check failed"
+        return {
+            "success": False,
+            "error": (
+                f"Uploaded package failed gzip integrity check: {err[:200]}. "
+                "The archive is corrupt. Re-prepare the package on the "
+                "source machine and re-upload."
+            ),
+        }
+    log("  Integrity OK", "success")
+
     log("Extracting upgrade package...", "info")
 
     # Use /app/data/tmp/ (mounted from host's data/) for persistence across container restarts
