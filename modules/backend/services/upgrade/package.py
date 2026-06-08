@@ -775,14 +775,32 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     except Exception:
                         pass
 
-                # Sanity log — if a multi-image module didn't bundle
-                # everything declared in DOCKER_IMAGES, surface that.
-                # Apply-side install functions for multi-container
-                # modules (volweb in particular) expect every declared
-                # tar to be present; a silent partial bundle reaches
-                # the target as "frontend image failed to load" much
-                # later — operators deserve to know on the prepare
-                # side instead.
+                # Bundling-completeness gate. Three outcomes:
+                #
+                # (a) bundled == declared → normal: every image landed,
+                #     register the module's version + let apply run.
+                # (b) 0 < bundled < declared → partial: at least one
+                #     image bundled but not all. Surface the warning
+                #     and register the version (operator opted in by
+                #     selecting the module; let apply try its best
+                #     with what we shipped).
+                # (c) bundled == 0 → total failure for this module
+                #     (typo'd version, registry 404, network glitch).
+                #     Skip the manifest entry so the apply phase
+                #     doesn't run for this module — no contradictory
+                #     "succeeded:N" report and no .env bumped to a
+                #     non-existent version. Operator fixes the typo
+                #     and re-runs without touching the rest of the
+                #     stack.
+                if bundled_for_module == 0 and declared > 0:
+                    log(
+                        f"  MODULE_FAILED_PREPARE: {module} bundled 0/{declared} images — "
+                        f"skipping {module} (apply phase will not run for this module). "
+                        f"Likely a typo'd version or registry 404; verify the version exists upstream.",
+                        "error",
+                    )
+                    # Do NOT add to manifest.versions; apply skips it.
+                    continue
                 if bundled_for_module < declared:
                     log(
                         f"  WARNING: {module} bundled {bundled_for_module}/{declared} images — "
