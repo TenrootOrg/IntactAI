@@ -43,13 +43,15 @@ DOCKER_IMAGES = {
         ('anssi/dfir-o365rc:{version}', 'dfir-o365rc-{version}.tar'),
     ],
     'volweb': [
-        # VolWeb backend image (memory-forensics analysis stack).
-        # The frontend / postgres / redis images are independent — they
-        # follow their own pins (volweb_frontend, volweb_postgres,
-        # volweb_redis in config.yaml) and bundle separately when those
-        # pins change. The backend image is the only one whose version
-        # changes routinely across releases.
-        ('forensicxlab/volweb-backend:{version}', 'volweb-backend-{version}.tar'),
+        # VolWeb backend + frontend (memory-forensics analysis stack).
+        # forensicxlab releases the two images in lockstep so a single
+        # `versions.volweb` pin drives both — same {version} placeholder
+        # for both tars. Postgres + Redis are infrastructure deps
+        # defaulted in modules/volweb/docker-compose.yaml; the
+        # operator's host pulls those directly from Docker Hub at
+        # compose-up time, not from this bundle.
+        ('forensicxlab/volweb-backend:{version}',  'volweb-backend-{version}.tar'),
+        ('forensicxlab/volweb-frontend:{version}', 'volweb-frontend-{version}.tar'),
     ],
 }
 

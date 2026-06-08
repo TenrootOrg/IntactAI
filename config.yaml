@@ -93,11 +93,12 @@ versions:
   # Set this to an empty string or remove the key to skip legacy downloads.
   velociraptor_legacy: '0.7.1'
   # VolWeb in-tree memory-forensics analysis stack (modules/volweb/).
-  # Upstream forensicxlab/VolWeb publishes :latest only — these track
-  # the digest captured at PoC validation time. install.sh renders
-  # modules/volweb/.env from these pins so re-installs are reproducible.
-  volweb_backend: 'latest'
-  volweb_frontend: 'latest'
-  volweb_postgres: '14.1'
-  volweb_redis: '7'
+  # forensicxlab publishes versioned semver tags WITHOUT a `v` prefix
+  # (Docker Hub: forensicxlab/volweb-backend + forensicxlab/volweb-frontend
+  # — current latest = 3.16.0 pushed 2026-03-20). Backend + frontend
+  # release in lockstep so a SINGLE pin drives both (same pattern as
+  # IRIS, where `iris: v2.4.27` drives 4 containers). Postgres + Redis
+  # are infrastructure deps — defaulted in modules/volweb/docker-compose.yaml
+  # via ${VAR:-default} syntax, NOT pinned here.
+  volweb: '3.16.0'
   backend: '1.0.0'

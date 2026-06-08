@@ -331,12 +331,13 @@ def get_latest_versions() -> Dict:
         'aws':          'aws_prowler',
         'azure':        'azure_dfir_o365rc',
         'intact':       'backend',
-        # VolWeb backend image (memory-forensics analysis stack).
-        # config.yaml ships 4 volweb_* pins (backend, frontend,
-        # postgres, redis); the prepare-modal version textbox drives
-        # the backend image tag which is the one operators actually
-        # bump release-to-release.
-        'volweb':       'volweb_backend',
+        # VolWeb (memory-forensics analysis stack). Single
+        # `versions.volweb` pin drives both backend + frontend images
+        # (forensicxlab releases them in lockstep — same semver tag,
+        # same release date). Postgres + Redis are infrastructure deps
+        # — not pinned in config.yaml; the compose file defaults them
+        # via ${VAR:-x}.
+        'volweb':       'volweb',
     }
     fallback = {
         'elk': '9.3.3',
@@ -347,7 +348,7 @@ def get_latest_versions() -> Dict:
         'aws': '5.28.1',
         'azure': 'latest',
         'intact': '1.0.0',
-        'volweb': 'latest',
+        'volweb': '3.16.0',
     }
 
     # config.yaml lives at the repo root, which is mounted at WORKDIR

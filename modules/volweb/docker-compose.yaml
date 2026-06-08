@@ -23,7 +23,7 @@ services:
 
   intact_volweb_postgresdb:
     container_name: intact_volweb_postgresdb
-    image: "postgres:${VOLWEB_POSTGRES_VERSION}"
+    image: "postgres:${VOLWEB_POSTGRES_VERSION:-14.1}"
     restart: unless-stopped
     environment:
       - POSTGRES_USER=${VOLWEB_POSTGRES_USER}
@@ -45,7 +45,7 @@ services:
 
   intact_volweb_redis:
     container_name: intact_volweb_redis
-    image: "redis:${VOLWEB_REDIS_VERSION}"
+    image: "redis:${VOLWEB_REDIS_VERSION:-7}"
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:

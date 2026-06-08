@@ -3,13 +3,15 @@
 The VolWeb in-tree module (``modules/volweb/``) brings up six
 containers: backend (Django + daphne), two celery worker queues
 (plugins + yarascan), postgres, redis, frontend. An "upgrade" here
-means swapping the four pinned images (``volweb_backend``,
-``volweb_frontend``, ``volweb_postgres``, ``volweb_redis`` per
-``config.yaml:versions``) for newer pins and restarting the stack.
+means swapping the backend + frontend image pins (driven by the
+single ``versions.volweb`` pin in ``config.yaml`` — forensicxlab
+ships the two images in lockstep) and restarting the stack. Postgres
+and Redis are infrastructure deps defaulted in
+``modules/volweb/docker-compose.yaml`` and are not bumped by this flow.
 
 This mirrors the existing per-module upgrade pattern (see
 ``upgrade/plaso.py`` for the cleanest reference): pull the new
-image(s), update the pin in ``modules/volweb/.env``, restart the
+image(s), update the pin(s) in ``modules/volweb/.env``, restart the
 container(s). Idempotent on a no-op pin change.
 
 The VolWeb postgres + media volumes are NEVER touched by upgrade.
@@ -63,16 +65,18 @@ def _compose_up(log: Callable, run_id: str | None = None) -> Dict:
 
 
 def upgrade_volweb(version: str, logger: Callable = None, run_id: str | None = None) -> Dict:
-    """Online upgrade — pull the new backend image, bump the pin,
-    recreate containers.
+    """Online upgrade — pull the new backend + frontend images, bump
+    both pins, recreate containers.
 
-    ``version`` is the new value for ``VOLWEB_BACKEND_VERSION``. The
-    frontend pin and the postgres/redis pins are updated separately
-    via their own upgrade callsites (kept distinct so a single bumped
-    version doesn't force a full-stack recreate).
+    ``version`` is a single semver tag that drives BOTH
+    ``VOLWEB_BACKEND_VERSION`` and ``VOLWEB_FRONTEND_VERSION``.
+    forensicxlab releases the two images in lockstep (same tag, same
+    push date), so a single operator-supplied version is sufficient.
+    Postgres + Redis pins are not touched — they're infrastructure
+    deps defaulted in modules/volweb/docker-compose.yaml.
     """
     log = logger or _log_default
-    log(f"Starting VolWeb upgrade (backend → {version})...", "info")
+    log(f"Starting VolWeb upgrade (backend + frontend → {version})...", "info")
 
     if not os.path.exists(_VOLWEB_ENV):
         msg = f"VolWeb env missing: {_VOLWEB_ENV}. Has install.sh run?"
@@ -84,20 +88,22 @@ def upgrade_volweb(version: str, logger: Callable = None, run_id: str | None = N
         log(f"VolWeb already at {version}; no change", "info")
         return {"success": True, "version": version, "noop": True}
 
-    # 1. Pull
-    log(f"Pulling forensicxlab/volweb-backend:{version}...", "info")
-    pull = run_command(
-        f"docker pull forensicxlab/volweb-backend:{version}",
-        timeout=600, logger=log, run_id=run_id,
-    )
-    if not pull.get("success"):
-        return {"success": False, "error": f"pull failed: {pull.get('error')}"}
+    # 1. Pull both images
+    for image in ("forensicxlab/volweb-backend", "forensicxlab/volweb-frontend"):
+        log(f"Pulling {image}:{version}...", "info")
+        pull = run_command(
+            f"docker pull {image}:{version}",
+            timeout=600, logger=log, run_id=run_id,
+        )
+        if not pull.get("success"):
+            return {"success": False, "error": f"pull {image} failed: {pull.get('error')}"}
 
-    # 2. Bump the pin
+    # 2. Bump both pins
     update_env_file(_VOLWEB_ENV, "VOLWEB_BACKEND_VERSION", version, logger=log)
+    update_env_file(_VOLWEB_ENV, "VOLWEB_FRONTEND_VERSION", version, logger=log)
 
     # 3. Recreate
-    log("Recreating VolWeb backend + worker containers...", "info")
+    log("Recreating VolWeb backend + frontend + worker containers...", "info")
     up = _compose_up(log, run_id=run_id)
     if not up.get("success"):
         return {"success": False, "error": f"compose up failed: {up.get('error')}"}
@@ -120,7 +126,7 @@ def upgrade_volweb_offline(
     (mirrors the timesketch / plaso bundling convention).
     """
     log = logger or _log_default
-    log(f"Starting VolWeb offline upgrade (backend → {version})...", "info")
+    log(f"Starting VolWeb offline upgrade (backend + frontend → {version})...", "info")
 
     if not os.path.exists(_VOLWEB_ENV):
         msg = f"VolWeb env missing: {_VOLWEB_ENV}"
@@ -132,19 +138,31 @@ def upgrade_volweb_offline(
         log(f"VolWeb already at {version}; no change", "info")
         return {"success": True, "version": version, "noop": True}
 
-    # 1. Load image from the bundle
-    image_tar = os.path.join(package_dir, "images", f"volweb-backend-{version}.tar")
-    if not os.path.exists(image_tar):
+    # 1. Load both images from the bundle. Backend is required;
+    # frontend is best-effort (a transitional prepare-package built
+    # before this refactor will only bundle the backend, in which case
+    # the frontend stays on whatever's already pulled).
+    backend_tar = os.path.join(package_dir, "images", f"volweb-backend-{version}.tar")
+    if not os.path.exists(backend_tar):
         return {
             "success": False,
-            "error": f"image bundle missing: {image_tar}",
+            "error": f"image bundle missing: {backend_tar}",
         }
-    loaded = load_docker_image(image_tar, logger=log, run_id=run_id)
+    loaded = load_docker_image(backend_tar, logger=log, run_id=run_id)
     if not loaded.get("success"):
-        return {"success": False, "error": f"docker load failed: {loaded.get('error')}"}
+        return {"success": False, "error": f"docker load failed (backend): {loaded.get('error')}"}
 
-    # 2. Bump pin + recreate
+    frontend_tar = os.path.join(package_dir, "images", f"volweb-frontend-{version}.tar")
+    if os.path.exists(frontend_tar):
+        loaded = load_docker_image(frontend_tar, logger=log, run_id=run_id)
+        if not loaded.get("success"):
+            log(f"frontend image load failed (continuing with current frontend): {loaded.get('error')}", "warning")
+    else:
+        log(f"frontend image bundle absent ({frontend_tar}) — frontend stays on current pin", "warning")
+
+    # 2. Bump both pins + recreate
     update_env_file(_VOLWEB_ENV, "VOLWEB_BACKEND_VERSION", version, logger=log)
+    update_env_file(_VOLWEB_ENV, "VOLWEB_FRONTEND_VERSION", version, logger=log)
     up = _compose_up(log, run_id=run_id)
     if not up.get("success"):
         return {"success": False, "error": f"compose up failed: {up.get('error')}"}

@@ -1049,10 +1049,11 @@ deploy_volweb() {
     if [[ -f "$env_out" ]]; then
         log_info "  modules/volweb/.env already present (skip render — secrets preserved)"
     elif [[ -f "$env_tmpl" ]]; then
-        local backend_ver=$(read_config "['versions']['volweb_backend']")
-        local frontend_ver=$(read_config "['versions']['volweb_frontend']")
-        local pg_ver=$(read_config "['versions']['volweb_postgres']")
-        local redis_ver=$(read_config "['versions']['volweb_redis']")
+        # Single `versions.volweb` pin drives both backend + frontend
+        # (forensicxlab releases them in lockstep). Postgres + Redis
+        # are infrastructure deps — the compose file defaults them
+        # via ${VAR:-x} so we don't render them into .env at all.
+        local volweb_ver=$(read_config "['versions']['volweb']")
         local domain=$(read_config "['domain']")
         # Per-install random secrets. Mirrors the IRIS_SECRET_KEY +
         # Timesketch SECRET_KEY pattern shipped earlier this session.
@@ -1064,10 +1065,10 @@ deploy_volweb() {
 
         cp "$env_tmpl" "$env_out"
         sed -i \
-            -e "s|__VOLWEB_BACKEND_VERSION__|${backend_ver:-latest}|g" \
-            -e "s|__VOLWEB_FRONTEND_VERSION__|${frontend_ver:-latest}|g" \
-            -e "s|__VOLWEB_POSTGRES_VERSION__|${pg_ver:-14.1}|g" \
-            -e "s|__VOLWEB_REDIS_VERSION__|${redis_ver:-7}|g" \
+            -e "s|__VOLWEB_BACKEND_VERSION__|${volweb_ver:-latest}|g" \
+            -e "s|__VOLWEB_FRONTEND_VERSION__|${volweb_ver:-latest}|g" \
+            -e "s|__VOLWEB_POSTGRES_VERSION__|14.1|g" \
+            -e "s|__VOLWEB_REDIS_VERSION__|7|g" \
             -e "s|__VOLWEB_DJANGO_SECRET__|${django_secret}|g" \
             -e "s|__VOLWEB_POSTGRES_PASSWORD__|${pg_password}|g" \
             -e "s|__VOLWEB_CSRF_TRUSTED_ORIGINS__|${csrf}|g" \
