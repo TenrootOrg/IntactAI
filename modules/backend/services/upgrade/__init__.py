@@ -10,6 +10,7 @@ Two-Phase Upgrade Support:
 
 import json
 import os
+import shutil
 import subprocess
 from typing import Dict, Callable, Optional
 
@@ -595,54 +596,75 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     }
 
 
-def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: Callable = None,
-                                  db_overwrite: Dict = None) -> Dict:
-    """Run offline upgrade workflow from an uploaded package with two-phase support.
+def run_offline_upgrade_workflow(package_path: Optional[str] = None,
+                                  run_id: str = None, logger: Callable = None,
+                                  db_overwrite: Dict = None,
+                                  *,
+                                  prebuilt_package_dir: Optional[str] = None,
+                                  prebuilt_manifest: Optional[Dict] = None,
+                                  workflow_label: str = "OFFLINE UPGRADE WORKFLOW") -> Dict:
+    """Run the apply-upgrade orchestration with two-phase support.
 
-    Two-Phase Upgrade:
+    Two entry modes, same orchestration body:
+    - **Offline (default):** pass `package_path` to an uploaded tar.gz.
+      The function calls `verify_upgrade_package()` to gzip-t-check
+      and extract the archive, then runs the per-module loop.
+    - **Online:** pass `prebuilt_package_dir` + `prebuilt_manifest`
+      (both already populated by `prepare_upgrade_package(compress=False)`).
+      The function skips verification + extraction and runs the same
+      per-module loop directly. `workflow_label` lets the caller
+      override the banner so operators reading logs can tell the two
+      flows apart.
+
+    Two-Phase Upgrade (unchanged for both modes):
     - If Intact.AI source is in package, it's upgraded first (Phase 1)
     - State is saved, backend restarts
     - On startup, Phase 2 resumes with remaining modules
-
-    Args:
-        package_path: Path to the uploaded .tar.gz package
-        run_id: Workflow run ID for state tracking
-        logger: Logging function
-        db_overwrite: Dict of module -> bool for fresh install (e.g., {"timesketch": True})
-
-    Returns:
-        Dict with success status and results per module
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     db_overwrite = db_overwrite or {}
 
     log("=" * 50, "info")
-    log("OFFLINE UPGRADE WORKFLOW", "info")
+    log(workflow_label, "info")
     log("=" * 50, "info")
 
-    # Cleanup any previous installation remnants
-    import glob
-    old_dirs = glob.glob('/app/data/tmp/intact-upgrade-*') + glob.glob('/data/tmp/intact-upgrade-*') + glob.glob('/tmp/intact-upgrade-*')
-    if old_dirs:
-        log("Cleaning up previous installation remnants...", "info")
-        for old_dir in old_dirs:
-            log(f"  Removing: {old_dir}", "info")
-            run_command(f"rm -rf {old_dir}", logger=log)
+    # Two-mode entry: tar.gz extraction (offline, legacy) OR pre-built
+    # package_dir from the online flow.
+    if prebuilt_package_dir and prebuilt_manifest:
+        package_dir = prebuilt_package_dir
+        manifest = prebuilt_manifest
+        verify_result = {
+            'success': True,
+            'package_dir': package_dir,
+            'extract_dir': package_dir,
+            'manifest': manifest,
+        }
+        log(f"  Online mode: using pre-built package_dir={package_dir}", "info")
+    else:
+        # Offline flow — clean up previous remnants (skipped for online
+        # because its fresh-timestamped build dir would get nuked).
+        import glob
+        old_dirs = glob.glob('/app/data/tmp/intact-upgrade-*') + glob.glob('/data/tmp/intact-upgrade-*') + glob.glob('/tmp/intact-upgrade-*')
+        if old_dirs:
+            log("Cleaning up previous installation remnants...", "info")
+            for old_dir in old_dirs:
+                log(f"  Removing: {old_dir}", "info")
+                run_command(f"rm -rf {old_dir}", logger=log)
 
-    # Verify and extract package
-    verify_result = verify_upgrade_package(package_path, logger=log)
-    if not verify_result['success']:
-        # Cleanup uploaded package on failure
-        if package_path and os.path.exists(package_path):
-            try:
-                os.remove(package_path)
-                log(f"Removed uploaded package: {os.path.basename(package_path)}", "info")
-            except Exception:
-                pass
-        return {"success": False, "error": verify_result.get('error', 'Package verification failed')}
+        # Verify and extract package
+        verify_result = verify_upgrade_package(package_path, logger=log)
+        if not verify_result['success']:
+            if package_path and os.path.exists(package_path):
+                try:
+                    os.remove(package_path)
+                    log(f"Removed uploaded package: {os.path.basename(package_path)}", "info")
+                except Exception:
+                    pass
+            return {"success": False, "error": verify_result.get('error', 'Package verification failed')}
 
-    package_dir = verify_result['package_dir']
-    manifest = verify_result['manifest']
+        package_dir = verify_result['package_dir']
+        manifest = verify_result['manifest']
+
     versions = manifest.get('versions', {})
 
     # Get current versions for comparison
@@ -945,6 +967,87 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
     }
 
 
+# ============================================================================
+# Online Upgrade — combined prepare + apply in a single workflow
+# ============================================================================
+
+def run_online_upgrade_workflow(modules: Dict[str, str], run_id: str = None,
+                                 logger: Callable = None,
+                                 db_overwrite: Dict = None) -> Dict:
+    """Run prepare-then-apply in a single workflow with no tar.gz round-trip.
+
+    For internet-connected machines. Combines the two-card flow
+    ("Prepare Upgrade Package" + "Import Upgrade Package") into one
+    workflow. The prepare step builds the package_dir directly at
+    the persistent path the apply side already uses
+    (``/app/data/tmp/intact-upgrade-<ts>/``) — no compression, no
+    decompression, no tar.gz hand-off. The apply orchestration is
+    the SAME loop the offline flow uses, so install-or-upgrade
+    auto-detection, Phase-1/Phase-2 restart, and cascade-resilient
+    per-module try/except all carry over verbatim.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+
+    log("=" * 50, "info")
+    log("ONLINE UPGRADE WORKFLOW", "info")
+    log("=" * 50, "info")
+    log("  Mode: prepare + apply in one run (no intermediate tar.gz)", "info")
+    log("", "info")
+
+    from services.upgrade.package import prepare_upgrade_package
+
+    # Build directly into /app/data/tmp/ — the persistent host-mounted
+    # path. /tmp/ would break Phase 2 because intact's backend restart
+    # between Phase 1 and Phase 2 wipes the container's /tmp.
+    from datetime import datetime as _dt
+    package_name = f"intact-upgrade-{_dt.now().strftime('%Y%m%d_%H%M%S')}"
+    persistent_work_dir = f"/app/data/tmp/{package_name}"
+    os.makedirs("/app/data/tmp", exist_ok=True)
+
+    prepare_result = prepare_upgrade_package(
+        modules=modules,
+        run_id=run_id,
+        logger=log,
+        compress=False,
+        work_dir=persistent_work_dir,
+    )
+
+    if not prepare_result.get('success'):
+        if os.path.exists(persistent_work_dir):
+            try:
+                shutil.rmtree(persistent_work_dir)
+            except Exception:
+                pass
+        return {
+            "success": False,
+            "status": "failed",
+            "error": prepare_result.get('error', 'Prepare step failed'),
+            "results": {},
+            "completed": 0,
+            "total": 0,
+            "versions": {},
+        }
+
+    package_dir = prepare_result['package_dir']
+    manifest = prepare_result['manifest']
+
+    log("", "info")
+    log("=" * 50, "info")
+    log("HAND-OFF TO APPLY (no compression step)", "success")
+    log("=" * 50, "info")
+    log("", "info")
+
+    return run_offline_upgrade_workflow(
+        package_path=None,
+        run_id=run_id,
+        logger=log,
+        db_overwrite=db_overwrite,
+        prebuilt_package_dir=package_dir,
+        prebuilt_manifest=manifest,
+        workflow_label="ONLINE UPGRADE WORKFLOW (Phase 2 of 2: apply)",
+    )
+
+
 # Backwards compatibility - expose private names as well
 _run_command = run_command
 _read_env_file = read_env_file
@@ -986,6 +1089,7 @@ __all__ = [
     # Workflow functions
     'run_upgrade_workflow',
     'run_offline_upgrade_workflow',
+    'run_online_upgrade_workflow',
     'resume_upgrade_workflow',
     # State management
     'get_pending_upgrade',

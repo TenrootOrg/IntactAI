@@ -3443,6 +3443,20 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 </button>
                             </div>
 
+                            <!-- Online Upgrade (combined prepare + apply, no tar.gz round-trip) -->
+                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div>
+                                    <h4 class="text-white font-medium">Online Upgrade</h4>
+                                    <p class="text-gray-400 text-sm">Internet-connected: download modules &amp; apply in one workflow. Skips the intermediate package file.</p>
+                                </div>
+                                <button @click="$store.settings.openOnlineUpgradeModal()" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                    </svg>
+                                    <span>Online Upgrade</span>
+                                </button>
+                            </div>
+
                             <!-- Prepare Upgrade Package -->
                             <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
                                 <div>
@@ -4083,14 +4097,18 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                 <div x-show="$store.settings.showPreparePackageModal" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="$store.settings.closePreparePackageModal()">
                     <div class="bg-gray-800 rounded-lg p-6 w-full max-w-lg border border-gray-700 shadow-xl" @click.stop>
                         <div class="flex items-center justify-between mb-4">
-                            <h3 class="text-xl font-bold text-white">Prepare Upgrade Package</h3>
+                            <h3 class="text-xl font-bold text-white"
+                                x-text="$store.settings.prepareModalMode === 'online' ? 'Online Upgrade' : 'Prepare Upgrade Package'"></h3>
                             <button @click="$store.settings.closePreparePackageModal()" class="text-gray-400 hover:text-white">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                                 </svg>
                             </button>
                         </div>
-                        <p class="text-gray-400 text-sm mb-4">Select modules to include in the offline upgrade package:</p>
+                        <p class="text-gray-400 text-sm mb-4"
+                           x-text="$store.settings.prepareModalMode === 'online'
+                                   ? 'Select modules to download and apply right now (no intermediate package file):'
+                                   : 'Select modules to include in the offline upgrade package:'"></p>
 
                         <!-- Loading state -->
                         <div x-show="$store.settings.prepareLoading" class="flex items-center justify-center py-8">
@@ -4156,11 +4174,18 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                             <button @click="$store.settings.closePreparePackageModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
                                 Cancel
                             </button>
-                            <button @click="$store.settings.startPackagePreparation()" :disabled="$store.settings.prepareLoading" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium flex items-center gap-2">
+                            <button @click="$store.settings.startPackagePreparation()" :disabled="$store.settings.prepareLoading"
+                                    class="disabled:opacity-60 px-4 py-2 rounded text-sm font-medium flex items-center gap-2"
+                                    :class="$store.settings.prepareModalMode === 'online'
+                                            ? 'bg-green-600 hover:bg-green-700'
+                                            : 'bg-blue-600 hover:bg-blue-700'">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                          :d="$store.settings.prepareModalMode === 'online'
+                                              ? 'M13 10V3L4 14h7v7l9-11h-7z'
+                                              : 'M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4'"></path>
                                 </svg>
-                                Start Preparation
+                                <span x-text="$store.settings.prepareModalMode === 'online' ? 'Start Online Upgrade' : 'Start Preparation'"></span>
                             </button>
                         </div>
 

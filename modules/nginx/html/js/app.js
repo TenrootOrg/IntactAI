@@ -781,6 +781,9 @@ document.addEventListener('alpine:init', () => {
         prepareRunId: null,
         preparePackageReady: false,
         preparePackageSize: '',
+        // 'prepare' → POST /api/upgrade/prepare (offline flow, produces tar.gz)
+        // 'online'  → POST /api/upgrade/online (combined prepare + apply)
+        prepareModalMode: 'prepare',
         prepareModules: [
             { id: 'elk', name: 'ELK Stack', targetVersion: '', enabled: false, fallback: '8.17.0' },
             { id: 'timesketch', name: 'Timesketch', targetVersion: '', enabled: false, fallback: '20240919' },
@@ -799,6 +802,16 @@ document.addEventListener('alpine:init', () => {
         ],
 
         async openPreparePackageModal() {
+            this.prepareModalMode = 'prepare';
+            await this._openModuleModal();
+        },
+
+        async openOnlineUpgradeModal() {
+            this.prepareModalMode = 'online';
+            await this._openModuleModal();
+        },
+
+        async _openModuleModal() {
             this.showPreparePackageModal = true;
             this.prepareLoading = true;
             this.prepareRunId = null;
@@ -867,9 +880,17 @@ document.addEventListener('alpine:init', () => {
                 modules[m.id] = m.targetVersion || m.latest || '1.0.0';
             });
 
+            const isOnline = this.prepareModalMode === 'online';
+            const endpoint = isOnline ? '/api/upgrade/online' : '/api/upgrade/prepare';
+            const successMsg = isOnline
+                ? 'Online upgrade started — check Workflows for progress'
+                : 'Package preparation started — check Workflows for progress';
+            const errPrefix = isOnline ? 'Failed to start online upgrade: ' : 'Failed to start preparation: ';
+            const exPrefix = isOnline ? 'Online upgrade error: ' : 'Preparation error: ';
+
             this.prepareLoading = true;
             try {
-                const response = await fetch('/api/upgrade/prepare', {
+                const response = await fetch(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ modules })
@@ -879,15 +900,15 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok && result.success) {
                     this.prepareRunId = result.run_id;
                     this.closePreparePackageModal();
-                    this.showMessage('Package preparation started - check Workflows for progress', 'success');
+                    this.showMessage(successMsg, 'success');
                     setTimeout(() => {
                         Alpine.store('app').switchTab('workflows');
                     }, 500);
                 } else {
-                    this.showMessage('Failed to start preparation: ' + (result.error || 'Unknown error'), 'error');
+                    this.showMessage(errPrefix + (result.error || 'Unknown error'), 'error');
                 }
             } catch (e) {
-                this.showMessage('Preparation error: ' + e.message, 'error');
+                this.showMessage(exPrefix + e.message, 'error');
             }
             this.prepareLoading = false;
         },

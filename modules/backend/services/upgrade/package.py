@@ -246,47 +246,59 @@ def _pull_and_save_image(image: str, output_path: str, logger: Callable,
     return True
 
 
-def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None) -> Dict:
+def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
+                            compress: bool = True,
+                            work_dir: Optional[str] = None) -> Dict:
     """Download and package upgrade components.
 
     Args:
         modules: Dict of module versions, e.g. {"elk": "9.3.1", "velociraptor": "0.75.6"}
         run_id: Workflow run ID for tracking
         logger: Logging function
+        compress: When True (default, offline flow), compress the built
+                  directory to a tar.gz at /data/upgrade_packages/ via
+                  the atomic-swap pattern, then clean up the work dir.
+                  When False (online-upgrade flow), skip compression +
+                  cleanup; the caller takes ownership of the
+                  package_dir and is responsible for removing it when
+                  the apply step is done.
+        work_dir: Where to build the package contents. Defaults to
+                  /tmp/<package_name>/. Online flow passes
+                  /app/data/tmp/<...>/ so the dir survives the backend
+                  restart that intact upgrades trigger between Phase 1
+                  and Phase 2.
 
     Returns:
-        Dict with success status, package_path, and metadata
+        Dict with success status. Shape depends on `compress`:
+        - compress=True:  {success, package_path, package_name, package_size, manifest}
+        - compress=False: {success, package_dir, manifest}
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     package_name = f"intact-upgrade-{timestamp}"
-    package_dir = f"/tmp/{package_name}"  # Temp work directory
+    package_dir = work_dir if work_dir else f"/tmp/{package_name}"
 
-    # Store final package in persistent location with an atomic-swap
-    # workflow:
-    #   1. write the new archive to `<output_file>.new`
-    #   2. validate it (gzip -t inside _compress_with_progress)
-    #   3. os.replace() the validated `.new` over `<output_file>`
-    # The previous good package stays on disk untouched throughout the
-    # whole prepare run — if anything fails (compression, integrity
-    # check, cancel, disk full), the operator's last working archive
-    # is still there to fall back to. Previous code wiped the
-    # directory upfront which left operators with NO valid package
-    # when prepare failed mid-run.
+    # Compression-only state — skipped when compress=False (online flow
+    # doesn't produce a tar.gz at all).
     packages_dir = "/data/upgrade_packages"
-    os.makedirs(packages_dir, exist_ok=True)
-
     output_file = f"{packages_dir}/intact-upgrade-latest.tar.gz"
     output_file_tmp = f"{output_file}.new"
-
-    # Clean any stale `.new` leftover from a previous interrupted run
-    # before we start writing — but leave the existing `.tar.gz` alone.
-    if os.path.exists(output_file_tmp):
-        try:
-            os.remove(output_file_tmp)
-        except OSError:
-            pass
+    if compress:
+        # Store final package in persistent location with an atomic-swap
+        # workflow:
+        #   1. write the new archive to `<output_file>.new`
+        #   2. validate it (gzip -t inside _compress_with_progress)
+        #   3. os.replace() the validated `.new` over `<output_file>`
+        # The previous good package stays on disk untouched throughout
+        # the whole prepare run — if anything fails, the operator's
+        # last working archive is still there to fall back to.
+        os.makedirs(packages_dir, exist_ok=True)
+        if os.path.exists(output_file_tmp):
+            try:
+                os.remove(output_file_tmp)
+            except OSError:
+                pass
 
     log("=" * 50, "info")
     log("PREPARING UPGRADE PACKAGE", "info")
@@ -835,21 +847,31 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
             json.dump(manifest, f, indent=2)
         log("  Created manifest.json", "success")
 
+        # Online-upgrade short-circuit: no tar.gz needed — return the
+        # built package_dir directly. Caller (run_online_upgrade_workflow)
+        # owns the dir from here and cleans up after the apply finishes.
+        if not compress:
+            log("", "info")
+            log("=" * 50, "info")
+            log("PACKAGE DIRECTORY READY (online-upgrade, no compression)", "success")
+            log("=" * 50, "info")
+            log(f"  Modules: {', '.join(modules.keys())}", "info")
+            log(f"  Built at: {package_dir}", "info")
+            return {
+                "success": True,
+                "package_dir": package_dir,
+                "manifest": manifest,
+            }
+
         # Create tar.gz archive
         log("", "info")
         log("=== Creating Package Archive ===", "info")
         log("  Compressing package (this may take a few minutes)...", "info")
 
         # Disk-space preflight — refuse to start compression if the
-        # output volume doesn't have enough room. Tar's gzip stream
-        # can silently truncate under disk pressure (the operator's
-        # 2026-06-08 prepare run produced a 4 GB tar.gz that failed
-        # zlib decompression — the proximate cause was no space-check
-        # before the compressor started writing). source_dir/package_name
-        # is already populated at this point so we know the input size.
-        source_path_check = os.path.join("/tmp", package_name)
+        # output volume doesn't have enough room.
         try:
-            source_size_check = _get_dir_size(source_path_check)
+            source_size_check = _get_dir_size(package_dir)
             free_bytes = shutil.disk_usage(packages_dir).free
             required = int(source_size_check * 1.2)
             if free_bytes < required:
@@ -862,14 +884,13 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                 log(msg, "error")
                 raise Exception(msg)
         except FileNotFoundError:
-            # source dir gone — extraction failures upstream will
-            # surface their own error; don't mask them with a disk
-            # message.
             pass
 
+        # Derive source_dir / source_name from the actual built path so
+        # a caller-overridden work_dir composes correctly through tar.
         result = _compress_with_progress(
-            source_dir="/tmp",
-            source_name=package_name,
+            source_dir=os.path.dirname(package_dir),
+            source_name=os.path.basename(package_dir),
             output_file=output_file_tmp,
             logger=log,
             progress_interval=10,
@@ -934,16 +955,18 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
         }
 
     finally:
-        # Always cleanup temp directory and pulled images
-        if os.path.exists(package_dir):
-            try:
-                shutil.rmtree(package_dir)
-            except Exception:
-                pass
+        # Offline-prepare cleanup ONLY. Online-upgrade caller owns the
+        # package_dir and consumes it via the apply step — cleanup
+        # happens in the orchestration's own finally block instead.
+        if compress:
+            if os.path.exists(package_dir):
+                try:
+                    shutil.rmtree(package_dir)
+                except Exception:
+                    pass
 
-        # Always cleanup pulled Docker images
-        for module, version in modules.items():
-            if module in DOCKER_IMAGES:
-                for image_template, _ in DOCKER_IMAGES[module]:
-                    image = image_template.format(version=version)
-                    run_command(f"docker rmi {image} 2>/dev/null || true", logger=None, timeout=60)
+            for module, version in modules.items():
+                if module in DOCKER_IMAGES:
+                    for image_template, _ in DOCKER_IMAGES[module]:
+                        image = image_template.format(version=version)
+                        run_command(f"docker rmi {image} 2>/dev/null || true", logger=None, timeout=60)
