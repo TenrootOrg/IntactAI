@@ -52,6 +52,41 @@ from .defaults import (
 from .volweb_client import VolWebClient, VolWebError
 
 
+def _resolve_plugin_set(blueprint: dict | None, client: "VolWebClient",
+                        evidence_id: int, log) -> tuple[str, ...]:
+    """Pick the Vol3 plugin list to extract for this run.
+
+    Resolution order:
+      1. Blueprint's `settings.plugin_set` if non-empty and not the
+         all-plugins marker.
+      2. Marker ``['*']`` → query VolWeb for every plugin row it
+         registered for this evidence (one row per plugin VolWeb knows
+         how to run against this dump's profile). Used by the
+         `memory_all_plugins` blueprint so the set stays correct as
+         VolWeb adds/removes plugins, without us hardcoding 60+ class
+         paths in the YAML.
+      3. Fallback to ``CURATED_PLUGINS`` (the 12-plugin sweet-spot
+         set from the PoC).
+    """
+    raw = (blueprint.get("settings") or {}).get("plugin_set") if blueprint else None
+    raw = list(raw or [])
+
+    if raw == ['*']:
+        try:
+            rows = client.list_plugins(evidence_id) or []
+        except Exception as e:
+            log(f"'*' resolution failed ({e!s}) — falling back to curated set", "warning")
+            return CURATED_PLUGINS
+        names = tuple(r['name'] for r in rows if r.get('name'))
+        if not names:
+            log("'*' resolved to empty list — falling back to curated set", "warning")
+            return CURATED_PLUGINS
+        log(f"'*' resolved to {len(names)} plugins available for evidence {evidence_id}", "info")
+        return names
+
+    return tuple(raw) if raw else CURATED_PLUGINS
+
+
 # Phase progress weights (sum to ~95; the final 5 is reserved for
 # Cleanup + Reporting). Tuned from the PoC runs — Acquire dominates
 # wall-clock on a fresh capture; Analyze is cheap once the data is
@@ -382,10 +417,7 @@ def run_memory_pipeline(
             # ------------------------------------------------------------
             log("pipeline: extract — selective-extraction + yarascan", "info")
             client.stage_media_dir(evidence_id)
-            plugins_to_run = (
-                tuple((blueprint.get("settings") or {}).get("plugin_set") or [])
-                if blueprint else ()
-            ) or CURATED_PLUGINS
+            plugins_to_run = _resolve_plugin_set(blueprint, client, evidence_id, log)
             client.trigger_extraction(evidence_id, plugins_to_run)
             client.trigger_yarascan(evidence_id, rulesets=None, rules=None)
             log(
@@ -511,10 +543,7 @@ def run_memory_pipeline(
             client.stage_media_dir(evidence_id)
 
             # Determine plugin set (blueprint override or curated default).
-            plugins_to_run = (
-                tuple((blueprint.get("settings") or {}).get("plugin_set") or [])
-                if blueprint else ()
-            ) or CURATED_PLUGINS
+            plugins_to_run = _resolve_plugin_set(blueprint, client, evidence_id, log)
 
             # Trigger BOTH tasks before waiting on either — they run on
             # separate Celery queues and execute concurrently.

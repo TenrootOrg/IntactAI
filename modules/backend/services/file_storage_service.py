@@ -50,6 +50,12 @@ from services.storage import (
     get_timesketch_blueprint,
     delete_timesketch_blueprint,
 
+    # Blueprint operations - Memory (VolWeb plugin sets)
+    save_memory_blueprint,
+    load_memory_blueprints,
+    get_memory_blueprint,
+    delete_memory_blueprint,
+
     # Collector operations
     save_offline_collector_config,
     load_offline_collector_configs,

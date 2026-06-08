@@ -1864,24 +1864,42 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                         and ask an LLM to synthesise an engagement-ready findings report.
                     </p>
 
-                    <!-- Card 1 — Analysis mode + Investigation name -->
+                    <!-- Card 1 — Blueprint + YARA toggle + Investigation name -->
                     <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
-                        <label class="block text-sm font-medium text-gray-300 mb-2">Analysis mode</label>
-                        <div class="flex flex-col gap-2 text-sm">
-                            <label class="flex items-center gap-2 cursor-pointer">
-                                <input type="radio" x-model="$store.memory.mode" value="layered"
-                                       class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
-                                <span class="text-gray-300">Layered <span class="text-gray-500">— Vol3 plugins + YARA (default)</span></span>
-                            </label>
-                            <label class="flex items-center gap-2 cursor-pointer">
-                                <input type="radio" x-model="$store.memory.mode" value="yara"
-                                       class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
-                                <span class="text-gray-300">YARA only <span class="text-gray-500">— ~20× cheaper, scale-out triage</span></span>
-                            </label>
-                            <label class="flex items-center gap-2 cursor-pointer">
-                                <input type="radio" x-model="$store.memory.mode" value="plugin"
-                                       class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
-                                <span class="text-gray-300">Plugins only <span class="text-gray-500">— behavioural context, no signatures</span></span>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Blueprint</label>
+                        <select x-model="$store.memory.blueprintId"
+                                class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none">
+                            <template x-for="b in $store.memory.blueprints" :key="b.id">
+                                <option :value="b.id" x-text="b.name"></option>
+                            </template>
+                        </select>
+                        <p class="text-xs text-gray-500 mt-2"
+                           x-text="($store.memory.selectedBlueprint() || {}).description || ''"></p>
+                        <p class="text-xs text-gray-500 mt-1">
+                            Plugins:
+                            <span class="text-gray-400 font-mono"
+                                  x-text="(() => {
+                                      const bp = $store.memory.selectedBlueprint();
+                                      const ps = (bp && bp.settings && bp.settings.plugin_set) || [];
+                                      if (ps.length === 1 && ps[0] === '*') return 'all available (resolved at runtime)';
+                                      if (ps.length === 0) return 'none (yara-only)';
+                                      return ps.length + ' plugin(s)';
+                                  })()"></span>
+                        </p>
+
+                        <!-- YARA toggle — independent of blueprint. Adds the
+                             yarascan "layer" on top of plugin extraction. For
+                             a blueprint with an empty plugin_set (YARA-only
+                             triage), this toggle has no effect — YARA always
+                             runs because there's nothing else to run. -->
+                        <div class="mt-4 pt-4 border-t border-gray-700">
+                            <label class="flex items-center gap-3 cursor-pointer">
+                                <input type="checkbox" x-model="$store.memory.includeYara"
+                                       class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                <div>
+                                    <div class="text-sm font-medium text-gray-300">Include YARA</div>
+                                    <div class="text-xs text-gray-500">Run yarascan in parallel with plugin extraction. Adds signature-based detection on top of behavioural plugin output.</div>
+                                </div>
                             </label>
                         </div>
 
@@ -2086,6 +2104,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                             <option value="all">All Types</option>
                             <option value="velociraptor">Velociraptor</option>
                             <option value="timesketch">Timesketch</option>
+                            <option value="memory">Memory</option>
                         </select>
                     </div>
                 </div>
@@ -2112,6 +2131,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 <select id="blueprint-type" onchange="onBlueprintTypeChange()" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
                                     <option value="velociraptor">Velociraptor (Hunts & AI Analysis)</option>
                                     <option value="timesketch">Timesketch (Triage + Timeline)</option>
+                                    <option value="memory">Memory Forensics (VolWeb plugin set)</option>
                                 </select>
                             </div>
 
@@ -2254,7 +2274,60 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 </div>
                             </div>
 
-                            <!-- Artifacts Section (hidden for Timesketch) -->
+                            <!-- Memory Forensics Settings (VolWeb plugin set) -->
+                            <div id="blueprint-memory-settings" class="hidden">
+                                <!-- Special "all available" toggle — when checked, the
+                                     blueprint stores plugin_set = ['*'] which the
+                                     pipeline resolves at run time via
+                                     volweb.list_plugins(evidence_id). Picking this
+                                     greys out the individual checkboxes since they
+                                     wouldn't be consulted. -->
+                                <div class="mb-3 p-3 bg-gray-900 rounded border border-purple-900/50">
+                                    <label class="flex items-center gap-3 cursor-pointer">
+                                        <input type="checkbox" id="blueprint-memory-all-plugins"
+                                               class="w-4 h-4 rounded border-gray-600 bg-gray-800 text-purple-600 focus:ring-purple-500"
+                                               onchange="onMemoryAllPluginsToggle()">
+                                        <div>
+                                            <div class="text-sm font-medium text-gray-300">Use every plugin VolWeb advertises (resolve at run time)</div>
+                                            <div class="text-xs text-gray-500">Same as the &quot;All plugins (deep dive)&quot; default. Picks include HollowProcesses (12+ min by itself) and bootkey-dependent plugins. The individual checkboxes below are ignored when this is on.</div>
+                                        </div>
+                                    </label>
+                                </div>
+
+                                <div class="flex items-center justify-between mb-2">
+                                    <label class="block text-sm font-medium text-gray-300">
+                                        Plugins (<span id="blueprint-memory-plugin-count">0</span> selected / <span id="blueprint-memory-plugin-total">0</span> total)
+                                    </label>
+                                    <div class="flex gap-2">
+                                        <button onclick="toggleAllMemoryPlugins(true)" class="text-xs bg-purple-700 hover:bg-purple-600 px-2 py-1 rounded">Check All</button>
+                                        <button onclick="toggleAllMemoryPlugins(false)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Uncheck All</button>
+                                    </div>
+                                </div>
+                                <input type="text" id="blueprint-memory-plugin-search"
+                                       oninput="filterMemoryPluginList()"
+                                       placeholder="Filter by name (e.g. registry, netscan, hollow)..."
+                                       class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none mb-2">
+                                <div id="blueprint-memory-plugin-list"
+                                     class="max-h-72 overflow-y-auto bg-gray-900 border border-gray-700 rounded p-2 space-y-2">
+                                    <p class="text-gray-500 text-sm">Loading plugins…</p>
+                                </div>
+                                <p class="text-xs text-gray-500 mt-1">
+                                    Selecting nothing = empty plugin set. Pair an empty blueprint with the &quot;Include YARA&quot; checkbox in the Memory page for YARA-only triage.
+                                </p>
+
+                                <div class="grid grid-cols-2 gap-3 mt-3">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="CPU usage cap on the target host during memory acquisition (Velociraptor side, percentage)">CPU Limit (%)</label>
+                                        <input type="number" id="blueprint-memory-cpu" value="80" min="10" max="100" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Velociraptor max_bytes cap on the memory acquisition VQL. 64 GiB default — covers any realistic Windows server RAM size.">Max Bytes (acquisition cap)</label>
+                                        <input type="number" id="blueprint-memory-max-bytes" value="68719476736" min="1073741824" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Artifacts Section (hidden for Timesketch + Memory) -->
                             <div id="blueprint-artifacts-section">
                                 <div class="flex items-center justify-between mb-2">
                                     <label class="block text-sm font-medium text-gray-300">Artifacts (<span id="blueprint-artifact-count">0</span> selected / <span id="blueprint-artifact-total">0</span> total)</label>

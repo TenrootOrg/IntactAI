@@ -625,4 +625,25 @@ def delete_memory_blueprint(bp_id):
     return jsonify({"ok": True})
 
 
+@memory_bp.route("/api/memory/available_plugins", methods=["GET"])
+def list_available_memory_plugins():
+    """Return the catalog of Volatility 3 Windows plugins surfaced to
+    the Blueprints memory editor. Used to render the checkbox grid so
+    operators don't have to type dotted class paths. Grouped by purpose
+    for the UI's section headers.
+    """
+    from services.memory.defaults import KNOWN_VOL3_PLUGINS
+    # Group preserving insertion order — Python dicts since 3.7 keep
+    # insertion order, which gives the UI a stable section layout.
+    groups: dict[str, list[str]] = {}
+    for group_label, class_path in KNOWN_VOL3_PLUGINS:
+        groups.setdefault(group_label, []).append(class_path)
+    return jsonify({
+        "groups": [
+            {"label": label, "plugins": plugins}
+            for label, plugins in groups.items()
+        ],
+    })
+
+
 __all__ = ["memory_bp"]

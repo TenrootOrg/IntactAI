@@ -23,6 +23,10 @@ from services.file_storage_service import (
     load_timesketch_blueprints,
     get_timesketch_blueprint,
     delete_timesketch_blueprint,
+    save_memory_blueprint,
+    load_memory_blueprints,
+    get_memory_blueprint,
+    delete_memory_blueprint,
 )
 from services.blueprint_loader_service import get_all_blueprints, get_artifact_lists
 
@@ -137,7 +141,32 @@ def seed_default_blueprints():
     from services.storage.blueprint_store import (
         load_memory_blueprints,
         save_memory_blueprint,
+        delete_memory_blueprint,
     )
+
+    # Memory blueprints that previously shipped as defaults and have
+    # since been removed from default_blueprints.yaml. Listed explicitly
+    # (rather than computed as "in DB but not YAML") so a YAML mistake
+    # never silently nukes a real default. Each entry is deleted on
+    # startup if the DB row is still flagged is_default — an operator
+    # who customized the name or settings (is_default=false) is left
+    # alone.
+    DEPRECATED_MEMORY_BLUEPRINT_IDS = {
+        # Removed when YARA became a memory-page checkbox: was just
+        # the curated 12-plugin set with `mode: plugin`, redundant
+        # with the renamed memory_layered_default ("Curated standard").
+        'memory_plugin_only',
+        # The four "fast" scenario blueprints were collapsed into their
+        # "deep" counterparts (renamed to plain scenario names — Process
+        # Anomalies / Persistence / Network / Credentials). Operators
+        # who want a faster variant can clone a default and prune the
+        # plugin checkboxes.
+        'memory_process_fast',
+        'memory_persistence_fast',
+        'memory_network_fast',
+        'memory_credentials_fast',
+    }
+
     mem_defaults = blueprints.get('memory', [])
     existing_mem = load_memory_blueprints()
 
@@ -159,6 +188,14 @@ def seed_default_blueprints():
                 existing['settings'] = default_bp.get('settings', existing.get('settings', {}))
                 save_memory_blueprint(existing)
                 print(f"[BLUEPRINTS] Synced memory default from YAML: {default_bp['id']}", flush=True)
+
+        # Cleanup pass — remove deprecated defaults that linger in DB
+        # from older seeds. Skip rows the operator already customized.
+        for bp_id in DEPRECATED_MEMORY_BLUEPRINT_IDS:
+            existing = existing_map.get(bp_id)
+            if existing and existing.get('is_default'):
+                delete_memory_blueprint(bp_id)
+                print(f"[BLUEPRINTS] Removed deprecated memory default: {bp_id}", flush=True)
 
 
 # Seed on module load
@@ -446,5 +483,108 @@ def delete_timesketch_blueprint_route(blueprint_id):
             return jsonify({"success": True})
         else:
             return jsonify({"error": "Failed to delete blueprint"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================================
+# Memory Forensics Blueprints — VolWeb plugin sets
+# ============================================================================
+# Same shape as timesketch CRUD but the settings payload is the Vol3
+# plugin_set + acquisition knobs (cpu_limit, max_bytes). The Memory page
+# also reads these via /api/memory/blueprints (memory_routes.py) — both
+# endpoints hit the same blueprints_memory SQLite table, so changes
+# made in the blueprints UI flow through to the Memory dropdown
+# immediately.
+
+@blueprint_bp.route('/api/blueprints/memory', methods=['GET'])
+def list_memory_blueprints_route():
+    """Get all memory blueprints"""
+    try:
+        blueprints = load_memory_blueprints()
+        return jsonify({"blueprints": blueprints})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@blueprint_bp.route('/api/blueprints/memory', methods=['POST'])
+def create_memory_blueprint():
+    """Create a new memory blueprint"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        if not data.get('name'):
+            return jsonify({"error": "Blueprint name is required"}), 400
+
+        blueprint_id = data.get('id') or f"custom_{int(time.time() * 1000)}"
+        settings = data.get('settings') or {}
+
+        blueprint = {
+            "id": blueprint_id,
+            "name": data['name'],
+            "description": data.get('description', ''),
+            "is_default": False,
+            "settings": settings,
+        }
+
+        result = save_memory_blueprint(blueprint)
+        if result:
+            return jsonify({"success": True, "blueprint": blueprint}), 201
+        return jsonify({"error": "Failed to save blueprint"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@blueprint_bp.route('/api/blueprints/memory/<blueprint_id>', methods=['GET'])
+def get_memory_blueprint_by_id(blueprint_id):
+    """Get a specific memory blueprint"""
+    try:
+        bp = get_memory_blueprint(blueprint_id)
+        if bp:
+            return jsonify(bp)
+        return jsonify({"error": "Blueprint not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@blueprint_bp.route('/api/blueprints/memory/<blueprint_id>', methods=['PUT'])
+def update_memory_blueprint_route(blueprint_id):
+    """Update a memory blueprint"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        existing = get_memory_blueprint(blueprint_id)
+        if not existing:
+            return jsonify({"error": "Blueprint not found"}), 404
+
+        data['id'] = blueprint_id
+        data['is_default'] = existing.get('is_default', False)
+        data['created_at'] = existing.get('created_at')
+
+        result = save_memory_blueprint(data)
+        if result:
+            return jsonify({"success": True, "blueprint": data})
+        return jsonify({"error": "Failed to update blueprint"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@blueprint_bp.route('/api/blueprints/memory/<blueprint_id>', methods=['DELETE'])
+def delete_memory_blueprint_route(blueprint_id):
+    """Delete a memory blueprint (defaults cannot be deleted)"""
+    try:
+        bp = get_memory_blueprint(blueprint_id)
+        if not bp:
+            return jsonify({"error": "Blueprint not found"}), 404
+        if bp.get('is_default'):
+            return jsonify({"error": "Cannot delete default blueprints"}), 400
+
+        result = delete_memory_blueprint(blueprint_id)
+        if result:
+            return jsonify({"success": True})
+        return jsonify({"error": "Failed to delete blueprint"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500

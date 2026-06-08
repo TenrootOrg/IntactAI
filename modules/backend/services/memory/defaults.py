@@ -42,6 +42,87 @@ CURATED_PLUGINS: tuple[str, ...] = (
     "volatility3.plugins.windows.registry.printkey.PrintKey",
 )
 
+# ---------------------------------------------------------------------------
+# Volatility 3 — full catalog of Windows plugins surfaced to the UI
+# ---------------------------------------------------------------------------
+#
+# Used by the Blueprints page's memory editor to render a checkbox grid
+# (operator picks plugins by ticking boxes instead of typing dotted
+# class paths). Grouped by purpose so the UI can render section headers.
+#
+# This list is the "menu" the operator sees — it doesn't constrain what
+# VolWeb actually runs. A custom blueprint can still reference any
+# class path the operator types directly in default_blueprints.yaml,
+# and the `['*']` marker resolves to whatever VolWeb advertises for the
+# specific dump at run time.
+#
+# Tradeoff: a static list won't track new Vol3 plugins released after
+# this file ships, so operators who need bleeding-edge plugins use the
+# `['*']` blueprint or edit YAML directly. Worth it for the discovery
+# benefit at the 95% case.
+KNOWN_VOL3_PLUGINS: tuple[tuple[str, str], ...] = (
+    # ── Process discovery + lineage ──
+    ("Process discovery + lineage", "volatility3.plugins.windows.pslist.PsList"),
+    ("Process discovery + lineage", "volatility3.plugins.windows.psscan.PsScan"),
+    ("Process discovery + lineage", "volatility3.plugins.windows.pstree.PsTree"),
+    ("Process discovery + lineage", "volatility3.plugins.windows.cmdline.CmdLine"),
+    ("Process discovery + lineage", "volatility3.plugins.windows.dlllist.DllList"),
+    ("Process discovery + lineage", "volatility3.plugins.windows.handles.Handles"),
+    ("Process discovery + lineage", "volatility3.plugins.windows.ldrmodules.LdrModules"),
+    ("Process discovery + lineage", "volatility3.plugins.windows.getsids.GetSIDs"),
+    ("Process discovery + lineage", "volatility3.plugins.windows.privileges.Privs"),
+    ("Process discovery + lineage", "volatility3.plugins.windows.sessions.Sessions"),
+    ("Process discovery + lineage", "volatility3.plugins.windows.envars.Envars"),
+    ("Process discovery + lineage", "volatility3.plugins.windows.vadinfo.VadInfo"),
+    ("Process discovery + lineage", "volatility3.plugins.windows.vadwalk.VadWalk"),
+
+    # ── Injection / hollowing / malware indicators ──
+    ("Injection / hollowing / malware", "volatility3.plugins.windows.malfind.Malfind"),
+    ("Injection / hollowing / malware", "volatility3.plugins.windows.hollowfind.Hollowfind"),
+    ("Injection / hollowing / malware", "volatility3.plugins.windows.hollowprocesses.HollowProcesses"),
+
+    # ── Persistence + drivers + kernel hooks ──
+    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.svcscan.SvcScan"),
+    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.mutantscan.MutantScan"),
+    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.modscan.ModScan"),
+    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.modules.Modules"),
+    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.callbacks.Callbacks"),
+    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.ssdt.SSDT"),
+    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.driverscan.DriverScan"),
+    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.drivermodule.DriverModule"),
+    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.driverirp.DriverIrp"),
+    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.devicetree.DeviceTree"),
+
+    # ── Network ──
+    ("Network", "volatility3.plugins.windows.netscan.NetScan"),
+    ("Network", "volatility3.plugins.windows.netstat.NetStat"),
+
+    # ── Credentials (bootkey-dependent) ──
+    ("Credentials (bootkey-dependent)", "volatility3.plugins.windows.hashdump.Hashdump"),
+    ("Credentials (bootkey-dependent)", "volatility3.plugins.windows.lsadump.Lsadump"),
+    ("Credentials (bootkey-dependent)", "volatility3.plugins.windows.cachedump.Cachedump"),
+
+    # ── Registry / execution history ──
+    ("Registry / execution history", "volatility3.plugins.windows.registry.userassist.UserAssist"),
+    ("Registry / execution history", "volatility3.plugins.windows.registry.printkey.PrintKey"),
+    ("Registry / execution history", "volatility3.plugins.windows.registry.hivelist.HiveList"),
+    ("Registry / execution history", "volatility3.plugins.windows.registry.hivescan.HiveScan"),
+    ("Registry / execution history", "volatility3.plugins.windows.registry.cmdline.CmdLine"),
+
+    # ── Filesystem ──
+    ("Filesystem", "volatility3.plugins.windows.filescan.FileScan"),
+    ("Filesystem", "volatility3.plugins.windows.mftscan.MFTScan"),
+    ("Filesystem", "volatility3.plugins.windows.mbrscan.MBRScan"),
+
+    # ── Profile / kernel info ──
+    ("Profile / kernel info", "volatility3.plugins.windows.info.Info"),
+    ("Profile / kernel info", "volatility3.plugins.windows.virtmap.VirtMap"),
+    ("Profile / kernel info", "volatility3.plugins.windows.statistics.Statistics"),
+    ("Profile / kernel info", "volatility3.plugins.windows.getservicesids.GetServiceSIDs"),
+    ("Profile / kernel info", "volatility3.plugins.windows.memmap.Memmap"),
+)
+
+
 # Per-plugin row cap used when assembling the LLM prompt.
 #
 # A Win10 dump's malfind/dlllist easily produce hundreds of rows; the

@@ -23,7 +23,12 @@ document.addEventListener('alpine:init', () => {
         // --------------------------------------------------------------
         // Inputs
         // --------------------------------------------------------------
-        mode: 'layered',          // 'layered' | 'yara' | 'plugin' — layered is default
+        // Blueprint picker — operator chooses which plugin set to run.
+        // Mode (layered/yara/plugin) is derived from this + includeYara
+        // at submit time, so the backend keeps its current 3-way schema.
+        // Blank = pipeline uses CURATED_PLUGINS fallback.
+        blueprintId: 'memory_layered_default',
+        includeYara: true,        // independent of blueprint — adds yarascan layer
         useLlm: true,             // operator checkbox — uncheck to skip LLM synthesis
         // Default case name: "Memory YYYY-MM-DD" so operators get a
         // sensible group out of the box without having to type one.
@@ -43,6 +48,8 @@ document.addEventListener('alpine:init', () => {
         // --------------------------------------------------------------
         clients: [],
         clientsLoadedAt: 0,
+        blueprints: [],
+        blueprintsLoadedAt: 0,
 
         // --------------------------------------------------------------
         // In-flight run state
@@ -66,7 +73,7 @@ document.addEventListener('alpine:init', () => {
         // Bootstrap
         // --------------------------------------------------------------
         async init() {
-            await this.refreshClients();
+            await Promise.all([this.refreshClients(), this.refreshBlueprints()]);
         },
 
         async refreshClients() {
@@ -76,6 +83,37 @@ document.addEventListener('alpine:init', () => {
                 this.clients = j.items || [];
                 this.clientsLoadedAt = Date.now();
             } catch (_) { this.clients = []; }
+        },
+
+        async refreshBlueprints() {
+            try {
+                const r = await fetch('/api/memory/blueprints');
+                const j = await r.json();
+                this.blueprints = j.items || j.blueprints || [];
+                this.blueprintsLoadedAt = Date.now();
+            } catch (_) { this.blueprints = []; }
+        },
+
+        // Look up the currently-selected blueprint object (so the UI
+        // can display its description + plugin count next to the
+        // dropdown without re-fetching).
+        selectedBlueprint() {
+            return this.blueprints.find(b => b.id === this.blueprintId) || null;
+        },
+
+        // Derive the backend `mode` field from (blueprint, includeYara).
+        // The backend schema still uses the 3-way mode; we just compute
+        // it here so the UI surfaces the cleaner blueprint + checkbox
+        // model the operator actually thinks in.
+        //
+        //   empty plugin_set            → "yara"      (YARA-only triage)
+        //   plugin_set + includeYara=t  → "layered"   (plugins + yara)
+        //   plugin_set + includeYara=f  → "plugin"    (plugins only)
+        derivedMode() {
+            const bp = this.selectedBlueprint();
+            const pluginSet = (bp && bp.settings && bp.settings.plugin_set) || [];
+            if (pluginSet.length === 0) return 'yara';
+            return this.includeYara ? 'layered' : 'plugin';
         },
 
         // --------------------------------------------------------------
@@ -121,7 +159,8 @@ document.addEventListener('alpine:init', () => {
                 const body = {
                     client_id: this.selectedClient,
                     client_name: c.hostname || null,
-                    mode: this.mode,
+                    blueprint_id: this.blueprintId || undefined,
+                    mode: this.derivedMode(),
                     use_llm: !!this.useLlm,
                     case_name: this.caseName || ('Memory ' + new Date().toISOString().split('T')[0]),
                 };
@@ -199,7 +238,8 @@ document.addEventListener('alpine:init', () => {
 
             const fd = new FormData();
             fd.append('file', this.uploadFile);
-            fd.append('mode', this.mode);
+            if (this.blueprintId) fd.append('blueprint_id', this.blueprintId);
+            fd.append('mode', this.derivedMode());
             fd.append('use_llm', this.useLlm ? 'true' : 'false');
             fd.append('case_name', this.caseName || ('Memory ' + new Date().toISOString().split('T')[0]));
             // No client_name for now — the operator can rename the
