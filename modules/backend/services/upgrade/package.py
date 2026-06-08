@@ -374,8 +374,14 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                 # (the branches API 404s for those), skip the
                 # resolution and fall through to the existing
                 # codeload-by-ref path.
+                # `resolved_ref` is what we pass to codeload (SHA when
+                # we can resolve the branch — bypasses the codeload
+                # stale-cache bug for moving refs). The manifest +
+                # VERSION-file stamp still uses the operator's input
+                # verbatim (`development`, `intact-20260604`, etc.) —
+                # operators don't want to see SHAs in the UI; they want
+                # "the latest development" to read as exactly that.
                 resolved_ref = version
-                display_version = version
                 branch_api_url = (
                     f"https://api.github.com/repos/{repo}/branches/{version}"
                 )
@@ -389,10 +395,10 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                     head_sha = (branch_data.get('commit') or {}).get('sha')
                     if head_sha:
                         resolved_ref = head_sha
-                        display_version = f"{version}@{head_sha[:7]}"
                         log(
-                            f"  Resolved branch '{version}' -> "
-                            f"{head_sha[:7]} (immutable snapshot)",
+                            f"  Branch '{version}' resolved to HEAD "
+                            f"{head_sha[:7]} for download (manifest "
+                            f"keeps '{version}')",
                             "info",
                         )
                 except urllib.error.HTTPError as e:
@@ -426,7 +432,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
 
                 log(
                     f"Downloading Intact.AI source from "
-                    f"github.com/{repo} @ '{display_version}'...",
+                    f"github.com/{repo} @ '{version}'...",
                     "info",
                 )
                 try:
@@ -519,36 +525,36 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                 except Exception:
                     pass
 
-                # Record the resolved identifier in the manifest. For
-                # branches: "development@abc1234" — the operator's
-                # input + the SHA they actually got. For tags / SHAs:
-                # the input verbatim (display_version == version).
-                manifest["versions"]["intact"] = display_version
+                # Record the operator's input verbatim in the manifest.
+                # `resolved_ref` (the SHA we actually downloaded) is
+                # captured separately in source_origin so the package
+                # is still traceable to a specific commit when needed,
+                # but the user-facing version string stays simple.
+                manifest["versions"]["intact"] = version
                 manifest["contents"]["include_source"] = True
                 manifest["contents"]["source_origin"] = (
                     f"github.com/{repo}@{resolved_ref}"
                 )
 
                 # Belt-and-suspenders: stamp the VERSION file inside the
-                # packaged source tree with the resolved identifier.
-                # The release-time GitHub Action keeps VERSION
-                # up-to-date on `development` — so on release tags this
-                # is usually a no-op overwrite. But it also covers cases
-                # the workflow can't (branches, commit SHAs, release
-                # tags from before the Action existed). When the apply
+                # packaged source tree with the operator's input. The
+                # release-time GitHub Action keeps VERSION up-to-date
+                # on `development` so on release tags this is usually
+                # a no-op overwrite. But it also covers cases the
+                # workflow can't (branches, commit SHAs, release tags
+                # from before the Action existed). When the apply
                 # step's `cp -a source/intact/* WORKDIR/` runs, this
                 # VERSION lands at the install root where
                 # get_current_versions reads it — operators see
-                # "development@abc1234" in the Settings page instead of
-                # a bare "development" that would be ambiguous about
-                # which commit is actually running.
+                # "development" or "intact-20260604" in the Settings
+                # page, matching what they typed in the modal.
                 try:
                     intact_source_root = f"{package_dir}/source/intact"
                     if os.path.isdir(intact_source_root):
                         version_file = f"{intact_source_root}/VERSION"
                         with open(version_file, "w") as vf:
-                            vf.write(display_version.strip() + "\n")
-                        log(f"  Stamped source/intact/VERSION -> {display_version}", "info")
+                            vf.write(version.strip() + "\n")
+                        log(f"  Stamped source/intact/VERSION -> {version}", "info")
                 except Exception as e:
                     log(f"  Could not stamp VERSION file: {e}", "warning")
 
