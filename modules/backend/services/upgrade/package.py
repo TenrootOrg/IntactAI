@@ -348,27 +348,95 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
 
                 import urllib.request
                 import urllib.error
+                import json as _json
                 import tarfile
 
                 repo = "TenrootOrg/IntactAI"
+
+                # If the operator typed a BRANCH name (`development`,
+                # `main`, a feature branch), resolve its current HEAD
+                # SHA via the GitHub branches API FIRST. Two reasons:
+                #
+                # 1. Codeload caches tarballs by ref. For branches —
+                #    which move — the cache can serve a stale or
+                #    truncated tarball captured before the latest
+                #    commit. We've hit this exact issue (memory note:
+                #    "push any commit to bust the per-SHA cache").
+                #    Downloading by resolved SHA bypasses the
+                #    branch-ref cache entirely.
+                #
+                # 2. The package becomes reproducible — the manifest
+                #    records the exact commit SHA shipped, so an
+                #    operator can correlate the apply log against
+                #    git history later.
+                #
+                # If `version` is already a release tag or commit SHA
+                # (the branches API 404s for those), skip the
+                # resolution and fall through to the existing
+                # codeload-by-ref path.
+                resolved_ref = version
+                display_version = version
+                branch_api_url = (
+                    f"https://api.github.com/repos/{repo}/branches/{version}"
+                )
+                try:
+                    req = urllib.request.Request(
+                        branch_api_url,
+                        headers={"Accept": "application/vnd.github+json"},
+                    )
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        branch_data = _json.load(resp)
+                    head_sha = (branch_data.get('commit') or {}).get('sha')
+                    if head_sha:
+                        resolved_ref = head_sha
+                        display_version = f"{version}@{head_sha[:7]}"
+                        log(
+                            f"  Resolved branch '{version}' -> "
+                            f"{head_sha[:7]} (immutable snapshot)",
+                            "info",
+                        )
+                except urllib.error.HTTPError as e:
+                    if e.code == 404:
+                        # Not a branch — could be a tag or SHA. Use
+                        # the operator's input verbatim. The codeload
+                        # call below will surface a clearer error if
+                        # the ref doesn't exist at all.
+                        pass
+                    else:
+                        log(
+                            f"  Branch resolution returned HTTP {e.code} "
+                            f"(continuing with raw ref): {e.reason}",
+                            "warning",
+                        )
+                except urllib.error.URLError as e:
+                    # GitHub API unreachable — try codeload directly.
+                    # If GitHub is fully down, codeload will fail with
+                    # a clearer error below.
+                    log(
+                        f"  Branch resolution skipped (network: {e}). "
+                        "Will try codeload with the ref as-is.",
+                        "warning",
+                    )
+
                 tar_url = (
-                    f"https://codeload.github.com/{repo}/tar.gz/{version}"
+                    f"https://codeload.github.com/{repo}/tar.gz/{resolved_ref}"
                 )
                 tar_path = f"{package_dir}/_intact_source.tar.gz"
                 extract_dir = f"{package_dir}/_intact_extracted"
 
                 log(
                     f"Downloading Intact.AI source from "
-                    f"github.com/{repo} @ '{version}'...",
+                    f"github.com/{repo} @ '{display_version}'...",
                     "info",
                 )
                 try:
                     urllib.request.urlretrieve(tar_url, tar_path)
                 except urllib.error.HTTPError as e:
                     raise RuntimeError(
-                        f"GitHub ref '{version}' not found at {repo} "
+                        f"GitHub ref '{resolved_ref}' not found at {repo} "
                         f"(HTTP {e.code}). Make sure the release tag exists "
-                        f"at https://github.com/{repo}/releases."
+                        f"at https://github.com/{repo}/releases — or if you "
+                        f"meant a branch, check it isn't deleted."
                     ) from e
                 except urllib.error.URLError as e:
                     raise RuntimeError(
@@ -451,29 +519,36 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                 except Exception:
                     pass
 
-                manifest["versions"]["intact"] = version
+                # Record the resolved identifier in the manifest. For
+                # branches: "development@abc1234" — the operator's
+                # input + the SHA they actually got. For tags / SHAs:
+                # the input verbatim (display_version == version).
+                manifest["versions"]["intact"] = display_version
                 manifest["contents"]["include_source"] = True
                 manifest["contents"]["source_origin"] = (
-                    f"github.com/{repo}@{version}"
+                    f"github.com/{repo}@{resolved_ref}"
                 )
 
                 # Belt-and-suspenders: stamp the VERSION file inside the
-                # packaged source tree with the GitHub ref the operator
-                # typed. The release-time GitHub Action keeps VERSION
+                # packaged source tree with the resolved identifier.
+                # The release-time GitHub Action keeps VERSION
                 # up-to-date on `development` — so on release tags this
                 # is usually a no-op overwrite. But it also covers cases
                 # the workflow can't (branches, commit SHAs, release
                 # tags from before the Action existed). When the apply
                 # step's `cp -a source/intact/* WORKDIR/` runs, this
                 # VERSION lands at the install root where
-                # get_current_versions reads it.
+                # get_current_versions reads it — operators see
+                # "development@abc1234" in the Settings page instead of
+                # a bare "development" that would be ambiguous about
+                # which commit is actually running.
                 try:
                     intact_source_root = f"{package_dir}/source/intact"
                     if os.path.isdir(intact_source_root):
                         version_file = f"{intact_source_root}/VERSION"
                         with open(version_file, "w") as vf:
-                            vf.write(version.strip() + "\n")
-                        log(f"  Stamped source/intact/VERSION -> {version}", "info")
+                            vf.write(display_version.strip() + "\n")
+                        log(f"  Stamped source/intact/VERSION -> {display_version}", "info")
                 except Exception as e:
                     log(f"  Could not stamp VERSION file: {e}", "warning")
 
