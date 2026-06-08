@@ -68,7 +68,7 @@ def get_upgrade_status():
         latest = get_latest_versions()
 
         versions = {}
-        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure', 'intact']:
+        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure', 'volweb', 'intact']:
             versions[module] = {
                 'latest': latest.get(module, 'unknown')
             }

@@ -827,9 +827,12 @@ document.addEventListener('alpine:init', () => {
                             return;
                         }
                         const ver = data.versions[m.id];
-                        if (ver) {
-                            m.targetVersion = ver.latest || m.fallback;
-                        }
+                        // Fall through to the module's own `fallback` even
+                        // when the API has no entry for it (e.g. a newer
+                        // module whose backend version-map hasn't been
+                        // updated yet). Without this, the textbox shows
+                        // an empty value and the operator has to guess.
+                        m.targetVersion = (ver && ver.latest) || m.fallback;
                     });
                 } else {
                     // Use fallback versions

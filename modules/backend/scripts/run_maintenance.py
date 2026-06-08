@@ -3,6 +3,7 @@
 Run maintenance tasks directly (no workflow creation).
 Used by install.sh to run maintenance during installation.
 """
+import subprocess
 import sys
 sys.path.insert(0, '/app')
 
@@ -18,40 +19,65 @@ def log(msg, level="info"):
     print(f"{prefix.get(level, '[INFO]')} {msg}", flush=True)
 
 
+def container_running(name):
+    """Return True when an optional module container is currently running."""
+    try:
+        result = subprocess.run(
+            [
+                "docker", "ps",
+                "--filter", f"name=^{name}$",
+                "--filter", "status=running",
+                "--format", "{{.Names}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return False
+    return name in {line.strip() for line in result.stdout.splitlines()}
+
+
 def main():
     """Run maintenance tasks."""
     log("Starting maintenance tasks...")
     print("", flush=True)
 
+    velociraptor_available = container_running('intact_velociraptor')
+    elk_available = container_running('intact_kibana')
+
     # =========================================================================
     # Task 1: Import Velociraptor artifacts
     # =========================================================================
     log("Task 1/4: Importing Velociraptor artifacts...")
-    try:
-        from services.velociraptor_init_service import initialize_velociraptor_artifacts
-        results = initialize_velociraptor_artifacts()
-        if results:
-            success_list = results.get('success', [])
-            failed_list = results.get('failed', [])
-            success = len(success_list)
-            failed = len(failed_list)
+    if not velociraptor_available:
+        log("Artifacts: skipped (Velociraptor module not installed/running)", "info")
+    else:
+        try:
+            from services.velociraptor_init_service import initialize_velociraptor_artifacts
+            results = initialize_velociraptor_artifacts()
+            if results:
+                success_list = results.get('success', [])
+                failed_list = results.get('failed', [])
+                success = len(success_list)
+                failed = len(failed_list)
 
-            # Show imported artifacts
-            for artifact in success_list[:5]:  # Show first 5
-                log(f"  + {artifact}", "success")
-            if success > 5:
-                log(f"  ... and {success - 5} more", "info")
+                # Show imported artifacts
+                for artifact in success_list[:5]:  # Show first 5
+                    log(f"  + {artifact}", "success")
+                if success > 5:
+                    log(f"  ... and {success - 5} more", "info")
 
-            if failed > 0:
-                for artifact in failed_list[:3]:
-                    log(f"  - {artifact}", "warning")
+                if failed > 0:
+                    for artifact in failed_list[:3]:
+                        log(f"  - {artifact}", "warning")
 
-            log(f"Artifacts: {success} imported, {failed} failed",
-                "success" if success > 0 else "info")
-        else:
-            log("No new artifacts to import (already up to date)", "info")
-    except Exception as e:
-        log(f"Artifact import error: {e}", "warning")
+                log(f"Artifacts: {success} imported, {failed} failed",
+                    "success" if success > 0 else "info")
+            else:
+                log("No new artifacts to import (already up to date)", "info")
+        except Exception as e:
+            log(f"Artifact import error: {e}", "warning")
 
     print("", flush=True)
 
@@ -59,32 +85,35 @@ def main():
     # Task 2: Download tools and configure inventory
     # =========================================================================
     log("Task 2/4: Downloading tools...")
-    try:
-        from services.tools_download_service import download_and_configure_tools
+    if not velociraptor_available:
+        log("Tools: skipped (Velociraptor inventory target not installed/running)", "info")
+    else:
+        try:
+            from services.tools_download_service import download_and_configure_tools
 
-        def tool_logger(msg, level="info"):
-            # Indent tool download messages
-            log(f"  {msg}", level)
+            def tool_logger(msg, level="info"):
+                # Indent tool download messages
+                log(f"  {msg}", level)
 
-        results = download_and_configure_tools(logger=tool_logger)
+            results = download_and_configure_tools(logger=tool_logger)
 
-        if results.get('success'):
-            dl = results.get('download_results', {})
-            downloaded = len(dl.get('downloaded', []))
-            existed = len(dl.get('already_exists', []))
-            dl_failed = len(dl.get('failed', []))
+            if results.get('success'):
+                dl = results.get('download_results', {})
+                downloaded = len(dl.get('downloaded', []))
+                existed = len(dl.get('already_exists', []))
+                dl_failed = len(dl.get('failed', []))
 
-            inv = results.get('inventory_results', {})
-            configured = len(inv.get('configured', []))
+                inv = results.get('inventory_results', {})
+                configured = len(inv.get('configured', []))
 
-            log(f"Tools: {downloaded} downloaded, {existed} existed, {dl_failed} failed",
-                "success" if downloaded > 0 or existed > 0 else "info")
-            if configured > 0:
-                log(f"Inventory: {configured} tools configured", "success")
-        else:
-            log(f"Tool download issue: {results.get('error', 'unknown')}", "warning")
-    except Exception as e:
-        log(f"Tool download error: {e}", "warning")
+                log(f"Tools: {downloaded} downloaded, {existed} existed, {dl_failed} failed",
+                    "success" if downloaded > 0 or existed > 0 else "info")
+                if configured > 0:
+                    log(f"Inventory: {configured} tools configured", "success")
+            else:
+                log(f"Tool download issue: {results.get('error', 'unknown')}", "warning")
+        except Exception as e:
+            log(f"Tool download error: {e}", "warning")
 
     print("", flush=True)
 
@@ -92,14 +121,17 @@ def main():
     # Task 3: Create Kibana data view for Velociraptor artifacts
     # =========================================================================
     log("Task 3/4: Setting up Kibana data view...")
-    try:
-        # Kibana serves HTTPS (self-signed); the shared helper handles the
-        # scheme + idempotent create. Same helper the ELK upgrade calls so the
-        # data view is re-ensured after an upgrade.
-        from services.kibana_init import ensure_kibana_data_view
-        ensure_kibana_data_view(log, wait=False)
-    except Exception as e:
-        log(f"  Kibana: {str(e)[:50]}", "info")
+    if not elk_available:
+        log("Kibana data view: skipped (ELK/Kibana module not installed/running)", "info")
+    else:
+        try:
+            # Kibana serves HTTPS (self-signed); the shared helper handles the
+            # scheme + idempotent create. Same helper the ELK upgrade calls so the
+            # data view is re-ensured after an upgrade.
+            from services.kibana_init import ensure_kibana_data_view
+            ensure_kibana_data_view(log, wait=False)
+        except Exception as e:
+            log(f"  Kibana: {str(e)[:50]}", "info")
 
     print("", flush=True)
 
@@ -110,31 +142,38 @@ def main():
     health_ok = True
 
     # Check Velociraptor connection
-    try:
-        from services.velociraptor_service import setup_velociraptor_connection
-        channel = setup_velociraptor_connection()
-        if channel:
-            log("  Velociraptor: Connected", "success")
-            channel.close()
-        else:
-            log("  Velociraptor: Connection failed", "warning")
+    if not velociraptor_available:
+        log("  Velociraptor: skipped (module not installed/running)", "info")
+    else:
+        try:
+            from services.velociraptor_service import setup_velociraptor_connection
+            channel = setup_velociraptor_connection()
+            if channel:
+                log("  Velociraptor: Connected", "success")
+                channel.close()
+            else:
+                log("  Velociraptor: Connection failed", "warning")
+                health_ok = False
+        except Exception as e:
+            log(f"  Velociraptor: {str(e)[:50]}", "warning")
             health_ok = False
-    except Exception as e:
-        log(f"  Velociraptor: {str(e)[:50]}", "warning")
-        health_ok = False
 
     # Check Elasticsearch
-    try:
-        import requests
-        es_response = requests.get("http://intact_elasticsearch:9200/_cluster/health", timeout=5)
-        if es_response.status_code == 200:
-            status = es_response.json().get('status', 'unknown')
-            log(f"  Elasticsearch: {status}",
-                "success" if status in ['green', 'yellow'] else "warning")
-        else:
-            log("  Elasticsearch: Unhealthy", "warning")
-    except Exception:
-        log("  Elasticsearch: Not reachable (may be disabled)", "info")
+    if not elk_available:
+        log("  Elasticsearch: skipped (ELK module not installed/running)", "info")
+    else:
+        try:
+            import requests
+            es_response = requests.get("http://intact_elasticsearch:9200/_cluster/health", timeout=5)
+            if es_response.status_code == 200:
+                status = es_response.json().get('status', 'unknown')
+                log(f"  Elasticsearch: {status}",
+                    "success" if status in ['green', 'yellow'] else "warning")
+            else:
+                log("  Elasticsearch: Unhealthy", "warning")
+        except Exception:
+            log("  Elasticsearch: Not reachable", "warning")
+            health_ok = False
 
     # Check database
     try:

@@ -27,6 +27,67 @@ UNHEALTHY_MODULES=()
 # this surfaces them at the end where they can't be missed.
 INSTALL_WARNINGS=()
 INSTALL_ERRORS=()
+declare -A INSTALL_ISSUE_SEEN=()
+
+record_install_issue() {
+    local severity="$1"
+    local source="${2:-?}"
+    local message="${3:-}"
+
+    [[ -z "$message" ]] && return 0
+
+    local key="${severity}|${source}|${message}"
+    if [[ -n "${INSTALL_ISSUE_SEEN[$key]:-}" ]]; then
+        return 0
+    fi
+    INSTALL_ISSUE_SEEN["$key"]=1
+
+    case "$severity" in
+        error)
+            INSTALL_ERRORS+=("$(date '+%H:%M:%S') ${source}: ${message}")
+            ;;
+        warn|warning)
+            INSTALL_WARNINGS+=("$(date '+%H:%M:%S') ${source}: ${message}")
+            ;;
+    esac
+}
+
+record_child_output_issue() {
+    local source="${1:-child-process}"
+    local line="${2:-}"
+    [[ -z "$line" ]] && return 0
+
+    local clean message
+    clean=$(printf '%s\n' "$line" | sed -E 's/\x1b\[[0-9;]*m//g; s/\r$//; s/^[[:space:]]+//')
+    message=$(printf '%s\n' "$clean" | sed -E 's/^([[:space:]]*\[[^]]+\][[:space:]]*)+//; s/^[[:space:]]+//')
+    [[ -z "$message" ]] && return 0
+
+    if [[ "$clean" == *"[ERROR]"* ]] \
+        || [[ "$message" == *"✗ Error:"* ]] \
+        || [[ "$message" == *"No such container:"* ]] \
+        || [[ "$message" == *"Failed to copy config:"* ]] \
+        || [[ "$message" == *"Failed to connect to Velociraptor"* ]]; then
+        record_install_issue "error" "$source" "$message"
+    elif [[ "$clean" == *"[WARN]"* ]] \
+        || [[ "$message" == *"WARNING:"* ]] \
+        || [[ "$message" == *"Connection failed"* ]] \
+        || [[ "$message" == *"Max retries exceeded"* ]] \
+        || [[ "$message" =~ Download[[:space:]]complete:.*[[:space:]][1-9][0-9]*[[:space:]]failed ]] \
+        || [[ "$message" =~ Tools:.*[[:space:]][1-9][0-9]*[[:space:]]failed ]]; then
+        record_install_issue "warn" "$source" "$message"
+    fi
+}
+
+scan_child_output_for_issues() {
+    local source="${1:-child-process}"
+    local output_file="${2:-}"
+    [[ -n "$output_file" && -s "$output_file" ]] || return 0
+
+    local line
+    while IFS= read -r line; do
+        record_child_output_issue "$source" "$line"
+    done < "$output_file"
+}
 
 # ============================================================================
 # Logging Functions
@@ -50,14 +111,14 @@ log_warn() {
     echo "$msg" >> "$LOG_FILE"
     # Track for end-of-install ATTENTION report. Caller ${FUNCNAME[1]}
     # tells the operator which install step produced the warning.
-    INSTALL_WARNINGS+=("$(date '+%H:%M:%S') ${FUNCNAME[1]:-?}: $1")
+    record_install_issue "warn" "${FUNCNAME[1]:-?}" "$1"
 }
 
 log_error() {
     local msg="[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $1"
     echo -e "${RED}[ERROR]${NC} $1"
     echo "$msg" >> "$LOG_FILE"
-    INSTALL_ERRORS+=("$(date '+%H:%M:%S') ${FUNCNAME[1]:-?}: $1")
+    record_install_issue "error" "${FUNCNAME[1]:-?}" "$1"
 }
 
 # Append a tail of each named container's logs to INSTALL_ERRORS so the

@@ -665,6 +665,7 @@ def ensure_offline_collector_binaries(downloads_dir: str, logger: Callable = Non
     import glob as _glob
 
     results = {"already_exists": [], "missing": []}
+    min_size = 1 * 1024 * 1024
 
     # platform_label -> filename suffix glob
     platforms = {
@@ -679,7 +680,7 @@ def ensure_offline_collector_binaries(downloads_dir: str, logger: Callable = Non
         matches = [
             p for p in _glob.glob(pattern)
             if os.path.isfile(p)
-            and os.path.getsize(p) > 0
+            and os.path.getsize(p) >= min_size
             and not p.endswith(".sig")
         ]
         if matches:

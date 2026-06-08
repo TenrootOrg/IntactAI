@@ -331,6 +331,12 @@ def get_latest_versions() -> Dict:
         'aws':          'aws_prowler',
         'azure':        'azure_dfir_o365rc',
         'intact':       'backend',
+        # VolWeb backend image (memory-forensics analysis stack).
+        # config.yaml ships 4 volweb_* pins (backend, frontend,
+        # postgres, redis); the prepare-modal version textbox drives
+        # the backend image tag which is the one operators actually
+        # bump release-to-release.
+        'volweb':       'volweb_backend',
     }
     fallback = {
         'elk': '9.3.3',
@@ -341,6 +347,7 @@ def get_latest_versions() -> Dict:
         'aws': '5.28.1',
         'azure': 'latest',
         'intact': '1.0.0',
+        'volweb': 'latest',
     }
 
     # config.yaml lives at the repo root, which is mounted at WORKDIR

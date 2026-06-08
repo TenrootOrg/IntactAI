@@ -506,6 +506,7 @@ download_offline_collector_binaries() {
                 log_success "  Downloaded: $binary"
                 ((downloaded++))
             else
+                rm -f "$dest_path"
                 log_warn "  Failed to download: $binary"
             fi
         fi
@@ -525,6 +526,7 @@ download_offline_collector_binaries() {
             log_error "Offline-Collector binary missing or undersized: $binary"
             log_error "  Expected ≥1 MB at $p — got $sz bytes (real binaries are 65-85 MB)"
             log_error "  Manual fix: curl -fsSL ${base_url}/${binary} -o $p && chmod +x $p"
+            rm -f "$p"
             ((missing++))
         fi
     done
@@ -725,6 +727,7 @@ download_legacy_velociraptor_binaries() {
                 log_success "  Downloaded: $binary"
                 ((downloaded++))
             else
+                rm -f "$dest_path"
                 log_warn "  Failed to download: $binary (legacy support for that OS will require online mode)"
             fi
         fi
@@ -743,6 +746,7 @@ download_legacy_velociraptor_binaries() {
         [[ -f "$p" ]] && sz=$(stat -c%s "$p" 2>/dev/null || echo 0)
         if [[ ! -s "$p" ]] || (( sz < min_size )); then
             log_warn "Legacy Velociraptor: ${label} binary missing/undersized at $p ($sz bytes)."
+            rm -f "$p"
             log_warn "  Manual fix: curl -fsSL ${base_url}/${fname} -o $p"
         else
             log_success "Legacy Velociraptor (v${legacy_version}): ${label} binary ready ($(numfmt --to=iec $sz))"

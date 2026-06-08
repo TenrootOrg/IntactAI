@@ -24,14 +24,18 @@ options:
   check_module_updates: false
 
 modules:
-  agentic:
-    enabled: true
+  # agentic is a core capability — always installed, always
+  # available. No enabled toggle; the agentic forensics pipeline,
+  # DFIR skills refresh, and interactive-chat features all run
+  # regardless of config.
   aws:
     enabled: true
   azure:
     enabled: true
-  cve_scan:
-    enabled: true
+  # cve_scan is a core capability — always installed, always
+  # available. No enabled toggle; the CPE dictionary + local CVE
+  # mirror refresh during every Maintenance run regardless of
+  # config.
   memory:
     enabled: true
   elk:

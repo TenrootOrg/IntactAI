@@ -54,8 +54,6 @@ def _load_llm_config():
 @agentic_bp.route('/api/agentic/run', methods=['POST'])
 def start_agentic_run():
     """Start a full agentic forensics pipeline"""
-    if not is_module_enabled('agentic'):
-        return jsonify({"error": "Agentic module is not enabled. Enable it in config.yaml and rebuild the backend."}), 400
     try:
         data = request.get_json()
         blueprint_id = data.get('blueprint_id')
@@ -230,8 +228,6 @@ def start_agentic_run():
 @agentic_bp.route('/api/agentic/analyze-existing', methods=['POST'])
 def analyze_existing_collection():
     """Run AI analysis on an existing Velociraptor flow or hunt (skip collection step)"""
-    if not is_module_enabled('agentic'):
-        return jsonify({"error": "Agentic module is not enabled. Enable it in config.yaml and rebuild the backend."}), 400
     try:
         data = request.get_json()
         # `flow_id` may arrive as a single string (legacy single-flow run),
@@ -549,8 +545,6 @@ def get_agentic_chat(run_id):
 def post_agentic_chat(run_id):
     """Append an operator message, get an assistant reply (single-turn LLM
     call with prior history flattened into the prompt), persist both."""
-    if not is_module_enabled('agentic'):
-        return jsonify({"error": "Agentic module is not enabled."}), 400
     try:
         run = get_automation_run(run_id)
         if not run:
@@ -591,8 +585,6 @@ def synthesize_agentic_chat(run_id):
     """Compress the chat into a structured master prompt. Persisted to
     workflow.details.master_prompt so the operator can edit it before
     triggering the re-run."""
-    if not is_module_enabled('agentic'):
-        return jsonify({"error": "Agentic module is not enabled."}), 400
     try:
         run = get_automation_run(run_id)
         if not run:
@@ -911,8 +903,6 @@ def rerun_agentic(run_id):
         master prompt as a system-prompt prefix. Expensive; use when the
         operator's corrections need to influence individual artifact
         analyses (not just the final synthesis)."""
-    if not is_module_enabled('agentic'):
-        return jsonify({"error": "Agentic module is not enabled."}), 400
     try:
         run = get_automation_run(run_id)
         if not run:

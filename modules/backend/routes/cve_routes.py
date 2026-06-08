@@ -230,12 +230,10 @@ def base_lower_ok(name: str) -> bool:
 
 
 def _module_check():
-    """If the cve_scan module is disabled in config.yaml, the routes
-    return a 400 rather than executing. Mirrors the existing
-    `is_module_enabled('agentic')` / `is_module_enabled('aws')`
-    gates."""
-    if not is_module_enabled('cve_scan'):
-        return jsonify({'error': 'CVE Scan module is not enabled in config.yaml.'}), 400
+    """CVE Scan is a core capability — always installed, always
+    available. No config.yaml gate. This stub stays so the existing
+    `gate = _module_check(); if gate: return gate` pattern at every
+    CVE route call site keeps working without per-endpoint edits."""
     return None
 
 

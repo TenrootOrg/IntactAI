@@ -4,6 +4,7 @@ Maintenance Routes - System maintenance and tool management endpoints
 """
 
 from flask import Blueprint, jsonify, request
+import subprocess
 import threading
 
 from services import (
@@ -12,8 +13,28 @@ from services import (
     update_run_status
 )
 from services.velociraptor_init_service import initialize_velociraptor_artifacts
+from config import is_module_enabled
 
 maintenance_bp = Blueprint('maintenance', __name__)
+
+
+def container_running(name):
+    """Return True when an optional module container is currently running."""
+    try:
+        result = subprocess.run(
+            [
+                "docker", "ps",
+                "--filter", f"name=^{name}$",
+                "--filter", "status=running",
+                "--format", "{{.Names}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return False
+    return name in {line.strip() for line in result.stdout.splitlines()}
 
 
 @maintenance_bp.route('/api/maintenance/run', methods=['POST'])
@@ -44,25 +65,28 @@ def run_system_maintenance():
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
                 update_run_status(run_id, "running", progress=10)
 
-                add_log_to_run(run_id, "Importing artifacts (Exchange, DetectRaptor, TenRoot custom)...", "info")
-                import_results = initialize_velociraptor_artifacts()
-
-                if import_results:
-                    success_count = len(import_results.get('success', []))
-                    failed_count = len(import_results.get('failed', []))
-
-                    for artifact in import_results.get('success', []):
-                        add_log_to_run(run_id, f"  ✓ {artifact}", "success")
-
-                    for artifact in import_results.get('failed', []):
-                        add_log_to_run(run_id, f"  ✗ {artifact}", "warning")
-
-                    if success_count > 0:
-                        add_log_to_run(run_id, f"Artifact import complete: {success_count} succeeded, {failed_count} failed", "success")
-                    else:
-                        add_log_to_run(run_id, "No new artifacts to import (already up to date)", "info")
+                if not container_running('intact_velociraptor'):
+                    add_log_to_run(run_id, "Artifact import skipped: intact_velociraptor is not running", "info")
                 else:
-                    add_log_to_run(run_id, "Artifact import returned no results", "warning")
+                    add_log_to_run(run_id, "Importing artifacts (Exchange, DetectRaptor, TenRoot custom)...", "info")
+                    import_results = initialize_velociraptor_artifacts()
+
+                    if import_results:
+                        success_count = len(import_results.get('success', []))
+                        failed_count = len(import_results.get('failed', []))
+
+                        for artifact in import_results.get('success', []):
+                            add_log_to_run(run_id, f"  ✓ {artifact}", "success")
+
+                        for artifact in import_results.get('failed', []):
+                            add_log_to_run(run_id, f"  ✗ {artifact}", "warning")
+
+                        if success_count > 0:
+                            add_log_to_run(run_id, f"Artifact import complete: {success_count} succeeded, {failed_count} failed", "success")
+                        else:
+                            add_log_to_run(run_id, "No new artifacts to import (already up to date)", "info")
+                    else:
+                        add_log_to_run(run_id, "Artifact import returned no results", "warning")
 
                 update_run_status(run_id, "running", progress=25)
 
@@ -74,36 +98,39 @@ def run_system_maintenance():
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
                 update_run_status(run_id, "running", progress=30)
 
-                try:
-                    from services.tools_download_service import download_and_configure_tools
+                if not container_running('intact_velociraptor'):
+                    add_log_to_run(run_id, "Tool download skipped: intact_velociraptor is not running", "info")
+                else:
+                    try:
+                        from services.tools_download_service import download_and_configure_tools
 
-                    tool_results = download_and_configure_tools(
-                        logger=lambda msg, level="info": add_log_to_run(run_id, msg, level),
-                        run_id=run_id,
-                    )
+                        tool_results = download_and_configure_tools(
+                            logger=lambda msg, level="info": add_log_to_run(run_id, msg, level),
+                            run_id=run_id,
+                        )
 
-                    if tool_results.get('success'):
-                        # Download results
-                        dl_results = tool_results.get('download_results', {})
-                        downloaded = len(dl_results.get('downloaded', []))
-                        existed = len(dl_results.get('already_exists', []))
-                        dl_failed = len(dl_results.get('failed', []))
+                        if tool_results.get('success'):
+                            # Download results
+                            dl_results = tool_results.get('download_results', {})
+                            downloaded = len(dl_results.get('downloaded', []))
+                            existed = len(dl_results.get('already_exists', []))
+                            dl_failed = len(dl_results.get('failed', []))
 
-                        # Inventory results
-                        inv_results = tool_results.get('inventory_results', {})
-                        configured = len(inv_results.get('configured', []))
-                        already_served = len(inv_results.get('already_served', []))
-                        not_found = len(inv_results.get('file_not_found', []))
+                            # Inventory results
+                            inv_results = tool_results.get('inventory_results', {})
+                            configured = len(inv_results.get('configured', []))
+                            already_served = len(inv_results.get('already_served', []))
+                            not_found = len(inv_results.get('file_not_found', []))
 
-                        add_log_to_run(run_id, f"Tool download: {downloaded} new, {existed} existed, {dl_failed} failed", "success" if downloaded > 0 or existed > 0 else "info")
-                        add_log_to_run(run_id, f"Inventory config: {configured} configured, {already_served} already served, {not_found} not found", "success" if configured > 0 else "info")
-                    else:
-                        add_log_to_run(run_id, f"Tool download had issues: {tool_results.get('error', 'unknown')}", "warning")
+                            add_log_to_run(run_id, f"Tool download: {downloaded} new, {existed} existed, {dl_failed} failed", "success" if downloaded > 0 or existed > 0 else "info")
+                            add_log_to_run(run_id, f"Inventory config: {configured} configured, {already_served} already served, {not_found} not found", "success" if configured > 0 else "info")
+                        else:
+                            add_log_to_run(run_id, f"Tool download had issues: {tool_results.get('error', 'unknown')}", "warning")
 
-                except Exception as e:
-                    add_log_to_run(run_id, f"Tool download error: {str(e)}", "warning")
-                    import traceback
-                    traceback.print_exc()
+                    except Exception as e:
+                        add_log_to_run(run_id, f"Tool download error: {str(e)}", "warning")
+                        import traceback
+                        traceback.print_exc()
 
                 # =========================================================
                 # Task 2.5: Refresh LLM model catalogs (5%)
@@ -166,6 +193,10 @@ def run_system_maintenance():
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
                 update_run_status(run_id, "running", progress=62)
 
+                # Agentic is a core capability — DFIR skills always
+                # refresh during maintenance, regardless of any config
+                # flag. agentic has no enabled toggle in config.yaml
+                # (always installed, always available).
                 try:
                     from services.skills_download_service import refresh_skills
                     skills_result = refresh_skills(
@@ -206,6 +237,12 @@ def run_system_maintenance():
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
                 add_log_to_run(run_id, "TASK 3.5/4: Refresh CVE Scan databases (CPE dict + local CVE mirror)", "info")
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
+
+                # CVE Scan is a core capability — its CPE dictionary +
+                # local CVE mirror always refresh during maintenance,
+                # regardless of any config flag. cve_scan has no
+                # enabled toggle in config.yaml (always installed,
+                # always available).
 
                 # --- 3.5a: CPE dictionary ---
                 try:
@@ -274,34 +311,40 @@ def run_system_maintenance():
                 health_issues = []
 
                 # Check Velociraptor connection
-                try:
-                    from services.velociraptor_service import setup_velociraptor_connection
-                    channel = setup_velociraptor_connection()
-                    if channel:
-                        add_log_to_run(run_id, "  ✓ Velociraptor: Connected", "success")
-                        channel.close()
-                    else:
-                        add_log_to_run(run_id, "  ✗ Velociraptor: Connection failed", "error")
+                if not container_running('intact_velociraptor'):
+                    add_log_to_run(run_id, "  Velociraptor: skipped (container not running)", "info")
+                else:
+                    try:
+                        from services.velociraptor_service import setup_velociraptor_connection
+                        channel = setup_velociraptor_connection()
+                        if channel:
+                            add_log_to_run(run_id, "  ✓ Velociraptor: Connected", "success")
+                            channel.close()
+                        else:
+                            add_log_to_run(run_id, "  ✗ Velociraptor: Connection failed", "error")
+                            health_issues.append("Velociraptor")
+                    except Exception as e:
+                        add_log_to_run(run_id, f"  ✗ Velociraptor: {str(e)[:50]}", "error")
                         health_issues.append("Velociraptor")
-                except Exception as e:
-                    add_log_to_run(run_id, f"  ✗ Velociraptor: {str(e)[:50]}", "error")
-                    health_issues.append("Velociraptor")
 
                 update_run_status(run_id, "running", progress=85)
 
                 # Check Elasticsearch
-                try:
-                    import requests
-                    es_response = requests.get("http://intact_elasticsearch:9200/_cluster/health", timeout=5)
-                    if es_response.status_code == 200:
-                        es_health = es_response.json()
-                        status = es_health.get('status', 'unknown')
-                        add_log_to_run(run_id, f"  ✓ Elasticsearch: {status}", "success" if status in ['green', 'yellow'] else "warning")
-                    else:
-                        add_log_to_run(run_id, "  ✗ Elasticsearch: Unhealthy", "warning")
-                        health_issues.append("Elasticsearch")
-                except Exception as e:
-                    add_log_to_run(run_id, f"  ⚠ Elasticsearch: Not reachable", "warning")
+                if not container_running('intact_elasticsearch'):
+                    add_log_to_run(run_id, "  Elasticsearch: skipped (container not running)", "info")
+                else:
+                    try:
+                        import requests
+                        es_response = requests.get("http://intact_elasticsearch:9200/_cluster/health", timeout=5)
+                        if es_response.status_code == 200:
+                            es_health = es_response.json()
+                            status = es_health.get('status', 'unknown')
+                            add_log_to_run(run_id, f"  ✓ Elasticsearch: {status}", "success" if status in ['green', 'yellow'] else "warning")
+                        else:
+                            add_log_to_run(run_id, "  ✗ Elasticsearch: Unhealthy", "warning")
+                            health_issues.append("Elasticsearch")
+                    except Exception as e:
+                        add_log_to_run(run_id, f"  ⚠ Elasticsearch: Not reachable", "warning")
 
                 update_run_status(run_id, "running", progress=95)
 
@@ -476,6 +519,12 @@ def download_velociraptor_tools():
 
         def run_download():
             try:
+                if not container_running('intact_velociraptor'):
+                    msg = "Tool download skipped: intact_velociraptor is not running"
+                    add_log_to_run(run_id, msg, "info")
+                    update_run_status(run_id, "completed", progress=100)
+                    return
+
                 result = download_and_configure_tools(
                     logger=lambda msg, level="info": add_log_to_run(run_id, msg, level),
                     run_id=run_id,

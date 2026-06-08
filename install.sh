@@ -55,6 +55,7 @@ main() {
     check_initialization_marker
     check_ubuntu
     check_config
+    print_installation_config_summary
     if ! check_network_connectivity; then
         log_error "Network connectivity check failed - aborting installation"
         exit 1
@@ -105,23 +106,41 @@ main() {
     # -------------------------------------------------------------------------
     # Timeline Processing (Plaso/Timesketch) - Air-gap Support
     # -------------------------------------------------------------------------
-    pull_plaso_image
-    pull_python_alpine_image
-    download_timesketch_packages
+    local timesketch_enabled
+    timesketch_enabled=$(read_config "['modules']['timesketch']['enabled']")
+    if is_enabled "$timesketch_enabled"; then
+        pull_plaso_image
+        pull_python_alpine_image
+        download_timesketch_packages
+    else
+        log_info "Timeline Processing pre-downloads: SKIPPED (TimeSketch disabled)"
+    fi
 
     # -------------------------------------------------------------------------
     # Forensic Collection (Velociraptor/Offline Collector) - Air-gap Support
     # -------------------------------------------------------------------------
-    download_offline_collector_binaries
-    download_legacy_velociraptor_binaries
-    create_velociraptor_collector
-    pull_velociraptor_base_image
+    local velociraptor_enabled
+    velociraptor_enabled=$(read_config "['modules']['velociraptor']['enabled']")
+    if is_enabled "$velociraptor_enabled"; then
+        download_offline_collector_binaries
+        download_legacy_velociraptor_binaries
+        create_velociraptor_collector
+        pull_velociraptor_base_image
+    else
+        log_info "Velociraptor/offline-collector pre-downloads: SKIPPED (Velociraptor disabled)"
+    fi
 
     # -------------------------------------------------------------------------
     # IRIS — pre-pull all runtime images so compose up doesn't depend on the
     # registry being reachable mid-deploy.
     # -------------------------------------------------------------------------
-    pull_iris_images
+    local iris_enabled
+    iris_enabled=$(read_config "['modules']['iris']['enabled']")
+    if is_enabled "$iris_enabled"; then
+        pull_iris_images
+    else
+        log_info "IRIS image pre-pull: SKIPPED (IRIS disabled)"
+    fi
 
     # -------------------------------------------------------------------------
     # Azure Security Tools (SIGMA Rules + DFIR-O365RC)
