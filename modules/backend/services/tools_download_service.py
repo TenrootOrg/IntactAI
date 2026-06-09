@@ -67,22 +67,104 @@ def _warn_dangling_inventory_refs(cfg: Dict, config_path: str) -> None:
         'osquery_tools', 'network_tools', 'linux_tools', 'optional_large',
     ]
 
-    # Strip trailing "-1.2.3", "_v0.7", "-rev2", and similar so
-    # version-pinned tool_names like "Hayabusa-2.14.0" reduce to
-    # "hayabusa" and match the generic "Hayabusa" download entry.
-    _VER_SUFFIX = re.compile(r'[-_](?:v?\d+(?:\.\d+)*|\d+).*$', re.IGNORECASE)
+    # Match inventory entries to download entries via three signals,
+    # any of which counts as "this inventory entry has a download path":
+    #
+    #   1. Bidirectional pattern matching — generate a synthetic
+    #      filename from the inventory's `file_pattern` and test against
+    #      every download's URL/filename/pattern; AND, in reverse,
+    #      generate filenames from each download (URL last-segment,
+    #      `filename` field, or pattern→sample) and test against the
+    #      inventory's `file_pattern` regex. Either-direction match
+    #      counts.
+    #
+    #   2. Tool-name substring after normalization (lowercase, alnum
+    #      only). Catches cases like inventory `Autorun_amd64` ⇆
+    #      download `Autoruns` where both contain `autorun`.
+    #
+    #   3. EXPLICIT_ALIASES map — for inventory tool_names whose alias
+    #      is too compressed for substring matching (e.g. `PSniper` →
+    #      `PersistenceSniper`, `EvtxHussar17` → `EVTXHussar`). When
+    #      a new inventory entry uses an alias not derivable from the
+    #      download name, add it here.
+    #
+    # Original algorithm relied only on name-substring with version
+    # suffix stripping, which generated 16 false-positive warnings on
+    # entries that had perfectly valid downloads — the names just
+    # didn't share substrings. See 2026-06-09 audit for the full list.
+    EXPLICIT_ALIASES = {
+        'PSniper': 'PersistenceSniper',
+        'EvtxHussar17': 'EVTXHussar',
+        'Takajo-2.5.0': 'Takajo',
+        'yaraexecutable': 'Yara Win64',
+        'YaraForgeCore': 'YaraForge Core',
+        'YaraForgeExtended': 'YaraForge Extended',
+        'YaraForgeFull': 'YaraForge Full',
+        'FileYaraLinux': 'DetectRaptor YARA Linux',
+        'FileYaraWindows': 'DetectRaptor YARA Windows',
+        'YaraRulesFull': 'DetectRaptor YARA Full',
+        'DetectRaptorLolRMM': 'DetectRaptor LOLRMM CSV',
+        'DiffCSVUrl': 'PersistenceSniper False Positives',
+        'SigmaProfiles': 'Sigma Profiles',
+        'SysmonConfig': 'Sysmon Config',
+        'OSQueryWindows': 'OSQuery Windows',
+        'OSQueryLinux': 'OSQuery Linux',
+        'OSQueryDarwin': 'OSQuery macOS',
+        'ProcessExplorer': 'Process Explorer',
+        'Autorun_amd64': 'Autoruns',
+    }
 
-    def _base(s: str) -> str:
-        return _VER_SUFFIX.sub('', s.lower())
+    def _pattern_to_sample(p: str) -> str:
+        s = re.sub(r'^\(\?[a-zA-Z]+\)', '', p)       # strip (?i), (?m), etc.
+        s = re.sub(r'^\^|\$$', '', s)                 # strip anchors
+        s = s.replace('.*', 'X').replace('.+', 'X')   # wildcards → placeholder
+        s = s.replace('\\.', '.')                     # unescape literal dot
+        s = re.sub(r'[\[\]\(\)\{\}\?\\\|]', '', s)   # drop remaining meta-chars
+        return s
 
-    download_bases = set()
+    def _norm(s: str) -> str:
+        return re.sub(r'[^a-z0-9]', '', s.lower())
+
+    # Build searchable indices from download entries
+    download_entries: list = []     # for explicit-alias lookup by name
+    download_samples: list = []     # for bidirectional pattern matching
+    download_norm_names: list = []  # for normalized substring matching
     for section in download_sections:
         for entry in (cfg.get(section) or []):
-            if isinstance(entry, dict):
-                for key in ('name', 'filename'):
-                    val = entry.get(key)
-                    if isinstance(val, str):
-                        download_bases.add(_base(val))
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get('name', '')
+            if isinstance(name, str) and name:
+                download_entries.append((entry, _norm(name)))
+                download_norm_names.append(_norm(name))
+            u = entry.get('url')
+            if isinstance(u, str) and u.strip():
+                fn = u.rsplit('/', 1)[-1].split('?')[0].split('#')[0]
+                if fn:
+                    download_samples.append(fn)
+            fn_field = entry.get('filename')
+            if isinstance(fn_field, str) and fn_field.strip():
+                download_samples.append(fn_field)
+            pat = entry.get('pattern')
+            if isinstance(pat, str) and pat.strip():
+                s = _pattern_to_sample(pat)
+                if s:
+                    download_samples.append(s)
+
+    # Also collect download patterns for the inventory-sample→download
+    # direction (the original "direction 1" check)
+    download_patterns: list = []
+    download_urls: list = []
+    for section in download_sections:
+        for entry in (cfg.get(section) or []):
+            if not isinstance(entry, dict):
+                continue
+            pat = entry.get('pattern')
+            if isinstance(pat, str) and pat.strip():
+                download_patterns.append(pat)
+            u = entry.get('url')
+            if isinstance(u, str) and u.strip():
+                download_urls.append(u)
 
     missing: list = []
     for inv_entry in inv:
@@ -96,11 +178,52 @@ def _warn_dangling_inventory_refs(cfg: Dict, config_path: str) -> None:
         # tools_inventory download. Don't flag those.
         if tool.lower().startswith('velociraptor'):
             continue
-        base = _base(tool)
-        # Match if any download base contains the tool base OR
-        # vice versa (handles plural/singular + minor name variations).
-        if any(base in d or d in base for d in download_bases if d and base):
+
+        # Signal 3 — explicit alias map
+        target = EXPLICIT_ALIASES.get(tool)
+        if target is not None:
+            target_norm = _norm(target)
+            if any(n == target_norm or target_norm in n for n in download_norm_names):
+                continue
+
+        # Signal 2 — normalized-name substring (either direction)
+        tn = _norm(tool)
+        if tn and any(tn in n or n in tn for n in download_norm_names if n):
             continue
+
+        # Signal 1 — bidirectional pattern matching
+        file_pattern = inv_entry.get('file_pattern', '')
+        if file_pattern:
+            try:
+                inv_rx = re.compile(file_pattern)
+            except re.error:
+                inv_rx = None
+            inv_sample = _pattern_to_sample(file_pattern)
+
+            found = False
+            # Direction A: download produces a file the inventory accepts
+            if inv_rx is not None:
+                for sample in download_samples:
+                    if inv_rx.search(sample):
+                        found = True
+                        break
+            # Direction B: inventory's sample matches a download URL/pattern
+            if not found and inv_sample:
+                for u in download_urls:
+                    if inv_sample.lower() in u.lower():
+                        found = True
+                        break
+            if not found and inv_sample:
+                for pat in download_patterns:
+                    try:
+                        if re.search(pat, inv_sample, flags=re.IGNORECASE):
+                            found = True
+                            break
+                    except re.error:
+                        continue
+            if found:
+                continue
+
         missing.append(tool)
 
     if missing:
