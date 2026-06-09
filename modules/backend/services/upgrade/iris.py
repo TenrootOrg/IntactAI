@@ -260,14 +260,111 @@ def install_iris_offline(package_dir: str, version: str, logger=None, run_id=Non
         path = os.path.join(secrets_dir, name)
         if os.path.exists(path) and os.path.getsize(path) > 0:
             log(f"  {name}: already present, keeping existing", "info")
+            # Re-chmod existing files to 0o644 — fixes pre-existing 0o600
+            # secrets from older versions of this code that locked
+            # iris_app out (iris_app runs as nobody/uid 65534; root-owned
+            # 0o600 secrets bind-mounted into /run/secrets/ are
+            # unreadable, so iris_app reads an empty password and
+            # connects with "" → password-auth-failed crashloop).
+            try:
+                os.chmod(path, 0o644)
+            except (PermissionError, FileNotFoundError):
+                pass
             continue
         with open(path, 'w') as f:
             f.write(val or '')
-        os.chmod(path, 0o600)
+        # 0o644 (world-readable) — not 0o600. The iris_app container runs
+        # the gunicorn process as `nobody` (uid 65534) while the secret
+        # files are owned by root inside the container (because docker
+        # bind-mounts inherit host ownership and we wrote them as root
+        # from the backend container). A 0o600 file owned by root is
+        # unreadable to nobody; iris_app then gets an empty password,
+        # connects with "", and crashes with "password authentication
+        # failed for user postgres" in an endless loop. install.sh's
+        # generate_iris_secrets doesn't chmod the files at all (leaving
+        # them at the default umask 0o644), which is why the regular
+        # install path doesn't hit this. Matching that policy here.
+        os.chmod(path, 0o644)
         log(f"  Generated {name}", "info")
 
-    return install_module_compose_up(
+    compose_result = install_module_compose_up(
         'iris', package_dir, version,
         image_tar_prefixes=['iris', 'rabbitmq', 'postgres'],
         logger=log, run_id=run_id,
     )
+    if not compose_result.get('success'):
+        return compose_result
+
+    # Post-install bootstrap. Without this, the install reports success
+    # but the IntactAI backend has NO IRIS api_key in its secrets DB →
+    # every backend → IRIS API call fails with 401. Mirrors
+    # lib/modules.sh:bootstrap_iris_api_key.
+    log("IRIS containers up. Waiting for first-init + extracting api_key...", "info")
+
+    import subprocess as _sub
+
+    # Stage 1: wait for the IRIS user table to be populated AND for the
+    # administrator's api_key column to be non-NULL. IRIS's first-init
+    # runs alembic migrations + a seed step that creates the
+    # administrator row WITHOUT an api_key initially, then a separate
+    # step populates the key. Polling for `api_key IS NOT NULL` is what
+    # tells us the stack is actually ready to authenticate.
+    api_key = None
+    waited = 0
+    while waited < 300:  # 5 minutes — IRIS first-init is slow (DB + alembic + seed)
+        try:
+            probe = _sub.run(
+                ["docker", "exec", "intact_iris_db", "psql", "-U", "iris", "-d", "iris_db",
+                 "-tAc", 'SELECT api_key FROM "user" WHERE name=\'administrator\' AND api_key IS NOT NULL;'],
+                capture_output=True, text=True, timeout=15,
+            )
+            out = (probe.stdout or "").strip()
+            if probe.returncode == 0 and out:
+                api_key = out
+                log(f"  IRIS administrator api_key materialized ({waited}s)", "success")
+                break
+        except _sub.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+        time.sleep(5)
+        waited += 5
+        if waited % 30 == 0:
+            log(f"  Still waiting for IRIS first-init... ({waited}s)", "info")
+
+    if not api_key:
+        log(
+            "IRIS administrator api_key did not appear in iris_db after 5 minutes. "
+            "Containers ARE running, but backend → IRIS API calls will fail until "
+            "the key is stored. Fix manually once IRIS is ready: "
+            "`docker exec intact_iris_db psql -U iris -d iris_db -tAc "
+            "\"SELECT api_key FROM \\\"user\\\" WHERE name='administrator';\"` "
+            "then `docker exec intact_backend python3 -c \"from services.storage."
+            "secret_store import set_secret; set_secret('iris.administrator.api_key', '<key>')\"`",
+            "warning",
+        )
+        return compose_result
+
+    # Stage 2: store the api_key in the backend's secrets DB so iris_service
+    # can auth without doing a docker-exec lookup on every call.
+    log("Storing IRIS api_key in backend secrets DB...", "info")
+    try:
+        from services.storage.secret_store import set_secret, get_secret
+        if set_secret('iris.administrator.api_key', api_key):
+            # Read-back verify (set_secret can succeed but a transient
+            # SQLite lock can roll the write back silently).
+            persisted = get_secret('iris.administrator.api_key')
+            if persisted == api_key:
+                log("  IRIS api_key persisted to backend secrets table — verified", "success")
+            else:
+                log(
+                    "  IRIS api_key set_secret() returned OK but read-back didn't match. "
+                    "Run the manual set_secret() shown in the prior warning.",
+                    "warning",
+                )
+        else:
+            log("  IRIS api_key set_secret() returned False. Fix manually.", "warning")
+    except Exception as e:
+        log(f"  Failed to persist IRIS api_key to backend secrets: {e}", "warning")
+
+    return compose_result
