@@ -22,6 +22,8 @@ reports all survive.
 from __future__ import annotations
 
 import os
+import time
+import subprocess as _subprocess
 from typing import Callable, Dict
 
 from .base import (
@@ -245,6 +247,113 @@ def install_volweb_offline(
     up = _compose_up(log, run_id=run_id)
     if not up.get("success"):
         return {"success": False, "error": f"compose up failed: {up.get('error')}"}
+
+    # Post-install bootstrap — without this, the install reports success
+    # but the IntactAI backend can never authenticate to VolWeb's REST
+    # API because no admin user exists in VolWeb's Django auth. Operator
+    # sees "VolWeb shows no connection" / memory module unable to
+    # dispatch jobs. Mirrors lib/modules.sh:deploy_volweb post-compose.
+    log("VolWeb containers up. Waiting for backend + seeding admin user...", "info")
+
+    # Stage 1: wait for VolWeb's DB migrations to finish. The Django
+    # shell can boot ~immediately (before postgres migrations are
+    # done), so a `print('READY')` probe alone returns success too
+    # early — we then hit "relation auth_user does not exist" inside
+    # the seed step. Check the actual table existence:
+    # `User.objects.exists()` will throw if the auth_user table isn't
+    # there yet. Catch that and keep polling. When the call returns 0
+    # AND prints SCHEMA_OK, migrations are done and seeding will work.
+    backend_ready = False
+    waited = 0
+    probe_script = (
+        "from django.contrib.auth import get_user_model\n"
+        # `.exists()` runs a SELECT against auth_user; throws
+        # ProgrammingError if migrations haven't created the table yet.
+        "get_user_model().objects.exists()\n"
+        "print('SCHEMA_OK')\n"
+    )
+    while waited < 180:
+        try:
+            probe = _subprocess.run(
+                ["docker", "exec", "--user", "app", "-w", "/home/app/web", "-i",
+                 "intact_volweb_backend", "python3", "manage.py", "shell"],
+                input=probe_script,
+                capture_output=True, text=True, timeout=20,
+            )
+            if probe.returncode == 0 and "SCHEMA_OK" in (probe.stdout or ""):
+                backend_ready = True
+                log(f"  VolWeb backend + DB ready ({waited}s)", "success")
+                break
+        except _subprocess.TimeoutExpired:
+            pass  # exec itself hung — keep polling
+        except Exception:
+            pass
+        time.sleep(5)
+        waited += 5
+
+    if not backend_ready:
+        log(
+            "VolWeb backend did not become ready after 120s. Containers ARE "
+            "running, but admin-user seeding has been SKIPPED — operator "
+            "must seed manually: `docker exec intact_volweb_backend "
+            "python3 manage.py createsuperuser`. Continuing.",
+            "warning",
+        )
+        return {"success": True, "version": version, "first_install": True}
+
+    # Stage 2: seed the platform's tenroot admin user from config.yaml.
+    # Same payload + Django shell call lib/modules.sh:seed_volweb_admin uses.
+    try:
+        import yaml
+        config_path = os.path.join(HOST_PATH, "config.yaml")
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f)
+        volweb_cfg = (cfg.get("modules") or {}).get("volweb") or {}
+        admin_user = volweb_cfg.get("id") or "tenroot"
+        admin_pass = volweb_cfg.get("password") or "123123"
+    except Exception as e:
+        log(f"Could not read VolWeb creds from config.yaml: {e}", "warning")
+        admin_user, admin_pass = "tenroot", "123123"
+
+    log(f"  Seeding VolWeb admin user ({admin_user})...", "info")
+    # Pass the script via stdin (manage.py shell reads from stdin) and
+    # interpolate the creds via Python repr() — never via the shell —
+    # so a password with special chars can't break the call.
+    # run_command() doesn't expose stdin, so use subprocess directly.
+    django_script = (
+        "from django.contrib.auth import get_user_model\n"
+        "U = get_user_model()\n"
+        f"u, created = U.objects.get_or_create(username={admin_user!r}, "
+        "defaults={'is_superuser': True, 'is_staff': True})\n"
+        "u.is_superuser = True\n"
+        "u.is_staff = True\n"
+        f"u.set_password({admin_pass!r})\n"
+        "u.save()\n"
+        "print('CREATED' if created else 'UPDATED', 'admin', u.username)\n"
+    )
+    try:
+        proc = _subprocess.run(
+            ["docker", "exec", "--user", "app", "-w", "/home/app/web", "-i",
+             "intact_volweb_backend", "python3", "manage.py", "shell"],
+            input=django_script,
+            capture_output=True, text=True, timeout=60,
+        )
+        out = (proc.stdout or "") + (proc.stderr or "")
+        if proc.returncode == 0 and ("CREATED" in out or "UPDATED" in out):
+            log(f"  VolWeb admin '{admin_user}' seeded — backend API auth ready", "success")
+        else:
+            log(
+                f"  VolWeb admin seeding returned rc={proc.returncode}: {out[:200]}. "
+                f"Fix manually: `docker exec --user app -w /home/app/web -i "
+                f"intact_volweb_backend python3 manage.py createsuperuser`. "
+                "Continuing.",
+                "warning",
+            )
+    except _subprocess.TimeoutExpired:
+        log("  VolWeb admin seeding timed out (60s). Containers up but "
+            "admin not seeded; run createsuperuser manually.", "warning")
+    except Exception as e:
+        log(f"  VolWeb admin seeding errored: {e}. Continuing.", "warning")
 
     log("VolWeb first-time install complete", "success")
     log(
