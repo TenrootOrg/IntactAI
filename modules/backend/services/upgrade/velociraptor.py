@@ -684,8 +684,56 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
     log(f"Installing Velociraptor (first-time) -> {version or 'tracked default'}...", "info")
     if os.path.exists(env_file) and version:
         update_env_file(env_file, 'VELOCIRAPTOR_VERSION', version, logger=log)
-    return install_module_compose_up(
+    compose_result = install_module_compose_up(
         'velociraptor', package_dir, version,
         image_tar_prefixes=['velociraptor-server'],
         logger=log, run_id=run_id,
     )
+    if not compose_result.get('success'):
+        return compose_result
+
+    # Post-install bootstrap. Velociraptor's entrypoint generates its
+    # own server.config.yaml / client.config.yaml / api.config.yaml
+    # on first boot (~30-60s). The backend's
+    # velociraptor_service.load_velociraptor_api_config() later reads
+    # api.config.yaml from this container via docker exec — without
+    # this wait, the install reports success and the operator's first
+    # request to backend → Velociraptor immediately fails because the
+    # config files don't exist yet. Polling for client.config.yaml
+    # (the same readiness signal lib/modules.sh:deploy_velociraptor
+    # uses at line ~683) confirms the entrypoint has finished its
+    # config-gen.
+    log("Velociraptor container up. Waiting for entrypoint config-gen...", "info")
+    import time as _time
+    import subprocess as _sub
+    config_ready = False
+    waited = 0
+    while waited < 120:
+        try:
+            probe = _sub.run(
+                ["docker", "exec", "intact_velociraptor",
+                 "test", "-f", "/velociraptor/client.config.yaml"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if probe.returncode == 0:
+                config_ready = True
+                log(f"  Velociraptor configuration ready ({waited}s)", "success")
+                break
+        except _sub.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+        _time.sleep(5)
+        waited += 5
+
+    if not config_ready:
+        log(
+            "Velociraptor configuration did not generate within 120s. "
+            "Container IS running but api.config.yaml may not be present "
+            "yet; backend → Velociraptor gRPC calls will fail until the "
+            "entrypoint finishes. Wait a minute then retry, or check "
+            "`docker logs intact_velociraptor` for errors. Continuing.",
+            "warning",
+        )
+
+    return compose_result
