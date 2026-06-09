@@ -816,6 +816,162 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     log(f"  Failed to build image: {build_result.get('error', '')[:160]}", "warning")
                     log("  Target will rebuild locally from the staged binaries (still offline-safe).", "info")
 
+                # Bundle Velociraptor artifact-source files so the apply
+                # side can re-import them post-upgrade even on an
+                # air-gapped target. The post-upgrade re-import in
+                # services/upgrade/velociraptor.py uses
+                # initialize_velociraptor_artifacts() — that function
+                # reads two host paths:
+                #   /app/data/tools/Velociraptor-Artifacts-main.zip
+                #   /app/data/custom_artifacts/
+                # Both are bind-mounted on /app/data so they survive
+                # backend restarts on the SAME machine; but when the
+                # upgrade package is transported to a fresh target,
+                # those paths may be empty there. Snapshotting them
+                # into the package makes the artifact restoration
+                # fully offline-safe.
+                log("Bundling Velociraptor artifact sources...", "info")
+                velo_artifacts_dir = os.path.join(package_dir, 'artifacts', 'velociraptor')
+                os.makedirs(velo_artifacts_dir, exist_ok=True)
+
+                src_zip = '/app/data/tools/Velociraptor-Artifacts-main.zip'
+                if os.path.isfile(src_zip):
+                    dst_zip = os.path.join(velo_artifacts_dir, 'Velociraptor-Artifacts-main.zip')
+                    try:
+                        shutil.copy2(src_zip, dst_zip)
+                        sz_mb = os.path.getsize(dst_zip) / (1024 * 1024)
+                        log(f"  Bundled TenRoot artifacts zip ({sz_mb:.1f} MB)", "success")
+                        manifest["contents"].setdefault("velociraptor_artifacts", {})["zip"] = True
+                    except Exception as e:
+                        log(f"  Could not bundle TenRoot zip: {e}", "warning")
+                else:
+                    log(f"  TenRoot artifacts zip absent at {src_zip} — apply will skip", "info")
+
+                src_custom = '/app/data/custom_artifacts'
+                if os.path.isdir(src_custom) and os.listdir(src_custom):
+                    dst_custom = os.path.join(velo_artifacts_dir, 'custom_artifacts')
+                    try:
+                        os.makedirs(dst_custom, exist_ok=True)
+                        cp = run_command(
+                            f"cp -a {src_custom}/. {dst_custom}/",
+                            logger=None, timeout=60, run_id=run_id,
+                        )
+                        if cp.get('success'):
+                            n_yaml = sum(
+                                1 for _, _, files in os.walk(dst_custom)
+                                for f in files if f.endswith(('.yaml', '.yml'))
+                            )
+                            log(f"  Bundled {n_yaml} custom artifact YAMLs from {src_custom}/", "success")
+                            manifest["contents"].setdefault("velociraptor_artifacts", {})["custom_dir"] = True
+                            manifest["contents"]["velociraptor_artifacts"]["custom_count"] = n_yaml
+                        else:
+                            log(f"  custom_artifacts copy failed: {cp.get('error', '')[:120]}", "warning")
+                    except Exception as e:
+                        log(f"  Could not bundle custom_artifacts: {e}", "warning")
+                else:
+                    log(f"  No custom artifacts at {src_custom}/ — apply will skip", "info")
+
+                # Snapshot the running Velociraptor's full non-built-in
+                # artifact registry. This is the ROBUST air-gap layer:
+                # the operator's running Velociraptor already has
+                # everything they imported via Server.Import.ArtifactExchange
+                # (Velocidex's exchange repo on github), Server.Import.
+                # DetectRaptor (mgreen27's repo), and Server.Import.Extras
+                # — plus the TenRoot zip artifacts and custom_artifacts/
+                # entries. By exporting them ALL via SQL at prepare time
+                # and bundling the YAMLs, the apply side on a fresh
+                # air-gapped target can re-register every one of those
+                # artifacts without ever reaching github. Same SQL the
+                # pre-upgrade-export step uses, but run at prepare time
+                # against the prepare-machine's Velociraptor.
+                log("Snapshotting Velociraptor artifact registry...", "info")
+                snapshot_dir = os.path.join(velo_artifacts_dir, 'registry_snapshot')
+                os.makedirs(snapshot_dir, exist_ok=True)
+                try:
+                    # Velociraptor's `query` defaults to a JSON array output
+                    # (one big `[ {...}, {...} ]` blob). The `raw` field is
+                    # the original artifact YAML text. We parse the array
+                    # and write each artifact's `raw` to its own .yaml
+                    # for the apply side's per-file `import_custom_artifact`.
+                    #
+                    # IMPORTANT: NO `run_id=` here. The cancellation-aware
+                    # branch of `run_command` uses Popen + PIPE without
+                    # draining stdout during its 1-second poll loop. The
+                    # subprocess writes ~2 MB to stdout (one big JSON
+                    # array of 359+ artifacts) and blocks on a full
+                    # 64 KB pipe buffer — `process.poll()` returns None
+                    # forever, the helper hits its timeout, and we lose
+                    # the snapshot. The legacy `subprocess.run(
+                    # capture_output=True)` path handles the large
+                    # output correctly; we accept that Stop can't kill
+                    # this specific query (it returns in ~2 s anyway).
+                    snap = run_command(
+                        "docker exec intact_velociraptor /velociraptor/velociraptor "
+                        "--config /velociraptor/server.config.yaml query "
+                        "'SELECT name, raw FROM artifact_definitions() "
+                        "WHERE built_in = FALSE AND raw != \"\"'",
+                        logger=None, timeout=180,
+                    )
+                    if snap.get('success'):
+                        import json as _json
+                        # Velociraptor's `query` doesn't emit a single
+                        # JSON array — it emits ONE array per result
+                        # batch, concatenated. For 359+ artifacts the
+                        # output looks like
+                        #     [ {row1}, {row2} ][ {row3}, {row4} ]...
+                        # which `json.loads` rejects ("Extra data"
+                        # after the first array). Use raw_decode in a
+                        # streaming loop to consume every concatenated
+                        # value robustly — handles `[` / `]` literals
+                        # inside string fields without regex hacks.
+                        raw_out = snap.get('stdout') or ''
+                        decoder = _json.JSONDecoder()
+                        rows = []
+                        idx = 0
+                        while idx < len(raw_out):
+                            while idx < len(raw_out) and raw_out[idx].isspace():
+                                idx += 1
+                            if idx >= len(raw_out):
+                                break
+                            try:
+                                obj, end = decoder.raw_decode(raw_out, idx)
+                            except _json.JSONDecodeError:
+                                break
+                            if isinstance(obj, list):
+                                rows.extend(obj)
+                            elif isinstance(obj, dict):
+                                rows.append(obj)
+                            idx = end
+                        snap_count = 0
+                        for row in rows:
+                            if not isinstance(row, dict):
+                                continue
+                            name = (row.get('name') or '').strip()
+                            raw = row.get('raw') or ''
+                            if not name or not raw:
+                                continue
+                            # Sanitize artifact name for filename
+                            safe = name.replace('/', '_').replace('\\', '_')
+                            try:
+                                with open(os.path.join(snapshot_dir, f"{safe}.yaml"), 'w') as f:
+                                    f.write(raw)
+                                snap_count += 1
+                            except Exception:
+                                continue
+                        if snap_count:
+                            log(f"  Snapshotted {snap_count} live artifacts from running Velociraptor "
+                                f"(includes ArtifactExchange + DetectRaptor + Extras + custom + ad-hoc)",
+                                "success")
+                            manifest["contents"]["velociraptor_artifacts"]["registry_snapshot_count"] = snap_count
+                        else:
+                            log("  Registry snapshot returned 0 artifacts — running Velociraptor "
+                                "may have empty non-built-in registry", "warning")
+                    else:
+                        log(f"  Registry snapshot SQL failed (continuing without it): "
+                            f"{snap.get('error', '')[:120]}", "warning")
+                except Exception as e:
+                    log(f"  Registry snapshot raised: {e}", "warning")
+
             elif module in DOCKER_IMAGES:
                 # Pull and save Docker images
                 declared = len(DOCKER_IMAGES[module])

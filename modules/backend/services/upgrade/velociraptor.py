@@ -2,6 +2,7 @@
 """Velociraptor upgrade functions."""
 
 import os
+import shutil
 import time
 import json
 from typing import Dict, Callable, Optional, Tuple
@@ -13,6 +14,198 @@ from .base import (
     load_docker_image, compare_versions,
     remove_old_module_image,
 )
+
+
+def _reimport_artifacts_post_upgrade(velo_data: str, logger: Callable = None) -> None:
+    """Re-register all custom + imported artifacts in the freshly-upgraded
+    Velociraptor server's registry.
+
+    Called at the END of a successful upgrade_velociraptor /
+    upgrade_velociraptor_offline run, after the new container has passed
+    its health check. A Velociraptor binary upgrade leaves the new
+    container's artifact registry empty of non-built-in artifacts (the
+    data volume persists but the registry is rebuilt on first boot);
+    without this re-import, Quick Wins blueprint hunts and Timesketch's
+    KapeTriage workflow fail with "artifact not found".
+
+    Re-import has three layers:
+
+    1. `initialize_velociraptor_artifacts()` — the exact same orchestrator
+       Maintenance → Refresh Tool Inventory calls. Runs
+       `Server.Import.ArtifactExchange` + `Server.Import.DetectRaptor` +
+       `Server.Import.Extras` (need internet on the target; gracefully
+       degrades to a logged warning when offline). Then re-imports the
+       TenRoot zip at `/app/data/tools/Velociraptor-Artifacts-main.zip`
+       and `/app/data/custom_artifacts/`.
+
+    2. Pre-upgrade-export catch-all — earlier in the upgrade flow we
+       snapshot the OLD registry's custom artifacts to
+       `{velo_data}/artifact_definitions/Exported/`. We loop that
+       directory here and `import_custom_artifact()` any YAML the
+       TenRoot/custom_artifacts paths didn't cover (operator-created
+       ad-hoc artifacts that only lived in the registry).
+
+    Failures are SWALLOWED (logged at warning level) — an already-healthy
+    upgrade must never be marked failed because of an artifact import
+    hiccup.
+    """
+    log = logger or (lambda msg, level="info": None)
+    log("Re-importing custom artifacts into the upgraded Velociraptor...", "info")
+    try:
+        from services.velociraptor_init_service import (
+            initialize_velociraptor_artifacts,
+            import_custom_artifact,
+        )
+    except Exception as e:
+        log(
+            f"  Could not import velociraptor_init_service "
+            f"({type(e).__name__}: {e}); operator should click "
+            f"Maintenance → Refresh Tool Inventory.",
+            "warning",
+        )
+        return
+
+    # Layer 1: same orchestrator the Maintenance UI button runs.
+    try:
+        initialize_velociraptor_artifacts(logger_func=log)
+    except Exception as e:
+        log(
+            f"  initialize_velociraptor_artifacts raised "
+            f"({type(e).__name__}: {e}); falling through to "
+            f"pre-upgrade-export catch-all.",
+            "warning",
+        )
+
+    # Layer 2: catch-all from pre-upgrade snapshot.
+    exported = os.path.join(velo_data, 'artifact_definitions', 'Exported')
+    if not os.path.isdir(exported):
+        return
+    count = 0
+    for fn in sorted(os.listdir(exported)):
+        if not (fn.endswith('.yaml') or fn.endswith('.yml')):
+            continue
+        try:
+            with open(os.path.join(exported, fn), 'r') as f:
+                yaml_content = f.read()
+            ok = import_custom_artifact(yaml_content, logger_func=log)
+            if ok:
+                count += 1
+        except Exception as e:
+            log(f"  Re-import {fn} failed ({e}); continuing.", "warning")
+    if count:
+        log(f"  Re-imported {count} pre-upgrade-snapshot artifacts", "success")
+
+
+def _restore_bundled_artifact_sources(package_dir: str,
+                                       logger: Callable = None) -> None:
+    """Copy bundled `artifacts/velociraptor/*` from the offline upgrade
+    package into `/app/data/` on the target so the post-upgrade
+    `initialize_velociraptor_artifacts()` call has the TenRoot zip and
+    custom_artifacts/ available even on a fresh air-gapped host that
+    never ran Maintenance with internet.
+
+    Layout the prepare side writes (see prepare_package's velociraptor
+    branch):
+        <package>/artifacts/velociraptor/Velociraptor-Artifacts-main.zip
+        <package>/artifacts/velociraptor/custom_artifacts/*.yaml
+
+    Maps to:
+        /app/data/tools/Velociraptor-Artifacts-main.zip
+        /app/data/custom_artifacts/*.yaml
+
+    Best-effort: silently no-ops when nothing is bundled (prepare on a
+    machine where these files don't exist).
+    """
+    log = logger or (lambda msg, level="info": None)
+    src_dir = os.path.join(package_dir, 'artifacts', 'velociraptor')
+    if not os.path.isdir(src_dir):
+        return
+
+    src_zip = os.path.join(src_dir, 'Velociraptor-Artifacts-main.zip')
+    dst_zip = '/app/data/tools/Velociraptor-Artifacts-main.zip'
+    if os.path.isfile(src_zip):
+        try:
+            os.makedirs(os.path.dirname(dst_zip), exist_ok=True)
+            shutil.copy2(src_zip, dst_zip)
+            sz_mb = os.path.getsize(dst_zip) / (1024 * 1024)
+            log(f"  Restored TenRoot artifacts zip from package "
+                f"({sz_mb:.1f} MB) -> {dst_zip}", "info")
+        except Exception as e:
+            log(f"  TenRoot zip restore failed: {e}", "warning")
+
+    src_custom = os.path.join(src_dir, 'custom_artifacts')
+    dst_custom = '/app/data/custom_artifacts'
+    if os.path.isdir(src_custom):
+        try:
+            os.makedirs(dst_custom, exist_ok=True)
+            # cp -a preserves perms + handles nested dirs cleanly
+            result = run_command(
+                f"cp -a {src_custom}/. {dst_custom}/",
+                logger=None, timeout=60,
+            )
+            if result.get('success'):
+                n = sum(
+                    1 for _, _, files in os.walk(src_custom)
+                    for f in files if f.endswith(('.yaml', '.yml'))
+                )
+                log(f"  Restored {n} custom artifact YAMLs from package "
+                    f"-> {dst_custom}/", "info")
+            else:
+                log(f"  custom_artifacts restore failed: "
+                    f"{result.get('error', '')[:120]}", "warning")
+        except Exception as e:
+            log(f"  custom_artifacts restore raised: {e}", "warning")
+
+
+def _import_bundled_registry_snapshot(package_dir: str,
+                                       logger: Callable = None) -> int:
+    """Loop the bundled registry-snapshot YAMLs and `import_custom_artifact`
+    each into the running Velociraptor's registry.
+
+    The snapshot at `<package>/artifacts/velociraptor/registry_snapshot/`
+    was taken from the running Velociraptor on the PREPARE machine via
+    SQL `SELECT name, raw FROM artifact_definitions() WHERE built_in =
+    FALSE`. That means it already contains every artifact the operator
+    had — TenRoot zip imports, custom_artifacts/ imports, AND the
+    output of Server.Import.ArtifactExchange / DetectRaptor / Extras
+    (which would otherwise need GitHub at apply time).
+
+    Returns the count of successfully-imported artifacts.
+    """
+    log = logger or (lambda msg, level="info": None)
+    snap_dir = os.path.join(package_dir, 'artifacts', 'velociraptor',
+                             'registry_snapshot')
+    if not os.path.isdir(snap_dir):
+        return 0
+
+    try:
+        from services.velociraptor_init_service import import_custom_artifact
+    except Exception as e:
+        log(f"  Could not import import_custom_artifact: {e}", "warning")
+        return 0
+
+    yamls = sorted(
+        f for f in os.listdir(snap_dir)
+        if f.endswith(('.yaml', '.yml'))
+    )
+    if not yamls:
+        return 0
+
+    log(f"  Importing {len(yamls)} artifacts from bundled registry snapshot...", "info")
+    ok = 0
+    for fn in yamls:
+        try:
+            with open(os.path.join(snap_dir, fn), 'r') as f:
+                yaml_content = f.read()
+            if import_custom_artifact(yaml_content, logger_func=None):
+                ok += 1
+        except Exception:
+            # Per-artifact failures are common with version-skew
+            # (newer artifact YAML using fields the new binary
+            # doesn't understand). Swallow + continue.
+            continue
+    log(f"  Registry snapshot: {ok}/{len(yamls)} artifacts imported", "success" if ok else "warning")
+    return ok
 
 
 # All four binaries the Dockerfile needs to COPY at build time. The
@@ -372,6 +565,20 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
         run_command(f"rm -rf {backup_dir}", logger=log)
         cleanup_backup(env_backup, logger=log)
         log(f"Velociraptor upgrade completed: {current_version} -> {actual_version}", "success")
+
+        # Re-import every artifact the previous container had. A
+        # Velociraptor binary upgrade leaves the new container's
+        # artifact registry empty of non-built-in artifacts (the
+        # data volume persists but the registry is rebuilt on first
+        # boot). Without this re-import, the Quick Wins blueprint
+        # hunt + Timesketch KapeTriage workflow fail with "artifact
+        # not found" the first time the operator tries to use them.
+        # Uses the same code Maintenance → Refresh Tool Inventory
+        # runs, so post-upgrade state matches a freshly-maintained
+        # install. Wrapped in try/except: import failure must NEVER
+        # fail an already-healthy upgrade.
+        _reimport_artifacts_post_upgrade(velo_data, logger=log)
+
         remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
         return {"success": True, "version": actual_version, "health": "green" if healthy else "pending"}
 
@@ -639,6 +846,32 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         run_command(f"rm -rf {backup_dir}", logger=log)
         cleanup_backup(env_backup, logger=log)
         log(f"Velociraptor offline upgrade completed: {current_version} -> {actual_version}", "success")
+
+        # Restore bundled artifact-source files into /app/data/ so the
+        # post-upgrade re-import works even on a fresh air-gapped
+        # target that never ran Maintenance with internet. See
+        # _restore_bundled_artifact_sources for the package layout.
+        _restore_bundled_artifact_sources(package_dir, logger=log)
+
+        # Air-gap-complete: re-register every artifact from the
+        # prepare-machine's running Velociraptor (snapshot bundled by
+        # prepare). Covers Server.Import.ArtifactExchange /
+        # DetectRaptor / Extras output that would otherwise need
+        # GitHub at apply time on a fresh target.
+        try:
+            _import_bundled_registry_snapshot(package_dir, logger=log)
+        except Exception as e:
+            log(f"  Registry-snapshot import raised: {e}", "warning")
+
+        # Same artifact re-import as the online path. See its docstring
+        # for the "why" — a Velociraptor binary upgrade leaves the
+        # new container's registry empty of non-built-in artifacts,
+        # breaking the Quick Wins blueprint hunt + KapeTriage flow
+        # for Timesketch. This is a belt-and-suspenders second pass
+        # that also triggers Server.Import.* (needs internet — falls
+        # back gracefully on air-gap).
+        _reimport_artifacts_post_upgrade(velo_data, logger=log)
+
         remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
         return {"success": True, "version": actual_version, "health": "green" if healthy else "pending"}
 
