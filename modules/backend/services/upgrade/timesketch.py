@@ -11,7 +11,8 @@ from typing import Dict, Callable, Optional
 from .base import (
     WORKDIR, HOST_PATH,
     run_command, read_env_file, update_env_file, load_docker_image,
-    backup_env_file, restore_env_file, cleanup_backup
+    backup_env_file, restore_env_file, cleanup_backup,
+    remove_old_module_image,
 )
 
 
@@ -679,6 +680,7 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
         # The new Plaso image will be used when a Plaso job is triggered
 
         log(f"Timesketch upgrade completed: {current_version} -> {version}", "success")
+        remove_old_module_image('timesketch', current_version, version, logger=log)
         result = {"success": True, "version": version, "health": "green" if healthy else "pending"}
         if plaso_version:
             result["plaso_version"] = plaso_version
@@ -876,6 +878,7 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
         # The new Plaso image will be used when a Plaso job is triggered
 
         log(f"Timesketch offline upgrade completed: {current_version} -> {version}", "success")
+        remove_old_module_image('timesketch', current_version, version, logger=log)
         result = {"success": True, "version": version, "health": "green" if healthy else "pending"}
         if plaso_version:
             result["plaso_version"] = plaso_version

@@ -9,7 +9,8 @@ from typing import Dict, Callable, Optional
 from .base import (
     WORKDIR, HOST_PATH,
     run_command, read_env_file, update_env_file, compare_versions, load_docker_image,
-    backup_env_file, restore_env_file, cleanup_backup
+    backup_env_file, restore_env_file, cleanup_backup,
+    remove_old_module_image,
 )
 
 
@@ -115,6 +116,7 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
         log(f"ELK upgrade completed: {current_version} -> {version}", "success")
+        remove_old_module_image('elk', current_version, version, logger=log)
         return {"success": True, "version": version, "health": "green" if healthy else "pending"}
 
     except Exception as e:
@@ -225,6 +227,7 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None,
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
         log(f"ELK offline upgrade completed: {current_version} -> {version}", "success")
+        remove_old_module_image('elk', current_version, version, logger=log)
         return {"success": True, "version": version, "health": "green" if healthy else "pending"}
 
     except Exception as e:

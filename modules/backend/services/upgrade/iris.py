@@ -9,7 +9,8 @@ from typing import Dict, Callable, Optional
 from .base import (
     WORKDIR, HOST_PATH,
     run_command, read_env_file, update_env_file, load_docker_image,
-    backup_env_file, restore_env_file, cleanup_backup
+    backup_env_file, restore_env_file, cleanup_backup,
+    remove_old_module_image,
 )
 
 
@@ -87,6 +88,10 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
         log(f"IRIS upgrade completed: {current_version} -> {version}", "success")
+        # Remove the OLD pinned image(s) — frees ~1.5 GB per IRIS bump.
+        # Safe by design: skipped on no-op upgrade, Docker refuses on
+        # in-use, errors swallowed (helper logs at info level).
+        remove_old_module_image('iris', current_version, version, logger=log)
         return {"success": True, "version": version, "health": "green" if healthy else "pending"}
 
     except Exception as e:
@@ -197,6 +202,7 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
         log(f"IRIS offline upgrade completed: {current_version} -> {version}", "success")
+        remove_old_module_image('iris', current_version, version, logger=log)
         return {"success": True, "version": version, "health": "green" if healthy else "pending"}
 
     except Exception as e:

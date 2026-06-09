@@ -10,7 +10,8 @@ from .base import (
     WORKDIR, HOST_PATH,
     run_command, read_env_file, update_env_file,
     backup_env_file, restore_env_file, cleanup_backup,
-    load_docker_image, compare_versions
+    load_docker_image, compare_versions,
+    remove_old_module_image,
 )
 
 
@@ -371,6 +372,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
         run_command(f"rm -rf {backup_dir}", logger=log)
         cleanup_backup(env_backup, logger=log)
         log(f"Velociraptor upgrade completed: {current_version} -> {actual_version}", "success")
+        remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
         return {"success": True, "version": actual_version, "health": "green" if healthy else "pending"}
 
     except Exception as e:
@@ -637,6 +639,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         run_command(f"rm -rf {backup_dir}", logger=log)
         cleanup_backup(env_backup, logger=log)
         log(f"Velociraptor offline upgrade completed: {current_version} -> {actual_version}", "success")
+        remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
         return {"success": True, "version": actual_version, "health": "green" if healthy else "pending"}
 
     except Exception as e:

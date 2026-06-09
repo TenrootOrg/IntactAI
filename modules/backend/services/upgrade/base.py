@@ -191,6 +191,94 @@ def cleanup_backup(backup_file: str, logger: Callable = None):
         log(f"  Warning: Could not remove backup: {e}", "warning")
 
 
+# Per-module image repos used by remove_old_module_image() below.
+# When a module's upgrade succeeds, the helper removes
+# `<repo>:<old_version>` for each repo listed here. Add an entry
+# when introducing a new module so its post-upgrade cleanup runs
+# automatically.
+_MODULE_IMAGE_REPOS = {
+    'iris': [
+        'ghcr.io/dfir-iris/iriswebapp_app',
+        'ghcr.io/dfir-iris/iriswebapp_db',
+        'ghcr.io/dfir-iris/iriswebapp_nginx',
+    ],
+    'timesketch': [
+        'us-docker.pkg.dev/osdfir-registry/timesketch/timesketch',
+    ],
+    'plaso': [
+        'log2timeline/plaso',
+    ],
+    'velociraptor': [
+        # Locally-built image; tag follows the version pin.
+        'velociraptor-server',
+    ],
+    'volweb': [
+        'forensicxlab/volweb-backend',
+        'forensicxlab/volweb-frontend',
+    ],
+    'elk': [
+        'docker.elastic.co/elasticsearch/elasticsearch',
+        'docker.elastic.co/kibana/kibana',
+        'docker.elastic.co/logstash/logstash',
+    ],
+    'aws': [
+        'toniblyx/prowler',
+    ],
+    'azure': [
+        'anssi/dfir-o365rc',
+    ],
+}
+
+
+def remove_old_module_image(module_id: str, old_version: str,
+                              new_version: str, logger: Callable = None) -> None:
+    """Remove `<repo>:<old_version>` for every repo associated with the
+    module — called AT THE END of a successful upgrade_*_offline run.
+
+    Safety guarantees:
+      * Noop when old_version == new_version (no-op upgrade).
+      * Noop when old_version is empty / 'unknown' (first install,
+        nothing prior to clean).
+      * `docker image rm` itself refuses to remove an image that's
+        attached to a running container — so even if our orchestration
+        somehow called this in the wrong order, Docker's own protection
+        prevents disaster.
+      * Errors are swallowed and logged at info level — a failure to
+        clean up is never reason to fail the upgrade.
+
+    The user requested this on 2026-06-09 after seeing several GB of
+    obsolete module images pile up on the host post-upgrade. Earlier
+    iteration shipped a manual Maintenance UI card; user preferred
+    fully-automatic cleanup of OLD versions on successful upgrade and
+    asked for the manual card to be removed.
+    """
+    log = logger or (lambda msg, level="info": None)
+    if not old_version:
+        return
+    if old_version.lower() in ('unknown', 'none', ''):
+        return
+    if new_version and old_version == new_version:
+        return
+    repos = _MODULE_IMAGE_REPOS.get(module_id)
+    if not repos:
+        return
+    for repo in repos:
+        old_ref = f"{repo}:{old_version}"
+        result = run_command(
+            f"docker image rm {old_ref}",
+            logger=None, timeout=60,
+        )
+        if result.get('success'):
+            log(f"  Cleaned up old image: {old_ref}", "info")
+        else:
+            # Common benign cases: tag was never pulled locally,
+            # or it's still referenced by something else (Docker
+            # protects). Don't log loudly.
+            err = (result.get('error') or result.get('stderr') or '').strip()
+            if 'No such image' not in err and 'is using' not in err:
+                log(f"  Could not remove old image {old_ref}: {err[:120]}", "info")
+
+
 def compare_versions(v1: str, v2: str) -> int:
     """Compare two version strings. Returns -1 if v1 < v2, 0 if equal, 1 if v1 > v2."""
     def parse_version(v):

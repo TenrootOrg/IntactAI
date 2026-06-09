@@ -31,6 +31,7 @@ from .base import (
     WORKDIR,
     load_docker_image,
     read_env_file,
+    remove_old_module_image,
     run_command,
     update_env_file,
 )
@@ -111,6 +112,7 @@ def upgrade_volweb(version: str, logger: Callable = None, run_id: str | None = N
         return {"success": False, "error": f"compose up failed: {up.get('error')}"}
 
     log(f"VolWeb upgrade completed: {cur} → {version}", "success")
+    remove_old_module_image('volweb', cur, version, logger=log)
     return {"success": True, "version": version}
 
 
@@ -170,6 +172,7 @@ def upgrade_volweb_offline(
         return {"success": False, "error": f"compose up failed: {up.get('error')}"}
 
     log(f"VolWeb offline upgrade completed: {cur} → {version}", "success")
+    remove_old_module_image('volweb', cur, version, logger=log)
     return {"success": True, "version": version}
 
 
