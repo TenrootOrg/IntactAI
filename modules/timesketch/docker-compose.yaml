@@ -45,6 +45,18 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+      # 5-minute grace period during initial start. OpenSearch loads
+      # ~24 plugins + bootstraps a single-node cluster, which on
+      # memory-constrained hosts (heap is 2 GB, total RAM often <16 GB
+      # with ELK + IRIS + VolWeb running) can take 90-180 seconds.
+      # Without start_period, docker counts those slow boots as
+      # healthcheck failures (5 × 30s = 150s budget), marks the
+      # container "Error", and downstream services depending on
+      # service_healthy refuse to start — even though OpenSearch
+      # itself is fine. This was observed during a 20251219 -> 20260326
+      # Timesketch upgrade where opensearch went Started → Waiting →
+      # Error before reporting green.
+      start_period: 5m
 
   timesketch-redis:
     container_name: intact_timesketch_redis
