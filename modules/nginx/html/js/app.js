@@ -615,24 +615,6 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        async runRefreshSkills() {
-            this.showMessage('Refreshing DFIR skills from upstream...', 'info');
-            try {
-                const response = await fetch('/api/maintenance/refresh-skills', { method: 'POST' });
-                const result = await response.json();
-                if (response.ok && result.success) {
-                    this.showMessage('Skills refresh started - redirecting to Workflows', 'success');
-                    setTimeout(() => {
-                        Alpine.store('app').switchTab('workflows');
-                    }, 500);
-                } else {
-                    this.showMessage('Skills refresh failed: ' + (result.error || 'Unknown error'), 'error');
-                }
-            } catch (e) {
-                this.showMessage('Skills refresh error: ' + e.message, 'error');
-            }
-        },
-
         async generateSupportBundle() {
             this.saving = true;
             this.showMessage('Support bundle workflow starting...', 'info');
