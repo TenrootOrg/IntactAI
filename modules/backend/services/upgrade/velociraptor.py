@@ -267,7 +267,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
     try:
         # Stop container
         log("Stopping Velociraptor container...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log)
+        result = run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
         if not result['success']:
             raise Exception(f"Failed to stop Velociraptor: {result['error']}")
 
@@ -388,7 +388,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
             run_command(f"chmod +x {velo_bin}", logger=log)
 
         # Rebuild and restart with old version
-        run_command("docker compose down", cwd=work_dir, logger=log)
+        run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
         run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
         run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
 
@@ -487,7 +487,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
     try:
         # Stop container
         log("Stopping Velociraptor container...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log, run_id=run_id)
+        result = run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to stop Velociraptor: {result['error']}")
 
@@ -654,7 +654,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
             run_command(f"chmod +x {velo_bin}", logger=log)
 
         # Rebuild and restart with old version
-        run_command("docker compose down", cwd=work_dir, logger=log)
+        run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
         run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
         run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
 

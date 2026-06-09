@@ -48,7 +48,7 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
     try:
         # Stop containers
         log("Stopping ELK containers...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log)
+        result = run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
         if not result['success']:
             raise Exception(f"Failed to stop ELK: {result['error']}")
 
@@ -126,7 +126,7 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
         # Restore the backup .env file
         if restore_env_file(env_file, backup_file, logger=log):
             # Stop failed containers and restart with old version
-            run_command("docker compose down", cwd=work_dir, logger=log)
+            run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
             run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
             log(f"ROLLED BACK to version {current_version}", "warning")
 
@@ -159,7 +159,7 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None,
     try:
         # Stop containers
         log("Stopping ELK containers...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log, run_id=run_id)
+        result = run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to stop ELK: {result['error']}")
 
@@ -236,7 +236,7 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None,
         # Restore the backup .env file
         if restore_env_file(env_file, backup_file, logger=log):
             # Stop failed containers and restart with old version
-            run_command("docker compose down", cwd=work_dir, logger=log)
+            run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
             run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
             log(f"ROLLED BACK to version {current_version}", "warning")
 

@@ -205,7 +205,19 @@ run_docker_compose() {
                         echo "    $line"
                     fi
                 done
-                exit "${PIPESTATUS[0]}"
+                rc="${PIPESTATUS[0]}"
+                # Same failure-visibility pattern as the compose-up branch
+                # below: on non-zero exit, surface the actual error instead
+                # of forcing the operator to grep the log file.
+                if [[ $rc -ne 0 ]]; then
+                    echo ""
+                    echo "    ============================================================"
+                    echo "    docker compose build FAILED (exit $rc) — last 30 lines:"
+                    echo "    ============================================================"
+                    tail -30 "$2" | sed "s/^/      /"
+                    echo "    ============================================================"
+                fi
+                exit "$rc"
             ' _ "$cwd" "$LOG_FILE"
         return $?
     else
@@ -226,7 +238,27 @@ run_docker_compose() {
                             echo "    $line"
                         fi
                     done
-                exit "${PIPESTATUS[0]}"
+                rc="${PIPESTATUS[0]}"
+                # On failure, dump the full last 30 lines from the log file to
+                # the terminal so the operator sees the actual error
+                # immediately, not just a generic "deploy failed" line. The log
+                # file already has the full output via `tee -a "$2"` above —
+                # this just makes it visible without forcing a hunt through
+                # thousands of lines. Real-world bug: the volume-mount race
+                # `failed to mkdir .../volweb_media/_data/symbols: file exists`
+                # was buried in the install log on a fresh-machine install and
+                # the operator could not tell why volweb deployment failed.
+                if [[ $rc -ne 0 ]]; then
+                    echo ""
+                    echo "    ============================================================"
+                    echo "    docker compose up FAILED (exit $rc) — last 30 lines of full output:"
+                    echo "    ============================================================"
+                    tail -30 "$2" | sed "s/^/      /"
+                    echo "    ============================================================"
+                    echo "    Full log: $2"
+                    echo "    ============================================================"
+                fi
+                exit "$rc"
             ' _ "$up_cwd" "$LOG_FILE"
         return $?
     fi

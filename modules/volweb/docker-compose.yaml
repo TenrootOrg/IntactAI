@@ -169,9 +169,22 @@ services:
     image: "forensicxlab/volweb-backend:${VOLWEB_BACKEND_VERSION}"
     command: celery -A backend worker --loglevel=INFO -Q yarascan --concurrency 1
     restart: unless-stopped
+    # Wait for intact_volweb_workers to be "started" before mounting the
+    # shared volweb_media volume. The workers entrypoint creates
+    # /home/app/web/media/symbols (and other subdirs) during init. Without
+    # this serialization, fresh-install brings BOTH worker containers up in
+    # parallel; whichever races to create `symbols/` second hits
+    #   failed to mkdir /var/lib/docker/volumes/volweb_volweb_media/_data/symbols:
+    #   file exists
+    # and crashes. The first-time-install error the user hit on 2026-06-09
+    # (install_20260609_114003.log:6008) was exactly this race. depends_on
+    # with condition: service_started is a one-shot wait — once workers
+    # is up, yarascan launches; afterwards Docker's restart policy keeps
+    # both alive independently as designed.
     depends_on:
       - intact_volweb_redis
       - intact_volweb_postgresdb
+      - intact_volweb_workers
     environment:
       - DATABASE=postgres
       - DATABASE_HOST=intact_volweb_postgresdb

@@ -586,7 +586,7 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
     try:
         # Stop containers
         log("Stopping Timesketch containers...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log)
+        result = run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
         if not result['success']:
             raise Exception(f"Failed to stop Timesketch: {result['error']}")
 
@@ -695,7 +695,7 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
         # Restore backup files
         rollback_env_ok = restore_env_file(env_file, ts_backup, logger=log)
         if rollback_env_ok:
-            run_command("docker compose down", cwd=work_dir, logger=log)
+            run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
             run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
             log(f"ROLLED BACK Timesketch config to version {current_version}", "warning")
 
@@ -783,7 +783,7 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
     try:
         # Stop containers
         log("Stopping Timesketch containers...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log, run_id=run_id)
+        result = run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to stop Timesketch: {result['error']}")
 
@@ -891,7 +891,7 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
 
         rollback_env_ok = restore_env_file(env_file, ts_backup, logger=log)
         if rollback_env_ok:
-            run_command("docker compose down", cwd=work_dir, logger=log)
+            run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
             run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
             log(f"ROLLED BACK Timesketch config to version {current_version}", "warning")
 

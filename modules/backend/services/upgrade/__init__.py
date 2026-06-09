@@ -95,7 +95,7 @@ def reset_module_database(module_name: str, logger: Callable = None) -> bool:
 
     # Stop containers first
     log(f"Stopping {module_name} containers...", "info")
-    run_command("docker compose down", cwd=module_dir, logger=log)
+    run_command("docker compose down --remove-orphans", cwd=module_dir, logger=log)
 
     # Remove volumes
     for volume in RESET_VOLUMES[module_name]:
