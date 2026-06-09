@@ -3415,6 +3415,77 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 </button>
                             </div>
 
+                            <!-- Clean Unused Images (smart classifier) -->
+                            <div class="p-4 bg-gray-900 rounded-lg border border-gray-700" x-data="{ open: false }">
+                                <div class="flex items-center justify-between">
+                                    <div>
+                                        <h4 class="text-white font-medium">Clean Unused Images</h4>
+                                        <p class="text-gray-400 text-sm">Reclaim disk from older Docker image versions left behind by previous upgrades. Module-aware: never deletes the current pinned version of any module (Plaso, Velociraptor, etc.) even when Docker says "unused".</p>
+                                    </div>
+                                    <button @click="open = !open; if (open) $store.settings.loadUnusedImages()" :disabled="$store.settings.imagesLoading" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a2 2 0 012-2h2a2 2 0 012 2v3"></path>
+                                        </svg>
+                                        <span x-text="open ? 'Close' : 'Review Images'"></span>
+                                    </button>
+                                </div>
+                                <div x-show="open" x-transition class="mt-4 space-y-3">
+                                    <div x-show="$store.settings.imagesLoading" class="text-gray-400 text-sm">Loading image inventory...</div>
+                                    <div x-show="!$store.settings.imagesLoading && $store.settings.imagesData">
+                                        <div class="p-3 bg-gray-800 rounded text-sm">
+                                            <div class="text-white font-medium" x-text="`Safely reclaimable: ${$store.settings.imagesData?.reclaimable_safe_label || '0 B'}`"></div>
+                                            <div class="text-gray-400 text-xs mt-1">Default selection = older module versions + dangling layers. Current versions and base images are never deleted automatically.</div>
+                                        </div>
+                                        <!-- Category groups -->
+                                        <template x-for="cat in ['module:older','dangling','base/sidecar','unknown','module:current','in-use']" :key="cat">
+                                            <div class="mt-3" x-show="($store.settings.imagesData?.categories?.[cat] || []).length > 0">
+                                                <div class="flex items-center gap-2 mb-1">
+                                                    <span class="font-medium text-sm"
+                                                          :class="{
+                                                              'text-green-400': cat === 'module:older' || cat === 'dangling',
+                                                              'text-yellow-400': cat === 'base/sidecar' || cat === 'unknown',
+                                                              'text-gray-500': cat === 'module:current' || cat === 'in-use'
+                                                          }"
+                                                          x-text="cat"></span>
+                                                    <span class="text-xs text-gray-500" x-text="`${($store.settings.imagesData.categories[cat] || []).length} images · ${$store.settings.imagesData.totals_label[cat]}`"></span>
+                                                    <span x-show="cat === 'module:older' || cat === 'dangling'" class="text-xs text-green-500">(safe to delete)</span>
+                                                    <span x-show="cat === 'module:current' || cat === 'in-use'" class="text-xs text-red-400">(protected — cannot delete)</span>
+                                                </div>
+                                                <div class="space-y-1">
+                                                    <template x-for="img in ($store.settings.imagesData.categories[cat] || [])" :key="img.image_id">
+                                                        <label class="flex items-center gap-3 p-2 bg-gray-800 rounded hover:bg-gray-700 cursor-pointer" :class="{'opacity-50': cat === 'module:current' || cat === 'in-use'}">
+                                                            <input type="checkbox"
+                                                                   :disabled="cat === 'module:current' || cat === 'in-use'"
+                                                                   :checked="$store.settings.imagesSelected.has(img.image_id || img.ref)"
+                                                                   @change="$store.settings.toggleImage(img)"
+                                                                   class="w-4 h-4">
+                                                            <code class="flex-1 text-xs text-gray-300" x-text="img.ref || img.image_id"></code>
+                                                            <span class="text-xs text-gray-400 w-20 text-right" x-text="img.size_label"></span>
+                                                            <span class="text-xs text-gray-500 w-32 truncate" x-text="img.reason"></span>
+                                                        </label>
+                                                    </template>
+                                                </div>
+                                            </div>
+                                        </template>
+                                        <!-- Selected total + actions -->
+                                        <div class="mt-4 p-3 bg-gray-800 rounded flex items-center justify-between">
+                                            <div class="text-sm">
+                                                <span class="text-white" x-text="`${$store.settings.imagesSelected.size} selected`"></span>
+                                                <span class="text-gray-400 ml-2" x-text="`(${$store.settings.selectedBytesLabel()})`"></span>
+                                            </div>
+                                            <div class="flex gap-2">
+                                                <button @click="$store.settings.loadUnusedImages()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-xs">Refresh</button>
+                                                <button @click="$store.settings.pruneSelectedImages()"
+                                                        :disabled="$store.settings.imagesSelected.size === 0 || $store.settings.imagesPruning"
+                                                        class="bg-red-600 hover:bg-red-700 disabled:bg-red-900 disabled:text-gray-500 px-3 py-1 rounded text-xs">
+                                                    <span x-text="$store.settings.imagesPruning ? 'Removing...' : 'Reclaim Selected'"></span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
                             <!-- Generate Support Bundle -->
                             <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
                                 <div>

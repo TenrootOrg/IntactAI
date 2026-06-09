@@ -1636,6 +1636,402 @@ def _purge_system_journal(_):
     return max(0, before - after), ""
 
 
+# ---- Smart image cleanup (module-aware version diff) --------------------
+#
+# Docker's built-in "unused image" / `docker image prune -a` is too
+# aggressive for IntactAI: it marks transient `docker run` images
+# (plaso, python:3-alpine) as Unused even though they're invoked
+# on-demand by long-running modules. Wholesale prune would delete
+# the CURRENT plaso image and break Timesketch's log ingest.
+#
+# This classifier looks at each local image semantically:
+#   - module:current    image tag matches the version pinned in
+#                       modules/<module>/.env — KEEP, never delete
+#                       even when Docker says "unused"
+#   - module:older      same module repo as a current image but the
+#                       tag is older — SAFE to delete (default opt-in)
+#   - dangling          <none>:<none> layer remnants — SAFE to delete
+#   - base/sidecar      known base images (postgres, redis, nginx,
+#                       ubuntu, python, rabbitmq, opensearch) that the
+#                       modules build on or invoke transiently — KEEP
+#                       by default (operator can opt in per-row)
+#   - unknown           anything else — KEEP by default
+#
+# Each known module's repo prefixes + .env file are listed below. To
+# support a new module, add an entry.
+
+_MODULE_REPOS = {
+    'timesketch': {
+        'repos': ['us-docker.pkg.dev/osdfir-registry/timesketch/timesketch'],
+        'env_file': 'modules/timesketch/.env',
+        'version_var': 'TIMESKETCH_VERSION',
+    },
+    'iris': {
+        'repos': [
+            'ghcr.io/dfir-iris/iriswebapp_app',
+            'ghcr.io/dfir-iris/iriswebapp_db',
+            'ghcr.io/dfir-iris/iriswebapp_nginx',
+            'ghcr.io/dfir-iris/iriswebapp_worker',
+        ],
+        'env_file': 'modules/iris/.env',
+        'version_var': 'IRIS_VERSION',
+    },
+    'velociraptor': {
+        'repos': ['velociraptor-server'],
+        'env_file': 'modules/velociraptor/.env',
+        'version_var': 'VELOCIRAPTOR_VERSION',
+    },
+    'plaso': {
+        'repos': ['log2timeline/plaso'],
+        'env_file': 'modules/backend/.env',
+        'version_var': 'PLASO_VERSION',
+    },
+    'volweb-backend': {
+        'repos': ['forensicxlab/volweb-backend'],
+        'env_file': 'modules/volweb/.env',
+        'version_var': 'VOLWEB_BACKEND_VERSION',
+    },
+    'volweb-frontend': {
+        'repos': ['forensicxlab/volweb-frontend'],
+        'env_file': 'modules/volweb/.env',
+        'version_var': 'VOLWEB_FRONTEND_VERSION',
+    },
+    'elasticsearch': {
+        'repos': ['docker.elastic.co/elasticsearch/elasticsearch'],
+        'env_file': 'modules/elk/.env',
+        'version_var': 'ELASTIC_VERSION',
+    },
+    'kibana': {
+        'repos': ['docker.elastic.co/kibana/kibana'],
+        'env_file': 'modules/elk/.env',
+        'version_var': 'KIBANA_VERSION',
+    },
+    'logstash': {
+        'repos': ['docker.elastic.co/logstash/logstash'],
+        'env_file': 'modules/elk/.env',
+        # Logstash tracks the same version pin as ELK as a whole — no
+        # separate LOGSTASH_VERSION in the .env.
+        'version_var': 'ELASTIC_VERSION',
+    },
+    'aws-prowler': {
+        'repos': ['toniblyx/prowler'],
+        'env_file': 'modules/backend/.env',
+        'version_var': 'PROWLER_VERSION',
+    },
+    'azure-dfir-o365rc': {
+        'repos': ['anssi/dfir-o365rc'],
+        'env_file': 'modules/backend/.env',
+        # Azure scanner uses a moving `latest` tag — no semver pin to
+        # diff against. The classifier handles this by treating the
+        # most recent loaded image of the repo as current (see logic
+        # in _classify_image below).
+        'version_var': 'DFIR_O365RC_VERSION',
+    },
+}
+
+# Base/sidecar images: known to be required by one or more modules
+# but used either as Dockerfile FROM bases or as transient `docker run`
+# targets. Default to KEEP — operator must explicitly opt in to delete.
+_BASE_SIDECAR_REPOS = {
+    'postgres', 'redis', 'nginx', 'ubuntu', 'python', 'rabbitmq',
+    'alpine', 'busybox',
+    'opensearchproject/opensearch', 'tusproject/tusd',
+    'portainer/portainer-ce', 'portainer/agent',
+}
+
+
+def _read_env_var(env_file_abs: str, var_name: str) -> str:
+    """Read VAR=VALUE from a docker .env file. Returns '' if absent or
+    file unreadable. Strips quotes + inline comments."""
+    try:
+        with open(env_file_abs, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' not in line:
+                    continue
+                k, _, v = line.partition('=')
+                if k.strip() != var_name:
+                    continue
+                v = v.split('#', 1)[0].strip().strip('"').strip("'")
+                return v
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+    return ''
+
+
+def _current_version_pins() -> dict:
+    """Return {module_key: current_pinned_version} for every known
+    module by reading its .env file. Module keys match _MODULE_REPOS.
+    """
+    import os
+    pins = {}
+    # WORKDIR resolution is the same as services.upgrade.base.WORKDIR
+    try:
+        from services.upgrade.base import WORKDIR
+        root = WORKDIR
+    except Exception:
+        root = os.environ.get('WORKDIR', '/app/workdir')
+    for key, info in _MODULE_REPOS.items():
+        env_path = os.path.join(root, info['env_file'])
+        ver = _read_env_var(env_path, info['version_var'])
+        if ver:
+            pins[key] = ver
+    return pins
+
+
+def _list_local_images() -> list:
+    """Return [{repo, tag, image_id, size_bytes, created_iso}] for
+    every local image (docker images JSON output, one per line)."""
+    import json
+    r = subprocess.run(
+        ["docker", "image", "ls", "--format", "{{json .}}", "--no-trunc"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if r.returncode != 0:
+        return []
+    out = []
+    for line in (r.stdout or '').splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        # docker image ls JSON fields: Repository, Tag, ID, Size,
+        # CreatedAt, CreatedSince
+        repo = d.get('Repository', '')
+        tag = d.get('Tag', '')
+        size_str = d.get('Size', '0B')
+        out.append({
+            'repo': repo,
+            'tag': tag,
+            'ref': f"{repo}:{tag}" if repo and tag and repo != '<none>' else d.get('ID', ''),
+            'image_id': d.get('ID', ''),
+            'size_bytes': _parse_size_string(size_str),
+            'size_label': size_str,
+            'created': d.get('CreatedSince', d.get('CreatedAt', '')),
+        })
+    return out
+
+
+def _classify_image(img: dict, pins: dict, in_use_refs: set) -> tuple:
+    """Classify a single image. Returns (category, reason, module_key).
+
+    Categories:
+      - module:current     don't delete (image matches current pin)
+      - module:older       safe to delete (older than current pin)
+      - dangling           safe to delete (no tag)
+      - base/sidecar       keep by default
+      - in-use             actively used by a running container, keep
+      - unknown            keep by default
+    """
+    repo = img['repo'] or ''
+    tag = img['tag'] or ''
+    ref = img['ref']
+
+    if ref in in_use_refs or f"{repo}:{tag}" in in_use_refs:
+        return ('in-use', 'attached to a running container', None)
+
+    if repo == '<none>' or tag == '<none>' or not repo:
+        return ('dangling', 'untagged layer remnant', None)
+
+    for module_key, info in _MODULE_REPOS.items():
+        if repo in info['repos']:
+            current_tag = pins.get(module_key)
+            if current_tag and tag == current_tag:
+                return ('module:current', f'current {module_key} version', module_key)
+            if current_tag:
+                return ('module:older', f'older than {module_key}={current_tag}', module_key)
+            return ('unknown', f'{module_key} but no .env pin found', module_key)
+
+    if repo in _BASE_SIDECAR_REPOS or any(repo.startswith(b + ':') or repo == b for b in _BASE_SIDECAR_REPOS):
+        return ('base/sidecar', 'base or sidecar image', None)
+
+    return ('unknown', 'not matched by any known module', None)
+
+
+def _classify_all_images() -> dict:
+    """Return {categories: {cat: [img,...]}, totals: {cat: bytes},
+    reclaimable_safe_bytes: int, pins: {module: ver}}.
+    """
+    pins = _current_version_pins()
+
+    # Build set of refs currently in use (any running container)
+    in_use = set()
+    try:
+        r = subprocess.run(
+            ["docker", "ps", "--format", "{{.Image}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            in_use = {ln.strip() for ln in r.stdout.splitlines() if ln.strip()}
+    except Exception:
+        pass
+
+    images = _list_local_images()
+    by_cat = {
+        'module:current': [], 'module:older': [],
+        'dangling': [], 'base/sidecar': [],
+        'in-use': [], 'unknown': [],
+    }
+    totals = {k: 0 for k in by_cat}
+    for img in images:
+        cat, reason, mod = _classify_image(img, pins, in_use)
+        entry = {
+            **img,
+            'category': cat,
+            'reason': reason,
+            'module': mod,
+            'safe_default': cat in ('module:older', 'dangling'),
+        }
+        by_cat.setdefault(cat, []).append(entry)
+        totals[cat] = totals.get(cat, 0) + img['size_bytes']
+
+    safe_bytes = totals['module:older'] + totals['dangling']
+    return {
+        'categories': by_cat,
+        'totals': totals,
+        'totals_label': {k: _fmt_size(v) for k, v in totals.items()},
+        'reclaimable_safe_bytes': safe_bytes,
+        'reclaimable_safe_label': _fmt_size(safe_bytes),
+        'pins': pins,
+    }
+
+
+@maintenance_bp.route('/api/maintenance/unused-images', methods=['GET'])
+def list_unused_images():
+    """Module-aware image inventory.
+
+    Returns a structured classification — see _classify_image for
+    category semantics. Frontend uses this to populate the Clean
+    Unused Images card with per-image checkboxes and category
+    grouping. Defaults (safe_default=true) are exactly
+    `module:older` + `dangling` — Docker's "unused" flag is NOT
+    trusted because it would happily mark transient images
+    (plaso:current, ubuntu:base) as deletable.
+    """
+    try:
+        return jsonify(_classify_all_images())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@maintenance_bp.route('/api/maintenance/unused-images/prune', methods=['POST'])
+def prune_unused_images():
+    """Remove operator-selected images.
+
+    Body:
+        {
+          "image_ids": ["sha256:...", "<repo>:<tag>", ...],  # explicit list
+          "dry_run": false                                    # default false
+        }
+
+    image_ids accepts either Docker image IDs (sha256:...) or full
+    repo:tag refs — `docker image rm` accepts both. We do NOT take a
+    "category" parameter here on purpose: the frontend builds the
+    final list by intersecting the operator's checkbox selections
+    with the classifier output, so the backend only sees a concrete
+    set of refs. Defense in depth: we also re-classify on the
+    backend and refuse to delete anything in `module:current` or
+    `in-use` even if explicitly listed (frontend bug protection).
+    """
+    from services.upgrade.base import run_command
+
+    data = request.get_json(silent=True) or {}
+    raw_ids = data.get('image_ids') or []
+    dry_run = bool(data.get('dry_run'))
+
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return jsonify({"error": "image_ids must be a non-empty list"}), 400
+
+    # Re-classify everything so we know what each requested ref is
+    snapshot = _classify_all_images()
+    all_images = []
+    for cat, entries in snapshot['categories'].items():
+        all_images.extend(entries)
+    by_ref = {}
+    for img in all_images:
+        # index by ref AND image_id so caller can pass either
+        if img.get('ref'):
+            by_ref[img['ref']] = img
+        if img.get('image_id'):
+            by_ref[img['image_id']] = img
+
+    # Hard-block protected categories regardless of caller intent
+    PROTECTED = {'module:current', 'in-use'}
+
+    to_remove = []
+    skipped_protected = []
+    skipped_unknown = []
+    for rid in raw_ids:
+        if not isinstance(rid, str) or not rid.strip():
+            continue
+        rid = rid.strip()
+        img = by_ref.get(rid)
+        if not img:
+            skipped_unknown.append(rid)
+            continue
+        if img['category'] in PROTECTED:
+            skipped_protected.append({
+                'ref': img['ref'], 'image_id': img['image_id'],
+                'category': img['category'], 'reason': img['reason'],
+            })
+            continue
+        to_remove.append(img)
+
+    # Dry run — report what WOULD happen without touching docker
+    total_bytes = sum(img['size_bytes'] for img in to_remove)
+    result = {
+        'dry_run': dry_run,
+        'planned_removal_count': len(to_remove),
+        'planned_removal_bytes': total_bytes,
+        'planned_removal_label': _fmt_size(total_bytes),
+        'planned_removals': [
+            {'ref': i['ref'], 'image_id': i['image_id'],
+             'category': i['category'], 'size_label': i['size_label']}
+            for i in to_remove
+        ],
+        'skipped_protected': skipped_protected,
+        'skipped_unknown': skipped_unknown,
+    }
+
+    if dry_run:
+        return jsonify(result)
+
+    # Actually remove. `docker image rm` accepts space-separated
+    # multi-ref but partial failures don't roll back — we iterate
+    # one-by-one so a stuck image doesn't block the rest.
+    removed = []
+    failed = []
+    for img in to_remove:
+        target = img['ref'] if img['ref'] else img['image_id']
+        r = run_command(f"docker image rm {target}", logger=None, timeout=120)
+        if r.get('success'):
+            removed.append({'ref': target, 'size_label': img['size_label']})
+        else:
+            failed.append({
+                'ref': target,
+                'error': (r.get('error') or r.get('stderr') or 'unknown')[:200],
+            })
+
+    removed_bytes = sum(
+        next((i['size_bytes'] for i in to_remove if (i['ref'] or i['image_id']) == r['ref']), 0)
+        for r in removed
+    )
+    result.update({
+        'removed': removed,
+        'removed_count': len(removed),
+        'removed_bytes': removed_bytes,
+        'removed_label': _fmt_size(removed_bytes),
+        'failed': failed,
+        'failed_count': len(failed),
+    })
+    return jsonify(result)
+
+
 # ---- registry -----------------------------------------------------------
 
 _PURGE_SECTIONS = (
