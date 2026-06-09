@@ -175,19 +175,47 @@ def schedule_backend_restart():
 
 
 def restart_nginx(log: Callable) -> bool:
-    """Restart nginx container."""
-    log("Restarting nginx to refresh DNS resolution...", "info")
-    try:
-        nginx_result = run_command("docker restart intact_nginx", logger=log)
-        if nginx_result.get('success'):
-            log("Nginx restarted successfully", "success")
-            return True
-        else:
-            log(f"WARNING: Nginx restart failed: {nginx_result.get('error', 'unknown')}", "warning")
-            return False
-    except Exception as nginx_error:
-        log(f"WARNING: Could not restart Nginx: {nginx_error}", "warning")
+    """Restart the main intact_nginx AND every per-module *_nginx.
+
+    Every nginx container resolves its upstream hostname ONCE at
+    startup. If an upstream is recreated after the nginx started,
+    nginx keeps the stale IP (or worse, the cached "no such host"
+    NXDOMAIN) and returns 502 forever. This bit us on fresh-install
+    apply with Timesketch — install_timesketch_offline brings up
+    intact_timesketch_nginx + intact_timesketch_web in the same
+    compose, but the main intact_nginx was already running from
+    install.sh and had cached "no upstream" for intact_timesketch_nginx.
+
+    Restarting only intact_nginx (the previous behavior) refreshed
+    the main reverse-proxy's cache, but missed the per-module nginxes
+    that ALSO need refreshing when their upstream web containers come
+    up. Mirrors lib/health.sh:refresh_nginx_upstreams.
+    """
+    log("Refreshing per-module nginx DNS caches...", "info")
+    # Find every nginx container — both the main intact_nginx and any
+    # per-module intact_*_nginx that's currently running.
+    list_cmd = "docker ps --filter 'name=intact_' --format '{{.Names}}'"
+    listing = run_command(list_cmd, logger=None, timeout=10)
+    names = []
+    if listing.get('success'):
+        for n in (listing.get('stdout', '') or '').splitlines():
+            n = n.strip()
+            if n and (n == 'intact_nginx' or n.endswith('_nginx')):
+                names.append(n)
+
+    if not names:
+        log("  No nginx containers found to refresh.", "warning")
         return False
+
+    ok = True
+    for name in names:
+        result = run_command(f"docker restart {name}", logger=None, timeout=60)
+        if result.get('success'):
+            log(f"  Restarted {name} (cleared upstream DNS cache)", "success")
+        else:
+            log(f"  WARNING: Failed to restart {name}: {result.get('error', '')[:160]}", "warning")
+            ok = False
+    return ok
 
 
 def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str = 'online',

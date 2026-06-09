@@ -919,7 +919,20 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
 
 
 def install_timesketch_offline(package_dir: str, version: str, logger=None, run_id=None) -> Dict:
-    """Fresh-install Timesketch — picked when intact_timesketch_web absent."""
+    """Fresh-install Timesketch — picked when intact_timesketch_web absent.
+
+    Three stages after `docker compose up -d`, matching what
+    `lib/modules.sh:deploy_timesketch` does for the install.sh path:
+      1. Poll for the postgres `user` table to materialize (the
+         Timesketch web container creates the schema lazily via
+         SQLAlchemy create_all on first start — typically ~10-30s).
+      2. Create the admin user from config.yaml via `tsctl create-user`.
+      3. Enable + make-admin so backend API auth works.
+
+    Without these, the install reports success but the backend can
+    never reach the Timesketch API because no admin user exists →
+    the operator sees "Timesketch shows no connection" in the UI.
+    """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     from .base import install_module_compose_up
     work_dir = os.path.join(WORKDIR, 'modules', 'timesketch')
@@ -927,8 +940,79 @@ def install_timesketch_offline(package_dir: str, version: str, logger=None, run_
     log(f"Installing Timesketch (first-time) -> {version or 'tracked default'}...", "info")
     if os.path.exists(env_file) and version:
         update_env_file(env_file, 'TIMESKETCH_VERSION', version, logger=log)
-    return install_module_compose_up(
+
+    compose_result = install_module_compose_up(
         'timesketch', package_dir, version,
         image_tar_prefixes=['timesketch'],
         logger=log, run_id=run_id,
     )
+    if not compose_result.get('success'):
+        return compose_result
+
+    # Post-install bootstrap — make the stack actually usable.
+    log("Timesketch containers up. Bootstrapping schema + admin user...", "info")
+
+    # Stage 1: poll for the postgres user table. The web container
+    # creates the schema lazily via SQLAlchemy create_all() on first
+    # start; tsctl create-user races it if we call it too early.
+    #
+    # `to_regclass('public."user"')` returns the regclass formatted as
+    # the table name with double-quotes preserved when the identifier
+    # is a reserved word — so the output we get back is literally
+    # `"user"` (3 chars: quote, "user", quote), NOT bare `user`. An
+    # earlier attempt failed by checking `out == 'user'` which never
+    # matched. Use a substring check so both shapes work and we don't
+    # bind to the exact format psql happens to print.
+    log("Waiting for Timesketch postgres `user` table to materialize...", "info")
+    schema_ready = False
+    waited = 0
+    while waited < 120:
+        probe = run_command(
+            'docker exec intact_timesketch_postgres psql -U timesketch -d timesketch '
+            '-tAc "SELECT to_regclass(\'public.\\"user\\"\');"',
+            logger=None, timeout=10,
+        )
+        out = (probe.get('stdout', '') or '').strip().strip('"')
+        # Empty / "NULL" → table doesn't exist yet (postgres returns
+        # NULL for to_regclass on a missing relation). Anything else
+        # non-empty IS a regclass identifier — i.e. the table exists.
+        if out and out.upper() != 'NULL':
+            schema_ready = True
+            log(f"  Timesketch `user` table is present ({waited}s)", "success")
+            break
+        time.sleep(2)
+        waited += 2
+
+    if not schema_ready:
+        log(
+            "Timesketch postgres `user` table did not appear after 120s — "
+            "the web container may still be initializing. Admin user "
+            "creation skipped; operator should run `docker exec "
+            "intact_timesketch_web tsctl create-user <id> --password <pw>` "
+            "manually once the schema is ready.",
+            "warning",
+        )
+        # Return compose-up success — containers ARE running, just not
+        # fully usable yet. Surfacing as success-with-warning so the
+        # orchestration's cascade resilience continues with other modules.
+        return compose_result
+
+    # Stage 2 + 3: create + enable admin user from config.yaml.
+    # Reuses the existing helper which already handles read-config,
+    # tsctl create-user, and make-admin.
+    try:
+        from . import recreate_timesketch_user  # avoid top-level circular
+    except ImportError:
+        from services.upgrade import recreate_timesketch_user
+    if recreate_timesketch_user(logger=log):
+        log("Timesketch admin user created — backend API ready", "success")
+    else:
+        log(
+            "Timesketch admin user creation FAILED. Containers are up but "
+            "the backend cannot authenticate to the Timesketch API. Fix "
+            "manually with `docker exec intact_timesketch_web tsctl "
+            "create-user <id> --password <pw>` then `tsctl make-admin <id>`.",
+            "warning",
+        )
+
+    return compose_result
