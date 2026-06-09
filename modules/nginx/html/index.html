@@ -3449,7 +3449,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                     <h4 class="text-white font-medium">Online Upgrade</h4>
                                     <p class="text-gray-400 text-sm">Internet-connected: download modules &amp; apply in one workflow. Skips the intermediate package file.</p>
                                 </div>
-                                <button @click="$store.settings.openOnlineUpgradeModal()" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                <button @click="$store.settings.openOnlineUpgradeModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
                                     </svg>
@@ -3479,7 +3479,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                         <p class="text-gray-400 text-sm">Upload upgrade package for air-gapped installation</p>
                                     </div>
                                     <input type="file" id="upgrade-package-input" accept=".tar.gz,.tgz" class="hidden" @change="$store.settings.importUpgradePackage($event)">
-                                    <button @click="document.getElementById('upgrade-package-input').click()" class="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <button @click="document.getElementById('upgrade-package-input').click()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
                                         </svg>
@@ -4175,10 +4175,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 Cancel
                             </button>
                             <button @click="$store.settings.startPackagePreparation()" :disabled="$store.settings.prepareLoading"
-                                    class="disabled:opacity-60 px-4 py-2 rounded text-sm font-medium flex items-center gap-2"
-                                    :class="$store.settings.prepareModalMode === 'online'
-                                            ? 'bg-green-600 hover:bg-green-700'
-                                            : 'bg-blue-600 hover:bg-blue-700'">
+                                    class="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 px-4 py-2 rounded text-sm font-medium flex items-center gap-2">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                           :d="$store.settings.prepareModalMode === 'online'
