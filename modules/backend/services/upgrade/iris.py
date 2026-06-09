@@ -142,6 +142,15 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
             else:
                 log(f"  Image not found: {tar_path}", "warning")
 
+        # Infrastructure deps: rabbitmq is a fixed-version dep declared
+        # in IRIS compose. Load it if bundled (newer packages include
+        # it for offline support; older packages don't — falling
+        # through to docker-hub pull is fine when there's internet).
+        rabbitmq_tar = os.path.join(images_dir, 'rabbitmq-3-management-alpine.tar')
+        if os.path.exists(rabbitmq_tar):
+            log("  Loading bundled rabbitmq image (infrastructure dep)...", "info")
+            load_docker_image(rabbitmq_tar, logger=log, run_id=run_id)
+
         # Update version in .env
         log(f"Updating version to {version}...", "info")
         update_env_file(env_file, 'IRIS_VERSION', version, logger=log)

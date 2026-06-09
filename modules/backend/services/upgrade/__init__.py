@@ -463,6 +463,21 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'volweb': lambda v, **kw: upgrade_volweb_offline(package_dir, v, **kw),
             'intact': lambda **kw: upgrade_intact_offline(package_dir, **kw),
         }
+        # Install-vs-upgrade dispatch (Phase-2 needs the same auto-detect
+        # the main loop has — otherwise a fresh install hits Phase 1
+        # for intact, then Phase 2 runs UPGRADE functions for modules
+        # whose containers don't exist yet, and they fail with cryptic
+        # "No such container" errors or report false success.
+        # See the 2026-06-08 fresh-install log where iris/timesketch
+        # both crashed because their upgrade fns tried to docker-exec
+        # into containers that hadn't been created yet.
+        install_functions = {
+            'elk':          lambda v, **kw: install_elk_offline(package_dir, v, **kw),
+            'timesketch':   lambda v, **kw: install_timesketch_offline(package_dir, v, **kw),
+            'iris':         lambda v, **kw: install_iris_offline(package_dir, v, **kw),
+            'velociraptor': lambda v, **kw: install_velociraptor_offline(package_dir, v, **kw),
+            'volweb':       lambda v, **kw: install_volweb_offline(package_dir, v, **kw),
+        }
     else:
         upgrade_functions = {
             'elk': upgrade_elk,
@@ -472,6 +487,13 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'velociraptor': upgrade_velociraptor,
             'intact': upgrade_intact,
         }
+        # Online mode doesn't currently expose install_* — operator
+        # is expected to have run install.sh first. Keep as-is.
+        install_functions = {}
+
+    # Reuse the container-existence detector — same source of truth
+    # the main run_offline_upgrade_workflow uses.
+    from .base import _module_container_exists
 
     results = {}
     overall_status = "success"
@@ -490,9 +512,23 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             target_version = modules[module_name]
             current = current_versions.get(module_name, {}).get('current', 'unknown')
 
+            # Install-vs-upgrade dispatch: pick the install function
+            # when the module's primary container is absent (fresh-
+            # install Phase 2 case). Otherwise use the upgrade function
+            # (the running-stack case the offline-upgrade flow was
+            # originally designed for). Same logic as the main loop.
+            install_fn = install_functions.get(module_name)
+            module_present = _module_container_exists(module_name)
+            if install_fn and module_present is False:
+                action_word = "INSTALLING"
+                upgrade_fn = install_fn
+            else:
+                action_word = "UPGRADING"
+                upgrade_fn = upgrade_functions.get(module_name)
+
             log("", "info")
             log(f"{'='*50}", "info")
-            log(f"UPGRADING: {module_name.upper()}", "info")
+            log(f"{action_word}: {module_name.upper()}", "info")
             log(f"  Current version: {current}", "info")
             log(f"  Target version:  {target_version}", "info")
             log(f"{'='*50}", "info")
@@ -501,7 +537,6 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             if db_overwrite.get(module_name, False):
                 reset_module_database(module_name, logger=log)
 
-            upgrade_fn = upgrade_functions.get(module_name)
             if not upgrade_fn:
                 log(f"Unknown module: {module_name}", "error")
                 results[module_name] = {"success": False, "error": "Unknown module"}

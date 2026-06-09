@@ -32,6 +32,14 @@ DOCKER_IMAGES = {
         ('ghcr.io/dfir-iris/iriswebapp_app:{version}', 'iris-app-{version}.tar'),
         ('ghcr.io/dfir-iris/iriswebapp_nginx:{version}', 'iris-nginx-{version}.tar'),
         ('ghcr.io/dfir-iris/iriswebapp_db:{version}', 'iris-db-{version}.tar'),
+        # Infrastructure dep — IRIS compose pulls rabbitmq from Docker
+        # Hub at compose-up time. On an air-gapped or fresh-install
+        # target the pull fails ("No such image: rabbitmq:3-management-
+        # alpine") and the stack can't start. Bundle the image so the
+        # apply step can `docker load` it offline. The tag is fixed
+        # (infrastructure dep, not IRIS-version-coupled — same pattern
+        # as volweb's postgres + redis).
+        ('rabbitmq:3-management-alpine', 'rabbitmq-3-management-alpine.tar'),
     ],
     'aws': [
         # Prowler image for AWS posture scans (run on demand, no live container)
