@@ -699,9 +699,21 @@ def install_module_compose_up(
     # filesystem, not the container's — translate WORKDIR → HOST_PATH.
     host_work_dir = work_dir.replace(WORKDIR, HOST_PATH, 1)
     log(f"  docker compose up -d on {module_id}...", "info")
+    # CRITICAL: --pull never. Without it, docker compose 2.x interprets
+    # a compose service that has BOTH `image:` and `build:` (the
+    # velociraptor case) plus `pull_policy: build` as "force a rebuild
+    # every up", which then tries to `FROM ubuntu:22.04` and fails
+    # air-gapped with "failed to fetch anonymous token". With
+    # --pull never, compose uses the locally-loaded image (which
+    # load_all_bundled_images put in place) and skips the rebuild
+    # entirely. Air-gap testing on 2026-06-09 verified this is the
+    # specific knob that flips velociraptor install from broken to
+    # working in an air-gapped environment. The pre-existing
+    # `upgrade_*_offline` paths already pass --pull never for the
+    # same reason; only the install helper was missing it.
     r = run_command(
         f"docker compose -f {host_work_dir}/docker-compose.yaml "
-        f"--project-directory {host_work_dir} up -d",
+        f"--project-directory {host_work_dir} up -d --pull never",
         timeout=300, logger=log, run_id=run_id,
     )
     if not r.get('success'):
