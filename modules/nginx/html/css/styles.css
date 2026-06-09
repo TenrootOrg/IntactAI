@@ -57,6 +57,15 @@ body {
     background: linear-gradient(180deg, #0a0a12 0%, #000000 100%);
     min-height: 100vh;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    /* On smaller monitors, wide content (the Workflows table) can
+       force the body itself to scroll horizontally. When that
+       happens the fixed sidebar — anchored at document x=0 — gets
+       scrolled off the visible viewport, leaving only the empty
+       260px margin we reserved on .main-content. Contain the
+       horizontal overflow at the body so the only horizontal
+       scrolling happens inside `.overflow-x-auto` wrappers
+       (where it belongs). */
+    overflow-x: hidden;
     color: var(--text);
     -webkit-font-smoothing: antialiased;
 }
@@ -146,9 +155,11 @@ h1, h2, h3, .header-text {
 }
 
 /* Sidebar collapsed: 72px (see .sidebar-collapsed above). Main needs
-   matching margin so content slides over instead of being overlapped. */
+   matching margin so content slides over instead of being overlapped,
+   plus a matching max-width so children can't burst the viewport. */
 .main-content-collapsed {
     margin-left: 72px;
+    max-width: calc(100vw - 72px);
 }
 
 .sidebar-logo {
@@ -265,6 +276,13 @@ h1, h2, h3, .header-text {
        padding; the workflows page (wide table inside overflow-x-auto)
        exposes it as "sidebar disappears" on horizontal scroll. */
     margin-left: 260px;
+    /* Cap the rendering width so children that try to bust the
+       container (a wide <table class="w-full"> inside a wrapper
+       that *should* be the scroll context) can't push the body
+       horizontal. Without this, on a 1280px-wide monitor the
+       workflows table extended past viewport-right and the body
+       horizontal-scrolled, moving the fixed sidebar off-screen. */
+    max-width: calc(100vw - 260px);
     background: transparent;
     min-height: 100vh;
     position: relative;
