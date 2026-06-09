@@ -74,17 +74,19 @@ nano config.yaml
 sudo bash install.sh
 ```
 
-## Components
+## Services
 
-| Service | Description | Port |
-|---------|-------------|------|
-| **Dashboard** | Web interface | 80 |
-| **Velociraptor** | EDR/Forensics | 8000 (GUI), 8001 (Frontend) |
-| **ELK Stack** | Log Analytics | 9200 (ES), 5601 (Kibana) |
-| **TimeSketch** | Timeline Analysis | 5000 |
-| **IRIS** | Incident Response | 443 |
-| **Backend API** | Management API | 5001 |
-| **Portainer** | Container Management | 9443 |
+All services terminate TLS through the main nginx. Detailed port allocations (internal docker-network ports, agent comms, install/runtime egress) are in the [Network / Firewall Ports](#network--firewall-ports) section below.
+
+| Service | Description | Access |
+|---------|-------------|--------|
+| **Dashboard** | Web UI — workflows, blueprints, reports, settings | `https://YOUR_IP` |
+| **Velociraptor** | Endpoint forensics + remote collection (reverse-proxied — use `/velociraptor/`, not the upstream port directly) | `https://YOUR_IP/velociraptor/` |
+| **TimeSketch** | Timeline analysis — ingest Plaso super-timelines and pivot across multi-host investigations from a single view | `https://YOUR_IP:5000` |
+| **ELK Stack** | Searchable log store + visualization. Indexes Velociraptor artifact hunts and Sigma rule matches; Kibana is the analyst-facing dashboard. | `https://YOUR_IP:5601` (Kibana) |
+| **IRIS** | Case management — track open incidents, assignees, evidence chains, and IR runbook progress across the engagement | `https://YOUR_IP:8443` |
+| **VolWeb** | Memory forensics (Volatility 3 + YARA) | `https://YOUR_IP:8002` |
+| **Portainer** | Container management — inspect, restart, and tail logs of the IntactAI service containers from a web UI | `https://YOUR_IP:9443` |
 
 ## Configuration
 
@@ -123,18 +125,20 @@ versions:
   velociraptor: '0.75'
 ```
 
-## Accessing Services
+## Network / Firewall Ports
 
-After installation:
+Open these on the IntactAI server:
 
-| Service | URL |
-|---------|-----|
-| Dashboard | `http://YOUR_IP` |
-| Velociraptor | `http://YOUR_IP/velociraptor/` |
-| TimeSketch | `http://YOUR_IP:5000` |
-| Kibana | `http://YOUR_IP:5601` |
-| IRIS | `https://YOUR_IP:443` |
-| Portainer | `https://YOUR_IP:9443` |
+| Direction | Port | Purpose |
+|-----------|------|---------|
+| **Inbound — analyst access** | TCP 443 | Dashboard + `/velociraptor/` + `/api/` proxy. **The main one.** |
+| | TCP 80 | HTTP → HTTPS redirect |
+| | TCP 5000, 5601, 8002, 8443, 9443 | TimeSketch, Kibana, VolWeb, IRIS, Portainer (lock to analyst subnet) |
+| **Inbound — Velociraptor agents** | TCP 8000 (TLS) | **Required.** Every endpoint phones home here. If blocked, agents silently never appear in the Clients list. |
+| **Outbound — install** | TCP 443 | Docker Hub, GitHub, Ubuntu apt, PyPI (for image pulls + Velociraptor binaries + SIGMA / YARA rules). Skip if using the offline upgrade package. |
+| **Outbound — runtime, per module** | TCP 443 | OpenRouter / Anthropic / Google (online LLM); `*.microsoftonline.com` + `graph.microsoft.com` (Azure scans); `*.amazonaws.com` (AWS scans); GitHub (YARA refresh). Only required if you enable that module. |
+
+**Minimum-viable deployment:** open 443 inbound from analysts, 8000 inbound from endpoint subnets, 443 outbound during install. Everything else is opt-in per module.
 
 ## Scripts
 

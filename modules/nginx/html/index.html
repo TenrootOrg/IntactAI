@@ -8,7 +8,7 @@
     <!-- Local scripts - no CDN dependencies -->
     <link rel="stylesheet" href="css/tailwind.css?v=7">
     <script defer src="js/alpine.min.js"></script>
-    <link rel="stylesheet" href="css/styles.css?v=9">
+    <link rel="stylesheet" href="css/styles.css?v=11">
     <!-- Flatpickr date picker (local) -->
     <link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css">
     <link rel="stylesheet" href="vendor/flatpickr/dark.css">
@@ -32,7 +32,7 @@
 
     <div class="flex">
         <!-- Left Sidebar -->
-        <aside class="sidebar bg-gray-800 fixed h-screen overflow-y-auto border-r border-gray-700 transition-all duration-300 flex flex-col"
+        <aside class="sidebar bg-gray-800 overflow-y-auto border-r border-gray-700 transition-all duration-300 flex flex-col"
                :class="{ 'sidebar-collapsed': $store.app.sidebarCollapsed }">
             <div class="p-4" :class="{ 'p-2 pt-4': $store.app.sidebarCollapsed }">
                 <!-- Header row with logo and toggle button -->
@@ -142,6 +142,17 @@
                                     </svg>
                                     <span>CVE Scan</span>
                                 </div>
+                                <!-- Memory Forensics — Velociraptor memory acquisition → VolWeb (Volatility 3
+                                     + yarascan) → LLM-synthesised findings report. Three modes:
+                                     layered (default) / yara-only / plugin-only. -->
+                                <div class="nav-item flex items-center gap-3 py-2 text-sm"
+                                     :class="{ 'active': $store.app.currentTab === 'modules-memory' }"
+                                     @click.stop="$store.app.switchTab('modules-memory')">
+                                    <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                                    </svg>
+                                    <span>Memory</span>
+                                </div>
                             </div>
                         </div>
 
@@ -166,7 +177,7 @@
                                     <svg class="w-4 h-4 flex-shrink-0 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
                                         <path d="M13.05 4.24L6.56 18.05a.5.5 0 00.46.7h8.48l-2.45 5.01h-8.6a2.5 2.5 0 01-2.3-3.48L9.95 4.24h3.1z"/>
                                     </svg>
-                                    <span>Azure</span>
+                                    <span>Microsoft 365</span>
                                 </div>
                                 <!-- AWS -->
                                 <div class="nav-item flex items-center gap-3 py-2 text-sm"
@@ -245,7 +256,7 @@
                         <div class="flex justify-between items-start">
                             <div>
                                 <p class="text-sm text-gray-400">Total Services</p>
-                                <p class="text-4xl font-bold mt-2 text-white">5</p>
+                                <p class="text-4xl font-bold mt-2 text-white">6</p>
                             </div>
                             <svg class="w-10 h-10 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path>
@@ -390,6 +401,30 @@
                             Open Portainer
                         </button>
                     </div>
+
+                    <!-- VolWeb — in-tree memory-forensics analysis stack.
+                         Powers the Memory tab; this card exposes the native
+                         VolWeb UI for plugin/yarascan deep-dive that the
+                         IntactAI UI doesn't surface directly. -->
+                    <div class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="flex items-center gap-3">
+                                <div class="bg-blue-600 p-3 rounded-lg">
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">VolWeb</h3>
+                                    <p class="text-sm text-gray-400">Memory Forensics (Volatility 3 + YARA)</p>
+                                </div>
+                            </div>
+                            <div :class="$store.services.getStatusClass('volweb')"></div>
+                        </div>
+                        <button onclick="openService('volweb')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
+                            Open VolWeb
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -410,7 +445,7 @@
                                  guaranteed regardless of CDN/JIT timing issues. -->
                             <button @click="$store.engagement.openComposeModal()"
                                     :disabled="$store.engagement.selectedRunIds.length === 0"
-                                    :title="$store.engagement.selectedRunIds.length === 0 ? 'Tick the checkboxes next to one or more completed Agentic / AWS / Azure runs to enable.' : 'Generate a combined engagement report from the ' + $store.engagement.selectedRunIds.length + ' selected workflow(s).'"
+                                    :title="$store.engagement.selectedRunIds.length === 0 ? 'Tick the checkboxes next to one or more completed Agentic / AWS / Microsoft 365 runs to enable.' : 'Generate a combined engagement report from the ' + $store.engagement.selectedRunIds.length + ' selected workflow(s).'"
                                     :style="$store.engagement.selectedRunIds.length === 0 ? 'background-color:#374151; cursor:not-allowed;' : 'background-color:#4f46e5;'"
                                     class="h-10 px-4 rounded-lg text-sm font-medium text-white flex items-center gap-2 hover:brightness-110 transition">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#ffffff;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
@@ -429,7 +464,7 @@
                                     <option value="">All Types</option>
                                     <option value="engagement_report">Engagement Report</option>
                                     <option value="aws_scan">AWS Scan</option>
-                                    <option value="azure_scan">Azure Scan</option>
+                                    <option value="azure_scan">Microsoft 365 Scan</option>
                                     <option value="agentic">Agentic</option>
                                     <option value="cve_scan">CVE Scan</option>
                                     <option value="timesketch">TimeSketch</option>
@@ -466,7 +501,7 @@
                             <thead class="bg-gray-900">
                                 <tr class="text-left text-gray-400 text-sm">
                                     <th class="px-3 py-4 font-medium w-12 text-center"
-                                        title="Tick to include a completed Agentic / AWS / Azure run in the next Engagement Report build">
+                                        title="Tick to include a completed Agentic / AWS / Microsoft 365 run in the next Engagement Report build">
                                         <svg class="w-4 h-4 inline-block text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
                                         </svg>
@@ -621,12 +656,24 @@
                                                         Engagement Report
                                                     </a>
                                                 </template>
+                                                <!-- Memory module: report download. Same shape + color
+                                                     as agentic/AWS/Azure Report buttons (bg-blue-600 is
+                                                     in the bundled Tailwind CSS; bg-emerald-600 isn't,
+                                                     which is why an earlier version rendered as a
+                                                     transparent pill). Sits BEFORE Interactive so the
+                                                     row's button order matches the other modules. -->
+                                                <template x-if="run.type === 'memory' && run.status === 'completed' && run.details?.report_md">
+                                                    <a :href="'/api/memory/run/' + run.id + '/download'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download the LLM-generated findings report">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                        Report
+                                                    </a>
+                                                </template>
                                                 <!-- Interactive: chat about findings + re-run pipeline with operator corrections.
-                                                     Available for agentic, AWS scan, Azure scan, and Engagement Report runs.
-                                                     For AWS/Azure, hidden when LLM was disabled — there are no analyses
-                                                     to refine, so the chat-driven rerun has nothing to work on. Agentic
-                                                     and Engagement Report runs are unaffected (they don't gate on this flag). -->
-                                                <template x-if="(run.type === 'agentic' || run.type === 'aws_scan' || run.type === 'azure_scan' || run.type === 'engagement_report') && run.status === 'completed' && (run.type === 'agentic' || run.type === 'engagement_report' || run.details?.llm_enabled !== false)">
+                                                     Available for agentic, AWS scan, Azure scan, Engagement Report,
+                                                     and Memory runs. For AWS/Azure, hidden when LLM was disabled — no
+                                                     analyses to refine. Memory uses `details.use_llm` (its own flag);
+                                                     agentic/engagement_report don't gate on the LLM flag. -->
+                                                <template x-if="(run.type === 'agentic' || run.type === 'aws_scan' || run.type === 'azure_scan' || run.type === 'engagement_report' || run.type === 'memory') && run.status === 'completed' && (run.type === 'agentic' || run.type === 'engagement_report' || (run.type === 'memory' ? run.details?.use_llm !== false : run.details?.llm_enabled !== false))">
                                                     <button @click="$store.agenticChat.open(run.id, run.type)" class="bg-teal-600 hover:bg-teal-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Open interactive chat: refine the report with operator notes, then re-run">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
                                                         Interactive
@@ -684,6 +731,21 @@
             <div x-show="$store.app.currentTab === 'downloads'" x-transition class="tab-content">
                 <h2 class="text-3xl font-bold text-white mb-2">Client Downloads</h2>
                 <p class="text-gray-400 mb-6">Download Velociraptor client installers</p>
+
+                <!-- ========================================================
+                     STANDARD VERSIONS — modern pre-built binaries for
+                     the vast majority of endpoints.
+                     The section header uses inline colors because the
+                     tab-content surface here is light (glass background)
+                     and the global `.tab-content h3 { color:#fff }` rule
+                     would render the heading invisible. Cards below use
+                     the dark-card pattern (.bg-gray-800) so their inner
+                     h3 stays white as intended.
+                     ======================================================== -->
+                <div class="max-w-3xl mb-3">
+                    <h3 class="text-xl font-semibold" style="color:#1a1a2e !important;">Standard versions</h3>
+                    <p class="text-sm mt-1" style="color:#444455;">Modern Windows / Linux endpoints — use these by default.</p>
+                </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 max-w-3xl">
                     <!-- Windows -->
                     <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
@@ -695,7 +757,7 @@
                             </div>
                             <div>
                                 <h3 class="text-xl font-semibold text-white">Windows</h3>
-                                <p class="text-gray-400 text-sm">MSI Installer</p>
+                                <p class="text-sm" style="color:#9ca3af;">MSI Installer</p>
                             </div>
                         </div>
                         <a href="/api/clients/download/windows-msi" class="block w-full bg-blue-600 hover:bg-blue-700 text-white text-center py-3 rounded-lg font-semibold">
@@ -713,34 +775,27 @@
                             </div>
                             <div>
                                 <h3 class="text-xl font-semibold text-white">Linux</h3>
-                                <p class="text-gray-400 text-sm">Binary</p>
+                                <p class="text-sm" style="color:#9ca3af;">Binary (modern glibc)</p>
                             </div>
                         </div>
                         <a href="/api/clients/download/linux" class="block w-full bg-orange-600 hover:bg-orange-700 text-white text-center py-3 rounded-lg font-semibold">
                             Download Linux
                         </a>
                     </div>
+                </div>
 
-                    <!-- Linux (musl) — modern static build, runs on any Linux -->
-                    <div class="bg-gray-800 rounded-lg p-6 border border-orange-700/50" id="dl-musl-card">
-                        <div class="flex items-center gap-4 mb-4">
-                            <div class="bg-orange-600 p-3 rounded-lg">
-                                <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
-                                    <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.84-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.406-.046.615.27.563.863.436 1.417.289.563-.158 1.163-.406 1.755-.516.11-.021.227-.045.348-.064.17-.558.406-1.142.983-1.485.177-.105.413-.159.619-.074.063.025.117.03.186.047a.795.795 0 01-.017-.11c-.078-.558-.13-1.605.21-2.053.786-.953 1.642-1.953 1.932-3.047.21-.787.233-1.391.233-2.159 0-.42-.012-.84-.03-1.258-.021-.42-.042-.84-.074-1.258-.105-1.5-.242-3.105.21-4.605.484-1.605 1.86-2.813 3.555-3.285.074-.02.148-.042.222-.06a5.57 5.57 0 011.05-.12z"/>
-                                </svg>
-                            </div>
-                            <div>
-                                <h3 class="text-xl font-semibold text-white">Linux (musl)</h3>
-                                <p class="text-gray-400 text-sm">Modern build, static — runs on any Linux</p>
-                            </div>
-                        </div>
-                        <a href="/api/clients/download/linux-musl"
-                           id="dl-musl-btn"
-                           class="block w-full bg-orange-600 hover:bg-orange-700 text-white text-center py-3 rounded-lg font-semibold">
-                            Download Linux (musl)
-                        </a>
-                    </div>
-
+                <!-- ========================================================
+                     SPECIAL / OLDER-SYSTEM VERSIONS — pick one of these
+                     only if the modern build crashes on load. Each card
+                     explains the specific case it covers.
+                     Same inline-color treatment as the Standard section
+                     header above — light glass background needs dark text.
+                     ======================================================== -->
+                <div class="max-w-3xl mb-3">
+                    <h3 class="text-xl font-semibold" style="color:#1a1a2e !important;">Other Downloads</h3>
+                    <p class="text-sm mt-1" style="color:#444455;">Use one of these when the standard build won't run — old OS or unusual libc. Buttons grey out when the bundled binary isn't present (re-run <code class="px-1 rounded" style="background-color:#374151; color:#e5e7eb;">install.sh</code> to fetch).</p>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 max-w-3xl">
                     <!-- Windows Legacy (Server 2008 R2 / Win 7) -->
                     <div class="bg-gray-800 rounded-lg p-6 border border-purple-700/50" id="dl-legacy-card">
                         <div class="flex items-center gap-4 mb-4">
@@ -751,9 +806,12 @@
                             </div>
                             <div>
                                 <h3 class="text-xl font-semibold text-white">Windows Legacy</h3>
-                                <p class="text-gray-400 text-sm">For Server 2008 R2 / Win 7</p>
+                                <p class="text-sm" style="color:#9ca3af;">EXE for Server 2008 R2 / Win 7</p>
                             </div>
                         </div>
+                        <p class="text-xs mb-3" style="line-height:1.45; color:#cbd5e1;">
+                            Pinned older Velociraptor release that still supports the TLS / Win32 API surface available on Win 7 / Server 2008 R2 / 2012. The modern EXE loads but crashes on first phone-home on these hosts.
+                        </p>
                         <a href="/api/clients/download/windows-legacy-exe"
                            id="dl-legacy-btn"
                            class="block w-full bg-purple-600 hover:bg-purple-700 text-white text-center py-3 rounded-lg font-semibold">
@@ -771,13 +829,39 @@
                             </div>
                             <div>
                                 <h3 class="text-xl font-semibold text-white">Linux Legacy</h3>
-                                <p class="text-gray-400 text-sm">Static — runs on any Linux (CentOS, Ubuntu, …)</p>
+                                <p class="text-sm" style="color:#9ca3af;">For old-glibc distros</p>
                             </div>
                         </div>
+                        <p class="text-xs mb-3" style="line-height:1.45; color:#cbd5e1;">
+                            For hosts whose glibc is older than 2.28 — CentOS 7, RHEL 7, Ubuntu 16.04, Debian 9. The modern binary throws <code class="px-1 rounded" style="background-color:#0f172a; color:#fbbf24;">GLIBC_2.28 not found</code> on load there.
+                        </p>
                         <a href="/api/clients/download/linux-legacy"
                            id="dl-legacy-linux-btn"
                            class="block w-full bg-purple-600 hover:bg-purple-700 text-white text-center py-3 rounded-lg font-semibold">
                             Download Legacy Linux
+                        </a>
+                    </div>
+
+                    <!-- Linux (musl) — modern static build, runs on any Linux -->
+                    <div class="bg-gray-800 rounded-lg p-6 border border-teal-700/50" id="dl-musl-card">
+                        <div class="flex items-center gap-4 mb-4">
+                            <div class="bg-teal-600 p-3 rounded-lg">
+                                <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.84-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.406-.046.615.27.563.863.436 1.417.289.563-.158 1.163-.406 1.755-.516.11-.021.227-.045.348-.064.17-.558.406-1.142.983-1.485.177-.105.413-.159.619-.074.063.025.117.03.186.047a.795.795 0 01-.017-.11c-.078-.558-.13-1.605.21-2.053.786-.953 1.642-1.953 1.932-3.047.21-.787.233-1.391.233-2.159 0-.42-.012-.84-.03-1.258-.021-.42-.042-.84-.074-1.258-.105-1.5-.242-3.105.21-4.605.484-1.605 1.86-2.813 3.555-3.285.074-.02.148-.042.222-.06a5.57 5.57 0 011.05-.12z"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 class="text-xl font-semibold text-white">Linux (musl)</h3>
+                                <p class="text-sm" style="color:#9ca3af;">Statically linked, no libc deps</p>
+                            </div>
+                        </div>
+                        <p class="text-xs mb-3" style="line-height:1.45; color:#cbd5e1;">
+                            Statically linked against musl libc — zero glibc dependency, runs on <em>any</em> Linux x86_64 including Alpine containers, Sophos UTM, BusyBox appliances and other minimal environments where neither the modern nor the legacy glibc build can load.
+                        </p>
+                        <a href="/api/clients/download/linux-musl"
+                           id="dl-musl-btn"
+                           class="block w-full bg-teal-600 hover:bg-teal-700 text-white text-center py-3 rounded-lg font-semibold">
+                            Download Linux (musl)
                         </a>
                     </div>
                 </div>
@@ -1762,6 +1846,251 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                 </div>
             </div>
 
+            <!-- Memory Forensics Tab — kept deliberately simple. No blueprints,
+                 no advanced section: pick a mode, pick a client, set an
+                 investigation name (auto-defaults to "Memory YYYY-MM-DD"),
+                 hit Acquire & Analyze. -->
+            <div x-show="$store.app.currentTab === 'modules-memory'" x-transition class="tab-content">
+                <div class="flex items-center justify-between mb-2">
+                    <h2 class="text-3xl font-bold text-white">Memory Forensics</h2>
+                </div>
+
+                <div class="max-w-3xl">
+                    <p class="text-gray-400 mb-6 text-sm">
+                        Capture Windows physical memory via Velociraptor, run Volatility 3 plugins
+                        + YARA scanning in
+                        <a href="https://github.com/forensicxlab/VolWeb" target="_blank" rel="noreferrer"
+                           class="text-indigo-300 hover:text-indigo-200 underline">VolWeb</a>,
+                        and ask an LLM to synthesise an engagement-ready findings report.
+                    </p>
+
+                    <!-- Card 1 — Blueprint + YARA toggle + Investigation name -->
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Blueprint</label>
+                        <select x-model="$store.memory.blueprintId"
+                                class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none">
+                            <template x-for="b in $store.memory.blueprints" :key="b.id">
+                                <option :value="b.id" x-text="b.name"></option>
+                            </template>
+                        </select>
+                        <p class="text-xs text-gray-500 mt-2"
+                           x-text="($store.memory.selectedBlueprint() || {}).description || ''"></p>
+                        <p class="text-xs text-gray-500 mt-1">
+                            Plugins:
+                            <span class="text-gray-400 font-mono"
+                                  x-text="(() => {
+                                      const bp = $store.memory.selectedBlueprint();
+                                      const ps = (bp && bp.settings && bp.settings.plugin_set) || [];
+                                      if (ps.length === 1 && ps[0] === '*') return 'all available (resolved at runtime)';
+                                      if (ps.length === 0) return 'none (yara-only)';
+                                      return ps.length + ' plugin(s)';
+                                  })()"></span>
+                        </p>
+
+                        <!-- YARA toggle — independent of blueprint. Adds the
+                             yarascan "layer" on top of plugin extraction. For
+                             a blueprint with an empty plugin_set (YARA-only
+                             triage), this toggle has no effect — YARA always
+                             runs because there's nothing else to run. -->
+                        <div class="mt-4 pt-4 border-t border-gray-700">
+                            <label class="flex items-center gap-3 cursor-pointer">
+                                <input type="checkbox" x-model="$store.memory.includeYara"
+                                       class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                <div>
+                                    <div class="text-sm font-medium text-gray-300">Include YARA</div>
+                                    <div class="text-xs text-gray-500">Run yarascan in parallel with plugin extraction. Adds signature-based detection on top of behavioural plugin output.</div>
+                                </div>
+                            </label>
+                        </div>
+
+                        <div class="mt-5 pt-4 border-t border-gray-700">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Investigation name</label>
+                            <input type="text" x-model="$store.memory.caseName"
+                                   class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                        </div>
+
+                        <!-- LLM toggle — operator-controlled. Default ON.
+                             When OFF the pipeline still runs acquire + upload
+                             + extract + yarascan, but skips the LLM-synthesis
+                             phase and emits an extraction-only report. -->
+                        <div class="mt-4 pt-4 border-t border-gray-700">
+                            <label class="flex items-center gap-3 cursor-pointer">
+                                <input type="checkbox" x-model="$store.memory.useLlm"
+                                       class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                <div>
+                                    <div class="text-sm font-medium text-gray-300">Run LLM analysis</div>
+                                    <div class="text-xs text-gray-500">Uncheck to skip the LLM call and get a plain extraction report (cheaper / works without an API key).</div>
+                                </div>
+                            </label>
+                        </div>
+
+                        <!-- Advanced timeouts — collapsed by default. Operators
+                             bump these for huge dumps (32 GB+) or slower
+                             extraction hardware. Leave blank to use defaults. -->
+                        <div class="mt-4 pt-4 border-t border-gray-700">
+                            <div class="flex items-center justify-between cursor-pointer"
+                                 @click="$store.memory.timeoutsOpen = !$store.memory.timeoutsOpen">
+                                <span class="text-xs font-medium text-gray-400">Advanced timeouts</span>
+                                <svg class="w-3 h-3 text-gray-500 transition-transform"
+                                     :class="{'rotate-180': $store.memory.timeoutsOpen}"
+                                     fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                </svg>
+                            </div>
+                            <div x-show="$store.memory.timeoutsOpen" x-transition class="mt-3 grid grid-cols-3 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Acquire timeout (sec)</label>
+                                    <input type="number" min="60" max="86400" step="60"
+                                           x-model.number="$store.memory.acquireTimeoutS"
+                                           :placeholder="'default 5400'"
+                                           class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <p class="text-[10px] text-gray-500 mt-0.5">Velociraptor flow + extract. Default 90 min.</p>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Plugin extract timeout (sec)</label>
+                                    <input type="number" min="60" max="86400" step="60"
+                                           x-model.number="$store.memory.pluginTimeoutS"
+                                           :placeholder="'default 1800'"
+                                           class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <p class="text-[10px] text-gray-500 mt-0.5">Vol3 selective-extraction cap. Default 30 min.</p>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">YARA scan timeout (sec)</label>
+                                    <input type="number" min="60" max="86400" step="60"
+                                           x-model.number="$store.memory.yarascanTimeoutS"
+                                           :placeholder="'default 2400'"
+                                           class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <p class="text-[10px] text-gray-500 mt-0.5">Yarascan worker cap. Default 40 min.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card 2 — Target client picker (Timesketch-style markup) -->
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                        <div class="flex items-center justify-between mb-2">
+                            <label class="block text-sm font-medium text-gray-300">Select Client for Acquisition</label>
+                            <button @click="$store.memory.refreshClients()"
+                                    class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Refresh</button>
+                        </div>
+                        <input type="text" x-model="$store.memory.clientFilter"
+                               placeholder="Filter clients by name..."
+                               class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-purple-500 focus:outline-none">
+                        <div class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
+                            <template x-for="c in $store.memory.filteredClients()" :key="c.client_id">
+                                <label class="flex items-center justify-between gap-3 cursor-pointer hover:bg-gray-800 rounded px-2 py-1">
+                                    <div class="flex items-center gap-3">
+                                        <input type="radio" :value="c.client_id" x-model="$store.memory.selectedClient"
+                                               class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                        <div>
+                                            <div class="text-sm text-gray-200" x-text="c.hostname || '(unknown)'"></div>
+                                            <div class="text-xs text-gray-500 font-mono" x-text="c.client_id"></div>
+                                        </div>
+                                    </div>
+                                    <div class="text-xs" :class="{'text-green-400': $store.memory.isFresh(c), 'text-gray-500': !$store.memory.isFresh(c)}"
+                                         x-text="$store.memory.ageLabel(c)"></div>
+                                </label>
+                            </template>
+                            <p x-show="!$store.memory.filteredClients().length" class="text-sm text-gray-500">
+                                No clients match the filter.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Dispatch (live acquire) -->
+                    <div class="flex items-center justify-end gap-3 mb-6">
+                        <span x-show="$store.memory.lastStatus" class="text-xs text-gray-400" x-text="$store.memory.lastStatus"></span>
+                        <button @click="$store.memory.startRun()"
+                                :disabled="!$store.memory.selectedClient || $store.memory.dispatching"
+                                class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
+                            <span x-show="!$store.memory.dispatching">Acquire &amp; Analyze</span>
+                            <span x-show="$store.memory.dispatching">Starting…</span>
+                        </button>
+                    </div>
+
+                    <!-- ──────────────────────────────────────────────────
+                         OR — Upload an already-acquired dump (offline path)
+                         ────────────────────────────────────────────────── -->
+                    <div class="flex items-center gap-3 my-2 text-xs text-gray-500">
+                        <div class="flex-1 h-px bg-gray-700"></div>
+                        <span>OR — upload an already-acquired dump</span>
+                        <div class="flex-1 h-px bg-gray-700"></div>
+                    </div>
+
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                        <label class="block text-sm font-medium text-gray-300 mb-1">Memory dump file</label>
+                        <p class="text-xs text-gray-500 mb-3">
+                            Accepts a raw memory image (<code class="text-indigo-300">.raw</code>,
+                            <code class="text-indigo-300">.bin</code>, <code class="text-indigo-300">.mem</code>,
+                            <code class="text-indigo-300">.dmp</code>) or a Velociraptor
+                            <em>Prepare Download</em> / offline-collector ZIP. We'll detect the
+                            <code class="text-indigo-300">PhysicalMemory</code> file inside the ZIP automatically.
+                        </p>
+                        <div class="flex items-center gap-3 bg-gray-900 border border-dashed border-gray-600 rounded px-4 py-4">
+                            <input type="file"
+                                   accept=".raw,.bin,.mem,.dmp,.zip"
+                                   @change="$store.memory.setUploadFile($event.target.files[0])"
+                                   class="flex-1 text-sm text-gray-300 file:mr-3 file:py-2 file:px-4 file:rounded file:border-0 file:bg-indigo-600 file:text-white file:hover:bg-indigo-700 file:cursor-pointer">
+                            <span x-show="$store.memory.uploadFile" class="text-xs text-teal-400 whitespace-nowrap"
+                                  x-text="$store.memory.uploadFile ? ($store.memory.uploadFile.name + ' — ' + $store.memory.uploadSizeLabel()) : ''"></span>
+                        </div>
+
+                        <!-- Upload progress (visible during XHR) -->
+                        <div x-show="$store.memory.uploadProgress > 0 && $store.memory.uploadProgress < 100" class="mt-4">
+                            <div class="flex justify-between text-xs text-gray-400 mb-1">
+                                <span>Uploading…</span>
+                                <span x-text="$store.memory.uploadProgress + '%'"></span>
+                            </div>
+                            <div class="bg-gray-700 rounded-full h-2 overflow-hidden">
+                                <div class="bg-indigo-500 h-full transition-all"
+                                     :style="`width: ${$store.memory.uploadProgress}%`"></div>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center justify-end gap-3 pt-4 mt-4 border-t border-gray-700">
+                            <span x-show="$store.memory.uploadStatus" class="text-xs text-gray-400"
+                                  x-text="$store.memory.uploadStatus"></span>
+                            <button @click="$store.memory.startUpload()"
+                                    :disabled="!$store.memory.uploadFile || $store.memory.uploading"
+                                    class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
+                                <span x-show="!$store.memory.uploading">Upload &amp; Analyze</span>
+                                <span x-show="$store.memory.uploading">Uploading…</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Mini status pane for the most recent run dispatched here. -->
+                    <div x-show="$store.memory.currentRunId" class="bg-gray-800 rounded-lg p-4 border border-gray-700 mb-4">
+                        <div class="flex items-center justify-between mb-2">
+                            <div>
+                                <div class="text-xs text-gray-500">Run</div>
+                                <div class="text-sm font-mono text-gray-200" x-text="$store.memory.currentRunId"></div>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-xs text-gray-500">Status</div>
+                                <div class="text-sm" x-text="$store.memory.currentStatus"></div>
+                            </div>
+                        </div>
+                        <div class="w-full bg-gray-700 rounded-full h-2 overflow-hidden mb-3">
+                            <div class="h-full bg-blue-500 transition-all" :style="`width:${$store.memory.currentProgress}%`"></div>
+                        </div>
+                        <div class="flex flex-wrap gap-2 text-sm">
+                            <button @click="$store.workflows.viewLogs($store.memory.currentRunId)"
+                                    class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded text-xs">View logs</button>
+                            <button x-show="$store.memory.currentStatus === 'running'"
+                                    @click="$store.memory.stopRun()"
+                                    class="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white rounded text-xs">Stop</button>
+                            <button x-show="$store.memory.currentStatus === 'completed'"
+                                    @click="$store.memory.downloadReport()"
+                                    class="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded text-xs">Download report</button>
+                            <button x-show="$store.memory.currentStatus === 'completed'"
+                                    @click="$store.memory.openChat()"
+                                    class="px-3 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-white rounded text-xs">Validate (chat)</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Blueprints Tab -->
             <div x-show="$store.app.currentTab === 'blueprints'" x-transition class="tab-content">
                 <div class="flex items-center justify-between mb-6">
@@ -1775,6 +2104,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                             <option value="all">All Types</option>
                             <option value="velociraptor">Velociraptor</option>
                             <option value="timesketch">Timesketch</option>
+                            <option value="memory">Memory</option>
                         </select>
                     </div>
                 </div>
@@ -1801,6 +2131,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 <select id="blueprint-type" onchange="onBlueprintTypeChange()" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
                                     <option value="velociraptor">Velociraptor (Hunts & AI Analysis)</option>
                                     <option value="timesketch">Timesketch (Triage + Timeline)</option>
+                                    <option value="memory">Memory Forensics (VolWeb plugin set)</option>
                                 </select>
                             </div>
 
@@ -1943,7 +2274,60 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 </div>
                             </div>
 
-                            <!-- Artifacts Section (hidden for Timesketch) -->
+                            <!-- Memory Forensics Settings (VolWeb plugin set) -->
+                            <div id="blueprint-memory-settings" class="hidden">
+                                <!-- Special "all available" toggle — when checked, the
+                                     blueprint stores plugin_set = ['*'] which the
+                                     pipeline resolves at run time via
+                                     volweb.list_plugins(evidence_id). Picking this
+                                     greys out the individual checkboxes since they
+                                     wouldn't be consulted. -->
+                                <div class="mb-3 p-3 bg-gray-900 rounded border border-purple-900/50">
+                                    <label class="flex items-center gap-3 cursor-pointer">
+                                        <input type="checkbox" id="blueprint-memory-all-plugins"
+                                               class="w-4 h-4 rounded border-gray-600 bg-gray-800 text-purple-600 focus:ring-purple-500"
+                                               onchange="onMemoryAllPluginsToggle()">
+                                        <div>
+                                            <div class="text-sm font-medium text-gray-300">Use every plugin VolWeb advertises (resolve at run time)</div>
+                                            <div class="text-xs text-gray-500">Same as the &quot;All plugins (deep dive)&quot; default. Picks include HollowProcesses (12+ min by itself) and bootkey-dependent plugins. The individual checkboxes below are ignored when this is on.</div>
+                                        </div>
+                                    </label>
+                                </div>
+
+                                <div class="flex items-center justify-between mb-2">
+                                    <label class="block text-sm font-medium text-gray-300">
+                                        Plugins (<span id="blueprint-memory-plugin-count">0</span> selected / <span id="blueprint-memory-plugin-total">0</span> total)
+                                    </label>
+                                    <div class="flex gap-2">
+                                        <button onclick="toggleAllMemoryPlugins(true)" class="text-xs bg-purple-700 hover:bg-purple-600 px-2 py-1 rounded">Check All</button>
+                                        <button onclick="toggleAllMemoryPlugins(false)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Uncheck All</button>
+                                    </div>
+                                </div>
+                                <input type="text" id="blueprint-memory-plugin-search"
+                                       oninput="filterMemoryPluginList()"
+                                       placeholder="Filter by name (e.g. registry, netscan, hollow)..."
+                                       class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none mb-2">
+                                <div id="blueprint-memory-plugin-list"
+                                     class="max-h-72 overflow-y-auto bg-gray-900 border border-gray-700 rounded p-2 space-y-2">
+                                    <p class="text-gray-500 text-sm">Loading plugins…</p>
+                                </div>
+                                <p class="text-xs text-gray-500 mt-1">
+                                    Selecting nothing = empty plugin set. Pair an empty blueprint with the &quot;Include YARA&quot; checkbox in the Memory page for YARA-only triage.
+                                </p>
+
+                                <div class="grid grid-cols-2 gap-3 mt-3">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="CPU usage cap on the target host during memory acquisition (Velociraptor side, percentage)">CPU Limit (%)</label>
+                                        <input type="number" id="blueprint-memory-cpu" value="80" min="10" max="100" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Velociraptor max_bytes cap on the memory acquisition VQL. 64 GiB default — covers any realistic Windows server RAM size.">Max Bytes (acquisition cap)</label>
+                                        <input type="number" id="blueprint-memory-max-bytes" value="68719476736" min="1073741824" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Artifacts Section (hidden for Timesketch + Memory) -->
                             <div id="blueprint-artifacts-section">
                                 <div class="flex items-center justify-between mb-2">
                                     <label class="block text-sm font-medium text-gray-300">Artifacts (<span id="blueprint-artifact-count">0</span> selected / <span id="blueprint-artifact-total">0</span> total)</label>
@@ -2721,8 +3105,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                  }"
                  x-init="checkAzureStatus()">
 
-                <h2 class="text-3xl font-bold text-white mb-2">Azure Security Automation</h2>
-                <p class="text-gray-400 mb-6">Collect Azure/M365 logs and run SIGMA detection rules with LLM analysis</p>
+                <h2 class="text-3xl font-bold text-white mb-2">Microsoft 365 Security Automation</h2>
+                <p class="text-gray-400 mb-6">Collect Microsoft 365 logs and run SIGMA detection rules with LLM analysis</p>
 
                 <!-- Status Banner -->
                 <div x-show="azureStatus" class="mb-6 p-3 rounded-lg"
@@ -2733,7 +3117,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                         <span class="text-gray-400">|</span>
                         <span class="text-gray-400">SIGMA Rules: <span :class="azureStatus?.sigma_rules?.available ? 'text-green-400' : 'text-red-400'" x-text="azureStatus?.sigma_rules?.available ? 'Available' : 'Not Found'"></span></span>
                         <span class="text-gray-400">|</span>
-                        <span class="text-gray-400">Azure Credentials: <span :class="azureStatus?.azure_credentials?.configured ? 'text-green-400' : 'text-yellow-400'" x-text="azureStatus?.azure_credentials?.configured ? 'Configured' : 'Not Set'"></span></span>
+                        <span class="text-gray-400">Microsoft 365 Credentials: <span :class="azureStatus?.azure_credentials?.configured ? 'text-green-400' : 'text-yellow-400'" x-text="azureStatus?.azure_credentials?.configured ? 'Configured' : 'Not Set'"></span></span>
                     </div>
                 </div>
 
@@ -2937,12 +3321,12 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 :disabled="azureRunning || !azureStatus?.azure_credentials?.configured"
                                 class="w-full py-3 rounded-lg font-medium transition-colors"
                                 :class="azureRunning || !azureStatus?.azure_credentials?.configured ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'">
-                            <span x-show="!azureRunning">Start Azure Scan</span>
+                            <span x-show="!azureRunning">Start Microsoft 365 Scan</span>
                             <span x-show="azureRunning">Scanning...</span>
                         </button>
 
                         <p x-show="!azureStatus?.azure_credentials?.configured" class="text-yellow-400 text-sm">
-                            Configure Azure credentials in Settings to use online mode.
+                            Configure Microsoft 365 credentials in Settings to use online mode.
                         </p>
                     </div>
 
@@ -2966,7 +3350,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 <svg class="w-12 h-12 mx-auto text-gray-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
                                 </svg>
-                                <p class="text-gray-300" x-text="azureRunning ? 'Uploading…' : 'Click to upload Azure/M365 logs'"></p>
+                                <p class="text-gray-300" x-text="azureRunning ? 'Uploading…' : 'Click to upload Microsoft 365 logs'"></p>
                                 <p class="text-gray-500 text-sm mt-1">JSON / JSONL / CSV, or a ZIP from the Data button of an online run</p>
                             </label>
                         </div>
@@ -3031,20 +3415,6 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 </button>
                             </div>
 
-                            <!-- Refresh DFIR Skills (standalone, faster than full maintenance) -->
-                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
-                                <div>
-                                    <h4 class="text-white font-medium">Refresh DFIR Skills</h4>
-                                    <p class="text-gray-400 text-sm">Re-download agentic DFIR skill markdown files from upstream (Anthropic Cybersecurity Skills, Apache-2.0). Skills improve over time upstream.</p>
-                                </div>
-                                <button @click="$store.settings.runRefreshSkills()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-                                    </svg>
-                                    <span x-text="$store.settings.saving ? 'Running...' : 'Refresh Skills'"></span>
-                                </button>
-                            </div>
-
                             <!-- Generate Support Bundle -->
                             <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
                                 <div>
@@ -3056,6 +3426,20 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                                     </svg>
                                     <span x-text="$store.settings.saving ? 'Starting...' : 'Generate Bundle'"></span>
+                                </button>
+                            </div>
+
+                            <!-- Online Upgrade (combined prepare + apply, no tar.gz round-trip) -->
+                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div>
+                                    <h4 class="text-white font-medium">Online Upgrade</h4>
+                                    <p class="text-gray-400 text-sm">Internet-connected: download modules &amp; apply in one workflow. Skips the intermediate package file.</p>
+                                </div>
+                                <button @click="$store.settings.openOnlineUpgradeModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                    </svg>
+                                    <span>Online Upgrade</span>
                                 </button>
                             </div>
 
@@ -3081,7 +3465,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                         <p class="text-gray-400 text-sm">Upload upgrade package for air-gapped installation</p>
                                     </div>
                                     <input type="file" id="upgrade-package-input" accept=".tar.gz,.tgz" class="hidden" @change="$store.settings.importUpgradePackage($event)">
-                                    <button @click="document.getElementById('upgrade-package-input').click()" class="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <button @click="document.getElementById('upgrade-package-input').click()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
                                         </svg>
@@ -3112,23 +3496,116 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 </div>
                             </div>
 
-                            <!-- System Purge -->
+                            <!-- System Purge — section-aware. Operator clicks
+                                 the button, modal opens with per-section
+                                 sizes + checkboxes + a live total. Nothing
+                                 is purged until the operator submits a
+                                 non-empty selection. -->
                             <div class="p-4 bg-gray-900 rounded-lg border border-red-900/50">
                                 <div class="flex items-center justify-between">
                                     <div>
                                         <h4 class="text-red-400 font-medium">System Purge</h4>
-                                        <p class="text-gray-400 text-sm">Remove all workflows, reports, uploads, temp files, and Velociraptor hunt data</p>
+                                        <p class="text-gray-400 text-sm">Reclaim disk by removing accumulated module data. Pick which sections to clear after seeing each one's size.</p>
                                     </div>
-                                    <button @click="$store.settings.runPurge()"
-                                            :disabled="$store.settings.saving"
-                                            class="bg-red-600 hover:bg-red-700 disabled:bg-red-800 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <button @click="$store.settings.openPurgeModal()"
+                                            class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
                                         </svg>
-                                        <span x-text="$store.settings.saving ? 'Running...' : 'Purge Data'"></span>
+                                        <span>Purge…</span>
                                     </button>
                                 </div>
                             </div>
+
+                            <!-- Purge modal — full-screen near-opaque overlay.
+                                 TELEPORTED to <body> via x-teleport so the
+                                 modal's stacking context isn't trapped inside
+                                 the <main> element (the sidebar uses
+                                 z-index: 9999 and was painting OVER the modal
+                                 because the modal's parent chain capped its
+                                 effective z-index). With teleport the modal
+                                 renders as a direct body child and the
+                                 inline z-index: 10000 actually wins. -->
+                            <template x-teleport="body">
+                            <div x-show="$store.settings.purgeModalOpen"
+                                 x-transition.opacity
+                                 style="z-index: 10000;"
+                                 class="fixed inset-0 bg-gray-950/95 flex items-center justify-center p-4"
+                                 @click.self="$store.settings.purgeModalOpen = false">
+                                <div style="max-width: 64rem;" class="bg-gray-900 border border-gray-700 rounded-lg shadow-2xl w-full max-h-[90vh] flex flex-col">
+                                    <div style="padding: 1rem 2.5rem;" class="border-b border-gray-700 flex items-center justify-between">
+                                        <div>
+                                            <h3 class="text-lg font-semibold text-red-400">System Purge — choose sections</h3>
+                                            <p class="text-xs text-gray-500">Tick the sections you want removed. Nothing is deleted until you click Purge.</p>
+                                        </div>
+                                        <button @click="$store.settings.purgeModalOpen = false"
+                                                class="text-gray-500 hover:text-gray-300 text-2xl leading-none">×</button>
+                                    </div>
+
+                                    <!-- Grand-total summary strip — shows live disk usage
+                                         across all modules so the operator sees the "if I tick
+                                         everything, what would I free?" number up-front. -->
+                                    <div style="padding: 0.75rem 2.5rem;" class="border-b border-gray-700 bg-gray-800/40 flex items-center justify-between">
+                                        <div class="text-sm text-gray-300">
+                                            <span class="text-gray-500">Total disk usage across all modules:</span>
+                                            <span class="font-mono text-base text-gray-100 ml-2"
+                                                  x-text="$store.settings.purgeGrandTotalLabel()"></span>
+                                        </div>
+                                        <div class="flex gap-2">
+                                            <button @click="$store.settings.purgeSelectAll(true)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">All</button>
+                                            <button @click="$store.settings.purgeSelectAll(false)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">None</button>
+                                            <button @click="$store.settings.refreshPurgeSizes()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Refresh</button>
+                                        </div>
+                                    </div>
+
+                                    <div style="padding: 0.5rem 2.5rem;" class="border-b border-gray-800 text-xs text-gray-500">
+                                        <span x-show="$store.settings.purgeScanning">Scanning module sizes…</span>
+                                        <span x-show="!$store.settings.purgeScanning && !$store.settings.purgeError">Click a row to toggle.</span>
+                                        <span x-show="$store.settings.purgeError" class="text-red-400" x-text="$store.settings.purgeError"></span>
+                                    </div>
+
+                                    <div style="padding: 1rem 2.5rem;" class="overflow-y-auto flex-1 space-y-2">
+                                        <template x-for="s in $store.settings.purgeSections" :key="s.id">
+                                            <label style="padding: 0.75rem 1.25rem;" class="flex items-center justify-between gap-4 bg-gray-800 rounded cursor-pointer hover:bg-gray-700/60">
+                                                <div class="flex items-center gap-3 min-w-0 flex-1">
+                                                    <input type="checkbox" :value="s.id" x-model="$store.settings.purgeSelected[s.id]"
+                                                           class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-red-500 focus:ring-red-500">
+                                                    <div class="min-w-0">
+                                                        <div class="text-sm text-gray-200" x-text="s.label"></div>
+                                                        <div class="text-xs text-gray-500 truncate" x-text="s.detail || '—'"></div>
+                                                    </div>
+                                                </div>
+                                                <div class="text-sm font-mono text-gray-300 whitespace-nowrap"
+                                                     :class="{'text-gray-600': s.size_bytes === 0}"
+                                                     x-text="s.size_label"></div>
+                                            </label>
+                                        </template>
+                                        <div x-show="!$store.settings.purgeScanning && !$store.settings.purgeSections.length"
+                                             class="text-sm text-gray-500 text-center py-6">No sections returned.</div>
+                                    </div>
+
+                                    <div style="padding: 1rem 2.5rem;" class="border-t border-gray-700 flex items-center justify-between">
+                                        <div class="text-sm text-gray-300">
+                                            <span x-text="$store.settings.purgeSelectedCount()"></span> section(s) selected —
+                                            <span class="font-medium text-emerald-400">~<span x-text="$store.settings.purgeSelectedTotalLabel()"></span></span>
+                                            will be freed
+                                        </div>
+                                        <div class="flex gap-2">
+                                            <button @click="$store.settings.purgeModalOpen = false"
+                                                    class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm">Cancel</button>
+                                            <button @click="$store.settings.runPurgeSelected()"
+                                                    :disabled="$store.settings.purgeRunning || $store.settings.purgeSelectedCount() === 0"
+                                                    class="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-900/50 disabled:cursor-not-allowed rounded text-sm font-medium flex items-center gap-2">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                                </svg>
+                                                <span x-text="$store.settings.purgeRunning ? 'Purging…' : 'Purge selected'"></span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            </template>
                         </div>
                     </div>
 
@@ -3606,14 +4083,18 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                 <div x-show="$store.settings.showPreparePackageModal" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="$store.settings.closePreparePackageModal()">
                     <div class="bg-gray-800 rounded-lg p-6 w-full max-w-lg border border-gray-700 shadow-xl" @click.stop>
                         <div class="flex items-center justify-between mb-4">
-                            <h3 class="text-xl font-bold text-white">Prepare Upgrade Package</h3>
+                            <h3 class="text-xl font-bold text-white"
+                                x-text="$store.settings.prepareModalMode === 'online' ? 'Online Upgrade' : 'Prepare Upgrade Package'"></h3>
                             <button @click="$store.settings.closePreparePackageModal()" class="text-gray-400 hover:text-white">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                                 </svg>
                             </button>
                         </div>
-                        <p class="text-gray-400 text-sm mb-4">Select modules to include in the offline upgrade package:</p>
+                        <p class="text-gray-400 text-sm mb-4"
+                           x-text="$store.settings.prepareModalMode === 'online'
+                                   ? 'Select modules to download and apply right now (no intermediate package file):'
+                                   : 'Select modules to include in the offline upgrade package:'"></p>
 
                         <!-- Loading state -->
                         <div x-show="$store.settings.prepareLoading" class="flex items-center justify-center py-8">
@@ -3632,14 +4113,20 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                            class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer">
                                     <div class="flex-1 min-w-0">
                                         <span class="text-white font-medium" x-text="module.name"></span>
-                                        <span x-show="module.id === 'intact'" class="text-blue-400 text-xs ml-2">(backend + frontend)</span>
+                                        <span x-show="module.id === 'intact'" class="text-blue-400 text-xs ml-2">(GitHub: TenrootOrg/IntactAI)</span>
                                     </div>
+                                    <!-- Per-module version textbox. For the `intact` module this is
+                                         now a GitHub ref (release tag, branch, or full commit SHA)
+                                         — the backend pulls the source tarball from
+                                         github.com/TenrootOrg/IntactAI@<ref> instead of copying
+                                         the running container's mounted source. Other modules use
+                                         this for the upstream docker-image tag. -->
                                     <input type="text" x-model="module.targetVersion"
                                            :disabled="!module.enabled"
-                                           x-show="module.id !== 'intact'"
                                            @click.stop
-                                           class="w-28 bg-gray-700 text-white text-sm px-2 py-1.5 rounded border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                                           placeholder="Version">
+                                           class="bg-gray-700 text-white text-sm px-2 py-1.5 rounded border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                           :class="module.id === 'intact' ? 'w-44' : 'w-28'"
+                                           :placeholder="module.id === 'intact' ? 'e.g. intact-20260604' : 'Version'">
                                 </label>
                             </template>
                         </div>
@@ -3673,11 +4160,15 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                             <button @click="$store.settings.closePreparePackageModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
                                 Cancel
                             </button>
-                            <button @click="$store.settings.startPackagePreparation()" :disabled="$store.settings.prepareLoading" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium flex items-center gap-2">
+                            <button @click="$store.settings.startPackagePreparation()" :disabled="$store.settings.prepareLoading"
+                                    class="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 px-4 py-2 rounded text-sm font-medium flex items-center gap-2">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                          :d="$store.settings.prepareModalMode === 'online'
+                                              ? 'M13 10V3L4 14h7v7l9-11h-7z'
+                                              : 'M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4'"></path>
                                 </svg>
-                                Start Preparation
+                                <span x-text="$store.settings.prepareModalMode === 'online' ? 'Start Online Upgrade' : 'Start Preparation'"></span>
                             </button>
                         </div>
 
@@ -3710,6 +4201,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
     <script src="js/agentic-chat.js?v=8"></script>
     <script src="js/engagement.js?v=14"></script>
     <script src="js/cve-scan.js?v=8"></script>
+    <script src="js/memory.js?v=8"></script>
     <script src="js/scheduler.js"></script>
     <!-- Azure date pickers -->
     <script>
@@ -4066,7 +4558,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                           'text-blue-400':   src.automation_type === 'aws_scan',
                                           'text-cyan-400':   src.automation_type === 'azure_scan'
                                       }"
-                                      x-text="src.automation_type === 'aws_scan' ? 'AWS' : (src.automation_type === 'azure_scan' ? 'Azure' : 'Agentic')"></span>
+                                      x-text="src.automation_type === 'aws_scan' ? 'AWS' : (src.automation_type === 'azure_scan' ? 'Microsoft 365' : 'Agentic')"></span>
                                 <div class="flex-1 min-w-0">
                                     <div class="text-gray-200 truncate" x-text="src.name"></div>
                                     <div class="text-gray-500 text-xs" x-text="src.run_id"></div>
@@ -4085,7 +4577,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                     <span class="text-xs text-blue-300 px-2 py-1 rounded bg-blue-900/30 border border-blue-800/60">→ AWS section</span>
                                 </template>
                                 <template x-if="src.automation_type === 'azure_scan'">
-                                    <span class="text-xs text-cyan-300 px-2 py-1 rounded bg-cyan-900/30 border border-cyan-800/60">→ Azure section</span>
+                                    <span class="text-xs text-cyan-300 px-2 py-1 rounded bg-cyan-900/30 border border-cyan-800/60">→ Microsoft 365 section</span>
                                 </template>
                                 <button @click="$store.engagement.remove(src.run_id)"
                                         class="text-gray-500 hover:text-red-300 text-xs" title="Remove from selection">

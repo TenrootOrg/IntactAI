@@ -60,6 +60,16 @@ def _load_source_report(run_id: str, automation_type: str) -> Optional[str]:
                 return payload.get('technical') or None
             except Exception:
                 return raw  # treat as bare markdown if the row wasn't JSON
+        if automation_type == 'memory':
+            # Memory module stores its single LLM report directly on
+            # the workflow row's details.report_md (no per-host fan-out,
+            # no reports table). The report already follows the
+            # `**Severity:** X` + `**Evidence (FACT):**` format the
+            # engagement fact-extractor parses, so IOCs + findings
+            # plug into the assembled report transparently.
+            from services.file_storage_service import get_workflow
+            wf = get_workflow(run_id) or {}
+            return ((wf.get('details') or {}).get('report_md')) or None
     except Exception as e:
         print(f"[ENGAGEMENT] Failed to load report for {run_id}: {e}", flush=True)
     return None
@@ -1490,15 +1500,15 @@ def _assemble_markdown(name, notes, loaded_sources, synthesis_md, *, tlp='AMBER'
         meta = s.get('metadata') or {}
         atype = s.get('automation_type') or '?'
         if atype == 'agentic':
-            tool = "IntactAI Agentic Pipeline (Velociraptor + Hayabusa + LLM analysis)"
+            tool = "Intact.AI Agentic Pipeline (Velociraptor + Hayabusa + LLM analysis)"
         elif atype == 'aws_scan':
-            tool = "IntactAI AWS Scan (CloudTrail + Prowler + GuardDuty + LLM)"
+            tool = "Intact.AI AWS Scan (CloudTrail + Prowler + GuardDuty + LLM)"
         elif atype == 'azure_scan':
-            tool = "IntactAI Azure Scan (DFIR-O365RC + SIGMA + LLM analysis)"
+            tool = "Intact.AI Azure Scan (DFIR-O365RC + SIGMA + LLM analysis)"
         elif atype == 'cve_scan':
-            tool = "IntactAI CVE Scan (Velociraptor inventory + local NVD mirror + CPE/Publisher resolver)"
+            tool = "Intact.AI CVE Scan (Velociraptor inventory + local NVD mirror + CPE/Publisher resolver)"
         else:
-            tool = "IntactAI workflow"
+            tool = "Intact.AI workflow"
         blueprint = meta.get('blueprint') or meta.get('blueprint_id') or '—'
         note_bits = []
         if meta.get('anonymize_data'):

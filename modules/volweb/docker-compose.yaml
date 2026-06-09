@@ -1,0 +1,278 @@
+# VolWeb — in-tree memory-forensics analysis stack
+#
+# Six services that mirror the upstream forensicxlab/VolWeb prod
+# compose, with three IntactAI-specific changes:
+#
+#   1. Every service joins `intact_network` so the IntactAI backend
+#      can reach the VolWeb API at http://intact_volweb_backend:8000
+#      by container name. The upstream nginx + host-port bindings are
+#      dropped — the dashboard's main nginx proxies any browser-facing
+#      VolWeb routes.
+#
+#   2. logging/ulimits/restart conventions match the rest of the
+#      IntactAI stack (per the leak-audit lessons from this session —
+#      see modules/backend/docker-compose.yaml). 50 MB × 5 rotation,
+#      nofile 65,536, restart: unless-stopped.
+#
+#   3. Versions are pinned via ../../config.yaml → modules/volweb/.env
+#      rather than the upstream ":latest" tags so installs are
+#      reproducible. The .env is rendered by lib/modules.sh:deploy_volweb
+#      from those config.yaml pins at install time.
+
+services:
+
+  intact_volweb_postgresdb:
+    container_name: intact_volweb_postgresdb
+    image: "postgres:${VOLWEB_POSTGRES_VERSION:-14.1}"
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${VOLWEB_POSTGRES_USER}
+      - POSTGRES_PASSWORD=${VOLWEB_POSTGRES_PASSWORD}
+      - POSTGRES_DB=${VOLWEB_POSTGRES_DB}
+    volumes:
+      - volweb_postgres_data:/var/lib/postgresql/data
+    networks:
+      - intact_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  intact_volweb_redis:
+    container_name: intact_volweb_redis
+    image: "redis:${VOLWEB_REDIS_VERSION:-7}"
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - volweb_redis_data:/data
+    networks:
+      - intact_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  intact_volweb_backend:
+    container_name: intact_volweb_backend
+    image: "forensicxlab/volweb-backend:${VOLWEB_BACKEND_VERSION}"
+    command: daphne -b 0.0.0.0 -p 8000 backend.asgi:application
+    restart: unless-stopped
+    # Network alias `volweb-backend` keeps the frontend image's
+    # hardcoded internal-nginx config (which proxies /api/ to
+    # http://volweb-backend:8000) working without rebuilding the
+    # upstream image. Without this the frontend nginx logs
+    # "host not found in upstream 'volweb-backend'" and the
+    # container restarts in a loop.
+    networks:
+      intact_network:
+        aliases:
+          - volweb-backend
+    depends_on:
+      - intact_volweb_postgresdb
+      - intact_volweb_redis
+    environment:
+      - DATABASE=postgres
+      - DATABASE_HOST=intact_volweb_postgresdb
+      - DATABASE_PORT=5432
+      - POSTGRES_USER=${VOLWEB_POSTGRES_USER}
+      - POSTGRES_PASSWORD=${VOLWEB_POSTGRES_PASSWORD}
+      - POSTGRES_DB=${VOLWEB_POSTGRES_DB}
+      - DJANGO_SECRET=${VOLWEB_DJANGO_SECRET}
+      - BROKER_HOST=intact_volweb_redis
+      - BROKER_PORT=6379
+      # CSRF — allow the IntactAI dashboard origin + localhost-dev shapes.
+      # install.sh renders the actual list from config.yaml's `domain`
+      # at deploy time, but the http://localhost:3000 default keeps the
+      # standalone PoC URL working during the migration window.
+      - CSRF_TRUSTED_ORIGINS=${VOLWEB_CSRF_TRUSTED_ORIGINS}
+    volumes:
+      - volweb_staticfiles:/home/app/web/staticfiles
+      - volweb_media:/home/app/web/media
+      # Shared memory-dump staging — same `intact_memory_dumps` volume
+      # mounted into Velociraptor at /data/memory_dumps. Lets the
+      # acquired .raw be visible to VolWeb workers without going through
+      # HTTP upload. The DB `evidence.file` field is set to
+      # `staging/<name>.raw` (relative to MEDIA_ROOT=/home/app/web/media)
+      # so Django's storage layer finds the file at /home/app/web/media/staging/<name>.raw.
+      - memory_dumps_shared:/home/app/web/media/staging:rw
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # Memory limit — the backend handles chunked uploads up to 64 GiB
+    # for memory dumps, but the request handler itself stays small;
+    # 2 GiB is generous headroom and prevents a runaway upload from
+    # ballooning the rest of the host.
+    mem_limit: 2g
+
+  intact_volweb_workers:
+    container_name: intact_volweb_workers
+    image: "forensicxlab/volweb-backend:${VOLWEB_BACKEND_VERSION}"
+    command: celery -A backend worker --loglevel=INFO -Q celery
+    restart: unless-stopped
+    depends_on:
+      - intact_volweb_redis
+      - intact_volweb_postgresdb
+    environment:
+      - DATABASE=postgres
+      - DATABASE_HOST=intact_volweb_postgresdb
+      - DATABASE_PORT=5432
+      - POSTGRES_USER=${VOLWEB_POSTGRES_USER}
+      - POSTGRES_PASSWORD=${VOLWEB_POSTGRES_PASSWORD}
+      - POSTGRES_DB=${VOLWEB_POSTGRES_DB}
+      - DJANGO_SECRET=${VOLWEB_DJANGO_SECRET}
+      - BROKER_HOST=intact_volweb_redis
+      - BROKER_PORT=6379
+    volumes:
+      - volweb_media:/home/app/web/media
+      # Shared memory-dump staging — same `intact_memory_dumps` volume
+      # mounted into Velociraptor at /data/memory_dumps. Lets the
+      # acquired .raw be visible to VolWeb workers without going through
+      # HTTP upload. The DB `evidence.file` field is set to
+      # `staging/<name>.raw` (relative to MEDIA_ROOT=/home/app/web/media)
+      # so Django's storage layer finds the file at /home/app/web/media/staging/<name>.raw.
+      - memory_dumps_shared:/home/app/web/media/staging:rw
+    networks:
+      - intact_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # Volatility 3 plugin extraction holds the full dump in memory
+    # for the kernel-PDB scan + per-process VAD walks. 5 GB dump
+    # benchmarked at ~2 GiB resident; 4 GiB cap accommodates 16 GB
+    # hosts without OOM risk.
+    mem_limit: 4g
+
+  intact_volweb_workers_yarascan:
+    container_name: intact_volweb_workers_yarascan
+    image: "forensicxlab/volweb-backend:${VOLWEB_BACKEND_VERSION}"
+    command: celery -A backend worker --loglevel=INFO -Q yarascan --concurrency 1
+    restart: unless-stopped
+    # Wait for intact_volweb_workers to be "started" before mounting the
+    # shared volweb_media volume. The workers entrypoint creates
+    # /home/app/web/media/symbols (and other subdirs) during init. Without
+    # this serialization, fresh-install brings BOTH worker containers up in
+    # parallel; whichever races to create `symbols/` second hits
+    #   failed to mkdir /var/lib/docker/volumes/volweb_volweb_media/_data/symbols:
+    #   file exists
+    # and crashes. The first-time-install error the user hit on 2026-06-09
+    # (install_20260609_114003.log:6008) was exactly this race. depends_on
+    # with condition: service_started is a one-shot wait — once workers
+    # is up, yarascan launches; afterwards Docker's restart policy keeps
+    # both alive independently as designed.
+    depends_on:
+      - intact_volweb_redis
+      - intact_volweb_postgresdb
+      - intact_volweb_workers
+    environment:
+      - DATABASE=postgres
+      - DATABASE_HOST=intact_volweb_postgresdb
+      - DATABASE_PORT=5432
+      - POSTGRES_USER=${VOLWEB_POSTGRES_USER}
+      - POSTGRES_PASSWORD=${VOLWEB_POSTGRES_PASSWORD}
+      - POSTGRES_DB=${VOLWEB_POSTGRES_DB}
+      - DJANGO_SECRET=${VOLWEB_DJANGO_SECRET}
+      - BROKER_HOST=intact_volweb_redis
+      - BROKER_PORT=6379
+    volumes:
+      - volweb_media:/home/app/web/media
+      # Shared memory-dump staging — same `intact_memory_dumps` volume
+      # mounted into Velociraptor at /data/memory_dumps. Lets the
+      # acquired .raw be visible to VolWeb workers without going through
+      # HTTP upload. The DB `evidence.file` field is set to
+      # `staging/<name>.raw` (relative to MEDIA_ROOT=/home/app/web/media)
+      # so Django's storage layer finds the file at /home/app/web/media/staging/<name>.raw.
+      - memory_dumps_shared:/home/app/web/media/staging:rw
+    networks:
+      - intact_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # Yarascan compiles all seeded rules into a single big module then
+    # walks the dump page-by-page. Memory-heavy step; 2 GiB cap covers
+    # the 1,444-rule corpus tested in the PoC with room for the dump's
+    # active-page working set.
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "${VOLWEB_YARASCAN_CPU_LIMIT:-1.0}"
+
+  intact_volweb_frontend:
+    container_name: intact_volweb_frontend
+    image: "forensicxlab/volweb-frontend:${VOLWEB_FRONTEND_VERSION}"
+    restart: unless-stopped
+    depends_on:
+      - intact_volweb_backend
+    # No host port — the frontend stays on the internal docker
+    # network. The main IntactAI nginx terminates TLS on host port
+    # 8002 (see modules/nginx/config/nginx.conf) and proxies through.
+    expose:
+      - 80
+    volumes:
+      - volweb_staticfiles:/home/app/web/staticfiles
+      - volweb_media:/home/app/web/media
+      # Shared memory-dump staging — same `intact_memory_dumps` volume
+      # mounted into Velociraptor at /data/memory_dumps. Lets the
+      # acquired .raw be visible to VolWeb workers without going through
+      # HTTP upload. The DB `evidence.file` field is set to
+      # `staging/<name>.raw` (relative to MEDIA_ROOT=/home/app/web/media)
+      # so Django's storage layer finds the file at /home/app/web/media/staging/<name>.raw.
+      - memory_dumps_shared:/home/app/web/media/staging:rw
+    networks:
+      - intact_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+volumes:
+  volweb_postgres_data:
+  volweb_redis_data:
+  volweb_staticfiles:
+  volweb_media:
+  # Cross-stack shared volume. Declared `external: true` because the
+  # Velociraptor compose creates it (memory_dumps_shared with name
+  # `intact_memory_dumps`). Both stacks reference it by the same docker
+  # name so `docker volume inspect intact_memory_dumps` from either side
+  # returns the same volume. If Velociraptor isn't up yet, install.sh
+  # pre-creates the volume.
+  memory_dumps_shared:
+    external: true
+    name: intact_memory_dumps
+
+networks:
+  intact_network:
+    external: true

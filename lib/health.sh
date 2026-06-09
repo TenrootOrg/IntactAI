@@ -32,15 +32,23 @@ run_post_install_init() {
     log_info "Running maintenance tasks (artifact import, tool download)..."
     log_info "This may take a few minutes..."
 
-    # Run the maintenance script inside the backend container
+    # Run the maintenance script inside the backend container. Keep a raw
+    # copy so child-process warnings/errors can be added to the final
+    # ATTENTION report; array writes inside a pipeline subshell would be lost.
+    local maintenance_output
+    maintenance_output=$(mktemp)
     if docker exec intact_backend python /app/scripts/run_maintenance.py 2>&1 | while IFS= read -r line; do
         echo "  $line"
         echo "  $line" >> "$LOG_FILE"
+        printf '%s\n' "$line" >> "$maintenance_output"
     done; then
+        scan_child_output_for_issues "run_maintenance.py" "$maintenance_output"
         log_success "Maintenance tasks completed"
     else
+        scan_child_output_for_issues "run_maintenance.py" "$maintenance_output"
         log_warn "Maintenance had issues - check logs above"
     fi
+    rm -f "$maintenance_output"
 }
 
 # ============================================================================
@@ -179,7 +187,13 @@ verify_installation() {
 print_summary() {
     echo ""
     echo "=============================================="
-    echo -e "${GREEN}Intact.AI Platform Installation Complete${NC}"
+    if [[ ${#FAILED_MODULES[@]} -gt 0 ]] || [[ ${#UNHEALTHY_MODULES[@]} -gt 0 ]] || [[ ${#INSTALL_ERRORS[@]} -gt 0 ]]; then
+        echo -e "${RED}Intact.AI Platform Installation Finished With Errors${NC}"
+    elif [[ ${#INSTALL_WARNINGS[@]} -gt 0 ]]; then
+        echo -e "${YELLOW}Intact.AI Platform Installation Finished With Warnings${NC}"
+    else
+        echo -e "${GREEN}Intact.AI Platform Installation Complete${NC}"
+    fi
     echo "=============================================="
     echo ""
 
@@ -208,7 +222,13 @@ print_summary() {
 
     # Log completion message (appears in both terminal and log file)
     log_success "=============================================="
-    log_success "Intact.AI Platform Installation Complete!"
+    if [[ ${#FAILED_MODULES[@]} -gt 0 ]] || [[ ${#UNHEALTHY_MODULES[@]} -gt 0 ]] || [[ ${#INSTALL_ERRORS[@]} -gt 0 ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] Intact.AI Platform Installation Finished With Errors" >> "$LOG_FILE"
+    elif [[ ${#INSTALL_WARNINGS[@]} -gt 0 ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [WARN] Intact.AI Platform Installation Finished With Warnings" >> "$LOG_FILE"
+    else
+        log_success "Intact.AI Platform Installation Complete!"
+    fi
     log_success "=============================================="
 }
 
@@ -341,23 +361,39 @@ print_final_issues_report() {
         return 0
     fi
 
-    echo ""
-    echo -e "${RED}============================================================${NC}"
-    echo -e "${RED}  ATTENTION — install completed with ${n_e} error(s), ${n_w} warning(s)${NC}"
-    echo -e "${RED}============================================================${NC}"
+    # Tee every line of the final summary into the install log too.
+    # Previously these were raw `echo` calls — they painted the terminal
+    # but the install log captured nothing past "Installation Complete!".
+    # Operators who only have the log file (no terminal scrollback)
+    # couldn't see which errors/warnings tripped the summary. `_tee`
+    # writes to both stdout (with ANSI for the terminal) and to the log
+    # file (stripped of ANSI so grep + future re-reads stay clean).
+    local _strip_ansi='s/\x1b\[[0-9;]*m//g'
+    _tee() {
+        local line="$1"
+        echo -e "$line"
+        if [[ -n "${LOG_FILE:-}" ]]; then
+            echo -e "$line" | sed -E "$_strip_ansi" >> "$LOG_FILE"
+        fi
+    }
+
+    _tee ""
+    _tee "${RED}============================================================${NC}"
+    _tee "${RED}  ATTENTION — install completed with ${n_e} error(s), ${n_w} warning(s)${NC}"
+    _tee "${RED}============================================================${NC}"
 
     if (( n_e > 0 )); then
-        echo ""
-        echo -e "${RED}ERRORS:${NC}"
+        _tee ""
+        _tee "${RED}ERRORS:${NC}"
         local entry
         for entry in "${INSTALL_ERRORS[@]}"; do
-            echo "  $entry"
+            _tee "  $entry"
         done
     fi
 
     if (( n_w > 0 )); then
-        echo ""
-        echo -e "${YELLOW}WARNINGS:${NC}"
+        _tee ""
+        _tee "${YELLOW}WARNINGS:${NC}"
         # Count "↳ resolved: …" breadcrumbs that pull_compose_with_retry
         # and _pull_image_with_retry leave when a retry attempt succeeds
         # after an earlier failure. Surface them as a one-line summary so
@@ -369,17 +405,17 @@ print_final_issues_report() {
             [[ "$entry" == *"↳ resolved:"* ]] && ((resolved_count++))
         done
         if (( resolved_count > 0 )); then
-            echo -e "${YELLOW}  (${resolved_count} of these were transient and already auto-resolved on retry — shown below as ↳ entries)${NC}"
+            _tee "${YELLOW}  (${resolved_count} of these were transient and already auto-resolved on retry — shown below as ↳ entries)${NC}"
         fi
         for entry in "${INSTALL_WARNINGS[@]}"; do
-            echo "  $entry"
+            _tee "  $entry"
         done
     fi
 
-    echo ""
-    echo -e "${RED}  Full log: ${LOG_FILE}${NC}"
-    echo -e "${RED}============================================================${NC}"
-    echo ""
+    _tee ""
+    _tee "${RED}  Full log: ${LOG_FILE}${NC}"
+    _tee "${RED}============================================================${NC}"
+    _tee ""
 
     return 0
 }

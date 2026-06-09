@@ -110,6 +110,15 @@ data/tmp/
 !.env.example
 !modules/*/.env
 
+# VolWeb is the exception to the per-module .env rule: its .env is
+# RENDERED at install time from `.env.template` with per-install
+# secrets (DJANGO_SECRET, POSTGRES_PASSWORD = `openssl rand` values).
+# Tracking it would either ship those random secrets or revert them
+# on every pull. Keep the template tracked; the rendered file is
+# operator-machine-only.
+modules/volweb/.env
+!modules/volweb/.env.template
+
 # Rendered configs — the .template files stay tracked, the rendered
 # output (which holds the live API key) does not.
 modules/timesketch/config/timesketch.conf
@@ -140,3 +149,9 @@ modules/nginx/package-lock.json
 # Python equivalent in services/upgrade/velociraptor.py. Binaries are
 # downloaded from upstream, not source-controlled.
 /modules/velociraptor/clients/
+
+# Belt-and-suspenders: never track SQLite DB files (defense-in-depth
+# after the data/mssp.db blob leak — see git filter-repo run on 2026-06-07)
+data/*.db
+data/*.db-shm
+data/*.db-wal

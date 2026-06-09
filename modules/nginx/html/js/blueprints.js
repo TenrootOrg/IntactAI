@@ -91,7 +91,8 @@ async function loadAvailableArtifacts(forceRefresh = false) {
 // The [Velociraptor] or [Agentic] prefix in the name is the only distinction
 const TYPE_CONFIG = {
     velociraptor: { label: 'Velociraptor', badgeColor: 'bg-blue-900 text-blue-300', borderColor: 'border-blue-900' },
-    timesketch: { label: 'Timesketch', badgeColor: 'bg-orange-900 text-orange-300', borderColor: 'border-orange-900' }
+    timesketch: { label: 'Timesketch', badgeColor: 'bg-orange-900 text-orange-300', borderColor: 'border-orange-900' },
+    memory: { label: 'Memory', badgeColor: 'bg-purple-900 text-purple-300', borderColor: 'border-purple-900' }
 };
 
 // ============================================================================
@@ -180,9 +181,15 @@ async function renderBlueprintsList() {
     const container = document.getElementById('blueprints-list');
     if (!container) return;
 
-    // Load unified forensics blueprints (velociraptor + agentic combined) and timesketch
-    const forensicsBp = await loadBlueprints('forensics');
-    const timesketchBp = await loadBlueprints('timesketch');
+    // Load unified forensics blueprints (velociraptor + agentic combined) + timesketch + memory.
+    // Memory blueprints expose a curated VolWeb plugin set per blueprint
+    // (the operator picks one in the Memory page; YARA is a separate
+    // checkbox there).
+    const [forensicsBp, timesketchBp, memoryBp] = await Promise.all([
+        loadBlueprints('forensics'),
+        loadBlueprints('timesketch'),
+        loadBlueprints('memory'),
+    ]);
 
     // Combine all blueprints with type info and cache them
     // Forensics blueprints have blueprint_type set by API (velociraptor or agentic based on name)
@@ -192,7 +199,8 @@ async function renderBlueprintsList() {
             _type: 'velociraptor',
             _actualType: bp.blueprint_type || (bp.name?.includes('[Agentic]') ? 'agentic' : 'velociraptor')
         })),
-        ...timesketchBp.map(bp => ({ ...bp, _type: 'timesketch', _actualType: 'timesketch' }))
+        ...timesketchBp.map(bp => ({ ...bp, _type: 'timesketch', _actualType: 'timesketch' })),
+        ...memoryBp.map(bp => ({ ...bp, _type: 'memory', _actualType: 'memory' })),
     ];
 
     // Apply current filter
@@ -225,17 +233,23 @@ function renderBlueprintCard(bp) {
     const actualType = bp._actualType || bp._type;  // Use actual type for API calls
     const displayType = bp._type;  // Use display type for filtering
 
-    // All velociraptor/agentic blueprints show Velociraptor badge
-    // The [Velociraptor] or [Agentic] prefix in the name is the only distinction
-    const badgeColor = displayType === 'timesketch'
-        ? 'bg-orange-900 text-orange-300'
-        : 'bg-blue-900 text-blue-300';
-    const badgeLabel = displayType === 'timesketch'
-        ? 'Timesketch'
-        : 'Velociraptor';
-    const borderColor = displayType === 'timesketch'
-        ? 'border-orange-900'
-        : 'border-blue-900';
+    // Per-type badge/border styling. Velociraptor + Agentic share a
+    // blue badge (the [Agentic] prefix in the name distinguishes them
+    // visually); Timesketch is orange; Memory is purple.
+    let badgeColor, badgeLabel, borderColor;
+    if (displayType === 'timesketch') {
+        badgeColor = 'bg-orange-900 text-orange-300';
+        badgeLabel = 'Timesketch';
+        borderColor = 'border-orange-900';
+    } else if (displayType === 'memory') {
+        badgeColor = 'bg-purple-900 text-purple-300';
+        badgeLabel = 'Memory';
+        borderColor = 'border-purple-900';
+    } else {
+        badgeColor = 'bg-blue-900 text-blue-300';
+        badgeLabel = 'Velociraptor';
+        borderColor = 'border-blue-900';
+    }
 
     // Settings display varies by type
     let settingsHtml = '';
@@ -245,6 +259,21 @@ function renderBlueprintCard(bp) {
         settingsHtml = `
             <span>Triage: ${kape}</span>
             <span>Plaso: ${plaso}</span>
+        `;
+    } else if (displayType === 'memory') {
+        const ps = bp.settings?.plugin_set || [];
+        let pluginLabel;
+        if (ps.length === 1 && ps[0] === '*') {
+            pluginLabel = 'all available';
+        } else if (ps.length === 0) {
+            pluginLabel = 'YARA-only';
+        } else {
+            pluginLabel = `${ps.length} plugin(s)`;
+        }
+        const cpu = bp.settings?.cpu_limit ?? 80;
+        settingsHtml = `
+            <span>${pluginLabel}</span>
+            <span>CPU: ${cpu}%</span>
         `;
     } else {
         const expiry = bp.settings?.hunt_expiry || 120;
@@ -318,6 +347,7 @@ function showSettingsForType(type) {
     // Two new TS-only sections introduced for KAPE upload-cap fix.
     const tsFlowLimits = document.getElementById('blueprint-timesketch-flow-limits');
     const tsKapeEnv = document.getElementById('blueprint-timesketch-kape-env');
+    const memorySettings = document.getElementById('blueprint-memory-settings');
     const artifactsSection = document.getElementById('blueprint-artifacts-section');
 
     // Hide all first
@@ -325,6 +355,7 @@ function showSettingsForType(type) {
     if (timesketchSettings) timesketchSettings.classList.add('hidden');
     if (tsFlowLimits) tsFlowLimits.classList.add('hidden');
     if (tsKapeEnv) tsKapeEnv.classList.add('hidden');
+    if (memorySettings) memorySettings.classList.add('hidden');
     if (artifactsSection) artifactsSection.classList.remove('hidden');
 
     if (type === 'timesketch') {
@@ -332,6 +363,9 @@ function showSettingsForType(type) {
         if (tsFlowLimits) tsFlowLimits.classList.remove('hidden');
         if (tsKapeEnv) tsKapeEnv.classList.remove('hidden');
         if (artifactsSection) artifactsSection.classList.add('hidden'); // No artifacts for timesketch
+    } else if (type === 'memory') {
+        if (memorySettings) memorySettings.classList.remove('hidden');
+        if (artifactsSection) artifactsSection.classList.add('hidden'); // No Velociraptor artifacts for memory
     } else {
         if (huntSettings) huntSettings.classList.remove('hidden');
     }
@@ -341,6 +375,20 @@ function onBlueprintTypeChange() {
     const type = document.getElementById('blueprint-type').value;
     window.currentBlueprintEditType = type;
     showSettingsForType(type);
+
+    // When switching INTO the memory type for a new blueprint, load the
+    // plugin catalog into the checkbox grid with nothing pre-selected.
+    // (editBlueprint() handles the pre-populated case.)
+    const editId = document.getElementById('blueprint-edit-id').value;
+    if (type === 'memory' && !editId) {
+        document.getElementById('blueprint-memory-cpu').value = 80;
+        document.getElementById('blueprint-memory-max-bytes').value = 68719476736;
+        const allToggle = document.getElementById('blueprint-memory-all-plugins');
+        if (allToggle) allToggle.checked = false;
+        const search = document.getElementById('blueprint-memory-plugin-search');
+        if (search) search.value = '';
+        populateMemoryPluginCheckboxes([]);
+    }
 }
 
 function closeBlueprintModal() {
@@ -389,6 +437,11 @@ async function editBlueprint(blueprintId, type) {
         document.getElementById('blueprint-ts-kape-max-hash-size').value = bp.settings?.kape_max_hash_size ?? 0;
         document.getElementById('blueprint-ts-kape-collection-policy').value = bp.settings?.kape_collection_policy || 'ExcludeSigned';
         toggleHasherSize();
+    } else if (type === 'memory') {
+        const pluginSet = bp.settings?.plugin_set || [];
+        document.getElementById('blueprint-memory-cpu').value = bp.settings?.cpu_limit ?? 80;
+        document.getElementById('blueprint-memory-max-bytes').value = bp.settings?.max_bytes ?? 68719476736;
+        await populateMemoryPluginCheckboxes(pluginSet);
     } else {
         document.getElementById('blueprint-expiry').value = bp.settings?.hunt_expiry || 120;
         document.getElementById('blueprint-timeout').value = bp.settings?.timeout || 3600;
@@ -401,6 +454,127 @@ async function editBlueprint(blueprintId, type) {
 
     populateModalArtifacts(bp.artifacts || []);
 }
+
+// ============================================================================
+// Memory blueprint plugin catalog (used by the memory editor checkbox grid)
+// ============================================================================
+
+// Cached catalog (grouped by purpose). Loaded once per page session;
+// the catalog ships with the backend so it doesn't change between
+// blueprint edits.
+let memoryPluginCatalogCache = null;
+
+async function loadMemoryPluginCatalog() {
+    if (memoryPluginCatalogCache) return memoryPluginCatalogCache;
+    try {
+        const r = await fetch('/api/memory/available_plugins');
+        const j = await r.json();
+        memoryPluginCatalogCache = j.groups || [];
+    } catch (e) {
+        console.error('Failed to load memory plugin catalog:', e);
+        memoryPluginCatalogCache = [];
+    }
+    return memoryPluginCatalogCache;
+}
+
+async function populateMemoryPluginCheckboxes(selectedPlugins) {
+    const container = document.getElementById('blueprint-memory-plugin-list');
+    if (!container) return;
+
+    const selected = new Set(selectedPlugins || []);
+    const allToggle = document.getElementById('blueprint-memory-all-plugins');
+
+    // The `['*']` marker means "every plugin VolWeb advertises" — flip
+    // the dedicated toggle and clear the per-plugin checkboxes since
+    // they'd be ignored at run time anyway.
+    if (selected.size === 1 && selected.has('*')) {
+        if (allToggle) allToggle.checked = true;
+        selected.clear();
+    } else if (allToggle) {
+        allToggle.checked = false;
+    }
+
+    container.innerHTML = '<p class="text-gray-500 text-sm">Loading plugins…</p>';
+    const groups = await loadMemoryPluginCatalog();
+
+    if (!groups.length) {
+        container.innerHTML = '<p class="text-red-400 text-sm">Failed to load plugin catalog.</p>';
+        return;
+    }
+
+    container.innerHTML = groups.map(g => `
+        <div class="memory-plugin-group">
+            <div class="text-xs font-semibold text-purple-300 uppercase tracking-wide mt-2 mb-1">${g.label}</div>
+            ${g.plugins.map(p => {
+                const shortName = p.split('.').slice(-1)[0];  // last segment, e.g. "PsList"
+                return `
+                <label class="memory-plugin-row flex items-center gap-2 text-xs text-white hover:bg-gray-800 px-2 py-1 rounded cursor-pointer"
+                       data-name="${p.toLowerCase()}">
+                    <input type="checkbox" class="blueprint-memory-plugin-cb" value="${p}"
+                           ${selected.has(p) ? 'checked' : ''}
+                           onchange="updateMemoryPluginCount()">
+                    <span class="text-purple-200 font-mono">${shortName}</span>
+                    <span class="text-gray-500 truncate">${p}</span>
+                </label>
+                `;
+            }).join('')}
+        </div>
+    `).join('');
+
+    onMemoryAllPluginsToggle();   // sets disabled state of per-row checkboxes
+    updateMemoryPluginCount();
+}
+
+function updateMemoryPluginCount() {
+    const checked = document.querySelectorAll('.blueprint-memory-plugin-cb:checked').length;
+    const total = document.querySelectorAll('.blueprint-memory-plugin-cb').length;
+    const checkedEl = document.getElementById('blueprint-memory-plugin-count');
+    const totalEl = document.getElementById('blueprint-memory-plugin-total');
+    if (checkedEl) checkedEl.textContent = checked;
+    if (totalEl) totalEl.textContent = total;
+}
+
+function toggleAllMemoryPlugins(check) {
+    // "All available" toggle wins — if it's on, individual checkboxes
+    // are disabled and toggling them would be misleading.
+    const allToggle = document.getElementById('blueprint-memory-all-plugins');
+    if (allToggle && allToggle.checked) return;
+    document.querySelectorAll('.blueprint-memory-plugin-cb').forEach(cb => {
+        // Respect search-hidden rows — only toggle visible ones, so the
+        // search box's filter doubles as a scope selector.
+        const row = cb.closest('.memory-plugin-row');
+        if (row && row.classList.contains('hidden')) return;
+        cb.checked = check;
+    });
+    updateMemoryPluginCount();
+}
+
+function filterMemoryPluginList() {
+    const q = (document.getElementById('blueprint-memory-plugin-search').value || '').toLowerCase().trim();
+    document.querySelectorAll('.memory-plugin-row').forEach(row => {
+        const name = row.dataset.name || '';
+        row.classList.toggle('hidden', q !== '' && !name.includes(q));
+    });
+    // Hide group headers whose rows are all hidden so the list doesn't
+    // show empty section labels.
+    document.querySelectorAll('.memory-plugin-group').forEach(g => {
+        const anyVisible = Array.from(g.querySelectorAll('.memory-plugin-row'))
+            .some(row => !row.classList.contains('hidden'));
+        g.classList.toggle('hidden', !anyVisible);
+    });
+}
+
+function onMemoryAllPluginsToggle() {
+    const allToggle = document.getElementById('blueprint-memory-all-plugins');
+    const isAll = !!(allToggle && allToggle.checked);
+    document.querySelectorAll('.blueprint-memory-plugin-cb').forEach(cb => {
+        cb.disabled = isAll;
+        // Visually grey out the row when the all-toggle is on.
+        const row = cb.closest('.memory-plugin-row');
+        if (row) row.classList.toggle('opacity-50', isAll);
+    });
+}
+
 
 async function populateModalArtifacts(selectedArtifacts) {
     const container = document.getElementById('blueprint-artifacts-list');
@@ -514,6 +688,34 @@ async function saveBlueprintFromModal() {
             kape_collection_policy: document.getElementById('blueprint-ts-kape-collection-policy').value || 'ExcludeSigned'
         };
         data = { name, description, settings };  // No artifacts for timesketch
+    } else if (type === 'memory') {
+        // Collect plugin selection from the checkbox grid. The
+        // "all-available" toggle stores the special ['*'] marker
+        // which pipeline.py resolves at run time via
+        // volweb.list_plugins(); otherwise we collect ticked
+        // checkboxes (may be empty → YARA-only blueprint).
+        const allToggle = document.getElementById('blueprint-memory-all-plugins');
+        let pluginSet;
+        if (allToggle && allToggle.checked) {
+            pluginSet = ['*'];
+        } else {
+            pluginSet = Array.from(document.querySelectorAll('.blueprint-memory-plugin-cb:checked'))
+                .map(cb => cb.value);
+        }
+        settings = {
+            // `mode` is required by the backend schema today; we set it
+            // to "plugin" here as a sane default. The Memory page
+            // computes the effective mode at submit time from the
+            // operator's blueprint choice + YARA checkbox, so this
+            // baked-in value isn't actually consulted at run time.
+            mode: 'plugin',
+            plugin_set: pluginSet,
+            yara_rulesets: [],
+            compression: 'None',
+            max_bytes: parseInt(document.getElementById('blueprint-memory-max-bytes').value) || 68719476736,
+            cpu_limit: parseInt(document.getElementById('blueprint-memory-cpu').value) || 80,
+        };
+        data = { name, description, settings };
     } else {
         const artifacts = Array.from(document.querySelectorAll('.blueprint-artifact-cb:checked')).map(cb => cb.value);
         if (artifacts.length === 0) { alert('Please select at least one artifact.'); return; }

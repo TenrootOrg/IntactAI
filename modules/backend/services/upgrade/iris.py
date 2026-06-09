@@ -9,7 +9,8 @@ from typing import Dict, Callable, Optional
 from .base import (
     WORKDIR, HOST_PATH,
     run_command, read_env_file, update_env_file, load_docker_image,
-    backup_env_file, restore_env_file, cleanup_backup
+    backup_env_file, restore_env_file, cleanup_backup,
+    remove_old_module_image,
 )
 
 
@@ -32,7 +33,7 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
     try:
         # Stop containers
         log("Stopping IRIS containers...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log)
+        result = run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
         if not result['success']:
             raise Exception(f"Failed to stop IRIS: {result['error']}")
 
@@ -87,6 +88,10 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
         log(f"IRIS upgrade completed: {current_version} -> {version}", "success")
+        # Remove the OLD pinned image(s) — frees ~1.5 GB per IRIS bump.
+        # Safe by design: skipped on no-op upgrade, Docker refuses on
+        # in-use, errors swallowed (helper logs at info level).
+        remove_old_module_image('iris', current_version, version, logger=log)
         return {"success": True, "version": version, "health": "green" if healthy else "pending"}
 
     except Exception as e:
@@ -96,7 +101,7 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
         log(f"Rolling back to version {current_version}...", "warning")
 
         if restore_env_file(env_file, backup_file, logger=log):
-            run_command("docker compose down", cwd=work_dir, logger=log)
+            run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
             run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
             log(f"ROLLED BACK IRIS to version {current_version}", "warning")
 
@@ -129,7 +134,7 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
     try:
         # Stop containers
         log("Stopping IRIS containers...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log, run_id=run_id)
+        result = run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to stop IRIS: {result['error']}")
 
@@ -141,6 +146,15 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
                 load_docker_image(tar_path, logger=log, run_id=run_id)
             else:
                 log(f"  Image not found: {tar_path}", "warning")
+
+        # Infrastructure deps: rabbitmq is a fixed-version dep declared
+        # in IRIS compose. Load it if bundled (newer packages include
+        # it for offline support; older packages don't — falling
+        # through to docker-hub pull is fine when there's internet).
+        rabbitmq_tar = os.path.join(images_dir, 'rabbitmq-3-management-alpine.tar')
+        if os.path.exists(rabbitmq_tar):
+            log("  Loading bundled rabbitmq image (infrastructure dep)...", "info")
+            load_docker_image(rabbitmq_tar, logger=log, run_id=run_id)
 
         # Update version in .env
         log(f"Updating version to {version}...", "info")
@@ -188,6 +202,7 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
         log(f"IRIS offline upgrade completed: {current_version} -> {version}", "success")
+        remove_old_module_image('iris', current_version, version, logger=log)
         return {"success": True, "version": version, "health": "green" if healthy else "pending"}
 
     except Exception as e:
@@ -197,7 +212,7 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
         log(f"Rolling back to version {current_version}...", "warning")
 
         if restore_env_file(env_file, backup_file, logger=log):
-            run_command("docker compose down", cwd=work_dir, logger=log)
+            run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
             run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
             log(f"ROLLED BACK IRIS to version {current_version}", "warning")
 
@@ -207,3 +222,155 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
             "rolled_back": True,
             "restored_version": current_version
         }
+
+
+def install_iris_offline(package_dir: str, version: str, logger=None, run_id=None) -> Dict:
+    """Fresh-install IRIS — picked when intact_iris_app absent.
+
+    Generates the secret files lib/modules.sh:generate_iris_secrets
+    would otherwise create (IRIS_ADM_PASSWORD from config.yaml,
+    IRIS_SECRET_KEY + IRIS_SECURITY_PASSWORD_SALT as `openssl rand -hex 32`
+    equivalents, POSTGRES_* passwords).
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    from .base import install_module_compose_up
+    import secrets as _secrets
+
+    work_dir = os.path.join(WORKDIR, 'modules', 'iris')
+    env_file = os.path.join(work_dir, '.env')
+    secrets_dir = os.path.join(work_dir, 'secrets')
+    os.makedirs(secrets_dir, exist_ok=True)
+
+    log(f"Installing IRIS (first-time) -> {version or 'tracked default'}...", "info")
+    if os.path.exists(env_file) and version:
+        update_env_file(env_file, 'IRIS_VERSION', version, logger=log)
+
+    iris_admin_pw = '123123'
+    try:
+        from config import load_main_config
+        cfg = load_main_config() or {}
+        v = (cfg.get('modules', {}) or {}).get('iris', {}).get('password')
+        if v:
+            iris_admin_pw = str(v)
+    except Exception:
+        pass
+
+    secret_specs = [
+        ('IRIS_ADM_PASSWORD', iris_admin_pw),
+        ('IRIS_SECRET_KEY', _secrets.token_hex(32)),
+        ('IRIS_SECURITY_PASSWORD_SALT', _secrets.token_hex(32)),
+        ('POSTGRES_ADMIN_PASSWORD', _secrets.token_hex(32)),
+        ('POSTGRES_PASSWORD', _secrets.token_hex(32)),
+    ]
+    for name, val in secret_specs:
+        path = os.path.join(secrets_dir, name)
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            log(f"  {name}: already present, keeping existing", "info")
+            # Re-chmod existing files to 0o644 — fixes pre-existing 0o600
+            # secrets from older versions of this code that locked
+            # iris_app out (iris_app runs as nobody/uid 65534; root-owned
+            # 0o600 secrets bind-mounted into /run/secrets/ are
+            # unreadable, so iris_app reads an empty password and
+            # connects with "" → password-auth-failed crashloop).
+            try:
+                os.chmod(path, 0o644)
+            except (PermissionError, FileNotFoundError):
+                pass
+            continue
+        with open(path, 'w') as f:
+            f.write(val or '')
+        # 0o644 (world-readable) — not 0o600. The iris_app container runs
+        # the gunicorn process as `nobody` (uid 65534) while the secret
+        # files are owned by root inside the container (because docker
+        # bind-mounts inherit host ownership and we wrote them as root
+        # from the backend container). A 0o600 file owned by root is
+        # unreadable to nobody; iris_app then gets an empty password,
+        # connects with "", and crashes with "password authentication
+        # failed for user postgres" in an endless loop. install.sh's
+        # generate_iris_secrets doesn't chmod the files at all (leaving
+        # them at the default umask 0o644), which is why the regular
+        # install path doesn't hit this. Matching that policy here.
+        os.chmod(path, 0o644)
+        log(f"  Generated {name}", "info")
+
+    compose_result = install_module_compose_up(
+        'iris', package_dir, version,
+        image_tar_prefixes=['iris', 'rabbitmq', 'postgres'],
+        logger=log, run_id=run_id,
+    )
+    if not compose_result.get('success'):
+        return compose_result
+
+    # Post-install bootstrap. Without this, the install reports success
+    # but the IntactAI backend has NO IRIS api_key in its secrets DB →
+    # every backend → IRIS API call fails with 401. Mirrors
+    # lib/modules.sh:bootstrap_iris_api_key.
+    log("IRIS containers up. Waiting for first-init + extracting api_key...", "info")
+
+    import subprocess as _sub
+
+    # Stage 1: wait for the IRIS user table to be populated AND for the
+    # administrator's api_key column to be non-NULL. IRIS's first-init
+    # runs alembic migrations + a seed step that creates the
+    # administrator row WITHOUT an api_key initially, then a separate
+    # step populates the key. Polling for `api_key IS NOT NULL` is what
+    # tells us the stack is actually ready to authenticate.
+    api_key = None
+    waited = 0
+    while waited < 300:  # 5 minutes — IRIS first-init is slow (DB + alembic + seed)
+        try:
+            probe = _sub.run(
+                ["docker", "exec", "intact_iris_db", "psql", "-U", "iris", "-d", "iris_db",
+                 "-tAc", 'SELECT api_key FROM "user" WHERE name=\'administrator\' AND api_key IS NOT NULL;'],
+                capture_output=True, text=True, timeout=15,
+            )
+            out = (probe.stdout or "").strip()
+            if probe.returncode == 0 and out:
+                api_key = out
+                log(f"  IRIS administrator api_key materialized ({waited}s)", "success")
+                break
+        except _sub.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+        time.sleep(5)
+        waited += 5
+        if waited % 30 == 0:
+            log(f"  Still waiting for IRIS first-init... ({waited}s)", "info")
+
+    if not api_key:
+        log(
+            "IRIS administrator api_key did not appear in iris_db after 5 minutes. "
+            "Containers ARE running, but backend → IRIS API calls will fail until "
+            "the key is stored. Fix manually once IRIS is ready: "
+            "`docker exec intact_iris_db psql -U iris -d iris_db -tAc "
+            "\"SELECT api_key FROM \\\"user\\\" WHERE name='administrator';\"` "
+            "then `docker exec intact_backend python3 -c \"from services.storage."
+            "secret_store import set_secret; set_secret('iris.administrator.api_key', '<key>')\"`",
+            "warning",
+        )
+        return compose_result
+
+    # Stage 2: store the api_key in the backend's secrets DB so iris_service
+    # can auth without doing a docker-exec lookup on every call.
+    log("Storing IRIS api_key in backend secrets DB...", "info")
+    try:
+        from services.storage.secret_store import set_secret, get_secret
+        if set_secret('iris.administrator.api_key', api_key):
+            # Read-back verify (set_secret can succeed but a transient
+            # SQLite lock can roll the write back silently).
+            persisted = get_secret('iris.administrator.api_key')
+            if persisted == api_key:
+                log("  IRIS api_key persisted to backend secrets table — verified", "success")
+            else:
+                log(
+                    "  IRIS api_key set_secret() returned OK but read-back didn't match. "
+                    "Run the manual set_secret() shown in the prior warning.",
+                    "warning",
+                )
+        else:
+            log("  IRIS api_key set_secret() returned False. Fix manually.", "warning")
+    except Exception as e:
+        log(f"  Failed to persist IRIS api_key to backend secrets: {e}", "warning")
+
+    return compose_result

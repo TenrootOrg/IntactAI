@@ -20,3 +20,4 @@ weasyprint==60.2
 pydyf<0.9  # Pin: WeasyPrint 60 expects pydyf 0.8.x; 0.9+ broke transform API.
 markdown==3.7
 pymdown-extensions==10.11
+

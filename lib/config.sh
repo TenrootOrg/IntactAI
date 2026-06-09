@@ -27,6 +27,69 @@ read_config() {
     python3 -c "import yaml; print(yaml.safe_load(open('${CONFIG_FILE}'))${key})" 2>/dev/null || echo ""
 }
 
+print_installation_config_summary() {
+    log_info "=========================================="
+    log_info "Installation configuration summary"
+    log_info "=========================================="
+
+    python3 - "$CONFIG_FILE" "$LOG_FILE" <<'PYCONFIG'
+import sys
+from datetime import datetime
+
+import yaml
+
+config_file, log_file = sys.argv[1], sys.argv[2]
+
+with open(config_file, "r", encoding="utf-8") as fh:
+    cfg = yaml.safe_load(fh) or {}
+
+
+def truthy(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"true", "yes", "1", "on"}
+
+
+def emit(level, message):
+    colors = {
+        "INFO": "\033[0;34m",
+        "SUCCESS": "\033[0;32m",
+        "WARN": "\033[1;33m",
+    }
+    nc = "\033[0m"
+    print(f"{colors.get(level, '')}[{level}]{nc} {message}")
+    with open(log_file, "a", encoding="utf-8") as log:
+        log.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [{level}] {message}\n")
+
+
+modules = cfg.get("modules") or {}
+enabled = []
+disabled = []
+
+for name in sorted(modules):
+    value = modules[name]
+    if isinstance(value, dict):
+        is_enabled = truthy(value.get("enabled", True))
+    else:
+        is_enabled = truthy(value)
+    (enabled if is_enabled else disabled).append(name)
+
+emit("INFO", f"Domain: {cfg.get('domain', 'not set')}")
+emit("SUCCESS", f"Enabled modules ({len(enabled)}): {', '.join(enabled) if enabled else 'none'}")
+emit("INFO", f"Disabled modules ({len(disabled)}): {', '.join(disabled) if disabled else 'none'}")
+
+options = cfg.get("options") or {}
+if options:
+    emit("INFO", "Options:")
+    for name in sorted(options):
+        emit("INFO", f"  {name}: {options[name]}")
+PYCONFIG
+
+    log_info "=========================================="
+}
+
 # ============================================================================
 # Environment File Updates
 # ============================================================================

@@ -10,7 +10,11 @@ window.services = {
     timesketch: { port: 5000, protocol: 'https' },
     kibana: { port: 5601, protocol: 'https' },
     iris: { port: 8443, protocol: 'https' },
-    portainer: { port: 9443, protocol: 'https' }
+    portainer: { port: 9443, protocol: 'https' },
+    // VolWeb — main nginx terminates TLS on host port 8002 and
+    // proxies to the internal intact_volweb_frontend:80. URL stays
+    // clean (no sub-path) so Vue's hardcoded /assets/ paths work.
+    volweb: { port: 8002, protocol: 'https' }
 };
 
 window.defaultConfig = {
@@ -611,24 +615,6 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        async runRefreshSkills() {
-            this.showMessage('Refreshing DFIR skills from upstream...', 'info');
-            try {
-                const response = await fetch('/api/maintenance/refresh-skills', { method: 'POST' });
-                const result = await response.json();
-                if (response.ok && result.success) {
-                    this.showMessage('Skills refresh started - redirecting to Workflows', 'success');
-                    setTimeout(() => {
-                        Alpine.store('app').switchTab('workflows');
-                    }, 500);
-                } else {
-                    this.showMessage('Skills refresh failed: ' + (result.error || 'Unknown error'), 'error');
-                }
-            } catch (e) {
-                this.showMessage('Skills refresh error: ' + e.message, 'error');
-            }
-        },
-
         async generateSupportBundle() {
             this.saving = true;
             this.showMessage('Support bundle workflow starting...', 'info');
@@ -648,21 +634,114 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        async runPurge() {
-            if (!confirm('This will delete ALL workflows, reports, uploads, temp files, and Velociraptor hunt data.\n\nThis cannot be undone. Continue?')) return;
-            this.saving = true;
+        // ===== Section-aware purge =====
+        // Two-step UX: (1) operator clicks "Purge…" → modal opens,
+        // we GET /api/maintenance/purge/sections to populate per-section
+        // sizes + counts. Operator ticks the sections they want gone.
+        // (2) operator clicks "Purge selected" → POST with the chosen IDs.
+        purgeModalOpen: false,
+        purgeSections: [],
+        purgeSelected: {},          // {section_id: bool}
+        purgeScanning: false,
+        purgeRunning: false,
+        purgeError: '',
+
+        /** Open the modal and scan sizes. */
+        async openPurgeModal() {
+            this.purgeModalOpen = true;
+            this.purgeError = '';
+            this.purgeSelected = {};
+            await this.refreshPurgeSizes();
+        },
+
+        async refreshPurgeSizes() {
+            this.purgeScanning = true;
+            this.purgeError = '';
             try {
-                const response = await fetch('/api/maintenance/purge', { method: 'POST' });
-                const result = await response.json();
-                if (result.run_id) {
-                    this.showMessage('Purge started - redirecting to Workflows', 'info');
-                    setTimeout(() => { Alpine.store('app').switchTab('workflows'); }, 500);
+                const r = await fetch('/api/maintenance/purge/sections');
+                const j = await r.json();
+                if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+                this.purgeSections = j.sections || [];
+                // Default-checked: nothing. Operator must pick explicitly.
+                if (Object.keys(this.purgeSelected).length === 0) {
+                    for (const s of this.purgeSections) this.purgeSelected[s.id] = false;
                 }
             } catch (e) {
-                this.showMessage('Purge error: ' + e.message, 'error');
+                this.purgeError = 'Scan failed: ' + e.message;
+            } finally {
+                this.purgeScanning = false;
             }
-            this.saving = false;
         },
+
+        /** Sum of currently-checked sections — shown live in the footer. */
+        purgeSelectedTotalBytes() {
+            return (this.purgeSections || [])
+                .filter(s => this.purgeSelected[s.id])
+                .reduce((acc, s) => acc + (s.size_bytes || 0), 0);
+        },
+
+        _fmtBytes(b) {
+            if (b >= 1024**3) return (b / 1024**3).toFixed(1) + ' GB';
+            if (b >= 1024**2) return (b / 1024**2).toFixed(1) + ' MB';
+            if (b >= 1024)    return (b / 1024).toFixed(1) + ' KB';
+            return b + ' B';
+        },
+
+        purgeSelectedTotalLabel() {
+            return this._fmtBytes(this.purgeSelectedTotalBytes());
+        },
+
+        /** Grand total of every section's size — shown in the modal
+         *  header strip so the operator sees the "if I purge
+         *  everything" number before they tick anything. */
+        purgeGrandTotalLabel() {
+            const total = (this.purgeSections || [])
+                .reduce((acc, s) => acc + (s.size_bytes || 0), 0);
+            return this._fmtBytes(total);
+        },
+
+        purgeSelectedCount() {
+            return Object.values(this.purgeSelected).filter(Boolean).length;
+        },
+
+        purgeSelectAll(value) {
+            for (const s of this.purgeSections) this.purgeSelected[s.id] = !!value;
+        },
+
+        async runPurgeSelected() {
+            const ids = (this.purgeSections || [])
+                .filter(s => this.purgeSelected[s.id])
+                .map(s => s.id);
+            if (!ids.length) {
+                this.purgeError = 'Pick at least one section.';
+                return;
+            }
+            const total = this.purgeSelectedTotalLabel();
+            if (!confirm(`Purge ${ids.length} section(s) — frees ~${total}. This cannot be undone. Continue?`)) return;
+
+            this.purgeRunning = true;
+            this.purgeError = '';
+            try {
+                const r = await fetch('/api/maintenance/purge/sections', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sections: ids }),
+                });
+                const j = await r.json();
+                if (!r.ok || !j.run_id) throw new Error(j.error || `HTTP ${r.status}`);
+                this.showMessage(`Purging ${ids.length} section(s) — redirecting to Workflows`, 'info');
+                this.purgeModalOpen = false;
+                setTimeout(() => { Alpine.store('app').switchTab('workflows'); }, 500);
+            } catch (e) {
+                this.purgeError = 'Purge error: ' + e.message;
+            } finally {
+                this.purgeRunning = false;
+            }
+        },
+
+        // Kept for backwards compat — old callsites (if any) still work.
+        // The button itself now invokes `openPurgeModal`.
+        async runPurge() { await this.openPurgeModal(); },
 
         // Fresh install flags (per module) - removes DB volumes for new schema
         dbOverwriteTimesketch: false,
@@ -684,6 +763,9 @@ document.addEventListener('alpine:init', () => {
         prepareRunId: null,
         preparePackageReady: false,
         preparePackageSize: '',
+        // 'prepare' → POST /api/upgrade/prepare (offline flow, produces tar.gz)
+        // 'online'  → POST /api/upgrade/online (combined prepare + apply)
+        prepareModalMode: 'prepare',
         prepareModules: [
             { id: 'elk', name: 'ELK Stack', targetVersion: '', enabled: false, fallback: '8.17.0' },
             { id: 'timesketch', name: 'Timesketch', targetVersion: '', enabled: false, fallback: '20240919' },
@@ -692,10 +774,26 @@ document.addEventListener('alpine:init', () => {
             { id: 'velociraptor', name: 'Velociraptor', targetVersion: '', enabled: false, fallback: '0.73.4' },
             { id: 'aws', name: 'AWS (Prowler)', targetVersion: '', enabled: false, fallback: '5.28.1' },
             { id: 'azure', name: 'Azure (DFIR-O365RC)', targetVersion: '', enabled: false, fallback: 'latest' },
-            { id: 'intact', name: 'Intact.AI Source Code', targetVersion: '1.0.0', enabled: false, fallback: '1.0.0' },
+            // VolWeb — apply orchestrator picks install_volweb_offline vs
+            // upgrade_volweb_offline automatically based on whether
+            // intact_volweb_backend exists on the host. Lets operators
+            // package + deploy a module that wasn't selected at install
+            // time without re-running install.sh.
+            { id: 'volweb', name: 'VolWeb (Memory Forensics)', targetVersion: '', enabled: false, fallback: 'latest' },
+            { id: 'intact', name: 'Intact.AI Source Code', targetVersion: 'intact-20260604', enabled: false, fallback: 'intact-20260604' },
         ],
 
         async openPreparePackageModal() {
+            this.prepareModalMode = 'prepare';
+            await this._openModuleModal();
+        },
+
+        async openOnlineUpgradeModal() {
+            this.prepareModalMode = 'online';
+            await this._openModuleModal();
+        },
+
+        async _openModuleModal() {
             this.showPreparePackageModal = true;
             this.prepareLoading = true;
             this.prepareRunId = null;
@@ -713,10 +811,23 @@ document.addEventListener('alpine:init', () => {
                 const data = await response.json();
                 if (data.success && data.versions) {
                     this.prepareModules.forEach(m => {
-                        const ver = data.versions[m.id];
-                        if (ver) {
-                            m.targetVersion = ver.latest || m.fallback;
+                        // The `intact` module is a GitHub ref (release tag /
+                        // branch / commit SHA), NOT a docker image tag — the
+                        // /api/upgrade/status "latest" lookup queries Docker
+                        // Hub for image tags and returns nonsense (e.g.
+                        // "1.0.0") for intact. Use the configured fallback,
+                        // which is a real GitHub release tag.
+                        if (m.id === 'intact') {
+                            m.targetVersion = m.fallback;
+                            return;
                         }
+                        const ver = data.versions[m.id];
+                        // Fall through to the module's own `fallback` even
+                        // when the API has no entry for it (e.g. a newer
+                        // module whose backend version-map hasn't been
+                        // updated yet). Without this, the textbox shows
+                        // an empty value and the operator has to guess.
+                        m.targetVersion = (ver && ver.latest) || m.fallback;
                     });
                 } else {
                     // Use fallback versions
@@ -751,9 +862,17 @@ document.addEventListener('alpine:init', () => {
                 modules[m.id] = m.targetVersion || m.latest || '1.0.0';
             });
 
+            const isOnline = this.prepareModalMode === 'online';
+            const endpoint = isOnline ? '/api/upgrade/online' : '/api/upgrade/prepare';
+            const successMsg = isOnline
+                ? 'Online upgrade started — check Workflows for progress'
+                : 'Package preparation started — check Workflows for progress';
+            const errPrefix = isOnline ? 'Failed to start online upgrade: ' : 'Failed to start preparation: ';
+            const exPrefix = isOnline ? 'Online upgrade error: ' : 'Preparation error: ';
+
             this.prepareLoading = true;
             try {
-                const response = await fetch('/api/upgrade/prepare', {
+                const response = await fetch(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ modules })
@@ -763,15 +882,15 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok && result.success) {
                     this.prepareRunId = result.run_id;
                     this.closePreparePackageModal();
-                    this.showMessage('Package preparation started - check Workflows for progress', 'success');
+                    this.showMessage(successMsg, 'success');
                     setTimeout(() => {
                         Alpine.store('app').switchTab('workflows');
                     }, 500);
                 } else {
-                    this.showMessage('Failed to start preparation: ' + (result.error || 'Unknown error'), 'error');
+                    this.showMessage(errPrefix + (result.error || 'Unknown error'), 'error');
                 }
             } catch (e) {
-                this.showMessage('Preparation error: ' + e.message, 'error');
+                this.showMessage(exPrefix + e.message, 'error');
             }
             this.prepareLoading = false;
         },

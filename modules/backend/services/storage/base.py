@@ -128,6 +128,16 @@ def create_tables():
             updated_at TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS blueprints_memory (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            description TEXT,
+            is_default INTEGER DEFAULT 0,
+            settings TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS offline_collectors (
             config_id TEXT PRIMARY KEY,
             config_name TEXT,

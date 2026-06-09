@@ -483,7 +483,14 @@ osquery_tools:
     enabled: true
     type: github_release
     repo: "osquery/osquery"
-    pattern: "osquery_.*_1\\.linux_amd64\\.deb$"
+    # Real osquery .deb release names look like
+    # `osquery_5.16.0-1.linux_amd64.deb` — the segment before
+    # `.linux_amd64` ends with `-1`, NOT `_1`. The prior pattern's
+    # `_1` would never match the actual artifact name, so this entry
+    # was effectively dead and the inventory's OSQueryLinux fell into
+    # the "no download source" warning bucket. Loosen to accept any
+    # trailing segment.
+    pattern: "osquery_.*\\.linux_amd64\\.deb$"
     category: monitoring
     description: "OS instrumentation framework for Linux"
 

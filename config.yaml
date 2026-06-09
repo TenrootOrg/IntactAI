@@ -24,13 +24,19 @@ options:
   check_module_updates: false
 
 modules:
-  agentic:
-    enabled: true
+  # agentic is a core capability — always installed, always
+  # available. No enabled toggle; the agentic forensics pipeline,
+  # DFIR skills refresh, and interactive-chat features all run
+  # regardless of config.
   aws:
     enabled: false
   azure:
     enabled: false
-  cve_scan:
+  # cve_scan is a core capability — always installed, always
+  # available. No enabled toggle; the CPE dictionary + local CVE
+  # mirror refresh during every Maintenance run regardless of
+  # config.
+  memory:
     enabled: true
   elk:
     enabled: true
@@ -51,6 +57,15 @@ modules:
   velociraptor:
     api_id: api
     api_password: '123123'
+    enabled: true
+    id: tenroot
+    password: '123123'
+  # VolWeb (memory-forensics analysis stack). The platform's admin
+  # user is seeded with these creds at install time by
+  # `lib/modules.sh:seed_volweb_admin`; the IntactAI backend
+  # authenticates against VolWeb's REST API using the same pair
+  # (no separate secret-store entry needed).
+  volweb:
     enabled: true
     id: tenroot
     password: '123123'
@@ -77,4 +92,13 @@ versions:
   # legacy-compatible installers without an internet round-trip at runtime.
   # Set this to an empty string or remove the key to skip legacy downloads.
   velociraptor_legacy: '0.7.1'
+  # VolWeb in-tree memory-forensics analysis stack (modules/volweb/).
+  # forensicxlab publishes versioned semver tags WITHOUT a `v` prefix
+  # (Docker Hub: forensicxlab/volweb-backend + forensicxlab/volweb-frontend
+  # — current latest = 3.16.0 pushed 2026-03-20). Backend + frontend
+  # release in lockstep so a SINGLE pin drives both (same pattern as
+  # IRIS, where `iris: v2.4.27` drives 4 containers). Postgres + Redis
+  # are infrastructure deps — defaulted in modules/volweb/docker-compose.yaml
+  # via ${VAR:-default} syntax, NOT pinned here.
+  volweb: '3.16.0'
   backend: '1.0.0'

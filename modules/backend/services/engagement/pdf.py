@@ -5,7 +5,7 @@ is the same document the /download endpoint serves; this layer adds:
 
   - Cover page with the Tenroot logo + classification + version
   - Page header (engagement name + TLP marker) and footer (page N
-    of M, "Prepared by IntactAI")
+    of M, "Prepared by Intact.AI")
   - Severity colour coding for Critical / High / Medium / Low badges
   - Table of Contents linking to numbered sections
   - Typography tuned for print (Inter / DejaVu fallback, line height,
@@ -199,7 +199,7 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
             color: #6b7280;
         }}
         @bottom-left {{
-            content: "Prepared by IntactAI";
+            content: "Prepared by Intact.AI";
             font-size: 8pt;
             color: #9ca3af;
         }}
@@ -468,7 +468,7 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
     </div>
     <div class="tlp-badge">TLP:{_html_escape(meta['tlp'])}</div>
     <h1>Engagement Report<br><span class="accent">{_html_escape(meta['name'])}</span></h1>
-    <p class="subtitle">Incident Response Engagement Deliverable — multi-environment forensic write-up prepared by the IntactAI engagement builder, reviewed by the operator who ran the source workflows.</p>
+    <p class="subtitle">Incident Response Engagement Deliverable — multi-environment forensic write-up prepared by the Intact.AI engagement builder, reviewed by the operator who ran the source workflows.</p>
     <div class="meta-grid">
       <div class="meta-row"><div class="meta-label">Classification</div><div class="meta-value">TLP:{_html_escape(meta['tlp'])}</div></div>
       {f'<div class="meta-row"><div class="meta-label">Prepared for</div><div class="meta-value">{_html_escape(meta["customer"])}</div></div>' if meta.get('customer') else ''}
@@ -476,7 +476,7 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
       <div class="meta-row"><div class="meta-label">Version</div><div class="meta-value">v{meta['version']}</div></div>
       <div class="meta-row"><div class="meta-label">Generated</div><div class="meta-value">{_html_escape(meta['generated'])}</div></div>
       <div class="meta-row"><div class="meta-label">Engagement ID</div><div class="meta-value"><code>{_html_escape(source_run_id)}</code></div></div>
-      <div class="meta-row"><div class="meta-label">Prepared by</div><div class="meta-value">Tenroot · IntactAI Engagement Builder</div></div>
+      <div class="meta-row"><div class="meta-label">Prepared by</div><div class="meta-value">Tenroot · Intact.AI Engagement Builder</div></div>
     </div>
     <div class="footer-line">
       <span>Confidential — handle per TLP marking above.</span>

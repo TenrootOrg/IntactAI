@@ -382,3 +382,173 @@ azure:
         - unified_audit
       time_range_days: 30
       min_severity: low
+
+
+# ============================================================================
+# Memory Forensics Blueprints
+# ============================================================================
+# Each blueprint is a PURE VolWeb plugin set — what to extract, nothing
+# more. Whether to also run yarascan is the operator's separate decision
+# in the Memory page (the "Include YARA" checkbox), not baked into the
+# blueprint. Treat the per-blueprint `yara_rulesets: []` and the
+# legacy `mode:` field as schema-only placeholders that the runtime
+# overrides from the memory page UI.
+#
+# The 12-plugin curated set (excludes HollowProcesses — known to take
+# 12+ min on a 5 GB dump) is the empirically validated sweet spot from
+# the PoC at ~/volweb-poc/.
+memory:
+
+  - id: memory_layered_default
+    name: "Curated standard (recommended)"
+    description: "12-plugin curated set covering process discovery, persistence, network, and registry — the empirically-validated sweet spot from the PoC. Excludes HollowProcesses (12+ min on a 5 GB dump)."
+    is_default: true
+    settings:
+      mode: plugin
+      plugin_set:
+        - volatility3.plugins.windows.pslist.PsList
+        - volatility3.plugins.windows.psscan.PsScan
+        - volatility3.plugins.windows.pstree.PsTree
+        - volatility3.plugins.windows.cmdline.CmdLine
+        - volatility3.plugins.windows.dlllist.DllList
+        - volatility3.plugins.windows.malfind.Malfind
+        - volatility3.plugins.windows.svcscan.SvcScan
+        - volatility3.plugins.windows.mutantscan.MutantScan
+        - volatility3.plugins.windows.netscan.NetScan
+        - volatility3.plugins.windows.netstat.NetStat
+        - volatility3.plugins.windows.registry.userassist.UserAssist
+        - volatility3.plugins.windows.registry.printkey.PrintKey
+      yara_rulesets: []
+      compression: "None"         # MUST stay None — see services/memory/defaults.py
+      max_bytes: 68719476736      # 64 GiB cap
+      cpu_limit: 80
+
+  - id: memory_yara_only_triage
+    name: "Empty (no plugins)"
+    description: "Empty plugin set — skips Vol3 extraction entirely. Pair with the 'Include YARA' checkbox in the Memory page for fast YARA-only triage (~20× cheaper across many hosts) before graduating suspicious endpoints to a real plugin blueprint."
+    is_default: true
+    settings:
+      mode: plugin
+      plugin_set: []
+      yara_rulesets: []
+      compression: "None"
+      max_bytes: 68719476736
+      cpu_limit: 80
+
+  # --------------------------------------------------------------------------
+  # Speed-tiered triage (orthogonal to scenario-specific blueprints below)
+  # --------------------------------------------------------------------------
+
+  - id: memory_quick_wins
+    name: "Quick Wins (fast triage)"
+    description: "5 fastest-signal plugins — catches process injection + live network state in under a minute. Triage tool when fanning out across many hosts. Misses persistence + credentials by design."
+    is_default: true
+    settings:
+      mode: plugin
+      plugin_set:
+        - volatility3.plugins.windows.pslist.PsList
+        - volatility3.plugins.windows.cmdline.CmdLine
+        - volatility3.plugins.windows.malfind.Malfind
+        - volatility3.plugins.windows.netscan.NetScan
+        - volatility3.plugins.windows.netstat.NetStat
+      yara_rulesets: []
+      compression: "None"
+      max_bytes: 68719476736
+      cpu_limit: 80
+
+  - id: memory_all_plugins
+    name: "All plugins (deep dive)"
+    description: "Every plugin VolWeb advertises for this dump — resolved at runtime via volweb.list_plugins(). Includes HollowProcesses (12+ min by itself). Use only after triage has flagged a host worth the wall-clock."
+    is_default: true
+    settings:
+      mode: plugin
+      # `['*']` is a marker — pipeline.py expands it at dispatch time by
+      # asking VolWeb which plugins are available for this evidence,
+      # so the set stays correct as VolWeb adds/removes plugins
+      # without us hardcoding 60+ class paths here.
+      plugin_set:
+        - '*'
+      yara_rulesets: []
+      compression: "None"
+      max_bytes: 68719476736
+      cpu_limit: 80
+
+  # --------------------------------------------------------------------------
+  # Scenario blueprints — one per investigation focus. Each one is the
+  # "deep" variant (covers the full kill chain for that scenario). Pair
+  # with the operator's "Include YARA" checkbox in the Memory page when
+  # signature-based detection is also wanted.
+  # --------------------------------------------------------------------------
+
+  - id: memory_process_deep
+    name: "Process Anomalies"
+    description: "Process discovery + lineage + DLL inventory, code-injection finder (Malfind), and the expensive HollowProcesses + Hollowfind structural checks. ~6 min runtime — worth it on a confirmed-bad host."
+    is_default: true
+    settings:
+      mode: plugin
+      plugin_set:
+        - volatility3.plugins.windows.pslist.PsList
+        - volatility3.plugins.windows.psscan.PsScan
+        - volatility3.plugins.windows.pstree.PsTree
+        - volatility3.plugins.windows.cmdline.CmdLine
+        - volatility3.plugins.windows.dlllist.DllList
+        - volatility3.plugins.windows.handles.Handles
+        - volatility3.plugins.windows.malfind.Malfind
+        - volatility3.plugins.windows.hollowfind.Hollowfind
+        - volatility3.plugins.windows.hollowprocesses.HollowProcesses
+      yara_rulesets: []
+      compression: "None"
+      max_bytes: 68719476736
+      cpu_limit: 80
+
+  - id: memory_persistence_deep
+    name: "Persistence"
+    description: "Services, named mutexes, loaded kernel modules, execution-history (UserAssist, Run/RunOnce registry keys) and kernel-level hooks (DriverScan, Callbacks, SSDT) — catches persistence techniques that survive a reboot. ~3 min."
+    is_default: true
+    settings:
+      mode: plugin
+      plugin_set:
+        - volatility3.plugins.windows.svcscan.SvcScan
+        - volatility3.plugins.windows.mutantscan.MutantScan
+        - volatility3.plugins.windows.modules.Modules
+        - volatility3.plugins.windows.registry.userassist.UserAssist
+        - volatility3.plugins.windows.registry.printkey.PrintKey
+        - volatility3.plugins.windows.driverscan.DriverScan
+        - volatility3.plugins.windows.callbacks.Callbacks
+        - volatility3.plugins.windows.ssdt.SSDT
+      yara_rulesets: []
+      compression: "None"
+      max_bytes: 68719476736
+      cpu_limit: 80
+
+  - id: memory_network_deep
+    name: "Network"
+    description: "Live TCP/UDP connections + listening sockets, correlated back to processes — pslist + cmdline + dlllist so the LLM can attribute each connection to a process and DLL set. ~2 min."
+    is_default: true
+    settings:
+      mode: plugin
+      plugin_set:
+        - volatility3.plugins.windows.netscan.NetScan
+        - volatility3.plugins.windows.netstat.NetStat
+        - volatility3.plugins.windows.pslist.PsList
+        - volatility3.plugins.windows.cmdline.CmdLine
+        - volatility3.plugins.windows.dlllist.DllList
+      yara_rulesets: []
+      compression: "None"
+      max_bytes: 68719476736
+      cpu_limit: 80
+
+  - id: memory_credentials_deep
+    name: "Credentials"
+    description: "SAM hash extraction, cached domain credentials, plus LSA secrets (machine account, service creds). ~2 min. Bootkey-dependent so will fail cleanly on dumps from Win11 24H2+ that VolWeb can't decrypt yet."
+    is_default: true
+    settings:
+      mode: plugin
+      plugin_set:
+        - volatility3.plugins.windows.hashdump.Hashdump
+        - volatility3.plugins.windows.cachedump.Cachedump
+        - volatility3.plugins.windows.lsadump.Lsadump
+      yara_rulesets: []
+      compression: "None"
+      max_bytes: 68719476736
+      cpu_limit: 80

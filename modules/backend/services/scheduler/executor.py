@@ -95,6 +95,14 @@ def run_scheduled_blueprint(job_id: str):
             run_timesketch_pipeline(job_meta, client_ids)
             print(f"[SCHEDULER] Started timesketch pipeline for {len(client_ids)} clients", flush=True)
 
+        elif blueprint_type == 'memory':
+            # Memory-forensics pipeline — single host per run (memory
+            # acquisition is per-target). The scheduler hands the first
+            # client_id; multi-client scheduling for memory is a defer
+            # because of disk-pressure mechanics documented in the plan.
+            run_memory_scheduled(job_meta, client_ids)
+            print(f"[SCHEDULER] Started memory pipeline for {len(client_ids)} clients", flush=True)
+
         else:
             # Velociraptor blueprint - run hunt directly
             run_velociraptor_hunt(job_meta['name'], blueprint_id, client_ids)
@@ -415,3 +423,55 @@ def update_job_run_stats(job_id: str):
     """, (now, now, job_id))
     conn.commit()
     conn.close()
+
+
+def run_memory_scheduled(job_meta: dict, client_ids: list) -> None:
+    """Dispatch a memory-forensics run from a scheduled blueprint.
+
+    Memory acquisition is per-host (4-16 GB transient .raw, three
+    concurrent copies during pipeline), so the scheduler runs ONE
+    client per job firing. If the operator scheduled multi-client,
+    we iterate them serially — each becomes its own workflow row.
+    """
+    import threading
+
+    from services.memory.pipeline import run_memory_pipeline
+    from services.storage.blueprint_store import get_memory_blueprint
+    from services.workflow_service import create_automation_run, update_run_status, add_log_to_run
+
+    if not client_ids:
+        print("[SCHEDULER] memory: no client_ids — skipping", flush=True)
+        return
+
+    blueprint_id = job_meta.get("blueprint_id") or ""
+    blueprint = get_memory_blueprint(blueprint_id) if blueprint_id else None
+    settings = (blueprint.get("settings") if blueprint else {}) or {}
+    mode = settings.get("mode") or "layered"
+    case_name = job_meta.get("case_name") or job_meta.get("name") or "Memory (scheduled)"
+
+    for cid in client_ids:
+        run_id = create_automation_run(
+            automation_type="memory",
+            name=f"Memory ({mode}) — scheduled: {cid}",
+            details={
+                "trigger": "scheduled",
+                "scheduled_job_id": job_meta.get("id"),
+                "mode": mode,
+                "client_id": cid,
+                "blueprint_id": blueprint_id or None,
+                "case_name": case_name,
+            },
+        )
+        add_log_to_run(run_id, f"scheduler: memory dispatch client={cid} mode={mode}", "info")
+        update_run_status(run_id, "running", progress=1)
+        threading.Thread(
+            target=run_memory_pipeline,
+            kwargs={
+                "run_id": run_id,
+                "client_id": cid,
+                "mode": mode,
+                "case_name": case_name,
+                "blueprint": blueprint,
+            },
+            daemon=True,
+        ).start()

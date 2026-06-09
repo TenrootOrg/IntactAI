@@ -176,6 +176,23 @@ def _assemble_report_context(run_id: str) -> str:
         sections = _assemble_cloud_sections(run_id, details, kind='azure')
     elif automation_type == 'engagement_report':
         sections = _assemble_engagement_sections(run_id, details)
+    elif automation_type == 'memory':
+        # Memory module stores its single LLM report directly on the
+        # workflow row's details.report_md (no per-host fan-out, no
+        # reports table). Hand it to the chat verbatim — the assistant
+        # can answer follow-up questions about the findings, suggest
+        # plugins to re-run, or push corrections back through the
+        # synthesize-master-prompt path.
+        report_md = (details or {}).get("report_md") or ""
+        if report_md.strip():
+            label = "Memory forensics report"
+            host = (details or {}).get("client_name") or (details or {}).get("client_id") or ""
+            mode = (details or {}).get("mode") or "?"
+            if host:
+                label = f"Memory forensics report — {host} (mode={mode})"
+            sections = [{"label": label, "body": report_md}]
+        else:
+            sections = []
     else:
         # Default to agentic behaviour — preserves prior path for the
         # original agentic chat code.

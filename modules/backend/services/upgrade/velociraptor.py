@@ -10,7 +10,8 @@ from .base import (
     WORKDIR, HOST_PATH,
     run_command, read_env_file, update_env_file,
     backup_env_file, restore_env_file, cleanup_backup,
-    load_docker_image, compare_versions
+    load_docker_image, compare_versions,
+    remove_old_module_image,
 )
 
 
@@ -267,7 +268,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
     try:
         # Stop container
         log("Stopping Velociraptor container...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log)
+        result = run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
         if not result['success']:
             raise Exception(f"Failed to stop Velociraptor: {result['error']}")
 
@@ -371,6 +372,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
         run_command(f"rm -rf {backup_dir}", logger=log)
         cleanup_backup(env_backup, logger=log)
         log(f"Velociraptor upgrade completed: {current_version} -> {actual_version}", "success")
+        remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
         return {"success": True, "version": actual_version, "health": "green" if healthy else "pending"}
 
     except Exception as e:
@@ -388,7 +390,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
             run_command(f"chmod +x {velo_bin}", logger=log)
 
         # Rebuild and restart with old version
-        run_command("docker compose down", cwd=work_dir, logger=log)
+        run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
         run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
         run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
 
@@ -487,7 +489,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
     try:
         # Stop container
         log("Stopping Velociraptor container...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log, run_id=run_id)
+        result = run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to stop Velociraptor: {result['error']}")
 
@@ -637,6 +639,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         run_command(f"rm -rf {backup_dir}", logger=log)
         cleanup_backup(env_backup, logger=log)
         log(f"Velociraptor offline upgrade completed: {current_version} -> {actual_version}", "success")
+        remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
         return {"success": True, "version": actual_version, "health": "green" if healthy else "pending"}
 
     except Exception as e:
@@ -654,7 +657,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
             run_command(f"chmod +x {velo_bin}", logger=log)
 
         # Rebuild and restart with old version
-        run_command("docker compose down", cwd=work_dir, logger=log)
+        run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
         run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
         run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
 
@@ -667,3 +670,86 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
             "rolled_back": True,
             "restored_version": current_version
         }
+
+
+def install_velociraptor_offline(package_dir: str, version: str, logger=None, run_id=None) -> Dict:
+    """Fresh-install Velociraptor — picked when intact_velociraptor absent.
+
+    Velociraptor's entrypoint generates its own server config + datastore
+    on first boot, so no Python-side cert / config rendering is needed.
+    The tracked `.env` carries the VELOX_USER / VELOX_PASSWORD defaults
+    from config.yaml that lib/modules.sh:deploy_velociraptor would use.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    from .base import install_module_compose_up
+    work_dir = os.path.join(WORKDIR, 'modules', 'velociraptor')
+    env_file = os.path.join(work_dir, '.env')
+    log(f"Installing Velociraptor (first-time) -> {version or 'tracked default'}...", "info")
+    if os.path.exists(env_file) and version:
+        update_env_file(env_file, 'VELOCIRAPTOR_VERSION', version, logger=log)
+    # CRITICAL: the prefix MUST match what the prepare side actually
+    # writes. package.py:prepare_upgrade_package saves the baked
+    # velociraptor-server image as `velociraptor-{version}.tar`
+    # (filename), NOT `velociraptor-server-{version}.tar`. The previous
+    # value here (`'velociraptor-server'`) never matched any file in
+    # the package, so the image was never loaded — compose would then
+    # see the `build:` directive in modules/velociraptor/
+    # docker-compose.yaml, try to build the Dockerfile, attempt to
+    # pull `ubuntu:22.04` as the base image, and fail air-gapped with
+    # "failed to fetch anonymous token". Air-gap apply tests caught
+    # this on 2026-06-09. Aligning the prefix with the prepare-side
+    # filename pattern lets the pre-built image load correctly and
+    # compose skips the build step entirely.
+    compose_result = install_module_compose_up(
+        'velociraptor', package_dir, version,
+        image_tar_prefixes=['velociraptor-'],
+        logger=log, run_id=run_id,
+    )
+    if not compose_result.get('success'):
+        return compose_result
+
+    # Post-install bootstrap. Velociraptor's entrypoint generates its
+    # own server.config.yaml / client.config.yaml / api.config.yaml
+    # on first boot (~30-60s). The backend's
+    # velociraptor_service.load_velociraptor_api_config() later reads
+    # api.config.yaml from this container via docker exec — without
+    # this wait, the install reports success and the operator's first
+    # request to backend → Velociraptor immediately fails because the
+    # config files don't exist yet. Polling for client.config.yaml
+    # (the same readiness signal lib/modules.sh:deploy_velociraptor
+    # uses at line ~683) confirms the entrypoint has finished its
+    # config-gen.
+    log("Velociraptor container up. Waiting for entrypoint config-gen...", "info")
+    import time as _time
+    import subprocess as _sub
+    config_ready = False
+    waited = 0
+    while waited < 120:
+        try:
+            probe = _sub.run(
+                ["docker", "exec", "intact_velociraptor",
+                 "test", "-f", "/velociraptor/client.config.yaml"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if probe.returncode == 0:
+                config_ready = True
+                log(f"  Velociraptor configuration ready ({waited}s)", "success")
+                break
+        except _sub.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+        _time.sleep(5)
+        waited += 5
+
+    if not config_ready:
+        log(
+            "Velociraptor configuration did not generate within 120s. "
+            "Container IS running but api.config.yaml may not be present "
+            "yet; backend → Velociraptor gRPC calls will fail until the "
+            "entrypoint finishes. Wait a minute then retry, or check "
+            "`docker logs intact_velociraptor` for errors. Continuing.",
+            "warning",
+        )
+
+    return compose_result

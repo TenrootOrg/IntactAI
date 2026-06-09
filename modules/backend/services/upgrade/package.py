@@ -22,6 +22,15 @@ DOCKER_IMAGES = {
     ],
     'timesketch': [
         ('us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:{version}', 'timesketch-{version}.tar'),
+        # Base images Timesketch's docker-compose.yaml depends on.
+        # Without bundling these the air-gap install fails at
+        # `docker compose up` trying to pull them. Versions match the
+        # defaults in modules/timesketch/docker-compose.yaml; if a
+        # future pin moves, update both places.
+        ('postgres:15', 'postgres-15.tar'),
+        ('opensearchproject/opensearch:2.11.0', 'opensearch-2.11.0.tar'),
+        ('redis:7-alpine', 'redis-7-alpine.tar'),
+        ('nginx:alpine', 'nginx-alpine.tar'),
     ],
     'plaso': [
         ('log2timeline/plaso:{version}', 'plaso-{version}.tar'),
@@ -32,6 +41,14 @@ DOCKER_IMAGES = {
         ('ghcr.io/dfir-iris/iriswebapp_app:{version}', 'iris-app-{version}.tar'),
         ('ghcr.io/dfir-iris/iriswebapp_nginx:{version}', 'iris-nginx-{version}.tar'),
         ('ghcr.io/dfir-iris/iriswebapp_db:{version}', 'iris-db-{version}.tar'),
+        # Infrastructure dep — IRIS compose pulls rabbitmq from Docker
+        # Hub at compose-up time. On an air-gapped or fresh-install
+        # target the pull fails ("No such image: rabbitmq:3-management-
+        # alpine") and the stack can't start. Bundle the image so the
+        # apply step can `docker load` it offline. The tag is fixed
+        # (infrastructure dep, not IRIS-version-coupled — same pattern
+        # as volweb's postgres + redis).
+        ('rabbitmq:3-management-alpine', 'rabbitmq-3-management-alpine.tar'),
     ],
     'aws': [
         # Prowler image for AWS posture scans (run on demand, no live container)
@@ -41,6 +58,23 @@ DOCKER_IMAGES = {
         # DFIR-O365RC image for Azure Unified Audit Log (run on demand). Upstream
         # only ships ':latest', so {version} is normally 'latest'.
         ('anssi/dfir-o365rc:{version}', 'dfir-o365rc-{version}.tar'),
+    ],
+    'volweb': [
+        # VolWeb backend + frontend (memory-forensics analysis stack).
+        # forensicxlab releases the two images in lockstep so a single
+        # `versions.volweb` pin drives both — same {version} placeholder
+        # for both tars. Postgres + Redis are infrastructure deps
+        # defaulted in modules/volweb/docker-compose.yaml; the
+        # operator's host pulls those directly from Docker Hub at
+        # compose-up time, not from this bundle.
+        ('forensicxlab/volweb-backend:{version}',  'volweb-backend-{version}.tar'),
+        ('forensicxlab/volweb-frontend:{version}', 'volweb-frontend-{version}.tar'),
+        # Base images VolWeb's docker-compose.yaml depends on. Versions
+        # match the pins in modules/volweb/.env (VOLWEB_POSTGRES_VERSION,
+        # VOLWEB_REDIS_VERSION). Without these the air-gap install fails
+        # at `docker compose up` trying to pull from Docker Hub.
+        ('postgres:15', 'volweb-postgres-15.tar'),
+        ('redis:7', 'volweb-redis-7.tar'),
     ],
 }
 
@@ -162,6 +196,36 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
     if returncode != 0:
         return {"success": False, "error": stderr[:200]}
 
+    # Post-write integrity check. `tar -czf` returning 0 is not enough —
+    # we've seen tar produce structurally-corrupt gzip streams under
+    # disk pressure / concurrent writes that pass tar's own exit code
+    # but fail the operator's apply step with a raw zlib error at
+    # extract time. `gzip -t` reads the whole file and validates every
+    # deflate block, so a corrupt archive fails here instead of on a
+    # different machine 5 minutes later. Cost: one full re-read of the
+    # archive (~10-30 sec on a 4 GB file) — small price for the
+    # operator confidence.
+    log("  Verifying archive integrity (gzip -t)...", "info")
+    verify = subprocess.run(
+        ["gzip", "-t", output_file],
+        capture_output=True, text=True,
+    )
+    if verify.returncode != 0:
+        try:
+            os.remove(output_file)
+        except OSError:
+            pass
+        err = (verify.stderr or "").strip() or "gzip integrity check failed"
+        return {
+            "success": False,
+            "error": (
+                "Output tar.gz failed gzip integrity check: "
+                f"{err[:200]}. Likely cause: disk pressure or concurrent "
+                "writes during compression. Free up /data and re-run prepare."
+            ),
+        }
+    log("  Archive integrity OK", "success")
+
     return {"success": True}
 
 
@@ -185,6 +249,44 @@ def _pull_and_save_image(image: str, output_path: str, logger: Callable,
         log(f"  Failed to pull {image}: {result.get('error', '')[:200]}", "error")
         return False
 
+    # Disk-space check before docker save. The pulled image lives in
+    # /var/lib/docker — `docker save` streams it to a tar in the
+    # package_dir, which is on the same volume as the output_path
+    # we're writing to. If the volume runs out of space mid-save,
+    # the tar is truncated silently (`docker save` exits 0 with a
+    # partial file) and the apply side then fails with a confusing
+    # "unexpected EOF" much later.
+    #
+    # Use `docker inspect --format='{{.Size}}'` to get the image's
+    # uncompressed size — that's roughly what the tar will be. Add
+    # a 1.2× margin since tar bookkeeping + uncompressed-vs-saved
+    # discrepancies push it slightly over.
+    size_check = run_command(
+        f"docker inspect --format='{{{{.Size}}}}' {image}",
+        timeout=30, logger=None, run_id=run_id,
+    )
+    if size_check.get("success"):
+        try:
+            image_bytes = int((size_check.get('stdout', '0') or '0').strip().strip("'"))
+            required = int(image_bytes * 1.2)
+            try:
+                free_bytes = shutil.disk_usage(os.path.dirname(output_path)).free
+            except (FileNotFoundError, OSError):
+                free_bytes = None
+            if free_bytes is not None and free_bytes < required:
+                log(
+                    f"  Not enough disk for {os.path.basename(output_path)}: "
+                    f"need ≥{_format_size(required)} (image × 1.2), "
+                    f"have {_format_size(free_bytes)}. Free disk and re-run prepare.",
+                    "error",
+                )
+                return False
+        except (ValueError, TypeError):
+            # docker inspect output unexpected — skip the check, fall
+            # through to docker save (the silent-truncation risk is
+            # still better than blocking the build on a parse error).
+            pass
+
     # Save the image (increased timeout for large images)
     log(f"  Saving to {os.path.basename(output_path)}...", "info")
     result = run_command(f"docker save -o {output_path} {image}", timeout=1200, logger=None, run_id=run_id)
@@ -205,34 +307,59 @@ def _pull_and_save_image(image: str, output_path: str, logger: Callable,
     return True
 
 
-def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None) -> Dict:
+def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
+                            compress: bool = True,
+                            work_dir: Optional[str] = None) -> Dict:
     """Download and package upgrade components.
 
     Args:
         modules: Dict of module versions, e.g. {"elk": "9.3.1", "velociraptor": "0.75.6"}
         run_id: Workflow run ID for tracking
         logger: Logging function
+        compress: When True (default, offline flow), compress the built
+                  directory to a tar.gz at /data/upgrade_packages/ via
+                  the atomic-swap pattern, then clean up the work dir.
+                  When False (online-upgrade flow), skip compression +
+                  cleanup; the caller takes ownership of the
+                  package_dir and is responsible for removing it when
+                  the apply step is done.
+        work_dir: Where to build the package contents. Defaults to
+                  /tmp/<package_name>/. Online flow passes
+                  /app/data/tmp/<...>/ so the dir survives the backend
+                  restart that intact upgrades trigger between Phase 1
+                  and Phase 2.
 
     Returns:
-        Dict with success status, package_path, and metadata
+        Dict with success status. Shape depends on `compress`:
+        - compress=True:  {success, package_path, package_name, package_size, manifest}
+        - compress=False: {success, package_dir, manifest}
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     package_name = f"intact-upgrade-{timestamp}"
-    package_dir = f"/tmp/{package_name}"  # Temp work directory
+    package_dir = work_dir if work_dir else f"/tmp/{package_name}"
 
-    # Store final package in persistent location (always use same filename - overwrite previous)
+    # Compression-only state — skipped when compress=False (online flow
+    # doesn't produce a tar.gz at all).
     packages_dir = "/data/upgrade_packages"
-    os.makedirs(packages_dir, exist_ok=True)
-
-    # Remove any existing packages (keep only latest)
-    for old_file in os.listdir(packages_dir):
-        old_path = os.path.join(packages_dir, old_file)
-        if os.path.isfile(old_path):
-            os.remove(old_path)
-
     output_file = f"{packages_dir}/intact-upgrade-latest.tar.gz"
+    output_file_tmp = f"{output_file}.new"
+    if compress:
+        # Store final package in persistent location with an atomic-swap
+        # workflow:
+        #   1. write the new archive to `<output_file>.new`
+        #   2. validate it (gzip -t inside _compress_with_progress)
+        #   3. os.replace() the validated `.new` over `<output_file>`
+        # The previous good package stays on disk untouched throughout
+        # the whole prepare run — if anything fails, the operator's
+        # last working archive is still there to fall back to.
+        os.makedirs(packages_dir, exist_ok=True)
+        if os.path.exists(output_file_tmp):
+            try:
+                os.remove(output_file_tmp)
+            except OSError:
+                pass
 
     log("=" * 50, "info")
     log("PREPARING UPGRADE PACKAGE", "info")
@@ -271,39 +398,238 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
             log(f"=== {module.upper()} ({version}) ===", "info")
 
             if module == 'intact':
-                # Copy source files from local machine
-                # TODO: Future - pull from GitHub like other modules (currently private repo)
-                # Should work like: download specific version/tag from repo
-                log("Copying Intact.AI source files...", "info")
+                # Download Intact.AI source from the public GitHub repo at the
+                # specific ref (tag / branch / SHA) the operator entered in the
+                # Prepare Upgrade modal. Previously this copied the running
+                # backend container's mounted source — which meant any local
+                # untracked edits leaked into the upgrade package and there was
+                # no way to ship a known-good upstream release without first
+                # checking it out on the running box. Now the operator types a
+                # release tag (e.g. `intact-20260604`) and the package gets
+                # exactly that snapshot, every time.
+                #
+                # Uses GitHub's codeload tarball endpoint, which resolves any
+                # ref (tag / branch / full SHA) under the same URL shape — no
+                # git binary required in the backend container.
 
-                backend_src = os.path.join(WORKDIR, 'modules', 'backend')
-                frontend_src = os.path.join(WORKDIR, 'modules', 'nginx', 'html')
+                if not version:
+                    raise ValueError(
+                        "Intact.AI source requires a GitHub ref (release tag, "
+                        "branch name, or commit SHA) — type one in the "
+                        "'Intact.AI Source Code' version field"
+                    )
 
-                if os.path.isdir(backend_src):
-                    log("  Copying backend source...", "info")
+                import urllib.request
+                import urllib.error
+                import json as _json
+                import tarfile
+
+                repo = "TenrootOrg/IntactAI"
+
+                # If the operator typed a BRANCH name (`development`,
+                # `main`, a feature branch), resolve its current HEAD
+                # SHA via the GitHub branches API FIRST. Two reasons:
+                #
+                # 1. Codeload caches tarballs by ref. For branches —
+                #    which move — the cache can serve a stale or
+                #    truncated tarball captured before the latest
+                #    commit. We've hit this exact issue (memory note:
+                #    "push any commit to bust the per-SHA cache").
+                #    Downloading by resolved SHA bypasses the
+                #    branch-ref cache entirely.
+                #
+                # 2. The package becomes reproducible — the manifest
+                #    records the exact commit SHA shipped, so an
+                #    operator can correlate the apply log against
+                #    git history later.
+                #
+                # If `version` is already a release tag or commit SHA
+                # (the branches API 404s for those), skip the
+                # resolution and fall through to the existing
+                # codeload-by-ref path.
+                # `resolved_ref` is what we pass to codeload (SHA when
+                # we can resolve the branch — bypasses the codeload
+                # stale-cache bug for moving refs). The manifest +
+                # VERSION-file stamp still uses the operator's input
+                # verbatim (`development`, `intact-20260604`, etc.) —
+                # operators don't want to see SHAs in the UI; they want
+                # "the latest development" to read as exactly that.
+                resolved_ref = version
+                branch_api_url = (
+                    f"https://api.github.com/repos/{repo}/branches/{version}"
+                )
+                try:
+                    req = urllib.request.Request(
+                        branch_api_url,
+                        headers={"Accept": "application/vnd.github+json"},
+                    )
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        branch_data = _json.load(resp)
+                    head_sha = (branch_data.get('commit') or {}).get('sha')
+                    if head_sha:
+                        resolved_ref = head_sha
+                        log(
+                            f"  Branch '{version}' resolved to HEAD "
+                            f"{head_sha[:7]} for download (manifest "
+                            f"keeps '{version}')",
+                            "info",
+                        )
+                except urllib.error.HTTPError as e:
+                    if e.code == 404:
+                        # Not a branch — could be a tag or SHA. Use
+                        # the operator's input verbatim. The codeload
+                        # call below will surface a clearer error if
+                        # the ref doesn't exist at all.
+                        pass
+                    else:
+                        log(
+                            f"  Branch resolution returned HTTP {e.code} "
+                            f"(continuing with raw ref): {e.reason}",
+                            "warning",
+                        )
+                except urllib.error.URLError as e:
+                    # GitHub API unreachable — try codeload directly.
+                    # If GitHub is fully down, codeload will fail with
+                    # a clearer error below.
+                    log(
+                        f"  Branch resolution skipped (network: {e}). "
+                        "Will try codeload with the ref as-is.",
+                        "warning",
+                    )
+
+                tar_url = (
+                    f"https://codeload.github.com/{repo}/tar.gz/{resolved_ref}"
+                )
+                tar_path = f"{package_dir}/_intact_source.tar.gz"
+                extract_dir = f"{package_dir}/_intact_extracted"
+
+                log(
+                    f"Downloading Intact.AI source from "
+                    f"github.com/{repo} @ '{version}'...",
+                    "info",
+                )
+                try:
+                    urllib.request.urlretrieve(tar_url, tar_path)
+                except urllib.error.HTTPError as e:
+                    raise RuntimeError(
+                        f"GitHub ref '{resolved_ref}' not found at {repo} "
+                        f"(HTTP {e.code}). Make sure the release tag exists "
+                        f"at https://github.com/{repo}/releases — or if you "
+                        f"meant a branch, check it isn't deleted."
+                    ) from e
+                except urllib.error.URLError as e:
+                    raise RuntimeError(
+                        f"Could not reach github.com to download the "
+                        f"Intact.AI source: {e}. The Prepare Upgrade flow "
+                        f"requires internet on the box running the prepare."
+                    ) from e
+
+                size_mb = os.path.getsize(tar_path) / (1024 * 1024)
+                log(f"  Downloaded {size_mb:.1f} MB", "info")
+
+                # Extract — GitHub tarballs unpack into a single top-level
+                # directory shaped like `IntactAI-<sha-or-tag>/`.
+                os.makedirs(extract_dir, exist_ok=True)
+                with tarfile.open(tar_path, "r:gz") as tar:
+                    tar.extractall(extract_dir)
+
+                tops = [
+                    d for d in os.listdir(extract_dir)
+                    if os.path.isdir(os.path.join(extract_dir, d))
+                ]
+                if not tops:
+                    raise RuntimeError(
+                        f"Downloaded tarball from {tar_url} had no top-level "
+                        "directory — corrupt download?"
+                    )
+                extracted_root = os.path.join(extract_dir, tops[0])
+
+                # Copy the WHOLE repo (matches the GitHub layout — `modules/`,
+                # `lib/`, `scripts/`, `install.sh`, `config.yaml`, etc.) to
+                # `source/intact/`. The apply step targets the specific
+                # directories that need swapping into the running install
+                # (backend code, frontend HTML); the rest of the tree is
+                # included so operators can inspect / port the release
+                # without re-cloning from GitHub. ~30 MB of repo content.
+                log("  Copying full repo into package source/intact/ ...", "info")
+                shutil.copytree(
+                    extracted_root,
+                    f"{package_dir}/source/intact",
+                    dirs_exist_ok=True,
+                    # `.git/` should not be there in a tarball but if it is,
+                    # don't ship it. Also drop any accidentally-present
+                    # operator state.
+                    ignore=shutil.ignore_patterns(
+                        '__pycache__', '*.pyc', '.env*', '*.db*',
+                        '.git', 'data', 'backups',
+                    ),
+                )
+                log("  Full repo copied", "success")
+
+                # Mirror the historical `source/backend` and `source/frontend`
+                # entry points so the apply side (services/upgrade/intact.py +
+                # __init__.py) keeps working unchanged for the offline
+                # upgrade flow that ships backend + frontend HTML into the
+                # running install. The apply side prefers the new
+                # `source/intact/` paths when present (see intact.py edit)
+                # but falls back to these for older packages.
+                backend_src_in_repo = os.path.join(extracted_root, 'modules', 'backend')
+                frontend_src_in_repo = os.path.join(extracted_root, 'modules', 'nginx', 'html')
+
+                if os.path.isdir(backend_src_in_repo):
                     shutil.copytree(
-                        backend_src,
+                        backend_src_in_repo,
                         f"{package_dir}/source/backend",
                         dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.env*', '*.db*')
+                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.env*', '*.db*'),
                     )
-                    log("  Backend source copied", "success")
-                else:
-                    log(f"  Backend source not found at {backend_src}", "warning")
-
-                if os.path.isdir(frontend_src):
-                    log("  Copying frontend source...", "info")
+                if os.path.isdir(frontend_src_in_repo):
                     shutil.copytree(
-                        frontend_src,
+                        frontend_src_in_repo,
                         f"{package_dir}/source/frontend",
-                        dirs_exist_ok=True
+                        dirs_exist_ok=True,
                     )
-                    log("  Frontend source copied", "success")
-                else:
-                    log(f"  Frontend source not found at {frontend_src}", "warning")
 
+                # Tear down the temp tarball + extraction so they don't end up
+                # inside the final .tar.gz output.
+                try:
+                    os.remove(tar_path)
+                    shutil.rmtree(extract_dir)
+                except Exception:
+                    pass
+
+                # Record the operator's input verbatim in the manifest.
+                # `resolved_ref` (the SHA we actually downloaded) is
+                # captured separately in source_origin so the package
+                # is still traceable to a specific commit when needed,
+                # but the user-facing version string stays simple.
                 manifest["versions"]["intact"] = version
                 manifest["contents"]["include_source"] = True
+                manifest["contents"]["source_origin"] = (
+                    f"github.com/{repo}@{resolved_ref}"
+                )
+
+                # Belt-and-suspenders: stamp the VERSION file inside the
+                # packaged source tree with the operator's input. The
+                # release-time GitHub Action keeps VERSION up-to-date
+                # on `development` so on release tags this is usually
+                # a no-op overwrite. But it also covers cases the
+                # workflow can't (branches, commit SHAs, release tags
+                # from before the Action existed). When the apply
+                # step's `cp -a source/intact/* WORKDIR/` runs, this
+                # VERSION lands at the install root where
+                # get_current_versions reads it — operators see
+                # "development" or "intact-20260604" in the Settings
+                # page, matching what they typed in the modal.
+                try:
+                    intact_source_root = f"{package_dir}/source/intact"
+                    if os.path.isdir(intact_source_root):
+                        version_file = f"{intact_source_root}/VERSION"
+                        with open(version_file, "w") as vf:
+                            vf.write(version.strip() + "\n")
+                        log(f"  Stamped source/intact/VERSION -> {version}", "info")
+                except Exception as e:
+                    log(f"  Could not stamp VERSION file: {e}", "warning")
 
             elif module == 'velociraptor':
                 # Velociraptor packaging — internet REQUIRED here on the
@@ -442,6 +768,27 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                 host_velo_dir = velo_dir.replace(WORKDIR, HOST_PATH, 1)
                 compose_file = f"{host_velo_dir}/docker-compose.yaml"
                 image_tag = f"velociraptor-server:{clean_version}"
+
+                # Probe `docker compose` first. The user's prepare run
+                # surfaced `unknown shorthand flag: 'f' in -f / See
+                # 'docker --help'.` — the error came from `docker`
+                # itself (not `docker compose`) because the compose
+                # plugin isn't installed in the backend container.
+                # Without the plugin, `docker` parses `compose` as a
+                # positional and `-f` as a global flag it doesn't
+                # recognize. Skip the bake cleanly instead of spewing
+                # that misleading error; the apply step rebuilds the
+                # image locally from the staged binaries anyway.
+                compose_probe = run_command(
+                    "docker compose version",
+                    timeout=10, logger=None, run_id=run_id,
+                )
+                if not compose_probe.get("success"):
+                    log("  `docker compose` plugin not available in this container — "
+                        "skipping image bake.", "info")
+                    log("  Target will rebuild locally from the staged binaries (still offline-safe).", "info")
+                    continue
+
                 build_result = run_command(
                     f"VELOCIRAPTOR_VERSION={clean_version} VELOCIRAPTOR_TAG={velo_tag} "
                     f"docker compose -f {compose_file} --project-directory {host_velo_dir} build "
@@ -471,6 +818,8 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
 
             elif module in DOCKER_IMAGES:
                 # Pull and save Docker images
+                declared = len(DOCKER_IMAGES[module])
+                bundled_for_module = 0
                 for image_template, output_template in DOCKER_IMAGES[module]:
                     image = image_template.format(version=version)
                     output_name = output_template.format(version=version)
@@ -478,6 +827,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
 
                     if _pull_and_save_image(image, output_path, log, run_id=run_id):
                         manifest["contents"]["images"].append(output_name)
+                        bundled_for_module += 1
                     # Honor cancel between images (fast-exit on Stop).
                     try:
                         from services.workflow_service import is_cancelled
@@ -485,6 +835,39 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
                             return {"success": False, "error": "cancelled", "cancelled": True}
                     except Exception:
                         pass
+
+                # Bundling-completeness gate. Three outcomes:
+                #
+                # (a) bundled == declared → normal: every image landed,
+                #     register the module's version + let apply run.
+                # (b) 0 < bundled < declared → partial: at least one
+                #     image bundled but not all. Surface the warning
+                #     and register the version (operator opted in by
+                #     selecting the module; let apply try its best
+                #     with what we shipped).
+                # (c) bundled == 0 → total failure for this module
+                #     (typo'd version, registry 404, network glitch).
+                #     Skip the manifest entry so the apply phase
+                #     doesn't run for this module — no contradictory
+                #     "succeeded:N" report and no .env bumped to a
+                #     non-existent version. Operator fixes the typo
+                #     and re-runs without touching the rest of the
+                #     stack.
+                if bundled_for_module == 0 and declared > 0:
+                    log(
+                        f"  MODULE_FAILED_PREPARE: {module} bundled 0/{declared} images — "
+                        f"skipping {module} (apply phase will not run for this module). "
+                        f"Likely a typo'd version or registry 404; verify the version exists upstream.",
+                        "error",
+                    )
+                    # Do NOT add to manifest.versions; apply skips it.
+                    continue
+                if bundled_for_module < declared:
+                    log(
+                        f"  WARNING: {module} bundled {bundled_for_module}/{declared} images — "
+                        "the target may fail to start a container at apply time.",
+                        "warning",
+                    )
 
                 manifest["versions"][module] = version
 
@@ -543,24 +926,74 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
             json.dump(manifest, f, indent=2)
         log("  Created manifest.json", "success")
 
+        # Online-upgrade short-circuit: no tar.gz needed — return the
+        # built package_dir directly. Caller (run_online_upgrade_workflow)
+        # owns the dir from here and cleans up after the apply finishes.
+        if not compress:
+            log("", "info")
+            log("=" * 50, "info")
+            log("PACKAGE DIRECTORY READY (online-upgrade, no compression)", "success")
+            log("=" * 50, "info")
+            log(f"  Modules: {', '.join(modules.keys())}", "info")
+            log(f"  Built at: {package_dir}", "info")
+            return {
+                "success": True,
+                "package_dir": package_dir,
+                "manifest": manifest,
+            }
+
         # Create tar.gz archive
         log("", "info")
         log("=== Creating Package Archive ===", "info")
         log("  Compressing package (this may take a few minutes)...", "info")
 
+        # Disk-space preflight — refuse to start compression if the
+        # output volume doesn't have enough room.
+        try:
+            source_size_check = _get_dir_size(package_dir)
+            free_bytes = shutil.disk_usage(packages_dir).free
+            required = int(source_size_check * 1.2)
+            if free_bytes < required:
+                msg = (
+                    f"Not enough free space in {packages_dir} — "
+                    f"need ≥{_format_size(required)} "
+                    f"(source × 1.2), have {_format_size(free_bytes)}. "
+                    "Free disk and re-run prepare."
+                )
+                log(msg, "error")
+                raise Exception(msg)
+        except FileNotFoundError:
+            pass
+
+        # Derive source_dir / source_name from the actual built path so
+        # a caller-overridden work_dir composes correctly through tar.
         result = _compress_with_progress(
-            source_dir="/tmp",
-            source_name=package_name,
-            output_file=output_file,
+            source_dir=os.path.dirname(package_dir),
+            source_name=os.path.basename(package_dir),
+            output_file=output_file_tmp,
             logger=log,
             progress_interval=10,
             run_id=run_id,
         )
 
         if result.get("cancelled"):
+            # Cancellation already removes output_file_tmp inside the
+            # compressor's cancel branch; previous good package is
+            # untouched.
             return {"success": False, "error": "cancelled", "cancelled": True}
         if not result['success']:
+            # `_compress_with_progress` already deleted the corrupt
+            # tmp file (on tar failure or gzip-t failure). The
+            # previous `output_file` — if any — is still in place.
             raise Exception(f"Failed to create archive: {result.get('error', '')[:200]}")
+
+        # Atomic swap: rename the validated `.new` over the canonical
+        # filename. os.replace is atomic on POSIX so a concurrent
+        # apply-upgrade reader always sees either the old file or the
+        # new file, never a partial. After this point the previous
+        # package is gone — but only after we KNOW the new one is good.
+        os.replace(output_file_tmp, output_file)
+        log("  Swapped new archive into place (atomic)", "success")
 
         package_size = os.path.getsize(output_file)
         log(f"  Package created: {_format_size(package_size)}", "success")
@@ -586,9 +1019,14 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
     except Exception as e:
         log(f"Package preparation failed: {str(e)}", "error")
 
-        # Remove failed output file
-        if os.path.exists(output_file):
-            os.remove(output_file)
+        # Remove ONLY the in-progress `.new` file — leave the
+        # previously-good `output_file` (if any) intact so the
+        # operator's apply-upgrade flow still has a working archive.
+        if os.path.exists(output_file_tmp):
+            try:
+                os.remove(output_file_tmp)
+            except OSError:
+                pass
 
         return {
             "success": False,
@@ -596,16 +1034,18 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None)
         }
 
     finally:
-        # Always cleanup temp directory and pulled images
-        if os.path.exists(package_dir):
-            try:
-                shutil.rmtree(package_dir)
-            except Exception:
-                pass
+        # Offline-prepare cleanup ONLY. Online-upgrade caller owns the
+        # package_dir and consumes it via the apply step — cleanup
+        # happens in the orchestration's own finally block instead.
+        if compress:
+            if os.path.exists(package_dir):
+                try:
+                    shutil.rmtree(package_dir)
+                except Exception:
+                    pass
 
-        # Always cleanup pulled Docker images
-        for module, version in modules.items():
-            if module in DOCKER_IMAGES:
-                for image_template, _ in DOCKER_IMAGES[module]:
-                    image = image_template.format(version=version)
-                    run_command(f"docker rmi {image} 2>/dev/null || true", logger=None, timeout=60)
+            for module, version in modules.items():
+                if module in DOCKER_IMAGES:
+                    for image_template, _ in DOCKER_IMAGES[module]:
+                        image = image_template.format(version=version)
+                        run_command(f"docker rmi {image} 2>/dev/null || true", logger=None, timeout=60)

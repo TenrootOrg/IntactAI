@@ -191,6 +191,94 @@ def cleanup_backup(backup_file: str, logger: Callable = None):
         log(f"  Warning: Could not remove backup: {e}", "warning")
 
 
+# Per-module image repos used by remove_old_module_image() below.
+# When a module's upgrade succeeds, the helper removes
+# `<repo>:<old_version>` for each repo listed here. Add an entry
+# when introducing a new module so its post-upgrade cleanup runs
+# automatically.
+_MODULE_IMAGE_REPOS = {
+    'iris': [
+        'ghcr.io/dfir-iris/iriswebapp_app',
+        'ghcr.io/dfir-iris/iriswebapp_db',
+        'ghcr.io/dfir-iris/iriswebapp_nginx',
+    ],
+    'timesketch': [
+        'us-docker.pkg.dev/osdfir-registry/timesketch/timesketch',
+    ],
+    'plaso': [
+        'log2timeline/plaso',
+    ],
+    'velociraptor': [
+        # Locally-built image; tag follows the version pin.
+        'velociraptor-server',
+    ],
+    'volweb': [
+        'forensicxlab/volweb-backend',
+        'forensicxlab/volweb-frontend',
+    ],
+    'elk': [
+        'docker.elastic.co/elasticsearch/elasticsearch',
+        'docker.elastic.co/kibana/kibana',
+        'docker.elastic.co/logstash/logstash',
+    ],
+    'aws': [
+        'toniblyx/prowler',
+    ],
+    'azure': [
+        'anssi/dfir-o365rc',
+    ],
+}
+
+
+def remove_old_module_image(module_id: str, old_version: str,
+                              new_version: str, logger: Callable = None) -> None:
+    """Remove `<repo>:<old_version>` for every repo associated with the
+    module — called AT THE END of a successful upgrade_*_offline run.
+
+    Safety guarantees:
+      * Noop when old_version == new_version (no-op upgrade).
+      * Noop when old_version is empty / 'unknown' (first install,
+        nothing prior to clean).
+      * `docker image rm` itself refuses to remove an image that's
+        attached to a running container — so even if our orchestration
+        somehow called this in the wrong order, Docker's own protection
+        prevents disaster.
+      * Errors are swallowed and logged at info level — a failure to
+        clean up is never reason to fail the upgrade.
+
+    The user requested this on 2026-06-09 after seeing several GB of
+    obsolete module images pile up on the host post-upgrade. Earlier
+    iteration shipped a manual Maintenance UI card; user preferred
+    fully-automatic cleanup of OLD versions on successful upgrade and
+    asked for the manual card to be removed.
+    """
+    log = logger or (lambda msg, level="info": None)
+    if not old_version:
+        return
+    if old_version.lower() in ('unknown', 'none', ''):
+        return
+    if new_version and old_version == new_version:
+        return
+    repos = _MODULE_IMAGE_REPOS.get(module_id)
+    if not repos:
+        return
+    for repo in repos:
+        old_ref = f"{repo}:{old_version}"
+        result = run_command(
+            f"docker image rm {old_ref}",
+            logger=None, timeout=60,
+        )
+        if result.get('success'):
+            log(f"  Cleaned up old image: {old_ref}", "info")
+        else:
+            # Common benign cases: tag was never pulled locally,
+            # or it's still referenced by something else (Docker
+            # protects). Don't log loudly.
+            err = (result.get('error') or result.get('stderr') or '').strip()
+            if 'No such image' not in err and 'is using' not in err:
+                log(f"  Could not remove old image {old_ref}: {err[:120]}", "info")
+
+
 def compare_versions(v1: str, v2: str) -> int:
     """Compare two version strings. Returns -1 if v1 < v2, 0 if equal, 1 if v1 > v2."""
     def parse_version(v):
@@ -217,60 +305,90 @@ def compare_versions(v1: str, v2: str) -> int:
 
 
 def get_current_versions() -> Dict:
-    """Get current versions from .env files for all modules."""
+    """Get current versions for all modules.
+
+    Each module reports as:
+      - 'Not installed' — primary container is absent (module never
+        deployed on this host)
+      - actual version string — read from the module's .env
+      - 'unknown' — module deployed but version key missing or
+        unreadable (most likely a stale install where .env got hand-
+        edited)
+    """
     versions = {}
 
-    # ELK
     elk_env = os.path.join(WORKDIR, 'modules', 'elk', '.env')
-    elk_vars = read_env_file(elk_env)
     versions['elk'] = {
-        'current': elk_vars.get('ELASTIC_VERSION', 'unknown'),
-        'env_file': elk_env
+        'current': _read_module_version('elk', elk_env, 'ELASTIC_VERSION'),
+        'env_file': elk_env,
     }
 
-    # Timesketch
     ts_env = os.path.join(WORKDIR, 'modules', 'timesketch', '.env')
-    ts_vars = read_env_file(ts_env)
     versions['timesketch'] = {
-        'current': ts_vars.get('TIMESKETCH_VERSION', 'unknown'),
-        'env_file': ts_env
+        'current': _read_module_version('timesketch', ts_env, 'TIMESKETCH_VERSION'),
+        'env_file': ts_env,
     }
 
-    # Plaso - read from backend .env
+    # Plaso pin lives in the backend .env (no standalone container);
+    # always shows the configured value.
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
     backend_vars = read_env_file(backend_env)
     versions['plaso'] = {
         'current': backend_vars.get('PLASO_VERSION', 'unknown'),
-        'env_file': backend_env
+        'env_file': backend_env,
     }
 
-    # IRIS
     iris_env = os.path.join(WORKDIR, 'modules', 'iris', '.env')
-    iris_vars = read_env_file(iris_env)
     versions['iris'] = {
-        'current': iris_vars.get('IRIS_VERSION', 'unknown'),
-        'env_file': iris_env
+        'current': _read_module_version('iris', iris_env, 'IRIS_VERSION'),
+        'env_file': iris_env,
     }
 
-    # Velociraptor
     velo_env = os.path.join(WORKDIR, 'modules', 'velociraptor', '.env')
-    velo_vars = read_env_file(velo_env)
     versions['velociraptor'] = {
-        'current': velo_vars.get('VELOCIRAPTOR_VERSION', 'unknown'),
-        'env_file': velo_env
+        'current': _read_module_version('velociraptor', velo_env, 'VELOCIRAPTOR_VERSION'),
+        'env_file': velo_env,
     }
 
-    # Intact.AI Platform - use git describe or fallback
-    try:
-        result = subprocess.run(
-            ['git', 'describe', '--tags', '--always'],
-            cwd=MODULES_DIR,
-            capture_output=True,
-            text=True
-        )
-        intact_version = result.stdout.strip() if result.returncode == 0 else 'unknown'
-    except:
-        intact_version = 'unknown'
+    # VolWeb — newer module, was missing from the version map before. Reports
+    # 'Not installed' when the operator never deployed it.
+    volweb_env = os.path.join(WORKDIR, 'modules', 'volweb', '.env')
+    versions['volweb'] = {
+        'current': _read_module_version('volweb', volweb_env, 'VOLWEB_BACKEND_VERSION'),
+        'env_file': volweb_env,
+    }
+
+    # Intact.AI Platform — read from VERSION file at repo root (stamped by
+    # .github/workflows/stamp-version-on-release.yml on every release, AND
+    # re-stamped by services/upgrade/package.py at prepare time as a
+    # belt-and-suspenders for non-release refs / pre-Action releases).
+    # Falls back to the running container's image tag for installs that
+    # predate the VERSION-file mechanism. 'Not installed' when the
+    # intact_backend container itself is absent.
+    if _module_container_exists('intact') is False:
+        intact_version = 'Not installed'
+    else:
+        intact_version = None
+        version_file = os.path.join(WORKDIR, 'VERSION')
+        if os.path.exists(version_file):
+            try:
+                with open(version_file) as f:
+                    v = f.read().strip()
+                if v:
+                    intact_version = v
+            except Exception:
+                pass
+        if not intact_version:
+            try:
+                result = subprocess.run(
+                    ['docker', 'inspect', 'intact_backend',
+                     '--format', '{{.Config.Image}}'],
+                    capture_output=True, text=True, timeout=5,
+                )
+                image = (result.stdout or '').strip()
+                intact_version = image.split(':', 1)[1] if ':' in image else (image or 'unknown')
+            except Exception:
+                intact_version = 'unknown'
     versions['intact'] = {'current': intact_version}
 
     return versions
@@ -301,6 +419,13 @@ def get_latest_versions() -> Dict:
         'aws':          'aws_prowler',
         'azure':        'azure_dfir_o365rc',
         'intact':       'backend',
+        # VolWeb (memory-forensics analysis stack). Single
+        # `versions.volweb` pin drives both backend + frontend images
+        # (forensicxlab releases them in lockstep — same semver tag,
+        # same release date). Postgres + Redis are infrastructure deps
+        # — not pinned in config.yaml; the compose file defaults them
+        # via ${VAR:-x}.
+        'volweb':       'volweb',
     }
     fallback = {
         'elk': '9.3.3',
@@ -311,6 +436,7 @@ def get_latest_versions() -> Dict:
         'aws': '5.28.1',
         'azure': 'latest',
         'intact': '1.0.0',
+        'volweb': '3.16.0',
     }
 
     # config.yaml lives at the repo root, which is mounted at WORKDIR
@@ -347,6 +473,34 @@ def load_docker_image(image_tar: str, logger: Callable = None,
         log(f"  Image file not found: {image_tar}", "error")
         return {"success": False, "error": f"Image file not found: {image_tar}"}
 
+    # Disk-space check before docker load. The tar size is roughly
+    # equal to what docker load needs on /var/lib/docker (Docker's
+    # layers are already gzip-compressed inside the tar; load
+    # extracts them into the storage driver's filesystem). Add a
+    # 1.5× margin since the extracted layers can grow slightly with
+    # overlay metadata.
+    try:
+        tar_size = os.path.getsize(image_tar)
+        required = int(tar_size * 1.5)
+        # Probe /var/lib/docker via the docker daemon's mountpoint —
+        # we run inside a backend container so checking our own /
+        # would be wrong. Fall back to the tar's own volume if the
+        # docker socket query fails.
+        free_bytes = shutil.disk_usage(os.path.dirname(image_tar)).free
+        if free_bytes < required:
+            tar_human = f"{tar_size // (1024 * 1024)} MB"
+            need_human = f"{required // (1024 * 1024)} MB"
+            have_human = f"{free_bytes // (1024 * 1024)} MB"
+            err = (
+                f"Not enough free space to load {os.path.basename(image_tar)}: "
+                f"tar is {tar_human}, docker load needs ~{need_human} "
+                f"(tar × 1.5), have {have_human}. Free disk and retry."
+            )
+            log(f"  {err}", "error")
+            return {"success": False, "error": err}
+    except (FileNotFoundError, OSError) as e:
+        log(f"  Disk-space preflight skipped: {e}", "warning")
+
     log(f"  Loading image: {os.path.basename(image_tar)}...", "info")
     result = run_command(f"docker load -i {image_tar}", logger=log, timeout=600, run_id=run_id)
 
@@ -371,6 +525,32 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
     if not os.path.exists(package_path):
         return {"success": False, "error": f"Package not found: {package_path}"}
 
+    # Pre-extract integrity check. Catches archives that were
+    # produced corrupt by an old prepare (pre-`gzip -t` fix) or
+    # truncated in transit during upload. Without this, the operator
+    # sees a raw zlib `Error -3 while decompressing data: invalid
+    # code lengths set` mid-extraction with no actionable message.
+    # `gzip -t` reads the whole file and validates every deflate
+    # block — corrupt archives fail HERE with a clear instruction
+    # to re-prepare, before we touch the filesystem.
+    log("Verifying package integrity (gzip -t)...", "info")
+    import subprocess as _subprocess
+    verify = _subprocess.run(
+        ["gzip", "-t", package_path],
+        capture_output=True, text=True,
+    )
+    if verify.returncode != 0:
+        err = (verify.stderr or "").strip() or "gzip integrity check failed"
+        return {
+            "success": False,
+            "error": (
+                f"Uploaded package failed gzip integrity check: {err[:200]}. "
+                "The archive is corrupt. Re-prepare the package on the "
+                "source machine and re-upload."
+            ),
+        }
+    log("  Integrity OK", "success")
+
     log("Extracting upgrade package...", "info")
 
     # Use /app/data/tmp/ (mounted from host's data/) for persistence across container restarts
@@ -378,6 +558,33 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
     os.makedirs("/app/data/tmp", exist_ok=True)
     extract_dir = f"/app/data/tmp/intact-upgrade-{int(time.time())}"
     os.makedirs(extract_dir, exist_ok=True)
+
+    # Disk-space check before extraction. tar.gz of image bundles
+    # compresses to roughly 1/3 of the uncompressed size (Docker
+    # images are already gzip'd layers internally, so compression
+    # ratio is modest). Use 3× as the required-free estimate with a
+    # bit of headroom — apologetic underestimate beats letting an
+    # in-flight extractall fill the disk and leave a half-extracted
+    # carcass behind.
+    try:
+        package_size = os.path.getsize(package_path)
+        required = int(package_size * 3)
+        free_bytes = shutil.disk_usage(extract_dir).free
+        if free_bytes < required:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            from_human = f"{package_size // (1024 * 1024)} MB"
+            need_human = f"{required // (1024 * 1024)} MB"
+            have_human = f"{free_bytes // (1024 * 1024)} MB"
+            return {
+                "success": False,
+                "error": (
+                    f"Not enough free space in {extract_dir} for extraction. "
+                    f"Package is {from_human}, extracted size needs ~{need_human} "
+                    f"(package × 3), have {have_human} free. Free disk and retry."
+                ),
+            }
+    except (FileNotFoundError, OSError) as e:
+        log(f"  Disk-space preflight skipped: {e}", "warning")
 
     try:
         with tarfile.open(package_path, 'r:gz') as tar:
@@ -439,3 +646,166 @@ def get_package_info(package_path: str) -> Dict:
         return {"success": False, "error": "manifest.json not found in package"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Module install/upgrade routing — used by services/upgrade/__init__.py
+# to detect whether the orchestrator should run the install or upgrade
+# path per module, and by get_current_versions() to distinguish "module
+# is installed but version unreadable" from "module never installed".
+# ---------------------------------------------------------------------------
+
+_MODULE_PRIMARY_CONTAINERS = {
+    'elk':          'intact_elasticsearch',
+    'iris':         'intact_iris_app',
+    'portainer':    'intact_portainer',
+    'timesketch':   'intact_timesketch_web',
+    'velociraptor': 'intact_velociraptor',
+    'volweb':       'intact_volweb_backend',
+    'intact':       'intact_backend',
+}
+
+
+def _module_container_exists(module_id: str) -> Optional[bool]:
+    """True iff the module's primary container exists (running or stopped).
+    Returns None for modules with no container concept (aws/azure/plaso).
+    Callers should treat None as 'always installed' since those modules
+    don't deploy a standalone container stack."""
+    name = _MODULE_PRIMARY_CONTAINERS.get(module_id)
+    if not name:
+        return None
+    try:
+        result = subprocess.run(
+            ['docker', 'ps', '-a', '--filter', f'name=^{name}$',
+             '--format', '{{.Names}}'],
+            capture_output=True, text=True, timeout=5,
+        )
+        return name in (result.stdout or '')
+    except Exception:
+        return None
+
+
+def _read_module_version(module_id: str, env_path: str, version_key: str) -> str:
+    """Resolve a single module's current version:
+       - 'Not installed': module has a primary container concept + the
+         container is absent (operator skipped this module at install time)
+       - actual version string: container exists + .env has the key
+       - 'unknown': container exists / no detection logic but .env key
+         missing or unreadable"""
+    present = _module_container_exists(module_id)
+    if present is False:
+        return 'Not installed'
+    if os.path.exists(env_path):
+        v = read_env_file(env_path).get(version_key)
+        if v:
+            return v
+    return 'unknown'
+
+
+def load_all_bundled_images(package_dir: str, logger: Callable = None,
+                              run_id: str = None) -> None:
+    """Load EVERY .tar in `package_dir/images/`. Idempotent — `docker
+    load` of an already-loaded image is a no-op, so calling this
+    multiple times in a multi-module apply is harmless.
+
+    Air-gap-bulletproof by design: when a module's docker-compose.yaml
+    references an image (e.g. `postgres:15`, `redis:7-alpine`,
+    `nginx:alpine`, `opensearchproject/opensearch:2.11.0`), the prepare
+    side bundles its tar into `/images/`. At install time we just load
+    everything in the directory — no per-module prefix allowlist
+    needed. Adding a new image to ANY module's compose only requires
+    updating DOCKER_IMAGES in package.py (or, future work, deriving
+    from the compose file itself); the install side picks it up
+    automatically.
+
+    Before this helper, install_module_compose_up matched bundled tars
+    against per-module `image_tar_prefixes` lists. That coupled the
+    install side to the prepare side's filename conventions and any
+    drift caused silent fallback to `docker pull` → air-gap failure
+    when compose tried to fetch the missing image from the registry.
+    Air-gap testing on 2026-06-09 surfaced this on Velociraptor (prefix
+    `velociraptor-server` vs filename `velociraptor-{version}.tar`)
+    and would have surfaced it on ELK (missing `logstash` prefix),
+    Timesketch (missing all four base-image prefixes), and VolWeb
+    (postgres+redis not even bundled). Loading every tar removes
+    the failure mode by construction.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    images_dir = os.path.join(package_dir, 'images')
+    if not os.path.isdir(images_dir):
+        return
+    for fn in sorted(os.listdir(images_dir)):
+        if not fn.endswith('.tar'):
+            continue
+        image_tar = os.path.join(images_dir, fn)
+        log(f"  Loading bundled image: {fn}", "info")
+        loaded = load_docker_image(image_tar, logger=log, run_id=run_id)
+        if not loaded.get('success'):
+            log(
+                f"  Image load failed ({fn}, continuing — compose will "
+                f"try to pull): {loaded.get('error')}",
+                "warning",
+            )
+
+
+def install_module_compose_up(
+    module_id: str,
+    package_dir: str,
+    version: str,
+    image_tar_prefixes: list = None,
+    logger: Callable = None,
+    run_id: str = None,
+) -> Dict:
+    """Generic fresh-install helper for modules whose first-time setup
+    is just "load bundled images + docker compose up -d". Modules with
+    extra first-time setup (volweb's .env render + shared volume; iris's
+    secret generation) layer that BEFORE calling this helper.
+
+    NOTE: image_tar_prefixes is retained as a kwarg for backward-compat
+    with callers that haven't been updated, but it is IGNORED. The
+    helper now loads EVERY .tar in /images/ via
+    load_all_bundled_images — see that function's docstring for the
+    air-gap-bulletproofing rationale.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    work_dir = os.path.join(WORKDIR, 'modules', module_id)
+    if not os.path.exists(work_dir):
+        return {
+            "success": False,
+            "error": (
+                f"module directory missing at {work_dir} — upgrade the "
+                "Intact.AI source first so the new module's compose file "
+                "lands on disk"
+            ),
+        }
+
+    # Load every bundled image. See load_all_bundled_images docstring
+    # for why we load ALL tars, not just module-specific ones.
+    load_all_bundled_images(package_dir, logger=log, run_id=run_id)
+
+    # The docker CLI we exec'd against /var/run/docker.sock sees the host
+    # filesystem, not the container's — translate WORKDIR → HOST_PATH.
+    host_work_dir = work_dir.replace(WORKDIR, HOST_PATH, 1)
+    log(f"  docker compose up -d on {module_id}...", "info")
+    # CRITICAL: --pull never. Without it, docker compose 2.x interprets
+    # a compose service that has BOTH `image:` and `build:` (the
+    # velociraptor case) plus `pull_policy: build` as "force a rebuild
+    # every up", which then tries to `FROM ubuntu:22.04` and fails
+    # air-gapped with "failed to fetch anonymous token". With
+    # --pull never, compose uses the locally-loaded image (which
+    # load_all_bundled_images put in place) and skips the rebuild
+    # entirely. Air-gap testing on 2026-06-09 verified this is the
+    # specific knob that flips velociraptor install from broken to
+    # working in an air-gapped environment. The pre-existing
+    # `upgrade_*_offline` paths already pass --pull never for the
+    # same reason; only the install helper was missing it.
+    r = run_command(
+        f"docker compose -f {host_work_dir}/docker-compose.yaml "
+        f"--project-directory {host_work_dir} up -d --pull never",
+        timeout=300, logger=log, run_id=run_id,
+    )
+    if not r.get('success'):
+        return {"success": False, "error": f"compose up failed: {r.get('error')}"}
+
+    log(f"{module_id} first-time install complete", "success")
+    return {"success": True, "version": version, "first_install": True}

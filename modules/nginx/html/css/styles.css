@@ -57,6 +57,15 @@ body {
     background: linear-gradient(180deg, #0a0a12 0%, #000000 100%);
     min-height: 100vh;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    /* On smaller monitors, wide content (the Workflows table) can
+       force the body itself to scroll horizontally. When that
+       happens the fixed sidebar — anchored at document x=0 — gets
+       scrolled off the visible viewport, leaving only the empty
+       260px margin we reserved on .main-content. Contain the
+       horizontal overflow at the body so the only horizontal
+       scrolling happens inside `.overflow-x-auto` wrappers
+       (where it belongs). */
+    overflow-x: hidden;
     color: var(--text);
     -webkit-font-smoothing: antialiased;
 }
@@ -114,11 +123,26 @@ h1, h2, h3, .header-text {
    SIDEBAR - Dark Glass Panel
    ============================================ */
 .sidebar {
-    width: 260px;
+    /* Pin to viewport top using position:sticky — same scroll-with-
+       page-then-stick behaviour we want, but unlike position:fixed
+       it does NOT take the element out of flex flow. The flex
+       parent still allocates 260px for the sidebar; <main> with
+       flex-1 gets the rest naturally. Avoids all the
+       containing-block / horizontal-scroll edge cases that
+       position:fixed creates (which were behind the "sidebar
+       disappears on Workflows" symptom).
+       width is also set with !important so Tailwind utility
+       overrides on the <aside> (or browser zoom + media queries)
+       can't shrink it to zero. */
+    width: 260px !important;
+    flex-shrink: 0;
     min-height: 100vh;
+    height: 100vh;
     background: rgba(12, 12, 18, 0.98);
     border-right: 1px solid var(--border);
-    position: relative;
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
     z-index: 10;
     transition: width 0.3s ease;
     display: flex;
@@ -126,7 +150,7 @@ h1, h2, h3, .header-text {
 }
 
 .sidebar-collapsed {
-    width: 72px;
+    width: 72px !important;
     overflow-x: hidden;
 }
 
@@ -145,11 +169,10 @@ h1, h2, h3, .header-text {
     height: 1.5rem;
 }
 
-/* `.main-content-collapsed` was used when the sidebar was position:fixed
-   and main needed a manual margin to clear it. The sidebar is now a flex
-   sibling (`<div class="flex">` wraps it + main with `flex-1`), so the
-   margin is redundant. Keep the rule as a no-op anchor — JS still toggles
-   the class for the transition timing. */
+/* No-op anchor — the JS still toggles this class for the transition
+   timing, but with position:sticky the sidebar collapse is handled
+   by .sidebar-collapsed { width: 72px } and the flex flow
+   reallocates space to <main> automatically. */
 .main-content-collapsed {
     /* intentionally empty */
 }
@@ -259,9 +282,16 @@ h1, h2, h3, .header-text {
    MAIN CONTENT
    ============================================ */
 .main-content {
-    /* No margin-left: the parent <div class="flex"> already lays the
-       sidebar (260px) and this <main flex-1> as siblings. Adding a
-       260px margin on top creates a redundant gap. */
+    /* No margin-left or max-width needed — the sidebar uses
+       position:sticky (see .sidebar above) which keeps it IN the
+       flex flow. The parent <div class="flex"> allocates 260px for
+       the sidebar and <main flex-1> gets the rest. Container queries
+       and content sizing all "just work" the way the original
+       comment intended. min-width:0 prevents flex children from
+       refusing to shrink (default min-width:auto on flex items
+       causes the wide workflows table to push <main> wider than
+       its allotted space, which used to push the body horizontal). */
+    min-width: 0;
     background: transparent;
     min-height: 100vh;
     position: relative;
@@ -770,7 +800,8 @@ body.bg-gray-900 {
         width: 100%;
         min-height: auto;
     }
-    .main-content {
+    .main-content,
+    .main-content-collapsed {
         margin-left: 0;
     }
 }

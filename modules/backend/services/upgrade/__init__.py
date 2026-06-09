@@ -10,6 +10,7 @@ Two-Phase Upgrade Support:
 
 import json
 import os
+import shutil
 import subprocess
 from typing import Dict, Callable, Optional
 
@@ -37,6 +38,11 @@ from .intact import upgrade_intact, upgrade_intact_offline
 from .plaso import upgrade_plaso, upgrade_plaso_offline
 from .aws import upgrade_aws, upgrade_aws_offline
 from .azure import upgrade_azure, upgrade_azure_offline
+from .volweb import upgrade_volweb, upgrade_volweb_offline, install_volweb_offline
+from .elk import install_elk_offline
+from .timesketch import install_timesketch_offline
+from .velociraptor import install_velociraptor_offline
+from .iris import install_iris_offline
 
 # Storage functions for two-phase upgrade state
 from services.storage.base import (
@@ -89,7 +95,7 @@ def reset_module_database(module_name: str, logger: Callable = None) -> bool:
 
     # Stop containers first
     log(f"Stopping {module_name} containers...", "info")
-    run_command("docker compose down", cwd=module_dir, logger=log)
+    run_command("docker compose down --remove-orphans", cwd=module_dir, logger=log)
 
     # Remove volumes
     for volume in RESET_VOLUMES[module_name]:
@@ -169,19 +175,47 @@ def schedule_backend_restart():
 
 
 def restart_nginx(log: Callable) -> bool:
-    """Restart nginx container."""
-    log("Restarting nginx to refresh DNS resolution...", "info")
-    try:
-        nginx_result = run_command("docker restart intact_nginx", logger=log)
-        if nginx_result.get('success'):
-            log("Nginx restarted successfully", "success")
-            return True
-        else:
-            log(f"WARNING: Nginx restart failed: {nginx_result.get('error', 'unknown')}", "warning")
-            return False
-    except Exception as nginx_error:
-        log(f"WARNING: Could not restart Nginx: {nginx_error}", "warning")
+    """Restart the main intact_nginx AND every per-module *_nginx.
+
+    Every nginx container resolves its upstream hostname ONCE at
+    startup. If an upstream is recreated after the nginx started,
+    nginx keeps the stale IP (or worse, the cached "no such host"
+    NXDOMAIN) and returns 502 forever. This bit us on fresh-install
+    apply with Timesketch — install_timesketch_offline brings up
+    intact_timesketch_nginx + intact_timesketch_web in the same
+    compose, but the main intact_nginx was already running from
+    install.sh and had cached "no upstream" for intact_timesketch_nginx.
+
+    Restarting only intact_nginx (the previous behavior) refreshed
+    the main reverse-proxy's cache, but missed the per-module nginxes
+    that ALSO need refreshing when their upstream web containers come
+    up. Mirrors lib/health.sh:refresh_nginx_upstreams.
+    """
+    log("Refreshing per-module nginx DNS caches...", "info")
+    # Find every nginx container — both the main intact_nginx and any
+    # per-module intact_*_nginx that's currently running.
+    list_cmd = "docker ps --filter 'name=intact_' --format '{{.Names}}'"
+    listing = run_command(list_cmd, logger=None, timeout=10)
+    names = []
+    if listing.get('success'):
+        for n in (listing.get('stdout', '') or '').splitlines():
+            n = n.strip()
+            if n and (n == 'intact_nginx' or n.endswith('_nginx')):
+                names.append(n)
+
+    if not names:
+        log("  No nginx containers found to refresh.", "warning")
         return False
+
+    ok = True
+    for name in names:
+        result = run_command(f"docker restart {name}", logger=None, timeout=60)
+        if result.get('success'):
+            log(f"  Restarted {name} (cleared upstream DNS cache)", "success")
+        else:
+            log(f"  WARNING: Failed to restart {name}: {result.get('error', '')[:160]}", "warning")
+            ok = False
+    return ok
 
 
 def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str = 'online',
@@ -207,7 +241,7 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
     db_overwrite = db_overwrite or {}
 
     # Intact.AI must be first so backend code is updated before modules
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure', 'volweb']
     upgrade_functions = {
         'elk': upgrade_elk,
         'timesketch': upgrade_timesketch,
@@ -216,6 +250,7 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
         'velociraptor': upgrade_velociraptor,
         'aws': upgrade_aws,
         'azure': upgrade_azure,
+        'volweb': upgrade_volweb,
         'intact': upgrade_intact,
     }
 
@@ -315,11 +350,19 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                     if run_id:
                         update_upgrade_phase(run_id, 'phase1', completed_modules)
                 else:
-                    log(f"{module_name.upper()} upgrade failed: {result.get('error', 'unknown')}", "error")
+                    log(f"MODULE_FAILED: {module_name.upper()} — {result.get('error', 'unknown')}", "error")
+                    log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                     overall_status = "completed_with_errors"
 
             except Exception as e:
-                log(f"{module_name.upper()} upgrade error: {str(e)}", "error")
+                # Per-module try/except is what gives the apply step
+                # cascade resilience: one module's crash never kills
+                # the run. The MODULE_FAILED log marker is what
+                # operators grep for in the install log.
+                import traceback as _tb
+                log(f"MODULE_FAILED: {module_name.upper()} — exception: {str(e)}", "error")
+                log(f"  Traceback: {_tb.format_exc()[:600]}", "error")
+                log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                 results[module_name] = {"success": False, "error": str(e)}
                 overall_status = "completed_with_errors"
 
@@ -445,7 +488,23 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'velociraptor': lambda v, **kw: upgrade_velociraptor_offline(package_dir, v, **kw),
             'aws': lambda v, **kw: upgrade_aws_offline(package_dir, v, **kw),
             'azure': lambda v, **kw: upgrade_azure_offline(package_dir, v, **kw),
+            'volweb': lambda v, **kw: upgrade_volweb_offline(package_dir, v, **kw),
             'intact': lambda **kw: upgrade_intact_offline(package_dir, **kw),
+        }
+        # Install-vs-upgrade dispatch (Phase-2 needs the same auto-detect
+        # the main loop has — otherwise a fresh install hits Phase 1
+        # for intact, then Phase 2 runs UPGRADE functions for modules
+        # whose containers don't exist yet, and they fail with cryptic
+        # "No such container" errors or report false success.
+        # See the 2026-06-08 fresh-install log where iris/timesketch
+        # both crashed because their upgrade fns tried to docker-exec
+        # into containers that hadn't been created yet.
+        install_functions = {
+            'elk':          lambda v, **kw: install_elk_offline(package_dir, v, **kw),
+            'timesketch':   lambda v, **kw: install_timesketch_offline(package_dir, v, **kw),
+            'iris':         lambda v, **kw: install_iris_offline(package_dir, v, **kw),
+            'velociraptor': lambda v, **kw: install_velociraptor_offline(package_dir, v, **kw),
+            'volweb':       lambda v, **kw: install_volweb_offline(package_dir, v, **kw),
         }
     else:
         upgrade_functions = {
@@ -456,6 +515,13 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'velociraptor': upgrade_velociraptor,
             'intact': upgrade_intact,
         }
+        # Online mode doesn't currently expose install_* — operator
+        # is expected to have run install.sh first. Keep as-is.
+        install_functions = {}
+
+    # Reuse the container-existence detector — same source of truth
+    # the main run_offline_upgrade_workflow uses.
+    from .base import _module_container_exists
 
     results = {}
     overall_status = "success"
@@ -474,9 +540,23 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             target_version = modules[module_name]
             current = current_versions.get(module_name, {}).get('current', 'unknown')
 
+            # Install-vs-upgrade dispatch: pick the install function
+            # when the module's primary container is absent (fresh-
+            # install Phase 2 case). Otherwise use the upgrade function
+            # (the running-stack case the offline-upgrade flow was
+            # originally designed for). Same logic as the main loop.
+            install_fn = install_functions.get(module_name)
+            module_present = _module_container_exists(module_name)
+            if install_fn and module_present is False:
+                action_word = "INSTALLING"
+                upgrade_fn = install_fn
+            else:
+                action_word = "UPGRADING"
+                upgrade_fn = upgrade_functions.get(module_name)
+
             log("", "info")
             log(f"{'='*50}", "info")
-            log(f"UPGRADING: {module_name.upper()}", "info")
+            log(f"{action_word}: {module_name.upper()}", "info")
             log(f"  Current version: {current}", "info")
             log(f"  Target version:  {target_version}", "info")
             log(f"{'='*50}", "info")
@@ -485,7 +565,6 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             if db_overwrite.get(module_name, False):
                 reset_module_database(module_name, logger=log)
 
-            upgrade_fn = upgrade_functions.get(module_name)
             if not upgrade_fn:
                 log(f"Unknown module: {module_name}", "error")
                 results[module_name] = {"success": False, "error": "Unknown module"}
@@ -510,11 +589,19 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
 
                     update_upgrade_phase(run_id, 'phase2', list(completed_modules))
                 else:
-                    log(f"{module_name.upper()} upgrade failed: {result.get('error', 'unknown')}", "error")
+                    log(f"MODULE_FAILED: {module_name.upper()} — {result.get('error', 'unknown')}", "error")
+                    log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                     overall_status = "completed_with_errors"
 
             except Exception as e:
-                log(f"{module_name.upper()} upgrade error: {str(e)}", "error")
+                # Per-module try/except is what gives the apply step
+                # cascade resilience: one module's crash never kills
+                # the run. The MODULE_FAILED log marker is what
+                # operators grep for in the install log.
+                import traceback as _tb
+                log(f"MODULE_FAILED: {module_name.upper()} — exception: {str(e)}", "error")
+                log(f"  Traceback: {_tb.format_exc()[:600]}", "error")
+                log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                 results[module_name] = {"success": False, "error": str(e)}
                 overall_status = "completed_with_errors"
 
@@ -572,54 +659,75 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     }
 
 
-def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: Callable = None,
-                                  db_overwrite: Dict = None) -> Dict:
-    """Run offline upgrade workflow from an uploaded package with two-phase support.
+def run_offline_upgrade_workflow(package_path: Optional[str] = None,
+                                  run_id: str = None, logger: Callable = None,
+                                  db_overwrite: Dict = None,
+                                  *,
+                                  prebuilt_package_dir: Optional[str] = None,
+                                  prebuilt_manifest: Optional[Dict] = None,
+                                  workflow_label: str = "OFFLINE UPGRADE WORKFLOW") -> Dict:
+    """Run the apply-upgrade orchestration with two-phase support.
 
-    Two-Phase Upgrade:
+    Two entry modes, same orchestration body:
+    - **Offline (default):** pass `package_path` to an uploaded tar.gz.
+      The function calls `verify_upgrade_package()` to gzip-t-check
+      and extract the archive, then runs the per-module loop.
+    - **Online:** pass `prebuilt_package_dir` + `prebuilt_manifest`
+      (both already populated by `prepare_upgrade_package(compress=False)`).
+      The function skips verification + extraction and runs the same
+      per-module loop directly. `workflow_label` lets the caller
+      override the banner so operators reading logs can tell the two
+      flows apart.
+
+    Two-Phase Upgrade (unchanged for both modes):
     - If Intact.AI source is in package, it's upgraded first (Phase 1)
     - State is saved, backend restarts
     - On startup, Phase 2 resumes with remaining modules
-
-    Args:
-        package_path: Path to the uploaded .tar.gz package
-        run_id: Workflow run ID for state tracking
-        logger: Logging function
-        db_overwrite: Dict of module -> bool for fresh install (e.g., {"timesketch": True})
-
-    Returns:
-        Dict with success status and results per module
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     db_overwrite = db_overwrite or {}
 
     log("=" * 50, "info")
-    log("OFFLINE UPGRADE WORKFLOW", "info")
+    log(workflow_label, "info")
     log("=" * 50, "info")
 
-    # Cleanup any previous installation remnants
-    import glob
-    old_dirs = glob.glob('/app/data/tmp/intact-upgrade-*') + glob.glob('/data/tmp/intact-upgrade-*') + glob.glob('/tmp/intact-upgrade-*')
-    if old_dirs:
-        log("Cleaning up previous installation remnants...", "info")
-        for old_dir in old_dirs:
-            log(f"  Removing: {old_dir}", "info")
-            run_command(f"rm -rf {old_dir}", logger=log)
+    # Two-mode entry: tar.gz extraction (offline, legacy) OR pre-built
+    # package_dir from the online flow.
+    if prebuilt_package_dir and prebuilt_manifest:
+        package_dir = prebuilt_package_dir
+        manifest = prebuilt_manifest
+        verify_result = {
+            'success': True,
+            'package_dir': package_dir,
+            'extract_dir': package_dir,
+            'manifest': manifest,
+        }
+        log(f"  Online mode: using pre-built package_dir={package_dir}", "info")
+    else:
+        # Offline flow — clean up previous remnants (skipped for online
+        # because its fresh-timestamped build dir would get nuked).
+        import glob
+        old_dirs = glob.glob('/app/data/tmp/intact-upgrade-*') + glob.glob('/data/tmp/intact-upgrade-*') + glob.glob('/tmp/intact-upgrade-*')
+        if old_dirs:
+            log("Cleaning up previous installation remnants...", "info")
+            for old_dir in old_dirs:
+                log(f"  Removing: {old_dir}", "info")
+                run_command(f"rm -rf {old_dir}", logger=log)
 
-    # Verify and extract package
-    verify_result = verify_upgrade_package(package_path, logger=log)
-    if not verify_result['success']:
-        # Cleanup uploaded package on failure
-        if package_path and os.path.exists(package_path):
-            try:
-                os.remove(package_path)
-                log(f"Removed uploaded package: {os.path.basename(package_path)}", "info")
-            except Exception:
-                pass
-        return {"success": False, "error": verify_result.get('error', 'Package verification failed')}
+        # Verify and extract package
+        verify_result = verify_upgrade_package(package_path, logger=log)
+        if not verify_result['success']:
+            if package_path and os.path.exists(package_path):
+                try:
+                    os.remove(package_path)
+                    log(f"Removed uploaded package: {os.path.basename(package_path)}", "info")
+                except Exception:
+                    pass
+            return {"success": False, "error": verify_result.get('error', 'Package verification failed')}
 
-    package_dir = verify_result['package_dir']
-    manifest = verify_result['manifest']
+        package_dir = verify_result['package_dir']
+        manifest = verify_result['manifest']
+
     versions = manifest.get('versions', {})
 
     # Get current versions for comparison
@@ -644,10 +752,30 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
         'aws': upgrade_aws_offline,
         'azure': upgrade_azure_offline,
         'intact': upgrade_intact_offline,
+        'volweb': upgrade_volweb_offline,
     }
 
-    # Intact.AI must be first so backend code is updated before modules
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure']
+    # Fresh-install functions — picked by the dispatcher when the module's
+    # primary container is absent. Modules not listed here fall back to
+    # their upgrade function (or have no install/upgrade decision —
+    # aws/azure/plaso/intact don't deploy a standalone container stack).
+    offline_install_functions = {
+        'elk':          install_elk_offline,
+        'timesketch':   install_timesketch_offline,
+        'iris':         install_iris_offline,
+        'velociraptor': install_velociraptor_offline,
+        'volweb':       install_volweb_offline,
+    }
+
+    # Container existence detector — reuses _MODULE_PRIMARY_CONTAINERS
+    # from base.py. Falls back to True ("module is installed") for
+    # modules without a container concept.
+    from .base import _module_container_exists
+
+    # Intact.AI must be first so backend code is updated before modules.
+    # VolWeb is at the end so its install (a multi-container compose) runs
+    # last when the operator is adding VolWeb to an existing install.
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure', 'volweb']
 
     results = {}
     total = 0
@@ -660,9 +788,17 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
     # Build modules dict for state tracking
     modules_dict = {k: v for k, v in versions.items()}
     if 'intact' not in modules_dict:
-        # Check if intact source exists in package (not just empty dirs)
-        backend_source = os.path.join(package_dir, 'source', 'backend')
-        frontend_source = os.path.join(package_dir, 'source', 'frontend')
+        # Check if intact source exists in package (not just empty dirs).
+        # Try the new GitHub-tarball layout first (`source/intact/`) and
+        # fall back to the legacy `source/backend` + `source/frontend`
+        # split for packages built before that change.
+        intact_root = os.path.join(package_dir, 'source', 'intact')
+        if os.path.isdir(intact_root):
+            backend_source = os.path.join(intact_root, 'modules', 'backend')
+            frontend_source = os.path.join(intact_root, 'modules', 'nginx', 'html')
+        else:
+            backend_source = os.path.join(package_dir, 'source', 'backend')
+            frontend_source = os.path.join(package_dir, 'source', 'frontend')
         has_backend = os.path.exists(backend_source) and os.listdir(backend_source)
         has_frontend = os.path.exists(frontend_source) and os.listdir(frontend_source)
         if has_backend or has_frontend:
@@ -682,25 +818,44 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
         for module_name in upgrade_order:
             version = versions.get(module_name)
 
-            # For intact, check if source exists
+            # For intact, check if source exists — try new layout first.
             if module_name == 'intact':
-                backend_source = os.path.join(package_dir, 'source', 'backend')
-                frontend_source = os.path.join(package_dir, 'source', 'frontend')
+                intact_root = os.path.join(package_dir, 'source', 'intact')
+                if os.path.isdir(intact_root):
+                    backend_source = os.path.join(intact_root, 'modules', 'backend')
+                    frontend_source = os.path.join(intact_root, 'modules', 'nginx', 'html')
+                else:
+                    backend_source = os.path.join(package_dir, 'source', 'backend')
+                    frontend_source = os.path.join(package_dir, 'source', 'frontend')
                 if not os.path.exists(backend_source) and not os.path.exists(frontend_source):
                     continue
             elif not version:
                 continue
 
+            # Install-or-upgrade detection: pick the install function
+            # (when registered) if the module's primary container is
+            # absent on the host. Otherwise use the upgrade function as
+            # before. This is what lets an operator package a module
+            # their current install doesn't have and have it deployed
+            # cleanly via the same Apply Upgrade flow.
+            install_fn = offline_install_functions.get(module_name)
+            module_present = _module_container_exists(module_name)
+            if install_fn and module_present is False:
+                action_word = "INSTALLING"
+                upgrade_fn = install_fn
+            else:
+                action_word = "UPGRADING"
+                upgrade_fn = offline_upgrade_functions.get(module_name)
+
             log("", "info")
             log(f"{'='*50}", "info")
-            log(f"UPGRADING: {module_name.upper()} -> {version or 'from source'}", "info")
+            log(f"{action_word}: {module_name.upper()} -> {version or 'from source'}", "info")
             log(f"{'='*50}", "info")
 
             # Fresh install: remove database volumes if requested for this module
             if db_overwrite.get(module_name, False):
                 reset_module_database(module_name, logger=log)
 
-            upgrade_fn = offline_upgrade_functions.get(module_name)
             if not upgrade_fn:
                 log(f"Unknown module: {module_name}", "error")
                 results[module_name] = {"success": False, "error": "Unknown module"}
@@ -724,6 +879,14 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
                 else:
                     # Note: Plaso is handled as its own module, not bundled with Timesketch
                     result = upgrade_fn(package_dir, version, logger=log, run_id=run_id)
+
+                # Defensive: if a module function returns None (bug)
+                # treat it as a failure rather than crashing on
+                # .get(). Without this guard, a buggy upgrade_fn
+                # takes down the whole orchestrator and leaves later
+                # modules un-attempted.
+                if result is None:
+                    result = {"success": False, "error": f"{module_name} returned None (bug in upgrade function)"}
 
                 results[module_name] = result
                 if not result.get('skipped'):
@@ -773,11 +936,19 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
                     if run_id:
                         update_upgrade_phase(run_id, 'phase1', completed_modules)
                 else:
-                    log(f"{module_name.upper()} upgrade failed: {result.get('error', 'unknown')}", "error")
+                    log(f"MODULE_FAILED: {module_name.upper()} — {result.get('error', 'unknown')}", "error")
+                    log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                     overall_status = "completed_with_errors"
 
             except Exception as e:
-                log(f"{module_name.upper()} upgrade error: {str(e)}", "error")
+                # Per-module try/except is what gives the apply step
+                # cascade resilience: one module's crash never kills
+                # the run. The MODULE_FAILED log marker is what
+                # operators grep for in the install log.
+                import traceback as _tb
+                log(f"MODULE_FAILED: {module_name.upper()} — exception: {str(e)}", "error")
+                log(f"  Traceback: {_tb.format_exc()[:600]}", "error")
+                log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                 results[module_name] = {"success": False, "error": str(e)}
                 overall_status = "completed_with_errors"
 
@@ -819,10 +990,23 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
             if run_id:
                 clear_upgrade_state(run_id)
 
-            # Print summary
+            # Print summary with explicit succeeded/failed/skipped
+            # counts so the operator can see at a glance which of N
+            # modules made it. A "completed_with_errors" run that
+            # successfully deployed 5/6 modules is very different from
+            # one that failed all 6 — the count surfaces the difference
+            # the status field alone can't.
+            succeeded = [m for m, r in results.items()
+                         if not m.startswith("_") and r.get('success') and not r.get('skipped')]
+            failed = [m for m, r in results.items()
+                      if not m.startswith("_") and not r.get('success') and not r.get('skipped')]
+            skipped = [m for m, r in results.items()
+                       if not m.startswith("_") and r.get('skipped')]
+
             log("", "info")
             log(f"{'='*50}", "info")
             log(f"OFFLINE UPGRADE COMPLETE - Status: {overall_status}", "info")
+            log(f"  succeeded: {len(succeeded)}    failed: {len(failed)}    skipped: {len(skipped)}", "info")
             log(f"{'='*50}", "info")
 
             for module_name, result in results.items():
@@ -844,6 +1028,87 @@ def run_offline_upgrade_workflow(package_path: str, run_id: str = None, logger: 
         "total": total,
         "versions": versions
     }
+
+
+# ============================================================================
+# Online Upgrade — combined prepare + apply in a single workflow
+# ============================================================================
+
+def run_online_upgrade_workflow(modules: Dict[str, str], run_id: str = None,
+                                 logger: Callable = None,
+                                 db_overwrite: Dict = None) -> Dict:
+    """Run prepare-then-apply in a single workflow with no tar.gz round-trip.
+
+    For internet-connected machines. Combines the two-card flow
+    ("Prepare Upgrade Package" + "Import Upgrade Package") into one
+    workflow. The prepare step builds the package_dir directly at
+    the persistent path the apply side already uses
+    (``/app/data/tmp/intact-upgrade-<ts>/``) — no compression, no
+    decompression, no tar.gz hand-off. The apply orchestration is
+    the SAME loop the offline flow uses, so install-or-upgrade
+    auto-detection, Phase-1/Phase-2 restart, and cascade-resilient
+    per-module try/except all carry over verbatim.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+
+    log("=" * 50, "info")
+    log("ONLINE UPGRADE WORKFLOW", "info")
+    log("=" * 50, "info")
+    log("  Mode: prepare + apply in one run (no intermediate tar.gz)", "info")
+    log("", "info")
+
+    from services.upgrade.package import prepare_upgrade_package
+
+    # Build directly into /app/data/tmp/ — the persistent host-mounted
+    # path. /tmp/ would break Phase 2 because intact's backend restart
+    # between Phase 1 and Phase 2 wipes the container's /tmp.
+    from datetime import datetime as _dt
+    package_name = f"intact-upgrade-{_dt.now().strftime('%Y%m%d_%H%M%S')}"
+    persistent_work_dir = f"/app/data/tmp/{package_name}"
+    os.makedirs("/app/data/tmp", exist_ok=True)
+
+    prepare_result = prepare_upgrade_package(
+        modules=modules,
+        run_id=run_id,
+        logger=log,
+        compress=False,
+        work_dir=persistent_work_dir,
+    )
+
+    if not prepare_result.get('success'):
+        if os.path.exists(persistent_work_dir):
+            try:
+                shutil.rmtree(persistent_work_dir)
+            except Exception:
+                pass
+        return {
+            "success": False,
+            "status": "failed",
+            "error": prepare_result.get('error', 'Prepare step failed'),
+            "results": {},
+            "completed": 0,
+            "total": 0,
+            "versions": {},
+        }
+
+    package_dir = prepare_result['package_dir']
+    manifest = prepare_result['manifest']
+
+    log("", "info")
+    log("=" * 50, "info")
+    log("HAND-OFF TO APPLY (no compression step)", "success")
+    log("=" * 50, "info")
+    log("", "info")
+
+    return run_offline_upgrade_workflow(
+        package_path=None,
+        run_id=run_id,
+        logger=log,
+        db_overwrite=db_overwrite,
+        prebuilt_package_dir=package_dir,
+        prebuilt_manifest=manifest,
+        workflow_label="ONLINE UPGRADE WORKFLOW (Phase 2 of 2: apply)",
+    )
 
 
 # Backwards compatibility - expose private names as well
@@ -887,6 +1152,7 @@ __all__ = [
     # Workflow functions
     'run_upgrade_workflow',
     'run_offline_upgrade_workflow',
+    'run_online_upgrade_workflow',
     'resume_upgrade_workflow',
     # State management
     'get_pending_upgrade',

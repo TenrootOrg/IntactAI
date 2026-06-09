@@ -35,7 +35,16 @@
                 </div>
             </header>
 
-            <!-- Download Cards -->
+            <!-- ============================================================
+                 STANDARD VERSIONS — pre-built modern binaries that fit
+                 the vast majority of endpoints. Use these unless the
+                 host is old enough or unusual enough to need one of the
+                 specialised builds below.
+                 ============================================================ -->
+            <div class="max-w-3xl mx-auto mb-3">
+                <h2 class="text-lg font-semibold header-text text-white">Standard versions</h2>
+                <p class="text-sm text-gray-400 mt-1">Modern Windows / Linux endpoints — use these by default.</p>
+            </div>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl mx-auto">
                 <!-- Windows MSI -->
                 <div class="service-card p-6">
@@ -56,28 +65,6 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
                         </svg>
                         Download MSI
-                    </a>
-                </div>
-
-                <!-- Linux -->
-                <div class="service-card p-6">
-                    <div class="flex items-center gap-4 mb-4">
-                        <div class="w-14 h-14 rounded-xl flex items-center justify-center" style="background: linear-gradient(135deg, rgba(249, 115, 22, 0.2), rgba(249, 115, 22, 0.1)); border: 1px solid rgba(249, 115, 22, 0.3);">
-                            <svg class="w-7 h-7 text-orange-400" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.84-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.406-.046.615.27.563.863.436 1.417.289.563-.158 1.163-.406 1.755-.516.11-.021.227-.045.348-.064.17-.558.406-1.142.983-1.485.177-.105.413-.159.619-.074.063.025.117.03.186.047a.795.795 0 01-.017-.11c-.078-.558-.13-1.605.21-2.053.786-.953 1.642-1.953 1.932-3.047.21-.787.233-1.391.233-2.159 0-.42-.012-.84-.03-1.258-.021-.42-.042-.84-.074-1.258-.105-1.5-.242-3.105.21-4.605.484-1.605 1.86-2.813 3.555-3.285.074-.02.148-.042.222-.06a5.57 5.57 0 011.05-.12z"/>
-                            </svg>
-                        </div>
-                        <div>
-                            <h2 class="text-lg font-semibold header-text text-white">LINUX</h2>
-                            <p class="text-gray-400 text-sm">Binary</p>
-                        </div>
-                        <div class="ml-auto w-2 h-2 rounded-full bg-orange-500"></div>
-                    </div>
-                    <a href="/api/clients/download/linux" class="w-full bg-orange-600 hover:bg-orange-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg flex items-center justify-center gap-2">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
-                        </svg>
-                        Download Linux
                     </a>
                 </div>
 
@@ -103,6 +90,39 @@
                     </a>
                 </div>
 
+                <!-- Linux -->
+                <div class="service-card p-6">
+                    <div class="flex items-center gap-4 mb-4">
+                        <div class="w-14 h-14 rounded-xl flex items-center justify-center" style="background: linear-gradient(135deg, rgba(249, 115, 22, 0.2), rgba(249, 115, 22, 0.1)); border: 1px solid rgba(249, 115, 22, 0.3);">
+                            <svg class="w-7 h-7 text-orange-400" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.84-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.406-.046.615.27.563.863.436 1.417.289.563-.158 1.163-.406 1.755-.516.11-.021.227-.045.348-.064.17-.558.406-1.142.983-1.485.177-.105.413-.159.619-.074.063.025.117.03.186.047a.795.795 0 01-.017-.11c-.078-.558-.13-1.605.21-2.053.786-.953 1.642-1.953 1.932-3.047.21-.787.233-1.391.233-2.159 0-.42-.012-.84-.03-1.258-.021-.42-.042-.84-.074-1.258-.105-1.5-.242-3.105.21-4.605.484-1.605 1.86-2.813 3.555-3.285.074-.02.148-.042.222-.06a5.57 5.57 0 011.05-.12z"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <h2 class="text-lg font-semibold header-text text-white">LINUX</h2>
+                            <p class="text-gray-400 text-sm">Binary (modern glibc)</p>
+                        </div>
+                        <div class="ml-auto w-2 h-2 rounded-full bg-orange-500"></div>
+                    </div>
+                    <a href="/api/clients/download/linux" class="w-full bg-orange-600 hover:bg-orange-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg flex items-center justify-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                        </svg>
+                        Download Linux
+                    </a>
+                </div>
+            </div>
+
+            <!-- ============================================================
+                 SPECIAL / OLDER-SYSTEM VERSIONS — only use one of these
+                 if the standard build won't run on the target host. Each
+                 card explains the specific case it covers.
+                 ============================================================ -->
+            <div class="max-w-3xl mx-auto mt-10 mb-3">
+                <h2 class="text-lg font-semibold header-text text-white">Special / older-system versions</h2>
+                <p class="text-sm text-gray-400 mt-1">Use one of these when the standard build crashes on load — typically because of an old OS version or an unusual libc.</p>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl mx-auto">
                 <!-- Windows Legacy (Server 2008 R2 / Win 7) -->
                 <div class="service-card p-6" id="legacy-card">
                     <div class="flex items-center gap-4 mb-4">
@@ -113,11 +133,16 @@
                         </div>
                         <div>
                             <h2 class="text-lg font-semibold header-text text-white">WINDOWS LEGACY</h2>
-                            <p class="text-gray-400 text-sm">For Server 2008 R2 / Win 7</p>
+                            <p class="text-gray-400 text-sm">EXE for Server 2008 R2 / Win 7</p>
                         </div>
                         <div class="ml-auto w-2 h-2 rounded-full bg-purple-500"></div>
                     </div>
-                    <div class="text-xs text-gray-400 mb-3" id="legacy-version-info">Checking bundled binary...</div>
+                    <p class="text-xs text-gray-400 mb-2">
+                        Pinned older Velociraptor release that still supports the TLS / Win32 API
+                        surface available on Windows 7 / Server 2008 R2 / Server 2012. The modern EXE
+                        loads but the service crashes on first phone-home on these hosts.
+                    </p>
+                    <div class="text-xs text-gray-500 mb-3 italic" id="legacy-version-info">Checking bundled binary...</div>
                     <a href="/api/clients/download/windows-legacy-exe"
                        id="legacy-offline-btn"
                        class="w-full bg-purple-600 hover:bg-purple-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg flex items-center justify-center gap-2">
@@ -125,6 +150,63 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
                         </svg>
                         Download Legacy EXE
+                    </a>
+                </div>
+
+                <!-- Linux Legacy (old glibc) -->
+                <div class="service-card p-6">
+                    <div class="flex items-center gap-4 mb-4">
+                        <div class="w-14 h-14 rounded-xl flex items-center justify-center" style="background: linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(168, 85, 247, 0.1)); border: 1px solid rgba(168, 85, 247, 0.3);">
+                            <svg class="w-7 h-7 text-purple-400" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.84-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.406-.046.615.27.563.863.436 1.417.289.563-.158 1.163-.406 1.755-.516.11-.021.227-.045.348-.064.17-.558.406-1.142.983-1.485.177-.105.413-.159.619-.074.063.025.117.03.186.047a.795.795 0 01-.017-.11c-.078-.558-.13-1.605.21-2.053.786-.953 1.642-1.953 1.932-3.047.21-.787.233-1.391.233-2.159 0-.42-.012-.84-.03-1.258-.021-.42-.042-.84-.074-1.258-.105-1.5-.242-3.105.21-4.605.484-1.605 1.86-2.813 3.555-3.285.074-.02.148-.042.222-.06a5.57 5.57 0 011.05-.12z"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <h2 class="text-lg font-semibold header-text text-white">LINUX LEGACY</h2>
+                            <p class="text-gray-400 text-sm">For old-glibc distros</p>
+                        </div>
+                        <div class="ml-auto w-2 h-2 rounded-full bg-purple-500"></div>
+                    </div>
+                    <p class="text-xs text-gray-400 mb-3">
+                        For hosts whose glibc is older than 2.28 — CentOS 7, RHEL 7, Ubuntu 16.04,
+                        Debian 9. The modern binary throws <code class="bg-gray-800 px-1 rounded">GLIBC_2.28 not found</code>
+                        on load there. Same pinned older release as the Windows Legacy build.
+                    </p>
+                    <a href="/api/clients/download/linux-legacy"
+                       class="w-full bg-purple-600 hover:bg-purple-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg flex items-center justify-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                        </svg>
+                        Download Linux Legacy
+                    </a>
+                </div>
+
+                <!-- Linux musl (statically linked) -->
+                <div class="service-card p-6">
+                    <div class="flex items-center gap-4 mb-4">
+                        <div class="w-14 h-14 rounded-xl flex items-center justify-center" style="background: linear-gradient(135deg, rgba(20, 184, 166, 0.2), rgba(20, 184, 166, 0.1)); border: 1px solid rgba(20, 184, 166, 0.3);">
+                            <svg class="w-7 h-7 text-teal-400" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.84-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.406-.046.615.27.563.863.436 1.417.289.563-.158 1.163-.406 1.755-.516.11-.021.227-.045.348-.064.17-.558.406-1.142.983-1.485.177-.105.413-.159.619-.074.063.025.117.03.186.047a.795.795 0 01-.017-.11c-.078-.558-.13-1.605.21-2.053.786-.953 1.642-1.953 1.932-3.047.21-.787.233-1.391.233-2.159 0-.42-.012-.84-.03-1.258-.021-.42-.042-.84-.074-1.258-.105-1.5-.242-3.105.21-4.605.484-1.605 1.86-2.813 3.555-3.285.074-.02.148-.042.222-.06a5.57 5.57 0 011.05-.12z"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <h2 class="text-lg font-semibold header-text text-white">LINUX (musl)</h2>
+                            <p class="text-gray-400 text-sm">Statically linked, no libc deps</p>
+                        </div>
+                        <div class="ml-auto w-2 h-2 rounded-full bg-teal-500"></div>
+                    </div>
+                    <p class="text-xs text-gray-400 mb-3">
+                        Statically linked against musl libc — zero glibc dependency, runs on
+                        <em>any</em> Linux x86_64 including Alpine containers, Sophos UTM, BusyBox
+                        embedded appliances, and other minimal environments where neither the
+                        modern nor the legacy glibc build can load.
+                    </p>
+                    <a href="/api/clients/download/linux-musl"
+                       class="w-full bg-teal-600 hover:bg-teal-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg flex items-center justify-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                        </svg>
+                        Download Linux musl
                     </a>
                 </div>
             </div>

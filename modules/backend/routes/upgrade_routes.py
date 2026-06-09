@@ -68,7 +68,7 @@ def get_upgrade_status():
         latest = get_latest_versions()
 
         versions = {}
-        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure', 'intact']:
+        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure', 'volweb', 'intact']:
             versions[module] = {
                 'latest': latest.get(module, 'unknown')
             }
@@ -337,6 +337,127 @@ def prepare_upgrade_package():
             "success": True,
             "run_id": run_id,
             "message": f"Package preparation started for {len(modules)} module(s)"
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@upgrade_bp.route('/api/upgrade/online', methods=['POST'])
+def start_online_upgrade():
+    """Combined prepare + apply in one workflow — no intermediate tar.gz.
+
+    Same JSON body shape as /api/upgrade/prepare:
+        {"modules": {"elk": "9.3.1", "intact": "development", ...}}
+
+    For internet-connected machines. Visible in the same Workflows
+    tab as prepare-package and offline-apply.
+    """
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        modules = data.get('modules', {})
+        if not modules:
+            return jsonify({"error": "No modules selected for online upgrade"}), 400
+
+        db_overwrite = data.get('db_overwrite') or {}
+
+        run_id = create_automation_run(
+            automation_type="online_upgrade",
+            name="Online Upgrade",
+            details={
+                "trigger": "manual",
+                "modules": modules,
+                "db_overwrite": db_overwrite,
+            },
+        )
+        add_log_to_run(run_id, "Starting online upgrade (prepare + apply in one run)", "info")
+        add_log_to_run(run_id, f"Modules: {', '.join(modules.keys())}", "info")
+        update_run_status(run_id, "running", progress=2)
+
+        # Progress estimation: split the visible 2-95% band between
+        # prepare-side image saves + apply-side per-module completions.
+        steps_per_module_prepare = {
+            'elk': 3, 'timesketch': 1, 'plaso': 1, 'iris': 2,
+            'velociraptor': 1, 'aws': 1, 'azure': 1,
+            'volweb': 2, 'intact': 2,
+        }
+        prepare_steps_total = sum(steps_per_module_prepare.get(m, 1) for m in modules) + 1
+        apply_steps_total = len(modules)
+        total_steps = max(prepare_steps_total + apply_steps_total, 1)
+        completed_steps = [0]
+
+        def bump_progress_from_log(msg, level):
+            if level == "success":
+                if msg.strip().startswith("Done (") or msg.strip().startswith("Downloaded ("):
+                    completed_steps[0] += 1
+                elif "source copied" in msg:
+                    completed_steps[0] += 1
+                elif "Created manifest.json" in msg:
+                    completed_steps[0] += 1
+                elif "upgrade completed" in msg:
+                    completed_steps[0] += 1
+            elif level == "error" and msg.startswith("MODULE_FAILED:"):
+                completed_steps[0] += 1
+            progress = 2 + int((completed_steps[0] / total_steps) * 93)
+            update_run_status(run_id, "running", progress=min(progress, 95))
+
+        from services.workflow_service import register_cancel_event, unregister_cancel
+        register_cancel_event(run_id)
+
+        def run_online():
+            try:
+                from services.upgrade import run_online_upgrade_workflow
+
+                def logger(msg, level="info"):
+                    add_log_to_run(run_id, msg, level)
+                    try:
+                        bump_progress_from_log(msg, level)
+                    except Exception:
+                        pass
+
+                result = run_online_upgrade_workflow(
+                    modules=modules,
+                    run_id=run_id,
+                    logger=logger,
+                    db_overwrite=db_overwrite,
+                )
+
+                if result.get('phase') == 'awaiting_restart':
+                    add_log_to_run(run_id, "Phase 1 complete. Backend restarting to resume Phase 2.", "info")
+                    return
+
+                if result.get('success'):
+                    update_run_status(run_id, "completed", progress=100)
+                else:
+                    from services.workflow_service import get_automation_run
+                    wf = get_automation_run(run_id) or {}
+                    if wf.get('status') in ('running', None):
+                        update_run_status(run_id, "failed", progress=0,
+                                          error=result.get('error', 'unknown'))
+
+            except Exception as e:
+                from services.workflow_service import is_cancelled, get_automation_run
+                wf = get_automation_run(run_id) or {}
+                if is_cancelled(run_id) or wf.get('status') == 'cancelled':
+                    return
+                add_log_to_run(run_id, f"Online upgrade failed: {str(e)}", "error")
+                import traceback
+                add_log_to_run(run_id, f"Traceback: {traceback.format_exc()[:800]}", "error")
+                update_run_status(run_id, "failed", progress=0, error=str(e))
+                traceback.print_exc()
+            finally:
+                unregister_cancel(run_id)
+
+        thread = threading.Thread(target=run_online, daemon=True)
+        thread.start()
+
+        return jsonify({
+            "success": True,
+            "run_id": run_id,
+            "message": f"Online upgrade started for {len(modules)} module(s)",
         })
 
     except Exception as e:

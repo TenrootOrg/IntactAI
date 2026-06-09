@@ -73,6 +73,15 @@ document.addEventListener('alpine:init', () => {
                 const d = run.details || {};
                 return d.has_report === true;
             }
+            if (run.type === 'memory') {
+                // Memory pipeline stores its single LLM report in
+                // details.report_md (no separate reports-table row).
+                // Eligible iff the report exists — covers both LLM
+                // mode (analyzer-generated) and use_llm=false mode
+                // (extraction-only stub the builder still accepts).
+                const d = run.details || {};
+                return !!d.report_md;
+            }
             return false;
         },
 
@@ -91,6 +100,10 @@ document.addEventListener('alpine:init', () => {
             const t = run.type || run.automation_type;
             switch (t) {
                 case 'agentic':    return 'Endpoints';
+                // Memory forensics is host-level — Vol3 plugins + YARA
+                // findings about a single endpoint. Belongs in the same
+                // section as agentic's Velociraptor-collected findings.
+                case 'memory':     return 'Endpoints';
                 case 'aws_scan':   return 'AWS';
                 case 'azure_scan': return 'Azure';
                 case 'cve_scan':   return 'Vulnerabilities';
@@ -127,6 +140,7 @@ document.addEventListener('alpine:init', () => {
             const run = this.runsById[runId];
             if (run) {
                 if (run.automation_type === 'agentic')    return 'Endpoints';
+                if (run.automation_type === 'memory')     return 'Endpoints';
                 if (run.automation_type === 'aws_scan')   return 'AWS';
                 if (run.automation_type === 'azure_scan') return 'Azure';
                 if (run.automation_type === 'cve_scan')   return 'Vulnerabilities';

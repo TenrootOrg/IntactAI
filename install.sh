@@ -55,6 +55,7 @@ main() {
     check_initialization_marker
     check_ubuntu
     check_config
+    print_installation_config_summary
     if ! check_network_connectivity; then
         log_error "Network connectivity check failed - aborting installation"
         exit 1
@@ -105,23 +106,41 @@ main() {
     # -------------------------------------------------------------------------
     # Timeline Processing (Plaso/Timesketch) - Air-gap Support
     # -------------------------------------------------------------------------
-    pull_plaso_image
-    pull_python_alpine_image
-    download_timesketch_packages
+    local timesketch_enabled
+    timesketch_enabled=$(read_config "['modules']['timesketch']['enabled']")
+    if is_enabled "$timesketch_enabled"; then
+        pull_plaso_image
+        pull_python_alpine_image
+        download_timesketch_packages
+    else
+        log_info "Timeline Processing pre-downloads: SKIPPED (TimeSketch disabled)"
+    fi
 
     # -------------------------------------------------------------------------
     # Forensic Collection (Velociraptor/Offline Collector) - Air-gap Support
     # -------------------------------------------------------------------------
-    download_offline_collector_binaries
-    download_legacy_velociraptor_binaries
-    create_velociraptor_collector
-    pull_velociraptor_base_image
+    local velociraptor_enabled
+    velociraptor_enabled=$(read_config "['modules']['velociraptor']['enabled']")
+    if is_enabled "$velociraptor_enabled"; then
+        download_offline_collector_binaries
+        download_legacy_velociraptor_binaries
+        create_velociraptor_collector
+        pull_velociraptor_base_image
+    else
+        log_info "Velociraptor/offline-collector pre-downloads: SKIPPED (Velociraptor disabled)"
+    fi
 
     # -------------------------------------------------------------------------
     # IRIS — pre-pull all runtime images so compose up doesn't depend on the
     # registry being reachable mid-deploy.
     # -------------------------------------------------------------------------
-    pull_iris_images
+    local iris_enabled
+    iris_enabled=$(read_config "['modules']['iris']['enabled']")
+    if is_enabled "$iris_enabled"; then
+        pull_iris_images
+    else
+        log_info "IRIS image pre-pull: SKIPPED (IRIS disabled)"
+    fi
 
     # -------------------------------------------------------------------------
     # Azure Security Tools (SIGMA Rules + DFIR-O365RC)
@@ -222,7 +241,28 @@ main "$@"
 #   - any deployed module didn't pass its end-to-end health probe
 #     (UNHEALTHY_MODULES). Previously the script exited 0 in that case,
 #     which lied about the actual state of the platform.
+#
+# When we DO exit non-zero, list which modules tripped the gate so the
+# operator doesn't have to re-grep the install log. Previously this was
+# a silent `exit 1` which is unfriendly for both humans and CI logs.
 if [[ ${#FAILED_MODULES[@]} -gt 0 ]] || [[ ${#UNHEALTHY_MODULES[@]} -gt 0 ]]; then
+    log_error "=============================================="
+    log_error "Installation finished with critical failures"
+    log_error "=============================================="
+    if [[ ${#FAILED_MODULES[@]} -gt 0 ]]; then
+        log_error "Failed to deploy (${#FAILED_MODULES[@]} module(s)):"
+        for m in "${FAILED_MODULES[@]}"; do
+            log_error "  - $m"
+        done
+    fi
+    if [[ ${#UNHEALTHY_MODULES[@]} -gt 0 ]]; then
+        log_error "Deployed but unhealthy (${#UNHEALTHY_MODULES[@]} module(s)):"
+        for m in "${UNHEALTHY_MODULES[@]}"; do
+            log_error "  - $m"
+        done
+    fi
+    log_error "Fix the underlying issue and re-run install.sh."
+    log_error "Install log: $LOG_FILE"
     exit 1
 fi
 exit 0

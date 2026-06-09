@@ -294,7 +294,7 @@ def cover_block(name, generated_at, sources, tlp='AMBER', version=1, customer_na
         lines.append(f"**Severity Summary:** {severity_summary.strip()}")
         lines.append("")
     lines += [
-        "**Prepared by:** IntactAI — Incident Response Engagement Builder",
+        "Prepared by Intact.AI",
         "",
         "---",
         "",
@@ -316,7 +316,7 @@ def cover_block(name, generated_at, sources, tlp='AMBER', version=1, customer_na
     lines.append("| Version | Date | Author | Summary |")
     lines.append("|---|---|---|---|")
     lines.append(
-        f"| v{version} | {generated_at} | IntactAI engagement builder | "
+        f"| v{version} | {generated_at} | Intact.AI engagement builder | "
         f"{'Initial build' if version == 1 else f'Revision v{version} — applied operator chat corrections'} |"
     )
     lines.append("")

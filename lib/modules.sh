@@ -7,6 +7,16 @@
 # ============================================================================
 
 generate_iris_secrets() {
+    # IRIS-disabled guard — without this, fresh installs with
+    # `modules.iris.enabled: false` still write 5 secret files into
+    # `modules/iris/secrets/` and pull config values for a module the
+    # operator turned off. Same `is_enabled` pattern as the rest.
+    local iris_enabled
+    iris_enabled=$(read_config "['modules']['iris']['enabled']")
+    if ! is_enabled "$iris_enabled"; then
+        log_info "Generating IRIS secrets: SKIPPED (disabled in config)"
+        return 0
+    fi
     log_info "Generating IRIS secrets..."
     local secrets_dir="${SCRIPT_DIR}/modules/iris/secrets"
     mkdir -p "$secrets_dir"
@@ -128,34 +138,43 @@ generate_certificates() {
     # this must run on every (re)generation, including change_ip.sh's regen.
     [[ -f "$nginx_ssl/nginx-cert.key" ]] && chmod 640 "$nginx_ssl/nginx-cert.key" 2>/dev/null || true
 
-    # IRIS Root CA
-    local iris_ca="${SCRIPT_DIR}/modules/iris/config/certificates/rootCA"
-    mkdir -p "$iris_ca"
-    if [[ ! -f "$iris_ca/irisRootCACert.pem" ]]; then
-        log_info "  Generating IRIS Root CA..."
-        openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-            -keyout "$iris_ca/irisRootCAKey.pem" \
-            -out "$iris_ca/irisRootCACert.pem" \
-            -subj "/CN=IRIS Root CA/O=Intact.AI/C=US" 2>/dev/null
-        log_success "  Generated IRIS Root CA"
+    # IRIS Root CA + web cert sync — gated on iris.enabled so disabled
+    # installs don't end up with a CA + a cert pair on disk for a module
+    # they explicitly turned off. Nginx + Portainer cert generation above
+    # stays unconditional.
+    local iris_enabled
+    iris_enabled=$(read_config "['modules']['iris']['enabled']")
+    if is_enabled "$iris_enabled"; then
+        local iris_ca="${SCRIPT_DIR}/modules/iris/config/certificates/rootCA"
+        mkdir -p "$iris_ca"
+        if [[ ! -f "$iris_ca/irisRootCACert.pem" ]]; then
+            log_info "  Generating IRIS Root CA..."
+            openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+                -keyout "$iris_ca/irisRootCAKey.pem" \
+                -out "$iris_ca/irisRootCACert.pem" \
+                -subj "/CN=IRIS Root CA/O=Intact.AI/C=US" 2>/dev/null
+            log_success "  Generated IRIS Root CA"
+        else
+            log_info "  IRIS Root CA exists, skipping"
+        fi
+
+        # IRIS Web Cert — shared with Nginx (same cert, copied to IRIS path)
+        local iris_web="${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates"
+        mkdir -p "$iris_web"
+        if [[ -f "$nginx_ssl/nginx-cert.crt" ]]; then
+            log_info "  Copying shared TLS certificate to IRIS..."
+            cp "$nginx_ssl/nginx-cert.crt" "$iris_web/iris_dev_cert.pem"
+            cp "$nginx_ssl/nginx-cert.key" "$iris_web/iris_dev_key.pem"
+            chmod 644 "$iris_web"/*.pem
+            log_success "  IRIS web certificate synced with Nginx certificate"
+        fi
+
+        # Ensure IRIS certificates are readable (fix permissions if needed)
+        if [[ -d "$iris_web" ]]; then
+            chmod 644 "$iris_web"/*.pem 2>/dev/null || true
+        fi
     else
-        log_info "  IRIS Root CA exists, skipping"
-    fi
-
-    # IRIS Web Cert — shared with Nginx (same cert, copied to IRIS path)
-    local iris_web="${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates"
-    mkdir -p "$iris_web"
-    if [[ -f "$nginx_ssl/nginx-cert.crt" ]]; then
-        log_info "  Copying shared TLS certificate to IRIS..."
-        cp "$nginx_ssl/nginx-cert.crt" "$iris_web/iris_dev_cert.pem"
-        cp "$nginx_ssl/nginx-cert.key" "$iris_web/iris_dev_key.pem"
-        chmod 644 "$iris_web"/*.pem
-        log_success "  IRIS web certificate synced with Nginx certificate"
-    fi
-
-    # Ensure IRIS certificates are readable (fix permissions if needed)
-    if [[ -d "$iris_web" ]]; then
-        chmod 644 "$iris_web"/*.pem 2>/dev/null || true
+        log_info "  IRIS disabled — skipping IRIS Root CA + web cert sync"
     fi
 }
 
@@ -186,7 +205,19 @@ run_docker_compose() {
                         echo "    $line"
                     fi
                 done
-                exit "${PIPESTATUS[0]}"
+                rc="${PIPESTATUS[0]}"
+                # Same failure-visibility pattern as the compose-up branch
+                # below: on non-zero exit, surface the actual error instead
+                # of forcing the operator to grep the log file.
+                if [[ $rc -ne 0 ]]; then
+                    echo ""
+                    echo "    ============================================================"
+                    echo "    docker compose build FAILED (exit $rc) — last 30 lines:"
+                    echo "    ============================================================"
+                    tail -30 "$2" | sed "s/^/      /"
+                    echo "    ============================================================"
+                fi
+                exit "$rc"
             ' _ "$cwd" "$LOG_FILE"
         return $?
     else
@@ -207,7 +238,27 @@ run_docker_compose() {
                             echo "    $line"
                         fi
                     done
-                exit "${PIPESTATUS[0]}"
+                rc="${PIPESTATUS[0]}"
+                # On failure, dump the full last 30 lines from the log file to
+                # the terminal so the operator sees the actual error
+                # immediately, not just a generic "deploy failed" line. The log
+                # file already has the full output via `tee -a "$2"` above —
+                # this just makes it visible without forcing a hunt through
+                # thousands of lines. Real-world bug: the volume-mount race
+                # `failed to mkdir .../volweb_media/_data/symbols: file exists`
+                # was buried in the install log on a fresh-machine install and
+                # the operator could not tell why volweb deployment failed.
+                if [[ $rc -ne 0 ]]; then
+                    echo ""
+                    echo "    ============================================================"
+                    echo "    docker compose up FAILED (exit $rc) — last 30 lines of full output:"
+                    echo "    ============================================================"
+                    tail -30 "$2" | sed "s/^/      /"
+                    echo "    ============================================================"
+                    echo "    Full log: $2"
+                    echo "    ============================================================"
+                fi
+                exit "$rc"
             ' _ "$up_cwd" "$LOG_FILE"
         return $?
     fi
@@ -275,6 +326,33 @@ pull_compose_with_retry() {
     log_error "  ${module_name} pull failed after ${max_attempts} attempts"
     return 1
 }
+
+# ============================================================================
+# Shared volumes — created BEFORE any compose runs so every module can
+# treat them as `external: true` and nobody fights over ownership.
+# ============================================================================
+
+ensure_shared_volumes() {
+    log_info "Ensuring shared docker volumes exist..."
+
+    # intact_memory_dumps — shared between Velociraptor (writes the
+    # acquired .raw at /data/memory_dumps), VolWeb backend + workers
+    # (read the .raw at /home/app/web/media/staging), and intact_backend
+    # (preflight + cleanup). Created once here so the per-module compose
+    # files only need `external: true name: intact_memory_dumps`.
+    if docker volume inspect intact_memory_dumps >/dev/null 2>&1; then
+        log_info "  intact_memory_dumps: already exists"
+    else
+        if docker volume create intact_memory_dumps >/dev/null; then
+            log_success "  intact_memory_dumps: created"
+        else
+            log_error "  intact_memory_dumps: docker volume create FAILED"
+            track_module_failure "shared-volumes"
+            return 1
+        fi
+    fi
+}
+
 
 # ============================================================================
 # Helper: Show container status
@@ -809,6 +887,16 @@ deploy_iris() {
 }
 
 bootstrap_iris_api_key() {
+    # IRIS-disabled guard — added in the install-hardening pass after
+    # the June 7 log showed 5 minutes of dead-wait polling for an
+    # `intact_iris_db` container that never started because IRIS was
+    # off. Mirrors the same pattern `deploy_iris` already uses.
+    local iris_enabled
+    iris_enabled=$(read_config "['modules']['iris']['enabled']")
+    if ! is_enabled "$iris_enabled"; then
+        log_info "  IRIS disabled — skipping API key bootstrap"
+        return 0
+    fi
     # Idempotent: skip if the secret is already in the backend DB. Doing
     # the check via the backend container guarantees we use the same
     # storage layer the runtime uses. If intact_backend isn't up yet we
@@ -963,6 +1051,190 @@ deploy_portainer() {
 }
 
 # ============================================================================
+# VolWeb Module (memory-forensics analysis stack)
+# ============================================================================
+
+deploy_volweb() {
+    # Gate on the dedicated `modules.volweb.enabled` key (added in
+    # commit 96b8a8f). Previously read `modules.memory.enabled`, which
+    # silently coupled the backend Memory feature flag to the VolWeb
+    # docker stack. Operators who want Memory without VolWeb (e.g.
+    # using an external Volatility installation) had no way to express
+    # that.
+    local volweb_enabled
+    volweb_enabled=$(read_config "['modules']['volweb']['enabled']")
+    if ! is_enabled "$volweb_enabled"; then
+        log_info "[5b/7] VolWeb: SKIPPED (volweb disabled in config)"
+        return
+    fi
+
+    log_info "[5b/7] Starting VolWeb (memory-forensics)..."
+    log_info "  Directory: ${SCRIPT_DIR}/modules/volweb"
+    cd "${SCRIPT_DIR}/modules/volweb"
+
+    # Render modules/volweb/.env from the template + config.yaml pins.
+    # Idempotent: existing .env is preserved across re-installs so the
+    # operator's rotated DJANGO_SECRET + postgres password persist.
+    local env_out="${SCRIPT_DIR}/modules/volweb/.env"
+    local env_tmpl="${SCRIPT_DIR}/modules/volweb/.env.template"
+
+    if [[ -f "$env_out" ]]; then
+        log_info "  modules/volweb/.env already present (skip render — secrets preserved)"
+    elif [[ -f "$env_tmpl" ]]; then
+        # Single `versions.volweb` pin drives both backend + frontend
+        # (forensicxlab releases them in lockstep). Postgres + Redis
+        # are infrastructure deps — the compose file defaults them
+        # via ${VAR:-x} so we don't render them into .env at all.
+        local volweb_ver=$(read_config "['versions']['volweb']")
+        local domain=$(read_config "['domain']")
+        # Per-install random secrets. Mirrors the IRIS_SECRET_KEY +
+        # Timesketch SECRET_KEY pattern shipped earlier this session.
+        local django_secret=$(openssl rand -hex 32)
+        local pg_password=$(openssl rand -hex 24)
+        # CSRF: the IntactAI dashboard hits VolWeb through intact_nginx
+        # AND from the backend container. Cover both shapes.
+        local csrf="https://${domain},http://intact_nginx,http://intact_backend:5001,http://intact_volweb_backend:8000"
+
+        cp "$env_tmpl" "$env_out"
+        sed -i \
+            -e "s|__VOLWEB_BACKEND_VERSION__|${volweb_ver:-latest}|g" \
+            -e "s|__VOLWEB_FRONTEND_VERSION__|${volweb_ver:-latest}|g" \
+            -e "s|__VOLWEB_POSTGRES_VERSION__|14.1|g" \
+            -e "s|__VOLWEB_REDIS_VERSION__|7|g" \
+            -e "s|__VOLWEB_DJANGO_SECRET__|${django_secret}|g" \
+            -e "s|__VOLWEB_POSTGRES_PASSWORD__|${pg_password}|g" \
+            -e "s|__VOLWEB_CSRF_TRUSTED_ORIGINS__|${csrf}|g" \
+            "$env_out"
+        log_success "  modules/volweb/.env rendered (per-install secrets generated)"
+    else
+        log_warn "  modules/volweb/.env.template missing — skipping VolWeb"
+        return 1
+    fi
+
+    if ! pull_compose_with_retry "VolWeb"; then
+        track_module_failure "VolWeb"
+        return 1
+    fi
+
+    if ! run_docker_compose "up -d" "VolWeb"; then
+        log_error "  Docker compose failed!"
+        track_module_failure "VolWeb"
+        return 1
+    fi
+
+    # Wait for the backend's healthcheck endpoint. Daphne takes a few
+    # seconds to bind after the container starts.
+    log_info "  Waiting for VolWeb backend to be ready..."
+    local volweb_wait=0
+    while [[ $volweb_wait -lt 90 ]]; do
+        if docker exec intact_volweb_backend curl -sf -o /dev/null \
+            http://localhost:8000/api/health 2>/dev/null \
+            || docker exec intact_volweb_backend curl -sI -o /dev/null \
+            -w "%{http_code}" http://localhost:8000/ 2>/dev/null | grep -qE "^(200|301|302|404)$"; then
+            log_success "  VolWeb backend ready (${volweb_wait}s)"
+            break
+        fi
+        sleep 5
+        ((volweb_wait+=5))
+    done
+    if [[ $volweb_wait -ge 90 ]]; then
+        log_warn "  VolWeb backend not responding after 90s"
+        capture_diagnostic_logs "VolWeb (backend start timeout)" intact_volweb_backend
+    fi
+
+    # Seed VolWeb admin user with the platform's tenroot credentials so
+    # the IntactAI backend can auth without baking a second password
+    # into ops. Idempotent — re-runs harmlessly skip.
+    if ! seed_volweb_admin; then
+        log_warn "  VolWeb admin seeding had issues — operator may need to do it manually"
+    fi
+
+    # Seed YARA rulesets via the VolWeb GitHub-import API. ~50 MB of
+    # text into VolWeb's postgres; ~3 min on a fast link. Idempotent
+    # — VolWeb dedupes on the (name, source) tuple.
+    if ! seed_yara_rulesets; then
+        log_warn "  YARA ruleset seeding had issues — refresh via Maintenance later"
+    fi
+
+    track_module_success "VolWeb"
+}
+
+
+seed_volweb_admin() {
+    # Use the platform's VolWeb admin creds from config.yaml. Reads
+    # ``modules.volweb.id`` + ``modules.volweb.password`` so VolWeb
+    # has its own settable creds (instead of borrowing Timesketch's).
+    # Falls back to ``tenroot:123123`` only if the keys are missing.
+    local tenroot_user=$(read_config "['modules']['volweb']['id']")
+    [[ -z "$tenroot_user" ]] && tenroot_user="tenroot"
+    local tenroot_pass=$(read_config "['modules']['volweb']['password']")
+    [[ -z "$tenroot_pass" ]] && tenroot_pass="123123"
+
+    log_info "  Seeding VolWeb admin user (${tenroot_user})..."
+    docker exec --user app -w /home/app/web -i intact_volweb_backend python3 manage.py shell <<EOF 2>&1 | tail -3
+from django.contrib.auth import get_user_model
+U = get_user_model()
+u, created = U.objects.get_or_create(username='${tenroot_user}', defaults={'is_superuser': True, 'is_staff': True})
+u.is_superuser = True
+u.is_staff = True
+u.set_password('${tenroot_pass}')
+u.save()
+print('CREATED' if created else 'UPDATED', 'admin', u.username)
+EOF
+    return $?
+}
+
+
+seed_yara_rulesets() {
+    # Three sources for the curated YARA corpus. Each is POSTed to
+    # /api/yararulesets/import/github/ which clones the repo +
+    # ingests every .yar / .yara file recursively.
+    local volweb_user=$(read_config "['modules']['volweb']['id']")
+    [[ -z "$volweb_user" ]] && volweb_user="tenroot"
+    local volweb_pass=$(read_config "['modules']['volweb']['password']")
+    [[ -z "$volweb_pass" ]] && volweb_pass="123123"
+
+    log_info "  Seeding YARA rulesets (~3 min)..."
+
+    # Get a JWT for the admin user we just seeded.
+    local token=$(docker exec intact_volweb_backend curl -s -X POST \
+        -H 'Content-Type: application/json' \
+        -d "{\"username\":\"${volweb_user}\",\"password\":\"${volweb_pass}\"}" \
+        http://localhost:8000/core/token/ \
+        | python3 -c 'import sys,json; print(json.load(sys.stdin).get("access",""))' 2>/dev/null)
+    if [[ -z "$token" ]]; then
+        log_warn "    Could not get VolWeb JWT — skipping YARA seed"
+        return 1
+    fi
+
+    # Tuples: name | github url | description
+    local rulesets=(
+        "Neo23x0 signature-base|https://github.com/Neo23x0/signature-base|Florian Roth's curated YARA rules (~749 active)"
+        "Elastic protections|https://github.com/elastic/protections-artifacts|Elastic security YARA detection rules (~695 active)"
+        "YARA-Forge|https://github.com/YARAHQ/yara-forge|Community-curated YARA rule aggregation"
+    )
+
+    for entry in "${rulesets[@]}"; do
+        local name="${entry%%|*}"
+        local rest="${entry#*|}"
+        local url="${rest%%|*}"
+        local desc="${rest#*|}"
+
+        log_info "    - ${name}..."
+        local resp=$(docker exec intact_volweb_backend curl -s -X POST \
+            -H "Authorization: Bearer ${token}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"name\":\"${name}\",\"github_url\":\"${url}\",\"description\":\"${desc}\"}" \
+            http://localhost:8000/api/yararulesets/import/github/)
+        log_info "      ${resp:0:200}"
+    done
+
+    log_success "  YARA seeding dispatched (rule validation runs async in workers-yarascan)"
+    return 0
+}
+
+
+# ============================================================================
 # Backend API Module
 # ============================================================================
 
@@ -1008,10 +1280,18 @@ deploy_backend() {
     done
 
     if [[ "$be_healthy" != "true" ]]; then
-        log_warn "  Backend API started but health check not responding yet"
+        # Honest failure: the backend container started but its
+        # /api/health endpoint never responded within 60s. Previously
+        # this called `track_module_success "Backend API"` — a literal
+        # falsehood that masked the failure and let install.sh print
+        # "Installation Complete!" with exit 0 (see install_20260607
+        # log). Switching to `track_module_failure` populates
+        # FAILED_MODULES so the end-of-run summary in install.sh can
+        # honestly report the install as failed and exit non-zero.
+        log_error "  Backend API never responded to /api/health after 60s"
         capture_diagnostic_logs "Backend API (post-deploy timeout)" intact_backend
-        track_module_success "Backend API"
-        return 0
+        track_module_failure "Backend API"
+        return 1
     fi
 
     # ---- Bootstrap LLM model catalogs ----------------------------------
@@ -1109,6 +1389,8 @@ start_services() {
     echo ""
     generate_certificates
     echo ""
+    ensure_shared_volumes
+    echo ""
 
     # Deploy modules in order (7 modules now, not 8)
     deploy_elk
@@ -1120,6 +1402,8 @@ start_services() {
     deploy_iris
     echo ""
     deploy_portainer
+    echo ""
+    deploy_volweb
     echo ""
     deploy_backend
     echo ""

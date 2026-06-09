@@ -9,7 +9,8 @@ from typing import Dict, Callable, Optional
 from .base import (
     WORKDIR, HOST_PATH,
     run_command, read_env_file, update_env_file, compare_versions, load_docker_image,
-    backup_env_file, restore_env_file, cleanup_backup
+    backup_env_file, restore_env_file, cleanup_backup,
+    remove_old_module_image,
 )
 
 
@@ -48,7 +49,7 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
     try:
         # Stop containers
         log("Stopping ELK containers...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log)
+        result = run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
         if not result['success']:
             raise Exception(f"Failed to stop ELK: {result['error']}")
 
@@ -115,6 +116,7 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
         log(f"ELK upgrade completed: {current_version} -> {version}", "success")
+        remove_old_module_image('elk', current_version, version, logger=log)
         return {"success": True, "version": version, "health": "green" if healthy else "pending"}
 
     except Exception as e:
@@ -126,7 +128,7 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
         # Restore the backup .env file
         if restore_env_file(env_file, backup_file, logger=log):
             # Stop failed containers and restart with old version
-            run_command("docker compose down", cwd=work_dir, logger=log)
+            run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
             run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
             log(f"ROLLED BACK to version {current_version}", "warning")
 
@@ -159,7 +161,7 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None,
     try:
         # Stop containers
         log("Stopping ELK containers...", "info")
-        result = run_command("docker compose down", cwd=work_dir, logger=log, run_id=run_id)
+        result = run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to stop ELK: {result['error']}")
 
@@ -225,6 +227,7 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None,
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
         log(f"ELK offline upgrade completed: {current_version} -> {version}", "success")
+        remove_old_module_image('elk', current_version, version, logger=log)
         return {"success": True, "version": version, "health": "green" if healthy else "pending"}
 
     except Exception as e:
@@ -236,7 +239,7 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None,
         # Restore the backup .env file
         if restore_env_file(env_file, backup_file, logger=log):
             # Stop failed containers and restart with old version
-            run_command("docker compose down", cwd=work_dir, logger=log)
+            run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
             run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
             log(f"ROLLED BACK to version {current_version}", "warning")
 
@@ -246,3 +249,97 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None,
             "rolled_back": True,
             "restored_version": current_version
         }
+
+
+def install_elk_offline(package_dir: str, version: str, logger=None, run_id=None) -> Dict:
+    """Fresh-install ELK from an offline package — picked by the apply
+    orchestrator when intact_elasticsearch is not present on the host.
+
+    Reuses the existing tracked `.env` (which ships with the platform's
+    default ELASTIC_PASSWORD / KIBANA_PASSWORD) and bumps the version
+    pins. Then loads bundled images if present and compose-ups the stack.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    from .base import install_module_compose_up
+    work_dir = os.path.join(WORKDIR, 'modules', 'elk')
+    env_file = os.path.join(work_dir, '.env')
+    version = (version or '').lstrip('v')
+    log(f"Installing ELK (first-time) -> {version or 'tracked default'}...", "info")
+    if os.path.exists(env_file) and version:
+        update_env_file(env_file, 'ELASTIC_VERSION', version, logger=log)
+        update_env_file(env_file, 'KIBANA_VERSION', version, logger=log)
+    compose_result = install_module_compose_up(
+        'elk', package_dir, version,
+        image_tar_prefixes=['elasticsearch', 'kibana'],
+        logger=log, run_id=run_id,
+    )
+    if not compose_result.get('success'):
+        return compose_result
+
+    # Post-install bootstrap. Without this, the install reports success
+    # but Kibana has no data view for the `artifact_*` indices the
+    # IntactAI backend writes to — Velociraptor artifacts uploaded by
+    # the platform exist in Elasticsearch but Kibana can't surface
+    # them in Discover / Dashboards until the data view exists. The
+    # upgrade path already does this (line ~108); the install path
+    # was missing the equivalent.
+    log("ELK containers up. Waiting for Elasticsearch + Kibana data view...", "info")
+
+    # Stage 1: wait for Elasticsearch to be ready. Probe its cluster
+    # health endpoint via the backend container's shell (the backend
+    # is on the same docker network and can reach intact_elasticsearch
+    # directly by name). Up to 180s — fresh-install ES boot is slower
+    # than upgrade because the security indices haven't been
+    # bootstrapped yet.
+    import subprocess as _sub
+    es_ready = False
+    waited = 0
+    while waited < 180:
+        try:
+            probe = _sub.run(
+                ["docker", "exec", "intact_elasticsearch",
+                 "curl", "-sf", "--max-time", "5",
+                 "http://localhost:9200/_cluster/health"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if probe.returncode == 0:
+                es_ready = True
+                log(f"  Elasticsearch ready ({waited}s)", "success")
+                break
+        except _sub.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+        time.sleep(5)
+        waited += 5
+
+    if not es_ready:
+        log(
+            "Elasticsearch did not become ready after 180s. Containers ARE "
+            "running but the Kibana data view bootstrap has been SKIPPED — "
+            "operator can re-trigger it later via Maintenance, or run "
+            "manually: `from services.kibana_init import "
+            "ensure_kibana_data_view; ensure_kibana_data_view(print)`. "
+            "Continuing.",
+            "warning",
+        )
+        return compose_result
+
+    # Stage 2: ensure the Kibana data view for the artifact_* indices.
+    # ensure_kibana_data_view() internally waits for Kibana to be
+    # ready and is idempotent.
+    log("Ensuring Kibana data view for artifact_* indices...", "info")
+    try:
+        from services.kibana_init import ensure_kibana_data_view
+        ensure_kibana_data_view(log, wait=True)
+        log("  Kibana data view ready — backend can render dashboards", "success")
+    except Exception as e:
+        log(
+            f"  Kibana data view init failed: {str(e)[:160]}. "
+            "Containers up; re-trigger via Settings → Maintenance "
+            "→ 'Refresh Kibana Data View' or run ensure_kibana_data_view "
+            "manually. Continuing.",
+            "warning",
+        )
+
+    return compose_result
