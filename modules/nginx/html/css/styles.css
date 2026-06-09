@@ -145,13 +145,10 @@ h1, h2, h3, .header-text {
     height: 1.5rem;
 }
 
-/* `.main-content-collapsed` was used when the sidebar was position:fixed
-   and main needed a manual margin to clear it. The sidebar is now a flex
-   sibling (`<div class="flex">` wraps it + main with `flex-1`), so the
-   margin is redundant. Keep the rule as a no-op anchor — JS still toggles
-   the class for the transition timing. */
+/* Sidebar collapsed: 72px (see .sidebar-collapsed above). Main needs
+   matching margin so content slides over instead of being overlapped. */
 .main-content-collapsed {
-    /* intentionally empty */
+    margin-left: 72px;
 }
 
 .sidebar-logo {
@@ -259,9 +256,15 @@ h1, h2, h3, .header-text {
    MAIN CONTENT
    ============================================ */
 .main-content {
-    /* No margin-left: the parent <div class="flex"> already lays the
-       sidebar (260px) and this <main flex-1> as siblings. Adding a
-       260px margin on top creates a redundant gap. */
+    /* The sidebar uses `position: fixed` (see .sidebar above) so it
+       is OUT of the flex layout — the parent <div class="flex"> sees
+       only <main> as a flex child, and <main flex-1> fills 100% of
+       the viewport. Without an explicit margin-left, the sidebar
+       visually overlays the leftmost 260px of every page. Most pages
+       hide the overlap because their content is centred / has enough
+       padding; the workflows page (wide table inside overflow-x-auto)
+       exposes it as "sidebar disappears" on horizontal scroll. */
+    margin-left: 260px;
     background: transparent;
     min-height: 100vh;
     position: relative;
@@ -770,7 +773,8 @@ body.bg-gray-900 {
         width: 100%;
         min-height: auto;
     }
-    .main-content {
+    .main-content,
+    .main-content-collapsed {
         margin-left: 0;
     }
 }
