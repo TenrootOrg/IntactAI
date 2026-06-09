@@ -684,9 +684,22 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
     log(f"Installing Velociraptor (first-time) -> {version or 'tracked default'}...", "info")
     if os.path.exists(env_file) and version:
         update_env_file(env_file, 'VELOCIRAPTOR_VERSION', version, logger=log)
+    # CRITICAL: the prefix MUST match what the prepare side actually
+    # writes. package.py:prepare_upgrade_package saves the baked
+    # velociraptor-server image as `velociraptor-{version}.tar`
+    # (filename), NOT `velociraptor-server-{version}.tar`. The previous
+    # value here (`'velociraptor-server'`) never matched any file in
+    # the package, so the image was never loaded — compose would then
+    # see the `build:` directive in modules/velociraptor/
+    # docker-compose.yaml, try to build the Dockerfile, attempt to
+    # pull `ubuntu:22.04` as the base image, and fail air-gapped with
+    # "failed to fetch anonymous token". Air-gap apply tests caught
+    # this on 2026-06-09. Aligning the prefix with the prepare-side
+    # filename pattern lets the pre-built image load correctly and
+    # compose skips the build step entirely.
     compose_result = install_module_compose_up(
         'velociraptor', package_dir, version,
-        image_tar_prefixes=['velociraptor-server'],
+        image_tar_prefixes=['velociraptor-'],
         logger=log, run_id=run_id,
     )
     if not compose_result.get('success'):

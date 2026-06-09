@@ -234,14 +234,17 @@ def install_volweb_offline(
     log("  Ensuring shared volume `intact_memory_dumps`...", "info")
     run_command("docker volume create intact_memory_dumps", logger=None)
 
-    # Load bundled images from offline package if present
-    for tag in ("backend", "frontend"):
-        image_tar = os.path.join(package_dir, "images", f"volweb-{tag}-{version}.tar")
-        if os.path.exists(image_tar):
-            log(f"  Loading bundled image: {image_tar}", "info")
-            loaded = load_docker_image(image_tar, logger=log, run_id=run_id)
-            if not loaded.get("success"):
-                log(f"  Image load failed (continuing): {loaded.get('error')}", "warning")
+    # Load every bundled image in /images/ — covers volweb-backend,
+    # volweb-frontend, AND the base images compose needs (postgres,
+    # redis). Previously this loop only matched `volweb-backend`/
+    # `volweb-frontend` tarballs and assumed postgres + redis could be
+    # pulled at compose-up time — true for internet-connected installs
+    # but BROKEN air-gapped (compose fails with "failed to fetch
+    # anonymous token" trying to pull postgres:15 from Docker Hub).
+    # The generic helper loads everything in /images/, idempotent on
+    # already-loaded images.
+    from .base import load_all_bundled_images
+    load_all_bundled_images(package_dir, logger=log, run_id=run_id)
 
     log("  docker compose up -d ...", "info")
     up = _compose_up(log, run_id=run_id)

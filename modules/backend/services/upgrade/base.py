@@ -614,6 +614,52 @@ def _read_module_version(module_id: str, env_path: str, version_key: str) -> str
     return 'unknown'
 
 
+def load_all_bundled_images(package_dir: str, logger: Callable = None,
+                              run_id: str = None) -> None:
+    """Load EVERY .tar in `package_dir/images/`. Idempotent — `docker
+    load` of an already-loaded image is a no-op, so calling this
+    multiple times in a multi-module apply is harmless.
+
+    Air-gap-bulletproof by design: when a module's docker-compose.yaml
+    references an image (e.g. `postgres:15`, `redis:7-alpine`,
+    `nginx:alpine`, `opensearchproject/opensearch:2.11.0`), the prepare
+    side bundles its tar into `/images/`. At install time we just load
+    everything in the directory — no per-module prefix allowlist
+    needed. Adding a new image to ANY module's compose only requires
+    updating DOCKER_IMAGES in package.py (or, future work, deriving
+    from the compose file itself); the install side picks it up
+    automatically.
+
+    Before this helper, install_module_compose_up matched bundled tars
+    against per-module `image_tar_prefixes` lists. That coupled the
+    install side to the prepare side's filename conventions and any
+    drift caused silent fallback to `docker pull` → air-gap failure
+    when compose tried to fetch the missing image from the registry.
+    Air-gap testing on 2026-06-09 surfaced this on Velociraptor (prefix
+    `velociraptor-server` vs filename `velociraptor-{version}.tar`)
+    and would have surfaced it on ELK (missing `logstash` prefix),
+    Timesketch (missing all four base-image prefixes), and VolWeb
+    (postgres+redis not even bundled). Loading every tar removes
+    the failure mode by construction.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    images_dir = os.path.join(package_dir, 'images')
+    if not os.path.isdir(images_dir):
+        return
+    for fn in sorted(os.listdir(images_dir)):
+        if not fn.endswith('.tar'):
+            continue
+        image_tar = os.path.join(images_dir, fn)
+        log(f"  Loading bundled image: {fn}", "info")
+        loaded = load_docker_image(image_tar, logger=log, run_id=run_id)
+        if not loaded.get('success'):
+            log(
+                f"  Image load failed ({fn}, continuing — compose will "
+                f"try to pull): {loaded.get('error')}",
+                "warning",
+            )
+
+
 def install_module_compose_up(
     module_id: str,
     package_dir: str,
@@ -625,7 +671,14 @@ def install_module_compose_up(
     """Generic fresh-install helper for modules whose first-time setup
     is just "load bundled images + docker compose up -d". Modules with
     extra first-time setup (volweb's .env render + shared volume; iris's
-    secret generation) layer that BEFORE calling this helper."""
+    secret generation) layer that BEFORE calling this helper.
+
+    NOTE: image_tar_prefixes is retained as a kwarg for backward-compat
+    with callers that haven't been updated, but it is IGNORED. The
+    helper now loads EVERY .tar in /images/ via
+    load_all_bundled_images — see that function's docstring for the
+    air-gap-bulletproofing rationale.
+    """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     work_dir = os.path.join(WORKDIR, 'modules', module_id)
     if not os.path.exists(work_dir):
@@ -638,21 +691,9 @@ def install_module_compose_up(
             ),
         }
 
-    # Load any bundled images from the offline package
-    images_dir = os.path.join(package_dir, 'images')
-    if image_tar_prefixes and os.path.isdir(images_dir):
-        for prefix in image_tar_prefixes:
-            for fn in os.listdir(images_dir):
-                if fn.startswith(prefix) and fn.endswith('.tar'):
-                    image_tar = os.path.join(images_dir, fn)
-                    log(f"  Loading bundled image: {fn}", "info")
-                    loaded = load_docker_image(image_tar, logger=log, run_id=run_id)
-                    if not loaded.get('success'):
-                        log(
-                            f"  Image load failed (continuing — compose will "
-                            f"try to pull): {loaded.get('error')}",
-                            "warning",
-                        )
+    # Load every bundled image. See load_all_bundled_images docstring
+    # for why we load ALL tars, not just module-specific ones.
+    load_all_bundled_images(package_dir, logger=log, run_id=run_id)
 
     # The docker CLI we exec'd against /var/run/docker.sock sees the host
     # filesystem, not the container's — translate WORKDIR → HOST_PATH.

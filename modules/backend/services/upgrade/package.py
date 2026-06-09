@@ -22,6 +22,15 @@ DOCKER_IMAGES = {
     ],
     'timesketch': [
         ('us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:{version}', 'timesketch-{version}.tar'),
+        # Base images Timesketch's docker-compose.yaml depends on.
+        # Without bundling these the air-gap install fails at
+        # `docker compose up` trying to pull them. Versions match the
+        # defaults in modules/timesketch/docker-compose.yaml; if a
+        # future pin moves, update both places.
+        ('postgres:15', 'postgres-15.tar'),
+        ('opensearchproject/opensearch:2.11.0', 'opensearch-2.11.0.tar'),
+        ('redis:7-alpine', 'redis-7-alpine.tar'),
+        ('nginx:alpine', 'nginx-alpine.tar'),
     ],
     'plaso': [
         ('log2timeline/plaso:{version}', 'plaso-{version}.tar'),
@@ -60,6 +69,12 @@ DOCKER_IMAGES = {
         # compose-up time, not from this bundle.
         ('forensicxlab/volweb-backend:{version}',  'volweb-backend-{version}.tar'),
         ('forensicxlab/volweb-frontend:{version}', 'volweb-frontend-{version}.tar'),
+        # Base images VolWeb's docker-compose.yaml depends on. Versions
+        # match the pins in modules/volweb/.env (VOLWEB_POSTGRES_VERSION,
+        # VOLWEB_REDIS_VERSION). Without these the air-gap install fails
+        # at `docker compose up` trying to pull from Docker Hub.
+        ('postgres:15', 'volweb-postgres-15.tar'),
+        ('redis:7', 'volweb-redis-7.tar'),
     ],
 }
 
