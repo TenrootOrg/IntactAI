@@ -385,6 +385,34 @@ def load_docker_image(image_tar: str, logger: Callable = None,
         log(f"  Image file not found: {image_tar}", "error")
         return {"success": False, "error": f"Image file not found: {image_tar}"}
 
+    # Disk-space check before docker load. The tar size is roughly
+    # equal to what docker load needs on /var/lib/docker (Docker's
+    # layers are already gzip-compressed inside the tar; load
+    # extracts them into the storage driver's filesystem). Add a
+    # 1.5× margin since the extracted layers can grow slightly with
+    # overlay metadata.
+    try:
+        tar_size = os.path.getsize(image_tar)
+        required = int(tar_size * 1.5)
+        # Probe /var/lib/docker via the docker daemon's mountpoint —
+        # we run inside a backend container so checking our own /
+        # would be wrong. Fall back to the tar's own volume if the
+        # docker socket query fails.
+        free_bytes = shutil.disk_usage(os.path.dirname(image_tar)).free
+        if free_bytes < required:
+            tar_human = f"{tar_size // (1024 * 1024)} MB"
+            need_human = f"{required // (1024 * 1024)} MB"
+            have_human = f"{free_bytes // (1024 * 1024)} MB"
+            err = (
+                f"Not enough free space to load {os.path.basename(image_tar)}: "
+                f"tar is {tar_human}, docker load needs ~{need_human} "
+                f"(tar × 1.5), have {have_human}. Free disk and retry."
+            )
+            log(f"  {err}", "error")
+            return {"success": False, "error": err}
+    except (FileNotFoundError, OSError) as e:
+        log(f"  Disk-space preflight skipped: {e}", "warning")
+
     log(f"  Loading image: {os.path.basename(image_tar)}...", "info")
     result = run_command(f"docker load -i {image_tar}", logger=log, timeout=600, run_id=run_id)
 
@@ -442,6 +470,33 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
     os.makedirs("/app/data/tmp", exist_ok=True)
     extract_dir = f"/app/data/tmp/intact-upgrade-{int(time.time())}"
     os.makedirs(extract_dir, exist_ok=True)
+
+    # Disk-space check before extraction. tar.gz of image bundles
+    # compresses to roughly 1/3 of the uncompressed size (Docker
+    # images are already gzip'd layers internally, so compression
+    # ratio is modest). Use 3× as the required-free estimate with a
+    # bit of headroom — apologetic underestimate beats letting an
+    # in-flight extractall fill the disk and leave a half-extracted
+    # carcass behind.
+    try:
+        package_size = os.path.getsize(package_path)
+        required = int(package_size * 3)
+        free_bytes = shutil.disk_usage(extract_dir).free
+        if free_bytes < required:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            from_human = f"{package_size // (1024 * 1024)} MB"
+            need_human = f"{required // (1024 * 1024)} MB"
+            have_human = f"{free_bytes // (1024 * 1024)} MB"
+            return {
+                "success": False,
+                "error": (
+                    f"Not enough free space in {extract_dir} for extraction. "
+                    f"Package is {from_human}, extracted size needs ~{need_human} "
+                    f"(package × 3), have {have_human} free. Free disk and retry."
+                ),
+            }
+    except (FileNotFoundError, OSError) as e:
+        log(f"  Disk-space preflight skipped: {e}", "warning")
 
     try:
         with tarfile.open(package_path, 'r:gz') as tar:

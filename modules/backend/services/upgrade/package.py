@@ -234,6 +234,44 @@ def _pull_and_save_image(image: str, output_path: str, logger: Callable,
         log(f"  Failed to pull {image}: {result.get('error', '')[:200]}", "error")
         return False
 
+    # Disk-space check before docker save. The pulled image lives in
+    # /var/lib/docker — `docker save` streams it to a tar in the
+    # package_dir, which is on the same volume as the output_path
+    # we're writing to. If the volume runs out of space mid-save,
+    # the tar is truncated silently (`docker save` exits 0 with a
+    # partial file) and the apply side then fails with a confusing
+    # "unexpected EOF" much later.
+    #
+    # Use `docker inspect --format='{{.Size}}'` to get the image's
+    # uncompressed size — that's roughly what the tar will be. Add
+    # a 1.2× margin since tar bookkeeping + uncompressed-vs-saved
+    # discrepancies push it slightly over.
+    size_check = run_command(
+        f"docker inspect --format='{{{{.Size}}}}' {image}",
+        timeout=30, logger=None, run_id=run_id,
+    )
+    if size_check.get("success"):
+        try:
+            image_bytes = int((size_check.get('stdout', '0') or '0').strip().strip("'"))
+            required = int(image_bytes * 1.2)
+            try:
+                free_bytes = shutil.disk_usage(os.path.dirname(output_path)).free
+            except (FileNotFoundError, OSError):
+                free_bytes = None
+            if free_bytes is not None and free_bytes < required:
+                log(
+                    f"  Not enough disk for {os.path.basename(output_path)}: "
+                    f"need ≥{_format_size(required)} (image × 1.2), "
+                    f"have {_format_size(free_bytes)}. Free disk and re-run prepare.",
+                    "error",
+                )
+                return False
+        except (ValueError, TypeError):
+            # docker inspect output unexpected — skip the check, fall
+            # through to docker save (the silent-truncation risk is
+            # still better than blocking the build on a parse error).
+            pass
+
     # Save the image (increased timeout for large images)
     log(f"  Saving to {os.path.basename(output_path)}...", "info")
     result = run_command(f"docker save -o {output_path} {image}", timeout=1200, logger=None, run_id=run_id)
