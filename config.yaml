@@ -29,9 +29,9 @@ modules:
   # DFIR skills refresh, and interactive-chat features all run
   # regardless of config.
   aws:
-    enabled: true
+    enabled: false
   azure:
-    enabled: true
+    enabled: false
   # cve_scan is a core capability — always installed, always
   # available. No enabled toggle; the CPE dictionary + local CVE
   # mirror refresh during every Maintenance run regardless of
