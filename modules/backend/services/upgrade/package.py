@@ -50,11 +50,11 @@ DOCKER_IMAGES = {
         # as volweb's postgres + redis).
         ('rabbitmq:3-management-alpine', 'rabbitmq-3-management-alpine.tar'),
     ],
-    'aws': [
+    'prowler': [
         # Prowler image for AWS posture scans (run on demand, no live container)
         ('toniblyx/prowler:{version}', 'prowler-{version}.tar'),
     ],
-    'azure': [
+    'o365rc': [
         # DFIR-O365RC image for Azure Unified Audit Log (run on demand). Upstream
         # only ships ':latest', so {version} is normally 'latest'.
         ('anssi/dfir-o365rc:{version}', 'dfir-o365rc-{version}.tar'),

@@ -46,31 +46,26 @@ upstream project's repository for the unmodified original.
 ## Quick Start
 
 ```bash
-# 1. Install unzip
-sudo apt update && sudo apt install -y unzip
-
-# 2. Get the main branch ZIP from GitHub.
-#    The repo is PRIVATE. Two options:
+# 1. Clone the repo into `intact/`. The repo is PRIVATE, so you need
+#    either an SSH key set up on this server (preferred for ongoing use
+#    + future `git pull` updates) or a GitHub Personal Access Token
+#    (PAT) with repo-read access (easier one-off).
 #
-#    (a) Download manually in your browser (recommended for most users):
-#        https://github.com/TenrootOrg/IntactAI  →  Code  →  Download ZIP
-#        Transfer IntactAI-main.zip to the server.
+#    (a) SSH (recommended):
+#        git clone git@github.com:TenrootOrg/IntactAI.git intact
 #
-#    (b) Or curl with a GitHub Personal Access Token (PAT) that has
-#        repo-read access:
-#        curl -L -H "Authorization: token <YOUR_GITHUB_PAT>" \
-#          -o IntactAI-main.zip \
-#          https://github.com/TenrootOrg/IntactAI/archive/refs/heads/main.zip
+#    (b) HTTPS with a PAT (one-off install, no SSH key needed):
+#        git clone https://<YOUR_GITHUB_PAT>@github.com/TenrootOrg/IntactAI.git intact
+#
+#    (c) GitHub CLI (`gh auth login` once, then):
+#        gh repo clone TenrootOrg/IntactAI intact
 
-# 3. Extract and rename to "intact"
-unzip IntactAI-main.zip
-mv IntactAI-main intact
 cd intact
 
-# 4. Edit configuration (set your IP/domain and passwords)
+# 2. Edit configuration (set your IP/domain and passwords)
 nano config.yaml
 
-# 5. Run installer
+# 3. Run installer
 sudo bash install.sh
 ```
 

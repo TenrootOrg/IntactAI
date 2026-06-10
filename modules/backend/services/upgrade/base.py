@@ -221,10 +221,10 @@ _MODULE_IMAGE_REPOS = {
         'docker.elastic.co/kibana/kibana',
         'docker.elastic.co/logstash/logstash',
     ],
-    'aws': [
+    'prowler': [
         'toniblyx/prowler',
     ],
-    'azure': [
+    'o365rc': [
         'anssi/dfir-o365rc',
     ],
 }
@@ -416,8 +416,8 @@ def get_latest_versions() -> Dict:
         'plaso':        'plaso',
         'iris':         'iris',
         'velociraptor': 'velociraptor',
-        'aws':          'aws_prowler',
-        'azure':        'azure_dfir_o365rc',
+        'prowler':      'prowler',
+        'o365rc':       'o365rc',
         'intact':       'backend',
         # VolWeb (memory-forensics analysis stack). Single
         # `versions.volweb` pin drives both backend + frontend images
@@ -433,8 +433,8 @@ def get_latest_versions() -> Dict:
         'plaso': '20260119',
         'iris': 'v2.4.27',
         'velociraptor': '0.76.5',
-        'aws': '5.28.1',
-        'azure': 'latest',
+        'prowler': '5.28.1',
+        'o365rc': 'latest',
         'intact': '1.0.0',
         'volweb': '3.16.0',
     }
@@ -588,6 +588,33 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
 
     try:
         with tarfile.open(package_path, 'r:gz') as tar:
+            # TAR-SLIP defense (Mythos finding #7). Reject any member
+            # whose name starts with `/` or contains `..` — neither
+            # appears in legitimate IntactAI upgrade packages produced
+            # by `prepare_package`. The check covers BOTH forward-
+            # and back-slash path separators to defeat the Windows-
+            # archive variant. Without this, a crafted tarball with a
+            # member like `../../../etc/cron.d/evil` would write
+            # outside `extract_dir` on apply, escalating to persistent
+            # RCE on the host. The check runs INSIDE
+            # `verify_upgrade_package` because every apply path
+            # funnels through here — one place to enforce, every
+            # caller protected.
+            for m in tar.getmembers():
+                name = m.name
+                if not name:
+                    continue
+                if name.startswith('/') or name.startswith('\\'):
+                    raise RuntimeError(
+                        f"package contains absolute-path member ({name!r}) "
+                        f"— refusing to extract"
+                    )
+                parts = name.replace('\\', '/').split('/')
+                if '..' in parts:
+                    raise RuntimeError(
+                        f"package contains path-traversal member ({name!r}) "
+                        f"— refusing to extract"
+                    )
             tar.extractall(extract_dir)
         log(f"  Extracted to {extract_dir}", "info")
 

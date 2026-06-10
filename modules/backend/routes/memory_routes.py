@@ -73,15 +73,20 @@ _VALID_MODES = {"yara", "plugin", "layered"}
 
 
 def _is_module_enabled() -> bool:
-    """Memory module gates on the same on/off switch as the rest of
-    the platform — ``config.yaml: modules.memory.enabled``. Defaults
-    to ``True`` if absent (the module ships enabled out of the box).
+    """Memory module gates on ``config.yaml: modules.volweb.enabled``.
+
+    History: 2026-06-10 the operator-facing module key was merged —
+    `memory:` was removed from config.yaml because the platform's
+    "Memory" feature is just an operator-facing label for VolWeb (the
+    memory-forensics stack). So a single `volweb.enabled` toggle now
+    controls both memory acquisition + memory analysis. Defaults to
+    True if absent (ships enabled out of the box).
     """
     try:
         from config import load_main_config
         cfg = load_main_config() or {}
         modules = cfg.get("modules") or {}
-        node = modules.get("memory")
+        node = modules.get("volweb")
         if isinstance(node, dict):
             return bool(node.get("enabled", True))
         return True
@@ -136,6 +141,13 @@ def start_memory_run():
     client_id = (data.get("client_id") or "").strip()
     if not client_id:
         return jsonify({"error": "client_id is required"}), 400
+
+    # SHAPE VALIDATION (Mythos #2 extended): `client_id` is downstream-
+    # interpolated into VQL strings via the memory acquisition path.
+    # Same Velociraptor `C.<hex>` shape constraint as everywhere else.
+    from services.vql_safety import is_valid_client_id
+    if not is_valid_client_id(client_id):
+        return jsonify({"error": "client_id must match C.<hex>"}), 400
 
     client_name = (data.get("client_name") or "").strip() or None
     case_name = (data.get("case_name") or "").strip() or "Memory"

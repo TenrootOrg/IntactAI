@@ -39,7 +39,7 @@ req_dir = sys.argv[2] if len(sys.argv) > 2 else '/app'
 # under requirements-<mod>.txt gets picked up automatically by the glob
 # below — the list is just an ordering hint so installs happen in a
 # predictable order in the logs.
-MODULES = ['velociraptor', 'timesketch', 'elk', 'agentic', 'azure', 'aws']
+MODULES = ['velociraptor', 'timesketch', 'elk', 'agentic', 'o365rc', 'prowler']
 
 for mod in MODULES:
     req = os.path.join(req_dir, f'requirements-{mod}.txt')

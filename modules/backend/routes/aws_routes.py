@@ -204,7 +204,7 @@ def start_scan():
 
     def run_scan():
         try:
-            if not is_module_enabled('aws'):
+            if not is_module_enabled('prowler'):
                 # AWS module isn't gated by a config.yaml flag the way Azure
                 # is; treat it as always-on for the scaffold. Keep the check
                 # for symmetry — when the config gate is added it'll come on
@@ -753,7 +753,7 @@ def get_aws_chat(run_id):
 @aws_bp.route('/api/aws/run/<run_id>/chat', methods=['POST'])
 def post_aws_chat(run_id):
     """Append an operator turn; get the assistant reply (synchronous)."""
-    if not is_module_enabled('aws'):
+    if not is_module_enabled('prowler'):
         return jsonify({"error": "AWS module is not enabled."}), 400
     try:
         run = get_automation_run(run_id)
@@ -794,7 +794,7 @@ def rerun_aws(run_id):
       - full: re-call analyze_artifacts on the persisted findings,
         then re-synthesise the report. Per-rule LLM call per rule.
     """
-    if not is_module_enabled('aws'):
+    if not is_module_enabled('prowler'):
         return jsonify({"error": "AWS module is not enabled."}), 400
     try:
         run = get_automation_run(run_id)

