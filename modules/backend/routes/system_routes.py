@@ -63,22 +63,46 @@ def get_intact_version():
 
 @system_bp.route('/api/system/containers', methods=['GET'])
 def get_container_status():
-    """Get status of core system containers from Docker interface"""
+    """Get status of core system containers.
+
+    Returns one of three states per service so the dashboard can
+    distinguish a stopped install from a never-installed module:
+
+      - 'online'        — container exists and is running
+      - 'stopped'       — container exists but is not running
+      - 'not_installed' — container has never been created on this host
+
+    Distinguishing 'stopped' from 'not_installed' lets the dashboard
+    count modules that were deployed via online/offline upgrade (which
+    creates the container at apply time) separately from modules that
+    were never enabled. `docker ps -a` includes stopped containers so a
+    single call covers both lifecycle states.
+
+    Legacy callers that only checked for 'online' still work unchanged
+    because that value's semantics are preserved.
+    """
     results = {}
     try:
-        # Run docker ps to get running container names
-        # Note: intact_backend has /var/run/docker.sock mounted
-        cmd = ["docker", "ps", "--format", "{{.Names}}"]
+        cmd = ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.State}}"]
         output = subprocess.check_output(cmd, text=True)
-        running_containers = [n.strip() for n in output.strip().split('\n') if n.strip()]
-        
+        container_states = {}
+        for line in output.strip().split('\n'):
+            if '\t' not in line:
+                continue
+            name, state = line.split('\t', 1)
+            container_states[name.strip()] = state.strip()
+
         for service_id, container_name in SERVICE_CONTAINERS.items():
-            if container_name in running_containers:
+            state = container_states.get(container_name)
+            if state == 'running':
                 results[service_id] = 'online'
+            elif state is None:
+                results[service_id] = 'not_installed'
             else:
-                # Optional: check if container exists but is stopped
-                results[service_id] = 'offline'
-                
+                # exited, created, dead, paused, restarting, etc. — the
+                # container exists on the host so the module IS installed
+                results[service_id] = 'stopped'
+
     except Exception as e:
         return jsonify({"error": f"Failed to query Docker: {str(e)}"}), 500
 
