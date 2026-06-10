@@ -79,8 +79,16 @@
                     <span x-show="!$store.app.sidebarCollapsed">Workflows</span>
                 </div>
 
-                <!-- Automation (collapsible parent) -->
-                <div x-data="{ automationOpen: true, onpremOpen: true, cloudOpen: false }">
+                <!-- Automation (collapsible parent) — hides entirely when
+                     ALL its sub-modules are not_installed. Without this the
+                     header would float over an empty space on a bare VM. -->
+                <div x-data="{ automationOpen: true, onpremOpen: true, cloudOpen: false }"
+                     x-show="$store.services.statuses['velociraptor'] !== 'not_installed' ||
+                             $store.services.statuses['timesketch'] !== 'not_installed' ||
+                             $store.services.statuses['volweb'] !== 'not_installed' ||
+                             $store.services.statuses['cve_scan'] !== 'not_installed' ||
+                             $store.services.statuses['o365rc'] !== 'not_installed' ||
+                             $store.services.statuses['prowler'] !== 'not_installed'">
                     <!-- Parent item -->
                     <div class="nav-item flex items-center gap-3"
                          :class="{ 'justify-center': $store.app.sidebarCollapsed, 'bg-gray-800/50': ($store.app.currentTab === 'modules-forensics' || $store.app.currentTab === 'modules-timesketch' || $store.app.currentTab === 'modules-cve-scan' || $store.app.currentTab === 'cloud-aws' || $store.app.currentTab === 'cloud-azure') && !automationOpen }"
@@ -100,8 +108,13 @@
                     <!-- Child items (indented) -->
                     <div x-show="automationOpen && !$store.app.sidebarCollapsed" x-transition class="ml-4 border-l border-gray-700 pl-2 mt-1">
 
-                        <!-- On-Prem Section -->
-                        <div>
+                        <!-- On-Prem Section — collapses entirely when none of its
+                             children are installed (velo/timesketch/volweb/cve_scan all
+                             missing means there's nothing to put under here). -->
+                        <div x-show="$store.services.statuses['velociraptor'] !== 'not_installed' ||
+                                     $store.services.statuses['timesketch'] !== 'not_installed' ||
+                                     $store.services.statuses['volweb'] !== 'not_installed' ||
+                                     $store.services.statuses['cve_scan'] !== 'not_installed'">
                             <div class="nav-item flex items-center gap-3 py-2 text-sm cursor-pointer"
                                  :class="{ 'text-blue-400': onpremOpen }"
                                  @click.stop="onpremOpen = !onpremOpen">
@@ -113,9 +126,16 @@
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
                                 </svg>
                             </div>
+                            <!-- Sub-nav items hide when their backing module's container has
+                                 never been created on this host (status === 'not_installed').
+                                 CVE Scan keys on Velociraptor because it dispatches a Velo hunt;
+                                 Memory keys on VolWeb (the analysis engine). Stopped containers
+                                 keep their nav entry so the operator can spot the page and act,
+                                 with a banner inside warning that the backing container is down. -->
                             <div x-show="onpremOpen" x-transition class="ml-4 border-l border-gray-700 pl-2">
                                 <!-- Velociraptor -->
-                                <div class="nav-item flex items-center gap-3 py-2 text-sm"
+                                <div x-show="$store.services.statuses['velociraptor'] !== 'not_installed'"
+                                     class="nav-item flex items-center gap-3 py-2 text-sm"
                                      :class="{ 'active': $store.app.currentTab === 'modules-forensics' }"
                                      @click.stop="$store.app.switchTab('modules-forensics')">
                                     <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -124,7 +144,8 @@
                                     <span>Velociraptor</span>
                                 </div>
                                 <!-- TimeSketch -->
-                                <div class="nav-item flex items-center gap-3 py-2 text-sm"
+                                <div x-show="$store.services.statuses['timesketch'] !== 'not_installed'"
+                                     class="nav-item flex items-center gap-3 py-2 text-sm"
                                      :class="{ 'active': $store.app.currentTab === 'modules-timesketch' }"
                                      @click.stop="$store.app.switchTab('modules-timesketch')">
                                     <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -132,9 +153,14 @@
                                     </svg>
                                     <span>TimeSketch</span>
                                 </div>
-                                <!-- CVE Scan — port of the nvd_check side project. Matches installed
-                                     software against NVD CVE database, outputs combined CSV. -->
-                                <div class="nav-item flex items-center gap-3 py-2 text-sm"
+                                <!-- CVE Scan — port of the nvd_check side project. Matches
+                                     installed software against NVD CVE database, outputs combined
+                                     CSV. Gated on its own config.yaml entry (modules.cve_scan.enabled)
+                                     instead of velociraptor: the manual CSV-upload path runs without
+                                     Velociraptor, and the "from Velociraptor flow" path renders an
+                                     in-page banner explaining the dependency when Velo is missing. -->
+                                <div x-show="$store.services.statuses['cve_scan'] !== 'not_installed'"
+                                     class="nav-item flex items-center gap-3 py-2 text-sm"
                                      :class="{ 'active': $store.app.currentTab === 'modules-cve-scan' }"
                                      @click.stop="$store.app.switchTab('modules-cve-scan')">
                                     <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -145,7 +171,8 @@
                                 <!-- Memory Forensics — Velociraptor memory acquisition → VolWeb (Volatility 3
                                      + yarascan) → LLM-synthesised findings report. Three modes:
                                      layered (default) / yara-only / plugin-only. -->
-                                <div class="nav-item flex items-center gap-3 py-2 text-sm"
+                                <div x-show="$store.services.statuses['volweb'] !== 'not_installed'"
+                                     class="nav-item flex items-center gap-3 py-2 text-sm"
                                      :class="{ 'active': $store.app.currentTab === 'modules-memory' }"
                                      @click.stop="$store.app.switchTab('modules-memory')">
                                     <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -156,8 +183,13 @@
                             </div>
                         </div>
 
-                        <!-- Cloud Section -->
-                        <div>
+                        <!-- Cloud Section — collapses entirely when neither
+                             Microsoft 365 (o365rc) nor AWS (prowler) is
+                             enabled in config.yaml. These modules have no
+                             persistent container — install state comes from
+                             the opt-in flag via /api/system/containers. -->
+                        <div x-show="$store.services.statuses['o365rc'] !== 'not_installed' ||
+                                     $store.services.statuses['prowler'] !== 'not_installed'">
                             <div class="nav-item flex items-center gap-3 py-2 text-sm cursor-pointer"
                                  :class="{ 'text-blue-400': cloudOpen }"
                                  @click.stop="cloudOpen = !cloudOpen">
@@ -170,8 +202,9 @@
                                 </svg>
                             </div>
                             <div x-show="cloudOpen" x-transition class="ml-4 border-l border-gray-700 pl-2">
-                                <!-- Azure -->
-                                <div class="nav-item flex items-center gap-3 py-2 text-sm"
+                                <!-- Azure / Microsoft 365 -->
+                                <div x-show="$store.services.statuses['o365rc'] !== 'not_installed'"
+                                     class="nav-item flex items-center gap-3 py-2 text-sm"
                                      :class="{ 'active': $store.app.currentTab === 'cloud-azure' }"
                                      @click.stop="$store.app.switchTab('cloud-azure')">
                                     <svg class="w-4 h-4 flex-shrink-0 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
@@ -180,7 +213,8 @@
                                     <span>Microsoft 365</span>
                                 </div>
                                 <!-- AWS -->
-                                <div class="nav-item flex items-center gap-3 py-2 text-sm"
+                                <div x-show="$store.services.statuses['prowler'] !== 'not_installed'"
+                                     class="nav-item flex items-center gap-3 py-2 text-sm"
                                      :class="{ 'active': $store.app.currentTab === 'cloud-aws' }"
                                      @click.stop="$store.app.switchTab('cloud-aws')">
                                     <svg class="w-4 h-4 flex-shrink-0 text-orange-400" fill="currentColor" viewBox="0 0 24 24">
@@ -207,7 +241,14 @@
                     <span x-show="!$store.app.sidebarCollapsed">Scheduler</span>
                 </div>
 
-                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'downloads', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('downloads')" :title="$store.app.sidebarCollapsed ? 'Downloads' : ''">
+                <!-- Downloads page distributes Velociraptor client installers
+                     (MSI, EXE, Linux binary, legacy builds). Without Velociraptor
+                     installed there's nothing to download from here, so hide it. -->
+                <div x-show="$store.services.statuses['velociraptor'] !== 'not_installed'"
+                     class="nav-item flex items-center gap-3"
+                     :class="{ 'active': $store.app.currentTab === 'downloads', 'justify-center': $store.app.sidebarCollapsed }"
+                     @click="$store.app.switchTab('downloads')"
+                     :title="$store.app.sidebarCollapsed ? 'Downloads' : ''">
                     <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
                     </svg>
@@ -316,9 +357,15 @@
                      installed on this host (status === 'not_installed').
                      Operators on a fresh VM see the empty state below instead
                      of six greyed-out cards they can't open. -->
+                <!-- Dark heading on the light tab-content surface — same
+                     treatment as the Downloads page's "Modern versions"
+                     subheader. The global .tab-content h3 rule defaults
+                     to white, which makes this header invisible on the
+                     dashboard's pale glass background. Inline style with
+                     !important overrides that. -->
                 <div x-show="$store.services.installedCount > 0" class="mb-6">
-                    <h3 class="text-2xl font-bold text-white mb-2">Security Services</h3>
-                    <p class="text-gray-400 text-sm">Integrated security and incident response platform modules</p>
+                    <h3 class="text-2xl font-bold mb-2" style="color:#1a1a2e !important;">Security Services</h3>
+                    <p class="text-sm" style="color:#444455;">Integrated security and incident response platform modules</p>
                 </div>
 
                 <!-- Empty state — shown when zero modules deployed. Points the
@@ -470,6 +517,60 @@
                         </div>
                         <button onclick="openService('volweb')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
                             Open VolWeb
+                        </button>
+                    </div>
+
+                    <!-- Prowler — AWS cloud posture scanner. On-demand
+                         docker run per scan (no persistent container, no
+                         web UI). "No console" button is intentionally
+                         disabled-styled — the dashboard Automation > Cloud
+                         > AWS page is where the operator actually triggers
+                         scans. Status dot reflects config.yaml + .env pin
+                         (the install signal for modules without a
+                         container). -->
+                    <div x-show="$store.services.statuses['prowler'] !== 'not_installed'"
+                         class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="flex items-center gap-3">
+                                <div class="bg-blue-600 p-3 rounded-lg">
+                                    <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93z"/>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">Prowler</h3>
+                                    <p class="text-sm text-gray-400">AWS Cloud Posture Scan</p>
+                                </div>
+                            </div>
+                            <div :class="$store.services.getStatusClass('prowler')"></div>
+                        </div>
+                        <button disabled class="w-full bg-gray-700 text-gray-400 py-2.5 rounded-lg font-medium cursor-not-allowed">
+                            No console
+                        </button>
+                    </div>
+
+                    <!-- DFIR-O365RC — Microsoft 365 Unified Audit Log
+                         collection. Same on-demand pattern as Prowler:
+                         no persistent container, no web UI. Operator
+                         drives scans from Automation > Cloud > Microsoft 365. -->
+                    <div x-show="$store.services.statuses['o365rc'] !== 'not_installed'"
+                         class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="flex items-center gap-3">
+                                <div class="bg-blue-600 p-3 rounded-lg">
+                                    <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M13.05 4.24L6.56 18.05a.5.5 0 00.46.7h8.48l-2.45 5.01h-8.6a2.5 2.5 0 01-2.3-3.48L9.95 4.24h3.1z"/>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">DFIR-O365RC</h3>
+                                    <p class="text-sm text-gray-400">Microsoft 365 Audit Log Collection</p>
+                                </div>
+                            </div>
+                            <div :class="$store.services.getStatusClass('o365rc')"></div>
+                        </div>
+                        <button disabled class="w-full bg-gray-700 text-gray-400 py-2.5 rounded-lg font-medium cursor-not-allowed">
+                            No console
                         </button>
                     </div>
                 </div>
@@ -1064,6 +1165,22 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                     <h2 class="text-3xl font-bold text-white">Velociraptor</h2>
                 </div>
 
+                <!-- Stopped-container warning: surfaces when the operator
+                     enters this page but the backing container exists in
+                     stopped state. Hidden when running (the normal case)
+                     and hidden when 'not_installed' (the page wouldn't be
+                     reachable from the sidebar in that case anyway). -->
+                <div x-show="$store.services.statuses['velociraptor'] === 'stopped'"
+                     class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 mb-6 flex items-start gap-3">
+                    <svg class="w-6 h-6 text-yellow-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-yellow-200">Velociraptor is installed but stopped</p>
+                        <p class="text-sm text-yellow-100/80 mt-1">The Velociraptor server container exists but isn't running. Hunts, collections and the AI Analysis pipeline will fail until it's started. Run <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">docker start intact_velociraptor</code> on the host, or use <span class="text-yellow-200">Settings → System Maintenance</span> to restart it.</p>
+                    </div>
+                </div>
+
                 <!-- Internal Tabs: Collections | Offline Collectors -->
                 <div class="flex gap-1 border-b border-gray-700 mb-6">
                     <button @click="forensicsTab = 'collections'"
@@ -1643,6 +1760,47 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                 <h2 class="text-3xl font-bold text-white mb-2">TimeSketch Automation</h2>
                 <p class="text-gray-400 mb-6">Collect forensic artifacts and create investigation timelines</p>
 
+                <!-- Stopped-container warnings. TimeSketch needs BOTH its own
+                     server (for sketch / timeline ingest) AND Velociraptor (for
+                     the KAPE collection step). Show both banners independently
+                     so the operator sees exactly which side is down. -->
+                <div x-show="$store.services.statuses['timesketch'] === 'stopped'"
+                     class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 mb-4 flex items-start gap-3">
+                    <svg class="w-6 h-6 text-yellow-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-yellow-200">TimeSketch is installed but stopped</p>
+                        <p class="text-sm text-yellow-100/80 mt-1">The TimeSketch container is not running, so sketch creation and timeline ingest will fail. Start it with <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">docker start intact_timesketch_web</code>.</p>
+                    </div>
+                </div>
+                <div x-show="$store.services.statuses['velociraptor'] === 'stopped'"
+                     class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 mb-6 flex items-start gap-3">
+                    <svg class="w-6 h-6 text-yellow-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-yellow-200">Velociraptor is installed but stopped</p>
+                        <p class="text-sm text-yellow-100/80 mt-1">KAPE collection dispatches the <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">Windows.KapeFiles.Targets</code> Velociraptor artifact, so this page can't collect anything until the Velociraptor server is running. Start it with <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">docker start intact_velociraptor</code>.</p>
+                    </div>
+                </div>
+                <!-- Velociraptor entirely absent: TimeSketch nav-item stays
+                     visible (it's gated on the timesketch container), but
+                     the KAPE-collection workflow this page drives can't fire
+                     without Velociraptor. Solid red so it stays readable
+                     on the light tab-content surface. -->
+                <div x-show="$store.services.statuses['velociraptor'] === 'not_installed'"
+                     class="rounded-lg p-4 mb-6 flex items-start gap-3"
+                     style="background-color:#7f1d1d; border:1px solid #dc2626;">
+                    <svg class="w-6 h-6 flex-shrink-0 mt-0.5" style="color:#fecaca;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold" style="color:#ffffff;">Velociraptor is not installed</p>
+                        <p class="text-sm mt-1" style="color:#fecaca;">KAPE collection dispatches the <code class="px-1.5 py-0.5 rounded" style="background-color:#450a0a; color:#ffffff;">Windows.KapeFiles.Targets</code> Velociraptor artifact — this workflow cannot run on a host without Velociraptor. Install it via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span> (or enable <code class="px-1.5 py-0.5 rounded" style="background-color:#450a0a; color:#ffffff;">modules.velociraptor.enabled: true</code> in config.yaml and re-run install.sh).</p>
+                    </div>
+                </div>
+
                 <!-- Mode Selection -->
                 <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
                     <h3 class="text-2xl font-semibold text-white mb-4">Triage Collection & Timeline Import</h3>
@@ -1769,6 +1927,36 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                  from a Velociraptor flow/hunt that ran the 4 required artifacts. -->
             <div x-show="$store.app.currentTab === 'modules-cve-scan'" x-transition class="tab-content">
                 <h2 class="text-3xl font-bold text-white mb-2">CVE Scan</h2>
+
+                <!-- Stopped-Velociraptor warning: CVE Scan's "from Velociraptor"
+                     mode dispatches a hunt with 4 inventory artifacts, so a down
+                     Velo blocks that path. Manual-CSV-upload still works. -->
+                <div x-show="$store.services.statuses['velociraptor'] === 'stopped'"
+                     class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 mb-4 flex items-start gap-3">
+                    <svg class="w-6 h-6 text-yellow-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-yellow-200">Velociraptor is installed but stopped</p>
+                        <p class="text-sm text-yellow-100/80 mt-1">The "Run from Velociraptor" path dispatches a hunt for the 4 inventory artifacts (installed-software / startup / scheduled-tasks / services). Without a running Velociraptor server, only the manual CSV-upload path works. Start it with <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">docker start intact_velociraptor</code>.</p>
+                    </div>
+                </div>
+                <!-- Velociraptor entirely absent: CVE Scan stays reachable via
+                     the cve_scan config gate, but the "Run from Velociraptor"
+                     and "From existing flow" paths can't dispatch their inventory
+                     hunt. Solid red so it stays readable on the light tab-content
+                     surface. The manual CSV-upload path still works. -->
+                <div x-show="$store.services.statuses['velociraptor'] === 'not_installed'"
+                     class="rounded-lg p-4 mb-4 flex items-start gap-3"
+                     style="background-color:#7f1d1d; border:1px solid #dc2626;">
+                    <svg class="w-6 h-6 flex-shrink-0 mt-0.5" style="color:#fecaca;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold" style="color:#ffffff;">Velociraptor is not installed</p>
+                        <p class="text-sm mt-1" style="color:#fecaca;">The "Run from Velociraptor" and "From existing flow" paths dispatch the inventory artifacts (<code class="px-1.5 py-0.5 rounded" style="background-color:#450a0a; color:#ffffff;">Windows.Sys.Programs</code> + 3 others) — these need a running Velociraptor server. The manual CSV-upload path still works without Velociraptor. To enable hunt dispatch, install Velociraptor via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span>.</p>
+                    </div>
+                </div>
                 <p class="text-gray-400 mb-4 max-w-4xl">
                     Match each host's installed software against
                     <a href="https://nvd.nist.gov/" target="_blank" rel="noreferrer" class="text-indigo-300 hover:text-indigo-200 underline">NVD</a>
@@ -1900,6 +2088,50 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
             <div x-show="$store.app.currentTab === 'modules-memory'" x-transition class="tab-content">
                 <div class="flex items-center justify-between mb-2">
                     <h2 class="text-3xl font-bold text-white">Memory Forensics</h2>
+                </div>
+
+                <!-- Memory page needs BOTH VolWeb (Volatility 3 + YARA analysis
+                     engine) AND Velociraptor (Windows.Memory.Acquisition artifact
+                     dispatch). Show distinct banners so the operator knows which
+                     side is down. Operator-supplied dump upload still works
+                     without Velociraptor — Velo is only needed for endpoint
+                     acquisition. -->
+                <div x-show="$store.services.statuses['volweb'] === 'stopped'"
+                     class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 mb-4 flex items-start gap-3">
+                    <svg class="w-6 h-6 text-yellow-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-yellow-200">VolWeb is installed but stopped</p>
+                        <p class="text-sm text-yellow-100/80 mt-1">The VolWeb backend container isn't running — Volatility 3 plugin execution and YARA scanning will fail. Start it with <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">docker start intact_volweb_backend</code>.</p>
+                    </div>
+                </div>
+                <div x-show="$store.services.statuses['velociraptor'] === 'stopped'"
+                     class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 mb-6 flex items-start gap-3">
+                    <svg class="w-6 h-6 text-yellow-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-yellow-200">Velociraptor is installed but stopped</p>
+                        <p class="text-sm text-yellow-100/80 mt-1">Endpoint memory acquisition dispatches the <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">Windows.Memory.Acquisition</code> Velociraptor artifact. Without a running Velociraptor server, you can still analyse an operator-supplied dump via the upload path. Start it with <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">docker start intact_velociraptor</code>.</p>
+                    </div>
+                </div>
+                <!-- Velociraptor not installed at all: same upload-path
+                     fallback still works, but operator should know
+                     endpoint acquisition is blocked. Solid red background
+                     + white text so it stays readable on the dashboard's
+                     light tab-content surface (the faded "/30" alpha
+                     palette washes out against pale glass). -->
+                <div x-show="$store.services.statuses['velociraptor'] === 'not_installed'"
+                     class="rounded-lg p-4 mb-6 flex items-start gap-3"
+                     style="background-color:#7f1d1d; border:1px solid #dc2626;">
+                    <svg class="w-6 h-6 flex-shrink-0 mt-0.5" style="color:#fecaca;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold" style="color:#ffffff;">Velociraptor is not installed</p>
+                        <p class="text-sm mt-1" style="color:#fecaca;">Endpoint memory acquisition uses the <code class="px-1.5 py-0.5 rounded" style="background-color:#450a0a; color:#ffffff;">Windows.Memory.Acquisition</code> Velociraptor artifact — that path is unavailable on this host. The upload path (operator-supplied memory dump) still works. To enable acquisition, install Velociraptor via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span>.</p>
+                    </div>
                 </div>
 
                 <div class="max-w-3xl">

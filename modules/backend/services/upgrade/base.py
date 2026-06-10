@@ -304,6 +304,54 @@ def compare_versions(v1: str, v2: str) -> int:
     return 0
 
 
+def set_module_enabled_in_config(module_name: str, logger=None) -> bool:
+    """Flip ``modules.<module_name>.enabled`` to ``true`` in config.yaml.
+
+    Used by the on-demand module upgraders (Prowler / DFIR-O365RC) so that
+    an online or offline upgrade through the dashboard also marks the
+    module as enabled — matching what install.sh would do if the operator
+    had set enabled: true before re-running it. Without this the
+    upgrade pulls the image and pins the .env but the sidebar and the
+    runtime is_module_enabled() gate still say "disabled", so the
+    module never shows up in the UI.
+
+    Targeted regex replacement preserves comments and YAML structure
+    (a yaml.dump round-trip strips both). Returns True if a flip
+    happened, False if the module was already enabled, the key wasn't
+    found, or config.yaml is missing.
+    """
+    import re
+    log = logger or (lambda msg, level="info": None)
+    config_path = os.path.join(WORKDIR, 'config.yaml')
+    if not os.path.exists(config_path):
+        log(f"config.yaml not found at {config_path}; skipping enable flip", "warning")
+        return False
+    try:
+        with open(config_path) as f:
+            content = f.read()
+    except Exception as e:
+        log(f"Could not read config.yaml: {e}", "warning")
+        return False
+    # Indent-aware match: modules.<name>: on one line, then enabled: false
+    # on the next. Tolerates true/True/false/False capitalisation.
+    pattern = re.compile(
+        rf'(^(\s+){re.escape(module_name)}:\s*\n\s+enabled:\s+)(false|False)',
+        re.MULTILINE,
+    )
+    new_content, n = pattern.subn(r'\1true', content, count=1)
+    if n == 0:
+        # Either the module isn't in config.yaml or it's already enabled.
+        return False
+    try:
+        with open(config_path, 'w') as f:
+            f.write(new_content)
+        log(f"Marked modules.{module_name}.enabled = true in config.yaml", "info")
+        return True
+    except Exception as e:
+        log(f"Could not write config.yaml: {e}", "warning")
+        return False
+
+
 def get_current_versions() -> Dict:
     """Get current versions for all modules.
 
@@ -356,6 +404,24 @@ def get_current_versions() -> Dict:
     versions['volweb'] = {
         'current': _read_module_version('volweb', volweb_env, 'VOLWEB_BACKEND_VERSION'),
         'env_file': volweb_env,
+    }
+
+    # On-demand modules (Prowler / DFIR-O365RC) have no long-running
+    # container — the install signal is the .env pin written by their
+    # upgrade functions. When the pin is missing the module has never
+    # been deployed, so report 'Not installed' (matching the dashboard
+    # vocabulary) instead of the bare 'unknown' fallback. This keeps the
+    # VERSION SUMMARY accurate for both "fresh install" runs and "upgrade
+    # from X to Y" runs.
+    prowler_version = backend_vars.get('PROWLER_VERSION', '').strip()
+    versions['prowler'] = {
+        'current': prowler_version if prowler_version else 'Not installed',
+        'env_file': backend_env,
+    }
+    o365rc_version = backend_vars.get('DFIR_O365RC_VERSION', '').strip()
+    versions['o365rc'] = {
+        'current': o365rc_version if o365rc_version else 'Not installed',
+        'env_file': backend_env,
     }
 
     # Intact.AI Platform — read from VERSION file at repo root (stamped by
@@ -695,19 +761,36 @@ _MODULE_PRIMARY_CONTAINERS = {
 
 def _module_container_exists(module_id: str) -> Optional[bool]:
     """True iff the module's primary container exists (running or stopped).
-    Returns None for modules with no container concept (aws/azure/plaso).
-    Callers should treat None as 'always installed' since those modules
-    don't deploy a standalone container stack."""
+    For container-based modules, queries `docker ps -a`. For on-demand
+    modules (prowler / o365rc) with no container concept, falls back to
+    "is the .env version pin present?" — that's the equivalent install
+    signal so the dispatcher can correctly label fresh-install runs as
+    INSTALLING instead of UPGRADING. Returns None for plaso (no .env pin
+    of its own; lives inside the backend .env)."""
     name = _MODULE_PRIMARY_CONTAINERS.get(module_id)
-    if not name:
+    if name:
+        try:
+            result = subprocess.run(
+                ['docker', 'ps', '-a', '--filter', f'name=^{name}$',
+                 '--format', '{{.Names}}'],
+                capture_output=True, text=True, timeout=5,
+            )
+            return name in (result.stdout or '')
+        except Exception:
+            return None
+    # On-demand modules: read the matching .env pin. Both prowler and
+    # DFIR-O365RC keep their version in the backend .env.
+    on_demand_env_keys = {
+        'prowler': 'PROWLER_VERSION',
+        'o365rc':  'DFIR_O365RC_VERSION',
+    }
+    env_key = on_demand_env_keys.get(module_id)
+    if not env_key:
         return None
+    backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
     try:
-        result = subprocess.run(
-            ['docker', 'ps', '-a', '--filter', f'name=^{name}$',
-             '--format', '{{.Names}}'],
-            capture_output=True, text=True, timeout=5,
-        )
-        return name in (result.stdout or '')
+        vars_ = read_env_file(backend_env)
+        return bool(vars_.get(env_key, '').strip())
     except Exception:
         return None
 

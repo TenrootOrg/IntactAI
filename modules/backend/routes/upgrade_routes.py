@@ -107,7 +107,7 @@ def get_upgrade_status():
         latest = get_latest_versions()
 
         versions = {}
-        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure', 'volweb', 'intact']:
+        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb', 'intact']:
             versions[module] = {
                 'latest': latest.get(module, 'unknown')
             }
@@ -296,8 +296,8 @@ def prepare_upgrade_package():
         # - Plaso: 1 image
         # - IRIS: 2 images (app, nginx)
         # - Velociraptor: 1 binary download
-        # - AWS (Prowler): 1 image
-        # - Azure (DFIR-O365RC): 1 image
+        # - Prowler (AWS posture): 1 image
+        # - DFIR-O365RC (Microsoft 365 UAL): 1 image
         # - Intact.AI: 2 source copies (backend, frontend)
         # Plus: manifest (1) + archive (1)
         steps_per_module = {
@@ -306,8 +306,8 @@ def prepare_upgrade_package():
             'plaso': 1,
             'iris': 2,
             'velociraptor': 1,
-            'aws': 1,
-            'azure': 1,
+            'prowler': 1,
+            'o365rc': 1,
             'intact': 2
         }
         total_steps = sum(steps_per_module.get(m, 1) for m in modules.keys()) + 2  # +2 for manifest and archive
@@ -428,7 +428,7 @@ def start_online_upgrade():
         # prepare-side image saves + apply-side per-module completions.
         steps_per_module_prepare = {
             'elk': 3, 'timesketch': 1, 'plaso': 1, 'iris': 2,
-            'velociraptor': 1, 'aws': 1, 'azure': 1,
+            'velociraptor': 1, 'prowler': 1, 'o365rc': 1,
             'volweb': 2, 'intact': 2,
         }
         prepare_steps_total = sum(steps_per_module_prepare.get(m, 1) for m in modules) + 1

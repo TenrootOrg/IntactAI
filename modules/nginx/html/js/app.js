@@ -809,8 +809,8 @@ document.addEventListener('alpine:init', () => {
             // newest known-good upstream tag so the operator can hit Start
             // without retyping. anssi/dfir-o365rc upstream only ships
             // :latest so we stay on the rolling tag for that one.
-            { id: 'aws', name: 'Prowler', subtitle: '', targetVersion: '', enabled: false, fallback: '5.29.3' },
-            { id: 'azure', name: 'DFIR-O365RC', subtitle: '', targetVersion: '', enabled: false, fallback: 'latest' },
+            { id: 'prowler', name: 'Prowler', subtitle: '', targetVersion: '', enabled: false, fallback: '5.29.3' },
+            { id: 'o365rc', name: 'DFIR-O365RC', subtitle: '', targetVersion: '', enabled: false, fallback: 'latest' },
             // VolWeb — apply orchestrator picks install_volweb_offline vs
             // upgrade_volweb_offline automatically based on whether
             // intact_volweb_backend exists on the host. Lets operators

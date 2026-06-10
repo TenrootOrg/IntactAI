@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Azure (DFIR-O365RC) upgrade functions.
+"""DFIR-O365RC (Microsoft 365 Unified Audit Log) upgrade functions.
 
-Azure Unified Audit Log collection runs the DFIR-O365RC image
-(anssi/dfir-o365rc) on demand — no long-running Azure container, so
-"upgrade" means pulling the image and pinning it in the backend .env
-(DFIR_O365RC_VERSION). Upstream only publishes ':latest' (no version
-tags), so the version is normally 'latest' and an upgrade re-pulls the
-newest latest. The scan runner (services/azure/dfir_o365rc.py) reads the
-version fresh, so the new image applies on the next scan without a
-backend restart. Mirrors the Plaso upgrader.
+DFIR-O365RC runs on demand against M365 tenants — no long-running
+container, so "upgrade" means pulling the image and pinning it in the
+backend .env (DFIR_O365RC_VERSION). Upstream only publishes ':latest'
+(no version tags), so the version is normally 'latest' and an upgrade
+re-pulls the newest latest. The scan runner
+(services/azure/dfir_o365rc.py) reads the version fresh, so the new
+image applies on the next scan without a backend restart. Mirrors the
+Plaso upgrader.
+
+Internal function names (`upgrade_azure`, `upgrade_azure_offline`) kept
+for backwards compatibility with the dispatcher tables; the public module
+key exposed via the API + run logs is now 'o365rc'.
 """
 
 import os
@@ -17,7 +21,8 @@ from typing import Dict, Callable, Optional
 from .base import (
     WORKDIR,
     run_command, read_env_file, update_env_file, load_docker_image,
-    backup_env_file, restore_env_file, cleanup_backup
+    backup_env_file, restore_env_file, cleanup_backup,
+    set_module_enabled_in_config,
 )
 
 
@@ -26,7 +31,7 @@ def upgrade_azure(version: str, logger: Callable = None) -> Dict:
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
 
-    log("Starting Azure (DFIR-O365RC) upgrade...", "info")
+    log("Starting DFIR-O365RC upgrade...", "info")
 
     current_vars = read_env_file(backend_env)
     current_version = current_vars.get('DFIR_O365RC_VERSION', 'unknown')
@@ -43,16 +48,20 @@ def upgrade_azure(version: str, logger: Callable = None) -> Dict:
         log(f"Updating DFIR-O365RC version to {version}...", "info")
         update_env_file(backend_env, 'DFIR_O365RC_VERSION', version, logger=log)
 
+        # Mark o365rc as enabled in config.yaml so the sidebar, dashboard
+        # cards and runtime is_module_enabled() gate all see this install.
+        set_module_enabled_in_config('o365rc', logger=log)
+
         # No backend restart needed — DFIR-O365RC runs as a separate container
         # per scan and dfir_o365rc reads DFIR_O365RC_VERSION fresh from .env.
 
         cleanup_backup(backup_file, logger=log)
-        log(f"Azure (DFIR-O365RC) upgrade completed: {current_version} -> {version}", "success")
+        log(f"DFIR-O365RC upgrade completed: {current_version} -> {version}", "success")
         return {"success": True, "version": version}
 
     except Exception as e:
         error_msg = str(e)
-        log(f"Azure upgrade FAILED: {error_msg}", "error")
+        log(f"DFIR-O365RC upgrade FAILED: {error_msg}", "error")
         log(f"Rolling back to version {current_version}...", "warning")
         if restore_env_file(backend_env, backup_file, logger=log):
             log(f"ROLLED BACK DFIR-O365RC to version {current_version}", "warning")
@@ -71,7 +80,7 @@ def upgrade_azure_offline(package_dir: str, version: str, logger: Callable = Non
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
     images_dir = os.path.join(package_dir, 'images')
 
-    log("Starting Azure (DFIR-O365RC) offline upgrade...", "info")
+    log("Starting DFIR-O365RC offline upgrade...", "info")
 
     current_vars = read_env_file(backend_env)
     current_version = current_vars.get('DFIR_O365RC_VERSION', 'unknown')
@@ -91,14 +100,15 @@ def upgrade_azure_offline(package_dir: str, version: str, logger: Callable = Non
 
         log(f"Updating DFIR-O365RC version to {version}...", "info")
         update_env_file(backend_env, 'DFIR_O365RC_VERSION', version, logger=log)
+        set_module_enabled_in_config('o365rc', logger=log)
 
         cleanup_backup(backup_file, logger=log)
-        log(f"Azure (DFIR-O365RC) offline upgrade completed: {current_version} -> {version}", "success")
+        log(f"DFIR-O365RC offline upgrade completed: {current_version} -> {version}", "success")
         return {"success": True, "version": version}
 
     except Exception as e:
         error_msg = str(e)
-        log(f"Azure offline upgrade FAILED: {error_msg}", "error")
+        log(f"DFIR-O365RC offline upgrade FAILED: {error_msg}", "error")
         log(f"Rolling back to version {current_version}...", "warning")
         if restore_env_file(backend_env, backup_file, logger=log):
             log(f"ROLLED BACK DFIR-O365RC to version {current_version}", "warning")

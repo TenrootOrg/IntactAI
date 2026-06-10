@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""AWS (Prowler) upgrade functions.
+"""Prowler (AWS posture scanner) upgrade functions.
 
-AWS posture scans run the Prowler image (toniblyx/prowler) on demand —
-there's no long-running AWS container, so "upgrade" means pulling a new
-image tag and pinning it in the backend .env (PROWLER_VERSION). The scan
-runner (services/aws/prowler_runner.py) reads that version fresh, so the
-new image is used on the next scan without a backend restart. Mirrors the
+Prowler runs on demand against AWS accounts — there's no long-running
+Prowler container, so "upgrade" means pulling a new image tag and pinning
+it in the backend .env (PROWLER_VERSION). The scan runner
+(services/aws/prowler_runner.py) reads that version fresh, so the new
+image is used on the next scan without a backend restart. Mirrors the
 Plaso upgrader.
+
+Internal function names (`upgrade_aws`, `upgrade_aws_offline`) kept for
+backwards compatibility with the dispatcher tables; the public module key
+exposed via the API + run logs is now 'prowler'.
 """
 
 import os
@@ -15,7 +19,8 @@ from typing import Dict, Callable, Optional
 from .base import (
     WORKDIR,
     run_command, read_env_file, update_env_file, load_docker_image,
-    backup_env_file, restore_env_file, cleanup_backup
+    backup_env_file, restore_env_file, cleanup_backup,
+    set_module_enabled_in_config,
 )
 
 
@@ -24,7 +29,7 @@ def upgrade_aws(version: str, logger: Callable = None) -> Dict:
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
 
-    log("Starting AWS (Prowler) upgrade...", "info")
+    log("Starting Prowler upgrade...", "info")
 
     current_vars = read_env_file(backend_env)
     current_version = current_vars.get('PROWLER_VERSION', 'unknown')
@@ -41,16 +46,21 @@ def upgrade_aws(version: str, logger: Callable = None) -> Dict:
         log(f"Updating Prowler version to {version}...", "info")
         update_env_file(backend_env, 'PROWLER_VERSION', version, logger=log)
 
+        # Mark prowler as enabled in config.yaml so the sidebar, dashboard
+        # cards and runtime is_module_enabled() gate all see this install.
+        # No-op when already enabled.
+        set_module_enabled_in_config('prowler', logger=log)
+
         # No backend restart needed — Prowler runs as a separate container
         # per scan and prowler_runner reads PROWLER_VERSION fresh from .env.
 
         cleanup_backup(backup_file, logger=log)
-        log(f"AWS (Prowler) upgrade completed: {current_version} -> {version}", "success")
+        log(f"Prowler upgrade completed: {current_version} -> {version}", "success")
         return {"success": True, "version": version}
 
     except Exception as e:
         error_msg = str(e)
-        log(f"AWS upgrade FAILED: {error_msg}", "error")
+        log(f"Prowler upgrade FAILED: {error_msg}", "error")
         log(f"Rolling back to version {current_version}...", "warning")
         if restore_env_file(backend_env, backup_file, logger=log):
             log(f"ROLLED BACK Prowler to version {current_version}", "warning")
@@ -69,7 +79,7 @@ def upgrade_aws_offline(package_dir: str, version: str, logger: Callable = None,
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
     images_dir = os.path.join(package_dir, 'images')
 
-    log("Starting AWS (Prowler) offline upgrade...", "info")
+    log("Starting Prowler offline upgrade...", "info")
 
     current_vars = read_env_file(backend_env)
     current_version = current_vars.get('PROWLER_VERSION', 'unknown')
@@ -89,14 +99,15 @@ def upgrade_aws_offline(package_dir: str, version: str, logger: Callable = None,
 
         log(f"Updating Prowler version to {version}...", "info")
         update_env_file(backend_env, 'PROWLER_VERSION', version, logger=log)
+        set_module_enabled_in_config('prowler', logger=log)
 
         cleanup_backup(backup_file, logger=log)
-        log(f"AWS (Prowler) offline upgrade completed: {current_version} -> {version}", "success")
+        log(f"Prowler offline upgrade completed: {current_version} -> {version}", "success")
         return {"success": True, "version": version}
 
     except Exception as e:
         error_msg = str(e)
-        log(f"AWS offline upgrade FAILED: {error_msg}", "error")
+        log(f"Prowler offline upgrade FAILED: {error_msg}", "error")
         log(f"Rolling back to version {current_version}...", "warning")
         if restore_env_file(backend_env, backup_file, logger=log):
             log(f"ROLLED BACK Prowler to version {current_version}", "warning")

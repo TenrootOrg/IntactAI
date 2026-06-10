@@ -28,6 +28,12 @@ modules:
     enabled: false
   o365rc:
     enabled: false
+  # CVE Scan — NVD-backed vulnerability matcher. No persistent container
+  # (the scan engine runs in-process inside the backend), so this entry
+  # only gates whether the sidebar item + routes are exposed. Disable to
+  # remove the CVE Scan tab on a host that doesn't need it.
+  cve_scan:
+    enabled: true
   elk:
     enabled: true
     id: elastic

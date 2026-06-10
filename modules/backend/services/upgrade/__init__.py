@@ -733,13 +733,22 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     # Get current versions for comparison
     current_versions = get_current_versions()
 
-    # Log current vs target versions
+    # Log current vs target versions. Distinguish a fresh install
+    # ("Not installed -> X" looks awkward; say "installing X") from an
+    # actual upgrade ("X -> Y"). The current_versions reader returns
+    # 'Not installed' for modules whose primary container or version pin
+    # is absent on this host.
     log("", "info")
     log("VERSION SUMMARY:", "info")
     log("-" * 40, "info")
     for module, target_ver in versions.items():
-        current_ver = current_versions.get(module, {}).get('current', 'unknown')
-        log(f"  {module.upper()}: {current_ver} -> {target_ver}", "info")
+        current_ver = current_versions.get(module, {}).get('current', 'Not installed')
+        if current_ver in ('Not installed', 'unknown'):
+            log(f"  {module.upper()}: installing {target_ver} (fresh install)", "info")
+        elif current_ver == target_ver:
+            log(f"  {module.upper()}: reinstalling {target_ver} (same version)", "info")
+        else:
+            log(f"  {module.upper()}: {current_ver} -> {target_ver} (upgrade)", "info")
     log("-" * 40, "info")
     log("", "info")
 
@@ -765,6 +774,15 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         'iris':         install_iris_offline,
         'velociraptor': install_velociraptor_offline,
         'volweb':       install_volweb_offline,
+        # On-demand modules — same function handles both install and
+        # upgrade (the only difference is whether PROWLER_VERSION /
+        # DFIR_O365RC_VERSION was already pinned). Registering them here
+        # lets the install-vs-upgrade dispatcher show "INSTALLING" on
+        # fresh deploys and "UPGRADING" on version bumps. _module_container_exists
+        # now reads the .env pin for these so the False-vs-True branch
+        # actually fires.
+        'prowler':      upgrade_aws_offline,
+        'o365rc':       upgrade_azure_offline,
     }
 
     # Container existence detector — reuses _MODULE_PRIMARY_CONTAINERS

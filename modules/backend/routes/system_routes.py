@@ -27,6 +27,14 @@ SERVICE_CONTAINERS = {
     'volweb': 'intact_volweb_backend',
 }
 
+# On-demand modules — no persistent container. Each scan is a one-shot
+# `docker run` (prowler/o365rc) or runs in-process inside the backend
+# (cve_scan). `docker ps -a` returns nothing for these, so the install
+# state comes from the operator's explicit opt-in in config.yaml
+# (modules.<name>.enabled). Used by the sidebar to hide Cloud > AWS /
+# Microsoft 365 / CVE Scan when the customer didn't enable them.
+ON_DEMAND_MODULES = ('prowler', 'o365rc', 'cve_scan')
+
 @system_bp.route('/api/test', methods=['GET', 'POST'])
 def test_endpoint():
     """Simple test endpoint"""
@@ -102,6 +110,21 @@ def get_container_status():
                 # exited, created, dead, paused, restarting, etc. — the
                 # container exists on the host so the module IS installed
                 results[service_id] = 'stopped'
+
+        # On-demand modules don't have persistent containers — they're
+        # one-shot `docker run` per scan. Treat config.yaml's enabled
+        # flag as the install signal. No 'stopped' state for these
+        # because there's nothing to be stopped.
+        try:
+            from config import is_module_enabled
+            for module in ON_DEMAND_MODULES:
+                results[module] = 'online' if is_module_enabled(module) else 'not_installed'
+        except Exception:
+            # If config load fails for any reason, conservatively report
+            # 'not_installed' so the sidebar doesn't show modules that
+            # might not actually work.
+            for module in ON_DEMAND_MODULES:
+                results.setdefault(module, 'not_installed')
 
     except Exception as e:
         return jsonify({"error": f"Failed to query Docker: {str(e)}"}), 500
