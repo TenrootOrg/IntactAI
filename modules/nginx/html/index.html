@@ -521,11 +521,11 @@
                     </div>
 
                     <!-- CVE Scan — NVD-backed vulnerability matcher. No
-                         external console (the page lives inside this app),
-                         so the button switches to the modules-cve-scan tab
-                         instead of opening a separate URL. Status comes from
-                         config.yaml's modules.cve_scan.enabled flag — same
-                         dual-signal path as prowler/o365rc. -->
+                         external console (operator drives it from
+                         Automation > On-Prem > CVE Scan in the sidebar).
+                         Same "No console" treatment as prowler/o365rc:
+                         disabled grey button so the operator immediately
+                         understands there's no web UI to open from here. -->
                     <div x-show="$store.services.statuses['cve_scan'] !== 'not_installed'"
                          class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
                         <div class="flex justify-between items-start mb-4">
@@ -542,8 +542,8 @@
                             </div>
                             <div :class="$store.services.getStatusClass('cve_scan')"></div>
                         </div>
-                        <button @click="$store.app.switchTab('modules-cve-scan')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
-                            Open CVE Scan
+                        <button disabled class="w-full bg-gray-700 text-gray-400 py-2.5 rounded-lg font-medium cursor-not-allowed">
+                            No console
                         </button>
                     </div>
 
