@@ -46,20 +46,8 @@ upstream project's repository for the unmodified original.
 ## Quick Start
 
 ```bash
-# 1. Clone the repo into `intact/`. The repo is PRIVATE, so you need
-#    either an SSH key set up on this server (preferred for ongoing use
-#    + future `git pull` updates) or a GitHub Personal Access Token
-#    (PAT) with repo-read access (easier one-off).
-#
-#    (a) SSH (recommended):
-#        git clone git@github.com:TenrootOrg/IntactAI.git intact
-#
-#    (b) HTTPS with a PAT (one-off install, no SSH key needed):
-#        git clone https://<YOUR_GITHUB_PAT>@github.com/TenrootOrg/IntactAI.git intact
-#
-#    (c) GitHub CLI (`gh auth login` once, then):
-#        gh repo clone TenrootOrg/IntactAI intact
-
+# 1. Clone the repo
+git clone https://github.com/TenrootOrg/IntactAI.git intact
 cd intact
 
 # 2. Edit configuration (set your IP/domain and passwords)
