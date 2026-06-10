@@ -802,7 +802,14 @@ document.addEventListener('alpine:init', () => {
             { id: 'plaso', name: 'Plaso', subtitle: '(Timeline)', targetVersion: '', enabled: false, fallback: '20240308' },
             { id: 'iris', name: 'IRIS', subtitle: '', targetVersion: '', enabled: false, fallback: 'v2.4.19' },
             { id: 'velociraptor', name: 'Velociraptor', subtitle: '', targetVersion: '', enabled: false, fallback: '0.73.4' },
-            { id: 'aws', name: 'Prowler', subtitle: '', targetVersion: '', enabled: false, fallback: '5.28.1' },
+            // Prowler & DFIR-O365RC: /api/upgrade/status frequently returns
+            // 'unknown' for these (the Docker Hub tag lookup is flaky for
+            // toniblyx/prowler + anssi/dfir-o365rc). The fallback below is
+            // what the textbox shows when the API can't resolve — pick the
+            // newest known-good upstream tag so the operator can hit Start
+            // without retyping. anssi/dfir-o365rc upstream only ships
+            // :latest so we stay on the rolling tag for that one.
+            { id: 'aws', name: 'Prowler', subtitle: '', targetVersion: '', enabled: false, fallback: '5.29.3' },
             { id: 'azure', name: 'DFIR-O365RC', subtitle: '', targetVersion: '', enabled: false, fallback: 'latest' },
             // VolWeb — apply orchestrator picks install_volweb_offline vs
             // upgrade_volweb_offline automatically based on whether
@@ -852,12 +859,17 @@ document.addEventListener('alpine:init', () => {
                             return;
                         }
                         const ver = data.versions[m.id];
-                        // Fall through to the module's own `fallback` even
-                        // when the API has no entry for it (e.g. a newer
-                        // module whose backend version-map hasn't been
-                        // updated yet). Without this, the textbox shows
-                        // an empty value and the operator has to guess.
-                        m.targetVersion = (ver && ver.latest) || m.fallback;
+                        // Fall through to the module's own `fallback` when:
+                        //   - the API has no entry for it (new module), OR
+                        //   - the API explicitly returns 'unknown' (Docker
+                        //     Hub tag lookup failed — common for the
+                        //     toniblyx/prowler + anssi/dfir-o365rc image
+                        //     names). Without the 'unknown' check the
+                        //     textbox literally renders the word "unknown"
+                        //     because it's a truthy string and beats the
+                        //     `||` fallback.
+                        const latest = ver && ver.latest;
+                        m.targetVersion = (latest && latest !== 'unknown') ? latest : m.fallback;
                     });
                 } else {
                     // Use fallback versions
