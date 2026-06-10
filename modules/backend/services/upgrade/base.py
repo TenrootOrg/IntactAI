@@ -588,6 +588,33 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
 
     try:
         with tarfile.open(package_path, 'r:gz') as tar:
+            # TAR-SLIP defense (Mythos finding #7). Reject any member
+            # whose name starts with `/` or contains `..` — neither
+            # appears in legitimate IntactAI upgrade packages produced
+            # by `prepare_package`. The check covers BOTH forward-
+            # and back-slash path separators to defeat the Windows-
+            # archive variant. Without this, a crafted tarball with a
+            # member like `../../../etc/cron.d/evil` would write
+            # outside `extract_dir` on apply, escalating to persistent
+            # RCE on the host. The check runs INSIDE
+            # `verify_upgrade_package` because every apply path
+            # funnels through here — one place to enforce, every
+            # caller protected.
+            for m in tar.getmembers():
+                name = m.name
+                if not name:
+                    continue
+                if name.startswith('/') or name.startswith('\\'):
+                    raise RuntimeError(
+                        f"package contains absolute-path member ({name!r}) "
+                        f"— refusing to extract"
+                    )
+                parts = name.replace('\\', '/').split('/')
+                if '..' in parts:
+                    raise RuntimeError(
+                        f"package contains path-traversal member ({name!r}) "
+                        f"— refusing to extract"
+                    )
             tar.extractall(extract_dir)
         log(f"  Extracted to {extract_dir}", "info")
 

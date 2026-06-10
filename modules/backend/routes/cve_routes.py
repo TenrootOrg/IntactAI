@@ -414,9 +414,17 @@ def _dispatch_cve_hunt(run_id: str, description: str, max_wait_seconds: int = 36
         cpu_limit = 80
         flow_max_rows = 5_000_000
         flow_max_bytes = 10_240 * 1024 * 1024
+        # Escape `description` for VQL single-quoted-literal embedding
+        # (Mythos #4). Apostrophes legitimately appear in IR data
+        # ("O'Brien Q4 sweep") so we can't shape-reject them; instead
+        # we apply VQL's standard single-quote escape (double up `'`)
+        # and strip control chars. See services/vql_safety.py for the
+        # full rationale.
+        from services.vql_safety import escape_vql_string
+        _safe_description = escape_vql_string(description)
         query = f"""
 LET collection = hunt(
-    description='{description}',
+    description='{_safe_description}',
     artifacts={artifacts_list},
     spec=dict({spec_parts}),
     expires=now() + {expire_seconds},
@@ -550,6 +558,19 @@ def run_cve_hunt():
         data = request.get_json() or {}
         chain = bool(data.get('chain_cve_scan'))
         run_name = (data.get('name') or '').strip() or _auto_run_name()
+
+        # SHAPE + LENGTH gate (Mythos finding #4). `run_name` flows
+        # into `_dispatch_cve_hunt(description=f"Intact.AI CVE Scan:
+        # {run_name}")` and ultimately into a VQL `hunt(description=
+        # '{description}', ...)` string. The downstream f-string
+        # assembly escapes the description via escape_vql_string
+        # before concat (see _dispatch_cve_hunt); here we just cap
+        # the length so an operator can't accidentally paste 100 KB
+        # of text into the hunt name and clog the workflows table.
+        # Free-form chars (apostrophe, dot, hyphen, parens) ARE
+        # allowed — IR data contains them legitimately.
+        if len(run_name) > 256:
+            return jsonify({"error": "name must be 256 characters or fewer"}), 400
         # Operator-supplied poll cap in minutes (chain mode only). Clamp
         # to [1 min, 12 h] so a typo can't lock the worker thread for
         # days. Default 120 min matches the previous hardcoded ceiling.

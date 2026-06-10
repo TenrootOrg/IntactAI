@@ -441,6 +441,30 @@ def import_tenroot_artifacts(logger_func=None):
             log(f"Extracting {TENROOT_ARTIFACTS_ZIP}...")
 
             with zipfile.ZipFile(TENROOT_ARTIFACTS_ZIP, 'r') as zip_ref:
+                # ZIP-SLIP defense (Mythos finding #7, zip variant).
+                # The TenRoot artifacts zip comes from a github tarball
+                # pulled by `tools_download_service`, so it's not fully
+                # untrusted — but tarball downloads CAN be tampered
+                # with by an upstream supply-chain compromise, and the
+                # extract here lands in a temp dir on the backend host.
+                # Reject any name that's absolute or contains `..` so
+                # a poisoned zip can't write to /etc/cron.d/ or
+                # similar. Legit artifact-name YAMLs never look like
+                # this.
+                for name in zip_ref.namelist():
+                    if not name:
+                        continue
+                    if name.startswith('/') or name.startswith('\\'):
+                        raise RuntimeError(
+                            f"zip contains absolute-path member ({name!r}) "
+                            f"— refusing to extract"
+                        )
+                    parts = name.replace('\\', '/').split('/')
+                    if '..' in parts:
+                        raise RuntimeError(
+                            f"zip contains path-traversal member ({name!r}) "
+                            f"— refusing to extract"
+                        )
                 zip_ref.extractall(temp_dir)
 
             # Find all .yaml files

@@ -17,6 +17,45 @@ from services import (
 
 upgrade_bp = Blueprint('upgrade', __name__)
 
+
+# Allowlist for operator-supplied `package_path` (Mythos finding #7).
+# Both `/api/upgrade/package-info` and `/api/upgrade/offline` accept
+# `package_path` from the request body, and `/api/upgrade/offline`
+# applies its contents over the running install (Phase 1 copies
+# `source/intact/*` over WORKDIR/*) — so a tarball at an attacker-
+# controlled path means persistent RCE in one POST. The two allowed
+# prefixes are the LEGIT landing points: `/data/uploads/` for files
+# the operator uploaded through the Import UI card, and
+# `/data/upgrade_packages/` for the prepare-side output of the
+# Online Upgrade flow. Any path outside these is by definition not
+# a legitimate workflow. `os.path.realpath` strips `..` traversal
+# before the prefix check, so an input like
+# `/data/uploads/foo/../../tmp/evil.tar.gz` resolves outside the
+# allowlist and is rejected.
+ALLOWED_PACKAGE_DIRS = ('/data/uploads/', '/data/upgrade_packages/')
+
+
+def _reject_package_path(package_path):
+    """Return a (jsonify_response, 400_status) tuple if `package_path`
+    is outside the allowlist; otherwise return None.
+
+    Callers use the idiom:
+        err = _reject_package_path(package_path)
+        if err: return err
+    """
+    if not isinstance(package_path, str) or not package_path:
+        return jsonify({"error": "package_path must be a non-empty string"}), 400
+    try:
+        real = os.path.realpath(package_path)
+    except (OSError, ValueError):
+        return jsonify({"error": "invalid package_path"}), 400
+    if not any(real.startswith(p) for p in ALLOWED_PACKAGE_DIRS):
+        return jsonify({
+            "error": f"package_path must be under one of: {', '.join(ALLOWED_PACKAGE_DIRS)}"
+        }), 400
+    return None
+
+
 # Fixed package path (only keep one package, overwrite each time)
 PACKAGE_PATH = "/data/upgrade_packages/intact-upgrade-latest.tar.gz"
 PACKAGE_INFO_FILE = "/data/db/prepared_package.json"
@@ -96,6 +135,10 @@ def get_upgrade_package_info():
         if not package_path:
             return jsonify({"error": "No package_path provided"}), 400
 
+        err = _reject_package_path(package_path)
+        if err:
+            return err
+
         from services.upgrade import get_package_info
         result = get_package_info(package_path)
 
@@ -124,6 +167,10 @@ def start_offline_upgrade():
 
         if not package_path:
             return jsonify({"error": "No package_path provided"}), 400
+
+        err = _reject_package_path(package_path)
+        if err:
+            return err
 
         if not os.path.exists(package_path):
             return jsonify({"error": f"Package not found: {package_path}"}), 400
