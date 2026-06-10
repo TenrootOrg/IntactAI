@@ -223,20 +223,29 @@
                 </div>
             </nav>
 
-            <!-- AGPL-3.0 source-availability notice (AGPL §13).
+            <!-- Platform version + AGPL-3.0 source-availability notice (AGPL §13).
                  Required because Intact.AI runs as a network service:
                  any user reaching the UI must be told where to obtain
-                 the source. Sidebar bottom is visible on every page. -->
+                 the source. Sidebar bottom is visible on every page.
+                 Version pulled from /api/version (reads VERSION file
+                 stamped by stamp-version-on-release.yml). -->
             <div x-show="!$store.app.sidebarCollapsed"
-                 class="mt-auto px-4 py-3 text-[10px] text-gray-500 leading-relaxed border-t border-gray-800">
-                Licensed under
-                <a href="https://github.com/TenrootOrg/IntactAI/blob/main/LICENSE"
-                   target="_blank" rel="noopener"
-                   class="text-blue-400 hover:underline">AGPL-3.0</a>
-                <br>
-                <a href="https://github.com/TenrootOrg/IntactAI"
-                   target="_blank" rel="noopener"
-                   class="text-gray-400 hover:underline">View source on GitHub</a>
+                 x-data="{ intactVersion: '' }"
+                 x-init="fetch('/api/version').then(r => r.json()).then(d => intactVersion = d.version || '').catch(() => {})"
+                 class="mt-auto px-4 py-3 leading-relaxed border-t border-gray-800">
+                <div x-show="intactVersion" class="text-xs font-semibold text-gray-200 mb-2">
+                    Version: <span x-text="intactVersion"></span>
+                </div>
+                <div class="text-[10px] text-gray-500">
+                    Licensed under
+                    <a href="https://github.com/TenrootOrg/IntactAI/blob/main/LICENSE"
+                       target="_blank" rel="noopener"
+                       class="text-blue-400 hover:underline">AGPL-3.0</a>
+                    <br>
+                    <a href="https://github.com/TenrootOrg/IntactAI"
+                       target="_blank" rel="noopener"
+                       class="text-gray-400 hover:underline">View source on GitHub</a>
+                </div>
             </div>
         </aside>
 
@@ -743,7 +752,7 @@
                      h3 stays white as intended.
                      ======================================================== -->
                 <div class="max-w-3xl mb-3">
-                    <h3 class="text-xl font-semibold" style="color:#1a1a2e !important;">Standard versions</h3>
+                    <h3 class="text-xl font-semibold" style="color:#1a1a2e !important;">Modern versions</h3>
                     <p class="text-sm mt-1" style="color:#444455;">Modern Windows / Linux endpoints — use these by default.</p>
                 </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 max-w-3xl">
@@ -793,7 +802,7 @@
                      ======================================================== -->
                 <div class="max-w-3xl mb-3">
                     <h3 class="text-xl font-semibold" style="color:#1a1a2e !important;">Other Downloads</h3>
-                    <p class="text-sm mt-1" style="color:#444455;">Use one of these when the standard build won't run — old OS or unusual libc. Buttons grey out when the bundled binary isn't present (re-run <code class="px-1 rounded" style="background-color:#374151; color:#e5e7eb;">install.sh</code> to fetch).</p>
+                    <p class="text-sm mt-1" style="color:#444455;">Use one of these when the modern build won't run — old OS or unusual libc. Buttons grey out when the bundled binary isn't present (re-run <code class="px-1 rounded" style="background-color:#374151; color:#e5e7eb;">install.sh</code> to fetch).</p>
                 </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 max-w-3xl">
                     <!-- Windows Legacy (Server 2008 R2 / Win 7) -->
@@ -1056,12 +1065,12 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 <label class="flex items-center gap-2 cursor-pointer">
                                     <input type="radio" name="collection-source" value="new" x-model="collectionSource"
                                         class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
-                                    <span class="text-sm text-gray-300">New Hunt</span>
+                                    <span class="text-sm text-gray-300">New Collection</span>
                                 </label>
                                 <label class="flex items-center gap-2 cursor-pointer">
                                     <input type="radio" name="collection-source" value="existing" x-model="collectionSource"
                                         class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
-                                    <span class="text-sm text-gray-300">Existing Flow</span>
+                                    <span class="text-sm text-gray-300">Existing Collection</span>
                                 </label>
                             </div>
                         </div>
@@ -1425,7 +1434,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                             <label class="flex items-center gap-2 cursor-pointer">
                                                 <input type="radio" name="offline-gen-target" value="windows:standard" checked
                                                        class="text-blue-600 bg-gray-800 border-gray-600 focus:ring-blue-500">
-                                                <span class="text-gray-300">Normal</span>
+                                                <span class="text-gray-300">Modern</span>
                                                 <span class="text-xs text-gray-500">(modern Windows — Server 2012+, Win 10/11)</span>
                                             </label>
                                             <label class="flex items-center gap-2 cursor-pointer">
@@ -1444,7 +1453,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                             <label class="flex items-center gap-2 cursor-pointer">
                                                 <input type="radio" name="offline-gen-target" value="linux:standard"
                                                        class="text-blue-600 bg-gray-800 border-gray-600 focus:ring-blue-500">
-                                                <span class="text-gray-300">Normal</span>
+                                                <span class="text-gray-300">Modern</span>
                                                 <span class="text-xs text-gray-500">(modern glibc — Ubuntu 20.04+, RHEL 8+)</span>
                                             </label>
                                             <label class="flex items-center gap-2 cursor-pointer">
@@ -1469,7 +1478,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                             <label class="flex items-center gap-2 cursor-pointer">
                                                 <input type="radio" name="offline-gen-target" value="darwin:standard"
                                                        class="text-blue-600 bg-gray-800 border-gray-600 focus:ring-blue-500">
-                                                <span class="text-gray-300">Normal</span>
+                                                <span class="text-gray-300">Modern</span>
                                                 <span class="text-xs text-gray-500">(Intel x86_64 — Velociraptor doesn't ship a darwin-arm64 yet)</span>
                                             </label>
                                         </div>
@@ -4107,13 +4116,20 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                         <!-- Module list -->
                         <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="space-y-3 max-h-80 overflow-y-auto">
                             <template x-for="module in $store.settings.prepareModules" :key="module.id">
-                                <label class="flex items-center gap-3 p-3 bg-gray-900 rounded border border-gray-700 cursor-pointer hover:bg-gray-800 transition-colors"
+                                <!-- flex-wrap + flex-shrink-0 on the textbox = the version input
+                                     never gets crushed off-screen on narrow modals/resolutions.
+                                     When the row can't fit horizontally the textbox wraps to the
+                                     next line instead of disappearing. The version textbox uses
+                                     w-full sm:w-28 (or sm:w-44 for intact) so it spans full row
+                                     width on small viewports and shrinks back to its natural
+                                     width above the sm breakpoint. -->
+                                <label class="flex flex-wrap items-center gap-3 p-3 bg-gray-900 rounded border border-gray-700 cursor-pointer hover:bg-gray-800 transition-colors"
                                        :class="{'border-blue-500 bg-gray-800': module.enabled}">
                                     <input type="checkbox" x-model="module.enabled"
-                                           class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer">
+                                           class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer flex-shrink-0">
                                     <div class="flex-1 min-w-0">
                                         <span class="text-white font-medium" x-text="module.name"></span>
-                                        <span x-show="module.id === 'intact'" class="text-blue-400 text-xs ml-2">(GitHub: TenrootOrg/IntactAI)</span>
+                                        <span x-show="module.subtitle" class="text-blue-400 text-xs ml-2" x-text="module.subtitle"></span>
                                     </div>
                                     <!-- Per-module version textbox. For the `intact` module this is
                                          now a GitHub ref (release tag, branch, or full commit SHA)
@@ -4124,8 +4140,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                     <input type="text" x-model="module.targetVersion"
                                            :disabled="!module.enabled"
                                            @click.stop
-                                           class="bg-gray-700 text-white text-sm px-2 py-1.5 rounded border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                                           :class="module.id === 'intact' ? 'w-44' : 'w-28'"
+                                           class="bg-gray-700 text-white text-sm px-2 py-1.5 rounded border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed focus:border-blue-500 focus:ring-1 focus:ring-blue-500 flex-shrink-0 w-full"
+                                           :class="module.id === 'intact' ? 'sm:w-44' : 'sm:w-28'"
                                            :placeholder="module.id === 'intact' ? 'e.g. intact-20260604' : 'Version'">
                                 </label>
                             </template>

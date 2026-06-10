@@ -38,6 +38,29 @@ def health_check():
     """Health check endpoint"""
     return jsonify({"status": "healthy", "service": "intact-backend"})
 
+
+@system_bp.route('/api/version', methods=['GET'])
+def get_intact_version():
+    """Return the current Intact.AI platform version.
+
+    Reads the VERSION file at the repo root — stamped by
+    .github/workflows/stamp-version-on-release.yml on every release.
+    Mirrors the read logic in services.upgrade.base.get_current_versions
+    but kept as a tiny standalone endpoint so the sidebar load doesn't
+    pull in the upgrade machinery.
+    """
+    import os
+    workdir = os.environ.get('INTACT_PATH', '/app/workdir')
+    version_file = os.path.join(workdir, 'VERSION')
+    try:
+        with open(version_file) as f:
+            version = f.read().strip()
+        if version:
+            return jsonify({"version": version})
+    except Exception:
+        pass
+    return jsonify({"version": "unknown"})
+
 @system_bp.route('/api/system/containers', methods=['GET'])
 def get_container_status():
     """Get status of core system containers from Docker interface"""

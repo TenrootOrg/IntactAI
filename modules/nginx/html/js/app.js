@@ -766,21 +766,25 @@ document.addEventListener('alpine:init', () => {
         // 'prepare' → POST /api/upgrade/prepare (offline flow, produces tar.gz)
         // 'online'  → POST /api/upgrade/online (combined prepare + apply)
         prepareModalMode: 'prepare',
+        // Each row: `name` renders in white, `subtitle` (optional) renders in
+        // blue beside it — matches the original Intact.AI "(backend + frontend)"
+        // styling and applies it uniformly across all modules so every row's
+        // tool/clarifier reads the same way.
         prepareModules: [
-            { id: 'elk', name: 'ELK Stack', targetVersion: '', enabled: false, fallback: '8.17.0' },
-            { id: 'timesketch', name: 'Timesketch', targetVersion: '', enabled: false, fallback: '20240919' },
-            { id: 'plaso', name: 'Plaso (Timeline)', targetVersion: '', enabled: false, fallback: '20240308' },
-            { id: 'iris', name: 'IRIS', targetVersion: '', enabled: false, fallback: 'v2.4.19' },
-            { id: 'velociraptor', name: 'Velociraptor', targetVersion: '', enabled: false, fallback: '0.73.4' },
-            { id: 'aws', name: 'AWS (Prowler)', targetVersion: '', enabled: false, fallback: '5.28.1' },
-            { id: 'azure', name: 'Azure (DFIR-O365RC)', targetVersion: '', enabled: false, fallback: 'latest' },
+            { id: 'elk', name: 'ELK Stack', subtitle: '', targetVersion: '', enabled: false, fallback: '8.17.0' },
+            { id: 'timesketch', name: 'Timesketch', subtitle: '', targetVersion: '', enabled: false, fallback: '20240919' },
+            { id: 'plaso', name: 'Plaso', subtitle: '(Timeline)', targetVersion: '', enabled: false, fallback: '20240308' },
+            { id: 'iris', name: 'IRIS', subtitle: '', targetVersion: '', enabled: false, fallback: 'v2.4.19' },
+            { id: 'velociraptor', name: 'Velociraptor', subtitle: '', targetVersion: '', enabled: false, fallback: '0.73.4' },
+            { id: 'aws', name: 'Prowler', subtitle: '', targetVersion: '', enabled: false, fallback: '5.28.1' },
+            { id: 'azure', name: 'DFIR-O365RC', subtitle: '', targetVersion: '', enabled: false, fallback: 'latest' },
             // VolWeb — apply orchestrator picks install_volweb_offline vs
             // upgrade_volweb_offline automatically based on whether
             // intact_volweb_backend exists on the host. Lets operators
             // package + deploy a module that wasn't selected at install
             // time without re-running install.sh.
-            { id: 'volweb', name: 'VolWeb (Memory Forensics)', targetVersion: '', enabled: false, fallback: 'latest' },
-            { id: 'intact', name: 'Intact.AI Source Code', targetVersion: 'intact-20260604', enabled: false, fallback: 'intact-20260604' },
+            { id: 'volweb', name: 'VolWeb', subtitle: '(Memory Forensics)', targetVersion: '', enabled: false, fallback: 'latest' },
+            { id: 'intact', name: 'Intact.AI', subtitle: '(Source code)', targetVersion: 'intact-20260604', enabled: false, fallback: 'intact-20260604' },
         ],
 
         async openPreparePackageModal() {
