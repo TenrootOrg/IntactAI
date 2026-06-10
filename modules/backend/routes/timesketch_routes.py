@@ -91,6 +91,17 @@ def run_timesketch_import():
     """Process KAPE collection and import into TimeSketch - Complete workflow"""
     sys.stdout.flush()
 
+    # Pre-flight: the import workflow polls a Velociraptor flow's
+    # results, so the server must be reachable. Without this check the
+    # request would crash deep inside services/agentic/collectors.py
+    # with a generic gRPC error — useless for the operator. The 503
+    # response names the artifact (`Windows.KapeFiles.Targets`) so
+    # they know what's missing.
+    from services.container_status import require_velociraptor
+    err, status = require_velociraptor('timesketch')
+    if err:
+        return jsonify(err), status
+
     try:
         data = request.get_json(silent=True) or {}
         flow_id = data.get('flow_id')
@@ -431,6 +442,13 @@ def start_multi_client_timesketch():
     in first-finished-first-processed order. All clients appear under one
     workflow row in the UI."""
     sys.stdout.flush()
+
+    # Same Velociraptor pre-flight as /api/timesketch/import — multi-client
+    # mode also dispatches Windows.KapeFiles.Targets, just across N clients.
+    from services.container_status import require_velociraptor
+    err, status = require_velociraptor('timesketch')
+    if err:
+        return jsonify(err), status
 
     try:
         data = request.get_json() or {}
