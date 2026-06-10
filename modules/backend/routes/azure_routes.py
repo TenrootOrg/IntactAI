@@ -210,7 +210,7 @@ def start_scan():
     def run_scan():
         try:
             # Validate module
-            if not is_module_enabled('azure'):
+            if not is_module_enabled('o365rc'):
                 add_log_to_run(run_id, "Azure module is not enabled. Enable it in config.yaml and rebuild.", "error")
                 update_run_status(run_id, "failed", error="Azure module not enabled")
                 return
@@ -332,7 +332,7 @@ def upload_logs():
     Accepts multipart form data with files.
     Returns run_id for subsequent analysis.
     """
-    if not is_module_enabled('azure'):
+    if not is_module_enabled('o365rc'):
         return jsonify({"error": "Azure module is not enabled. Enable it in config.yaml and rebuild the backend."}), 400
     try:
         if 'files' not in request.files and 'file' not in request.files:
@@ -958,7 +958,7 @@ def get_azure_chat(run_id):
 @azure_bp.route('/api/azure/run/<run_id>/chat', methods=['POST'])
 def post_azure_chat(run_id):
     """Append an operator turn; get the assistant reply."""
-    if not is_module_enabled('azure'):
+    if not is_module_enabled('o365rc'):
         return jsonify({"error": "Azure module is not enabled."}), 400
     try:
         run = get_automation_run(run_id)
@@ -998,7 +998,7 @@ def rerun_azure(run_id):
       - full: re-call analyze_artifacts over cached findings, then
         re-synthesise the report. One LLM call per rule fired.
     """
-    if not is_module_enabled('azure'):
+    if not is_module_enabled('o365rc'):
         return jsonify({"error": "Azure module is not enabled."}), 400
     try:
         run = get_automation_run(run_id)

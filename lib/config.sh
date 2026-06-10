@@ -215,8 +215,8 @@ update_env_files() {
         local ts_user=$(read_config "['modules']['timesketch']['id']")
         local ts_pass=$(read_config "['modules']['timesketch']['password']")
         local plaso_version=$(read_config "['versions']['plaso']")
-        local prowler_version=$(read_config "['versions']['aws_prowler']")
-        local o365rc_version=$(read_config "['versions']['azure_dfir_o365rc']")
+        local prowler_version=$(read_config "['versions']['prowler']")
+        local o365rc_version=$(read_config "['versions']['o365rc']")
 
         update_env_var "$backend_env" "TIMESKETCH_USER" "$ts_user"
         update_env_var "$backend_env" "TIMESKETCH_PASS" "$ts_pass"

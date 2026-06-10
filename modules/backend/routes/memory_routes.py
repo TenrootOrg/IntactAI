@@ -73,15 +73,20 @@ _VALID_MODES = {"yara", "plugin", "layered"}
 
 
 def _is_module_enabled() -> bool:
-    """Memory module gates on the same on/off switch as the rest of
-    the platform — ``config.yaml: modules.memory.enabled``. Defaults
-    to ``True`` if absent (the module ships enabled out of the box).
+    """Memory module gates on ``config.yaml: modules.volweb.enabled``.
+
+    History: 2026-06-10 the operator-facing module key was merged —
+    `memory:` was removed from config.yaml because the platform's
+    "Memory" feature is just an operator-facing label for VolWeb (the
+    memory-forensics stack). So a single `volweb.enabled` toggle now
+    controls both memory acquisition + memory analysis. Defaults to
+    True if absent (ships enabled out of the box).
     """
     try:
         from config import load_main_config
         cfg = load_main_config() or {}
         modules = cfg.get("modules") or {}
-        node = modules.get("memory")
+        node = modules.get("volweb")
         if isinstance(node, dict):
             return bool(node.get("enabled", True))
         return True

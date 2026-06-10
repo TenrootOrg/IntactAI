@@ -221,10 +221,10 @@ _MODULE_IMAGE_REPOS = {
         'docker.elastic.co/kibana/kibana',
         'docker.elastic.co/logstash/logstash',
     ],
-    'aws': [
+    'prowler': [
         'toniblyx/prowler',
     ],
-    'azure': [
+    'o365rc': [
         'anssi/dfir-o365rc',
     ],
 }
@@ -416,8 +416,8 @@ def get_latest_versions() -> Dict:
         'plaso':        'plaso',
         'iris':         'iris',
         'velociraptor': 'velociraptor',
-        'aws':          'aws_prowler',
-        'azure':        'azure_dfir_o365rc',
+        'prowler':      'prowler',
+        'o365rc':       'o365rc',
         'intact':       'backend',
         # VolWeb (memory-forensics analysis stack). Single
         # `versions.volweb` pin drives both backend + frontend images
@@ -433,8 +433,8 @@ def get_latest_versions() -> Dict:
         'plaso': '20260119',
         'iris': 'v2.4.27',
         'velociraptor': '0.76.5',
-        'aws': '5.28.1',
-        'azure': 'latest',
+        'prowler': '5.28.1',
+        'o365rc': 'latest',
         'intact': '1.0.0',
         'volweb': '3.16.0',
     }

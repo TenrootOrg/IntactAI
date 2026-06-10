@@ -817,7 +817,7 @@ download_sigma_rules() {
     # Clones SigmaHQ rules repository for offline use
 
     # Skip if azure module is disabled
-    local azure_enabled=$(read_config "['modules']['azure']['enabled']")
+    local azure_enabled=$(read_config "['modules']['o365rc']['enabled']")
     if ! is_enabled "$azure_enabled"; then
         log_info "Azure module disabled, skipping SIGMA rules download"
         return 0
@@ -867,14 +867,14 @@ download_sigma_rules() {
 pull_dfir_o365rc_image() {
     # Pull DFIR-O365RC image for Unified Audit Log collection
 
-    local azure_enabled=$(read_config "['modules']['azure']['enabled']")
+    local azure_enabled=$(read_config "['modules']['o365rc']['enabled']")
     if ! is_enabled "$azure_enabled"; then
         log_info "Azure module disabled, skipping DFIR-O365RC"
         return 0
     fi
 
     # Version pin from config.yaml (upstream only ships ':latest').
-    local o365rc_version=$(read_config "['versions']['azure_dfir_o365rc']")
+    local o365rc_version=$(read_config "['versions']['o365rc']")
     [[ -z "$o365rc_version" ]] && o365rc_version="latest"
     local o365rc_image="anssi/dfir-o365rc:${o365rc_version}"
 
@@ -909,14 +909,14 @@ pull_prowler_image() {
     # — at runtime the first scan would otherwise stall for several
     # minutes waiting for the pull on a fresh customer machine.
 
-    local aws_enabled=$(read_config "['modules']['aws']['enabled']")
+    local aws_enabled=$(read_config "['modules']['prowler']['enabled']")
     if ! is_enabled "$aws_enabled"; then
         log_info "AWS module disabled, skipping Prowler image"
         return 0
     fi
 
     # Version pin from config.yaml for reproducible installs.
-    local prowler_version=$(read_config "['versions']['aws_prowler']")
+    local prowler_version=$(read_config "['versions']['prowler']")
     [[ -z "$prowler_version" ]] && prowler_version="5.28.1"
     local prowler_image="toniblyx/prowler:${prowler_version}"
 
@@ -1016,7 +1016,7 @@ generate_azure_certificate() {
     # Generate self-signed certificate for DFIR-O365RC authentication
     # The public key must be uploaded to Azure App Registration by the user
 
-    local azure_enabled=$(read_config "['modules']['azure']['enabled']")
+    local azure_enabled=$(read_config "['modules']['o365rc']['enabled']")
     if ! is_enabled "$azure_enabled"; then
         return 0
     fi

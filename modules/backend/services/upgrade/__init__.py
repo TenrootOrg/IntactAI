@@ -241,15 +241,15 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
     db_overwrite = db_overwrite or {}
 
     # Intact.AI must be first so backend code is updated before modules
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure', 'volweb']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb']
     upgrade_functions = {
         'elk': upgrade_elk,
         'timesketch': upgrade_timesketch,
         'plaso': upgrade_plaso,
         'iris': upgrade_iris,
         'velociraptor': upgrade_velociraptor,
-        'aws': upgrade_aws,
-        'azure': upgrade_azure,
+        'prowler': upgrade_aws,
+        'o365rc': upgrade_azure,
         'volweb': upgrade_volweb,
         'intact': upgrade_intact,
     }
@@ -476,7 +476,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             package_dir = package_dir_raw
             extract_dir = package_dir_raw
 
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc']
 
     # Use online or offline functions based on mode
     if mode == 'offline':
@@ -486,8 +486,8 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'plaso': lambda v, **kw: upgrade_plaso_offline(package_dir, v, **kw),
             'iris': lambda v, **kw: upgrade_iris_offline(package_dir, v, **kw),
             'velociraptor': lambda v, **kw: upgrade_velociraptor_offline(package_dir, v, **kw),
-            'aws': lambda v, **kw: upgrade_aws_offline(package_dir, v, **kw),
-            'azure': lambda v, **kw: upgrade_azure_offline(package_dir, v, **kw),
+            'prowler': lambda v, **kw: upgrade_aws_offline(package_dir, v, **kw),
+            'o365rc': lambda v, **kw: upgrade_azure_offline(package_dir, v, **kw),
             'volweb': lambda v, **kw: upgrade_volweb_offline(package_dir, v, **kw),
             'intact': lambda **kw: upgrade_intact_offline(package_dir, **kw),
         }
@@ -749,8 +749,8 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         'plaso': upgrade_plaso_offline,
         'iris': upgrade_iris_offline,
         'velociraptor': upgrade_velociraptor_offline,
-        'aws': upgrade_aws_offline,
-        'azure': upgrade_azure_offline,
+        'prowler': upgrade_aws_offline,
+        'o365rc': upgrade_azure_offline,
         'intact': upgrade_intact_offline,
         'volweb': upgrade_volweb_offline,
     }
@@ -775,7 +775,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     # Intact.AI must be first so backend code is updated before modules.
     # VolWeb is at the end so its install (a multi-container compose) runs
     # last when the operator is adding VolWeb to an existing install.
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws', 'azure', 'volweb']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb']
 
     results = {}
     total = 0
