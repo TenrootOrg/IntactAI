@@ -62,7 +62,16 @@ def start_agentic_run():
         if not blueprint_name:
             bp = get_agentic_blueprint(blueprint_id) or get_velociraptor_blueprint(blueprint_id)
             blueprint_name = bp.get('name', 'Unknown') if bp else 'Unknown'
-        client_ids = data.get('client_ids', [])
+        # SHAPE VALIDATION (Mythos #2 extended): every `client_ids`
+        # element flows into `services/agentic/collectors.py` VQL
+        # strings via f-string concat (`get_flow(client_id='{cid}',
+        # ...)`, `cancel_flow(client_id='{cid}', ...)`, etc. — 9+
+        # sites). Reject anything that's not Velociraptor's strict
+        # `C.<hex>` ID format. Legitimate clients always match.
+        from services.vql_safety import validate_client_ids_list
+        client_ids, _cid_err = validate_client_ids_list(data.get('client_ids'))
+        if _cid_err:
+            return jsonify({"error": _cid_err}), 400
         collection_minutes = data.get('collection_minutes', 30)
         report_types = data.get('report_types', ['technical'])  # Default: both
 
@@ -277,10 +286,13 @@ def analyze_existing_collection():
         # client picker and sends the selection here so the collector can
         # push a `WHERE ClientId IN (...)` filter into the hunt-flows
         # enumeration. Ignored on single-flow runs.
-        client_ids = data.get('client_ids') or []
-        if not isinstance(client_ids, list):
-            return jsonify({"error": "client_ids must be a list of client ID strings"}), 400
-        client_ids = [str(c) for c in client_ids if c]
+        # SHAPE VALIDATION (Mythos #2 extended): see /api/agentic/run
+        # comment above for rationale — same VQL-concat downstream
+        # vulnerability through services/agentic/collectors.py.
+        from services.vql_safety import validate_client_ids_list
+        client_ids, _cid_err = validate_client_ids_list(data.get('client_ids'))
+        if _cid_err:
+            return jsonify({"error": _cid_err}), 400
 
         # Validate - need either flow_id or hunt_id
         if not flow_id and not hunt_id:
@@ -922,11 +934,14 @@ def rerun_agentic(run_id):
         # rest forward from the previous ZIP. Only meaningful for
         # scope='reports_only'; ignored on a full re-analysis (which
         # re-runs per-artifact LLM calls that aren't per-client scoped).
-        target_client_ids = data.get('client_ids') or None
-        if target_client_ids is not None and not isinstance(target_client_ids, list):
-            return jsonify({"error": "client_ids must be a list of strings"}), 400
-        if target_client_ids:
-            target_client_ids = [str(c) for c in target_client_ids if c]
+        # SHAPE VALIDATION (Mythos #2 extended): see /api/agentic/run
+        # for rationale.
+        from services.vql_safety import validate_client_ids_list
+        target_client_ids, _cid_err = validate_client_ids_list(data.get('client_ids'))
+        if _cid_err:
+            return jsonify({"error": _cid_err}), 400
+        if not target_client_ids:
+            target_client_ids = None  # preserve "None means all"
 
         details = run.get('details') or {}
         if not isinstance(details, dict):

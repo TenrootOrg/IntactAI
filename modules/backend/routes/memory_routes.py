@@ -137,6 +137,13 @@ def start_memory_run():
     if not client_id:
         return jsonify({"error": "client_id is required"}), 400
 
+    # SHAPE VALIDATION (Mythos #2 extended): `client_id` is downstream-
+    # interpolated into VQL strings via the memory acquisition path.
+    # Same Velociraptor `C.<hex>` shape constraint as everywhere else.
+    from services.vql_safety import is_valid_client_id
+    if not is_valid_client_id(client_id):
+        return jsonify({"error": "client_id must match C.<hex>"}), 400
+
     client_name = (data.get("client_name") or "").strip() or None
     case_name = (data.get("case_name") or "").strip() or "Memory"
 

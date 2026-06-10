@@ -92,9 +92,21 @@ def run_timesketch_import():
     sys.stdout.flush()
 
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         flow_id = data.get('flow_id')
         client_id = data.get('client_id')
+
+        # SHAPE VALIDATION (Mythos #2 extended): both fields flow into
+        # `services/agentic/collectors.py` VQL strings (`get_flow(
+        # client_id='{cid}', flow_id='{fid}')`, `enumerate_flow(...)`,
+        # `cancel_flow(...)`, etc.). Velociraptor's IDs follow strict
+        # prefixed-alphanumeric shapes; legit inputs always pass,
+        # attack shapes never do.
+        from services.vql_safety import is_valid_client_id, is_valid_flow_id
+        if not is_valid_client_id(client_id):
+            return jsonify({"error": "client_id is required and must match C.<hex>"}), 400
+        if flow_id and not is_valid_flow_id(flow_id):
+            return jsonify({"error": "flow_id must match F.<alphanumeric>"}), 400
         client_name = data.get('client_name', 'Unknown')
         sketch_name = data.get('sketch_name', f'Investigation_{datetime.now().strftime("%Y%m%d")}')
         timeline_name = data.get('timeline_name', f'{client_name}_{datetime.now().strftime("%Y%m%d_%H%M%S")}')

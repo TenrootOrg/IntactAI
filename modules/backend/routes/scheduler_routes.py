@@ -61,7 +61,16 @@ def create_job():
             return jsonify({"error": "interval_value must be at least 1"}), 400
 
         # Optional fields
-        client_ids = data.get('client_ids', [])
+        # SHAPE VALIDATION (Mythos #2 extended): scheduled agentic jobs
+        # eventually call into services/agentic/collectors.py with
+        # these client IDs in the same VQL-concat sites the manual
+        # agentic route uses. Reject malformed shapes at schedule time
+        # so a bad schedule doesn't sit around and fire injection on
+        # every cron tick.
+        from services.vql_safety import validate_client_ids_list
+        client_ids, _cid_err = validate_client_ids_list(data.get('client_ids'))
+        if _cid_err:
+            return jsonify({"error": _cid_err}), 400
         description = data.get('description', '')
         report_types = data.get('report_types', ['technical'])
         anonymize_data = data.get('anonymize_data', False)

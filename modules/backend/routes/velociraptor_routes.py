@@ -261,8 +261,26 @@ def run_bestpractice_hunts():
         artifact independently.
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         artifacts = data.get('artifacts', [])
+
+        # SHAPE VALIDATION (Mythos #4 extended): each artifact name
+        # gets interpolated into a VQL `hunt(artifacts=[...], ...)`
+        # string at lines ~210 and ~405. Velociraptor's parser today
+        # rejects malformed names — but that's the wrong layer to
+        # rely on. Validate the shape at the route entry: every legit
+        # Velociraptor artifact follows `^[A-Za-z0-9_.\-:]+$`, attack
+        # shapes (quotes, parens, semicolons) never match.
+        if not isinstance(artifacts, list):
+            return jsonify({"error": "artifacts must be a list of artifact names"}), 400
+        if len(artifacts) > 500:
+            return jsonify({"error": "artifacts list too long (>500 items)"}), 400
+        from services.vql_safety import is_valid_artifact_name
+        for i, a in enumerate(artifacts):
+            if not isinstance(a, str) or not is_valid_artifact_name(a):
+                return jsonify({
+                    "error": f"artifacts[{i}] is not a valid Velociraptor artifact name"
+                }), 400
         blueprint_name = data.get('blueprint_name', 'Custom')
         expire_minutes = data.get('expire_minutes', 120)
         timeout_seconds = data.get('timeout_seconds', 10000)

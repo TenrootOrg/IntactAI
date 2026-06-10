@@ -73,6 +73,42 @@ def is_valid_artifact_name(value: str) -> bool:
     return bool(value) and bool(_ARTIFACT_NAME_RE.match(value))
 
 
+def validate_client_ids_list(values, max_items: int = 5000):
+    """For routes that accept a `client_ids` LIST (agentic, scheduler,
+    analyze-existing, etc.): coerce to list, reject non-list payloads,
+    enforce a length cap, and shape-validate every element via
+    `is_valid_client_id`.
+
+    Returns (cleaned_list, None) on success, or (None, error_message)
+    on failure. Caller does:
+
+        cleaned, err = validate_client_ids_list(data.get('client_ids'))
+        if err:
+            return jsonify({"error": err}), 400
+
+    Empty input is allowed (returns `[]`) because some routes use
+    `client_ids=[]` to mean "all targets" or have other code paths.
+    The shape check still fires on every element when the list is
+    non-empty.
+    """
+    if values is None:
+        return [], None
+    if not isinstance(values, list):
+        return None, "client_ids must be a list of strings"
+    if len(values) > max_items:
+        return None, f"client_ids list too long (>{max_items} items)"
+    cleaned = []
+    for i, v in enumerate(values):
+        if not v:
+            continue
+        if not isinstance(v, str):
+            return None, f"client_ids[{i}] must be a string"
+        if not is_valid_client_id(v):
+            return None, f"client_ids[{i}] is not a valid Velociraptor client ID (must match C.<hex>)"
+        cleaned.append(v)
+    return cleaned, None
+
+
 def escape_vql_string(value: str) -> str:
     """Make a free-form string safe to embed inside a VQL single-quoted
     literal via the standard SQL/VQL escape: double up every `'`.
