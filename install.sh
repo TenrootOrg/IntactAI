@@ -158,6 +158,13 @@ main() {
     pull_prowler_image
 
     # -------------------------------------------------------------------------
+    # Backend base image — always built, so always pre-pull. Keeps the
+    # ~46 MB python:3.11-slim out of the build's wall-clock budget on
+    # slow-uplink VMs.
+    # -------------------------------------------------------------------------
+    pull_backend_base_image
+
+    # -------------------------------------------------------------------------
     # Configuration
     # -------------------------------------------------------------------------
     update_env_files
