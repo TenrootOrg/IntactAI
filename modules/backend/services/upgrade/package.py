@@ -967,10 +967,96 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             log("  Registry snapshot returned 0 artifacts — running Velociraptor "
                                 "may have empty non-built-in registry", "warning")
                     else:
-                        log(f"  Registry snapshot SQL failed (continuing without it): "
+                        # Soft fail — the direct-download step below
+                        # covers the standard sources (ArtifactExchange,
+                        # DetectRaptor, Extras) without needing a running
+                        # Velociraptor. Operator only loses bespoke
+                        # artifacts they imported manually that aren't
+                        # in those public sources.
+                        log(f"  Registry snapshot SQL failed (continuing — direct "
+                            f"downloads below will cover the standard sources): "
                             f"{snap.get('error', '')[:120]}", "warning")
                 except Exception as e:
                     log(f"  Registry snapshot raised: {e}", "warning")
+
+                # Direct downloads — pull artifact source zips straight
+                # from their public GitHub URLs. Runs UNCONDITIONALLY
+                # (works whether velociraptor is up or down) so the
+                # package always contains the standard artifact set even
+                # when the SQL snapshot above couldn't run.
+                #
+                # The three URLs are what Velociraptor 0.76.x itself
+                # uses for Server.Import.ArtifactExchange /
+                # Server.Import.DetectRaptor / Server.Import.Extras (verified
+                # by querying the live Velociraptor's Server.Import.*
+                # artifact YAMLs on 2026-06-10). They may need to be
+                # updated when bumping to a future Velociraptor major
+                # version that points elsewhere. The SQL snapshot above,
+                # when velociraptor IS running, captures whatever URLs
+                # the running version actually expects — so the two
+                # paths complement each other.
+                external_dir = os.path.join(velo_artifacts_dir, 'external')
+                os.makedirs(external_dir, exist_ok=True)
+                external_sources = [
+                    (
+                        "ArtifactExchange + Extras (Velocidex)",
+                        "artifact_exchange_v2.zip",
+                        "https://github.com/Velocidex/velociraptor-docs/raw/gh-pages/exchange/artifact_exchange_v2.zip",
+                    ),
+                    (
+                        "DetectRaptor (mgreen27)",
+                        "detectraptor_latest.zip",
+                        # GitHub /latest/download/<asset> redirects to
+                        # whatever asset name the latest release uses.
+                        # Verified 2026-06-10: latest tag = DetectRaptor,
+                        # asset name DetectRaptorVQL.zip (~750 KB).
+                        # Works without an API token at the anonymous
+                        # rate-limit (60/h is plenty for prepare).
+                        "https://github.com/mgreen27/DetectRaptor/releases/latest/download/DetectRaptorVQL.zip",
+                    ),
+                    (
+                        "Rapid7 Labs VQL (Extras)",
+                        "rapid7labs_vql.zip",
+                        "https://github.com/rapid7/Rapid7-Labs/raw/main/Vql/release/Rapid7LabsVQL.zip",
+                    ),
+                ]
+                log("Downloading external artifact sources (public GitHub URLs)...",
+                    "info")
+                dl_count = 0
+                for label, fname, url in external_sources:
+                    dst = os.path.join(external_dir, fname)
+                    try:
+                        cp = run_command(
+                            f"curl -fL --retry 3 --retry-delay 5 --max-time 180 "
+                            f"-o {dst} {url}",
+                            logger=None, timeout=200, run_id=run_id,
+                        )
+                        if cp.get('success') and os.path.isfile(dst):
+                            sz_mb = os.path.getsize(dst) / (1024 * 1024)
+                            if sz_mb > 0.05:
+                                log(f"  ✓ {label} → {fname} ({sz_mb:.1f} MB)",
+                                    "success")
+                                dl_count += 1
+                            else:
+                                log(f"  ✗ {label}: downloaded file too small "
+                                    f"({sz_mb*1024:.0f} KB) — probably an "
+                                    f"error page", "warning")
+                                try: os.remove(dst)
+                                except Exception: pass
+                        else:
+                            log(f"  ✗ {label}: curl failed "
+                                f"({(cp.get('error') or '')[:100]})", "warning")
+                    except Exception as e:
+                        log(f"  ✗ {label}: {e}", "warning")
+                if dl_count > 0:
+                    manifest["contents"].setdefault("velociraptor_artifacts", {})[
+                        "external_zips"] = dl_count
+                if dl_count == 0:
+                    log("  No external artifact sources downloaded — package "
+                        "will rely on registry_snapshot + custom_artifacts + "
+                        "TenRoot zip alone. Verify the upstream URLs haven't "
+                        "moved if this is an internet-connected prepare host.",
+                        "warning")
 
             elif module in DOCKER_IMAGES:
                 # Pull and save Docker images
