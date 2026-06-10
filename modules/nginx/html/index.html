@@ -520,6 +520,33 @@
                         </button>
                     </div>
 
+                    <!-- CVE Scan — NVD-backed vulnerability matcher. No
+                         external console (the page lives inside this app),
+                         so the button switches to the modules-cve-scan tab
+                         instead of opening a separate URL. Status comes from
+                         config.yaml's modules.cve_scan.enabled flag — same
+                         dual-signal path as prowler/o365rc. -->
+                    <div x-show="$store.services.statuses['cve_scan'] !== 'not_installed'"
+                         class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="flex items-center gap-3">
+                                <div class="bg-blue-600 p-3 rounded-lg">
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-semibold">CVE Scan</h3>
+                                    <p class="text-sm text-gray-400">NVD Vulnerability Matcher</p>
+                                </div>
+                            </div>
+                            <div :class="$store.services.getStatusClass('cve_scan')"></div>
+                        </div>
+                        <button @click="$store.app.switchTab('modules-cve-scan')" class="w-full bg-blue-600 hover:bg-blue-700 py-2.5 rounded-lg font-medium transition-all shadow hover:shadow-lg">
+                            Open CVE Scan
+                        </button>
+                    </div>
+
                     <!-- Prowler — AWS cloud posture scanner. On-demand
                          docker run per scan (no persistent container, no
                          web UI). "No console" button is intentionally
