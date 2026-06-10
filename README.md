@@ -46,8 +46,11 @@ upstream project's repository for the unmodified original.
 ## Quick Start
 
 ```bash
-# 1. Clone the repo
+# 1. Clone the repo (gets the latest `main`)
 git clone https://github.com/TenrootOrg/IntactAI.git intact
+# To install a specific release instead, add `--branch <tag>`,
+# e.g. --branch intact-20260609  (see the Releases tab for tags).
+
 cd intact
 
 # 2. Edit configuration (set your IP/domain and passwords)
