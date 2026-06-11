@@ -1042,7 +1042,13 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
     import subprocess as _sub
     config_ready = False
     waited = 0
-    while waited < 120:
+    # 5 min wall-clock budget. 120 s was too tight on slow disks (same
+    # rationale as the Timesketch schema-wait bump on 2026-06-11).
+    # Velociraptor's entrypoint does config-gen + key gen + datastore
+    # init in series; on a CPU-constrained or disk-slow machine that
+    # chain can take >120 s. Most installs land at 5-30 s.
+    _CONFIG_WAIT_SECS = 300
+    while waited < _CONFIG_WAIT_SECS:
         try:
             probe = _sub.run(
                 ["docker", "exec", "intact_velociraptor",
@@ -1057,16 +1063,21 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
             pass
         except Exception:
             pass
+        # Heartbeat every 30 s.
+        if waited and waited % 30 == 0:
+            log(f"  …still waiting for config-gen ({waited}s elapsed of "
+                f"{_CONFIG_WAIT_SECS}s budget)", "info")
         _time.sleep(5)
         waited += 5
 
     if not config_ready:
         log(
-            "Velociraptor configuration did not generate within 120s. "
-            "Container IS running but api.config.yaml may not be present "
-            "yet; backend → Velociraptor gRPC calls will fail until the "
-            "entrypoint finishes. Wait a minute then retry, or check "
-            "`docker logs intact_velociraptor` for errors. Continuing.",
+            f"Velociraptor configuration did not generate within "
+            f"{_CONFIG_WAIT_SECS}s. Container IS running but "
+            f"api.config.yaml may not be present yet; backend → "
+            f"Velociraptor gRPC calls will fail until the entrypoint "
+            f"finishes. Wait a minute then retry, or check `docker logs "
+            f"intact_velociraptor` for errors. Continuing.",
             "warning",
         )
 

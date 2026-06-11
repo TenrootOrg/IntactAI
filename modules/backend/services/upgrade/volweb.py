@@ -278,7 +278,12 @@ def install_volweb_offline(
         "get_user_model().objects.exists()\n"
         "print('SCHEMA_OK')\n"
     )
-    while waited < 180:
+    # 300s budget (was 180; warning text said 120 which was already
+    # stale). Bumped on 2026-06-11 to match Timesketch / Velociraptor /
+    # ELK so the whole upgrade suite survives slow-disk machines without
+    # silently degrading to "completed with warning" state.
+    _BACKEND_READY_WAIT_SECS = 300
+    while waited < _BACKEND_READY_WAIT_SECS:
         try:
             probe = _subprocess.run(
                 ["docker", "exec", "--user", "app", "-w", "/home/app/web", "-i",
@@ -294,15 +299,20 @@ def install_volweb_offline(
             pass  # exec itself hung — keep polling
         except Exception:
             pass
+        # Heartbeat every 30 s so the operator knows we haven't hung.
+        if waited and waited % 30 == 0:
+            log(f"  …still waiting for VolWeb backend ({waited}s elapsed of "
+                f"{_BACKEND_READY_WAIT_SECS}s budget)", "info")
         time.sleep(5)
         waited += 5
 
     if not backend_ready:
         log(
-            "VolWeb backend did not become ready after 120s. Containers ARE "
-            "running, but admin-user seeding has been SKIPPED — operator "
-            "must seed manually: `docker exec intact_volweb_backend "
-            "python3 manage.py createsuperuser`. Continuing.",
+            f"VolWeb backend did not become ready after "
+            f"{_BACKEND_READY_WAIT_SECS}s. Containers ARE running, but "
+            f"admin-user seeding has been SKIPPED — operator must seed "
+            f"manually: `docker exec intact_volweb_backend "
+            f"python3 manage.py createsuperuser`. Continuing.",
             "warning",
         )
         return {"success": True, "version": version, "first_install": True}

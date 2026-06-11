@@ -944,6 +944,52 @@ def install_timesketch_offline(package_dir: str, version: str, logger=None, run_
     if os.path.exists(env_file) and version:
         update_env_file(env_file, 'TIMESKETCH_VERSION', version, logger=log)
 
+    # Bootstrap timesketch.conf + timesketch_legacy.conf from templates
+    # BEFORE compose up — mirrors lib/modules.sh:deploy_timesketch which
+    # does the same thing for install.sh. Without these files the web /
+    # worker / legacy containers crash-loop on `Config file
+    # /etc/timesketch.conf does not exist` and the schema-bootstrap wait
+    # below times out at 120s. This was the root cause of the
+    # 2026-06-11 offline-install failure where the apply marked
+    # Timesketch "completed with warning" but the operator couldn't
+    # reach the UI. Idempotent: existing confs are preserved so
+    # operator's Settings → Timesketch api_key survives re-runs.
+    cfg_dir = os.path.join(work_dir, 'config')
+    if os.path.isdir(cfg_dir):
+        import secrets as _secrets
+        for base in ('timesketch.conf', 'timesketch_legacy.conf'):
+            template = os.path.join(cfg_dir, f'{base}.template')
+            out = os.path.join(cfg_dir, base)
+            if os.path.exists(out):
+                log(f"  {base} already present (skip)", "info")
+                continue
+            if not os.path.exists(template):
+                log(f"  Template missing: {template}", "warning")
+                continue
+            try:
+                with open(template) as f:
+                    rendered = f.read()
+                # SECRET_KEY signs Flask session cookies + CSRF tokens —
+                # must be unique per install. Templates ship a
+                # __SECRET_KEY__ placeholder OR a stub literal; the
+                # regex covers both shapes (mirrors lib/modules.sh:467).
+                import re
+                random_key = _secrets.token_hex(32)
+                rendered = re.sub(
+                    r"^SECRET_KEY\s*=\s*'[^']*'",
+                    f"SECRET_KEY = '{random_key}'",
+                    rendered,
+                    count=1,
+                    flags=re.MULTILINE,
+                )
+                with open(out, 'w') as f:
+                    f.write(rendered)
+                log(f"  {base} created from template (api_key empty — set via Settings → Timesketch; SECRET_KEY randomized)", "success")
+            except Exception as e:
+                log(f"  {base} bootstrap failed: {e}", "warning")
+    else:
+        log(f"  Config dir missing at {cfg_dir} — Timesketch will crash-loop on missing conf. Check package extraction.", "warning")
+
     compose_result = install_module_compose_up(
         'timesketch', package_dir, version,
         image_tar_prefixes=['timesketch'],
@@ -969,7 +1015,14 @@ def install_timesketch_offline(package_dir: str, version: str, logger=None, run_
     log("Waiting for Timesketch postgres `user` table to materialize...", "info")
     schema_ready = False
     waited = 0
-    while waited < 120:
+    # 5 min wall-clock budget. 120 s was too tight on slow disks /
+    # CPU-constrained installs — the user from 2026-06-11 saw a clean
+    # install report "completed" but the schema never materialized
+    # because postgres + opensearch + redis + web took >120 s to
+    # finish their cold-boot. Most installs land at 30-60 s so the
+    # extra slack is paid only on the slow-machine tail.
+    _SCHEMA_WAIT_SECS = 300
+    while waited < _SCHEMA_WAIT_SECS:
         probe = run_command(
             'docker exec intact_timesketch_postgres psql -U timesketch -d timesketch '
             '-tAc "SELECT to_regclass(\'public.\\"user\\"\');"',
@@ -983,16 +1036,20 @@ def install_timesketch_offline(package_dir: str, version: str, logger=None, run_
             schema_ready = True
             log(f"  Timesketch `user` table is present ({waited}s)", "success")
             break
+        # Heartbeat every 30 s so the operator knows we haven't hung.
+        if waited and waited % 30 == 0:
+            log(f"  …still waiting for schema ({waited}s elapsed of "
+                f"{_SCHEMA_WAIT_SECS}s budget)", "info")
         time.sleep(2)
         waited += 2
 
     if not schema_ready:
         log(
-            "Timesketch postgres `user` table did not appear after 120s — "
-            "the web container may still be initializing. Admin user "
-            "creation skipped; operator should run `docker exec "
-            "intact_timesketch_web tsctl create-user <id> --password <pw>` "
-            "manually once the schema is ready.",
+            f"Timesketch postgres `user` table did not appear after "
+            f"{_SCHEMA_WAIT_SECS}s — the web container may still be "
+            f"initializing. Admin user creation skipped; operator should "
+            f"run `docker exec intact_timesketch_web tsctl create-user "
+            f"<id> --password <pw>` manually once the schema is ready.",
             "warning",
         )
         # Return compose-up success — containers ARE running, just not
