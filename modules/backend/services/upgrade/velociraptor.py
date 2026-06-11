@@ -208,6 +208,78 @@ def _import_bundled_registry_snapshot(package_dir: str,
     return ok
 
 
+def _import_bundled_external_artifacts(package_dir: str,
+                                        logger: Callable = None) -> int:
+    """Import the artifact zips that prepare downloaded directly from
+    public GitHub URLs (ArtifactExchange, DetectRaptor, Rapid7 Labs).
+
+    Path written by prepare_upgrade_package's velociraptor branch:
+        <package>/artifacts/velociraptor/external/*.zip
+
+    Each zip contains many .yaml artifact definitions at various depths
+    (the upstream zip layouts aren't uniform — Velocidex's
+    artifact_exchange_v2.zip nests under exchange/, DetectRaptor's
+    flattens under DetectRaptor/, Rapid7's puts them under Vql/). Walk
+    each extracted tree and import every .yaml. Per-artifact failures
+    are swallowed for the same reason as registry_snapshot — version
+    skew between the prepare-host's Velociraptor and the target's.
+
+    Returns the count of successfully-imported artifacts across all zips.
+    """
+    import tempfile
+    import zipfile
+
+    log = logger or (lambda msg, level="info": None)
+    ext_dir = os.path.join(package_dir, 'artifacts', 'velociraptor', 'external')
+    if not os.path.isdir(ext_dir):
+        return 0
+
+    zips = sorted(
+        os.path.join(ext_dir, f) for f in os.listdir(ext_dir)
+        if f.endswith('.zip')
+    )
+    if not zips:
+        return 0
+
+    try:
+        from services.velociraptor_init_service import import_custom_artifact
+    except Exception as e:
+        log(f"  Could not import import_custom_artifact: {e}", "warning")
+        return 0
+
+    log(f"  Importing artifacts from {len(zips)} external zip(s)...", "info")
+    total_ok = 0
+    for zpath in zips:
+        zname = os.path.basename(zpath)
+        try:
+            with tempfile.TemporaryDirectory(prefix='extbundle_') as tmp:
+                with zipfile.ZipFile(zpath) as zf:
+                    zf.extractall(tmp)
+                ok = 0
+                count = 0
+                for root, _, files in os.walk(tmp):
+                    for fn in files:
+                        if not fn.endswith(('.yaml', '.yml')):
+                            continue
+                        count += 1
+                        try:
+                            with open(os.path.join(root, fn), 'r') as f:
+                                yaml_content = f.read()
+                            if import_custom_artifact(yaml_content, logger_func=None):
+                                ok += 1
+                        except Exception:
+                            continue
+                log(f"    {zname}: {ok}/{count} imported", "info" if ok else "warning")
+                total_ok += ok
+        except zipfile.BadZipFile:
+            log(f"    {zname}: not a valid zip — skipping", "warning")
+        except Exception as e:
+            log(f"    {zname}: {e}", "warning")
+    log(f"  External artifact zips: {total_ok} total artifacts imported",
+        "success" if total_ok else "warning")
+    return total_ok
+
+
 # All four binaries the Dockerfile needs to COPY at build time. The
 # entrypoint repacks the Mac/Win/Linux clients with the server's config
 # on every container boot, so all four MUST be present in the image —
@@ -863,6 +935,19 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         except Exception as e:
             log(f"  Registry-snapshot import raised: {e}", "warning")
 
+        # Direct-download fallback: extract + import the public source
+        # zips prepare curl'd. These cover the same three sources as the
+        # SQL snapshot above (ArtifactExchange / DetectRaptor / Extras)
+        # but run unconditionally — so an upgrade package that was
+        # prepared without a running Velociraptor still imports the
+        # standard artifact set on the target. Imports are idempotent
+        # (import_custom_artifact overwrites by name), so the overlap
+        # with the registry snapshot is harmless.
+        try:
+            _import_bundled_external_artifacts(package_dir, logger=log)
+        except Exception as e:
+            log(f"  External artifact import raised: {e}", "warning")
+
         # Same artifact re-import as the online path. See its docstring
         # for the "why" — a Velociraptor binary upgrade leaves the
         # new container's registry empty of non-built-in artifacts,
@@ -984,5 +1069,27 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
             "`docker logs intact_velociraptor` for errors. Continuing.",
             "warning",
         )
+
+    # Bundled-artifact restoration — same three paths the upgrade flow
+    # runs. Without these a fresh-install Velociraptor comes up with an
+    # EMPTY non-built-in artifact registry: no DetectRaptor, no
+    # ArtifactExchange, no Extras, no operator custom_artifacts. On an
+    # air-gapped target there's no way to fetch them later either, so
+    # the install is functionally useless. Each layer is best-effort
+    # (existing wrapper pattern) — failures log warnings but don't
+    # abort an otherwise-successful install.
+    log("Restoring bundled artifacts from package...", "info")
+    try:
+        _restore_bundled_artifact_sources(package_dir, logger=log)
+    except Exception as e:
+        log(f"  Bundled artifact source restore raised: {e}", "warning")
+    try:
+        _import_bundled_registry_snapshot(package_dir, logger=log)
+    except Exception as e:
+        log(f"  Registry-snapshot import raised: {e}", "warning")
+    try:
+        _import_bundled_external_artifacts(package_dir, logger=log)
+    except Exception as e:
+        log(f"  External artifact import raised: {e}", "warning")
 
     return compose_result

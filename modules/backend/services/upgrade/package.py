@@ -1031,21 +1031,38 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             f"-o {dst} {url}",
                             logger=None, timeout=200, run_id=run_id,
                         )
-                        if cp.get('success') and os.path.isfile(dst):
-                            sz_mb = os.path.getsize(dst) / (1024 * 1024)
-                            if sz_mb > 0.05:
-                                log(f"  ✓ {label} → {fname} ({sz_mb:.1f} MB)",
-                                    "success")
-                                dl_count += 1
-                            else:
-                                log(f"  ✗ {label}: downloaded file too small "
-                                    f"({sz_mb*1024:.0f} KB) — probably an "
-                                    f"error page", "warning")
-                                try: os.remove(dst)
-                                except Exception: pass
-                        else:
+                        if not (cp.get('success') and os.path.isfile(dst)):
                             log(f"  ✗ {label}: curl failed "
                                 f"({(cp.get('error') or '')[:100]})", "warning")
+                            continue
+                        # Verify it's a real zip by reading the magic
+                        # bytes: every ZIP starts with PK\x03\x04. This
+                        # cleanly rejects GitHub's HTML error pages while
+                        # accepting legitimate small zips like Rapid7's
+                        # ~12 KB Rapid7LabsVQL.zip — which a size-based
+                        # threshold ("> 50 KB") would false-positive on.
+                        try:
+                            with open(dst, 'rb') as f:
+                                head = f.read(4)
+                        except Exception as e:
+                            log(f"  ✗ {label}: could not read downloaded "
+                                f"file: {e}", "warning")
+                            try: os.remove(dst)
+                            except Exception: pass
+                            continue
+                        if not head.startswith(b'PK\x03\x04'):
+                            sz_kb = os.path.getsize(dst) / 1024
+                            log(f"  ✗ {label}: download isn't a real zip "
+                                f"(magic={head!r}, {sz_kb:.0f} KB) — most "
+                                f"likely an HTML error page, dropping",
+                                "warning")
+                            try: os.remove(dst)
+                            except Exception: pass
+                            continue
+                        sz_mb = os.path.getsize(dst) / (1024 * 1024)
+                        log(f"  ✓ {label} → {fname} ({sz_mb:.2f} MB)",
+                            "success")
+                        dl_count += 1
                     except Exception as e:
                         log(f"  ✗ {label}: {e}", "warning")
                 if dl_count > 0:
