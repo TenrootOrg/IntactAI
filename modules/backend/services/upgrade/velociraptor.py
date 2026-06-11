@@ -1103,4 +1103,46 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
     except Exception as e:
         log(f"  External artifact import raised: {e}", "warning")
 
+    # Generate pre-configured client installers (MSI / EXE / Linux /
+    # Mac / musl). lib/modules.sh:730-739 does this for the install.sh
+    # path; the offline-apply path was missing the parallel step, so
+    # operators who installed via the UI got a fully-functional
+    # Velociraptor server but the Downloads page returned "Client
+    # installer not found for platform: windows-msi". The script does a
+    # `docker exec intact_velociraptor velociraptor config client …`
+    # per platform and dumps the binaries into client_installers/. We
+    # reach it through the WORKDIR bind-mount (the repo root inside the
+    # backend container). Best-effort — failures log warnings; the
+    # operator can re-run the script manually.
+    client_gen_script = os.path.join(WORKDIR, 'scripts', 'generate_clients.sh')
+    if os.path.isfile(client_gen_script):
+        log("Generating pre-configured client installers (MSI / EXE / Linux / Mac / musl)...", "info")
+        try:
+            cg = run_command(
+                f"bash {client_gen_script}",
+                logger=log, timeout=600, run_id=run_id,
+            )
+            if cg.get('success'):
+                log("  Client installers generated; Downloads page is ready.",
+                    "success")
+            else:
+                err = (cg.get('error') or '')[:200]
+                log(
+                    f"  generate_clients.sh returned non-zero: {err}. The "
+                    f"Downloads page will return 404 for client installers "
+                    f"until the operator re-runs `bash scripts/generate_clients.sh` "
+                    f"on the host.",
+                    "warning",
+                )
+        except Exception as e:
+            log(f"  generate_clients.sh raised: {e} (Downloads page will "
+                f"404 until operator re-runs the script)", "warning")
+    else:
+        log(
+            f"  generate_clients.sh not found at {client_gen_script}. "
+            f"Downloads page client-installer endpoints will 404 until "
+            f"the operator runs the script manually on the host.",
+            "warning",
+        )
+
     return compose_result
