@@ -184,7 +184,7 @@ def start_server_event_artifact(artifact_name, logger_func=None):
         return False
 
 
-def initialize_velociraptor_artifacts(logger_func=None):
+def initialize_velociraptor_artifacts(logger_func=None, skip_exchange_imports=False):
     """Initialize Velociraptor by running server artifacts in sequence
 
     This function is called on backend startup to ensure all required
@@ -195,6 +195,15 @@ def initialize_velociraptor_artifacts(logger_func=None):
 
     Args:
         logger_func: Optional logging function
+        skip_exchange_imports: When True, skip the three internet-dependent
+            Server.Import.* artifacts (ArtifactExchange, DetectRaptor,
+            Extras). Set this for offline-install paths where
+            _import_bundled_external_artifacts has already imported the
+            same content from bundled zips at prepare time — running the
+            Server.Import.* artifacts then would just fail silently when
+            internet is unavailable, surfacing as "Some artifacts failed
+            to add" warnings the operator can't resolve. TenRoot zip
+            extraction + local custom artifact import still run.
 
     Returns:
         dict with status of each import
@@ -232,27 +241,41 @@ def initialize_velociraptor_artifacts(logger_func=None):
         log("Velociraptor not available, skipping artifact initialization", "warning")
         return results
 
-    # Run server artifacts (Server.Import.ArtifactExchange imports all exchange artifacts)
-    log(f"Running {len(STARTUP_SERVER_ARTIFACTS)} server artifacts...")
+    # Run server artifacts (Server.Import.ArtifactExchange imports all exchange artifacts).
+    # Skipped when the caller has already covered the same content from
+    # bundled-package external zips (see _import_bundled_external_artifacts
+    # in services/upgrade/velociraptor.py — runs the same imports without
+    # needing internet at apply time).
+    if skip_exchange_imports:
+        log(f"Skipping {len(STARTUP_SERVER_ARTIFACTS)} Server.Import.* artifacts "
+            "(already imported from bundled package zips — avoids 'failed' "
+            "warnings on air-gapped targets where these would hit github at "
+            "runtime).")
+        # Record them as 'skipped' so the caller sees consistent counts.
+        for artifact in STARTUP_SERVER_ARTIFACTS:
+            results["skipped"].append(artifact)
+        # Fall through to the TenRoot + local imports below.
+    else:
+        log(f"Running {len(STARTUP_SERVER_ARTIFACTS)} server artifacts...")
 
-    for idx, artifact in enumerate(STARTUP_SERVER_ARTIFACTS):
-        try:
-            flow_id = run_server_artifact(artifact, logger_func=logger_func)
-            if flow_id:
-                results["success"].append(artifact)
-                log(f"Successfully started {artifact} with flow_id: {flow_id}")
-            else:
+        for idx, artifact in enumerate(STARTUP_SERVER_ARTIFACTS):
+            try:
+                flow_id = run_server_artifact(artifact, logger_func=logger_func)
+                if flow_id:
+                    results["success"].append(artifact)
+                    log(f"Successfully started {artifact} with flow_id: {flow_id}")
+                else:
+                    results["failed"].append(artifact)
+                    log(f"Failed to start {artifact}", "warning")
+
+            except Exception as e:
+                log(f"Failed to run {artifact}: {e}", "error")
                 results["failed"].append(artifact)
-                log(f"Failed to start {artifact}", "warning")
 
-        except Exception as e:
-            log(f"Failed to run {artifact}: {e}", "error")
-            results["failed"].append(artifact)
-
-        # Delay between artifacts (except after the last one)
-        if idx < len(STARTUP_SERVER_ARTIFACTS) - 1:
-            log("Waiting 10s before next artifact...")
-            time.sleep(10)
+            # Delay between artifacts (except after the last one)
+            if idx < len(STARTUP_SERVER_ARTIFACTS) - 1:
+                log("Waiting 10s before next artifact...")
+                time.sleep(10)
 
     # Import TenRoot custom artifacts (if zip exists)
     log("")

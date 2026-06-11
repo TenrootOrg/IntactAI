@@ -16,7 +16,8 @@ from .base import (
 )
 
 
-def _reimport_artifacts_post_upgrade(velo_data: str, logger: Callable = None) -> None:
+def _reimport_artifacts_post_upgrade(velo_data: str, logger: Callable = None,
+                                       skip_exchange_imports: bool = False) -> None:
     """Re-register all custom + imported artifacts in the freshly-upgraded
     Velociraptor server's registry.
 
@@ -66,8 +67,17 @@ def _reimport_artifacts_post_upgrade(velo_data: str, logger: Callable = None) ->
         return
 
     # Layer 1: same orchestrator the Maintenance UI button runs.
+    # skip_exchange_imports plumbs through from offline-upgrade callers
+    # (where Server.Import.ArtifactExchange / DetectRaptor / Extras need
+    # internet at runtime and silently fail on air-gap targets — and
+    # _import_bundled_external_artifacts above already imported the
+    # same content from the prepare-time bundled zips). Online upgrades
+    # pass False (the default) so they still get the live upstream
+    # additions Velociraptor's Server.Import.* artifacts would fetch.
     try:
-        initialize_velociraptor_artifacts(logger_func=log)
+        initialize_velociraptor_artifacts(
+            logger_func=log, skip_exchange_imports=skip_exchange_imports
+        )
     except Exception as e:
         log(
             f"  initialize_velociraptor_artifacts raised "
@@ -952,10 +962,15 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         # for the "why" — a Velociraptor binary upgrade leaves the
         # new container's registry empty of non-built-in artifacts,
         # breaking the Quick Wins blueprint hunt + KapeTriage flow
-        # for Timesketch. This is a belt-and-suspenders second pass
-        # that also triggers Server.Import.* (needs internet — falls
-        # back gracefully on air-gap).
-        _reimport_artifacts_post_upgrade(velo_data, logger=log)
+        # for Timesketch. skip_exchange_imports=True because we're in
+        # the OFFLINE upgrade path — _import_bundled_external_artifacts
+        # above already imported the 7 prepare-time bundled zips, and
+        # the Server.Import.* artifacts would silently 404 on an
+        # air-gap target while logging confusing "Some artifacts
+        # failed" warnings. The online upgrade path keeps the default
+        # (False) so it still benefits from live upstream additions.
+        _reimport_artifacts_post_upgrade(velo_data, logger=log,
+                                          skip_exchange_imports=True)
 
         remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
         return {"success": True, "version": actual_version, "health": "green" if healthy else "pending"}
@@ -1102,6 +1117,46 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
         _import_bundled_external_artifacts(package_dir, logger=log)
     except Exception as e:
         log(f"  External artifact import raised: {e}", "warning")
+
+    # Run the TenRoot artifact importer. Critical for fresh installs:
+    # the previous steps register YAMLs that are already standalone
+    # artifacts, but the TenRoot custom pack (Windows.Triage.Targets,
+    # KAPE blueprints, and ~40 others) is delivered as a ZIP that has
+    # to be UNPACKED by a server artifact called
+    # Custom.Server.Import.TenRoot.Artifacts running inside Velociraptor.
+    # _restore_bundled_artifact_sources above placed the zip at
+    # /app/data/tools/Velociraptor-Artifacts-main.zip; we now invoke
+    # the same orchestrator the "Maintenance → Refresh Tool Inventory"
+    # UI button runs to extract and import every YAML.
+    #
+    # Without this, KAPE-based TimeSketch automations fail with
+    # "Parameter refers to an unknown artifact (Windows.Triage.Targets)"
+    # — the symptom the 2026-06-11 fresh-install operator hit. The
+    # upgrade path already calls this via _reimport_artifacts_post_upgrade,
+    # but install_velociraptor_offline was missing the parallel step.
+    log("Importing TenRoot custom artifact pack (KAPE blueprints, etc.)...", "info")
+    try:
+        from services.velociraptor_init_service import initialize_velociraptor_artifacts
+        # skip_exchange_imports=True — the three Server.Import.* artifacts
+        # (ArtifactExchange / DetectRaptor / Extras) need internet to
+        # download from github at runtime. On air-gapped targets those
+        # silently fail and the operator sees "Some artifacts failed".
+        # _import_bundled_external_artifacts above already imported the
+        # same content from the prepare-time bundled zips, so running
+        # the Server.Import.* artifacts is pure noise — skip them and
+        # only run the TenRoot zip extraction + local custom artifact
+        # imports (both fully air-gap safe).
+        initialize_velociraptor_artifacts(logger_func=log, skip_exchange_imports=True)
+    except Exception as e:
+        log(
+            f"  TenRoot import orchestrator raised "
+            f"({type(e).__name__}: {e}); operator should click "
+            f"Settings → System Maintenance → Refresh Tool Inventory "
+            f"to retry. KAPE collections will fail with 'unknown "
+            f"artifact (Windows.Triage.Targets)' until this runs "
+            f"successfully.",
+            "warning",
+        )
 
     # Generate pre-configured client installers (MSI / EXE / Linux /
     # Mac / musl). lib/modules.sh:730-739 does this for the install.sh

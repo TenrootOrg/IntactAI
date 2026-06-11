@@ -997,9 +997,19 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # paths complement each other.
                 external_dir = os.path.join(velo_artifacts_dir, 'external')
                 os.makedirs(external_dir, exist_ok=True)
+                # Full list — every URL Server.Import.ArtifactExchange /
+                # DetectRaptor / Extras would download at runtime. The
+                # Extras artifact in particular downloads from SIX URLs
+                # (not the two the original list had); missing the
+                # Triage zip means Windows.Triage.Targets is absent on
+                # the apply target, which kape_service.py:76 hard-fails
+                # on with "Parameter refers to an unknown artifact". The
+                # 2026-06-11 fresh-install operator hit exactly this.
+                # See `Server.Import.Extras` artifact YAML for the
+                # authoritative list (parameters.Details.default).
                 external_sources = [
                     (
-                        "ArtifactExchange + Extras (Velocidex)",
+                        "Artifact Exchange (Velocidex)",
                         "artifact_exchange_v2.zip",
                         "https://github.com/Velocidex/velociraptor-docs/raw/gh-pages/exchange/artifact_exchange_v2.zip",
                     ),
@@ -1015,9 +1025,29 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         "https://github.com/mgreen27/DetectRaptor/releases/latest/download/DetectRaptorVQL.zip",
                     ),
                     (
-                        "Rapid7 Labs VQL (Extras)",
+                        "Rapid7 Labs VQL",
                         "rapid7labs_vql.zip",
                         "https://github.com/rapid7/Rapid7-Labs/raw/main/Vql/release/Rapid7LabsVQL.zip",
+                    ),
+                    (
+                        "Velociraptor Sigma",
+                        "velociraptor_sigma.zip",
+                        "https://sigma.velocidex.com/Velociraptor.Sigma.Artifacts.zip",
+                    ),
+                    (
+                        "Registry Hunter (Velocidex)",
+                        "windows_registry_hunter.zip",
+                        "https://registry-hunter.velocidex.com/Windows.Registry.Hunter.zip",
+                    ),
+                    (
+                        "SQLite Hunter (Velocidex)",
+                        "sqlite_hunter.zip",
+                        "https://sqlitehunter.velocidex.com/SQLiteHunter.zip",
+                    ),
+                    (
+                        "Triage Artifacts (Velocidex) — Windows.Triage.Targets, Windows.KapeFiles.Targets",
+                        "velociraptor_triage.zip",
+                        "https://triage.velocidex.com/artifacts/Velociraptor_Triage_v0.1.zip",
                     ),
                 ]
                 log("Downloading external artifact sources (public GitHub URLs)...",
