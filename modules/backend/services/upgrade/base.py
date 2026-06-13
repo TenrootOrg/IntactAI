@@ -580,12 +580,17 @@ def get_current_versions() -> Dict:
         'env_file': ts_env,
     }
 
-    # Plaso pin lives in the backend .env (no standalone container);
-    # always shows the configured value.
+    # Plaso pin lives in the backend .env (no standalone container).
+    # Same blank → 'Not installed' treatment as prowler / o365rc below —
+    # without it, a backend-only host shows plaso with an empty 'current'
+    # string and the track-flow resolver classifies it as forced/noop
+    # instead of optional, so the operator can never opt in via the new
+    # UI. Discovered during a backend-only fresh-install Test A.
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
     backend_vars = read_env_file(backend_env)
+    plaso_version = backend_vars.get('PLASO_VERSION', '').strip()
     versions['plaso'] = {
-        'current': backend_vars.get('PLASO_VERSION', 'unknown'),
+        'current': plaso_version if plaso_version else 'Not installed',
         'env_file': backend_env,
     }
 
