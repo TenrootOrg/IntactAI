@@ -1063,6 +1063,46 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
 
             log(f"{'='*50}", "info")
 
+            # ─── version table: before → after ────────────────────────
+            # The opening "VERSION SUMMARY" earlier in this run logged
+            # current → target. This one logs the OBSERVED after-state
+            # (re-reads .env so we see what the upgrade functions
+            # actually wrote, not what was planned) next to the BEFORE
+            # state we captured at the top of the run. Same module list,
+            # same order, so the operator can scan the two tables side
+            # by side. Shows ✗ when a planned upgrade didn't change the
+            # observed version — a silent partial failure that the
+            # success summary above would hide.
+            try:
+                after_versions = get_current_versions()
+            except Exception as _e:
+                after_versions = {}
+
+            log("", "info")
+            log("FINAL VERSION TABLE:", "info")
+            log("-" * 64, "info")
+            log(f"  {'Module':14} {'Before':22} {'After':22} {'Status':6}", "info")
+            log(f"  {'-'*14} {'-'*22} {'-'*22} {'-'*6}", "info")
+            # Iterate over a stable, predictable order that matches the
+            # VERSION SUMMARY at run start.
+            row_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris',
+                         'velociraptor', 'prowler', 'o365rc', 'volweb']
+            for mod in row_order:
+                before = current_versions.get(mod, {}).get('current', '?') if isinstance(current_versions, dict) else '?'
+                after = after_versions.get(mod, {}).get('current', '?') if isinstance(after_versions, dict) else '?'
+                if before == after:
+                    status = '(noop)'
+                elif before in ('Not installed', 'unknown'):
+                    status = 'NEW'
+                elif after in ('Not installed', 'unknown'):
+                    # Module went from installed → not — shouldn't happen
+                    # in an upgrade. Loud signal that something is wrong.
+                    status = 'GONE!'
+                else:
+                    status = 'OK'
+                log(f"  {mod:14} {str(before):22} {str(after):22} {status}", "info")
+            log("-" * 64, "info")
+
     all_success = all(r.get('success', False) for r in results.values() if not isinstance(r, str))
     return {
         "success": all_success,

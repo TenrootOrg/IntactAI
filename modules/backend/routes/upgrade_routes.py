@@ -98,10 +98,19 @@ def _read_package_manifest(package_path):
     return {}
 
 
-def _modules_from_track(target: str, opted_in_optional: list) -> dict:
+def _modules_from_track(target: str, opted_in_optional: list):
     """Translate the new ``{target, opted_in_optional}`` request shape
     into the ``{module: version}`` dict the existing prepare/online
     dispatchers consume.
+
+    Returns a 2-tuple ``(modules_dict, warnings)`` — warnings is a list
+    of strings the caller should emit into the workflow log AFTER the
+    run is created, so the operator sees them in the Workflow UI.
+    Today the only warning is the "default credentials" notice, fired
+    when ``modules.<name>`` was created from upstream — the upstream
+    creds are KNOWN-PUBLIC release defaults (id: tenroot, password:
+    123123 in the shipped config.yaml) so the operator MUST change them
+    before the new module is exposed.
 
     Forced rows (modules already installed locally) are ALL included —
     operator can't opt out per principle 1 of the design. Optional rows
@@ -113,13 +122,7 @@ def _modules_from_track(target: str, opted_in_optional: list) -> dict:
     an optional module that doesn't yet have a ``modules.<name>`` block
     in their local config.yaml, we splice it in from the upstream
     config.yaml BEFORE dispatching. The install function later reads
-    the credentials from the local file as normal. This closes the
-    new-module gap so future releases that add modules (e.g. v3.0
-    introduces ``auditd``) automatically grow the operator's local
-    config.yaml when they opt in, rather than relying on
-    install-function hardcoded defaults that are invisible to the
-    operator. See set_module_block_in_config docstring for the
-    insertion semantics (idempotent, preserves operator-local edits).
+    the credentials from the local file as normal.
 
     Raises :class:`ResolverError` (handled at the route layer) when the
     target is unreachable, rate-limited, or returns garbage.
@@ -129,6 +132,7 @@ def _modules_from_track(target: str, opted_in_optional: list) -> dict:
 
     plan = compute_plan(target, user_action='submit')
     modules: dict = {}
+    warnings: list = []
     for row in plan['forced']:
         if row['action'] == 'noop':
             continue
@@ -149,9 +153,24 @@ def _modules_from_track(target: str, opted_in_optional: list) -> dict:
             # it. No-op if the block already exists (operator's wins).
             block = upstream_modules.get(name)
             if block:
-                set_module_block_in_config(name, block)
+                wrote = set_module_block_in_config(name, block)
+                if wrote:
+                    # The upstream block IS the public release default
+                    # (whatever TenrootOrg ships in config.yaml). Tell
+                    # the operator loud and clear, with the actual
+                    # values quoted so they know what to change.
+                    cred_summary = ', '.join(
+                        f'{k}={v}' for k, v in block.items()
+                        if k in ('id', 'password', 'api_id', 'api_password')
+                    ) or '(no credential keys)'
+                    warnings.append(
+                        f"⚠ modules.{name}: created in config.yaml using the "
+                        f"RELEASE DEFAULTS ({cred_summary}). CHANGE these in "
+                        f"config.yaml before exposing the module to anyone "
+                        f"outside this host."
+                    )
 
-    return modules
+    return modules, warnings
 
 
 @upgrade_bp.route('/api/upgrade/refs', methods=['POST'])
@@ -384,10 +403,11 @@ def prepare_upgrade_package():
             return jsonify({"error": "No data provided"}), 400
 
         target = (data.get('target') or '').strip()
+        track_warnings: list = []
         if target:
             from services.upgrade.resolver import ResolverError
             try:
-                modules = _modules_from_track(
+                modules, track_warnings = _modules_from_track(
                     target, data.get('opted_in_optional') or []
                 )
             except ResolverError as e:
@@ -417,6 +437,8 @@ def prepare_upgrade_package():
         )
         add_log_to_run(run_id, "Starting package preparation", "info")
         add_log_to_run(run_id, f"Modules: {', '.join(modules.keys())}", "info")
+        for w in track_warnings:
+            add_log_to_run(run_id, w, "warning")
         update_run_status(run_id, "running", progress=5)
 
         # Calculate total steps for progress tracking
@@ -543,10 +565,11 @@ def start_online_upgrade():
             return jsonify({"error": "No data provided"}), 400
 
         target = (data.get('target') or '').strip()
+        track_warnings: list = []
         if target:
             from services.upgrade.resolver import ResolverError
             try:
-                modules = _modules_from_track(
+                modules, track_warnings = _modules_from_track(
                     target, data.get('opted_in_optional') or []
                 )
             except ResolverError as e:
@@ -570,6 +593,8 @@ def start_online_upgrade():
         )
         add_log_to_run(run_id, "Starting online upgrade (prepare + apply in one run)", "info")
         add_log_to_run(run_id, f"Modules: {', '.join(modules.keys())}", "info")
+        for w in track_warnings:
+            add_log_to_run(run_id, w, "warning")
         update_run_status(run_id, "running", progress=2)
 
         # Progress estimation: split the visible 2-95% band between
