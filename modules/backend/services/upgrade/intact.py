@@ -85,6 +85,18 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
         log("Copying frontend files...", "info")
         run_command(f"cp -a {frontend_source}/* {nginx_html}/", logger=log, run_id=run_id)
 
+    # Stamp VERSION at the install root so the sidebar + Settings page
+    # reflect the new release. Only present in the new `source/intact/`
+    # layout — legacy packages that ship just source/backend + source/frontend
+    # have no VERSION file to copy (and were built before the sidebar
+    # version display existed, so reporting "unknown" until the next
+    # upgrade is the right behaviour).
+    version_source = os.path.join(intact_root, 'VERSION') if os.path.isdir(intact_root) else None
+    if version_source and os.path.exists(version_source):
+        version_dest = os.path.join(WORKDIR, 'VERSION')
+        log("Copying VERSION file...", "info")
+        run_command(f"cp -a {version_source} {version_dest}", logger=log, run_id=run_id)
+
     # Fix file permissions (files copied by root need correct ownership for future upgrades)
     log("Fixing file permissions...", "info")
     run_command("chown -R 1000:1000 /app/workdir/modules/backend/", logger=None)

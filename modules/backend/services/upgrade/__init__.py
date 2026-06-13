@@ -733,13 +733,22 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     # Get current versions for comparison
     current_versions = get_current_versions()
 
-    # Log current vs target versions
+    # Log current vs target versions. Distinguish a fresh install
+    # ("Not installed -> X" looks awkward; say "installing X") from an
+    # actual upgrade ("X -> Y"). The current_versions reader returns
+    # 'Not installed' for modules whose primary container or version pin
+    # is absent on this host.
     log("", "info")
     log("VERSION SUMMARY:", "info")
     log("-" * 40, "info")
     for module, target_ver in versions.items():
-        current_ver = current_versions.get(module, {}).get('current', 'unknown')
-        log(f"  {module.upper()}: {current_ver} -> {target_ver}", "info")
+        current_ver = current_versions.get(module, {}).get('current', 'Not installed')
+        if current_ver in ('Not installed', 'unknown'):
+            log(f"  {module.upper()}: installing {target_ver} (fresh install)", "info")
+        elif current_ver == target_ver:
+            log(f"  {module.upper()}: reinstalling {target_ver} (same version)", "info")
+        else:
+            log(f"  {module.upper()}: {current_ver} -> {target_ver} (upgrade)", "info")
     log("-" * 40, "info")
     log("", "info")
 
@@ -765,6 +774,15 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         'iris':         install_iris_offline,
         'velociraptor': install_velociraptor_offline,
         'volweb':       install_volweb_offline,
+        # On-demand modules — same function handles both install and
+        # upgrade (the only difference is whether PROWLER_VERSION /
+        # DFIR_O365RC_VERSION was already pinned). Registering them here
+        # lets the install-vs-upgrade dispatcher show "INSTALLING" on
+        # fresh deploys and "UPGRADING" on version bumps. _module_container_exists
+        # now reads the .env pin for these so the False-vs-True branch
+        # actually fires.
+        'prowler':      upgrade_aws_offline,
+        'o365rc':       upgrade_azure_offline,
     }
 
     # Container existence detector — reuses _MODULE_PRIMARY_CONTAINERS
@@ -895,6 +913,32 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
 
                 if result.get('success'):
                     log(f"{module_name.upper()} upgrade completed", "success")
+
+                    # Bump versions.<key> in config.yaml so the next
+                    # track-based upgrade's diff is correct. Partial
+                    # failure safety: only successful modules' versions
+                    # get bumped — a failed module's row stays at the
+                    # old version so re-running the upgrade retries
+                    # exactly the right thing. The 'intact' module
+                    # writes to the 'backend' key per the existing
+                    # config_key_map in base.get_latest_versions.
+                    # We also flip modules.<name>.enabled=true when
+                    # this was a fresh INSTALL (not an upgrade) — that
+                    # covers both the new track-flow opt-in checkbox
+                    # AND the legacy flow where an operator typed in
+                    # a module they don't currently have.
+                    from .base import set_module_version_in_config, set_module_enabled_in_config
+                    yaml_key = 'backend' if module_name == 'intact' else module_name
+                    if version and version != 'from_package':
+                        try:
+                            set_module_version_in_config(yaml_key, version, logger=log)
+                        except Exception as e:
+                            log(f"  config.yaml version-writeback failed for {module_name}: {e}", "warning")
+                    if action_word == 'INSTALLING' and module_name not in ('intact',):
+                        try:
+                            set_module_enabled_in_config(module_name, logger=log)
+                        except Exception as e:
+                            log(f"  config.yaml enable-flip failed for {module_name}: {e}", "warning")
 
                     # Recreate Timesketch user after fresh install
                     if module_name == 'timesketch' and db_overwrite.get('timesketch', False):

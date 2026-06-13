@@ -28,6 +28,12 @@ modules:
     enabled: false
   o365rc:
     enabled: false
+  # CVE Scan — NVD-backed vulnerability matcher. No persistent container
+  # (the scan engine runs in-process inside the backend), so this entry
+  # only gates whether the sidebar item + routes are exposed. Disable to
+  # remove the CVE Scan tab on a host that doesn't need it.
+  cve_scan:
+    enabled: true
   elk:
     enabled: true
     id: elastic
@@ -63,10 +69,10 @@ project_name: intact
 versions:
   elk: 9.3.3
   iris: v2.4.27
-  plaso: '20260119'
+  plaso: '20260512'
   portainer: 2.39.1
-  timesketch: '20260326'
-  velociraptor: '0.76.5'
+  timesketch: '20260611'
+  velociraptor: '0.76.6'
   # AWS posture scans run the Prowler image (toniblyx/prowler). Pinned to a
   # real release tag for reproducible installs + upgrades.
   prowler: '5.28.1'

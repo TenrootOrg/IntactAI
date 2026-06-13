@@ -288,13 +288,17 @@ def install_elk_offline(package_dir: str, version: str, logger=None, run_id=None
     # Stage 1: wait for Elasticsearch to be ready. Probe its cluster
     # health endpoint via the backend container's shell (the backend
     # is on the same docker network and can reach intact_elasticsearch
-    # directly by name). Up to 180s — fresh-install ES boot is slower
+    # directly by name). 300s budget — fresh-install ES boot is slower
     # than upgrade because the security indices haven't been
-    # bootstrapped yet.
+    # bootstrapped yet. Bumped from 180s on 2026-06-11 to match the
+    # other module timeouts and survive slow-disk machines that hit
+    # the same shape of failure Timesketch did (install reports
+    # "completed" but downstream bootstrap times out).
     import subprocess as _sub
     es_ready = False
     waited = 0
-    while waited < 180:
+    _ES_READY_WAIT_SECS = 300
+    while waited < _ES_READY_WAIT_SECS:
         try:
             probe = _sub.run(
                 ["docker", "exec", "intact_elasticsearch",
@@ -315,8 +319,8 @@ def install_elk_offline(package_dir: str, version: str, logger=None, run_id=None
 
     if not es_ready:
         log(
-            "Elasticsearch did not become ready after 180s. Containers ARE "
-            "running but the Kibana data view bootstrap has been SKIPPED — "
+            f"Elasticsearch did not become ready after {_ES_READY_WAIT_SECS}s. "
+            "Containers ARE running but the Kibana data view bootstrap has been SKIPPED — "
             "operator can re-trigger it later via Maintenance, or run "
             "manually: `from services.kibana_init import "
             "ensure_kibana_data_view; ensure_kibana_data_view(print)`. "

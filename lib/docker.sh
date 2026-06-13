@@ -345,8 +345,10 @@ _pull_image_with_retry() {
         # Stream progress to BOTH terminal and log file. Operator needs
         # to see the per-layer download bytes so a slow pull doesn't
         # look like a hang.
+        local pull_start=$SECONDS
         if docker pull "$image" 2>&1 | tee -a "$LOG_FILE"; then
             if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+                _log_pull_throughput "$image" "$pull_start"
                 if (( had_failure > 0 )); then
                     log_success "  $image pulled on attempt $attempt (previous failure was transient)"
                     INSTALL_WARNINGS+=("  ↳ resolved: $image pull succeeded on attempt $attempt")
@@ -365,6 +367,76 @@ _pull_image_with_retry() {
     return 1
 }
 
+# Log per-pull timing + effective throughput. Diagnostic for "is the customer
+# network the bottleneck, or is the registry?" — without it, slow installs
+# look like hangs and operators can't distinguish "200 kB/s uplink" from
+# "buildkit stuck on resolve". `docker image inspect .Size` is total image
+# size, so on cache-hit pulls (elapsed <5s) we skip the rate to avoid
+# reporting fake-fast numbers like "5000 MB/s".
+_log_pull_throughput() {
+    local image="$1"
+    local start_ts="$2"
+    local elapsed=$(( SECONDS - start_ts ))
+    local size_bytes
+    size_bytes=$(docker image inspect --format '{{.Size}}' "$image" 2>/dev/null)
+    if [[ -z "$size_bytes" || ! "$size_bytes" =~ ^[0-9]+$ ]]; then
+        log_info "    ↳ $image: ${elapsed}s (size unknown)"
+        return 0
+    fi
+    local size_mb=$(( size_bytes / 1048576 ))
+    if (( elapsed < 5 )); then
+        log_info "    ↳ $image: ${elapsed}s — ${size_mb} MB (cached / fast path)"
+        return 0
+    fi
+    # kB/s as primary unit — fits the slow-uplink case from
+    # install_20260610_070534.log where rates were ~120-250 kB/s. Add MB/s
+    # only when fast enough that kB/s is unwieldy (>= 1 MB/s).
+    local kbps=$(( size_bytes / 1024 / elapsed ))
+    if (( kbps >= 1024 )); then
+        local mbps_x10=$(( size_bytes * 10 / 1048576 / elapsed ))
+        local mbps_int=$(( mbps_x10 / 10 ))
+        local mbps_frac=$(( mbps_x10 % 10 ))
+        log_info "    ↳ $image: ${size_mb} MB in ${elapsed}s = ${kbps} kB/s (~${mbps_int}.${mbps_frac} MB/s)"
+    else
+        log_info "    ↳ $image: ${size_mb} MB in ${elapsed}s = ${kbps} kB/s"
+    fi
+}
+
+# Curl wrapper that logs bytes + wall-clock + computed kB/s using curl's
+# own --write-out telemetry. Mirrors _log_pull_throughput so the log lines
+# look the same whether the bottleneck was a docker pull or a host curl.
+# Returns curl's exit code. Stdout of curl is not captured here — caller
+# uses curl's own -o/-O to direct the body.
+_curl_with_throughput() {
+    local label="$1"
+    local url="$2"
+    local dest="$3"
+    shift 3  # remaining args passed through to curl
+    local stats
+    stats=$(curl -fsSL "$@" \
+        -w '%{size_download} %{time_total} %{speed_download}\n' \
+        "$url" -o "$dest" 2>> "$LOG_FILE")
+    local rc=$?
+    if (( rc == 0 )) && [[ -n "$stats" ]]; then
+        # curl prints size in bytes, time in seconds (float), speed in B/s
+        local bytes seconds_f bps_f
+        read -r bytes seconds_f bps_f <<< "$stats"
+        local size_mb=$(( ${bytes:-0} / 1048576 ))
+        local seconds_int=${seconds_f%.*}
+        [[ -z "$seconds_int" ]] && seconds_int=0
+        local kbps=$(( ${bps_f%.*} / 1024 ))
+        if (( seconds_int < 2 )); then
+            log_info "    ↳ $label: ${seconds_int}s — ${size_mb} MB (fast path)"
+        elif (( kbps >= 1024 )); then
+            local mbps_x10=$(( ${bps_f%.*} * 10 / 1048576 ))
+            log_info "    ↳ $label: ${size_mb} MB in ${seconds_int}s = ${kbps} kB/s (~$(( mbps_x10 / 10 )).$(( mbps_x10 % 10 )) MB/s)"
+        else
+            log_info "    ↳ $label: ${size_mb} MB in ${seconds_int}s = ${kbps} kB/s"
+        fi
+    fi
+    return $rc
+}
+
 pull_plaso_image() {
     local plaso_version=$(read_config "['versions']['plaso']")
     local plaso_image="log2timeline/plaso:${plaso_version:-20260119}"
@@ -377,8 +449,10 @@ pull_plaso_image() {
     fi
 
     log_info "Downloading $plaso_image (this may take a few minutes)..."
+    local pull_start=$SECONDS
     if docker pull "$plaso_image" 2>&1 | tee -a "$LOG_FILE"; then
         if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            _log_pull_throughput "$plaso_image" "$pull_start"
             log_success "Plaso image pulled successfully: $plaso_image"
         else
             log_warn "Failed to pull Plaso image - it will be downloaded on first use"
@@ -402,8 +476,10 @@ pull_python_alpine_image() {
     fi
 
     log_info "  Downloading $image..."
+    local pull_start=$SECONDS
     if docker pull "$image" 2>&1 | tee -a "$LOG_FILE"; then
         if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            _log_pull_throughput "$image" "$pull_start"
             log_success "  Python Alpine image pulled successfully"
         else
             log_warn "  Failed to pull $image - Plaso decompression may fail offline"
@@ -501,7 +577,7 @@ download_offline_collector_binaries() {
             ((skipped++))
         else
             log_info "  Downloading: $binary  (from ${base_url}/${binary})"
-            if curl -fsSL "${base_url}/${binary}" -o "$dest_path" 2>> "$LOG_FILE"; then
+            if _curl_with_throughput "$binary" "${base_url}/${binary}" "$dest_path"; then
                 chmod +x "$dest_path" 2>/dev/null || true
                 log_success "  Downloaded: $binary"
                 ((downloaded++))
@@ -722,7 +798,7 @@ download_legacy_velociraptor_binaries() {
             ((skipped++))
         else
             log_info "  Downloading: $binary"
-            if curl -fsSL "${base_url}/${binary}" -o "$dest_path" 2>> "$LOG_FILE"; then
+            if _curl_with_throughput "$binary" "${base_url}/${binary}" "$dest_path"; then
                 chmod +x "$dest_path" 2>/dev/null || true
                 log_success "  Downloaded: $binary"
                 ((downloaded++))
@@ -791,7 +867,7 @@ create_velociraptor_collector() {
 
     # Download the collector template from GitHub
     log_info "  Downloading from: $collector_url"
-    if curl -fsSL "$collector_url" -o "$dest_path" 2>> "$LOG_FILE"; then
+    if _curl_with_throughput "velociraptor-collector" "$collector_url" "$dest_path"; then
         chmod +x "$dest_path"
         local size=$(stat -c%s "$dest_path" 2>/dev/null || echo "0")
         if [[ "$size" -gt "$min_size" ]]; then
@@ -885,8 +961,10 @@ pull_dfir_o365rc_image() {
         return 0
     fi
 
+    local pull_start=$SECONDS
     if docker pull "$o365rc_image" 2>&1 | tee -a "$LOG_FILE"; then
         if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            _log_pull_throughput "$o365rc_image" "$pull_start"
             log_success "DFIR-O365RC image pulled successfully"
         else
             log_warn "Failed to pull DFIR-O365RC image - Unified Audit Log collection will not be available"
@@ -927,8 +1005,10 @@ pull_prowler_image() {
         return 0
     fi
 
+    local pull_start=$SECONDS
     if docker pull "$prowler_image" 2>&1 | tee -a "$LOG_FILE"; then
         if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            _log_pull_throughput "$prowler_image" "$pull_start"
             log_success "Prowler image pulled successfully"
         else
             log_warn "Failed to pull Prowler image - AWS posture scans will fall back to fixture data"
@@ -963,6 +1043,28 @@ pull_velociraptor_base_image() {
         log_success "  $image pulled successfully"
     else
         log_warn "  Failed to pull $image after retries — Velociraptor build will likely fail"
+        return 1
+    fi
+}
+
+pull_backend_base_image() {
+    # The Backend Dockerfile builds FROM python:3.11-slim. Pre-pulling on the
+    # host means the ~46 MB base image doesn't count against `docker compose
+    # build`'s wall-clock timeout — important on slow-uplink customer VMs
+    # where install_20260610_070534.log showed ~120 kB/s sustained, putting
+    # the base image alone at ~4 min of the build budget.
+    local image="python:3.11-slim"
+    log_info "Pulling Python base image for Backend build..."
+
+    if docker image inspect "$image" > /dev/null 2>&1; then
+        log_info "  $image already exists"
+        return 0
+    fi
+
+    if _pull_image_with_retry "$image"; then
+        log_success "  $image pulled successfully"
+    else
+        log_warn "  Failed to pull $image after retries — Backend build will likely fail"
         return 1
     fi
 }

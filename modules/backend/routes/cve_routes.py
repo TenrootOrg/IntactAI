@@ -230,10 +230,14 @@ def base_lower_ok(name: str) -> bool:
 
 
 def _module_check():
-    """CVE Scan is a core capability — always installed, always
-    available. No config.yaml gate. This stub stays so the existing
-    `gate = _module_check(); if gate: return gate` pattern at every
-    CVE route call site keeps working without per-endpoint edits."""
+    """CVE Scan gates on ``config.yaml: modules.cve_scan.enabled``.
+
+    Returns a Flask response tuple when disabled (so callers do
+    ``gate = _module_check(); if gate: return gate``), or None when the
+    module is enabled and the route should proceed.
+    """
+    if not is_module_enabled('cve_scan'):
+        return jsonify({"error": "CVE Scan module is not enabled in config.yaml."}), 400
     return None
 
 
@@ -320,6 +324,15 @@ def from_flow_scan():
     gate = _module_check()
     if gate:
         return gate
+
+    # Pre-flight: this route reads artifact CSVs from a Velociraptor flow
+    # via gRPC. With the server down the pull would silently return zero
+    # rows and the operator would see "no findings" without knowing why.
+    from services.container_status import require_velociraptor
+    err, status = require_velociraptor('cve_scan')
+    if err:
+        return jsonify(err), status
+
     try:
         data = request.get_json() or {}
         flow_id = (data.get('flow_id') or '').strip() or None
@@ -554,6 +567,16 @@ def run_cve_hunt():
     gate = _module_check()
     if gate:
         return gate
+
+    # Pre-flight: dispatching the cve_management hunt requires a reachable
+    # Velociraptor server. Mirrors timesketch/memory routes — names the
+    # primary artifact (Windows.Sys.Programs) in the error so the operator
+    # knows which collection is blocked.
+    from services.container_status import require_velociraptor
+    err, vstatus = require_velociraptor('cve_scan')
+    if err:
+        return jsonify(err), vstatus
+
     try:
         data = request.get_json() or {}
         chain = bool(data.get('chain_cve_scan'))

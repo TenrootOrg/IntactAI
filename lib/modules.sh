@@ -185,9 +185,12 @@ generate_certificates() {
 run_docker_compose() {
     local action="$1"
     local module_name="$2"
-    # Allow callers to override the build timeout per module (Backend ships
-    # with 900s default; Velociraptor's smaller surface gets 600s passed in).
-    local build_timeout="${3:-900}"
+    # Allow callers to override the build timeout per module. Default is
+    # 1800s (30 min) — sized for slow-network customer installs where the
+    # Backend image's ~200 MB of downloads (base image + 141 MB apt + pip)
+    # can take 15+ min at 200 kB/s. Velociraptor's smaller surface still
+    # passes its own 600s override.
+    local build_timeout="${3:-1800}"
 
     log_info "  Running: docker compose $action"
 

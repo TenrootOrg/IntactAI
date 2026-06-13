@@ -115,11 +115,21 @@ def seed_default_blueprints():
                 continue
             if not existing.get('is_default'):
                 continue
+            # Sync name + description from YAML for default blueprints —
+            # mirrors the velociraptor branch above. Lets us copy-edit the
+            # default labels in default_blueprints.yaml and have them land
+            # on the next backend restart without a manual DB update.
+            changed = False
+            if existing.get('name') != bp.get('name'):
+                existing['name'] = bp.get('name')
+                changed = True
+            if existing.get('description') != bp.get('description', ''):
+                existing['description'] = bp.get('description', '')
+                changed = True
             # Backfill any missing keys we've added to default TS blueprints
             # over time. Only touches defaults; user-customised blueprints stay
             # untouched.
             settings = existing.get('settings') or {}
-            changed = False
             # Default jumped from 10000 → 100000 (~28h); the old value was
             # killing legitimate long KAPE collections. Only bump rows that
             # are still at the old default — anything else is user choice.

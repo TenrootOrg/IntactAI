@@ -294,8 +294,17 @@ run_with_heartbeat() {
     kill "${heartbeat_pid}" 2>/dev/null
     wait "${heartbeat_pid}" 2>/dev/null
 
+    local total_elapsed=$(( SECONDS - start_ts ))
     if [[ $rc -eq 124 ]]; then
-        log_error "  ${description} exceeded ${timeout_secs}s timeout — killed"
+        log_error "  ${description} exceeded ${timeout_secs}s timeout — killed (ran ${total_elapsed}s)"
+    elif [[ $rc -eq 0 ]]; then
+        # Concrete finish-time + budget headroom: helps the operator see
+        # how close they ran to the timeout and decide whether the cap
+        # needs to be raised again next release.
+        local pct=$(( total_elapsed * 100 / timeout_secs ))
+        log_info "  ${description} completed in ${total_elapsed}s (${pct}% of ${timeout_secs}s budget)"
+    else
+        log_info "  ${description} exited rc=$rc after ${total_elapsed}s"
     fi
     return $rc
 }

@@ -81,6 +81,14 @@ document.addEventListener('alpine:init', () => {
         statuses: {},
         clientCount: 0,
         onlineCount: 0,
+        // installedCount = modules whose container exists on the host
+        // (running OR stopped). Drives the dashboard "Total Services"
+        // card so it reflects what's actually deployed — including
+        // modules added via online / offline upgrade apply, not just
+        // the install.sh seed. 0 when nothing's installed yet → the
+        // dashboard hides the Total card entirely (see x-show in
+        // index.html).
+        installedCount: 0,
         onlineClientCount: 0,
 
         async checkAll() {
@@ -97,8 +105,11 @@ document.addEventListener('alpine:init', () => {
                     // Ensure any service not in container list (if it was added elsewhere) is handled
                     for (const serviceId in window.services) {
                         if (!(serviceId in containerStatuses)) {
-                            // Fallback to offline if not managed by docker ps check
-                            this.statuses[serviceId] = this.statuses[serviceId] || 'offline';
+                            // Fallback: assume not installed if backend
+                            // doesn't know about it (was previously
+                            // 'offline' but that conflated "stopped"
+                            // with "never created" — now distinct).
+                            this.statuses[serviceId] = this.statuses[serviceId] || 'not_installed';
                         }
                     }
                 } else {
@@ -106,9 +117,14 @@ document.addEventListener('alpine:init', () => {
                 }
             } catch (e) {
                 console.error('Error checking service status:', e);
-                // Mark all as checking/offline if backend is unreachable
+                // Mark all as not_installed if backend is unreachable —
+                // we can't tell the difference between "stopped" and
+                // "never created" without a docker ps reply, so we
+                // conservatively assume nothing is installed (worst
+                // case: the dashboard hides Total card briefly until
+                // the next successful poll).
                 for (const serviceId in window.services) {
-                    this.statuses[serviceId] = 'offline';
+                    this.statuses[serviceId] = 'not_installed';
                 }
             }
             this.updateStats();
@@ -120,12 +136,22 @@ document.addEventListener('alpine:init', () => {
         },
 
         updateStats() {
-            this.onlineCount = Object.values(this.statuses).filter(s => s === 'online').length;
+            const vals = Object.values(this.statuses);
+            this.onlineCount = vals.filter(s => s === 'online').length;
+            // "installed" = container exists, regardless of running state.
+            // This counts modules deployed via install.sh seed AND
+            // modules added later via online/offline upgrade apply.
+            this.installedCount = vals.filter(s => s !== 'not_installed').length;
         },
 
         getStatusClass(serviceId) {
             const status = this.statuses[serviceId] || 'checking';
-            return `status-dot status-${status} w-3 h-3 rounded-full`;
+            // 'stopped' and 'not_installed' both render with the
+            // existing 'offline' dot styling — the dashboard's count
+            // cards already distinguish installed-vs-not via separate
+            // numeric badges, so the per-service dot can stay simple.
+            const dotStatus = (status === 'stopped' || status === 'not_installed') ? 'offline' : status;
+            return `status-dot status-${dotStatus} w-3 h-3 rounded-full`;
         },
 
         async loadClients() {
@@ -766,22 +792,6 @@ document.addEventListener('alpine:init', () => {
         // 'prepare' → POST /api/upgrade/prepare (offline flow, produces tar.gz)
         // 'online'  → POST /api/upgrade/online (combined prepare + apply)
         prepareModalMode: 'prepare',
-        prepareModules: [
-            { id: 'elk', name: 'ELK Stack', targetVersion: '', enabled: false, fallback: '8.17.0' },
-            { id: 'timesketch', name: 'Timesketch', targetVersion: '', enabled: false, fallback: '20240919' },
-            { id: 'plaso', name: 'Plaso (Timeline)', targetVersion: '', enabled: false, fallback: '20240308' },
-            { id: 'iris', name: 'IRIS', targetVersion: '', enabled: false, fallback: 'v2.4.19' },
-            { id: 'velociraptor', name: 'Velociraptor', targetVersion: '', enabled: false, fallback: '0.73.4' },
-            { id: 'aws', name: 'AWS (Prowler)', targetVersion: '', enabled: false, fallback: '5.28.1' },
-            { id: 'azure', name: 'Azure (DFIR-O365RC)', targetVersion: '', enabled: false, fallback: 'latest' },
-            // VolWeb — apply orchestrator picks install_volweb_offline vs
-            // upgrade_volweb_offline automatically based on whether
-            // intact_volweb_backend exists on the host. Lets operators
-            // package + deploy a module that wasn't selected at install
-            // time without re-running install.sh.
-            { id: 'volweb', name: 'VolWeb (Memory Forensics)', targetVersion: '', enabled: false, fallback: 'latest' },
-            { id: 'intact', name: 'Intact.AI Source Code', targetVersion: 'intact-20260604', enabled: false, fallback: 'intact-20260604' },
-        ],
 
         async openPreparePackageModal() {
             this.prepareModalMode = 'prepare';
@@ -793,106 +803,128 @@ document.addEventListener('alpine:init', () => {
             await this._openModuleModal();
         },
 
+        // ─── Track-based upgrade flow state ──────────────────────────
+        // The operator picks ONE Intact release, system derives the
+        // per-module work list. See services/upgrade/resolver.py.
+        upgradeRefs: [],            // populated by fetchUpgradeRefs()
+        selectedRef: '',            // the ref the operator picked in the dropdown
+        upgradePlan: null,          // populated by computeUpgradePlan()
+        optedInOptional: [],        // module IDs the operator ticked in the optional table
+        fetchingRefs: false,
+        computingPlan: false,
+
+        async fetchUpgradeRefs() {
+            // Operator-triggered (the Fetch button). Backend caches for
+            // 30 min — clicking twice within that window is free.
+            this.fetchingRefs = true;
+            this.upgradeRefs = [];
+            this.selectedRef = '';
+            this.upgradePlan = null;
+            try {
+                const r = await fetch('/api/upgrade/refs', {method: 'POST'});
+                const d = await r.json();
+                if (d && d.success) {
+                    this.upgradeRefs = d.refs || [];
+                    if (this.upgradeRefs.length) {
+                        this.selectedRef = this.upgradeRefs[0].name;
+                    }
+                } else {
+                    this.showMessage('Could not fetch releases: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Fetch releases failed: ' + e.message, 'error');
+            }
+            this.fetchingRefs = false;
+        },
+
+        async computeUpgradePlan() {
+            if (!this.selectedRef) {
+                this.showMessage('Pick a release first', 'error');
+                return;
+            }
+            this.computingPlan = true;
+            this.upgradePlan = null;
+            this.optedInOptional = [];
+            try {
+                const r = await fetch('/api/upgrade/plan', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({target: this.selectedRef}),
+                });
+                const d = await r.json();
+                if (d && d.success) {
+                    this.upgradePlan = d.plan;
+                } else {
+                    this.showMessage('Plan failed: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Plan request failed: ' + e.message, 'error');
+            }
+            this.computingPlan = false;
+        },
+
+        toggleOptionalModule(moduleId) {
+            const idx = this.optedInOptional.indexOf(moduleId);
+            if (idx >= 0) {
+                this.optedInOptional.splice(idx, 1);
+            } else {
+                this.optedInOptional.push(moduleId);
+            }
+        },
+
+        async startTrackUpgrade() {
+            if (!this.upgradePlan) {
+                this.showMessage('Compute a plan first', 'error');
+                return;
+            }
+            const isOnline = this.prepareModalMode === 'online';
+            const endpoint = isOnline ? '/api/upgrade/online' : '/api/upgrade/prepare';
+            const successMsg = isOnline
+                ? 'Online upgrade started — check Workflows for progress'
+                : 'Package preparation started — check Workflows for progress';
+            this.prepareLoading = true;
+            try {
+                const r = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        target: this.selectedRef,
+                        opted_in_optional: this.optedInOptional,
+                    }),
+                });
+                const d = await r.json();
+                if (r.ok && d.success) {
+                    this.prepareRunId = d.run_id;
+                    this.closePreparePackageModal();
+                    this.showMessage(successMsg, 'success');
+                    setTimeout(() => { Alpine.store('app').switchTab('workflows'); }, 500);
+                } else {
+                    this.showMessage('Upgrade request failed: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Upgrade request error: ' + e.message, 'error');
+            }
+            this.prepareLoading = false;
+        },
+
         async _openModuleModal() {
             this.showPreparePackageModal = true;
-            this.prepareLoading = true;
+            this.prepareLoading = false;
             this.prepareRunId = null;
             this.preparePackageReady = false;
             this.preparePackageSize = '';
-
-            // Reset modules
-            this.prepareModules.forEach(m => {
-                m.enabled = false;
-                m.targetVersion = '';
-            });
-
-            try {
-                const response = await fetch('/api/upgrade/status');
-                const data = await response.json();
-                if (data.success && data.versions) {
-                    this.prepareModules.forEach(m => {
-                        // The `intact` module is a GitHub ref (release tag /
-                        // branch / commit SHA), NOT a docker image tag — the
-                        // /api/upgrade/status "latest" lookup queries Docker
-                        // Hub for image tags and returns nonsense (e.g.
-                        // "1.0.0") for intact. Use the configured fallback,
-                        // which is a real GitHub release tag.
-                        if (m.id === 'intact') {
-                            m.targetVersion = m.fallback;
-                            return;
-                        }
-                        const ver = data.versions[m.id];
-                        // Fall through to the module's own `fallback` even
-                        // when the API has no entry for it (e.g. a newer
-                        // module whose backend version-map hasn't been
-                        // updated yet). Without this, the textbox shows
-                        // an empty value and the operator has to guess.
-                        m.targetVersion = (ver && ver.latest) || m.fallback;
-                    });
-                } else {
-                    // Use fallback versions
-                    this.prepareModules.forEach(m => {
-                        m.targetVersion = m.fallback;
-                    });
-                }
-            } catch (e) {
-                console.error('Failed to fetch versions, using fallbacks:', e);
-                this.prepareModules.forEach(m => {
-                    m.targetVersion = m.fallback;
-                });
-            }
-            this.prepareLoading = false;
+            // Reset track-view state. We don't pre-fetch GitHub on modal
+            // open per the call discipline — see services/upgrade/resolver.py.
+            this.upgradeRefs = [];
+            this.selectedRef = '';
+            this.upgradePlan = null;
+            this.optedInOptional = [];
         },
 
         closePreparePackageModal() {
             this.showPreparePackageModal = false;
             this.preparePackageReady = false;
             this.prepareRunId = null;
-        },
-
-        async startPackagePreparation() {
-            const selected = this.prepareModules.filter(m => m.enabled);
-            if (selected.length === 0) {
-                this.showMessage('Select at least one module to include', 'error');
-                return;
-            }
-
-            const modules = {};
-            selected.forEach(m => {
-                modules[m.id] = m.targetVersion || m.latest || '1.0.0';
-            });
-
-            const isOnline = this.prepareModalMode === 'online';
-            const endpoint = isOnline ? '/api/upgrade/online' : '/api/upgrade/prepare';
-            const successMsg = isOnline
-                ? 'Online upgrade started — check Workflows for progress'
-                : 'Package preparation started — check Workflows for progress';
-            const errPrefix = isOnline ? 'Failed to start online upgrade: ' : 'Failed to start preparation: ';
-            const exPrefix = isOnline ? 'Online upgrade error: ' : 'Preparation error: ';
-
-            this.prepareLoading = true;
-            try {
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ modules })
-                });
-
-                const result = await response.json();
-                if (response.ok && result.success) {
-                    this.prepareRunId = result.run_id;
-                    this.closePreparePackageModal();
-                    this.showMessage(successMsg, 'success');
-                    setTimeout(() => {
-                        Alpine.store('app').switchTab('workflows');
-                    }, 500);
-                } else {
-                    this.showMessage(errPrefix + (result.error || 'Unknown error'), 'error');
-                }
-            } catch (e) {
-                this.showMessage(exPrefix + e.message, 'error');
-            }
-            this.prepareLoading = false;
         },
 
         async downloadPreparedPackage() {

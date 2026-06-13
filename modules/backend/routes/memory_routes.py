@@ -136,6 +136,16 @@ def start_memory_run():
     """
     if not _is_module_enabled():
         return jsonify({"error": "Memory module is not enabled."}), 400
+
+    # Pre-flight: dispatching Windows.Memory.Acquisition requires the
+    # Velociraptor server to be reachable. The /upload route does NOT
+    # share this guard because that flow consumes an operator-supplied
+    # dump file directly — no endpoint-side acquisition involved.
+    from services.container_status import require_velociraptor
+    err, vstatus = require_velociraptor('memory')
+    if err:
+        return jsonify(err), vstatus
+
     data = request.get_json(silent=True) or {}
 
     client_id = (data.get("client_id") or "").strip()

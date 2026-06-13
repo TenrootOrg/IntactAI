@@ -14,7 +14,7 @@ velociraptor:
   # --------------------------------------------------------------------------
 
   - id: velociraptor_quick_scan
-    name: "Quick Scan"
+    name: "Velociraptor Hunt: Quick Scan"
     description: "Fast detection-focused scan for rapid assessment (12 artifacts)"
     is_default: true
     settings:
@@ -42,7 +42,7 @@ velociraptor:
       - Generic.System.Pstree
 
   - id: velociraptor_best_practice
-    name: "BestPractice"
+    name: "Velociraptor Hunt: BestPractice"
     description: "Curated best-practice artifact collection for thorough IR triage (31 artifacts)"
     is_default: true
     settings:
@@ -87,7 +87,7 @@ velociraptor:
       - DetectRaptor.Windows.Detection.ZoneIdentifier
 
   - id: velociraptor_full_collection
-    name: "Full Collection"
+    name: "Velociraptor Hunt: Full Collection"
     description: "Maximum artifact collection for deep forensic analysis (53 artifacts)"
     is_default: true
     settings:
@@ -169,7 +169,7 @@ velociraptor:
   # "Run from Velociraptor" mode), then the tab pulls the result CSVs
   # and runs them through the NVD lookup pipeline.
   - id: cve_management
-    name: "[CVE] CVE Management Collection"
+    name: "Velociraptor CVE: Vulnerability Management"
     description: "Collects the four artifacts the CVE Scan tab consumes (installed programs + DetectRaptor app/LolRM tables + OS version)"
     is_default: true
     # Conservative defaults — the hunt itself stays open long enough to
@@ -190,7 +190,7 @@ velociraptor:
       - Generic.Client.Info
 
   - id: agentic_quick_wins
-    name: "[Agentic] Quick Wins"
+    name: "Velociraptor Agentic: Quick Wins"
     description: "Low-volume detection artifacts for fast analysis (11 artifacts)"
     is_default: true
     settings:
@@ -215,7 +215,7 @@ velociraptor:
       - Windows.Forensics.SAM
 
   - id: agentic_quick_wins_extended
-    name: "[Agentic] Quick Wins Extended"
+    name: "Velociraptor Agentic: Quick Wins Extended"
     description: "Extended detection with program execution, C2, and browser artifacts (15 artifacts)"
     is_default: true
     settings:
@@ -253,8 +253,8 @@ velociraptor:
 timesketch:
 
   - id: timesketch_full_triage
-    name: "Full Triage"
-    description: "Comprehensive triage collection with full Windows parsing"
+    name: "Forensic Timeline: Full Triage"
+    description: "Comprehensive triage timeline collection with full Windows parsing"
     is_default: true
     settings:
       kape_target: "_KapeTriage"
@@ -288,8 +288,8 @@ timesketch:
       timesketch_processing_timeout: 259200   # 3 days, in seconds
 
   - id: timesketch_event_logs
-    name: "Event Logs Only"
-    description: "Windows Event Logs collection with fast winevtx parsing"
+    name: "Forensic Timeline: Event Logs Only"
+    description: "Windows Event Logs timeline collection with fast winevtx parsing"
     is_default: true
     settings:
       kape_target: "EventLogs"
@@ -311,8 +311,8 @@ timesketch:
       timesketch_processing_timeout: 259200   # 3 days
 
   - id: timesketch_basic_collection
-    name: "Basic Collection"
-    description: "Basic artifacts collection for quick analysis"
+    name: "Forensic Timeline: Basic Collection"
+    description: "Basic artifacts timeline collection for quick analysis"
     is_default: true
     settings:
       kape_target: "_BasicCollection"
@@ -400,7 +400,7 @@ azure:
 memory:
 
   - id: memory_layered_default
-    name: "Curated standard (recommended)"
+    name: "Memory Analysis: Curated standard (recommended)"
     description: "12-plugin curated set covering process discovery, persistence, network, and registry — the empirically-validated sweet spot from the PoC. Excludes HollowProcesses (12+ min on a 5 GB dump)."
     is_default: true
     settings:
@@ -424,7 +424,7 @@ memory:
       cpu_limit: 80
 
   - id: memory_yara_only_triage
-    name: "Empty (no plugins)"
+    name: "Memory Analysis: Empty (no plugins)"
     description: "Empty plugin set — skips Vol3 extraction entirely. Pair with the 'Include YARA' checkbox in the Memory page for fast YARA-only triage (~20× cheaper across many hosts) before graduating suspicious endpoints to a real plugin blueprint."
     is_default: true
     settings:
@@ -440,7 +440,7 @@ memory:
   # --------------------------------------------------------------------------
 
   - id: memory_quick_wins
-    name: "Quick Wins (fast triage)"
+    name: "Memory Analysis: Quick Wins (fast triage)"
     description: "5 fastest-signal plugins — catches process injection + live network state in under a minute. Triage tool when fanning out across many hosts. Misses persistence + credentials by design."
     is_default: true
     settings:
@@ -457,7 +457,7 @@ memory:
       cpu_limit: 80
 
   - id: memory_all_plugins
-    name: "All plugins (deep dive)"
+    name: "Memory Analysis: All plugins (deep dive)"
     description: "Every plugin VolWeb advertises for this dump — resolved at runtime via volweb.list_plugins(). Includes HollowProcesses (12+ min by itself). Use only after triage has flagged a host worth the wall-clock."
     is_default: true
     settings:
@@ -481,7 +481,7 @@ memory:
   # --------------------------------------------------------------------------
 
   - id: memory_process_deep
-    name: "Process Anomalies"
+    name: "Memory Analysis: Process Anomalies"
     description: "Process discovery + lineage + DLL inventory, code-injection finder (Malfind), and the expensive HollowProcesses + Hollowfind structural checks. ~6 min runtime — worth it on a confirmed-bad host."
     is_default: true
     settings:
@@ -502,7 +502,7 @@ memory:
       cpu_limit: 80
 
   - id: memory_persistence_deep
-    name: "Persistence"
+    name: "Memory Analysis: Persistence"
     description: "Services, named mutexes, loaded kernel modules, execution-history (UserAssist, Run/RunOnce registry keys) and kernel-level hooks (DriverScan, Callbacks, SSDT) — catches persistence techniques that survive a reboot. ~3 min."
     is_default: true
     settings:
@@ -522,7 +522,7 @@ memory:
       cpu_limit: 80
 
   - id: memory_network_deep
-    name: "Network"
+    name: "Memory Analysis: Network"
     description: "Live TCP/UDP connections + listening sockets, correlated back to processes — pslist + cmdline + dlllist so the LLM can attribute each connection to a process and DLL set. ~2 min."
     is_default: true
     settings:
@@ -539,7 +539,7 @@ memory:
       cpu_limit: 80
 
   - id: memory_credentials_deep
-    name: "Credentials"
+    name: "Memory Analysis: Credentials"
     description: "SAM hash extraction, cached domain credentials, plus LSA secrets (machine account, service creds). ~2 min. Bootkey-dependent so will fail cleanly on dumps from Win11 24H2+ that VolWeb can't decrypt yet."
     is_default: true
     settings:

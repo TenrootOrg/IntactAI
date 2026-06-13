@@ -27,6 +27,14 @@ SERVICE_CONTAINERS = {
     'volweb': 'intact_volweb_backend',
 }
 
+# On-demand modules — no persistent container. Each scan is a one-shot
+# `docker run` (prowler/o365rc) or runs in-process inside the backend
+# (cve_scan). `docker ps -a` returns nothing for these, so the install
+# state comes from the operator's explicit opt-in in config.yaml
+# (modules.<name>.enabled). Used by the sidebar to hide Cloud > AWS /
+# Microsoft 365 / CVE Scan when the customer didn't enable them.
+ON_DEMAND_MODULES = ('prowler', 'o365rc', 'cve_scan')
+
 @system_bp.route('/api/test', methods=['GET', 'POST'])
 def test_endpoint():
     """Simple test endpoint"""
@@ -38,24 +46,86 @@ def health_check():
     """Health check endpoint"""
     return jsonify({"status": "healthy", "service": "intact-backend"})
 
+
+@system_bp.route('/api/version', methods=['GET'])
+def get_intact_version():
+    """Return the current Intact.AI platform version.
+
+    Reads the VERSION file at the repo root — stamped by
+    .github/workflows/stamp-version-on-release.yml on every release.
+    Mirrors the read logic in services.upgrade.base.get_current_versions
+    but kept as a tiny standalone endpoint so the sidebar load doesn't
+    pull in the upgrade machinery.
+    """
+    import os
+    workdir = os.environ.get('INTACT_PATH', '/app/workdir')
+    version_file = os.path.join(workdir, 'VERSION')
+    try:
+        with open(version_file) as f:
+            version = f.read().strip()
+        if version:
+            return jsonify({"version": version})
+    except Exception:
+        pass
+    return jsonify({"version": "unknown"})
+
 @system_bp.route('/api/system/containers', methods=['GET'])
 def get_container_status():
-    """Get status of core system containers from Docker interface"""
+    """Get status of core system containers.
+
+    Returns one of three states per service so the dashboard can
+    distinguish a stopped install from a never-installed module:
+
+      - 'online'        — container exists and is running
+      - 'stopped'       — container exists but is not running
+      - 'not_installed' — container has never been created on this host
+
+    Distinguishing 'stopped' from 'not_installed' lets the dashboard
+    count modules that were deployed via online/offline upgrade (which
+    creates the container at apply time) separately from modules that
+    were never enabled. `docker ps -a` includes stopped containers so a
+    single call covers both lifecycle states.
+
+    Legacy callers that only checked for 'online' still work unchanged
+    because that value's semantics are preserved.
+    """
     results = {}
     try:
-        # Run docker ps to get running container names
-        # Note: intact_backend has /var/run/docker.sock mounted
-        cmd = ["docker", "ps", "--format", "{{.Names}}"]
+        cmd = ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.State}}"]
         output = subprocess.check_output(cmd, text=True)
-        running_containers = [n.strip() for n in output.strip().split('\n') if n.strip()]
-        
+        container_states = {}
+        for line in output.strip().split('\n'):
+            if '\t' not in line:
+                continue
+            name, state = line.split('\t', 1)
+            container_states[name.strip()] = state.strip()
+
         for service_id, container_name in SERVICE_CONTAINERS.items():
-            if container_name in running_containers:
+            state = container_states.get(container_name)
+            if state == 'running':
                 results[service_id] = 'online'
+            elif state is None:
+                results[service_id] = 'not_installed'
             else:
-                # Optional: check if container exists but is stopped
-                results[service_id] = 'offline'
-                
+                # exited, created, dead, paused, restarting, etc. — the
+                # container exists on the host so the module IS installed
+                results[service_id] = 'stopped'
+
+        # On-demand modules don't have persistent containers — they're
+        # one-shot `docker run` per scan. Treat config.yaml's enabled
+        # flag as the install signal. No 'stopped' state for these
+        # because there's nothing to be stopped.
+        try:
+            from config import is_module_enabled
+            for module in ON_DEMAND_MODULES:
+                results[module] = 'online' if is_module_enabled(module) else 'not_installed'
+        except Exception:
+            # If config load fails for any reason, conservatively report
+            # 'not_installed' so the sidebar doesn't show modules that
+            # might not actually work.
+            for module in ON_DEMAND_MODULES:
+                results.setdefault(module, 'not_installed')
+
     except Exception as e:
         return jsonify({"error": f"Failed to query Docker: {str(e)}"}), 500
 

@@ -16,7 +16,8 @@ from .base import (
 )
 
 
-def _reimport_artifacts_post_upgrade(velo_data: str, logger: Callable = None) -> None:
+def _reimport_artifacts_post_upgrade(velo_data: str, logger: Callable = None,
+                                       skip_exchange_imports: bool = False) -> None:
     """Re-register all custom + imported artifacts in the freshly-upgraded
     Velociraptor server's registry.
 
@@ -66,8 +67,17 @@ def _reimport_artifacts_post_upgrade(velo_data: str, logger: Callable = None) ->
         return
 
     # Layer 1: same orchestrator the Maintenance UI button runs.
+    # skip_exchange_imports plumbs through from offline-upgrade callers
+    # (where Server.Import.ArtifactExchange / DetectRaptor / Extras need
+    # internet at runtime and silently fail on air-gap targets — and
+    # _import_bundled_external_artifacts above already imported the
+    # same content from the prepare-time bundled zips). Online upgrades
+    # pass False (the default) so they still get the live upstream
+    # additions Velociraptor's Server.Import.* artifacts would fetch.
     try:
-        initialize_velociraptor_artifacts(logger_func=log)
+        initialize_velociraptor_artifacts(
+            logger_func=log, skip_exchange_imports=skip_exchange_imports
+        )
     except Exception as e:
         log(
             f"  initialize_velociraptor_artifacts raised "
@@ -206,6 +216,78 @@ def _import_bundled_registry_snapshot(package_dir: str,
             continue
     log(f"  Registry snapshot: {ok}/{len(yamls)} artifacts imported", "success" if ok else "warning")
     return ok
+
+
+def _import_bundled_external_artifacts(package_dir: str,
+                                        logger: Callable = None) -> int:
+    """Import the artifact zips that prepare downloaded directly from
+    public GitHub URLs (ArtifactExchange, DetectRaptor, Rapid7 Labs).
+
+    Path written by prepare_upgrade_package's velociraptor branch:
+        <package>/artifacts/velociraptor/external/*.zip
+
+    Each zip contains many .yaml artifact definitions at various depths
+    (the upstream zip layouts aren't uniform — Velocidex's
+    artifact_exchange_v2.zip nests under exchange/, DetectRaptor's
+    flattens under DetectRaptor/, Rapid7's puts them under Vql/). Walk
+    each extracted tree and import every .yaml. Per-artifact failures
+    are swallowed for the same reason as registry_snapshot — version
+    skew between the prepare-host's Velociraptor and the target's.
+
+    Returns the count of successfully-imported artifacts across all zips.
+    """
+    import tempfile
+    import zipfile
+
+    log = logger or (lambda msg, level="info": None)
+    ext_dir = os.path.join(package_dir, 'artifacts', 'velociraptor', 'external')
+    if not os.path.isdir(ext_dir):
+        return 0
+
+    zips = sorted(
+        os.path.join(ext_dir, f) for f in os.listdir(ext_dir)
+        if f.endswith('.zip')
+    )
+    if not zips:
+        return 0
+
+    try:
+        from services.velociraptor_init_service import import_custom_artifact
+    except Exception as e:
+        log(f"  Could not import import_custom_artifact: {e}", "warning")
+        return 0
+
+    log(f"  Importing artifacts from {len(zips)} external zip(s)...", "info")
+    total_ok = 0
+    for zpath in zips:
+        zname = os.path.basename(zpath)
+        try:
+            with tempfile.TemporaryDirectory(prefix='extbundle_') as tmp:
+                with zipfile.ZipFile(zpath) as zf:
+                    zf.extractall(tmp)
+                ok = 0
+                count = 0
+                for root, _, files in os.walk(tmp):
+                    for fn in files:
+                        if not fn.endswith(('.yaml', '.yml')):
+                            continue
+                        count += 1
+                        try:
+                            with open(os.path.join(root, fn), 'r') as f:
+                                yaml_content = f.read()
+                            if import_custom_artifact(yaml_content, logger_func=None):
+                                ok += 1
+                        except Exception:
+                            continue
+                log(f"    {zname}: {ok}/{count} imported", "info" if ok else "warning")
+                total_ok += ok
+        except zipfile.BadZipFile:
+            log(f"    {zname}: not a valid zip — skipping", "warning")
+        except Exception as e:
+            log(f"    {zname}: {e}", "warning")
+    log(f"  External artifact zips: {total_ok} total artifacts imported",
+        "success" if total_ok else "warning")
+    return total_ok
 
 
 # All four binaries the Dockerfile needs to COPY at build time. The
@@ -863,14 +945,32 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         except Exception as e:
             log(f"  Registry-snapshot import raised: {e}", "warning")
 
+        # Direct-download fallback: extract + import the public source
+        # zips prepare curl'd. These cover the same three sources as the
+        # SQL snapshot above (ArtifactExchange / DetectRaptor / Extras)
+        # but run unconditionally — so an upgrade package that was
+        # prepared without a running Velociraptor still imports the
+        # standard artifact set on the target. Imports are idempotent
+        # (import_custom_artifact overwrites by name), so the overlap
+        # with the registry snapshot is harmless.
+        try:
+            _import_bundled_external_artifacts(package_dir, logger=log)
+        except Exception as e:
+            log(f"  External artifact import raised: {e}", "warning")
+
         # Same artifact re-import as the online path. See its docstring
         # for the "why" — a Velociraptor binary upgrade leaves the
         # new container's registry empty of non-built-in artifacts,
         # breaking the Quick Wins blueprint hunt + KapeTriage flow
-        # for Timesketch. This is a belt-and-suspenders second pass
-        # that also triggers Server.Import.* (needs internet — falls
-        # back gracefully on air-gap).
-        _reimport_artifacts_post_upgrade(velo_data, logger=log)
+        # for Timesketch. skip_exchange_imports=True because we're in
+        # the OFFLINE upgrade path — _import_bundled_external_artifacts
+        # above already imported the 7 prepare-time bundled zips, and
+        # the Server.Import.* artifacts would silently 404 on an
+        # air-gap target while logging confusing "Some artifacts
+        # failed" warnings. The online upgrade path keeps the default
+        # (False) so it still benefits from live upstream additions.
+        _reimport_artifacts_post_upgrade(velo_data, logger=log,
+                                          skip_exchange_imports=True)
 
         remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
         return {"success": True, "version": actual_version, "health": "green" if healthy else "pending"}
@@ -957,7 +1057,13 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
     import subprocess as _sub
     config_ready = False
     waited = 0
-    while waited < 120:
+    # 5 min wall-clock budget. 120 s was too tight on slow disks (same
+    # rationale as the Timesketch schema-wait bump on 2026-06-11).
+    # Velociraptor's entrypoint does config-gen + key gen + datastore
+    # init in series; on a CPU-constrained or disk-slow machine that
+    # chain can take >120 s. Most installs land at 5-30 s.
+    _CONFIG_WAIT_SECS = 300
+    while waited < _CONFIG_WAIT_SECS:
         try:
             probe = _sub.run(
                 ["docker", "exec", "intact_velociraptor",
@@ -972,16 +1078,125 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
             pass
         except Exception:
             pass
+        # Heartbeat every 30 s.
+        if waited and waited % 30 == 0:
+            log(f"  …still waiting for config-gen ({waited}s elapsed of "
+                f"{_CONFIG_WAIT_SECS}s budget)", "info")
         _time.sleep(5)
         waited += 5
 
     if not config_ready:
         log(
-            "Velociraptor configuration did not generate within 120s. "
-            "Container IS running but api.config.yaml may not be present "
-            "yet; backend → Velociraptor gRPC calls will fail until the "
-            "entrypoint finishes. Wait a minute then retry, or check "
-            "`docker logs intact_velociraptor` for errors. Continuing.",
+            f"Velociraptor configuration did not generate within "
+            f"{_CONFIG_WAIT_SECS}s. Container IS running but "
+            f"api.config.yaml may not be present yet; backend → "
+            f"Velociraptor gRPC calls will fail until the entrypoint "
+            f"finishes. Wait a minute then retry, or check `docker logs "
+            f"intact_velociraptor` for errors. Continuing.",
+            "warning",
+        )
+
+    # Bundled-artifact restoration — same three paths the upgrade flow
+    # runs. Without these a fresh-install Velociraptor comes up with an
+    # EMPTY non-built-in artifact registry: no DetectRaptor, no
+    # ArtifactExchange, no Extras, no operator custom_artifacts. On an
+    # air-gapped target there's no way to fetch them later either, so
+    # the install is functionally useless. Each layer is best-effort
+    # (existing wrapper pattern) — failures log warnings but don't
+    # abort an otherwise-successful install.
+    log("Restoring bundled artifacts from package...", "info")
+    try:
+        _restore_bundled_artifact_sources(package_dir, logger=log)
+    except Exception as e:
+        log(f"  Bundled artifact source restore raised: {e}", "warning")
+    try:
+        _import_bundled_registry_snapshot(package_dir, logger=log)
+    except Exception as e:
+        log(f"  Registry-snapshot import raised: {e}", "warning")
+    try:
+        _import_bundled_external_artifacts(package_dir, logger=log)
+    except Exception as e:
+        log(f"  External artifact import raised: {e}", "warning")
+
+    # Run the TenRoot artifact importer. Critical for fresh installs:
+    # the previous steps register YAMLs that are already standalone
+    # artifacts, but the TenRoot custom pack (Windows.Triage.Targets,
+    # KAPE blueprints, and ~40 others) is delivered as a ZIP that has
+    # to be UNPACKED by a server artifact called
+    # Custom.Server.Import.TenRoot.Artifacts running inside Velociraptor.
+    # _restore_bundled_artifact_sources above placed the zip at
+    # /app/data/tools/Velociraptor-Artifacts-main.zip; we now invoke
+    # the same orchestrator the "Maintenance → Refresh Tool Inventory"
+    # UI button runs to extract and import every YAML.
+    #
+    # Without this, KAPE-based TimeSketch automations fail with
+    # "Parameter refers to an unknown artifact (Windows.Triage.Targets)"
+    # — the symptom the 2026-06-11 fresh-install operator hit. The
+    # upgrade path already calls this via _reimport_artifacts_post_upgrade,
+    # but install_velociraptor_offline was missing the parallel step.
+    log("Importing TenRoot custom artifact pack (KAPE blueprints, etc.)...", "info")
+    try:
+        from services.velociraptor_init_service import initialize_velociraptor_artifacts
+        # skip_exchange_imports=True — the three Server.Import.* artifacts
+        # (ArtifactExchange / DetectRaptor / Extras) need internet to
+        # download from github at runtime. On air-gapped targets those
+        # silently fail and the operator sees "Some artifacts failed".
+        # _import_bundled_external_artifacts above already imported the
+        # same content from the prepare-time bundled zips, so running
+        # the Server.Import.* artifacts is pure noise — skip them and
+        # only run the TenRoot zip extraction + local custom artifact
+        # imports (both fully air-gap safe).
+        initialize_velociraptor_artifacts(logger_func=log, skip_exchange_imports=True)
+    except Exception as e:
+        log(
+            f"  TenRoot import orchestrator raised "
+            f"({type(e).__name__}: {e}); operator should click "
+            f"Settings → System Maintenance → Refresh Tool Inventory "
+            f"to retry. KAPE collections will fail with 'unknown "
+            f"artifact (Windows.Triage.Targets)' until this runs "
+            f"successfully.",
+            "warning",
+        )
+
+    # Generate pre-configured client installers (MSI / EXE / Linux /
+    # Mac / musl). lib/modules.sh:730-739 does this for the install.sh
+    # path; the offline-apply path was missing the parallel step, so
+    # operators who installed via the UI got a fully-functional
+    # Velociraptor server but the Downloads page returned "Client
+    # installer not found for platform: windows-msi". The script does a
+    # `docker exec intact_velociraptor velociraptor config client …`
+    # per platform and dumps the binaries into client_installers/. We
+    # reach it through the WORKDIR bind-mount (the repo root inside the
+    # backend container). Best-effort — failures log warnings; the
+    # operator can re-run the script manually.
+    client_gen_script = os.path.join(WORKDIR, 'scripts', 'generate_clients.sh')
+    if os.path.isfile(client_gen_script):
+        log("Generating pre-configured client installers (MSI / EXE / Linux / Mac / musl)...", "info")
+        try:
+            cg = run_command(
+                f"bash {client_gen_script}",
+                logger=log, timeout=600, run_id=run_id,
+            )
+            if cg.get('success'):
+                log("  Client installers generated; Downloads page is ready.",
+                    "success")
+            else:
+                err = (cg.get('error') or '')[:200]
+                log(
+                    f"  generate_clients.sh returned non-zero: {err}. The "
+                    f"Downloads page will return 404 for client installers "
+                    f"until the operator re-runs `bash scripts/generate_clients.sh` "
+                    f"on the host.",
+                    "warning",
+                )
+        except Exception as e:
+            log(f"  generate_clients.sh raised: {e} (Downloads page will "
+                f"404 until operator re-runs the script)", "warning")
+    else:
+        log(
+            f"  generate_clients.sh not found at {client_gen_script}. "
+            f"Downloads page client-installer endpoints will 404 until "
+            f"the operator runs the script manually on the host.",
             "warning",
         )
 
