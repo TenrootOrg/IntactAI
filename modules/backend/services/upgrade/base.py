@@ -304,6 +304,125 @@ def compare_versions(v1: str, v2: str) -> int:
     return 0
 
 
+def set_module_block_in_config(module_name: str, block: dict, logger=None) -> bool:
+    """Insert a fresh ``modules.<module_name>`` block into config.yaml.
+
+    Closes the new-module gap: when a future release ships a module the
+    operator's local config.yaml doesn't yet know about (e.g. v3.0 adds
+    ``auditd``), the install function later goes to read
+    ``modules.auditd`` for credentials and finds nothing — falling back
+    to whatever hardcoded defaults the install function carries.
+
+    This helper writes the missing block into the operator's local file
+    so the install function reads from a real source AND the operator
+    can see/edit the module's settings in their file like every other
+    module.
+
+    Behavior:
+
+    * **Idempotent.** If ``modules.<name>`` already exists in local
+      config.yaml, do nothing — the operator's local version wins. We
+      never overwrite a hand-customised block.
+    * **Targeted insert.** Walks the file line-by-line, finds the end of
+      the ``modules:`` block (first top-level key after it, or EOF),
+      and inserts the new mapping at that boundary. Everything else
+      (comments, ordering, operator-local password edits, the
+      ``versions:`` block) stays byte-identical.
+
+    Returns ``True`` if a write happened, ``False`` if the block was
+    already present, the input block was empty, or the file is
+    missing/unwritable.
+    """
+    import re
+    log = logger or (lambda msg, level="info": None)
+    if not block:
+        return False
+    config_path = os.path.join(WORKDIR, 'config.yaml')
+    if not os.path.exists(config_path):
+        log(f"config.yaml not found at {config_path}; skipping module block insert", "warning")
+        return False
+    try:
+        with open(config_path) as f:
+            content = f.read()
+    except Exception as e:
+        log(f"Could not read config.yaml: {e}", "warning")
+        return False
+
+    # Already present at any indent? Skip — operator's version wins.
+    if re.search(rf'^[ \t]+{re.escape(module_name)}:[\s]*$', content, re.MULTILINE):
+        return False
+
+    # Find the modules: block boundaries by walking lines. The block
+    # starts at a line `modules:` (top-level, no leading whitespace) and
+    # ends at the next line that's also top-level (or EOF). Comments
+    # and blank lines INSIDE the block are part of it.
+    lines = content.split('\n')
+    modules_start = None
+    insert_idx = None  # we'll insert BEFORE this index
+    for i, line in enumerate(lines):
+        if modules_start is None:
+            if re.match(r'^modules:\s*$', line):
+                modules_start = i
+            continue
+        # Inside the modules block; look for the boundary.
+        stripped = line.strip()
+        if not stripped:
+            # blank lines belong to whichever block surrounds them; keep going
+            continue
+        if line.startswith(' ') or line.startswith('\t') or stripped.startswith('#'):
+            # still inside the block (indented child OR a comment)
+            continue
+        # Top-level non-blank line — modules: block has ended.
+        insert_idx = i
+        break
+    if modules_start is None:
+        log("config.yaml has no top-level 'modules:' block; cannot insert "
+            f"modules.{module_name}", "warning")
+        return False
+    if insert_idx is None:
+        # Block runs to EOF — append at the very end.
+        insert_idx = len(lines)
+
+    # Format the new block. 2-space indent matches what install.sh +
+    # config.yaml's existing entries use. String values quoted with
+    # single quotes to match the existing style; booleans rendered
+    # lowercase (true/false) to stay YAML-conventional.
+    indent = '  '
+    new_lines = [f'{indent}{module_name}:']
+    for k, v in block.items():
+        if isinstance(v, bool):
+            new_lines.append(f'{indent}{indent}{k}: {str(v).lower()}')
+        elif isinstance(v, (int, float)):
+            new_lines.append(f'{indent}{indent}{k}: {v}')
+        elif v is None:
+            new_lines.append(f'{indent}{indent}{k}: null')
+        else:
+            # string — quote with single quotes; escape any embedded
+            # single quotes by YAML doubling convention ('' inside '...')
+            s = str(v).replace("'", "''")
+            new_lines.append(f"{indent}{indent}{k}: '{s}'")
+
+    # Ensure separation between the new block and what follows. If we're
+    # inserting before a top-level key (not EOF), drop a blank line first
+    # so it doesn't visually merge with the next section.
+    insert_payload = new_lines[:]
+    if insert_idx < len(lines):
+        insert_payload.append('')  # blank line before the next top-level key
+
+    lines[insert_idx:insert_idx] = insert_payload
+    new_content = '\n'.join(lines)
+
+    try:
+        with open(config_path, 'w') as f:
+            f.write(new_content)
+        log(f"Inserted modules.{module_name} block into config.yaml "
+            f"({len(block)} keys)", "info")
+        return True
+    except Exception as e:
+        log(f"Could not write config.yaml: {e}", "warning")
+        return False
+
+
 def set_module_enabled_in_config(module_name: str, logger=None) -> bool:
     """Flip ``modules.<module_name>.enabled`` to ``true`` in config.yaml.
 

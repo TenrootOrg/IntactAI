@@ -109,20 +109,48 @@ def _modules_from_track(target: str, opted_in_optional: list) -> dict:
     Noop rows (current == target) are dropped to keep the work list
     minimal.
 
+    Side effect — opt-in credential plumbing: when the operator ticks
+    an optional module that doesn't yet have a ``modules.<name>`` block
+    in their local config.yaml, we splice it in from the upstream
+    config.yaml BEFORE dispatching. The install function later reads
+    the credentials from the local file as normal. This closes the
+    new-module gap so future releases that add modules (e.g. v3.0
+    introduces ``auditd``) automatically grow the operator's local
+    config.yaml when they opt in, rather than relying on
+    install-function hardcoded defaults that are invisible to the
+    operator. See set_module_block_in_config docstring for the
+    insertion semantics (idempotent, preserves operator-local edits).
+
     Raises :class:`ResolverError` (handled at the route layer) when the
     target is unreachable, rate-limited, or returns garbage.
     """
-    from services.upgrade.resolver import compute_plan
+    from services.upgrade.resolver import compute_plan, fetch_upstream_config
+    from services.upgrade.base import set_module_block_in_config
+
     plan = compute_plan(target, user_action='submit')
     modules: dict = {}
     for row in plan['forced']:
         if row['action'] == 'noop':
             continue
         modules[row['module']] = row['target']
+
     opted_in_set = set(opted_in_optional or [])
-    for row in plan['optional']:
-        if row['module'] in opted_in_set:
-            modules[row['module']] = row['target']
+    if opted_in_set:
+        # Cache hit ~all the time — compute_plan above already cached
+        # this fetch for 30 min. Safe to call again.
+        upstream_cfg = fetch_upstream_config(target, user_action='submit')
+        upstream_modules = (upstream_cfg.get('modules') or {})
+        for row in plan['optional']:
+            name = row['module']
+            if name not in opted_in_set:
+                continue
+            modules[name] = row['target']
+            # Splice in modules.<name> if local config.yaml is missing
+            # it. No-op if the block already exists (operator's wins).
+            block = upstream_modules.get(name)
+            if block:
+                set_module_block_in_config(name, block)
+
     return modules
 
 
