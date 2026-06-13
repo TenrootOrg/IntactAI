@@ -4435,38 +4435,104 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                             </svg>
                         </div>
 
-                        <!-- Module list -->
-                        <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="space-y-3 max-h-80 overflow-y-auto">
-                            <template x-for="module in $store.settings.prepareModules" :key="module.id">
-                                <!-- flex-wrap + flex-shrink-0 on the textbox = the version input
-                                     never gets crushed off-screen on narrow modals/resolutions.
-                                     When the row can't fit horizontally the textbox wraps to the
-                                     next line instead of disappearing. The version textbox uses
-                                     w-full sm:w-28 (or sm:w-44 for intact) so it spans full row
-                                     width on small viewports and shrinks back to its natural
-                                     width above the sm breakpoint. -->
-                                <label class="flex flex-wrap items-center gap-3 p-3 bg-gray-900 rounded border border-gray-700 cursor-pointer hover:bg-gray-800 transition-colors"
-                                       :class="{'border-blue-500 bg-gray-800': module.enabled}">
-                                    <input type="checkbox" x-model="module.enabled"
-                                           class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer flex-shrink-0">
-                                    <div class="flex-1 min-w-0">
-                                        <span class="text-white font-medium" x-text="module.name"></span>
-                                        <span x-show="module.subtitle" class="text-blue-400 text-xs ml-2" x-text="module.subtitle"></span>
+                        <!-- ─── TRACK VIEW ────────────────────────────────────
+                             Pick one Intact release; backend derives the per-module
+                             work list. Operator can opt-in to modules they don't
+                             currently have (e.g. prowler on a non-AWS environment).
+                             Forced rows have no checkbox — installed modules MUST
+                             be upgraded to keep customers on tested combos. -->
+                        <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="space-y-4 max-h-96 overflow-y-auto">
+
+                            <!-- Step 1: release picker -->
+                            <div class="bg-gray-900 rounded border border-gray-700 p-3">
+                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">1. Pick an Intact release</label>
+                                <div class="flex gap-2 items-center">
+                                    <select x-model="$store.settings.selectedRef"
+                                            :disabled="$store.settings.fetchingRefs || !$store.settings.upgradeRefs.length"
+                                            class="flex-1 bg-gray-700 text-white text-sm px-2 py-1.5 rounded border border-gray-600 focus:border-blue-500 disabled:opacity-50">
+                                        <option value="" x-show="!$store.settings.upgradeRefs.length">— click Fetch to load —</option>
+                                        <template x-for="ref in $store.settings.upgradeRefs" :key="ref.name">
+                                            <option :value="ref.name" x-text="ref.label"></option>
+                                        </template>
+                                    </select>
+                                    <button @click="$store.settings.fetchUpgradeRefs()"
+                                            :disabled="$store.settings.fetchingRefs"
+                                            class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-3 py-1.5 rounded text-sm">
+                                        <span x-show="!$store.settings.fetchingRefs">Fetch releases</span>
+                                        <span x-show="$store.settings.fetchingRefs">Fetching…</span>
+                                    </button>
+                                </div>
+                                <p class="text-gray-500 text-xs mt-2">
+                                    Hitting Fetch calls the GitHub releases API once. Results are cached for 30 minutes — clicking again within that window is free.
+                                </p>
+                            </div>
+
+                            <!-- Step 2: compute plan -->
+                            <div x-show="$store.settings.selectedRef" class="bg-gray-900 rounded border border-gray-700 p-3">
+                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">2. Compute the plan</label>
+                                <button @click="$store.settings.computeUpgradePlan()"
+                                        :disabled="$store.settings.computingPlan"
+                                        class="bg-blue-700 hover:bg-blue-600 disabled:opacity-50 px-4 py-1.5 rounded text-sm">
+                                    <span x-show="!$store.settings.computingPlan">Compute plan</span>
+                                    <span x-show="$store.settings.computingPlan">Computing…</span>
+                                </button>
+                            </div>
+
+                            <!-- Step 3: plan preview -->
+                            <div x-show="$store.settings.upgradePlan" class="bg-gray-900 rounded border border-gray-700 p-3">
+                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">3. Review &amp; confirm</label>
+
+                                <!-- Chain banner -->
+                                <div class="mb-3 text-xs text-gray-300 bg-blue-900/30 border border-blue-700/40 rounded p-2"
+                                     x-show="$store.settings.upgradePlan && $store.settings.upgradePlan.chain && $store.settings.upgradePlan.chain.length">
+                                    <span x-text="'You are on Intact ' + ($store.settings.upgradePlan?.current_intact_version || 'unknown') + '. Target: ' + ($store.settings.upgradePlan?.target || '')"></span>
+                                    <span x-show="$store.settings.upgradePlan && $store.settings.upgradePlan.chain.length > 1"
+                                          x-text="' — will apply ' + $store.settings.upgradePlan.chain.length + ' releases sequentially: ' + $store.settings.upgradePlan.chain.join(' → ')"></span>
+                                </div>
+
+                                <!-- Forced rows (no checkbox) -->
+                                <template x-if="$store.settings.upgradePlan && $store.settings.upgradePlan.forced.length">
+                                    <div class="mb-3">
+                                        <div class="text-gray-400 text-xs mb-1">Installed modules (will be upgraded automatically):</div>
+                                        <template x-for="row in $store.settings.upgradePlan.forced" :key="row.module">
+                                            <div class="flex items-center text-xs px-2 py-1.5 rounded border-l-2"
+                                                 :class="row.action === 'noop' ? 'border-gray-600 text-gray-500 bg-gray-800/30' : 'border-blue-500 text-gray-200 bg-gray-800'">
+                                                <span class="flex-1 font-mono" x-text="row.module"></span>
+                                                <span class="font-mono" x-text="row.current"></span>
+                                                <span class="mx-2 text-gray-500">→</span>
+                                                <span class="font-mono" x-text="row.target"></span>
+                                                <span class="ml-3 text-xs uppercase"
+                                                      :class="row.action === 'noop' ? 'text-gray-500' : 'text-blue-400'"
+                                                      x-text="row.action === 'noop' ? '(no change)' : 'upgrade'"></span>
+                                            </div>
+                                        </template>
                                     </div>
-                                    <!-- Per-module version textbox. For the `intact` module this is
-                                         now a GitHub ref (release tag, branch, or full commit SHA)
-                                         — the backend pulls the source tarball from
-                                         github.com/TenrootOrg/IntactAI@<ref> instead of copying
-                                         the running container's mounted source. Other modules use
-                                         this for the upstream docker-image tag. -->
-                                    <input type="text" x-model="module.targetVersion"
-                                           :disabled="!module.enabled"
-                                           @click.stop
-                                           class="bg-gray-700 text-white text-sm px-2 py-1.5 rounded border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed focus:border-blue-500 focus:ring-1 focus:ring-blue-500 flex-shrink-0 w-full"
-                                           :class="module.id === 'intact' ? 'sm:w-44' : 'sm:w-28'"
-                                           :placeholder="module.id === 'intact' ? 'e.g. intact-20260604' : 'Version'">
-                                </label>
-                            </template>
+                                </template>
+
+                                <!-- Optional rows (checkbox to opt-in) -->
+                                <template x-if="$store.settings.upgradePlan && $store.settings.upgradePlan.optional.length">
+                                    <div class="mb-3">
+                                        <div class="text-gray-400 text-xs mb-1">Optional new modules (tick to install on this host):</div>
+                                        <template x-for="row in $store.settings.upgradePlan.optional" :key="row.module">
+                                            <label class="flex items-center text-xs px-2 py-1.5 rounded border-l-2 border-yellow-600/60 bg-gray-800 cursor-pointer hover:bg-gray-700">
+                                                <input type="checkbox"
+                                                       :checked="$store.settings.optedInOptional.includes(row.module)"
+                                                       @change="$store.settings.toggleOptionalModule(row.module)"
+                                                       class="mr-3 w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500">
+                                                <span class="flex-1 font-mono" x-text="row.module"></span>
+                                                <span class="font-mono text-gray-500">not installed</span>
+                                                <span class="mx-2 text-gray-500">→</span>
+                                                <span class="font-mono" x-text="row.target"></span>
+                                                <span class="ml-3 text-xs uppercase text-yellow-400">install if ticked</span>
+                                            </label>
+                                        </template>
+                                    </div>
+                                </template>
+
+                                <div x-show="$store.settings.upgradePlan && !$store.settings.upgradePlan.forced.length && !$store.settings.upgradePlan.optional.length"
+                                     class="text-gray-500 text-xs italic">Nothing to do — local config.yaml matches the target's versions.</div>
+                            </div>
+
                         </div>
 
                         <!-- Package Ready -->
@@ -4498,7 +4564,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                             <button @click="$store.settings.closePreparePackageModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
                                 Cancel
                             </button>
-                            <button @click="$store.settings.startPackagePreparation()" :disabled="$store.settings.prepareLoading"
+                            <button @click="$store.settings.startTrackUpgrade()"
+                                    :disabled="$store.settings.prepareLoading || !$store.settings.upgradePlan"
                                     class="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 px-4 py-2 rounded text-sm font-medium flex items-center gap-2">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -4525,7 +4592,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
 
     <!-- JavaScript - Alpine app + module-specific scripts -->
     <script src="js/api-client.js"></script>
-    <script src="js/app.js?v=12"></script>
+    <script src="js/app.js?v=14"></script>
     <script src="js/velociraptor.js?v=2"></script>
     <script src="js/blueprints.js?v=3"></script>
     <script src="js/blueprints-forensics.js?v=2"></script>

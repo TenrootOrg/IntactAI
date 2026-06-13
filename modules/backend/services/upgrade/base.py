@@ -352,6 +352,90 @@ def set_module_enabled_in_config(module_name: str, logger=None) -> bool:
         return False
 
 
+def set_module_version_in_config(module_key: str, new_version: str,
+                                   logger=None) -> bool:
+    """Rewrite ``versions.<module_key>`` in config.yaml.
+
+    Modeled exactly on :func:`set_module_enabled_in_config` above —
+    surgical regex replacement on the YAML text so comments, ordering,
+    and operator-local edits (passwords, enabled flags, domain) stay
+    byte-identical. A yaml.safe_load+yaml.safe_dump round-trip would
+    strip all of those, which is why we don't use it.
+
+    ``module_key`` is the KEY inside the ``versions:`` block (e.g.
+    ``backend`` for intact, ``velociraptor``, ``elk``). The key map
+    in :func:`get_latest_versions` documents the
+    module-id-to-yaml-key mapping that the caller should already have
+    applied before calling us.
+
+    Returns ``True`` if a write happened, ``False`` if the module key
+    wasn't found, the version was already identical, or the file is
+    missing/unwritable. Same partial-failure safety as the enabled
+    flip: never raises into the dispatcher.
+    """
+    import re
+    log = logger or (lambda msg, level="info": None)
+    config_path = os.path.join(WORKDIR, 'config.yaml')
+    if not os.path.exists(config_path):
+        log(f"config.yaml not found at {config_path}; skipping version bump", "warning")
+        return False
+    try:
+        with open(config_path) as f:
+            content = f.read()
+    except Exception as e:
+        log(f"Could not read config.yaml: {e}", "warning")
+        return False
+
+    # Match `  <key>: <ver>` ONLY inside the top-level `versions:` block.
+    # The trick: lookbehind for `^versions:` (or a less-indented top-
+    # level key) is awkward in Python's re without `regex` package, so
+    # we instead bound the match by snapping to the versions block
+    # explicitly. The pattern:
+    #
+    #   (^versions:\s*\n(?:[ \t]+.*\n)*?)   ← header + zero or more
+    #                                        deeper-indented lines
+    #   ([ \t]+<key>:\s*['"]?)               ← the key line, prefix
+    #   [^\n'"#]+                            ← old value
+    #   (['"]?\s*(?:#.*)?$)                  ← optional quote + comment + EOL
+    #
+    # The first group is reflowed verbatim; group 2 carries the
+    # original indent + quote style; group 3 preserves trailing
+    # comments. Only the value between them gets replaced.
+    pattern = re.compile(
+        rf"(^versions:\s*\n(?:[ \t]+.*\n)*?)([ \t]+{re.escape(module_key)}:\s*(['\"]?))[^\n'\"#]+((['\"]?)\s*(?:#.*)?$)",
+        re.MULTILINE,
+    )
+    match = pattern.search(content)
+    if not match:
+        log(f"versions.{module_key} not found in config.yaml; skipping bump", "info")
+        return False
+
+    # If the line already carries this exact version, do nothing — keeps
+    # the file mtime stable on no-op upgrades.
+    current_line = match.group(0)
+    current_value_match = re.search(
+        rf"{re.escape(module_key)}:\s*(['\"]?)([^'\"#\n]+)(['\"]?)",
+        current_line,
+    )
+    if current_value_match and current_value_match.group(2).strip() == new_version:
+        return False
+
+    # Group 3 / 5 are the opening / closing quote pair. Use group 3's
+    # value (the one that exists) as the quote style for the new value.
+    open_q = match.group(3) or ''
+    new_line = match.group(2) + new_version + match.group(4)
+    new_content = content[:match.start()] + match.group(1) + new_line + content[match.end():]
+
+    try:
+        with open(config_path, 'w') as f:
+            f.write(new_content)
+        log(f"Bumped versions.{module_key} → {new_version} in config.yaml", "info")
+        return True
+    except Exception as e:
+        log(f"Could not write config.yaml: {e}", "warning")
+        return False
+
+
 def get_current_versions() -> Dict:
     """Get current versions for all modules.
 

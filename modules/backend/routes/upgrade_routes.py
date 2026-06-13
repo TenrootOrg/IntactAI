@@ -98,6 +98,87 @@ def _read_package_manifest(package_path):
     return {}
 
 
+def _modules_from_track(target: str, opted_in_optional: list) -> dict:
+    """Translate the new ``{target, opted_in_optional}`` request shape
+    into the ``{module: version}`` dict the existing prepare/online
+    dispatchers consume.
+
+    Forced rows (modules already installed locally) are ALL included —
+    operator can't opt out per principle 1 of the design. Optional rows
+    only land in the dict when the operator explicitly ticked them.
+    Noop rows (current == target) are dropped to keep the work list
+    minimal.
+
+    Raises :class:`ResolverError` (handled at the route layer) when the
+    target is unreachable, rate-limited, or returns garbage.
+    """
+    from services.upgrade.resolver import compute_plan
+    plan = compute_plan(target, user_action='submit')
+    modules: dict = {}
+    for row in plan['forced']:
+        if row['action'] == 'noop':
+            continue
+        modules[row['module']] = row['target']
+    opted_in_set = set(opted_in_optional or [])
+    for row in plan['optional']:
+        if row['module'] in opted_in_set:
+            modules[row['module']] = row['target']
+    return modules
+
+
+@upgrade_bp.route('/api/upgrade/refs', methods=['POST'])
+def list_upgrade_refs():
+    """Operator-triggered (Fetch button). Returns the release/branch list.
+
+    POST not GET on purpose: the call hits the GitHub API, costs anonymous
+    rate-limit budget, and MUST stay behind an explicit operator action
+    (not page-load chatter). Returns cached results within the 30-minute
+    TTL — so a double-click only spends one GitHub call.
+    """
+    try:
+        from services.upgrade.resolver import list_github_refs, ResolverError
+        try:
+            refs = list_github_refs(user_action='fetch')
+        except ResolverError as e:
+            return jsonify({"success": False, "error": str(e)}), 502
+        return jsonify({"success": True, "refs": refs})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@upgrade_bp.route('/api/upgrade/plan', methods=['POST'])
+def compute_upgrade_plan():
+    """Operator-triggered (Compute Plan button). Returns the work plan.
+
+    Body: ``{"target": "<ref>"}`` where ref is one of the names returned
+    by ``/api/upgrade/refs`` (a release tag like ``v1.4.2`` or the
+    synthetic ``development``).
+
+    Response (see :func:`services.upgrade.resolver.compute_plan`):
+        {
+          current_intact_version: ...,
+          target: ...,
+          chain: [ref, ref, ...],
+          forced:   [{module, current, target, action}, ...],
+          optional: [{module, current, target, action}, ...],
+        }
+    """
+    try:
+        data = request.json or {}
+        target = (data.get('target') or '').strip()
+        if not target:
+            return jsonify({"success": False, "error": "target required"}), 400
+
+        from services.upgrade.resolver import compute_plan, ResolverError
+        try:
+            plan = compute_plan(target, user_action='plan')
+        except ResolverError as e:
+            return jsonify({"success": False, "error": str(e)}), 502
+        return jsonify({"success": True, "plan": plan})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @upgrade_bp.route('/api/upgrade/status', methods=['GET'])
 def get_upgrade_status():
     """Get latest versions for all modules (used by Prepare Package modal)."""
@@ -255,16 +336,37 @@ def start_offline_upgrade():
 def prepare_upgrade_package():
     """Prepare an upgrade package for offline/air-gapped transfer.
 
-    Body: {
-        "modules": {"elk": "9.3.1", "velociraptor": "0.75.6", ...}
-    }
+    Two request shapes are accepted:
+
+    1. NEW track-based shape::
+
+           {"target": "<ref>", "opted_in_optional": ["prowler", ...]}
+
+       The backend resolves ``target`` → forced + opted-in modules via
+       :func:`_modules_from_track` and feeds the result into the rest
+       of the existing flow.
+
+    2. LEGACY explicit shape (still supported for the textbox UI)::
+
+           {"modules": {"elk": "9.3.1", "velociraptor": "0.75.6", ...}}
     """
     try:
         data = request.json
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
-        modules = data.get('modules', {})
+        target = (data.get('target') or '').strip()
+        if target:
+            from services.upgrade.resolver import ResolverError
+            try:
+                modules = _modules_from_track(
+                    target, data.get('opted_in_optional') or []
+                )
+            except ResolverError as e:
+                return jsonify({"error": str(e)}), 502
+        else:
+            modules = data.get('modules', {})
+
         if not modules:
             return jsonify({"error": "No modules selected for package"}), 400
 
@@ -394,8 +496,15 @@ def prepare_upgrade_package():
 def start_online_upgrade():
     """Combined prepare + apply in one workflow — no intermediate tar.gz.
 
-    Same JSON body shape as /api/upgrade/prepare:
-        {"modules": {"elk": "9.3.1", "intact": "development", ...}}
+    Same dual-shape body as ``/api/upgrade/prepare``:
+
+    1. NEW track-based shape::
+
+           {"target": "<ref>", "opted_in_optional": [...]}
+
+    2. LEGACY explicit shape (still supported)::
+
+           {"modules": {"elk": "9.3.1", "intact": "development", ...}}
 
     For internet-connected machines. Visible in the same Workflows
     tab as prepare-package and offline-apply.
@@ -405,7 +514,18 @@ def start_online_upgrade():
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
-        modules = data.get('modules', {})
+        target = (data.get('target') or '').strip()
+        if target:
+            from services.upgrade.resolver import ResolverError
+            try:
+                modules = _modules_from_track(
+                    target, data.get('opted_in_optional') or []
+                )
+            except ResolverError as e:
+                return jsonify({"error": str(e)}), 502
+        else:
+            modules = data.get('modules', {})
+
         if not modules:
             return jsonify({"error": "No modules selected for online upgrade"}), 400
 

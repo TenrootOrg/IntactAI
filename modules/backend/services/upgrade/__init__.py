@@ -914,6 +914,32 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                 if result.get('success'):
                     log(f"{module_name.upper()} upgrade completed", "success")
 
+                    # Bump versions.<key> in config.yaml so the next
+                    # track-based upgrade's diff is correct. Partial
+                    # failure safety: only successful modules' versions
+                    # get bumped — a failed module's row stays at the
+                    # old version so re-running the upgrade retries
+                    # exactly the right thing. The 'intact' module
+                    # writes to the 'backend' key per the existing
+                    # config_key_map in base.get_latest_versions.
+                    # We also flip modules.<name>.enabled=true when
+                    # this was a fresh INSTALL (not an upgrade) — that
+                    # covers both the new track-flow opt-in checkbox
+                    # AND the legacy flow where an operator typed in
+                    # a module they don't currently have.
+                    from .base import set_module_version_in_config, set_module_enabled_in_config
+                    yaml_key = 'backend' if module_name == 'intact' else module_name
+                    if version and version != 'from_package':
+                        try:
+                            set_module_version_in_config(yaml_key, version, logger=log)
+                        except Exception as e:
+                            log(f"  config.yaml version-writeback failed for {module_name}: {e}", "warning")
+                    if action_word == 'INSTALLING' and module_name not in ('intact',):
+                        try:
+                            set_module_enabled_in_config(module_name, logger=log)
+                        except Exception as e:
+                            log(f"  config.yaml enable-flip failed for {module_name}: {e}", "warning")
+
                     # Recreate Timesketch user after fresh install
                     if module_name == 'timesketch' and db_overwrite.get('timesketch', False):
                         recreate_timesketch_user(logger=log)

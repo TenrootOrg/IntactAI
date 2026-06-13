@@ -792,33 +792,6 @@ document.addEventListener('alpine:init', () => {
         // 'prepare' → POST /api/upgrade/prepare (offline flow, produces tar.gz)
         // 'online'  → POST /api/upgrade/online (combined prepare + apply)
         prepareModalMode: 'prepare',
-        // Each row: `name` renders in white, `subtitle` (optional) renders in
-        // blue beside it — matches the original Intact.AI "(backend + frontend)"
-        // styling and applies it uniformly across all modules so every row's
-        // tool/clarifier reads the same way.
-        prepareModules: [
-            { id: 'elk', name: 'ELK Stack', subtitle: '', targetVersion: '', enabled: false, fallback: '8.17.0' },
-            { id: 'timesketch', name: 'Timesketch', subtitle: '', targetVersion: '', enabled: false, fallback: '20240919' },
-            { id: 'plaso', name: 'Plaso', subtitle: '(Timeline)', targetVersion: '', enabled: false, fallback: '20240308' },
-            { id: 'iris', name: 'IRIS', subtitle: '', targetVersion: '', enabled: false, fallback: 'v2.4.19' },
-            { id: 'velociraptor', name: 'Velociraptor', subtitle: '', targetVersion: '', enabled: false, fallback: '0.73.4' },
-            // Prowler & DFIR-O365RC: /api/upgrade/status frequently returns
-            // 'unknown' for these (the Docker Hub tag lookup is flaky for
-            // toniblyx/prowler + anssi/dfir-o365rc). The fallback below is
-            // what the textbox shows when the API can't resolve — pick the
-            // newest known-good upstream tag so the operator can hit Start
-            // without retyping. anssi/dfir-o365rc upstream only ships
-            // :latest so we stay on the rolling tag for that one.
-            { id: 'prowler', name: 'Prowler', subtitle: '', targetVersion: '', enabled: false, fallback: '5.29.3' },
-            { id: 'o365rc', name: 'DFIR-O365RC', subtitle: '', targetVersion: '', enabled: false, fallback: 'latest' },
-            // VolWeb — apply orchestrator picks install_volweb_offline vs
-            // upgrade_volweb_offline automatically based on whether
-            // intact_volweb_backend exists on the host. Lets operators
-            // package + deploy a module that wasn't selected at install
-            // time without re-running install.sh.
-            { id: 'volweb', name: 'VolWeb', subtitle: '(Memory Forensics)', targetVersion: '', enabled: false, fallback: 'latest' },
-            { id: 'intact', name: 'Intact.AI', subtitle: '(Source code)', targetVersion: 'intact-20260604', enabled: false, fallback: 'intact-20260604' },
-        ],
 
         async openPreparePackageModal() {
             this.prepareModalMode = 'prepare';
@@ -830,111 +803,128 @@ document.addEventListener('alpine:init', () => {
             await this._openModuleModal();
         },
 
+        // ─── Track-based upgrade flow state ──────────────────────────
+        // The operator picks ONE Intact release, system derives the
+        // per-module work list. See services/upgrade/resolver.py.
+        upgradeRefs: [],            // populated by fetchUpgradeRefs()
+        selectedRef: '',            // the ref the operator picked in the dropdown
+        upgradePlan: null,          // populated by computeUpgradePlan()
+        optedInOptional: [],        // module IDs the operator ticked in the optional table
+        fetchingRefs: false,
+        computingPlan: false,
+
+        async fetchUpgradeRefs() {
+            // Operator-triggered (the Fetch button). Backend caches for
+            // 30 min — clicking twice within that window is free.
+            this.fetchingRefs = true;
+            this.upgradeRefs = [];
+            this.selectedRef = '';
+            this.upgradePlan = null;
+            try {
+                const r = await fetch('/api/upgrade/refs', {method: 'POST'});
+                const d = await r.json();
+                if (d && d.success) {
+                    this.upgradeRefs = d.refs || [];
+                    if (this.upgradeRefs.length) {
+                        this.selectedRef = this.upgradeRefs[0].name;
+                    }
+                } else {
+                    this.showMessage('Could not fetch releases: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Fetch releases failed: ' + e.message, 'error');
+            }
+            this.fetchingRefs = false;
+        },
+
+        async computeUpgradePlan() {
+            if (!this.selectedRef) {
+                this.showMessage('Pick a release first', 'error');
+                return;
+            }
+            this.computingPlan = true;
+            this.upgradePlan = null;
+            this.optedInOptional = [];
+            try {
+                const r = await fetch('/api/upgrade/plan', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({target: this.selectedRef}),
+                });
+                const d = await r.json();
+                if (d && d.success) {
+                    this.upgradePlan = d.plan;
+                } else {
+                    this.showMessage('Plan failed: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Plan request failed: ' + e.message, 'error');
+            }
+            this.computingPlan = false;
+        },
+
+        toggleOptionalModule(moduleId) {
+            const idx = this.optedInOptional.indexOf(moduleId);
+            if (idx >= 0) {
+                this.optedInOptional.splice(idx, 1);
+            } else {
+                this.optedInOptional.push(moduleId);
+            }
+        },
+
+        async startTrackUpgrade() {
+            if (!this.upgradePlan) {
+                this.showMessage('Compute a plan first', 'error');
+                return;
+            }
+            const isOnline = this.prepareModalMode === 'online';
+            const endpoint = isOnline ? '/api/upgrade/online' : '/api/upgrade/prepare';
+            const successMsg = isOnline
+                ? 'Online upgrade started — check Workflows for progress'
+                : 'Package preparation started — check Workflows for progress';
+            this.prepareLoading = true;
+            try {
+                const r = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        target: this.selectedRef,
+                        opted_in_optional: this.optedInOptional,
+                    }),
+                });
+                const d = await r.json();
+                if (r.ok && d.success) {
+                    this.prepareRunId = d.run_id;
+                    this.closePreparePackageModal();
+                    this.showMessage(successMsg, 'success');
+                    setTimeout(() => { Alpine.store('app').switchTab('workflows'); }, 500);
+                } else {
+                    this.showMessage('Upgrade request failed: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Upgrade request error: ' + e.message, 'error');
+            }
+            this.prepareLoading = false;
+        },
+
         async _openModuleModal() {
             this.showPreparePackageModal = true;
-            this.prepareLoading = true;
+            this.prepareLoading = false;
             this.prepareRunId = null;
             this.preparePackageReady = false;
             this.preparePackageSize = '';
-
-            // Reset modules
-            this.prepareModules.forEach(m => {
-                m.enabled = false;
-                m.targetVersion = '';
-            });
-
-            try {
-                const response = await fetch('/api/upgrade/status');
-                const data = await response.json();
-                if (data.success && data.versions) {
-                    this.prepareModules.forEach(m => {
-                        // The `intact` module is a GitHub ref (release tag /
-                        // branch / commit SHA), NOT a docker image tag — the
-                        // /api/upgrade/status "latest" lookup queries Docker
-                        // Hub for image tags and returns nonsense (e.g.
-                        // "1.0.0") for intact. Use the configured fallback,
-                        // which is a real GitHub release tag.
-                        if (m.id === 'intact') {
-                            m.targetVersion = m.fallback;
-                            return;
-                        }
-                        const ver = data.versions[m.id];
-                        // Fall through to the module's own `fallback` when:
-                        //   - the API has no entry for it (new module), OR
-                        //   - the API explicitly returns 'unknown' (Docker
-                        //     Hub tag lookup failed — common for the
-                        //     toniblyx/prowler + anssi/dfir-o365rc image
-                        //     names). Without the 'unknown' check the
-                        //     textbox literally renders the word "unknown"
-                        //     because it's a truthy string and beats the
-                        //     `||` fallback.
-                        const latest = ver && ver.latest;
-                        m.targetVersion = (latest && latest !== 'unknown') ? latest : m.fallback;
-                    });
-                } else {
-                    // Use fallback versions
-                    this.prepareModules.forEach(m => {
-                        m.targetVersion = m.fallback;
-                    });
-                }
-            } catch (e) {
-                console.error('Failed to fetch versions, using fallbacks:', e);
-                this.prepareModules.forEach(m => {
-                    m.targetVersion = m.fallback;
-                });
-            }
-            this.prepareLoading = false;
+            // Reset track-view state. We don't pre-fetch GitHub on modal
+            // open per the call discipline — see services/upgrade/resolver.py.
+            this.upgradeRefs = [];
+            this.selectedRef = '';
+            this.upgradePlan = null;
+            this.optedInOptional = [];
         },
 
         closePreparePackageModal() {
             this.showPreparePackageModal = false;
             this.preparePackageReady = false;
             this.prepareRunId = null;
-        },
-
-        async startPackagePreparation() {
-            const selected = this.prepareModules.filter(m => m.enabled);
-            if (selected.length === 0) {
-                this.showMessage('Select at least one module to include', 'error');
-                return;
-            }
-
-            const modules = {};
-            selected.forEach(m => {
-                modules[m.id] = m.targetVersion || m.latest || '1.0.0';
-            });
-
-            const isOnline = this.prepareModalMode === 'online';
-            const endpoint = isOnline ? '/api/upgrade/online' : '/api/upgrade/prepare';
-            const successMsg = isOnline
-                ? 'Online upgrade started — check Workflows for progress'
-                : 'Package preparation started — check Workflows for progress';
-            const errPrefix = isOnline ? 'Failed to start online upgrade: ' : 'Failed to start preparation: ';
-            const exPrefix = isOnline ? 'Online upgrade error: ' : 'Preparation error: ';
-
-            this.prepareLoading = true;
-            try {
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ modules })
-                });
-
-                const result = await response.json();
-                if (response.ok && result.success) {
-                    this.prepareRunId = result.run_id;
-                    this.closePreparePackageModal();
-                    this.showMessage(successMsg, 'success');
-                    setTimeout(() => {
-                        Alpine.store('app').switchTab('workflows');
-                    }, 500);
-                } else {
-                    this.showMessage(errPrefix + (result.error || 'Unknown error'), 'error');
-                }
-            } catch (e) {
-                this.showMessage(exPrefix + e.message, 'error');
-            }
-            this.prepareLoading = false;
         },
 
         async downloadPreparedPackage() {
