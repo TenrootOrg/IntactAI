@@ -884,12 +884,20 @@ document.addEventListener('alpine:init', () => {
             //     (post-upload review). Skip straight to apply.
             let packagePath = this.applyPackage.path;
             if (!packagePath && this.applyPackage._localFile) {
-                this.showMessage('Uploading package…', 'info');
-                this.closeApplyPackageModal();
-                Alpine.store('app').switchTab('workflows');
+                // Capture EVERYTHING from the Alpine state BEFORE
+                // closing the modal — close() nulls applyPackage and
+                // applyManifest, so any subsequent read on them throws
+                // and the upload silently never starts. That's why the
+                // operator saw "Apply" close the modal but no workflow
+                // appeared.
                 const file = this.applyPackage._localFile;
                 const selected = this.applySelectedModules.slice();
                 const db_overwrite = Object.assign({}, this.applyDbOverwrite);
+                console.log('[Import] Starting tus upload for', file.name,
+                            '(', file.size, 'bytes), modules:', selected);
+                this.showMessage('Uploading package… (you can watch the upload run in Workflows)', 'info');
+                this.closeApplyPackageModal();
+                Alpine.store('app').switchTab('workflows');
                 this.applying = false;
                 const upload = new tus.Upload(file, {
                     endpoint: '/api/uploads/',
