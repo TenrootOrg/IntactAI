@@ -186,11 +186,19 @@ def _modules_for_prepare(target: str, selected_modules: list) -> dict:
     upstream release's actual versions block so a typo or stale module
     name in the request doesn't silently slip through — only modules the
     upstream release actually pins land in the result.
+
+    Backend safety net for the intact requirement: a tarball without
+    the intact platform itself is useless (every other module needs
+    the platform to drive it; air-gap targets need it to receive the
+    upgrade). intact is force-added even if the request omitted it
+    (UI disables the checkbox, but an external automation might POST
+    a list that excludes it).
     """
     from services.upgrade.resolver import list_upstream_modules
     upstream = list_upstream_modules(target, user_action='submit-prepare')
     upstream_map = {row['module']: row['target'] for row in upstream}
     selected_set = set(selected_modules or [])
+    selected_set.add('intact')  # ← always bundled, no opt-out
     modules: dict = {}
     for name in selected_set:
         v = upstream_map.get(name)

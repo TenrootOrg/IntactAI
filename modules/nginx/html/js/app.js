@@ -1078,6 +1078,10 @@ document.addEventListener('alpine:init', () => {
         },
 
         togglePrepareModule(moduleId) {
+            // intact is the platform — a package without it has no
+            // runtime to apply other modules. Guard against any code
+            // path that tries to untick it.
+            if (moduleId === 'intact') return;
             const idx = this.prepareSelected.indexOf(moduleId);
             if (idx >= 0) {
                 this.prepareSelected.splice(idx, 1);
