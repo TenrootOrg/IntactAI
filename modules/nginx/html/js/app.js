@@ -874,12 +874,75 @@ document.addEventListener('alpine:init', () => {
                 return;
             }
             this.applying = true;
+
+            // Two code paths share this function:
+            //  1. peek-flow — applyPackage.path is null because the
+            //     local file hasn't been uploaded yet. Upload now via
+            //     tus, then call /api/upgrade/offline with the
+            //     resulting /data/uploads/<id> path.
+            //  2. legacy-flow — applyPackage.path is already set
+            //     (post-upload review). Skip straight to apply.
+            let packagePath = this.applyPackage.path;
+            if (!packagePath && this.applyPackage._localFile) {
+                this.showMessage('Uploading package…', 'info');
+                this.closeApplyPackageModal();
+                Alpine.store('app').switchTab('workflows');
+                const file = this.applyPackage._localFile;
+                const selected = this.applySelectedModules.slice();
+                const db_overwrite = Object.assign({}, this.applyDbOverwrite);
+                this.applying = false;
+                const upload = new tus.Upload(file, {
+                    endpoint: '/api/uploads/',
+                    retryDelays: [0, 1000, 3000, 5000],
+                    chunkSize: 5 * 1024 * 1024,
+                    metadata: {
+                        filename: file.name,
+                        filetype: file.type || 'application/gzip',
+                        purpose: 'upgrade_package',
+                    },
+                    onError: (error) => {
+                        console.error('Upload error:', error);
+                        this.showMessage('Upload failed: ' + error.message, 'error');
+                    },
+                    onSuccess: async () => {
+                        const parts = (upload.url || '').split('/').filter(Boolean);
+                        const uploadId = parts.length ? parts[parts.length - 1] : null;
+                        if (!uploadId) {
+                            this.showMessage('Upload succeeded but no ID returned', 'error');
+                            return;
+                        }
+                        try {
+                            const r = await fetch('/api/upgrade/offline', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({
+                                    package_path: '/data/uploads/' + uploadId,
+                                    selected_modules: selected,
+                                    db_overwrite: db_overwrite,
+                                }),
+                            });
+                            const d = await r.json();
+                            if (r.ok && d.success) {
+                                this.showMessage('Apply started — see Workflows for progress', 'success');
+                            } else {
+                                this.showMessage('Apply failed: ' + (d.error || 'unknown'), 'error');
+                            }
+                        } catch (e) {
+                            this.showMessage('Apply request failed: ' + e.message, 'error');
+                        }
+                    },
+                });
+                upload.start();
+                return;
+            }
+
+            // Legacy-flow: tarball already on disk, just apply.
             try {
                 const r = await fetch('/api/upgrade/offline', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        package_path: this.applyPackage.path,
+                        package_path: packagePath,
                         selected_modules: this.applySelectedModules,
                         db_overwrite: this.applyDbOverwrite,
                     }),
@@ -1101,25 +1164,80 @@ document.addEventListener('alpine:init', () => {
         },
 
         // ===== OFFLINE UPGRADE =====
-        importUpgradePackage(event) {
+        async importUpgradePackage(event) {
             const files = event.target.files;
             if (!files || files.length === 0) return;
-
             const file = files[0];
+            event.target.value = '';
 
             if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.tgz')) {
                 this.showMessage('Please select a .tar.gz or .tgz file', 'error');
-                event.target.value = '';
                 return;
             }
 
-            // Single-click flow: tus upload runs silently in the
-            // background. When it finishes we pop the review modal so
-            // the operator can tick which modules from the manifest to
-            // actually apply (and the per-module db_overwrite flags
-            // for fresh installs). No auto-apply.
-            this.showMessage(`Uploading ${file.name}...`, 'info');
+            // ─── PEEK PHASE ─────────────────────────────────────────────
+            // Read just the first 5 MB of the local file, POST it to
+            // /api/upgrade/peek-manifest, get the manifest back, open
+            // the review modal. The full 5 GB upload only happens after
+            // the operator clicks Apply. If the operator cancels, no
+            // upload bytes get sent at all.
+            //
+            // Why 5 MB: manifest.json lives in the first ~10 KB of any
+            // tarball built by the new prepare flow (tar --files-from
+            // ordering). 5 MB is a generous margin that covers
+            // alignment, headers, and any pre-manifest entries. Costs
+            // ~0.5 s on a typical link.
+            this.showMessage('Reading manifest from local file…', 'info');
+            const slice = file.slice(0, 5 * 1024 * 1024);
+            let peek = null;
+            try {
+                const resp = await fetch('/api/upgrade/peek-manifest', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/octet-stream'},
+                    body: slice,
+                });
+                peek = await resp.json();
+            } catch (e) {
+                console.error('peek-manifest request failed:', e);
+                this.showMessage('Manifest peek failed: ' + e.message, 'error');
+                return;
+            }
+            if (!peek || !peek.success) {
+                // Older tarballs (manifest at end) land here. Operator
+                // can still upload + review post-upload, but warn them
+                // the upload will run with no preview.
+                if (!confirm(
+                    'Could not preview the manifest from the first 5 MB of this tarball ' +
+                    '(likely a package built before the new ordering). Upload the FULL file ' +
+                    'now and review afterwards?'
+                )) return;
+                return this._legacyUploadThenReview(file);
+            }
 
+            // Open the review modal with the peeked manifest. The
+            // package_path stays NULL until the actual upload finishes
+            // (Apply button is what triggers the upload).
+            this.applyPackage = {
+                _localFile: file,                          // kept for the upload step
+                name: file.name,
+                size_bytes: file.size,
+                source: 'local-pending',
+                path: null,                                // filled in after upload
+            };
+            this.applyManifest = peek.manifest || peek;
+            this.applySelectedModules = Object.keys(
+                (this.applyManifest && this.applyManifest.versions) || {}
+            );
+            this.applyDbOverwrite = {};
+            this.showApplyPackageModal = true;
+            this.loadingApplyInfo = false;
+        },
+
+        // Legacy fallback for tarballs where the peek can't find
+        // manifest.json in the first 5 MB. Uploads first, opens the
+        // modal on tus success (matches the previous behavior).
+        _legacyUploadThenReview(file) {
+            this.showMessage(`Uploading ${file.name}...`, 'info');
             const upload = new tus.Upload(file, {
                 endpoint: '/api/uploads/',
                 retryDelays: [0, 1000, 3000, 5000],
@@ -1134,15 +1252,12 @@ document.addEventListener('alpine:init', () => {
                     this.showMessage('Upload failed: ' + error.message, 'error');
                 },
                 onSuccess: () => {
-                    // Extract the upload id from the tus URL — that's
-                    // the filename the backend writes at /data/uploads/.
                     const parts = (upload.url || '').split('/').filter(Boolean);
                     const uploadId = parts.length ? parts[parts.length - 1] : null;
                     if (!uploadId) {
-                        this.showMessage('Upload succeeded but no ID returned; cannot open review modal', 'error');
+                        this.showMessage('Upload succeeded but no ID returned', 'error');
                         return;
                     }
-                    this.showMessage(`Upload complete. Review and pick modules to apply.`, 'success');
                     this.openApplyPackageModal({
                         path: '/data/uploads/' + uploadId,
                         name: file.name,
@@ -1151,9 +1266,7 @@ document.addEventListener('alpine:init', () => {
                     });
                 },
             });
-
             upload.start();
-            event.target.value = '';
         },
 
         async onProviderChange() {

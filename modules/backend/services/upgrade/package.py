@@ -127,8 +127,40 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
     source_size = _get_dir_size(source_path)
     log(f"  Source size: {_format_size(source_size)}", "info")
 
-    # Start tar in background
-    cmd = f"tar -czf {output_file} -C {source_dir} {source_name}"
+    # Build a file list with manifest.json FIRST so it lives in the
+    # first ~10KB of the gzipped tar. This lets:
+    #   * the operator's browser peek the manifest from the first ~5MB
+    #     of the local file before any upload (see /api/upgrade/peek-manifest),
+    #   * get_package_info()'s slow-path fallback to find the manifest
+    #     in the first decompressed block instead of scanning the
+    #     entire archive.
+    # Falls back to the legacy directory-mode tar command if the
+    # manifest doesn't exist (older callers / partial packages).
+    manifest_rel = os.path.join(source_name, 'manifest.json')
+    manifest_abs = os.path.join(source_path, 'manifest.json')
+    list_file = output_file + '.filelist'
+    use_files_from = False
+    try:
+        if os.path.isfile(manifest_abs):
+            entries = [manifest_rel]
+            for root, _, files in os.walk(source_path):
+                for f in files:
+                    rel = os.path.relpath(os.path.join(root, f), source_dir)
+                    if rel != manifest_rel:
+                        entries.append(rel)
+            with open(list_file, 'w') as f:
+                f.write('\n'.join(entries) + '\n')
+            use_files_from = True
+    except Exception as _e:
+        # Anything weird → fall through to the legacy directory-mode tar.
+        # The output is still a correct tarball, just with manifest in
+        # whatever filesystem-order tar picks.
+        use_files_from = False
+
+    if use_files_from:
+        cmd = f"tar -czf {output_file} -C {source_dir} -T {list_file}"
+    else:
+        cmd = f"tar -czf {output_file} -C {source_dir} {source_name}"
     process = subprocess.Popen(
         cmd,
         shell=True,
@@ -192,6 +224,14 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
     # Check result
     returncode = process.returncode
     stderr = process.stderr.read().decode() if process.stderr else ""
+
+    # Best-effort cleanup of the file list (only created when use_files_from
+    # branch ran). Failures here are harmless cruft.
+    try:
+        if use_files_from and os.path.isfile(list_file):
+            os.remove(list_file)
+    except Exception:
+        pass
 
     if returncode != 0:
         return {"success": False, "error": stderr[:200]}

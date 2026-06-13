@@ -226,6 +226,64 @@ def list_prepare_modules():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@upgrade_bp.route('/api/upgrade/peek-manifest', methods=['POST'])
+def peek_manifest_from_blob():
+    """Extract manifest.json from the FIRST few MB of a tarball blob.
+
+    The operator's browser slices the first ~5 MB of a local file
+    (FileReader API) and POSTs the raw bytes here. We decompress
+    streaming-style and look for the first ``manifest.json`` entry —
+    which lives in the first ~10 KB of any tarball built by the new
+    prepare flow (manifest.json is written first via tar --files-from
+    so it's at the very start). For older tarballs without that
+    ordering, this will fail gracefully and the JS falls back to the
+    post-upload review path.
+
+    Body: raw gzip+tar bytes (Content-Type: application/octet-stream).
+    Returns: {"success": True, "manifest": {...}} on hit,
+             {"success": False, "error": "..."} on miss.
+    """
+    try:
+        blob = request.get_data()
+        if not blob:
+            return jsonify({"success": False, "error": "empty body"}), 400
+        if len(blob) > 25 * 1024 * 1024:
+            # 25 MB ceiling — peek is supposed to be the FIRST chunk,
+            # not the whole file. Refuse anything larger.
+            return jsonify({"success": False, "error": "blob too large for peek"}), 400
+
+        import io as _io
+        import tarfile as _tarfile
+        # Streaming mode (mode='r|gz') reads entry-by-entry from the
+        # bytes object without seeking — perfect for a partial gzip
+        # stream that ends mid-entry beyond manifest.json.
+        try:
+            with _tarfile.open(fileobj=_io.BytesIO(blob), mode='r|gz') as tar:
+                for member in tar:
+                    if member.name.endswith('manifest.json') and member.isfile():
+                        f = tar.extractfile(member)
+                        if f is None:
+                            continue
+                        manifest = json.load(f)
+                        return jsonify({
+                            "success": True,
+                            "manifest": manifest,
+                            "versions": manifest.get('versions', {}),
+                            "contents": manifest.get('contents', {}),
+                            "created": manifest.get('created'),
+                        })
+        except (EOFError, _tarfile.ReadError):
+            # Stream ended before manifest.json was found. Caller
+            # should fall back to the post-upload review path.
+            pass
+        return jsonify({
+            "success": False,
+            "error": "manifest.json not found in the first chunk (likely an older tarball)",
+        }), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @upgrade_bp.route('/api/upgrade/list-packages', methods=['POST'])
 def list_pending_packages():
     """Return the inventory of tarballs currently sitting on disk in the
