@@ -173,6 +173,105 @@ def _modules_from_track(target: str, opted_in_optional: list):
     return modules, warnings
 
 
+def _modules_for_prepare(target: str, selected_modules: list) -> dict:
+    """Translate the Prepare Package shape ``{target, selected_modules}``
+    into the ``{module: version}`` dict the prepare workflow consumes.
+
+    Pure function — does NOT read local machine state. The build-server's
+    installed modules are IRRELEVANT to what the operator wants to bundle
+    for an air-gap target. See plan: Prepare's semantics are "pick from
+    the upstream release's full module list", not "diff against local".
+
+    Cross-references the operator's selected_modules list against the
+    upstream release's actual versions block so a typo or stale module
+    name in the request doesn't silently slip through — only modules the
+    upstream release actually pins land in the result.
+    """
+    from services.upgrade.resolver import list_upstream_modules
+    upstream = list_upstream_modules(target, user_action='submit-prepare')
+    upstream_map = {row['module']: row['target'] for row in upstream}
+    selected_set = set(selected_modules or [])
+    modules: dict = {}
+    for name in selected_set:
+        v = upstream_map.get(name)
+        if v is not None:
+            modules[name] = v
+    return modules
+
+
+@upgrade_bp.route('/api/upgrade/prepare-list', methods=['POST'])
+def list_prepare_modules():
+    """Operator-triggered (the Prepare modal's "Show Modules" button).
+
+    Body: ``{"target": "<ref>"}`` — the release the operator picked.
+    Returns the flat module list for that release, no local-state diff.
+
+    Used by the Prepare Package modal to render its checkbox table.
+    Online Upgrade uses ``/api/upgrade/plan`` instead (which DOES read
+    local state for the forced/optional split).
+    """
+    try:
+        data = request.json or {}
+        target = (data.get('target') or '').strip()
+        if not target:
+            return jsonify({"success": False, "error": "target required"}), 400
+
+        from services.upgrade.resolver import list_upstream_modules, ResolverError
+        try:
+            rows = list_upstream_modules(target, user_action='prepare-list')
+        except ResolverError as e:
+            return jsonify({"success": False, "error": str(e)}), 502
+        return jsonify({"success": True, "target": target, "modules": rows})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@upgrade_bp.route('/api/upgrade/list-packages', methods=['POST'])
+def list_pending_packages():
+    """Return the inventory of tarballs currently sitting on disk in the
+    two allowlisted package dirs (``/data/uploads/`` from operator
+    uploads + ``/data/upgrade_packages/`` from the prepare flow).
+
+    Used by the new Apply Uploaded Package card so the operator can see
+    what tarballs are available and pick one. POST (not GET) to match
+    the other upgrade endpoints' convention and signal "operator
+    action, not page chatter".
+    """
+    try:
+        import os as _os
+        out = []
+        for prefix in ALLOWED_PACKAGE_DIRS:
+            if not _os.path.isdir(prefix):
+                continue
+            try:
+                names = _os.listdir(prefix)
+            except OSError:
+                continue
+            for name in sorted(names):
+                # tarballs only — silently skip anything else (the
+                # upload + prepare flows can leave .info files and
+                # subdirectories around that aren't applicable).
+                if not (name.endswith('.tar.gz') or name.endswith('.tgz')):
+                    continue
+                full = _os.path.join(prefix, name)
+                try:
+                    st = _os.stat(full)
+                except OSError:
+                    continue
+                out.append({
+                    'path': full,
+                    'name': name,
+                    'size_bytes': st.st_size,
+                    'mtime': st.st_mtime,
+                    'source': 'uploads' if prefix == '/data/uploads/' else 'prepare',
+                })
+        # Newest first — operators usually want the latest tarball
+        out.sort(key=lambda r: r['mtime'], reverse=True)
+        return jsonify({"success": True, "packages": out})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @upgrade_bp.route('/api/upgrade/refs', methods=['POST'])
 def list_upgrade_refs():
     """Operator-triggered (Fetch button). Returns the release/branch list.
@@ -282,8 +381,14 @@ def start_offline_upgrade():
 
     Body: {
         "package_path": "/data/uploads/...",
-        "db_overwrite": {"timesketch": true, "iris": false}  // optional: fresh install per module
+        "db_overwrite": {"timesketch": true, "iris": false},  // optional: fresh install per module
+        "selected_modules": ["elk", "velociraptor"]  // optional: only apply these modules from the tarball
     }
+
+    ``selected_modules`` is the new Apply Uploaded Package shape — when
+    present, the workflow loop skips every module in the manifest that
+    isn't in this list. When omitted, the workflow applies everything
+    in the manifest (legacy behavior, preserves any external automation).
     """
     try:
         data = request.json
@@ -292,6 +397,7 @@ def start_offline_upgrade():
 
         package_path = data.get('package_path')
         db_overwrite = data.get('db_overwrite', {})  # Per-module fresh install flags
+        selected_modules = data.get('selected_modules')  # None = no filter (apply all)
 
         if not package_path:
             return jsonify({"error": "No package_path provided"}), 400
@@ -340,8 +446,11 @@ def start_offline_upgrade():
                             progress = 5 + min(completed_modules[0] * 15, 90)
                             update_run_status(run_id, "running", progress=progress)
 
-                result = run_offline_upgrade_workflow(package_path, run_id=run_id, logger=logger,
-                                                      db_overwrite=db_overwrite)
+                result = run_offline_upgrade_workflow(
+                    package_path, run_id=run_id, logger=logger,
+                    db_overwrite=db_overwrite,
+                    selected_modules=selected_modules,
+                )
 
                 # Handle two-phase upgrade (backend restart pending)
                 if result.get('phase') == 'awaiting_restart':
@@ -387,13 +496,22 @@ def prepare_upgrade_package():
 
     1. NEW track-based shape::
 
+           {"target": "<ref>", "selected_modules": ["elk", "velociraptor", ...]}
+
+       The build-server's installed state is IRRELEVANT to what gets
+       bundled — the operator chose a release + a subset of that
+       release's modules. We pull versions straight from upstream.
+
+    2. LEGACY SHAPE A (online-style — diff against local state)::
+
            {"target": "<ref>", "opted_in_optional": ["prowler", ...]}
 
-       The backend resolves ``target`` → forced + opted-in modules via
-       :func:`_modules_from_track` and feeds the result into the rest
-       of the existing flow.
+       Backed by :func:`_modules_from_track`. Was the original Prepare
+       behavior but it leaked local state into the bundle decision —
+       wrong for air-gap. Kept for any external automation that still
+       posts this shape.
 
-    2. LEGACY explicit shape (still supported for the textbox UI)::
+    3. LEGACY SHAPE B (explicit dict)::
 
            {"modules": {"elk": "9.3.1", "velociraptor": "0.75.6", ...}}
     """
@@ -404,7 +522,18 @@ def prepare_upgrade_package():
 
         target = (data.get('target') or '').strip()
         track_warnings: list = []
-        if target:
+        selected_modules = data.get('selected_modules')
+        if target and selected_modules is not None:
+            # New shape: explicit module subset against the picked
+            # release's upstream versions. Pure — no local-state read.
+            from services.upgrade.resolver import ResolverError
+            try:
+                modules = _modules_for_prepare(target, selected_modules)
+            except ResolverError as e:
+                return jsonify({"error": str(e)}), 502
+        elif target:
+            # Legacy track-flow shape (local-state-aware). Backed by
+            # _modules_from_track which reads `current_versions`.
             from services.upgrade.resolver import ResolverError
             try:
                 modules, track_warnings = _modules_from_track(

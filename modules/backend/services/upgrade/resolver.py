@@ -264,6 +264,63 @@ def resolve_upgrade_chain(current_ref: Optional[str],
     return step_tags
 
 
+def list_upstream_modules(target_ref: str,
+                          user_action: str = 'prepare-list') -> List[Dict]:
+    """Return the flat module list for a given target ref.
+
+    Used by Prepare Package — the build-server's local state is
+    irrelevant when bundling for an unknown air-gap target, so this
+    helper returns every module in the upstream ``versions:`` block
+    without any noop/forced/optional classification.
+
+    The intact module isn't in upstream's versions block as a
+    docker-image-style pin (the upstream key is ``backend`` and the
+    real "version" of intact is the picked ref itself), so we surface
+    it separately with the ref as its target.
+
+    Returns::
+
+        [
+            {'module': 'intact',      'target': 'intact-20260612'},
+            {'module': 'elk',         'target': '9.3.3'},
+            {'module': 'timesketch',  'target': '20260611'},
+            ...
+        ]
+
+    Reuses :func:`fetch_upstream_config` (30-min cache), so this is a
+    no-cost call on repeat clicks within the cache window.
+    """
+    upstream_cfg = fetch_upstream_config(target_ref, user_action=user_action)
+    upstream_versions = upstream_cfg.get('versions') or {}
+
+    # Same key map as compute_plan(). intact's "version" is the ref.
+    KEY_MAP = [
+        ('intact',       'backend'),
+        ('elk',          'elk'),
+        ('timesketch',   'timesketch'),
+        ('plaso',        'plaso'),
+        ('iris',         'iris'),
+        ('velociraptor', 'velociraptor'),
+        ('prowler',      'prowler'),
+        ('o365rc',       'o365rc'),
+        ('volweb',       'volweb'),
+    ]
+
+    out: List[Dict] = []
+    for module_id, cfg_key in KEY_MAP:
+        if module_id == 'intact':
+            out.append({'module': 'intact', 'target': target_ref})
+            continue
+        v = upstream_versions.get(cfg_key)
+        if v is None:
+            # Module not in upstream — skip silently. Future-proof: a
+            # release that drops a module shouldn't show it as
+            # bundleable.
+            continue
+        out.append({'module': module_id, 'target': str(v)})
+    return out
+
+
 def compute_plan(target_ref: str,
                  user_action: str = 'plan') -> Dict:
     """Build the work plan for the UI to render.

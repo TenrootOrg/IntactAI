@@ -662,6 +662,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
 def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                                   run_id: str = None, logger: Callable = None,
                                   db_overwrite: Dict = None,
+                                  selected_modules: Optional[list] = None,
                                   *,
                                   prebuilt_package_dir: Optional[str] = None,
                                   prebuilt_manifest: Optional[Dict] = None,
@@ -832,9 +833,27 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         save_upgrade_state(run_id, 'phase1', modules_dict, [], 'offline', extract_dir, package_path,
                            db_overwrite=db_overwrite)
 
+    # Apply Uploaded Package can pass an operator-chosen subset. When
+    # set, modules in the manifest NOT in this set are skipped and the
+    # final summary shows them under "skipped: N". When None, every
+    # module in the manifest is applied (legacy behavior — keeps
+    # external automation working).
+    selected_set = set(selected_modules) if selected_modules else None
+    if selected_set is not None:
+        log(f"Operator-selected subset: {sorted(selected_set)}", "info")
+
     try:
         for module_name in upgrade_order:
             version = versions.get(module_name)
+
+            # Operator subset filter — silently skip anything the
+            # operator unchecked at apply time. Recorded as skipped so
+            # the summary still mentions them.
+            if selected_set is not None and module_name not in selected_set:
+                if version or module_name == 'intact':
+                    results[module_name] = {"success": True, "skipped": True,
+                                             "reason": "deselected by operator"}
+                continue
 
             # For intact, check if source exists — try new layout first.
             if module_name == 'intact':

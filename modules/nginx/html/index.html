@@ -3788,41 +3788,132 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 </button>
                             </div>
 
-                            <!-- Import Upgrade Package -->
+                            <!-- Upload Upgrade Package — upload-only, no auto-apply -->
                             <div class="p-4 bg-gray-900 rounded-lg border border-gray-700">
                                 <div class="flex items-center justify-between mb-3">
                                     <div>
-                                        <h4 class="text-white font-medium">Import Upgrade Package</h4>
-                                        <p class="text-gray-400 text-sm">Upload upgrade package for air-gapped installation</p>
+                                        <h4 class="text-white font-medium">Upload Upgrade Package</h4>
+                                        <p class="text-gray-400 text-sm">Upload a prepared tarball. Use "Apply Uploaded Package" below to review + apply.</p>
                                     </div>
                                     <input type="file" id="upgrade-package-input" accept=".tar.gz,.tgz" class="hidden" @change="$store.settings.importUpgradePackage($event)">
                                     <button @click="document.getElementById('upgrade-package-input').click()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
                                         </svg>
-                                        <span>Import Package</span>
+                                        <span>Upload Package</span>
                                     </button>
                                 </div>
-                                <!-- Fresh install options -->
-                                <div class="p-3 bg-gray-800 rounded border border-red-700">
-                                    <p class="text-red-400 text-sm font-medium mb-1">⚠️ Fresh install — DELETES ALL DATA for the selected module</p>
-                                    <p class="text-gray-400 text-xs mb-2">Leave these UNCHECKED for normal upgrades. Schema changes are applied automatically by database migrations with no data loss. Only tick a box to wipe that module and start completely empty (removes every sketch / case / index).</p>
-                                    <div class="grid grid-cols-3 gap-3">
-                                        <label class="flex items-center gap-2 p-2 rounded cursor-pointer select-none hover:bg-gray-700 transition-colors">
-                                            <input type="checkbox" x-model="$store.settings.dbOverwriteTimesketch"
-                                                   class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-red-500 focus:ring-red-500 cursor-pointer">
-                                            <span class="text-gray-300">Timesketch</span>
-                                        </label>
-                                        <label class="flex items-center gap-2 p-2 rounded cursor-pointer select-none hover:bg-gray-700 transition-colors">
-                                            <input type="checkbox" x-model="$store.settings.dbOverwriteIris"
-                                                   class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-red-500 focus:ring-red-500 cursor-pointer">
-                                            <span class="text-gray-300">IRIS</span>
-                                        </label>
-                                        <label class="flex items-center gap-2 p-2 rounded cursor-pointer select-none hover:bg-gray-700 transition-colors">
-                                            <input type="checkbox" x-model="$store.settings.dbOverwriteElk"
-                                                   class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-red-500 focus:ring-red-500 cursor-pointer">
-                                            <span class="text-gray-300">ELK</span>
-                                        </label>
+                            </div>
+
+                            <!-- Apply Uploaded Package — review manifest, pick modules, apply -->
+                            <div class="p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div class="flex items-center justify-between mb-3">
+                                    <div>
+                                        <h4 class="text-white font-medium">Apply Uploaded Package</h4>
+                                        <p class="text-gray-400 text-sm">Pick a tarball, review its manifest, choose which modules to actually install.</p>
+                                    </div>
+                                    <button @click="$store.settings.loadUploadedPackages()"
+                                            :disabled="$store.settings.loadingPackages"
+                                            class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                                        </svg>
+                                        <span x-show="!$store.settings.loadingPackages">Refresh List</span>
+                                        <span x-show="$store.settings.loadingPackages">Loading…</span>
+                                    </button>
+                                </div>
+                                <div x-show="!$store.settings.uploadedPackages.length && !$store.settings.loadingPackages"
+                                     class="text-gray-500 text-sm italic">
+                                    No uploaded packages found. Click Refresh List, or upload a tarball above first.
+                                </div>
+                                <template x-for="pkg in $store.settings.uploadedPackages" :key="pkg.path">
+                                    <div class="flex items-center justify-between p-3 mb-2 bg-gray-800 rounded border border-gray-700 hover:border-blue-500 cursor-pointer"
+                                         @click="$store.settings.openApplyPackageModal(pkg)">
+                                        <div class="flex-1 min-w-0 mr-3">
+                                            <div class="text-white text-sm font-mono truncate" x-text="pkg.name"></div>
+                                            <div class="text-gray-500 text-xs"
+                                                 x-text="(pkg.size_bytes / (1024*1024)).toFixed(1) + ' MB · source: ' + pkg.source"></div>
+                                        </div>
+                                        <button class="bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded text-xs">Review &amp; Apply</button>
+                                    </div>
+                                </template>
+                            </div>
+
+                            <!-- Apply Uploaded Package modal -->
+                            <div x-show="$store.settings.showApplyPackageModal"
+                                 x-transition:enter="transition ease-out duration-200"
+                                 x-transition:enter-start="opacity-0"
+                                 x-transition:enter-end="opacity-100"
+                                 class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+                                 @click.self="$store.settings.closeApplyPackageModal()"
+                                 @keydown.escape.window="$store.settings.showApplyPackageModal && $store.settings.closeApplyPackageModal()">
+                                <div class="bg-gray-800 rounded-lg p-6 w-full max-w-lg border border-gray-700 shadow-xl max-h-[90vh] flex flex-col" @click.stop>
+                                    <div class="flex items-center justify-between mb-4">
+                                        <h3 class="text-xl font-bold text-white">Apply Uploaded Package</h3>
+                                        <button @click="$store.settings.closeApplyPackageModal()" class="text-gray-400 hover:text-white">
+                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                        </button>
+                                    </div>
+                                    <div class="flex-1 overflow-y-auto -mx-2 px-2">
+                                        <div x-show="$store.settings.loadingApplyInfo" class="text-gray-400 text-sm py-4">Loading manifest…</div>
+                                        <div x-show="!$store.settings.loadingApplyInfo && $store.settings.applyManifest" class="space-y-4">
+                                            <div class="bg-gray-900 rounded border border-gray-700 p-3">
+                                                <div class="text-gray-400 text-xs uppercase tracking-wide mb-1">Package</div>
+                                                <div class="text-white text-sm font-mono break-all" x-text="$store.settings.applyPackage?.name"></div>
+                                                <div class="text-gray-500 text-xs mt-1"
+                                                     x-text="'Built: ' + ($store.settings.applyManifest?.created || 'unknown')"></div>
+                                            </div>
+                                            <div class="bg-gray-900 rounded border border-gray-700 p-3">
+                                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">Modules in this package</label>
+                                                <div class="text-gray-400 text-xs mb-2">All pre-checked. Untick any module you do NOT want applied.</div>
+                                                <template x-for="(target, name) in ($store.settings.applyManifest?.versions || {})" :key="name">
+                                                    <label class="flex items-center text-xs px-2 py-1.5 rounded border-l-2 border-blue-500 bg-gray-800 cursor-pointer hover:bg-gray-700 mb-1">
+                                                        <input type="checkbox"
+                                                               :checked="$store.settings.applySelectedModules.includes(name)"
+                                                               @change="$store.settings.toggleApplyModule(name)"
+                                                               class="mr-3 w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500">
+                                                        <span class="flex-1 font-mono" x-text="name"></span>
+                                                        <span class="font-mono text-gray-300" x-text="target"></span>
+                                                    </label>
+                                                </template>
+                                            </div>
+                                            <div class="bg-gray-900 rounded border border-red-700 p-3">
+                                                <p class="text-red-400 text-xs font-medium mb-1">⚠️ Fresh install — DELETES ALL DATA for the selected module</p>
+                                                <p class="text-gray-400 text-xs mb-2">Leave UNCHECKED for normal upgrades. Migrations preserve data. Only tick to wipe a module clean (every sketch / case / index gone).</p>
+                                                <div class="grid grid-cols-3 gap-3">
+                                                    <label class="flex items-center gap-2 p-2 rounded cursor-pointer hover:bg-gray-700">
+                                                        <input type="checkbox"
+                                                               :checked="$store.settings.applyDbOverwrite.timesketch === true"
+                                                               @change="$store.settings.applyDbOverwrite.timesketch = $event.target.checked"
+                                                               class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-red-500">
+                                                        <span class="text-gray-300 text-xs">Timesketch</span>
+                                                    </label>
+                                                    <label class="flex items-center gap-2 p-2 rounded cursor-pointer hover:bg-gray-700">
+                                                        <input type="checkbox"
+                                                               :checked="$store.settings.applyDbOverwrite.iris === true"
+                                                               @change="$store.settings.applyDbOverwrite.iris = $event.target.checked"
+                                                               class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-red-500">
+                                                        <span class="text-gray-300 text-xs">IRIS</span>
+                                                    </label>
+                                                    <label class="flex items-center gap-2 p-2 rounded cursor-pointer hover:bg-gray-700">
+                                                        <input type="checkbox"
+                                                               :checked="$store.settings.applyDbOverwrite.elk === true"
+                                                               @change="$store.settings.applyDbOverwrite.elk = $event.target.checked"
+                                                               class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-red-500">
+                                                        <span class="text-gray-300 text-xs">ELK</span>
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-700">
+                                        <button @click="$store.settings.closeApplyPackageModal()" class="px-4 py-2 text-gray-400 hover:text-white">Cancel</button>
+                                        <button @click="$store.settings.applyUploadedPackage()"
+                                                :disabled="$store.settings.applying || !$store.settings.applySelectedModules.length"
+                                                class="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 px-4 py-2 rounded text-sm font-medium">
+                                            <span x-show="!$store.settings.applying">Apply</span>
+                                            <span x-show="$store.settings.applying">Applying…</span>
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -4478,8 +4569,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 </p>
                             </div>
 
-                            <!-- Step 2: compute plan -->
-                            <div x-show="$store.settings.selectedRef" class="bg-gray-900 rounded border border-gray-700 p-3">
+                            <!-- Step 2 (ONLINE mode): compute plan -->
+                            <div x-show="$store.settings.selectedRef && $store.settings.prepareModalMode === 'online'" class="bg-gray-900 rounded border border-gray-700 p-3">
                                 <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">2. Compute the plan</label>
                                 <button @click="$store.settings.computeUpgradePlan()"
                                         :disabled="$store.settings.computingPlan"
@@ -4489,8 +4580,40 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 </button>
                             </div>
 
-                            <!-- Step 3: plan preview -->
-                            <div x-show="$store.settings.upgradePlan" class="bg-gray-900 rounded border border-gray-700 p-3">
+                            <!-- Step 2 (PREPARE mode): show modules -->
+                            <div x-show="$store.settings.selectedRef && $store.settings.prepareModalMode === 'prepare'" class="bg-gray-900 rounded border border-gray-700 p-3">
+                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">2. Show modules to bundle</label>
+                                <button @click="$store.settings.showPrepareModules()"
+                                        :disabled="$store.settings.showingPrepareModules"
+                                        class="bg-blue-700 hover:bg-blue-600 disabled:opacity-50 px-4 py-1.5 rounded text-sm">
+                                    <span x-show="!$store.settings.showingPrepareModules">Show modules</span>
+                                    <span x-show="$store.settings.showingPrepareModules">Loading…</span>
+                                </button>
+                                <p class="text-gray-500 text-xs mt-2">
+                                    Lists every module shipped with this release. Build-server's installed state is ignored — you're choosing what to bundle for a (possibly different) air-gap target.
+                                </p>
+                            </div>
+
+                            <!-- Step 3 (PREPARE mode): flat checkbox list, all pre-checked -->
+                            <div x-show="$store.settings.prepareModalMode === 'prepare' && $store.settings.prepareModules" class="bg-gray-900 rounded border border-gray-700 p-3">
+                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">3. Tick modules to include</label>
+                                <div class="text-gray-400 text-xs mb-2">All pre-checked. Untick anything you don't want in the tarball.</div>
+                                <template x-for="row in $store.settings.prepareModules" :key="row.module">
+                                    <label class="flex items-center text-xs px-2 py-1.5 rounded border-l-2 border-blue-500 bg-gray-800 cursor-pointer hover:bg-gray-700 mb-1">
+                                        <input type="checkbox"
+                                               :checked="$store.settings.prepareSelected.includes(row.module)"
+                                               @change="$store.settings.togglePrepareModule(row.module)"
+                                               class="mr-3 w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500">
+                                        <span class="flex-1 font-mono" x-text="row.module"></span>
+                                        <span class="font-mono text-gray-300" x-text="row.target"></span>
+                                    </label>
+                                </template>
+                                <div class="text-gray-500 text-xs mt-2"
+                                     x-text="$store.settings.prepareSelected.length + ' / ' + $store.settings.prepareModules.length + ' modules will be bundled'"></div>
+                            </div>
+
+                            <!-- Step 3 (ONLINE mode): plan preview -->
+                            <div x-show="$store.settings.prepareModalMode === 'online' && $store.settings.upgradePlan" class="bg-gray-900 rounded border border-gray-700 p-3">
                                 <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">3. Review &amp; confirm</label>
 
                                 <!-- Chain banner -->
@@ -4579,7 +4702,9 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 Cancel
                             </button>
                             <button @click="$store.settings.startTrackUpgrade()"
-                                    :disabled="$store.settings.prepareLoading || !$store.settings.upgradePlan"
+                                    :disabled="$store.settings.prepareLoading
+                                        || ($store.settings.prepareModalMode === 'online' && !$store.settings.upgradePlan)
+                                        || ($store.settings.prepareModalMode === 'prepare' && (!$store.settings.prepareModules || !$store.settings.prepareSelected.length))"
                                     class="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 px-4 py-2 rounded text-sm font-medium flex items-center gap-2">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -4606,7 +4731,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
 
     <!-- JavaScript - Alpine app + module-specific scripts -->
     <script src="js/api-client.js"></script>
-    <script src="js/app.js?v=15"></script>
+    <script src="js/app.js?v=16"></script>
     <script src="js/velociraptor.js?v=2"></script>
     <script src="js/blueprints.js?v=3"></script>
     <script src="js/blueprints-forensics.js?v=2"></script>

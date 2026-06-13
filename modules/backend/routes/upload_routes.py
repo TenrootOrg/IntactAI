@@ -300,58 +300,24 @@ def handle_tus_hook():
                     update_run_status(run_id, "completed", progress=100)
 
             elif purpose == 'upgrade_package':
-                # Upgrade package uploaded - keep workflow running for upgrade to continue
-                # The actual upgrade will use this same run_id
-                print(f"[TUS HOOK] Upgrade package uploaded: {original_filename}", flush=True)
+                # Upload only — DOES NOT auto-apply anymore. The new
+                # "Apply Uploaded Package" card is what triggers
+                # run_offline_upgrade_workflow, after the operator has
+                # reviewed the package's manifest and ticked the
+                # specific modules they want applied. Auto-apply was
+                # the wrong default for air-gap scenarios: the build
+                # server's state had no business deciding what to run
+                # on the target.
+                print(f"[TUS HOOK] Upgrade package uploaded (deferred apply): "
+                      f"{original_filename}", flush=True)
                 if run_id:
                     add_log_to_run(run_id, f"Upload complete: {original_filename}", "success")
                     add_log_to_run(run_id, f"Package path: {file_path}", "info")
-                    add_log_to_run(run_id, "Starting offline upgrade...", "info")
-                    update_run_status(run_id, "running", progress=15)
-
-                    # Auto-start the offline upgrade using the same workflow
-                    def run_offline_upgrade():
-                        try:
-                            from services.upgrade import run_offline_upgrade_workflow
-
-                            # Track progress based on module completion
-                            completed_modules = [0]
-
-                            def logger(msg, level="info"):
-                                add_log_to_run(run_id, msg, level)
-                                # Track progress based on module completion messages
-                                if level == "success" and " upgrade completed" in msg:
-                                    first_word = msg.split()[0] if msg else ""
-                                    if first_word.isupper() and first_word in ["ELK", "TIMESKETCH", "PLASO", "IRIS", "VELOCIRAPTOR", "Intact.AI"]:
-                                        completed_modules[0] += 1
-                                        # Progress from 15% (upload done) to 95%
-                                        progress = 15 + min(completed_modules[0] * 13, 80)
-                                        update_run_status(run_id, "running", progress=progress)
-
-                            result = run_offline_upgrade_workflow(file_path, run_id=run_id, logger=logger,
-                                                                  db_overwrite=db_overwrite)
-
-                            # Handle result
-                            if result.get('phase') == 'awaiting_restart':
-                                add_log_to_run(run_id, "Phase 1 complete. Backend restarting. Phase 2 will resume automatically.", "info")
-                                update_run_status(run_id, "running", progress=50)
-                            elif result.get('success'):
-                                add_log_to_run(run_id, f"Offline upgrade completed: {result.get('completed', 0)}/{result.get('total', 0)} modules", "success")
-                                update_run_status(run_id, "completed", progress=100)
-                            else:
-                                failed = [m for m, r in result.get('results', {}).items() if not r.get('success')]
-                                if failed:
-                                    add_log_to_run(run_id, f"Offline upgrade completed with failures: {', '.join(failed)}", "warning")
-                                update_run_status(run_id, "completed", progress=100)
-
-                        except Exception as e:
-                            print(f"[TUS HOOK] Offline upgrade error: {e}", flush=True)
-                            traceback.print_exc()
-                            add_log_to_run(run_id, f"Upgrade error: {str(e)}", "error")
-                            update_run_status(run_id, "failed", error=str(e))
-
-                    thread = threading.Thread(target=run_offline_upgrade, daemon=True)
-                    thread.start()
+                    add_log_to_run(run_id,
+                                    "Use the 'Apply Uploaded Package' card to "
+                                    "review the manifest and apply.",
+                                    "info")
+                    update_run_status(run_id, "completed", progress=100)
 
             return jsonify({"ok": True})
 
