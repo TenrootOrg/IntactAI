@@ -350,8 +350,7 @@ def _stage_binaries_for_build(
     misses become zero-byte placeholders + warnings.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    parts = clean_version.split('.')
-    release_tag = f"v{parts[0]}.{parts[1]}" if len(parts) >= 2 else f"v{clean_version}"
+    release_tag = resolve_velociraptor_release_tag(clean_version, logger=log)
     base_url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}"
 
     staged: list = []
@@ -416,16 +415,61 @@ def _stage_binaries_for_build(
     }
 
 
+def resolve_velociraptor_release_tag(clean_version: str, logger: Callable = None) -> str:
+    """Return the github release tag that actually hosts this version's assets.
+
+    Velocidex's release naming has shifted over time:
+
+    * Older releases (<= 0.7.x and 0.74/0.75/0.76 line) shipped multiple
+      patch builds under a single rolling tag like ``v0.76`` —
+      ``velociraptor-v0.76.5-linux-amd64`` lived at
+      ``releases/download/v0.76/...``.
+    * Starting roughly v0.76.6, Velocidex publishes each patch as its
+      OWN release, e.g. tag ``v0.76.6`` holds the v0.76.6 assets — the
+      old rolling ``v0.76`` release stays frozen at an earlier patch.
+
+    The old code hard-coded ``f"v{major}.{minor}"`` and silently 404'd
+    on every new patch release. We now HEAD-probe the full-version tag
+    first; only if that 404s do we fall back to the rolling tag.
+
+    Why HEAD not API: cheaper than the GitHub releases endpoint, no
+    rate-limit cost, no token needed. One HEAD per upgrade is
+    negligible.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    parts = clean_version.split('.')
+    full_tag = f"v{clean_version}"                              # v0.76.6
+    minor_tag = f"v{parts[0]}.{parts[1]}" if len(parts) >= 2 else full_tag  # v0.76
+
+    binary = f"velociraptor-v{clean_version}-linux-amd64"
+    for candidate in (full_tag, minor_tag):
+        url = f"https://github.com/Velocidex/velociraptor/releases/download/{candidate}/{binary}"
+        try:
+            import requests
+            r = requests.head(url, allow_redirects=False, timeout=10)
+            if r.status_code in (200, 302):
+                log(f"  Release tag resolved: {candidate} (probed {r.status_code})", "info")
+                return candidate
+        except Exception:
+            continue
+    # Last-resort default. The caller's actual download will surface
+    # the 404 with a clear log line.
+    log(f"  Release tag probe failed for both {full_tag} and {minor_tag}; "
+        f"defaulting to {minor_tag} — the download will fail loudly.", "warning")
+    return minor_tag
+
+
 def get_velociraptor_download_url(version: str, logger: Callable = None) -> Tuple[Optional[str], Optional[str]]:
     """Build Velociraptor binary download URL from version string.
 
-    No GitHub API calls - constructs URL directly from version.
+    Velociraptor URL pattern (resolved at call time):
+    https://github.com/Velocidex/velociraptor/releases/download/<resolved-tag>/velociraptor-v{version}-linux-amd64
 
-    Velociraptor URL pattern:
-    https://github.com/Velocidex/velociraptor/releases/download/v{major}.{minor}/velociraptor-v{version}-linux-amd64
+    The resolved-tag is :func:`resolve_velociraptor_release_tag` — tries
+    ``v{full_version}`` first, falls back to ``v{major.minor}``.
 
     Args:
-        version: Version string like "0.75.6" or "v0.75.6" (full version required)
+        version: Version string like "0.76.6" or "v0.76.6" (full version required)
 
     Returns:
         Tuple of (download_url, clean_version) or (None, None) if invalid
@@ -442,15 +486,11 @@ def get_velociraptor_download_url(version: str, logger: Callable = None) -> Tupl
         log(f"  Check https://github.com/Velocidex/velociraptor/releases for available versions", "info")
         return None, None
 
-    # Build release tag (major.minor)
-    release_tag = f"v{parts[0]}.{parts[1]}"
-
-    # Build download URL
+    release_tag = resolve_velociraptor_release_tag(clean_version, logger=log)
     binary_name = f"velociraptor-v{clean_version}-linux-amd64"
     download_url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}/{binary_name}"
 
     log(f"  Version: {clean_version}", "info")
-    log(f"  Release tag: {release_tag}", "info")
     log(f"  Binary: {binary_name}", "info")
 
     return download_url, clean_version

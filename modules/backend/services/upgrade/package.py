@@ -651,7 +651,12 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     log(f"  Full version required (e.g., 0.75.6), got: {version}", "error")
                     continue
 
-                release_tag = f"v{parts[0]}.{parts[1]}"
+                # See resolve_velociraptor_release_tag in velociraptor.py
+                # for why we can't just compute v{major}.{minor} here —
+                # Velocidex's tagging changed at v0.76.6 (each patch has
+                # its own release now).
+                from .velociraptor import resolve_velociraptor_release_tag
+                release_tag = resolve_velociraptor_release_tag(clean_version, logger=log)
                 base_url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}"
                 velo_tag = f"{parts[0]}.{parts[1]}"
 
