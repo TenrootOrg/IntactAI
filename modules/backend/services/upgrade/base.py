@@ -925,9 +925,38 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
 
 
 def get_package_info(package_path: str) -> Dict:
-    """Get manifest info from an upgrade package without fully extracting."""
+    """Get manifest info from an upgrade package without fully extracting.
+
+    Fast path — sidecar manifest. The prepare flow writes
+    ``<package>.manifest.json`` next to the tarball at prepare time
+    specifically so this function can return in O(1) instead of having
+    to scan the entire gzipped tar to find ``manifest.json`` (which
+    lives near the END of the archive due to tar/gzip ordering — a
+    4.8 GB tarball took 54 s of decompression before this sidecar
+    existed).
+
+    Slow fallback path — if no sidecar exists (older packages or
+    operator-renamed tarballs), crack the tar open and scan members.
+    """
     if not os.path.exists(package_path):
         return {"success": False, "error": "Package not found"}
+
+    sidecar = package_path + '.manifest.json'
+    if os.path.isfile(sidecar):
+        try:
+            with open(sidecar, 'r') as f:
+                manifest = json.load(f)
+            return {
+                "success": True,
+                "manifest": manifest,
+                "versions": manifest.get('versions', {}),
+                "created": manifest.get('created'),
+                "contents": manifest.get('contents', {})
+            }
+        except Exception as e:
+            # Sidecar exists but is unreadable. Fall through to the
+            # slow path; the tarball is the source of truth anyway.
+            print(f"[PACKAGE-INFO] sidecar unreadable ({e}); falling back to tar scan", flush=True)
 
     try:
         with tarfile.open(package_path, 'r:gz') as tar:
@@ -936,6 +965,14 @@ def get_package_info(package_path: str) -> Dict:
                     f = tar.extractfile(member)
                     if f:
                         manifest = json.load(f)
+                        # Opportunistically write the sidecar now so
+                        # subsequent calls are fast even for legacy
+                        # tarballs the prepare flow didn't stamp.
+                        try:
+                            with open(sidecar, 'w') as out:
+                                json.dump(manifest, out)
+                        except Exception:
+                            pass
                         return {
                             "success": True,
                             "manifest": manifest,

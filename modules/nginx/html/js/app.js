@@ -1107,28 +1107,19 @@ document.addEventListener('alpine:init', () => {
 
             const file = files[0];
 
-            // Validate file extension
             if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.tgz')) {
                 this.showMessage('Please select a .tar.gz or .tgz file', 'error');
-                event.target.value = ''; // Reset input
+                event.target.value = '';
                 return;
             }
 
-            // Check if any fresh install is enabled
-            const dbOverwrite = this.getDbOverwrite();
-            const freshInstallModules = Object.entries(dbOverwrite).filter(([k, v]) => v).map(([k]) => k);
-            if (freshInstallModules.length > 0) {
-                if (!confirm(`Fresh install selected for: ${freshInstallModules.join(', ').toUpperCase()}\n\nThis will remove existing data to allow new database schema. Continue?`)) {
-                    event.target.value = ''; // Reset input
-                    return;
-                }
-            }
-
-            // Show message and redirect to workflows immediately
+            // Single-click flow: tus upload runs silently in the
+            // background. When it finishes we pop the review modal so
+            // the operator can tick which modules from the manifest to
+            // actually apply (and the per-module db_overwrite flags
+            // for fresh installs). No auto-apply.
             this.showMessage(`Uploading ${file.name}...`, 'info');
-            Alpine.store('app').switchTab('workflows');
 
-            // Start upload in background - backend will create workflow and auto-start upgrade
             const upload = new tus.Upload(file, {
                 endpoint: '/api/uploads/',
                 retryDelays: [0, 1000, 3000, 5000],
@@ -1137,20 +1128,32 @@ document.addEventListener('alpine:init', () => {
                     filename: file.name,
                     filetype: file.type || 'application/gzip',
                     purpose: 'upgrade_package',
-                    db_overwrite: JSON.stringify(dbOverwrite)
                 },
                 onError: (error) => {
                     console.error('Upload error:', error);
                     this.showMessage('Upload failed: ' + error.message, 'error');
                 },
                 onSuccess: () => {
-                    // Backend handles everything - just refresh workflows
-                    Alpine.store('workflows').load();
-                }
+                    // Extract the upload id from the tus URL — that's
+                    // the filename the backend writes at /data/uploads/.
+                    const parts = (upload.url || '').split('/').filter(Boolean);
+                    const uploadId = parts.length ? parts[parts.length - 1] : null;
+                    if (!uploadId) {
+                        this.showMessage('Upload succeeded but no ID returned; cannot open review modal', 'error');
+                        return;
+                    }
+                    this.showMessage(`Upload complete. Review and pick modules to apply.`, 'success');
+                    this.openApplyPackageModal({
+                        path: '/data/uploads/' + uploadId,
+                        name: file.name,
+                        size_bytes: file.size,
+                        source: 'uploads',
+                    });
+                },
             });
 
             upload.start();
-            event.target.value = ''; // Reset input for next upload
+            event.target.value = '';
         },
 
         async onProviderChange() {

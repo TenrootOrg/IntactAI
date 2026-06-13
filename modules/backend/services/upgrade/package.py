@@ -1289,6 +1289,19 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         os.replace(output_file_tmp, output_file)
         log("  Swapped new archive into place (atomic)", "success")
 
+        # Sidecar manifest — placed NEXT to the tarball, not inside it,
+        # so get_package_info() can return in O(1) without having to
+        # decompress the entire (multi-GB) tarball just to read the
+        # manifest. Tarball is still self-describing; this is purely
+        # a read-performance optimization.
+        try:
+            sidecar = output_file + '.manifest.json'
+            with open(sidecar, 'w') as out:
+                json.dump(manifest, out)
+            log(f"  Wrote sidecar manifest -> {os.path.basename(sidecar)}", "info")
+        except Exception as e:
+            log(f"  Sidecar manifest write failed: {e}", "warning")
+
         package_size = os.path.getsize(output_file)
         log(f"  Package created: {_format_size(package_size)}", "success")
 

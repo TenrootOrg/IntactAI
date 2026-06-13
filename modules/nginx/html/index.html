@@ -3788,55 +3788,25 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 </button>
                             </div>
 
-                            <!-- Upload Upgrade Package — upload-only, no auto-apply -->
+                            <!-- Import Upgrade Package — single-click flow.
+                                 Tus upload runs silently in the background;
+                                 when it finishes the review modal pops up
+                                 so the operator picks which modules from the
+                                 manifest to actually apply. No auto-apply. -->
                             <div class="p-4 bg-gray-900 rounded-lg border border-gray-700">
                                 <div class="flex items-center justify-between mb-3">
                                     <div>
-                                        <h4 class="text-white font-medium">Upload Upgrade Package</h4>
-                                        <p class="text-gray-400 text-sm">Upload a prepared tarball. Use "Apply Uploaded Package" below to review + apply.</p>
+                                        <h4 class="text-white font-medium">Import Upgrade Package</h4>
+                                        <p class="text-gray-400 text-sm">Upload a prepared tarball; after upload, pick which modules to apply.</p>
                                     </div>
                                     <input type="file" id="upgrade-package-input" accept=".tar.gz,.tgz" class="hidden" @change="$store.settings.importUpgradePackage($event)">
                                     <button @click="document.getElementById('upgrade-package-input').click()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
                                         </svg>
-                                        <span>Upload Package</span>
+                                        <span>Import Package</span>
                                     </button>
                                 </div>
-                            </div>
-
-                            <!-- Apply Uploaded Package — review manifest, pick modules, apply -->
-                            <div class="p-4 bg-gray-900 rounded-lg border border-gray-700">
-                                <div class="flex items-center justify-between mb-3">
-                                    <div>
-                                        <h4 class="text-white font-medium">Apply Uploaded Package</h4>
-                                        <p class="text-gray-400 text-sm">Pick a tarball, review its manifest, choose which modules to actually install.</p>
-                                    </div>
-                                    <button @click="$store.settings.loadUploadedPackages()"
-                                            :disabled="$store.settings.loadingPackages"
-                                            class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-                                        </svg>
-                                        <span x-show="!$store.settings.loadingPackages">Refresh List</span>
-                                        <span x-show="$store.settings.loadingPackages">Loading…</span>
-                                    </button>
-                                </div>
-                                <div x-show="!$store.settings.uploadedPackages.length && !$store.settings.loadingPackages"
-                                     class="text-gray-500 text-sm italic">
-                                    No uploaded packages found. Click Refresh List, or upload a tarball above first.
-                                </div>
-                                <template x-for="pkg in $store.settings.uploadedPackages" :key="pkg.path">
-                                    <div class="flex items-center justify-between p-3 mb-2 bg-gray-800 rounded border border-gray-700 hover:border-blue-500 cursor-pointer"
-                                         @click="$store.settings.openApplyPackageModal(pkg)">
-                                        <div class="flex-1 min-w-0 mr-3">
-                                            <div class="text-white text-sm font-mono truncate" x-text="pkg.name"></div>
-                                            <div class="text-gray-500 text-xs"
-                                                 x-text="(pkg.size_bytes / (1024*1024)).toFixed(1) + ' MB · source: ' + pkg.source"></div>
-                                        </div>
-                                        <button class="bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded text-xs">Review &amp; Apply</button>
-                                    </div>
-                                </template>
                             </div>
 
                             <!-- Apply Uploaded Package modal -->
@@ -4731,7 +4701,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
 
     <!-- JavaScript - Alpine app + module-specific scripts -->
     <script src="js/api-client.js"></script>
-    <script src="js/app.js?v=16"></script>
+    <script src="js/app.js?v=17"></script>
     <script src="js/velociraptor.js?v=2"></script>
     <script src="js/blueprints.js?v=3"></script>
     <script src="js/blueprints-forensics.js?v=2"></script>
