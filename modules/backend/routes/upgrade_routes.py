@@ -767,10 +767,6 @@ def prepare_upgrade_package():
         def run_prepare():
             try:
                 from services.upgrade.package import prepare_upgrade_package as do_prepare
-                from services.upgrade import (
-                    _intact_bootstrap_needed,
-                    _bootstrap_intact_and_restart,
-                )
 
                 def logger(msg, level="info"):
                     add_log_to_run(run_id, msg, level)
@@ -793,46 +789,6 @@ def prepare_upgrade_package():
                         # Calculate progress (5% start, 95% for work, 100% at end)
                         progress = 5 + int((completed_steps[0] / total_steps) * 90)
                         update_run_status(run_id, "running", progress=min(progress, 95))
-
-                # Bootstrap-first when intact is being bumped. The new
-                # intact's code replaces this backend BEFORE the heavy
-                # prepare runs, so the prepare in Phase 2 uses the new
-                # version pins / artifact-bundling fixes (e.g. opensearch
-                # floor bump, TenRoot zip upstream fallback). Without
-                # this, the package is built against the OLD code shipped
-                # in the currently-running backend.
-                #
-                # On the bootstrap path this function returns after
-                # scheduling the restart; the resume runs as
-                # `_resume_after_intact_bootstrap` post-restart and
-                # writes the final package via `_save_prepared_package_info`.
-                if _intact_bootstrap_needed(modules):
-                    boot = _bootstrap_intact_and_restart(
-                        modules=modules,
-                        run_id=run_id,
-                        logger=logger,
-                        mode='prepare_bootstrap',
-                    )
-                    if boot.get('success'):
-                        update_run_status(run_id, "running", progress=15)
-                        add_log_to_run(
-                            run_id,
-                            "Backend restarting; preparation resumes "
-                            "automatically with the new code.",
-                            "info",
-                        )
-                        return  # workflow continues post-restart
-                    else:
-                        add_log_to_run(
-                            run_id,
-                            f"Bootstrap failed: {boot.get('error', 'unknown')}",
-                            "error",
-                        )
-                        update_run_status(
-                            run_id, "failed", progress=0,
-                            error=boot.get('error'),
-                        )
-                        return
 
                 result = do_prepare(modules, run_id, logger)
 
