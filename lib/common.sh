@@ -477,7 +477,20 @@ check_github_quota() {
         log_error "GitHub rate limit too low for $action: need $needed, have $remaining/$limit."
         log_error "  Quota resets at $reset_hm (in ${reset_min} minutes)."
         if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-            log_error "  Set GITHUB_TOKEN env var to lift the cap from 60 → 5000/hr."
+            log_error ""
+            log_error "  To raise the cap from 60 → 5000/hr:"
+            log_error "    1) Get a token: github.com/settings/tokens → Generate new"
+            log_error "       token (classic). Leave all scopes UNCHECKED."
+            log_error "    2) Re-run install.sh with the token in scope:"
+            log_error "         sudo -E GITHUB_TOKEN=ghp_YOUR_TOKEN bash install.sh"
+            log_error "       (or export it system-wide in /etc/environment for"
+            log_error "       all future runs to inherit it automatically.)"
+            log_error "    3) Confirm — this [GH-QUOTA] line should then show"
+            log_error "       have N/5000 instead of N/60."
+            log_error "  Otherwise, wait until $reset_hm."
+        else
+            log_error "  Token IS authed against /5000 cap; rate-limited by"
+            log_error "  unusually high call volume — wait until $reset_hm."
         fi
         return 1
     fi

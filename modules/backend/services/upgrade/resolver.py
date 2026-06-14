@@ -194,14 +194,38 @@ def check_quota_or_raise(needed: int, action_name: str,
     limit = state['limit'] or 60
     reset_hm = state['reset_hm']
     reset_min = max(0, state['reset_in_seconds'] // 60)
-    authed_note = '' if state['authed'] else ' Set GITHUB_TOKEN to lift the cap from 60 → 5000/hr.'
     if remaining < needed:
         _emit(f"[GH-QUOTA] {action_name}: REFUSED — needs {needed}, have {remaining}/{limit} "
               f"(resets {reset_hm}, in {reset_min}m)", "error")
+        # Multi-line actionable instructions in the error message so
+        # the UI's "showMessage(d.error)" surfaces a path the operator
+        # can actually follow, not just "set GITHUB_TOKEN" with no
+        # context. Two options shown — wait OR raise the cap — with
+        # exact commands for the raise-the-cap path.
+        if state['authed']:
+            fix_block = (
+                " (Token IS authed against /5000 cap; "
+                "you're rate-limited by an unusually high call volume — "
+                "wait until reset.)"
+            )
+        else:
+            fix_block = (
+                "\n\nTo raise the cap from 60 → 5000/hr:\n"
+                "  1) Get a token: github.com/settings/tokens "
+                "→ Generate new token (classic). Leave all scopes UNCHECKED "
+                "(public-repo reads only, smaller blast radius if it leaks).\n"
+                "  2) On the IntactAI host:\n"
+                "       echo 'GITHUB_TOKEN=ghp_YOUR_TOKEN' | sudo tee -a "
+                "/home/tenroot/intact/modules/backend/.env\n"
+                "       docker restart intact_backend\n"
+                "  3) Confirm — open this modal again; the [GH-QUOTA] log "
+                "should now show have N/5000 instead of N/60.\n"
+                "Otherwise, wait until reset."
+            )
         raise ResolverQuotaError(
             f"GitHub rate limit too low for {action_name}: "
             f"need {needed}, have {remaining}. "
-            f"Quota resets at {reset_hm} (in {reset_min} minutes).{authed_note}"
+            f"Quota resets at {reset_hm} (in {reset_min} minutes).{fix_block}"
         )
     _emit(f"[GH-QUOTA] {action_name}: needs {needed} calls, "
           f"have {remaining}/{limit} remaining (resets {reset_hm})", "info")
