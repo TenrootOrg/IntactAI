@@ -580,15 +580,43 @@ def get_current_versions() -> Dict:
         'env_file': ts_env,
     }
 
+    # Helper: is the on-demand module enabled in operator's local
+    # config.yaml? install.sh seeds PLASO_VERSION / PROWLER_VERSION /
+    # DFIR_O365RC_VERSION into backend's .env unconditionally (the
+    # backend code path needs the constants regardless), so a pinned
+    # version in .env does NOT mean the operator opted into the
+    # module. We must ALSO check the modules.<name>.enabled flag.
+    # Discovered when an operator did a backend+cve-only install and
+    # the Online Upgrade modal incorrectly listed plaso/prowler/o365rc
+    # as "installed → upgrade automatically" — they'd never agreed
+    # to deploy any of those.
+    def _ondemand_enabled(name: str) -> bool:
+        try:
+            import yaml as _yaml
+            with open(os.path.join(WORKDIR, 'config.yaml')) as f:
+                cfg = _yaml.safe_load(f) or {}
+            mods = cfg.get('modules') or {}
+            entry = mods.get(name) or {}
+            return bool(entry.get('enabled'))
+        except Exception:
+            # If config.yaml is unreadable / missing, fall back to
+            # "treat as enabled" — better to surface a phantom row in
+            # the upgrade plan than to silently hide a module that's
+            # actually being used.
+            return True
+
     # Plaso pin lives in the backend .env (no standalone container).
-    # Same blank → 'Not installed' treatment as prowler / o365rc below —
-    # without it, a backend-only host shows plaso with an empty 'current'
-    # string and the track-flow resolver classifies it as forced/noop
-    # instead of optional, so the operator can never opt in via the new
-    # UI. Discovered during a backend-only fresh-install Test A.
+    # Plaso is a SEPARATE module from Timesketch (yes they run in the
+    # same automation, but plaso can be invoked standalone for other
+    # forensic work and timesketch can ingest pre-parsed events
+    # without plaso). It has its own `modules.plaso.enabled` flag.
+    # 'Not installed' when the .env pin is blank OR plaso is disabled
+    # (or absent) in the operator's modules block.
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
     backend_vars = read_env_file(backend_env)
     plaso_version = backend_vars.get('PLASO_VERSION', '').strip()
+    if not _ondemand_enabled('plaso'):
+        plaso_version = ''
     versions['plaso'] = {
         'current': plaso_version if plaso_version else 'Not installed',
         'env_file': backend_env,
@@ -615,18 +643,22 @@ def get_current_versions() -> Dict:
     }
 
     # On-demand modules (Prowler / DFIR-O365RC) have no long-running
-    # container — the install signal is the .env pin written by their
-    # upgrade functions. When the pin is missing the module has never
-    # been deployed, so report 'Not installed' (matching the dashboard
-    # vocabulary) instead of the bare 'unknown' fallback. This keeps the
-    # VERSION SUMMARY accurate for both "fresh install" runs and "upgrade
-    # from X to Y" runs.
+    # container — the install signal is the .env pin AND the
+    # modules.<name>.enabled flag in config.yaml. install.sh seeds the
+    # .env pin regardless of the operator's choice (backend code path
+    # needs the constants), so the enabled-flag gate is mandatory —
+    # otherwise a backend-only install incorrectly classifies these as
+    # "installed → upgrade automatically".
     prowler_version = backend_vars.get('PROWLER_VERSION', '').strip()
+    if not _ondemand_enabled('prowler'):
+        prowler_version = ''
     versions['prowler'] = {
         'current': prowler_version if prowler_version else 'Not installed',
         'env_file': backend_env,
     }
     o365rc_version = backend_vars.get('DFIR_O365RC_VERSION', '').strip()
+    if not _ondemand_enabled('o365rc'):
+        o365rc_version = ''
     versions['o365rc'] = {
         'current': o365rc_version if o365rc_version else 'Not installed',
         'env_file': backend_env,

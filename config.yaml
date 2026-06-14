@@ -28,6 +28,14 @@ modules:
     enabled: false
   o365rc:
     enabled: false
+  # Plaso — log2timeline timeline parser. On-demand image: pulled by the
+  # backend when timesketch or a standalone forensic job invokes it.
+  # No long-running container, so this flag is the ONLY signal of
+  # whether the operator wants plaso available on this host (the
+  # PLASO_VERSION pin in modules/backend/.env is shipped as a constant
+  # and doesn't reflect operator intent).
+  plaso:
+    enabled: true
   # CVE Scan — NVD-backed vulnerability matcher. No persistent container
   # (the scan engine runs in-process inside the backend), so this entry
   # only gates whether the sidebar item + routes are exposed. Disable to
