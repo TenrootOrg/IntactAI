@@ -362,23 +362,65 @@ def _quota_preflight_or_jsonify(needed: int, action: str):
         return (jsonify({"success": False, "error": str(e)}), 429)
 
 
-def _quota_audit_line(needed: int) -> str:
-    """Build the human-readable quota audit line for the workflow log.
+def _quota_audit_lines(needed: int) -> list:
+    """Build the multi-line quota audit + setup-hint emission for the
+    workflow log. Returns a list of strings the caller pushes via
+    add_log_to_run (one per line) so each lands as its own row in the
+    Workflows tab.
+
+    Always emits:
+      1. The "needs N / have N/60 remaining" line.
+      2. A short setup-hint when NOT authed (no GITHUB_TOKEN set) OR
+         when needed > 0 AND quota is uncomfortably low (<= 2 × needed).
+         Operators with a token already in place don't see the hint —
+         they already know.
 
     Mirrors the format that `check_quota_or_raise` prints to stdout so
-    the operator sees the same wording in both `docker logs
-    intact_backend` AND the workflow's log tab in the UI. Returns a
-    fallback message when the rate_limit endpoint is unreachable.
+    the wording is consistent between `docker logs intact_backend` AND
+    the workflow log tab in the UI.
     """
     from services.upgrade.resolver import get_github_rate_limit
     state = get_github_rate_limit()
+
     if state is None:
-        return "[GH-QUOTA] rate-limit endpoint unreachable; proceeding without pre-flight"
-    return (
-        f"[GH-QUOTA] needs {needed} GitHub calls; "
-        f"have {state['remaining']}/{state['limit'] or 60} remaining "
-        f"(resets {state['reset_hm']}{' — authed' if state['authed'] else ''})"
-    )
+        return [
+            "[GH-QUOTA] rate-limit endpoint unreachable; "
+            "proceeding without pre-flight check",
+        ]
+
+    lines = []
+    remaining = state['remaining']
+    limit = state['limit'] or 60
+    reset_hm = state['reset_hm']
+    authed = state['authed']
+
+    # Line 1: state.
+    if needed == 0:
+        lines.append(
+            f"[GH-QUOTA] needs 0 GitHub calls (offline-only); "
+            f"current quota: {remaining}/{limit} remaining "
+            f"(resets {reset_hm}{' — authed' if authed else ''})"
+        )
+    else:
+        ratio_label = '' if authed else ' — anonymous IP, low cap'
+        lines.append(
+            f"[GH-QUOTA] needs {needed} GitHub calls; "
+            f"have {remaining}/{limit} remaining "
+            f"(resets {reset_hm}{ratio_label})"
+        )
+
+    # Line 2: setup hint. Only when no token — if they already have
+    # one, the 60→5000 jump has happened and the hint is noise.
+    if not authed:
+        lines.append(
+            "[GH-QUOTA-SETUP] To raise cap 60 → 5000/hr:  "
+            "echo 'GITHUB_TOKEN=ghp_YOUR_TOKEN' | sudo tee -a "
+            "/home/tenroot/intact/modules/backend/.env  &&  "
+            "docker restart intact_backend  "
+            "(token: github.com/settings/tokens → Generate new (classic), "
+            "no scopes needed)"
+        )
+    return lines
 
 
 @upgrade_bp.route('/api/upgrade/refs', methods=['POST'])
@@ -535,10 +577,8 @@ def start_offline_upgrade():
         )
         add_log_to_run(run_id, "Starting offline upgrade from package", "info")
         add_log_to_run(run_id, f"Package: {package_path}", "info")
-        # Offline apply doesn't touch github — everything's in the
-        # tarball. Log a 0-needed audit line for consistency with the
-        # other workflows so operators see the same format everywhere.
-        add_log_to_run(run_id, "[GH-QUOTA] needs 0 GitHub calls (offline-only apply)", "info")
+        for line in _quota_audit_lines(0):
+            add_log_to_run(run_id, line, "info")
         update_run_status(run_id, "running", progress=5)
 
         from services.workflow_service import register_cancel_event, unregister_cancel
@@ -690,7 +730,8 @@ def prepare_upgrade_package():
         )
         add_log_to_run(run_id, "Starting package preparation", "info")
         add_log_to_run(run_id, f"Modules: {', '.join(modules.keys())}", "info")
-        add_log_to_run(run_id, _quota_audit_line(2), "info")
+        for line in _quota_audit_lines(2):
+            add_log_to_run(run_id, line, "info")
         for w in track_warnings:
             add_log_to_run(run_id, w, "warning")
         update_run_status(run_id, "running", progress=5)
@@ -853,7 +894,8 @@ def start_online_upgrade():
         )
         add_log_to_run(run_id, "Starting online upgrade (prepare + apply in one run)", "info")
         add_log_to_run(run_id, f"Modules: {', '.join(modules.keys())}", "info")
-        add_log_to_run(run_id, _quota_audit_line(2), "info")
+        for line in _quota_audit_lines(2):
+            add_log_to_run(run_id, line, "info")
         for w in track_warnings:
             add_log_to_run(run_id, w, "warning")
         update_run_status(run_id, "running", progress=2)

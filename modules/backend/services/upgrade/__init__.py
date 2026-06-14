@@ -823,16 +823,6 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         if has_backend or has_frontend:
             modules_dict['intact'] = 'from_package'
 
-    for module in upgrade_order:
-        if module in modules_dict:
-            total += 1
-
-    # Save initial state if we have a run_id (include package_path for cleanup after Phase 2)
-    extract_dir = verify_result.get('extract_dir')
-    if run_id:
-        save_upgrade_state(run_id, 'phase1', modules_dict, [], 'offline', extract_dir, package_path,
-                           db_overwrite=db_overwrite)
-
     # Apply Uploaded Package can pass an operator-chosen subset. When
     # set, modules in the manifest NOT in this set are skipped and the
     # final summary shows them under "skipped: N". When None, every
@@ -841,6 +831,25 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     selected_set = set(selected_modules) if selected_modules else None
     if selected_set is not None:
         log(f"Operator-selected subset: {sorted(selected_set)}", "info")
+
+    # Count `total` against modules the operator ACTUALLY intends to
+    # apply. Without this, a 1-module apply with intact deselected
+    # reports "1/2 modules" because the manifest's intact entry was
+    # counted in the denominator even though we'll skip it. The
+    # denominator should reflect the operator's intent, not the
+    # tarball's contents.
+    for module in upgrade_order:
+        if module not in modules_dict:
+            continue
+        if selected_set is not None and module not in selected_set:
+            continue
+        total += 1
+
+    # Save initial state if we have a run_id (include package_path for cleanup after Phase 2)
+    extract_dir = verify_result.get('extract_dir')
+    if run_id:
+        save_upgrade_state(run_id, 'phase1', modules_dict, [], 'offline', extract_dir, package_path,
+                           db_overwrite=db_overwrite)
 
     try:
         for module_name in upgrade_order:
@@ -1075,6 +1084,14 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
             for module_name, result in results.items():
                 if module_name.startswith("_"):
                     continue
+                # Skipped takes precedence over the success/fail icon —
+                # an operator-deselected module is neither a win nor a
+                # loss, and showing [OK] for it implies it was actually
+                # applied (which it wasn't).
+                if result.get('skipped'):
+                    reason = result.get('reason') or 'skipped'
+                    log(f"  [SKIPPED] {module_name}: {reason}", "info")
+                    continue
                 icon = "OK" if result.get('success') else "FAILED"
                 log(f"  [{icon}] {module_name}: {'success' if result.get('success') else 'failed'}", "info")
                 if result.get('rolled_back'):
@@ -1100,8 +1117,6 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
             log("", "info")
             log("FINAL VERSION TABLE:", "info")
             log("-" * 64, "info")
-            log(f"  {'Module':14} {'Before':22} {'After':22} {'Status':6}", "info")
-            log(f"  {'-'*14} {'-'*22} {'-'*22} {'-'*6}", "info")
             # Iterate over a stable, predictable order that matches the
             # VERSION SUMMARY at run start.
             row_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris',
@@ -1109,17 +1124,28 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
             for mod in row_order:
                 before = current_versions.get(mod, {}).get('current', '?') if isinstance(current_versions, dict) else '?'
                 after = after_versions.get(mod, {}).get('current', '?') if isinstance(after_versions, dict) else '?'
-                if before == after:
-                    status = '(noop)'
-                elif before in ('Not installed', 'unknown'):
-                    status = 'NEW'
-                elif after in ('Not installed', 'unknown'):
-                    # Module went from installed → not — shouldn't happen
-                    # in an upgrade. Loud signal that something is wrong.
-                    status = 'GONE!'
+                before_s = str(before)
+                after_s = str(after)
+                # Format per the operator-readable style:
+                #   <module>: <before> -> <after>   (<status>)
+                # When unchanged, collapse to a single version + the
+                # word "unchanged" instead of repeating the version on
+                # both sides — easier to scan.
+                if before_s == after_s:
+                    status = 'unchanged'
+                    version_part = before_s
+                    log(f"  {mod}: {version_part}   ({status})", "info")
                 else:
-                    status = 'OK'
-                log(f"  {mod:14} {str(before):22} {str(after):22} {status}", "info")
+                    if before_s in ('Not installed', 'unknown'):
+                        status = 'installed'
+                    elif after_s in ('Not installed', 'unknown'):
+                        # Module went from installed → not — shouldn't
+                        # happen in an upgrade. Loud signal that
+                        # something is wrong.
+                        status = 'REMOVED'
+                    else:
+                        status = 'upgraded'
+                    log(f"  {mod}: {before_s} -> {after_s}   ({status})", "info")
             log("-" * 64, "info")
 
     all_success = all(r.get('success', False) for r in results.values() if not isinstance(r, str))
