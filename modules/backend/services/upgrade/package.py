@@ -28,7 +28,10 @@ DOCKER_IMAGES = {
         # defaults in modules/timesketch/docker-compose.yaml; if a
         # future pin moves, update both places.
         ('postgres:15', 'postgres-15.tar'),
-        ('opensearchproject/opensearch:2.11.0', 'opensearch-2.11.0.tar'),
+        # Timesketch >=20260611 requires OpenSearch >=2.19.5. Keep this in
+        # sync with the OPENSEARCH_VERSION default in modules/timesketch/
+        # docker-compose.yaml — if it moves, bump both.
+        ('opensearchproject/opensearch:2.19.5', 'opensearch-2.19.5.tar'),
         ('redis:7-alpine', 'redis-7-alpine.tar'),
         ('nginx:alpine', 'nginx-alpine.tar'),
     ],
@@ -881,17 +884,143 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 os.makedirs(velo_artifacts_dir, exist_ok=True)
 
                 src_zip = '/app/data/tools/Velociraptor-Artifacts-main.zip'
+                dst_zip = os.path.join(velo_artifacts_dir, 'Velociraptor-Artifacts-main.zip')
                 if os.path.isfile(src_zip):
-                    dst_zip = os.path.join(velo_artifacts_dir, 'Velociraptor-Artifacts-main.zip')
                     try:
                         shutil.copy2(src_zip, dst_zip)
                         sz_mb = os.path.getsize(dst_zip) / (1024 * 1024)
-                        log(f"  Bundled TenRoot artifacts zip ({sz_mb:.1f} MB)", "success")
+                        log(f"  Bundled TenRoot artifacts zip from local cache ({sz_mb:.1f} MB)", "success")
                         manifest["contents"].setdefault("velociraptor_artifacts", {})["zip"] = True
                     except Exception as e:
                         log(f"  Could not bundle TenRoot zip: {e}", "warning")
                 else:
-                    log(f"  TenRoot artifacts zip absent at {src_zip} — apply will skip", "info")
+                    # Fetch-from-upstream fallback: when the operator added
+                    # velociraptor via Online Upgrade (not at initial
+                    # install), the install.sh tools_download step that
+                    # seeds this zip never ran. Without this fallback the
+                    # apply log shows "TenRoot artifacts zip absent" and
+                    # the custom triage/IR artifacts (Windows.Triage.*,
+                    # etc.) never get imported on the target.
+                    log(f"  TenRoot artifacts zip absent at {src_zip} — fetching from upstream...", "info")
+                    tenroot_url = "https://github.com/TenRootOrg/Velociraptor-Artifacts/archive/refs/heads/main.zip"
+                    dl = run_command(
+                        f"curl -fL --retry 3 --retry-max-time 600 --connect-timeout 30 "
+                        f"--max-time 900 -o {dst_zip} {tenroot_url}",
+                        timeout=950, logger=None, run_id=run_id,
+                    )
+                    if dl.get("cancelled"):
+                        return {"success": False, "error": "cancelled", "cancelled": True}
+                    if dl.get("success") and os.path.isfile(dst_zip) and os.path.getsize(dst_zip) > 1024:
+                        sz_mb = os.path.getsize(dst_zip) / (1024 * 1024)
+                        log(f"  Fetched TenRoot artifacts zip from upstream ({sz_mb:.1f} MB)", "success")
+                        manifest["contents"].setdefault("velociraptor_artifacts", {})["zip"] = True
+                        # Seed the local cache so subsequent prepares hit the fast path.
+                        try:
+                            os.makedirs(os.path.dirname(src_zip), exist_ok=True)
+                            shutil.copy2(dst_zip, src_zip)
+                        except Exception:
+                            pass
+                    else:
+                        err = (dl.get("error") or "")[:120]
+                        log(f"  Upstream fetch failed ({err}) — apply will skip TenRoot pack", "warning")
+                        if os.path.isfile(dst_zip):
+                            try:
+                                os.remove(dst_zip)
+                            except Exception:
+                                pass
+
+                # Legacy Velociraptor binaries (v0.7.x — for Win 7 /
+                # Server 2008 R2 hosts where the modern Go-1.22 build
+                # crashes with 0xc0000005). lib/docker.sh:
+                # download_legacy_velociraptor_binaries seeds these at
+                # install time when velociraptor is enabled — but on a
+                # fresh backend+cve-only install the legacy zip never
+                # ran, so when the operator adds velociraptor via
+                # Online Upgrade the Downloads page shows greyed-out
+                # "Download Legacy EXE / Linux" buttons.
+                #
+                # Bundle them here so the apply side can drop them into
+                # modules/nginx/html/downloads/ on the target. Same
+                # local-first-then-upstream pattern as the modern
+                # binaries above. Pin lives in config.yaml's
+                # versions.velociraptor_legacy (default '0.7.1').
+                legacy_pin = None
+                try:
+                    cfg_path = os.path.join(WORKDIR, 'config.yaml')
+                    if os.path.isfile(cfg_path):
+                        import yaml as _yaml
+                        with open(cfg_path) as _f:
+                            _cfg = _yaml.safe_load(_f) or {}
+                        legacy_pin = (((_cfg.get('versions') or {})
+                                        .get('velociraptor_legacy')) or None)
+                        if legacy_pin:
+                            legacy_pin = str(legacy_pin).strip().lstrip('v')
+                except Exception as _ce:
+                    log(f"  Could not read versions.velociraptor_legacy: {_ce}", "warning")
+
+                if legacy_pin:
+                    legacy_filenames = [
+                        f"velociraptor-v{legacy_pin}-windows-amd64.exe",
+                        f"velociraptor-v{legacy_pin}-linux-amd64-musl",
+                    ]
+                    legacy_pkg_dir = os.path.join(package_dir, 'binaries', 'legacy')
+                    os.makedirs(legacy_pkg_dir, exist_ok=True)
+                    legacy_url_base = (f"https://github.com/Velocidex/velociraptor/"
+                                       f"releases/download/v{legacy_pin}")
+                    legacy_local_dir = os.path.join(WORKDIR, 'modules', 'nginx',
+                                                    'html', 'downloads')
+                    legacy_bundled = []
+                    log(f"Bundling Velociraptor LEGACY v{legacy_pin} binaries...", "info")
+                    for fname in legacy_filenames:
+                        dst = os.path.join(legacy_pkg_dir, fname)
+                        local_src = os.path.join(legacy_local_dir, fname)
+                        if os.path.isfile(local_src) and os.path.getsize(local_src) > 1024 * 1024:
+                            cp = run_command(f"cp {local_src} {dst}",
+                                             logger=None, run_id=run_id)
+                            if cp.get("cancelled"):
+                                return {"success": False, "error": "cancelled", "cancelled": True}
+                            if cp.get("success") and os.path.isfile(dst):
+                                sz = os.path.getsize(dst) / (1024 * 1024)
+                                log(f"  {fname}: bundled from local cache ({sz:.1f} MB)", "success")
+                                legacy_bundled.append(fname)
+                                continue
+                        log(f"  {fname}: fetching from upstream...", "info")
+                        dl = run_command(
+                            f"curl -fL --retry 3 --retry-max-time 600 "
+                            f"--connect-timeout 30 --max-time 900 "
+                            f"-o {dst} {legacy_url_base}/{fname}",
+                            timeout=950, logger=None, run_id=run_id,
+                        )
+                        if dl.get("cancelled"):
+                            return {"success": False, "error": "cancelled", "cancelled": True}
+                        if (dl.get("success") and os.path.isfile(dst)
+                                and os.path.getsize(dst) > 1024 * 1024):
+                            sz = os.path.getsize(dst) / (1024 * 1024)
+                            log(f"  {fname}: fetched from upstream ({sz:.1f} MB)", "success")
+                            legacy_bundled.append(fname)
+                            # Seed local cache so the prepare host's
+                            # legacy download buttons start working too.
+                            try:
+                                os.makedirs(legacy_local_dir, exist_ok=True)
+                                shutil.copy2(dst, os.path.join(legacy_local_dir, fname))
+                            except Exception:
+                                pass
+                        else:
+                            err = (dl.get("error") or "")[:120]
+                            log(f"  {fname}: upstream fetch failed ({err}) — "
+                                f"legacy {fname.split('-')[3] if '-' in fname else 'OS'} "
+                                f"download will be unavailable on the target", "warning")
+                            if os.path.isfile(dst):
+                                try:
+                                    os.remove(dst)
+                                except Exception:
+                                    pass
+                    if legacy_bundled:
+                        manifest["contents"].setdefault("velociraptor_legacy", {})
+                        manifest["contents"]["velociraptor_legacy"]["version"] = legacy_pin
+                        manifest["contents"]["velociraptor_legacy"]["binaries"] = legacy_bundled
+                else:
+                    log("Legacy Velociraptor: versions.velociraptor_legacy not set — skipping", "info")
 
                 src_custom = '/app/data/custom_artifacts'
                 if os.path.isdir(src_custom) and os.listdir(src_custom):

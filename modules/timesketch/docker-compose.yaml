@@ -22,7 +22,12 @@ services:
 
   timesketch-opensearch:
     container_name: intact_timesketch_opensearch
-    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-2.11.0}
+    # Timesketch >=20260611 requires OpenSearch >=2.19.5 (native wildcard field
+    # mapping landed there; older datastores get rejected at startup with
+    # `UnsupportedDatastoreVersionError`). Pin the floor explicitly — the
+    # image is fully forward-compatible with 2.11.x volumes, so existing
+    # installs auto-migrate the data dir on first start at the new version.
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-2.19.5}
     environment:
       - discovery.type=single-node
       - DISABLE_INSTALL_DEMO_CONFIG=true

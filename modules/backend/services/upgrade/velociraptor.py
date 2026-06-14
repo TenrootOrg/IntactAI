@@ -166,6 +166,37 @@ def _restore_bundled_artifact_sources(package_dir: str,
         except Exception as e:
             log(f"  custom_artifacts restore raised: {e}", "warning")
 
+    # Legacy Velociraptor binaries (v0.7.x). Prepare staged them at
+    # <package>/binaries/legacy/. Drop them into
+    # {WORKDIR}/modules/nginx/html/downloads/ so the Downloads page's
+    # "Download Legacy EXE / Linux" buttons light up. Without this the
+    # buttons stay greyed-out on any host that added velociraptor via
+    # Online Upgrade (the initial install.sh seed only runs when
+    # velociraptor is enabled at install time).
+    legacy_src = os.path.join(package_dir, 'binaries', 'legacy')
+    if os.path.isdir(legacy_src):
+        legacy_dst = os.path.join(WORKDIR, 'modules', 'nginx', 'html', 'downloads')
+        try:
+            os.makedirs(legacy_dst, exist_ok=True)
+            restored = 0
+            for fname in os.listdir(legacy_src):
+                src_p = os.path.join(legacy_src, fname)
+                if not (os.path.isfile(src_p) and os.path.getsize(src_p) > 1024 * 1024):
+                    continue
+                dst_p = os.path.join(legacy_dst, fname)
+                try:
+                    shutil.copy2(src_p, dst_p)
+                    if not fname.endswith('.exe'):
+                        os.chmod(dst_p, 0o755)
+                    restored += 1
+                except Exception as e:
+                    log(f"  Legacy binary copy failed for {fname}: {e}", "warning")
+            if restored:
+                log(f"  Restored {restored} legacy Velociraptor binar(y/ies) "
+                    f"-> {legacy_dst}/", "info")
+        except Exception as e:
+            log(f"  Legacy binary restore raised: {e}", "warning")
+
 
 def _import_bundled_registry_snapshot(package_dir: str,
                                        logger: Callable = None) -> int:
