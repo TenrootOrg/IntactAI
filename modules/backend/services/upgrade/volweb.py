@@ -249,6 +249,18 @@ def install_volweb_offline(
     from .base import load_all_bundled_images
     load_all_bundled_images(package_dir, logger=log, run_id=run_id)
 
+    # Stamp transitive container versions from the bundled manifest
+    # (VOLWEB_POSTGRES_VERSION, VOLWEB_REDIS_VERSION) into
+    # modules/volweb/.env BEFORE compose up. The compose file's
+    # `${VAR:?...}` interpolation will fail without these.
+    from .base import stamp_transitive_env_from_manifest
+    try:
+        stamp_transitive_env_from_manifest('volweb', package_dir, logger=log)
+    except Exception as _e:
+        log(f"  transitive .env stamp raised "
+            f"({type(_e).__name__}: {_e}); compose up will likely fail",
+            "warning")
+
     log("  docker compose up -d ...", "info")
     up = _compose_up(log, run_id=run_id)
     if not up.get("success"):

@@ -994,6 +994,20 @@ def install_timesketch_offline(package_dir: str, version: str, logger=None, run_
     else:
         log(f"  Config dir missing at {cfg_dir} — Timesketch will crash-loop on missing conf. Check package extraction.", "warning")
 
+    # Stamp transitive container versions from the bundled manifest
+    # into modules/timesketch/.env BEFORE compose up. Without this,
+    # compose's `${VAR:?...}` interpolation fails because the env
+    # vars (POSTGRES_VERSION etc.) aren't set. The manifest was
+    # populated at prepare time from config.yaml's
+    # `versions.timesketch_<dep>` entries — single source of truth.
+    from .base import stamp_transitive_env_from_manifest
+    try:
+        stamp_transitive_env_from_manifest('timesketch', package_dir, logger=log)
+    except Exception as _e:
+        log(f"  transitive .env stamp raised "
+            f"({type(_e).__name__}: {_e}); compose up will likely fail",
+            "warning")
+
     compose_result = install_module_compose_up(
         'timesketch', package_dir, version,
         image_tar_prefixes=['timesketch'],

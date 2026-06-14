@@ -23,7 +23,12 @@ services:
 
   intact_volweb_postgresdb:
     container_name: intact_volweb_postgresdb
-    image: "postgres:${VOLWEB_POSTGRES_VERSION:-14.1}"
+    # No default — `versions.volweb_postgres` in config.yaml is
+    # authoritative; install.sh:deploy_volweb stamps it into
+    # modules/volweb/.env. Refactor 2026-06-14 dropped the `:-14.1`
+    # fallback to surface install/upgrade drift loudly instead of
+    # silently using the literal.
+    image: "postgres:${VOLWEB_POSTGRES_VERSION:?must be set via modules/volweb/.env — see versions.volweb_postgres in config.yaml}"
     restart: unless-stopped
     environment:
       - POSTGRES_USER=${VOLWEB_POSTGRES_USER}
@@ -45,7 +50,8 @@ services:
 
   intact_volweb_redis:
     container_name: intact_volweb_redis
-    image: "redis:${VOLWEB_REDIS_VERSION:-7}"
+    # No default — `versions.volweb_redis` in config.yaml is authoritative.
+    image: "redis:${VOLWEB_REDIS_VERSION:?must be set via modules/volweb/.env — see versions.volweb_redis in config.yaml}"
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:

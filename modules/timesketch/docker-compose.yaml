@@ -4,21 +4,18 @@
 services:
   timesketch-postgres:
     container_name: intact_timesketch_postgres
-    # Default matches upstream timesketch's published compose
-    # (https://github.com/google/timesketch/blob/.../docker/release/docker-compose.yml).
-    # Bumped 2026-06-14 from `:-15` to `:-13.0-alpine` after an operator
-    # hit the install-vs-upgrade postgres-version mismatch: the install
-    # path didn't stamp POSTGRES_VERSION, the `:-15` default kicked in,
-    # postgres-15 initialized the data volume, and then the next
-    # upgrade scraped upstream (which still pins 13.0-alpine), tried
-    # to stamp POSTGRES_VERSION=13.0-alpine, and postgres-13 failed
-    # to read postgres-15 data ("database files are incompatible").
-    # Matching the default to upstream's pin makes install + upgrade
-    # converge from day one — `${POSTGRES_VERSION:-13.0-alpine}` is
-    # what the upgrade flow stamps anyway via the upstream scrape, so
-    # fresh installs now initialize postgres-13 data and subsequent
-    # upgrades are no-ops for postgres.
-    image: postgres:${POSTGRES_VERSION:-13.0-alpine}
+    # No default. POSTGRES_VERSION must be set in modules/timesketch/.env
+    # by either install.sh:deploy_timesketch (reads versions.timesketch_postgres
+    # from config.yaml) or the apply-side stamp_transitive_env_from_manifest
+    # (reads it from the bundled manifest, which prepare populated from
+    # the same config.yaml entry). 2026-06-14 refactor: dropped the
+    # historical `${VAR:-15}` fallback because it caused the
+    # install-vs-upgrade postgres-version drift incident — install used
+    # the compose default, upgrade scraped upstream, and the two
+    # disagreed. Single source of truth is `versions.timesketch_postgres`
+    # in config.yaml; loud failure if `.env` isn't stamped is preferable
+    # to silent drift.
+    image: postgres:${POSTGRES_VERSION:?must be set via modules/timesketch/.env — see versions.timesketch_postgres in config.yaml}
     environment:
       - POSTGRES_USER=timesketch
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-timesketch}
@@ -41,7 +38,9 @@ services:
     # `UnsupportedDatastoreVersionError`). Pin the floor explicitly — the
     # image is fully forward-compatible with 2.11.x volumes, so existing
     # installs auto-migrate the data dir on first start at the new version.
-    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-2.19.5}
+    # No default — see the postgres comment above for the rationale.
+    # `versions.timesketch_opensearch` in config.yaml is authoritative.
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:?must be set via modules/timesketch/.env — see versions.timesketch_opensearch in config.yaml}
     environment:
       - discovery.type=single-node
       - DISABLE_INSTALL_DEMO_CONFIG=true
@@ -79,14 +78,13 @@ services:
 
   timesketch-redis:
     container_name: intact_timesketch_redis
-    # Default matches upstream timesketch's exact pin
-    # (`redis:7.2.11-alpine`). Bumped 2026-06-14 from `:-7-alpine` to
-    # the specific patch so fresh installs match what the upgrade
-    # flow scrapes from upstream — same rationale as the postgres
-    # pin above. Redis volumes are non-stateful by default in the
-    # timesketch deployment (Celery broker only), so the version
-    # change is safe across in-place restarts.
-    image: redis:${REDIS_VERSION:-7.2.11-alpine}
+    # No default — `versions.timesketch_redis` in config.yaml is
+    # authoritative; install + upgrade both stamp REDIS_VERSION into
+    # modules/timesketch/.env. Redis is non-stateful in the timesketch
+    # deployment (Celery broker only), so version changes are safe
+    # across restarts — but the loud failure still helps if `.env`
+    # isn't stamped at all.
+    image: redis:${REDIS_VERSION:?must be set via modules/timesketch/.env — see versions.timesketch_redis in config.yaml}
     command: redis-server
     restart: unless-stopped
     networks:
@@ -161,7 +159,13 @@ services:
 
   timesketch-nginx:
     container_name: intact_timesketch_nginx
-    image: nginx:alpine
+    # No default — `versions.timesketch_nginx` in config.yaml is
+    # authoritative. Previously hardcoded as `nginx:alpine`, which
+    # broke air-gap installs (compose tried to pull from Docker Hub
+    # rather than using the bundled image). Fixed 2026-06-14 to honor
+    # the env var the prepare/apply machinery has been writing all
+    # along.
+    image: nginx:${NGINX_VERSION:?must be set via modules/timesketch/.env — see versions.timesketch_nginx in config.yaml}
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       # Shared self-signed cert for TLS termination (CN=domain), same one

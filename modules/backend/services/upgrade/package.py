@@ -67,18 +67,17 @@ PRIMARY_IMAGES = {
 # at runtime. Each entry is:
 #   (dep_key, image_pattern, tar_pattern)
 #
-# `dep_key` is looked up at prepare time in config.yaml's
-# `transitive_versions.<module>.<dep_key>` block (see _read_transitive_pin
-# below); the resolved tag fills `{tag}` in both patterns. Fallbacks in
-# TRANSITIVE_DEFAULTS keep the historical behaviour when the operator's
-# config.yaml has no `transitive_versions:` block.
+# `dep_key` is looked up at prepare time via `get_transitive_tag` which
+# reads `versions.<module>_<dep_key>` from config.yaml (single source of
+# truth — see 2026-06-14 refactor that deleted the live upstream scrape
+# + cache + fallback table layers). The resolved tag fills `{tag}` in
+# both patterns.
 #
 # Air-gap correctness: at apply time, the resolved tag also lands in the
 # bundled manifest.json under `contents.transitive_versions`, and the
 # offline-apply step writes it to per-module `.env` files BEFORE
-# `docker compose up`. That way the compose's `${VAR:-default}`
-# resolves to the tag of an image actually present in the loaded
-# bundle, not the static default the compose file shipped with.
+# `docker compose up`. That way the compose's `${VAR:?...}` interpolation
+# resolves to the tag of an image actually present in the loaded bundle.
 TRANSITIVE_IMAGES = {
     'timesketch': [
         ('postgres',   'postgres:{tag}',                       'postgres-{tag}.tar'),
@@ -101,34 +100,11 @@ TRANSITIVE_IMAGES = {
 }
 
 
-# Fallback tags when config.yaml has no `transitive_versions.<module>.<dep>`
-# entry. Mirrors today's hardcoded values, so the refactor is a no-op
-# for any operator who hasn't added the block.
-TRANSITIVE_DEFAULTS = {
-    'timesketch': {
-        # Timesketch >=20260611 requires OpenSearch >=2.19.5 (compat-floor
-        # break that bit us when upstream bumped past 2.11.0 — see the
-        # transitive_resolver module's history).
-        'opensearch': '2.19.5',
-        'postgres':   '15',
-        'redis':      '7-alpine',
-        'nginx':      'alpine',
-    },
-    'iris': {
-        'rabbitmq': '3-management-alpine',
-    },
-    'volweb': {
-        'postgres': '15',
-        'redis':    '7',
-    },
-}
-
-
 # Maps each transitive `(module, dep_key)` to the env var name the
 # module's compose file consumes. Used by the apply side to write the
 # right `.env` line before `docker compose up`, and by the prepare side
 # to record bundled tags in the manifest. Keys live in
-# modules/<module>/docker-compose.yaml as `${VAR:-default}` references.
+# modules/<module>/docker-compose.yaml as `${VAR:?...}` references.
 TRANSITIVE_ENV_KEYS = {
     'timesketch': {
         'opensearch': 'OPENSEARCH_VERSION',
@@ -136,259 +112,75 @@ TRANSITIVE_ENV_KEYS = {
         'redis':      'REDIS_VERSION',
         'nginx':      'NGINX_VERSION',
     },
+    'iris': {
+        # iris's compose uses `image: rabbitmq:${RABBITMQ_VERSION:?...}`
+        # — the apply side must write RABBITMQ_VERSION into
+        # modules/iris/.env before compose up. Old comment claiming
+        # iris's rabbitmq was a literal tag was incorrect (likely
+        # written when iris first shipped with a hardcoded tag, before
+        # the env-var conversion).
+        'rabbitmq': 'RABBITMQ_VERSION',
+    },
     'volweb': {
         'postgres': 'VOLWEB_POSTGRES_VERSION',
         'redis':    'VOLWEB_REDIS_VERSION',
     },
-    # iris's rabbitmq is referenced literally in
-    # modules/iris/docker-compose.yaml — no env var. The apply side
-    # treats a missing env-key as "no .env write needed; the image
-    # already gets loaded and compose's literal `rabbitmq:3-management-
-    # alpine` reference matches".
-    'iris': {},
 }
 
 
-def _read_transitive_pin(module: str, dep: str) -> Optional[str]:
-    """Return config.yaml's `transitive_versions.<module>.<dep>` value, or
-    None when the block / module / key is absent. Fail-soft on any
-    parse error so a malformed config.yaml never blocks a prepare.
-
-    This is the OPERATOR OVERRIDE layer — when an entry exists here, it
-    wins over upstream scrape + hardcoded defaults. Leave empty (or
-    omit the block entirely) to track upstream automatically.
+def _read_config_yaml_versions() -> Dict[str, str]:
+    """Return the `versions:` block from config.yaml as a flat dict.
+    Fail-soft (empty dict) on any read/parse error so a malformed
+    config.yaml surfaces in get_transitive_tag's KeyError rather than
+    a yaml.YAMLError that's harder to attribute. Caller is expected
+    to validate the keys it cares about.
     """
     config_path = os.path.join(WORKDIR, 'config.yaml')
     if not os.path.exists(config_path):
-        return None
+        return {}
     try:
         import yaml  # local — yaml isn't used elsewhere in this module
         with open(config_path, 'r') as f:
             cfg = yaml.safe_load(f) or {}
-        block = ((cfg.get('transitive_versions') or {}).get(module) or {})
-        val = block.get(dep)
-        return str(val).strip() if val is not None else None
+        v = cfg.get('versions') or {}
+        return {str(k): str(val).strip() for k, val in v.items()
+                if val is not None}
     except Exception:
-        return None
-
-
-# Disk cache for upstream-scraped transitive versions. Keyed by
-# (module, primary_version) — both are immutable on the upstream side
-# (the version is a release tag), so the cached result is valid as long
-# as upstream doesn't force-push the tag (which they shouldn't). 24h
-# TTL guards against rare cases where they do.
-_UPSTREAM_CACHE_DIR = '/app/data/cache/transitive_resolver'
-_UPSTREAM_CACHE_TTL_SEC = 24 * 60 * 60
-
-# In-process LRU layer over the disk cache: prepare iterates the
-# transitive image list per module + version, calling
-# `_resolve_from_upstream` once per dep — without the in-memory layer
-# we'd hit disk N times per module per prepare. Lives for the
-# lifetime of the prepare process.
-_UPSTREAM_MEM_CACHE: Dict[str, Dict[str, str]] = {}
-
-# Floating tags upstream sometimes ships in their compose (e.g.
-# k1nd0ne/VolWeb's `redis:latest`). Operator decision 2026-06-14: we
-# bundle them verbatim. The tar contains the SPECIFIC image digest
-# pulled at prepare time so the bundle itself is reproducible; only
-# the human-readable .env tag says 'latest'. This set is kept solely
-# to LOG when upstream uses one — useful for debugging / operator
-# awareness of what got bundled.
-_FLOATING_TAGS = frozenset({
-    'latest', 'master', 'main', 'develop', 'dev', 'edge', 'stable',
-    'rolling',
-})
-
-
-def _resolve_from_upstream(module: str,
-                            primary_version: str,
-                            logger: Optional[Callable] = None) -> Dict[str, str]:
-    """Fetch `transitive_resolver.resolve_for(module, primary_version)`
-    via a layered cache. Returns dict of `{dep_key: tag}` for whatever
-    upstream's compose / config.env declares at the pinned tag, or `{}`
-    on any failure.
-
-    Layers, fastest first:
-      1. _UPSTREAM_MEM_CACHE (process-lifetime dict)
-      2. _UPSTREAM_CACHE_DIR (disk JSON, 24h TTL — survives backend
-         restarts; works across multiple prepares in the same day)
-      3. resolve_for() (live network call to upstream)
-
-    Each layer also strips floating tags before storing.
-
-    The optional `logger` makes every step of the chain visible in the
-    workflow log (which cache layer hit, what URL is being scraped, what
-    came back, why an attempt failed). Critical for diagnosing "why did
-    prepare bundle opensearch X" questions — without these breadcrumbs
-    a wrong version looks identical in the log to a right one.
-    """
-    log = logger or (lambda msg, lvl='info': None)
-    cache_key = f"{module}@{primary_version}"
-    if cache_key in _UPSTREAM_MEM_CACHE:
-        cached = _UPSTREAM_MEM_CACHE[cache_key]
-        log(f"  [transitive] {module}@{primary_version}: in-memory cache hit "
-            f"({len(cached)} deps)", "info")
-        return cached
-
-    cache_path = os.path.join(
-        _UPSTREAM_CACHE_DIR,
-        f"{module}-{primary_version.replace('/', '_')}.json",
-    )
-    now = time.time()
-    if os.path.isfile(cache_path):
-        try:
-            age = now - os.path.getmtime(cache_path)
-            if age < _UPSTREAM_CACHE_TTL_SEC:
-                with open(cache_path, 'r') as f:
-                    cached = json.load(f) or {}
-                _UPSTREAM_MEM_CACHE[cache_key] = cached
-                age_h = int(age // 3600)
-                age_m = int((age % 3600) // 60)
-                log(f"  [transitive] {module}@{primary_version}: disk cache "
-                    f"hit (age {age_h}h{age_m}m, {len(cached)} deps)",
-                    "info")
-                return cached
-        except Exception as e:
-            log(f"  [transitive] {module}@{primary_version}: disk cache "
-                f"unreadable ({type(e).__name__}: {e}) — re-fetching",
-                "warning")
-
-    # Cache miss. Hit upstream.
-    log(f"  [transitive] {module}@{primary_version}: cache miss → scraping "
-        f"upstream config…", "info")
-    try:
-        from .transitive_resolver import resolve_for
-        raw = resolve_for(module, primary_version) or {}
-        if raw:
-            log(f"  [transitive] {module}@{primary_version}: scrape returned "
-                f"{', '.join(f'{k}={v}' for k, v in raw.items())}",
-                "info")
-        else:
-            log(f"  [transitive] {module}@{primary_version}: scrape returned "
-                f"NO data (upstream URL may have moved, repo archived, or "
-                f"network unreachable). Callers will surface this loudly — "
-                f"see get_transitive_tag.",
-                "warning")
-    except Exception as e:
-        log(f"  [transitive] {module}@{primary_version}: scrape raised "
-            f"{type(e).__name__}: {e}. Falling through to empty result.",
-            "warning")
-        raw = {}
-
-    # Trust upstream's tag verbatim — including floating ones like
-    # 'latest'. Operator's decision 2026-06-14: when upstream ships
-    # `image: "redis:latest"` (as VolWeb does), we bundle whatever the
-    # registry's `latest` resolves to at prepare time. The tar holds a
-    # specific image digest, so the bundle itself is still deterministic;
-    # only the human-readable tag label in .env says 'latest'. The
-    # apply side's `docker compose up` finds the loaded-from-tar image
-    # locally and uses it without pulling.
-    floating_seen = [k for k, v in raw.items()
-                     if str(v).strip().lower() in _FLOATING_TAGS]
-    if floating_seen:
-        log(f"  [transitive] {module}@{primary_version}: upstream uses "
-            f"floating tag(s) for {sorted(floating_seen)} — bundling as-is "
-            f"(image in tar is the specific digest pulled at prepare time)",
-            "info")
-
-    # Persist (best-effort).
-    try:
-        os.makedirs(_UPSTREAM_CACHE_DIR, exist_ok=True)
-        tmp = cache_path + '.new'
-        with open(tmp, 'w') as f:
-            json.dump(raw, f)
-        os.replace(tmp, cache_path)
-    except Exception as e:
-        log(f"  [transitive] {module}@{primary_version}: disk cache write "
-            f"failed ({type(e).__name__}: {e}); in-memory cache only",
-            "warning")
-
-    _UPSTREAM_MEM_CACHE[cache_key] = raw
-    return raw
+        return {}
 
 
 def get_transitive_tag(module: str, dep: str,
                         primary_version: Optional[str] = None,
                         logger: Optional[Callable] = None) -> str:
-    """Resolve the tag for one transitive container of `module`.
+    """Resolve <module>.<dep> from config.yaml's `versions.<module>_<dep>`.
 
-    Resolution order (first hit wins):
-      1. config.yaml's `transitive_versions.<module>.<dep>` — operator
-         override. Sparse only; almost never set. Loud log when used.
-      2. Upstream scrape via `_resolve_from_upstream` — hits the module's
-         own published compose / config.env at the pinned tag.
-      3. `TRANSITIVE_DEFAULTS[module][dep]` — fallback used ONLY when
-         the scrape SUCCEEDED but this specific dep wasn't in the
-         cleaned result (upstream pinned other deps but floats this one
-         — e.g. VolWeb pins postgres but ships `redis: latest`, which
-         our floating-tag filter strips). Loud warning when used.
+    Single source of truth. No upstream scrape, no cache layer, no
+    fallback table. To bump a transitive pin, edit config.yaml.
 
-    Raises `RuntimeError` only when the scrape itself failed entirely
-    (returned no deps at all) AND no operator override AND no default.
-    This keeps the spirit of the 2026-06-14 mandatory-scrape rule —
-    "no internet → hard fail so the operator notices" — without
-    catching the legitimate case where upstream simply doesn't pin
-    every dep. The earlier all-or-nothing version mis-categorized
-    floating-tag drops as scrape failures, bricking VolWeb prepare on
-    2026-06-14.
+    `primary_version` is kept in the signature for source-compat with
+    callers that used to need it for the live scrape, but is ignored —
+    the pin in config.yaml is authoritative regardless of which primary
+    version is being installed/upgraded.
 
-    Raises `KeyError` when the (module, dep) pair itself is unknown
-    (misnamed at the call site).
+    Raises `KeyError` when the `versions.<module>_<dep>` entry is
+    missing from config.yaml (or config.yaml itself is unreadable). The
+    error message is operator-facing; it tells them what key to add.
     """
     log = logger or (lambda msg, lvl='info': None)
-
-    pinned = _read_transitive_pin(module, dep)
-    if pinned:
-        log(f"  [transitive] {module}.{dep} = {pinned} "
-            f"(operator override from config.yaml.transitive_versions)",
-            "info")
-        return pinned
-
-    upstream: Dict[str, str] = {}
-    if primary_version:
-        upstream = _resolve_from_upstream(module, primary_version, logger=log)
-        if upstream and dep in upstream:
-            tag = upstream[dep]
-            log(f"  [transitive] {module}.{dep} = {tag} (upstream scrape)",
-                "success")
-            return tag
-
-    # Scrape succeeded (returned at least one dep) but this specific
-    # dep wasn't in the cleaned result. Two legitimate reasons:
-    #   - upstream's compose uses a floating tag for it (filtered)
-    #   - upstream doesn't pin this dep at all
-    # Fall back to TRANSITIVE_DEFAULTS for THIS dep with a loud log.
-    # Other deps in the same module are unaffected.
-    if upstream:
-        default = TRANSITIVE_DEFAULTS.get(module, {}).get(dep)
-        if default is not None:
-            log(f"  [transitive] {module}.{dep} = {default} "
-                f"(scrape returned {len(upstream)} other dep(s) but no "
-                f"pinned tag for this one — upstream likely uses a "
-                f"floating tag like 'latest'. Falling back to "
-                f"TRANSITIVE_DEFAULTS. Override in config.yaml's "
-                f"`transitive_versions.{module}.{dep}` to silence.)",
-                "warning")
-            return default
-
-    # Truly nothing: scrape failed entirely (empty result) AND no
-    # operator override AND no default. Hard error so the operator
-    # notices instead of silently bundling stale values.
-    last_known = TRANSITIVE_DEFAULTS.get(module, {}).get(dep, '<unknown>')
-    msg = (
-        f"Cannot resolve transitive dep {module}.{dep}: "
-        f"no operator override in config.yaml.transitive_versions, "
-        f"upstream scrape returned nothing for primary_version="
-        f"{primary_version!r}, and no TRANSITIVE_DEFAULTS entry exists. "
-        f"Prepare requires internet to scrape each module's own "
-        f"config.env / docker-compose at the pinned tag. Either "
-        f"(a) restore internet access to api.github.com + "
-        f"raw.githubusercontent.com and re-run, or (b) set "
-        f"`transitive_versions.{module}.{dep}: '<tag>'` in config.yaml "
-        f"as a manual override (last-known-good value: {last_known!r})."
-    )
-    log(msg, "error")
-    raise RuntimeError(msg)
+    key = f"{module}_{dep}"
+    versions = _read_config_yaml_versions()
+    value = versions.get(key)
+    if not value:
+        raise KeyError(
+            f"versions.{key} is missing from config.yaml. The 2026-06-14 "
+            f"refactor moved transitive sidecar pins from an upstream "
+            f"scrape into config.yaml. Add a line under `versions:` like:\n"
+            f"  {key}: '<tag>'\n"
+            f"For reference, current shipped values are documented in the "
+            f"config.yaml comment block above the `<module>_<dep>` entries."
+        )
+    log(f"  [transitive] {module}.{dep} = {value} (config.yaml)", "info")
+    return value
 
 
 def get_docker_images_for(module: str, version: str,
@@ -398,16 +190,15 @@ def get_docker_images_for(module: str, version: str,
     list returned (already with placeholders expanded), so callers can
     iterate uniformly.
 
-    Tag resolution per image (layered, first hit wins):
+    Tag resolution per image:
       - Primary image: `versions.<module>` pin from config.yaml
-      - Transitive image: config.yaml's
-        `transitive_versions.<module>.<dep>` override → upstream scrape
-        for `(module, version)` at the pinned tag → TRANSITIVE_DEFAULTS
+      - Transitive image: `versions.<module>_<dep>` pin from config.yaml
+        (e.g. `timesketch_postgres`, `iris_rabbitmq`). See
+        get_transitive_tag for the resolver.
 
-    `logger` (when provided) lights up the transitive resolution chain
-    so the prepare log shows which source produced each tag. Without it
-    the resolution is silent (legacy behaviour preserved for callers
-    that don't have a logger).
+    `logger` (when provided) emits one info-level line per resolved
+    transitive tag so the prepare log shows which config.yaml entry
+    fed each image.
     """
     out = []
     for image_pat, tar_pat in PRIMARY_IMAGES.get(module, []):

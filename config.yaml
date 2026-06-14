@@ -101,8 +101,30 @@ versions:
   # (Docker Hub: forensicxlab/volweb-backend + forensicxlab/volweb-frontend
   # — current latest = 3.16.0 pushed 2026-03-20). Backend + frontend
   # release in lockstep so a SINGLE pin drives both (same pattern as
-  # IRIS, where `iris: v2.4.27` drives 4 containers). Postgres + Redis
-  # are infrastructure deps — defaulted in modules/volweb/docker-compose.yaml
-  # via ${VAR:-default} syntax, NOT pinned here.
+  # IRIS, where `iris: v2.4.27` drives 4 containers).
   volweb: '3.16.0'
   backend: '1.0.0'
+
+  # ── External sidecar pins (postgres / opensearch / redis / nginx / rabbitmq) ──
+  # 2026-06-14 refactor: these used to be scraped live from each
+  # module's upstream docker-compose at the pinned primary version,
+  # via services/upgrade/transitive_resolver.py + an in-memory + disk
+  # cache layer + a TRANSITIVE_DEFAULTS fallback table. That whole
+  # chain is gone now — the live scrape produced silent drift between
+  # install and upgrade (an operator hit it 2026-06-14: install used
+  # postgres:15 from the compose default, upgrade scraped upstream's
+  # postgres:13.0-alpine pin, postgres-13 then refused to start
+  # against postgres-15 data). Single source of truth = these lines.
+  # Naming convention: `<module>_<sidecar>` — read by
+  # services/upgrade/package.py:get_transitive_tag and stamped into
+  # each module's modules/<module>/.env before its docker compose up.
+  # To bump any sidecar: edit the value here, then re-run the module's
+  # install/upgrade flow. Both online + offline (air-gap) paths read
+  # the SAME entries via the bundled manifest.
+  timesketch_opensearch: '2.19.5'
+  timesketch_postgres:   '13.0-alpine'
+  timesketch_redis:      '7.2.11-alpine'
+  timesketch_nginx:      '1.25.5-alpine-slim'
+  iris_rabbitmq:         '3-management-alpine'
+  volweb_postgres:       '14.1'
+  volweb_redis:          '7'

@@ -4,7 +4,12 @@
 services:
   iris-rabbitmq:
     container_name: intact_iris_rabbitmq
-    image: rabbitmq:${RABBITMQ_VERSION:-3-management-alpine}
+    # No default — `versions.iris_rabbitmq` in config.yaml is
+    # authoritative. install.sh:deploy_iris stamps RABBITMQ_VERSION
+    # into modules/iris/.env before compose up; UI install/upgrade
+    # does the same via stamp_transitive_env_from_manifest. Refactor
+    # 2026-06-14 dropped the `:-3-management-alpine` fallback.
+    image: rabbitmq:${RABBITMQ_VERSION:?must be set via modules/iris/.env — see versions.iris_rabbitmq in config.yaml}
     restart: unless-stopped
     networks:
       - iris_internal
