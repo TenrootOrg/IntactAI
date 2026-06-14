@@ -127,6 +127,7 @@ versions:
 # Values below mirror what the current package.py + compose defaults
 # actually ship (initial state; will become the canonical source of
 # truth when the Phase B refactor lands).
+# end of versions block
 transitive_versions:
   timesketch:
     opensearch: '2.19.5'
