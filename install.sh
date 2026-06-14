@@ -73,7 +73,15 @@ main() {
     local check_updates_flag
     check_updates_flag=$(read_config "['options']['check_module_updates']")
     if [[ "$check_updates_flag" == "True" ]]; then
-        check_module_updates
+        # Pre-flight: check_module_updates polls api.github.com once
+        # per pinned module (6 calls today). Refuse early if quota is
+        # too low so the operator gets a clear "wait N minutes" message
+        # instead of a confusing 403 mid-poll.
+        if ! check_github_quota 6 "module update check"; then
+            log_warn "  Skipping update check; install will proceed with pinned versions"
+        else
+            check_module_updates
+        fi
         echo ""
     fi
 

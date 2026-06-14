@@ -7,76 +7,369 @@ Creates offline upgrade packages that can be transferred to air-gapped systems.
 import os
 import json
 import shutil
+import time
 from datetime import datetime
 from typing import Dict, Callable, List, Optional
 
 from .base import run_command, WORKDIR, HOST_PATH
 
 
-# Docker image mappings for each module
-DOCKER_IMAGES = {
+# Primary images per module — the deliverables the operator's
+# `versions:` pin in config.yaml directly drives. `{version}` is
+# substituted with `modules[<module>]` at prepare time.
+PRIMARY_IMAGES = {
     'elk': [
-        ('docker.elastic.co/elasticsearch/elasticsearch:{version}', 'elasticsearch-{version}.tar'),
-        ('docker.elastic.co/kibana/kibana:{version}', 'kibana-{version}.tar'),
-        ('docker.elastic.co/logstash/logstash:{version}', 'logstash-{version}.tar'),
+        ('docker.elastic.co/elasticsearch/elasticsearch:{version}',
+         'elasticsearch-{version}.tar'),
+        ('docker.elastic.co/kibana/kibana:{version}',
+         'kibana-{version}.tar'),
+        ('docker.elastic.co/logstash/logstash:{version}',
+         'logstash-{version}.tar'),
     ],
     'timesketch': [
-        ('us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:{version}', 'timesketch-{version}.tar'),
-        # Base images Timesketch's docker-compose.yaml depends on.
-        # Without bundling these the air-gap install fails at
-        # `docker compose up` trying to pull them. Versions match the
-        # defaults in modules/timesketch/docker-compose.yaml; if a
-        # future pin moves, update both places.
-        ('postgres:15', 'postgres-15.tar'),
-        ('opensearchproject/opensearch:2.11.0', 'opensearch-2.11.0.tar'),
-        ('redis:7-alpine', 'redis-7-alpine.tar'),
-        ('nginx:alpine', 'nginx-alpine.tar'),
+        ('us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:{version}',
+         'timesketch-{version}.tar'),
     ],
     'plaso': [
         ('log2timeline/plaso:{version}', 'plaso-{version}.tar'),
     ],
     'iris': [
-        # Note: iris-worker uses the same iriswebapp_app image
-        # Note: DB image included for air-gap support (data is in volumes, safe to upgrade)
-        ('ghcr.io/dfir-iris/iriswebapp_app:{version}', 'iris-app-{version}.tar'),
-        ('ghcr.io/dfir-iris/iriswebapp_nginx:{version}', 'iris-nginx-{version}.tar'),
-        ('ghcr.io/dfir-iris/iriswebapp_db:{version}', 'iris-db-{version}.tar'),
-        # Infrastructure dep — IRIS compose pulls rabbitmq from Docker
-        # Hub at compose-up time. On an air-gapped or fresh-install
-        # target the pull fails ("No such image: rabbitmq:3-management-
-        # alpine") and the stack can't start. Bundle the image so the
-        # apply step can `docker load` it offline. The tag is fixed
-        # (infrastructure dep, not IRIS-version-coupled — same pattern
-        # as volweb's postgres + redis).
-        ('rabbitmq:3-management-alpine', 'rabbitmq-3-management-alpine.tar'),
+        # iris-worker reuses the same iriswebapp_app image. The DB image
+        # is included for air-gap support; data lives in a volume so the
+        # upgrade is non-destructive.
+        ('ghcr.io/dfir-iris/iriswebapp_app:{version}',
+         'iris-app-{version}.tar'),
+        ('ghcr.io/dfir-iris/iriswebapp_nginx:{version}',
+         'iris-nginx-{version}.tar'),
+        ('ghcr.io/dfir-iris/iriswebapp_db:{version}',
+         'iris-db-{version}.tar'),
     ],
     'prowler': [
-        # Prowler image for AWS posture scans (run on demand, no live container)
         ('toniblyx/prowler:{version}', 'prowler-{version}.tar'),
     ],
     'o365rc': [
-        # DFIR-O365RC image for Azure Unified Audit Log (run on demand). Upstream
-        # only ships ':latest', so {version} is normally 'latest'.
+        # Upstream only ships ':latest', so {version} is normally 'latest'.
         ('anssi/dfir-o365rc:{version}', 'dfir-o365rc-{version}.tar'),
     ],
     'volweb': [
-        # VolWeb backend + frontend (memory-forensics analysis stack).
-        # forensicxlab releases the two images in lockstep so a single
-        # `versions.volweb` pin drives both — same {version} placeholder
-        # for both tars. Postgres + Redis are infrastructure deps
-        # defaulted in modules/volweb/docker-compose.yaml; the
-        # operator's host pulls those directly from Docker Hub at
-        # compose-up time, not from this bundle.
-        ('forensicxlab/volweb-backend:{version}',  'volweb-backend-{version}.tar'),
-        ('forensicxlab/volweb-frontend:{version}', 'volweb-frontend-{version}.tar'),
-        # Base images VolWeb's docker-compose.yaml depends on. Versions
-        # match the pins in modules/volweb/.env (VOLWEB_POSTGRES_VERSION,
-        # VOLWEB_REDIS_VERSION). Without these the air-gap install fails
-        # at `docker compose up` trying to pull from Docker Hub.
-        ('postgres:15', 'volweb-postgres-15.tar'),
-        ('redis:7', 'volweb-redis-7.tar'),
+        # forensicxlab releases backend + frontend in lockstep so a single
+        # `versions.volweb` pin drives both.
+        ('forensicxlab/volweb-backend:{version}',
+         'volweb-backend-{version}.tar'),
+        ('forensicxlab/volweb-frontend:{version}',
+         'volweb-frontend-{version}.tar'),
     ],
 }
+
+
+# Transitive infrastructure images per module — postgres / opensearch /
+# redis / rabbitmq / nginx etc. that the primary module's compose pulls
+# at runtime. Each entry is:
+#   (dep_key, image_pattern, tar_pattern)
+#
+# `dep_key` is looked up at prepare time in config.yaml's
+# `transitive_versions.<module>.<dep_key>` block (see _read_transitive_pin
+# below); the resolved tag fills `{tag}` in both patterns. Fallbacks in
+# TRANSITIVE_DEFAULTS keep the historical behaviour when the operator's
+# config.yaml has no `transitive_versions:` block.
+#
+# Air-gap correctness: at apply time, the resolved tag also lands in the
+# bundled manifest.json under `contents.transitive_versions`, and the
+# offline-apply step writes it to per-module `.env` files BEFORE
+# `docker compose up`. That way the compose's `${VAR:-default}`
+# resolves to the tag of an image actually present in the loaded
+# bundle, not the static default the compose file shipped with.
+TRANSITIVE_IMAGES = {
+    'timesketch': [
+        ('postgres',   'postgres:{tag}',                       'postgres-{tag}.tar'),
+        ('opensearch', 'opensearchproject/opensearch:{tag}',   'opensearch-{tag}.tar'),
+        ('redis',      'redis:{tag}',                          'redis-{tag}.tar'),
+        ('nginx',      'nginx:{tag}',                          'nginx-{tag}.tar'),
+    ],
+    'iris': [
+        # Infrastructure dep — IRIS compose pulls rabbitmq from Docker
+        # Hub at compose-up time. Bundling lets the apply step load it
+        # offline.
+        ('rabbitmq', 'rabbitmq:{tag}', 'rabbitmq-{tag}.tar'),
+    ],
+    'volweb': [
+        # Distinct tar names from timesketch's postgres/redis so both
+        # bundles can coexist on disk without name collisions.
+        ('postgres', 'postgres:{tag}', 'volweb-postgres-{tag}.tar'),
+        ('redis',    'redis:{tag}',    'volweb-redis-{tag}.tar'),
+    ],
+}
+
+
+# Fallback tags when config.yaml has no `transitive_versions.<module>.<dep>`
+# entry. Mirrors today's hardcoded values, so the refactor is a no-op
+# for any operator who hasn't added the block.
+TRANSITIVE_DEFAULTS = {
+    'timesketch': {
+        # Timesketch >=20260611 requires OpenSearch >=2.19.5 (compat-floor
+        # break that bit us when upstream bumped past 2.11.0 — see the
+        # transitive_resolver module's history).
+        'opensearch': '2.19.5',
+        'postgres':   '15',
+        'redis':      '7-alpine',
+        'nginx':      'alpine',
+    },
+    'iris': {
+        'rabbitmq': '3-management-alpine',
+    },
+    'volweb': {
+        'postgres': '15',
+        'redis':    '7',
+    },
+}
+
+
+# Maps each transitive `(module, dep_key)` to the env var name the
+# module's compose file consumes. Used by the apply side to write the
+# right `.env` line before `docker compose up`, and by the prepare side
+# to record bundled tags in the manifest. Keys live in
+# modules/<module>/docker-compose.yaml as `${VAR:-default}` references.
+TRANSITIVE_ENV_KEYS = {
+    'timesketch': {
+        'opensearch': 'OPENSEARCH_VERSION',
+        'postgres':   'POSTGRES_VERSION',
+        'redis':      'REDIS_VERSION',
+        'nginx':      'NGINX_VERSION',
+    },
+    'volweb': {
+        'postgres': 'VOLWEB_POSTGRES_VERSION',
+        'redis':    'VOLWEB_REDIS_VERSION',
+    },
+    # iris's rabbitmq is referenced literally in
+    # modules/iris/docker-compose.yaml — no env var. The apply side
+    # treats a missing env-key as "no .env write needed; the image
+    # already gets loaded and compose's literal `rabbitmq:3-management-
+    # alpine` reference matches".
+    'iris': {},
+}
+
+
+def _read_transitive_pin(module: str, dep: str) -> Optional[str]:
+    """Return config.yaml's `transitive_versions.<module>.<dep>` value, or
+    None when the block / module / key is absent. Fail-soft on any
+    parse error so a malformed config.yaml never blocks a prepare.
+
+    This is the OPERATOR OVERRIDE layer — when an entry exists here, it
+    wins over upstream scrape + hardcoded defaults. Leave empty (or
+    omit the block entirely) to track upstream automatically.
+    """
+    config_path = os.path.join(WORKDIR, 'config.yaml')
+    if not os.path.exists(config_path):
+        return None
+    try:
+        import yaml  # local — yaml isn't used elsewhere in this module
+        with open(config_path, 'r') as f:
+            cfg = yaml.safe_load(f) or {}
+        block = ((cfg.get('transitive_versions') or {}).get(module) or {})
+        val = block.get(dep)
+        return str(val).strip() if val is not None else None
+    except Exception:
+        return None
+
+
+# Disk cache for upstream-scraped transitive versions. Keyed by
+# (module, primary_version) — both are immutable on the upstream side
+# (the version is a release tag), so the cached result is valid as long
+# as upstream doesn't force-push the tag (which they shouldn't). 24h
+# TTL guards against rare cases where they do.
+_UPSTREAM_CACHE_DIR = '/app/data/cache/transitive_resolver'
+_UPSTREAM_CACHE_TTL_SEC = 24 * 60 * 60
+
+# In-process LRU layer over the disk cache: prepare iterates the
+# transitive image list per module + version, calling
+# `_resolve_from_upstream` once per dep — without the in-memory layer
+# we'd hit disk N times per module per prepare. Lives for the
+# lifetime of the prepare process.
+_UPSTREAM_MEM_CACHE: Dict[str, Dict[str, str]] = {}
+
+# Floating tags upstream sometimes ships in their compose
+# (e.g. k1nd0ne/VolWeb's `redis:latest`). Don't propagate those — they
+# defeat reproducibility. When upstream uses one of these, fall through
+# to the next layer (config.yaml override → TRANSITIVE_DEFAULTS).
+_FLOATING_TAGS = frozenset({
+    'latest', 'master', 'main', 'develop', 'dev', 'edge', 'stable',
+    'rolling',
+})
+
+
+def _resolve_from_upstream(module: str,
+                            primary_version: str) -> Dict[str, str]:
+    """Fetch `transitive_resolver.resolve_for(module, primary_version)`
+    via a layered cache. Returns dict of `{dep_key: tag}` for whatever
+    upstream's compose / config.env declares at the pinned tag, or `{}`
+    on any failure (fail-open: callers fall back to operator override
+    then TRANSITIVE_DEFAULTS).
+
+    Layers, fastest first:
+      1. _UPSTREAM_MEM_CACHE (process-lifetime dict)
+      2. _UPSTREAM_CACHE_DIR (disk JSON, 24h TTL — survives backend
+         restarts; works across multiple prepares in the same day)
+      3. resolve_for() (live network call to upstream)
+
+    Each layer also strips floating tags before storing.
+    """
+    cache_key = f"{module}@{primary_version}"
+    if cache_key in _UPSTREAM_MEM_CACHE:
+        return _UPSTREAM_MEM_CACHE[cache_key]
+
+    cache_path = os.path.join(
+        _UPSTREAM_CACHE_DIR,
+        f"{module}-{primary_version.replace('/', '_')}.json",
+    )
+    now = time.time()
+    if os.path.isfile(cache_path):
+        try:
+            age = now - os.path.getmtime(cache_path)
+            if age < _UPSTREAM_CACHE_TTL_SEC:
+                with open(cache_path, 'r') as f:
+                    cached = json.load(f) or {}
+                _UPSTREAM_MEM_CACHE[cache_key] = cached
+                return cached
+        except Exception:
+            # Corrupted cache — fall through and re-fetch.
+            pass
+
+    # Cache miss. Hit upstream.
+    try:
+        from .transitive_resolver import resolve_for
+        raw = resolve_for(module, primary_version) or {}
+    except Exception:
+        raw = {}
+
+    # Strip floating tags so they never feed back through the pipeline.
+    cleaned = {
+        k: v for k, v in raw.items()
+        if str(v).strip().lower() not in _FLOATING_TAGS
+    }
+
+    # Persist (best-effort).
+    try:
+        os.makedirs(_UPSTREAM_CACHE_DIR, exist_ok=True)
+        tmp = cache_path + '.new'
+        with open(tmp, 'w') as f:
+            json.dump(cleaned, f)
+        os.replace(tmp, cache_path)
+    except Exception:
+        pass
+
+    _UPSTREAM_MEM_CACHE[cache_key] = cleaned
+    return cleaned
+
+
+def get_transitive_tag(module: str, dep: str,
+                        primary_version: Optional[str] = None) -> str:
+    """Resolve the tag for one transitive container of `module`.
+
+    Layered fallback:
+      1. config.yaml's `transitive_versions.<module>.<dep>` — operator
+         override; always wins when set
+      2. Upstream scrape — if `primary_version` is provided, fetch what
+         upstream's own compose / config.env declares at that tag and
+         use it. Cached on disk for 24h so repeated prepares for the
+         same (module, version) pair don't re-hit GitHub.
+      3. `TRANSITIVE_DEFAULTS[module][dep]` — hardcoded last resort
+         (today's pre-resolver behavior; KeyError on unknown dep so
+         misnamed lookups are loud bugs)
+
+    `primary_version` is optional only for backwards compatibility with
+    code paths that don't have it; callers building image lists for a
+    specific prepare run should always pass it through.
+    """
+    pinned = _read_transitive_pin(module, dep)
+    if pinned:
+        return pinned
+
+    if primary_version:
+        upstream = _resolve_from_upstream(module, primary_version)
+        if upstream and dep in upstream:
+            return upstream[dep]
+
+    return TRANSITIVE_DEFAULTS[module][dep]
+
+
+def get_docker_images_for(module: str, version: str) -> list:
+    """Return the list of `(image, tar_filename)` to bundle for one
+    primary module + version. Same shape the old `DOCKER_IMAGES[module]`
+    list returned (already with placeholders expanded), so callers can
+    iterate uniformly.
+
+    Tag resolution per image (layered, first hit wins):
+      - Primary image: `versions.<module>` pin from config.yaml
+      - Transitive image: config.yaml's
+        `transitive_versions.<module>.<dep>` override → upstream scrape
+        for `(module, version)` at the pinned tag → TRANSITIVE_DEFAULTS
+    """
+    out = []
+    for image_pat, tar_pat in PRIMARY_IMAGES.get(module, []):
+        out.append((
+            image_pat.format(version=version),
+            tar_pat.format(version=version),
+        ))
+    for dep_key, image_pat, tar_pat in TRANSITIVE_IMAGES.get(module, []):
+        tag = get_transitive_tag(module, dep_key, primary_version=version)
+        out.append((
+            image_pat.format(tag=tag),
+            tar_pat.format(tag=tag),
+        ))
+    return out
+
+
+def get_transitive_versions_for(module: str,
+                                  primary_version: Optional[str] = None
+                                  ) -> Dict[str, str]:
+    """Return the resolved transitive tags for `module` keyed by env-var
+    name (e.g. {'POSTGRES_VERSION': '15', 'OPENSEARCH_VERSION': '2.19.5'}).
+    Empty dict for modules with no transitive deps. The manifest carries
+    this so the offline apply can stamp per-module `.env` files BEFORE
+    `docker compose up`.
+
+    `primary_version` enables the upstream-scrape fallback in
+    get_transitive_tag — without it, only the operator override +
+    hardcoded defaults are consulted.
+    """
+    env_map = TRANSITIVE_ENV_KEYS.get(module, {})
+    if not env_map:
+        return {}
+    out = {}
+    for dep_key, env_key in env_map.items():
+        try:
+            out[env_key] = get_transitive_tag(
+                module, dep_key, primary_version=primary_version,
+            )
+        except KeyError:
+            continue
+    return out
+
+
+# Backwards-compat shim: anything that historically did
+# `DOCKER_IMAGES[<module>]` still works (returns the templated list).
+# The two in-tree callers in this file have been updated to call
+# get_docker_images_for() directly with the version arg; this stays
+# only for any future callers / external tooling that import the dict.
+class _DockerImagesCompat:
+    def __contains__(self, module: str) -> bool:
+        return module in PRIMARY_IMAGES or module in TRANSITIVE_IMAGES
+
+    def __getitem__(self, module: str):
+        # Return the un-expanded templates so old `.format(version=...)`
+        # callers keep working. Transitive entries are returned with the
+        # resolved tag pre-baked (since they have no `{version}` slot).
+        items = list(PRIMARY_IMAGES.get(module, []))
+        for dep_key, image_pat, tar_pat in TRANSITIVE_IMAGES.get(module, []):
+            try:
+                tag = get_transitive_tag(module, dep_key)
+            except KeyError:
+                continue
+            items.append((image_pat.format(tag=tag), tar_pat.format(tag=tag)))
+        return items
+
+
+DOCKER_IMAGES = _DockerImagesCompat()
 
 
 def _format_size(size_bytes: int) -> str:
@@ -127,8 +420,40 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
     source_size = _get_dir_size(source_path)
     log(f"  Source size: {_format_size(source_size)}", "info")
 
-    # Start tar in background
-    cmd = f"tar -czf {output_file} -C {source_dir} {source_name}"
+    # Build a file list with manifest.json FIRST so it lives in the
+    # first ~10KB of the gzipped tar. This lets:
+    #   * the operator's browser peek the manifest from the first ~5MB
+    #     of the local file before any upload (see /api/upgrade/peek-manifest),
+    #   * get_package_info()'s slow-path fallback to find the manifest
+    #     in the first decompressed block instead of scanning the
+    #     entire archive.
+    # Falls back to the legacy directory-mode tar command if the
+    # manifest doesn't exist (older callers / partial packages).
+    manifest_rel = os.path.join(source_name, 'manifest.json')
+    manifest_abs = os.path.join(source_path, 'manifest.json')
+    list_file = output_file + '.filelist'
+    use_files_from = False
+    try:
+        if os.path.isfile(manifest_abs):
+            entries = [manifest_rel]
+            for root, _, files in os.walk(source_path):
+                for f in files:
+                    rel = os.path.relpath(os.path.join(root, f), source_dir)
+                    if rel != manifest_rel:
+                        entries.append(rel)
+            with open(list_file, 'w') as f:
+                f.write('\n'.join(entries) + '\n')
+            use_files_from = True
+    except Exception as _e:
+        # Anything weird → fall through to the legacy directory-mode tar.
+        # The output is still a correct tarball, just with manifest in
+        # whatever filesystem-order tar picks.
+        use_files_from = False
+
+    if use_files_from:
+        cmd = f"tar -czf {output_file} -C {source_dir} -T {list_file}"
+    else:
+        cmd = f"tar -czf {output_file} -C {source_dir} {source_name}"
     process = subprocess.Popen(
         cmd,
         shell=True,
@@ -193,6 +518,14 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
     returncode = process.returncode
     stderr = process.stderr.read().decode() if process.stderr else ""
 
+    # Best-effort cleanup of the file list (only created when use_files_from
+    # branch ran). Failures here are harmless cruft.
+    try:
+        if use_files_from and os.path.isfile(list_file):
+            os.remove(list_file)
+    except Exception:
+        pass
+
     if returncode != 0:
         return {"success": False, "error": stderr[:200]}
 
@@ -242,7 +575,7 @@ def _pull_and_save_image(image: str, output_path: str, logger: Callable,
 
     # Pull the image with output shown
     log(f"  Pulling {image}...", "info")
-    result = run_command(f"docker pull {image}", timeout=1200, logger=log, run_id=run_id)
+    result = run_command(f"docker pull {image}", timeout=1800, logger=log, run_id=run_id)
     if result.get("cancelled"):
         return False
     if not result['success']:
@@ -651,7 +984,12 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     log(f"  Full version required (e.g., 0.75.6), got: {version}", "error")
                     continue
 
-                release_tag = f"v{parts[0]}.{parts[1]}"
+                # See resolve_velociraptor_release_tag in velociraptor.py
+                # for why we can't just compute v{major}.{minor} here —
+                # Velocidex's tagging changed at v0.76.6 (each patch has
+                # its own release now).
+                from .velociraptor import resolve_velociraptor_release_tag
+                release_tag = resolve_velociraptor_release_tag(clean_version, logger=log)
                 base_url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}"
                 velo_tag = f"{parts[0]}.{parts[1]}"
 
@@ -716,9 +1054,10 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         url = f"{base_url}/{fname}"
                         log(f"  Downloading: {fname}", "info")
                         dl = run_command(
-                            f"curl -L -f --retry 5 --retry-delay 5 --retry-max-time 120 "
+                            f"curl -L -f --retry 5 --retry-delay 5 "
+                            f"--retry-max-time 600 --connect-timeout 30 "
                             f"-o {pkg_path} {url}",
-                            timeout=300, logger=None, run_id=run_id,
+                            timeout=1800, logger=None, run_id=run_id,
                         )
                         if dl.get("cancelled"):
                             return {"success": False, "error": "cancelled", "cancelled": True}
@@ -835,17 +1174,143 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 os.makedirs(velo_artifacts_dir, exist_ok=True)
 
                 src_zip = '/app/data/tools/Velociraptor-Artifacts-main.zip'
+                dst_zip = os.path.join(velo_artifacts_dir, 'Velociraptor-Artifacts-main.zip')
                 if os.path.isfile(src_zip):
-                    dst_zip = os.path.join(velo_artifacts_dir, 'Velociraptor-Artifacts-main.zip')
                     try:
                         shutil.copy2(src_zip, dst_zip)
                         sz_mb = os.path.getsize(dst_zip) / (1024 * 1024)
-                        log(f"  Bundled TenRoot artifacts zip ({sz_mb:.1f} MB)", "success")
+                        log(f"  Bundled TenRoot artifacts zip from local cache ({sz_mb:.1f} MB)", "success")
                         manifest["contents"].setdefault("velociraptor_artifacts", {})["zip"] = True
                     except Exception as e:
                         log(f"  Could not bundle TenRoot zip: {e}", "warning")
                 else:
-                    log(f"  TenRoot artifacts zip absent at {src_zip} — apply will skip", "info")
+                    # Fetch-from-upstream fallback: when the operator added
+                    # velociraptor via Online Upgrade (not at initial
+                    # install), the install.sh tools_download step that
+                    # seeds this zip never ran. Without this fallback the
+                    # apply log shows "TenRoot artifacts zip absent" and
+                    # the custom triage/IR artifacts (Windows.Triage.*,
+                    # etc.) never get imported on the target.
+                    log(f"  TenRoot artifacts zip absent at {src_zip} — fetching from upstream...", "info")
+                    tenroot_url = "https://github.com/TenRootOrg/Velociraptor-Artifacts/archive/refs/heads/main.zip"
+                    dl = run_command(
+                        f"curl -fL --retry 3 --retry-max-time 600 --connect-timeout 30 "
+                        f"--max-time 900 -o {dst_zip} {tenroot_url}",
+                        timeout=950, logger=None, run_id=run_id,
+                    )
+                    if dl.get("cancelled"):
+                        return {"success": False, "error": "cancelled", "cancelled": True}
+                    if dl.get("success") and os.path.isfile(dst_zip) and os.path.getsize(dst_zip) > 1024:
+                        sz_mb = os.path.getsize(dst_zip) / (1024 * 1024)
+                        log(f"  Fetched TenRoot artifacts zip from upstream ({sz_mb:.1f} MB)", "success")
+                        manifest["contents"].setdefault("velociraptor_artifacts", {})["zip"] = True
+                        # Seed the local cache so subsequent prepares hit the fast path.
+                        try:
+                            os.makedirs(os.path.dirname(src_zip), exist_ok=True)
+                            shutil.copy2(dst_zip, src_zip)
+                        except Exception:
+                            pass
+                    else:
+                        err = (dl.get("error") or "")[:120]
+                        log(f"  Upstream fetch failed ({err}) — apply will skip TenRoot pack", "warning")
+                        if os.path.isfile(dst_zip):
+                            try:
+                                os.remove(dst_zip)
+                            except Exception:
+                                pass
+
+                # Legacy Velociraptor binaries (v0.7.x — for Win 7 /
+                # Server 2008 R2 hosts where the modern Go-1.22 build
+                # crashes with 0xc0000005). lib/docker.sh:
+                # download_legacy_velociraptor_binaries seeds these at
+                # install time when velociraptor is enabled — but on a
+                # fresh backend+cve-only install the legacy zip never
+                # ran, so when the operator adds velociraptor via
+                # Online Upgrade the Downloads page shows greyed-out
+                # "Download Legacy EXE / Linux" buttons.
+                #
+                # Bundle them here so the apply side can drop them into
+                # modules/nginx/html/downloads/ on the target. Same
+                # local-first-then-upstream pattern as the modern
+                # binaries above. Pin lives in config.yaml's
+                # versions.velociraptor_legacy (default '0.7.1').
+                legacy_pin = None
+                try:
+                    cfg_path = os.path.join(WORKDIR, 'config.yaml')
+                    if os.path.isfile(cfg_path):
+                        import yaml as _yaml
+                        with open(cfg_path) as _f:
+                            _cfg = _yaml.safe_load(_f) or {}
+                        legacy_pin = (((_cfg.get('versions') or {})
+                                        .get('velociraptor_legacy')) or None)
+                        if legacy_pin:
+                            legacy_pin = str(legacy_pin).strip().lstrip('v')
+                except Exception as _ce:
+                    log(f"  Could not read versions.velociraptor_legacy: {_ce}", "warning")
+
+                if legacy_pin:
+                    legacy_filenames = [
+                        f"velociraptor-v{legacy_pin}-windows-amd64.exe",
+                        f"velociraptor-v{legacy_pin}-linux-amd64-musl",
+                    ]
+                    legacy_pkg_dir = os.path.join(package_dir, 'binaries', 'legacy')
+                    os.makedirs(legacy_pkg_dir, exist_ok=True)
+                    legacy_url_base = (f"https://github.com/Velocidex/velociraptor/"
+                                       f"releases/download/v{legacy_pin}")
+                    legacy_local_dir = os.path.join(WORKDIR, 'modules', 'nginx',
+                                                    'html', 'downloads')
+                    legacy_bundled = []
+                    log(f"Bundling Velociraptor LEGACY v{legacy_pin} binaries...", "info")
+                    for fname in legacy_filenames:
+                        dst = os.path.join(legacy_pkg_dir, fname)
+                        local_src = os.path.join(legacy_local_dir, fname)
+                        if os.path.isfile(local_src) and os.path.getsize(local_src) > 1024 * 1024:
+                            cp = run_command(f"cp {local_src} {dst}",
+                                             logger=None, run_id=run_id)
+                            if cp.get("cancelled"):
+                                return {"success": False, "error": "cancelled", "cancelled": True}
+                            if cp.get("success") and os.path.isfile(dst):
+                                sz = os.path.getsize(dst) / (1024 * 1024)
+                                log(f"  {fname}: bundled from local cache ({sz:.1f} MB)", "success")
+                                legacy_bundled.append(fname)
+                                continue
+                        log(f"  {fname}: fetching from upstream...", "info")
+                        dl = run_command(
+                            f"curl -fL --retry 3 --retry-max-time 600 "
+                            f"--connect-timeout 30 --max-time 900 "
+                            f"-o {dst} {legacy_url_base}/{fname}",
+                            timeout=950, logger=None, run_id=run_id,
+                        )
+                        if dl.get("cancelled"):
+                            return {"success": False, "error": "cancelled", "cancelled": True}
+                        if (dl.get("success") and os.path.isfile(dst)
+                                and os.path.getsize(dst) > 1024 * 1024):
+                            sz = os.path.getsize(dst) / (1024 * 1024)
+                            log(f"  {fname}: fetched from upstream ({sz:.1f} MB)", "success")
+                            legacy_bundled.append(fname)
+                            # Seed local cache so the prepare host's
+                            # legacy download buttons start working too.
+                            try:
+                                os.makedirs(legacy_local_dir, exist_ok=True)
+                                shutil.copy2(dst, os.path.join(legacy_local_dir, fname))
+                            except Exception:
+                                pass
+                        else:
+                            err = (dl.get("error") or "")[:120]
+                            log(f"  {fname}: upstream fetch failed ({err}) — "
+                                f"legacy {fname.split('-')[3] if '-' in fname else 'OS'} "
+                                f"download will be unavailable on the target", "warning")
+                            if os.path.isfile(dst):
+                                try:
+                                    os.remove(dst)
+                                except Exception:
+                                    pass
+                    if legacy_bundled:
+                        manifest["contents"].setdefault("velociraptor_legacy", {})
+                        manifest["contents"]["velociraptor_legacy"]["version"] = legacy_pin
+                        manifest["contents"]["velociraptor_legacy"]["binaries"] = legacy_bundled
+                else:
+                    log("Legacy Velociraptor: versions.velociraptor_legacy not set — skipping", "info")
 
                 src_custom = '/app/data/custom_artifacts'
                 if os.path.isdir(src_custom) and os.listdir(src_custom):
@@ -1057,9 +1522,10 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     dst = os.path.join(external_dir, fname)
                     try:
                         cp = run_command(
-                            f"curl -fL --retry 3 --retry-delay 5 --max-time 180 "
+                            f"curl -fL --retry 3 --retry-delay 5 "
+                            f"--max-time 600 --connect-timeout 30 "
                             f"-o {dst} {url}",
-                            logger=None, timeout=200, run_id=run_id,
+                            logger=None, timeout=900, run_id=run_id,
                         )
                         if not (cp.get('success') and os.path.isfile(dst)):
                             log(f"  ✗ {label}: curl failed "
@@ -1105,13 +1571,27 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         "moved if this is an internet-connected prepare host.",
                         "warning")
 
-            elif module in DOCKER_IMAGES:
+            elif module in PRIMARY_IMAGES or module in TRANSITIVE_IMAGES:
+                # Resolve the full image list for this module + record the
+                # transitive tags in the manifest so the apply side (which
+                # never reads config.yaml — it gets the package from a
+                # potentially-disconnected host) knows which `.env` values
+                # to stamp before `docker compose up`.
+                images_for_module = get_docker_images_for(module, version)
+                tv_env = get_transitive_versions_for(
+                    module, primary_version=version,
+                )
+                if tv_env:
+                    manifest["contents"].setdefault(
+                        "transitive_versions", {})[module] = tv_env
+                    log(f"  Transitive pins for {module}: " +
+                        ', '.join(f'{k}={v}' for k, v in tv_env.items()),
+                        "info")
+
                 # Pull and save Docker images
-                declared = len(DOCKER_IMAGES[module])
+                declared = len(images_for_module)
                 bundled_for_module = 0
-                for image_template, output_template in DOCKER_IMAGES[module]:
-                    image = image_template.format(version=version)
-                    output_name = output_template.format(version=version)
+                for image, output_name in images_for_module:
                     output_path = f"{package_dir}/images/{output_name}"
 
                     if _pull_and_save_image(image, output_path, log, run_id=run_id):
@@ -1284,6 +1764,19 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         os.replace(output_file_tmp, output_file)
         log("  Swapped new archive into place (atomic)", "success")
 
+        # Sidecar manifest — placed NEXT to the tarball, not inside it,
+        # so get_package_info() can return in O(1) without having to
+        # decompress the entire (multi-GB) tarball just to read the
+        # manifest. Tarball is still self-describing; this is purely
+        # a read-performance optimization.
+        try:
+            sidecar = output_file + '.manifest.json'
+            with open(sidecar, 'w') as out:
+                json.dump(manifest, out)
+            log(f"  Wrote sidecar manifest -> {os.path.basename(sidecar)}", "info")
+        except Exception as e:
+            log(f"  Sidecar manifest write failed: {e}", "warning")
+
         package_size = os.path.getsize(output_file)
         log(f"  Package created: {_format_size(package_size)}", "success")
 
@@ -1334,7 +1827,6 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     pass
 
             for module, version in modules.items():
-                if module in DOCKER_IMAGES:
-                    for image_template, _ in DOCKER_IMAGES[module]:
-                        image = image_template.format(version=version)
+                if module in PRIMARY_IMAGES or module in TRANSITIVE_IMAGES:
+                    for image, _ in get_docker_images_for(module, version):
                         run_command(f"docker rmi {image} 2>/dev/null || true", logger=None, timeout=60)

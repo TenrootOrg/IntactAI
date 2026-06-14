@@ -98,10 +98,19 @@ def _read_package_manifest(package_path):
     return {}
 
 
-def _modules_from_track(target: str, opted_in_optional: list) -> dict:
+def _modules_from_track(target: str, opted_in_optional: list):
     """Translate the new ``{target, opted_in_optional}`` request shape
     into the ``{module: version}`` dict the existing prepare/online
     dispatchers consume.
+
+    Returns a 2-tuple ``(modules_dict, warnings)`` — warnings is a list
+    of strings the caller should emit into the workflow log AFTER the
+    run is created, so the operator sees them in the Workflow UI.
+    Today the only warning is the "default credentials" notice, fired
+    when ``modules.<name>`` was created from upstream — the upstream
+    creds are KNOWN-PUBLIC release defaults (id: tenroot, password:
+    123123 in the shipped config.yaml) so the operator MUST change them
+    before the new module is exposed.
 
     Forced rows (modules already installed locally) are ALL included —
     operator can't opt out per principle 1 of the design. Optional rows
@@ -109,21 +118,309 @@ def _modules_from_track(target: str, opted_in_optional: list) -> dict:
     Noop rows (current == target) are dropped to keep the work list
     minimal.
 
+    Side effect — opt-in credential plumbing: when the operator ticks
+    an optional module that doesn't yet have a ``modules.<name>`` block
+    in their local config.yaml, we splice it in from the upstream
+    config.yaml BEFORE dispatching. The install function later reads
+    the credentials from the local file as normal.
+
     Raises :class:`ResolverError` (handled at the route layer) when the
     target is unreachable, rate-limited, or returns garbage.
     """
-    from services.upgrade.resolver import compute_plan
+    from services.upgrade.resolver import compute_plan, fetch_upstream_config
+    from services.upgrade.base import set_module_block_in_config
+
     plan = compute_plan(target, user_action='submit')
     modules: dict = {}
+    warnings: list = []
     for row in plan['forced']:
         if row['action'] == 'noop':
             continue
         modules[row['module']] = row['target']
+
     opted_in_set = set(opted_in_optional or [])
-    for row in plan['optional']:
-        if row['module'] in opted_in_set:
-            modules[row['module']] = row['target']
+    if opted_in_set:
+        # Cache hit ~all the time — compute_plan above already cached
+        # this fetch for 30 min. Safe to call again.
+        upstream_cfg = fetch_upstream_config(target, user_action='submit')
+        upstream_modules = (upstream_cfg.get('modules') or {})
+        for row in plan['optional']:
+            name = row['module']
+            if name not in opted_in_set:
+                continue
+            modules[name] = row['target']
+            # Splice in modules.<name> if local config.yaml is missing
+            # it. No-op if the block already exists (operator's wins).
+            block = upstream_modules.get(name)
+            if block:
+                wrote = set_module_block_in_config(name, block)
+                if wrote:
+                    # The upstream block IS the public release default
+                    # (whatever TenrootOrg ships in config.yaml). Tell
+                    # the operator loud and clear, with the actual
+                    # values quoted so they know what to change.
+                    cred_summary = ', '.join(
+                        f'{k}={v}' for k, v in block.items()
+                        if k in ('id', 'password', 'api_id', 'api_password')
+                    ) or '(no credential keys)'
+                    warnings.append(
+                        f"⚠ modules.{name}: created in config.yaml using the "
+                        f"RELEASE DEFAULTS ({cred_summary}). CHANGE these in "
+                        f"config.yaml before exposing the module to anyone "
+                        f"outside this host."
+                    )
+
+    return modules, warnings
+
+
+def _modules_for_prepare(target: str, selected_modules: list) -> dict:
+    """Translate the Prepare Package shape ``{target, selected_modules}``
+    into the ``{module: version}`` dict the prepare workflow consumes.
+
+    Pure function — does NOT read local machine state. The build-server's
+    installed modules are IRRELEVANT to what the operator wants to bundle
+    for an air-gap target. See plan: Prepare's semantics are "pick from
+    the upstream release's full module list", not "diff against local".
+
+    Cross-references the operator's selected_modules list against the
+    upstream release's actual versions block so a typo or stale module
+    name in the request doesn't silently slip through — only modules the
+    upstream release actually pins land in the result.
+
+    Backend safety net for the intact requirement: a tarball without
+    the intact platform itself is useless (every other module needs
+    the platform to drive it; air-gap targets need it to receive the
+    upgrade). intact is force-added even if the request omitted it
+    (UI disables the checkbox, but an external automation might POST
+    a list that excludes it).
+    """
+    from services.upgrade.resolver import list_upstream_modules
+    upstream = list_upstream_modules(target, user_action='submit-prepare')
+    upstream_map = {row['module']: row['target'] for row in upstream}
+    selected_set = set(selected_modules or [])
+    selected_set.add('intact')  # ← always bundled, no opt-out
+    modules: dict = {}
+    for name in selected_set:
+        v = upstream_map.get(name)
+        if v is not None:
+            modules[name] = v
     return modules
+
+
+@upgrade_bp.route('/api/upgrade/prepare-list', methods=['POST'])
+def list_prepare_modules():
+    """Operator-triggered (the Prepare modal's "Show Modules" button).
+
+    Body: ``{"target": "<ref>"}`` — the release the operator picked.
+    Returns the flat module list for that release, no local-state diff.
+
+    Used by the Prepare Package modal to render its checkbox table.
+    Online Upgrade uses ``/api/upgrade/plan`` instead (which DOES read
+    local state for the forced/optional split).
+    """
+    try:
+        data = request.json or {}
+        target = (data.get('target') or '').strip()
+        if not target:
+            return jsonify({"success": False, "error": "target required"}), 400
+
+        err = _quota_preflight_or_jsonify(1, "prepare-list (module enumeration)")
+        if err: return err
+
+        from services.upgrade.resolver import list_upstream_modules, ResolverError
+        try:
+            rows = list_upstream_modules(target, user_action='prepare-list')
+        except ResolverError as e:
+            return jsonify({"success": False, "error": str(e)}), 502
+        return jsonify({"success": True, "target": target, "modules": rows})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@upgrade_bp.route('/api/upgrade/peek-manifest', methods=['POST'])
+def peek_manifest_from_blob():
+    """Extract manifest.json from the FIRST few MB of a tarball blob.
+
+    The operator's browser slices the first ~5 MB of a local file
+    (FileReader API) and POSTs the raw bytes here. We decompress
+    streaming-style and look for the first ``manifest.json`` entry —
+    which lives in the first ~10 KB of any tarball built by the new
+    prepare flow (manifest.json is written first via tar --files-from
+    so it's at the very start). For older tarballs without that
+    ordering, this will fail gracefully and the JS falls back to the
+    post-upload review path.
+
+    Body: raw gzip+tar bytes (Content-Type: application/octet-stream).
+    Returns: {"success": True, "manifest": {...}} on hit,
+             {"success": False, "error": "..."} on miss.
+    """
+    try:
+        blob = request.get_data()
+        if not blob:
+            return jsonify({"success": False, "error": "empty body"}), 400
+        if len(blob) > 25 * 1024 * 1024:
+            # 25 MB ceiling — peek is supposed to be the FIRST chunk,
+            # not the whole file. Refuse anything larger.
+            return jsonify({"success": False, "error": "blob too large for peek"}), 400
+
+        import io as _io
+        import tarfile as _tarfile
+        # Streaming mode (mode='r|gz') reads entry-by-entry from the
+        # bytes object without seeking — perfect for a partial gzip
+        # stream that ends mid-entry beyond manifest.json.
+        try:
+            with _tarfile.open(fileobj=_io.BytesIO(blob), mode='r|gz') as tar:
+                for member in tar:
+                    if member.name.endswith('manifest.json') and member.isfile():
+                        f = tar.extractfile(member)
+                        if f is None:
+                            continue
+                        manifest = json.load(f)
+                        return jsonify({
+                            "success": True,
+                            "manifest": manifest,
+                            "versions": manifest.get('versions', {}),
+                            "contents": manifest.get('contents', {}),
+                            "created": manifest.get('created'),
+                        })
+        except (EOFError, _tarfile.ReadError):
+            # Stream ended before manifest.json was found. Caller
+            # should fall back to the post-upload review path.
+            pass
+        return jsonify({
+            "success": False,
+            "error": "manifest.json not found in the first chunk (likely an older tarball)",
+        }), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@upgrade_bp.route('/api/upgrade/list-packages', methods=['POST'])
+def list_pending_packages():
+    """Return the inventory of tarballs currently sitting on disk in the
+    two allowlisted package dirs (``/data/uploads/`` from operator
+    uploads + ``/data/upgrade_packages/`` from the prepare flow).
+
+    Used by the new Apply Uploaded Package card so the operator can see
+    what tarballs are available and pick one. POST (not GET) to match
+    the other upgrade endpoints' convention and signal "operator
+    action, not page chatter".
+    """
+    try:
+        import os as _os
+        out = []
+        for prefix in ALLOWED_PACKAGE_DIRS:
+            if not _os.path.isdir(prefix):
+                continue
+            try:
+                names = _os.listdir(prefix)
+            except OSError:
+                continue
+            for name in sorted(names):
+                # tarballs only — silently skip anything else (the
+                # upload + prepare flows can leave .info files and
+                # subdirectories around that aren't applicable).
+                if not (name.endswith('.tar.gz') or name.endswith('.tgz')):
+                    continue
+                full = _os.path.join(prefix, name)
+                try:
+                    st = _os.stat(full)
+                except OSError:
+                    continue
+                out.append({
+                    'path': full,
+                    'name': name,
+                    'size_bytes': st.st_size,
+                    'mtime': st.st_mtime,
+                    'source': 'uploads' if prefix == '/data/uploads/' else 'prepare',
+                })
+        # Newest first — operators usually want the latest tarball
+        out.sort(key=lambda r: r['mtime'], reverse=True)
+        return jsonify({"success": True, "packages": out})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _quota_preflight_or_jsonify(needed: int, action: str):
+    """Pre-flight GitHub quota check used by every github-touching route.
+
+    Returns either (None, None) on pass-through OR (jsonify_response,
+    status_code) when the quota is too low. Routes call:
+
+        err = _quota_preflight_or_jsonify(N, "refs fetch")
+        if err: return err
+
+    Fail-open: if the rate_limit endpoint itself is unreachable,
+    `check_quota_or_raise` logs a warning and returns silently — we
+    never block on the check failing.
+    """
+    from services.upgrade.resolver import check_quota_or_raise, ResolverQuotaError
+    try:
+        check_quota_or_raise(needed, action)
+        return None
+    except ResolverQuotaError as e:
+        return (jsonify({"success": False, "error": str(e)}), 429)
+
+
+def _quota_audit_lines(needed: int) -> list:
+    """Build the multi-line quota audit + setup-hint emission for the
+    workflow log. Returns a list of strings the caller pushes via
+    add_log_to_run (one per line) so each lands as its own row in the
+    Workflows tab.
+
+    Always emits:
+      1. The "needs N / have N/60 remaining" line.
+      2. A short setup-hint when NOT authed (no GITHUB_TOKEN set) OR
+         when needed > 0 AND quota is uncomfortably low (<= 2 × needed).
+         Operators with a token already in place don't see the hint —
+         they already know.
+
+    Mirrors the format that `check_quota_or_raise` prints to stdout so
+    the wording is consistent between `docker logs intact_backend` AND
+    the workflow log tab in the UI.
+    """
+    from services.upgrade.resolver import get_github_rate_limit
+    state = get_github_rate_limit()
+
+    if state is None:
+        return [
+            "[GH-QUOTA] rate-limit endpoint unreachable; "
+            "proceeding without pre-flight check",
+        ]
+
+    lines = []
+    remaining = state['remaining']
+    limit = state['limit'] or 60
+    reset_hm = state['reset_hm']
+    authed = state['authed']
+
+    # Line 1: state.
+    if needed == 0:
+        lines.append(
+            f"[GH-QUOTA] needs 0 GitHub calls (offline-only); "
+            f"current quota: {remaining}/{limit} remaining "
+            f"(resets {reset_hm}{' — authed' if authed else ''})"
+        )
+    else:
+        ratio_label = '' if authed else ' — anonymous IP, low cap'
+        lines.append(
+            f"[GH-QUOTA] needs {needed} GitHub calls; "
+            f"have {remaining}/{limit} remaining "
+            f"(resets {reset_hm}{ratio_label})"
+        )
+
+    # Line 2: setup hint. Only when no token — if they already have
+    # one, the 60→5000 jump has happened and the hint is noise.
+    if not authed:
+        lines.append(
+            "[GH-QUOTA-SETUP] To raise cap 60 → 5000/hr:  "
+            "echo 'GITHUB_TOKEN=ghp_YOUR_TOKEN' | sudo tee -a "
+            "/home/tenroot/intact/modules/backend/.env  &&  "
+            "docker restart intact_backend  "
+            "(token: github.com/settings/tokens → Generate new (classic), "
+            "no scopes needed)"
+        )
+    return lines
 
 
 @upgrade_bp.route('/api/upgrade/refs', methods=['POST'])
@@ -135,6 +432,8 @@ def list_upgrade_refs():
     (not page-load chatter). Returns cached results within the 30-minute
     TTL — so a double-click only spends one GitHub call.
     """
+    err = _quota_preflight_or_jsonify(1, "refs fetch")
+    if err: return err
     try:
         from services.upgrade.resolver import list_github_refs, ResolverError
         try:
@@ -168,6 +467,9 @@ def compute_upgrade_plan():
         target = (data.get('target') or '').strip()
         if not target:
             return jsonify({"success": False, "error": "target required"}), 400
+
+        err = _quota_preflight_or_jsonify(1, "plan compute")
+        if err: return err
 
         from services.upgrade.resolver import compute_plan, ResolverError
         try:
@@ -235,8 +537,14 @@ def start_offline_upgrade():
 
     Body: {
         "package_path": "/data/uploads/...",
-        "db_overwrite": {"timesketch": true, "iris": false}  // optional: fresh install per module
+        "db_overwrite": {"timesketch": true, "iris": false},  // optional: fresh install per module
+        "selected_modules": ["elk", "velociraptor"]  // optional: only apply these modules from the tarball
     }
+
+    ``selected_modules`` is the new Apply Uploaded Package shape — when
+    present, the workflow loop skips every module in the manifest that
+    isn't in this list. When omitted, the workflow applies everything
+    in the manifest (legacy behavior, preserves any external automation).
     """
     try:
         data = request.json
@@ -245,6 +553,7 @@ def start_offline_upgrade():
 
         package_path = data.get('package_path')
         db_overwrite = data.get('db_overwrite', {})  # Per-module fresh install flags
+        selected_modules = data.get('selected_modules')  # None = no filter (apply all)
 
         if not package_path:
             return jsonify({"error": "No package_path provided"}), 400
@@ -268,6 +577,8 @@ def start_offline_upgrade():
         )
         add_log_to_run(run_id, "Starting offline upgrade from package", "info")
         add_log_to_run(run_id, f"Package: {package_path}", "info")
+        for line in _quota_audit_lines(0):
+            add_log_to_run(run_id, line, "info")
         update_run_status(run_id, "running", progress=5)
 
         from services.workflow_service import register_cancel_event, unregister_cancel
@@ -293,8 +604,11 @@ def start_offline_upgrade():
                             progress = 5 + min(completed_modules[0] * 15, 90)
                             update_run_status(run_id, "running", progress=progress)
 
-                result = run_offline_upgrade_workflow(package_path, run_id=run_id, logger=logger,
-                                                      db_overwrite=db_overwrite)
+                result = run_offline_upgrade_workflow(
+                    package_path, run_id=run_id, logger=logger,
+                    db_overwrite=db_overwrite,
+                    selected_modules=selected_modules,
+                )
 
                 # Handle two-phase upgrade (backend restart pending)
                 if result.get('phase') == 'awaiting_restart':
@@ -340,13 +654,22 @@ def prepare_upgrade_package():
 
     1. NEW track-based shape::
 
+           {"target": "<ref>", "selected_modules": ["elk", "velociraptor", ...]}
+
+       The build-server's installed state is IRRELEVANT to what gets
+       bundled — the operator chose a release + a subset of that
+       release's modules. We pull versions straight from upstream.
+
+    2. LEGACY SHAPE A (online-style — diff against local state)::
+
            {"target": "<ref>", "opted_in_optional": ["prowler", ...]}
 
-       The backend resolves ``target`` → forced + opted-in modules via
-       :func:`_modules_from_track` and feeds the result into the rest
-       of the existing flow.
+       Backed by :func:`_modules_from_track`. Was the original Prepare
+       behavior but it leaked local state into the bundle decision —
+       wrong for air-gap. Kept for any external automation that still
+       posts this shape.
 
-    2. LEGACY explicit shape (still supported for the textbox UI)::
+    3. LEGACY SHAPE B (explicit dict)::
 
            {"modules": {"elk": "9.3.1", "velociraptor": "0.75.6", ...}}
     """
@@ -355,11 +678,29 @@ def prepare_upgrade_package():
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
+        # Pre-flight: prepare hits api.github.com a few times (intact
+        # branches API + maybe DetectRaptor /latest/ redirect). Refuse
+        # early if quota is too low instead of failing mid-run.
+        err = _quota_preflight_or_jsonify(2, "prepare package")
+        if err: return err
+
         target = (data.get('target') or '').strip()
-        if target:
+        track_warnings: list = []
+        selected_modules = data.get('selected_modules')
+        if target and selected_modules is not None:
+            # New shape: explicit module subset against the picked
+            # release's upstream versions. Pure — no local-state read.
             from services.upgrade.resolver import ResolverError
             try:
-                modules = _modules_from_track(
+                modules = _modules_for_prepare(target, selected_modules)
+            except ResolverError as e:
+                return jsonify({"error": str(e)}), 502
+        elif target:
+            # Legacy track-flow shape (local-state-aware). Backed by
+            # _modules_from_track which reads `current_versions`.
+            from services.upgrade.resolver import ResolverError
+            try:
+                modules, track_warnings = _modules_from_track(
                     target, data.get('opted_in_optional') or []
                 )
             except ResolverError as e:
@@ -389,6 +730,10 @@ def prepare_upgrade_package():
         )
         add_log_to_run(run_id, "Starting package preparation", "info")
         add_log_to_run(run_id, f"Modules: {', '.join(modules.keys())}", "info")
+        for line in _quota_audit_lines(2):
+            add_log_to_run(run_id, line, "info")
+        for w in track_warnings:
+            add_log_to_run(run_id, w, "warning")
         update_run_status(run_id, "running", progress=5)
 
         # Calculate total steps for progress tracking
@@ -514,11 +859,18 @@ def start_online_upgrade():
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
+        # Pre-flight: online upgrade prepares + applies in one run, so
+        # it hits all the same github endpoints as prepare. Same quota
+        # cost — refuse early instead of mid-run.
+        err = _quota_preflight_or_jsonify(2, "online upgrade")
+        if err: return err
+
         target = (data.get('target') or '').strip()
+        track_warnings: list = []
         if target:
             from services.upgrade.resolver import ResolverError
             try:
-                modules = _modules_from_track(
+                modules, track_warnings = _modules_from_track(
                     target, data.get('opted_in_optional') or []
                 )
             except ResolverError as e:
@@ -542,6 +894,10 @@ def start_online_upgrade():
         )
         add_log_to_run(run_id, "Starting online upgrade (prepare + apply in one run)", "info")
         add_log_to_run(run_id, f"Modules: {', '.join(modules.keys())}", "info")
+        for line in _quota_audit_lines(2):
+            add_log_to_run(run_id, line, "info")
+        for w in track_warnings:
+            add_log_to_run(run_id, w, "warning")
         update_run_status(run_id, "running", progress=2)
 
         # Progress estimation: split the visible 2-95% band between

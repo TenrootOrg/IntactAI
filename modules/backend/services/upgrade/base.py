@@ -5,6 +5,7 @@ Shared functions used across all module upgrade files.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -304,6 +305,125 @@ def compare_versions(v1: str, v2: str) -> int:
     return 0
 
 
+def set_module_block_in_config(module_name: str, block: dict, logger=None) -> bool:
+    """Insert a fresh ``modules.<module_name>`` block into config.yaml.
+
+    Closes the new-module gap: when a future release ships a module the
+    operator's local config.yaml doesn't yet know about (e.g. v3.0 adds
+    ``auditd``), the install function later goes to read
+    ``modules.auditd`` for credentials and finds nothing — falling back
+    to whatever hardcoded defaults the install function carries.
+
+    This helper writes the missing block into the operator's local file
+    so the install function reads from a real source AND the operator
+    can see/edit the module's settings in their file like every other
+    module.
+
+    Behavior:
+
+    * **Idempotent.** If ``modules.<name>`` already exists in local
+      config.yaml, do nothing — the operator's local version wins. We
+      never overwrite a hand-customised block.
+    * **Targeted insert.** Walks the file line-by-line, finds the end of
+      the ``modules:`` block (first top-level key after it, or EOF),
+      and inserts the new mapping at that boundary. Everything else
+      (comments, ordering, operator-local password edits, the
+      ``versions:`` block) stays byte-identical.
+
+    Returns ``True`` if a write happened, ``False`` if the block was
+    already present, the input block was empty, or the file is
+    missing/unwritable.
+    """
+    import re
+    log = logger or (lambda msg, level="info": None)
+    if not block:
+        return False
+    config_path = os.path.join(WORKDIR, 'config.yaml')
+    if not os.path.exists(config_path):
+        log(f"config.yaml not found at {config_path}; skipping module block insert", "warning")
+        return False
+    try:
+        with open(config_path) as f:
+            content = f.read()
+    except Exception as e:
+        log(f"Could not read config.yaml: {e}", "warning")
+        return False
+
+    # Already present at any indent? Skip — operator's version wins.
+    if re.search(rf'^[ \t]+{re.escape(module_name)}:[\s]*$', content, re.MULTILINE):
+        return False
+
+    # Find the modules: block boundaries by walking lines. The block
+    # starts at a line `modules:` (top-level, no leading whitespace) and
+    # ends at the next line that's also top-level (or EOF). Comments
+    # and blank lines INSIDE the block are part of it.
+    lines = content.split('\n')
+    modules_start = None
+    insert_idx = None  # we'll insert BEFORE this index
+    for i, line in enumerate(lines):
+        if modules_start is None:
+            if re.match(r'^modules:\s*$', line):
+                modules_start = i
+            continue
+        # Inside the modules block; look for the boundary.
+        stripped = line.strip()
+        if not stripped:
+            # blank lines belong to whichever block surrounds them; keep going
+            continue
+        if line.startswith(' ') or line.startswith('\t') or stripped.startswith('#'):
+            # still inside the block (indented child OR a comment)
+            continue
+        # Top-level non-blank line — modules: block has ended.
+        insert_idx = i
+        break
+    if modules_start is None:
+        log("config.yaml has no top-level 'modules:' block; cannot insert "
+            f"modules.{module_name}", "warning")
+        return False
+    if insert_idx is None:
+        # Block runs to EOF — append at the very end.
+        insert_idx = len(lines)
+
+    # Format the new block. 2-space indent matches what install.sh +
+    # config.yaml's existing entries use. String values quoted with
+    # single quotes to match the existing style; booleans rendered
+    # lowercase (true/false) to stay YAML-conventional.
+    indent = '  '
+    new_lines = [f'{indent}{module_name}:']
+    for k, v in block.items():
+        if isinstance(v, bool):
+            new_lines.append(f'{indent}{indent}{k}: {str(v).lower()}')
+        elif isinstance(v, (int, float)):
+            new_lines.append(f'{indent}{indent}{k}: {v}')
+        elif v is None:
+            new_lines.append(f'{indent}{indent}{k}: null')
+        else:
+            # string — quote with single quotes; escape any embedded
+            # single quotes by YAML doubling convention ('' inside '...')
+            s = str(v).replace("'", "''")
+            new_lines.append(f"{indent}{indent}{k}: '{s}'")
+
+    # Ensure separation between the new block and what follows. If we're
+    # inserting before a top-level key (not EOF), drop a blank line first
+    # so it doesn't visually merge with the next section.
+    insert_payload = new_lines[:]
+    if insert_idx < len(lines):
+        insert_payload.append('')  # blank line before the next top-level key
+
+    lines[insert_idx:insert_idx] = insert_payload
+    new_content = '\n'.join(lines)
+
+    try:
+        with open(config_path, 'w') as f:
+            f.write(new_content)
+        log(f"Inserted modules.{module_name} block into config.yaml "
+            f"({len(block)} keys)", "info")
+        return True
+    except Exception as e:
+        log(f"Could not write config.yaml: {e}", "warning")
+        return False
+
+
 def set_module_enabled_in_config(module_name: str, logger=None) -> bool:
     """Flip ``modules.<module_name>.enabled`` to ``true`` in config.yaml.
 
@@ -436,70 +556,6 @@ def set_module_version_in_config(module_key: str, new_version: str,
         return False
 
 
-def set_transitive_version_in_config(module: str, dep: str,
-                                       new_value: str,
-                                       logger=None) -> bool:
-    """Rewrite ``transitive_versions.<module>.<dep>`` in config.yaml.
-
-    Two-level nested cousin of :func:`set_module_version_in_config`.
-    Surgical regex replacement so comments + ordering survive. Used by
-    the auto-resolve path in prepare to land upstream's recommended
-    transitive tag (e.g. `opensearch: 2.19.5 → 2.20`) when the operator
-    bumped the primary pin and upstream's compose now demands more.
-
-    Returns True if a write happened, False on no-op / not-found /
-    parse failure. Never raises — drift handling must never block
-    a prepare.
-    """
-    log = logger or (lambda msg, level="info": None)
-    config_path = os.path.join(WORKDIR, 'config.yaml')
-    if not os.path.exists(config_path):
-        return False
-    try:
-        with open(config_path) as f:
-            content = f.read()
-    except Exception as e:
-        log(f"Could not read config.yaml: {e}", "warning")
-        return False
-
-    # Anchor on the top-level `transitive_versions:` block, snap to the
-    # given module's section, then match the dep line. The .*?\n* in the
-    # middle groups are non-greedy so we don't bleed past the module's
-    # subtree into a later module.
-    pattern = re.compile(
-        rf"(^transitive_versions:\s*\n(?:[ \t]+.*\n)*?"
-        rf"[ \t]+{re.escape(module)}:\s*\n(?:[ \t]+.*\n)*?)"
-        rf"([ \t]+{re.escape(dep)}:\s*(['\"]?))[^\n'\"#]+"
-        rf"((['\"]?)\s*(?:#.*)?$)",
-        re.MULTILINE,
-    )
-    match = pattern.search(content)
-    if not match:
-        return False
-
-    # No-op when already at target.
-    current_line = match.group(0).split('\n')[-1]
-    current_value_match = re.search(
-        rf"{re.escape(dep)}:\s*(['\"]?)([^'\"#\n]+)(['\"]?)",
-        current_line,
-    )
-    if current_value_match and current_value_match.group(2).strip() == new_value:
-        return False
-
-    new_line = match.group(2) + new_value + match.group(4)
-    new_content = (content[:match.start()] + match.group(1) + new_line
-                   + content[match.end():])
-    try:
-        with open(config_path, 'w') as f:
-            f.write(new_content)
-        log(f"Bumped transitive_versions.{module}.{dep} → {new_value} "
-            f"in config.yaml", "info")
-        return True
-    except Exception as e:
-        log(f"Could not write config.yaml: {e}", "warning")
-        return False
-
-
 def get_current_versions() -> Dict:
     """Get current versions for all modules.
 
@@ -525,12 +581,45 @@ def get_current_versions() -> Dict:
         'env_file': ts_env,
     }
 
-    # Plaso pin lives in the backend .env (no standalone container);
-    # always shows the configured value.
+    # Helper: is the on-demand module enabled in operator's local
+    # config.yaml? install.sh seeds PLASO_VERSION / PROWLER_VERSION /
+    # DFIR_O365RC_VERSION into backend's .env unconditionally (the
+    # backend code path needs the constants regardless), so a pinned
+    # version in .env does NOT mean the operator opted into the
+    # module. We must ALSO check the modules.<name>.enabled flag.
+    # Discovered when an operator did a backend+cve-only install and
+    # the Online Upgrade modal incorrectly listed plaso/prowler/o365rc
+    # as "installed → upgrade automatically" — they'd never agreed
+    # to deploy any of those.
+    def _ondemand_enabled(name: str) -> bool:
+        try:
+            import yaml as _yaml
+            with open(os.path.join(WORKDIR, 'config.yaml')) as f:
+                cfg = _yaml.safe_load(f) or {}
+            mods = cfg.get('modules') or {}
+            entry = mods.get(name) or {}
+            return bool(entry.get('enabled'))
+        except Exception:
+            # If config.yaml is unreadable / missing, fall back to
+            # "treat as enabled" — better to surface a phantom row in
+            # the upgrade plan than to silently hide a module that's
+            # actually being used.
+            return True
+
+    # Plaso pin lives in the backend .env (no standalone container).
+    # Plaso is a SEPARATE module from Timesketch (yes they run in the
+    # same automation, but plaso can be invoked standalone for other
+    # forensic work and timesketch can ingest pre-parsed events
+    # without plaso). It has its own `modules.plaso.enabled` flag.
+    # 'Not installed' when the .env pin is blank OR plaso is disabled
+    # (or absent) in the operator's modules block.
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
     backend_vars = read_env_file(backend_env)
+    plaso_version = backend_vars.get('PLASO_VERSION', '').strip()
+    if not _ondemand_enabled('plaso'):
+        plaso_version = ''
     versions['plaso'] = {
-        'current': backend_vars.get('PLASO_VERSION', 'unknown'),
+        'current': plaso_version if plaso_version else 'Not installed',
         'env_file': backend_env,
     }
 
@@ -555,18 +644,22 @@ def get_current_versions() -> Dict:
     }
 
     # On-demand modules (Prowler / DFIR-O365RC) have no long-running
-    # container — the install signal is the .env pin written by their
-    # upgrade functions. When the pin is missing the module has never
-    # been deployed, so report 'Not installed' (matching the dashboard
-    # vocabulary) instead of the bare 'unknown' fallback. This keeps the
-    # VERSION SUMMARY accurate for both "fresh install" runs and "upgrade
-    # from X to Y" runs.
+    # container — the install signal is the .env pin AND the
+    # modules.<name>.enabled flag in config.yaml. install.sh seeds the
+    # .env pin regardless of the operator's choice (backend code path
+    # needs the constants), so the enabled-flag gate is mandatory —
+    # otherwise a backend-only install incorrectly classifies these as
+    # "installed → upgrade automatically".
     prowler_version = backend_vars.get('PROWLER_VERSION', '').strip()
+    if not _ondemand_enabled('prowler'):
+        prowler_version = ''
     versions['prowler'] = {
         'current': prowler_version if prowler_version else 'Not installed',
         'env_file': backend_env,
     }
     o365rc_version = backend_vars.get('DFIR_O365RC_VERSION', '').strip()
+    if not _ondemand_enabled('o365rc'):
+        o365rc_version = ''
     versions['o365rc'] = {
         'current': o365rc_version if o365rc_version else 'Not installed',
         'env_file': backend_env,
@@ -865,9 +958,38 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
 
 
 def get_package_info(package_path: str) -> Dict:
-    """Get manifest info from an upgrade package without fully extracting."""
+    """Get manifest info from an upgrade package without fully extracting.
+
+    Fast path — sidecar manifest. The prepare flow writes
+    ``<package>.manifest.json`` next to the tarball at prepare time
+    specifically so this function can return in O(1) instead of having
+    to scan the entire gzipped tar to find ``manifest.json`` (which
+    lives near the END of the archive due to tar/gzip ordering — a
+    4.8 GB tarball took 54 s of decompression before this sidecar
+    existed).
+
+    Slow fallback path — if no sidecar exists (older packages or
+    operator-renamed tarballs), crack the tar open and scan members.
+    """
     if not os.path.exists(package_path):
         return {"success": False, "error": "Package not found"}
+
+    sidecar = package_path + '.manifest.json'
+    if os.path.isfile(sidecar):
+        try:
+            with open(sidecar, 'r') as f:
+                manifest = json.load(f)
+            return {
+                "success": True,
+                "manifest": manifest,
+                "versions": manifest.get('versions', {}),
+                "created": manifest.get('created'),
+                "contents": manifest.get('contents', {})
+            }
+        except Exception as e:
+            # Sidecar exists but is unreadable. Fall through to the
+            # slow path; the tarball is the source of truth anyway.
+            print(f"[PACKAGE-INFO] sidecar unreadable ({e}); falling back to tar scan", flush=True)
 
     try:
         with tarfile.open(package_path, 'r:gz') as tar:
@@ -876,6 +998,14 @@ def get_package_info(package_path: str) -> Dict:
                     f = tar.extractfile(member)
                     if f:
                         manifest = json.load(f)
+                        # Opportunistically write the sidecar now so
+                        # subsequent calls are fast even for legacy
+                        # tarballs the prepare flow didn't stamp.
+                        try:
+                            with open(sidecar, 'w') as out:
+                                json.dump(manifest, out)
+                        except Exception:
+                            pass
                         return {
                             "success": True,
                             "manifest": manifest,
@@ -1004,6 +1134,99 @@ def load_all_bundled_images(package_dir: str, logger: Callable = None,
                 f"try to pull): {loaded.get('error')}",
                 "warning",
             )
+
+
+def stamp_transitive_env_from_manifest(
+    module_id: str,
+    package_dir: str,
+    logger: Callable = None,
+) -> Dict[str, str]:
+    """Read the bundled manifest's `contents.transitive_versions.<module_id>`
+    block and write each `VAR=tag` pair into modules/<module_id>/.env
+    BEFORE `docker compose up` runs.
+
+    This is the apply-side counterpart to the prepare-side's transitive
+    bundling. Without this, the compose `${VAR:-default}` references
+    would resolve to the static default the compose file shipped with —
+    NOT the tag whose image was actually bundled into the package.
+    Result: compose tries to pull an unavailable image and the stack
+    fails to come up on air-gapped targets.
+
+    Backwards-compatible: pre-refactor packages have no
+    `transitive_versions` block in their manifest, so this is a no-op for
+    those (the apply continues with whatever the operator's existing
+    .env already has).
+
+    Returns: dict of {ENV_VAR: tag} actually written (empty when no
+    block in manifest, or when the .env couldn't be located).
+    """
+    log = logger or (lambda msg, level="info": None)
+    manifest_path = os.path.join(package_dir, 'manifest.json')
+    if not os.path.isfile(manifest_path):
+        return {}
+    try:
+        with open(manifest_path, 'r') as f:
+            manifest = json.load(f)
+    except Exception as e:
+        log(f"  transitive .env stamp: manifest read failed: {e}",
+            "warning")
+        return {}
+
+    tv_root = ((manifest.get('contents') or {})
+                .get('transitive_versions') or {})
+    pins = tv_root.get(module_id) or {}
+    if not pins:
+        return {}
+
+    env_path = os.path.join(WORKDIR, 'modules', module_id, '.env')
+    if not os.path.isfile(env_path):
+        # No .env to stamp — the module either doesn't use one, or it
+        # hasn't been initialized yet. Skip silently; the compose
+        # default still wins. Future installs that create the .env
+        # will get re-stamped on the next apply.
+        return {}
+
+    try:
+        with open(env_path, 'r') as f:
+            lines = f.read().splitlines()
+    except Exception as e:
+        log(f"  transitive .env stamp: read failed for {env_path}: {e}",
+            "warning")
+        return {}
+
+    written = {}
+    keys_remaining = dict(pins)  # var → tag
+    out_lines = []
+    for raw in lines:
+        line = raw.rstrip('\r')
+        # Match `VAR=...` or commented-out `# VAR=...`; rewrite the
+        # value while preserving everything else (comments above,
+        # blank lines, ordering). The replace_all flag at the bottom
+        # handles the "key not yet in file" case.
+        m = re.match(r'^\s*(?:#\s*)?([A-Z][A-Z0-9_]*)\s*=', line)
+        if m and m.group(1) in keys_remaining:
+            var = m.group(1)
+            tag = keys_remaining.pop(var)
+            out_lines.append(f"{var}={tag}")
+            written[var] = tag
+        else:
+            out_lines.append(line)
+    # Append any vars not already present.
+    for var, tag in keys_remaining.items():
+        out_lines.append(f"{var}={tag}")
+        written[var] = tag
+
+    try:
+        with open(env_path, 'w') as f:
+            f.write('\n'.join(out_lines) + '\n')
+    except Exception as e:
+        log(f"  transitive .env stamp: write failed for {env_path}: {e}",
+            "warning")
+        return {}
+
+    log(f"  Stamped transitive pins into {module_id}/.env: " +
+        ", ".join(f"{k}={v}" for k, v in written.items()), "info")
+    return written
 
 
 def install_module_compose_up(

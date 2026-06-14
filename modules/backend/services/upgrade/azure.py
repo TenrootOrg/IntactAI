@@ -41,7 +41,7 @@ def upgrade_azure(version: str, logger: Callable = None) -> Dict:
 
     try:
         log(f"Pulling DFIR-O365RC {version}...", "info")
-        result = run_command(f"docker pull anssi/dfir-o365rc:{version}", logger=log, timeout=900)
+        result = run_command(f"docker pull anssi/dfir-o365rc:{version}", logger=log, timeout=1800)
         if not result['success']:
             raise Exception(f"Failed to pull DFIR-O365RC image: {result['error']}")
 

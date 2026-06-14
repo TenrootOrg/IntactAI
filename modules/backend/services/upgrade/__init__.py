@@ -662,6 +662,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
 def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                                   run_id: str = None, logger: Callable = None,
                                   db_overwrite: Dict = None,
+                                  selected_modules: Optional[list] = None,
                                   *,
                                   prebuilt_package_dir: Optional[str] = None,
                                   prebuilt_manifest: Optional[Dict] = None,
@@ -822,9 +823,27 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         if has_backend or has_frontend:
             modules_dict['intact'] = 'from_package'
 
+    # Apply Uploaded Package can pass an operator-chosen subset. When
+    # set, modules in the manifest NOT in this set are skipped and the
+    # final summary shows them under "skipped: N". When None, every
+    # module in the manifest is applied (legacy behavior — keeps
+    # external automation working).
+    selected_set = set(selected_modules) if selected_modules else None
+    if selected_set is not None:
+        log(f"Operator-selected subset: {sorted(selected_set)}", "info")
+
+    # Count `total` against modules the operator ACTUALLY intends to
+    # apply. Without this, a 1-module apply with intact deselected
+    # reports "1/2 modules" because the manifest's intact entry was
+    # counted in the denominator even though we'll skip it. The
+    # denominator should reflect the operator's intent, not the
+    # tarball's contents.
     for module in upgrade_order:
-        if module in modules_dict:
-            total += 1
+        if module not in modules_dict:
+            continue
+        if selected_set is not None and module not in selected_set:
+            continue
+        total += 1
 
     # Save initial state if we have a run_id (include package_path for cleanup after Phase 2)
     extract_dir = verify_result.get('extract_dir')
@@ -835,6 +854,15 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     try:
         for module_name in upgrade_order:
             version = versions.get(module_name)
+
+            # Operator subset filter — silently skip anything the
+            # operator unchecked at apply time. Recorded as skipped so
+            # the summary still mentions them.
+            if selected_set is not None and module_name not in selected_set:
+                if version or module_name == 'intact':
+                    results[module_name] = {"success": True, "skipped": True,
+                                             "reason": "deselected by operator"}
+                continue
 
             # For intact, check if source exists — try new layout first.
             if module_name == 'intact':
@@ -890,6 +918,27 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                     break
             except Exception:
                 pass
+
+            # Stamp transitive container pins (postgres / opensearch /
+            # redis / nginx / rabbitmq versions) from the bundled
+            # manifest into modules/<module>/.env BEFORE compose up. The
+            # prepare side wrote them; without this stamp the compose's
+            # `${VAR:-default}` resolves to the shipped default rather
+            # than the tag actually bundled, and air-gapped installs
+            # fail to start the stack. No-op for pre-refactor packages
+            # (manifest has no transitive_versions block) and for
+            # modules without transitive deps. Apply-side only — no
+            # network access.
+            if module_name != 'intact':
+                try:
+                    from .base import stamp_transitive_env_from_manifest
+                    stamp_transitive_env_from_manifest(
+                        module_name, package_dir, logger=log,
+                    )
+                except Exception as _e:
+                    log(f"  transitive .env stamp raised "
+                        f"({type(_e).__name__}: {_e}); proceeding with "
+                        f"existing .env values", "warning")
 
             try:
                 if module_name == 'intact':
@@ -1056,12 +1105,69 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
             for module_name, result in results.items():
                 if module_name.startswith("_"):
                     continue
+                # Skipped takes precedence over the success/fail icon —
+                # an operator-deselected module is neither a win nor a
+                # loss, and showing [OK] for it implies it was actually
+                # applied (which it wasn't).
+                if result.get('skipped'):
+                    reason = result.get('reason') or 'skipped'
+                    log(f"  [SKIPPED] {module_name}: {reason}", "info")
+                    continue
                 icon = "OK" if result.get('success') else "FAILED"
                 log(f"  [{icon}] {module_name}: {'success' if result.get('success') else 'failed'}", "info")
                 if result.get('rolled_back'):
                     log(f"       -> Rolled back to {result.get('restored_version')}", "warning")
 
             log(f"{'='*50}", "info")
+
+            # ─── version table: before → after ────────────────────────
+            # The opening "VERSION SUMMARY" earlier in this run logged
+            # current → target. This one logs the OBSERVED after-state
+            # (re-reads .env so we see what the upgrade functions
+            # actually wrote, not what was planned) next to the BEFORE
+            # state we captured at the top of the run. Same module list,
+            # same order, so the operator can scan the two tables side
+            # by side. Shows ✗ when a planned upgrade didn't change the
+            # observed version — a silent partial failure that the
+            # success summary above would hide.
+            try:
+                after_versions = get_current_versions()
+            except Exception as _e:
+                after_versions = {}
+
+            log("", "info")
+            log("FINAL VERSION TABLE:", "info")
+            log("-" * 64, "info")
+            # Iterate over a stable, predictable order that matches the
+            # VERSION SUMMARY at run start.
+            row_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris',
+                         'velociraptor', 'prowler', 'o365rc', 'volweb']
+            for mod in row_order:
+                before = current_versions.get(mod, {}).get('current', '?') if isinstance(current_versions, dict) else '?'
+                after = after_versions.get(mod, {}).get('current', '?') if isinstance(after_versions, dict) else '?'
+                before_s = str(before)
+                after_s = str(after)
+                # Format per the operator-readable style:
+                #   <module>: <before> -> <after>   (<status>)
+                # When unchanged, collapse to a single version + the
+                # word "unchanged" instead of repeating the version on
+                # both sides — easier to scan.
+                if before_s == after_s:
+                    status = 'unchanged'
+                    version_part = before_s
+                    log(f"  {mod}: {version_part}   ({status})", "info")
+                else:
+                    if before_s in ('Not installed', 'unknown'):
+                        status = 'installed'
+                    elif after_s in ('Not installed', 'unknown'):
+                        # Module went from installed → not — shouldn't
+                        # happen in an upgrade. Loud signal that
+                        # something is wrong.
+                        status = 'REMOVED'
+                    else:
+                        status = 'upgraded'
+                    log(f"  {mod}: {before_s} -> {after_s}   ({status})", "info")
+            log("-" * 64, "info")
 
     all_success = all(r.get('success', False) for r in results.values() if not isinstance(r, str))
     return {

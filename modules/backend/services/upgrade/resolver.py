@@ -28,7 +28,7 @@ import os
 import re
 import time
 import yaml
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import requests
 
@@ -88,6 +88,148 @@ def _gh_call_log(path: str, action: str):
 
 
 # ─── Public API ───────────────────────────────────────────────────────────
+
+def get_github_rate_limit() -> Optional[Dict]:
+    """Fetch current GitHub REST API quota state.
+
+    The ``api.github.com/rate_limit`` endpoint is explicitly excluded
+    from the rate-limit counter itself (per GitHub's docs:
+    "Accessing this endpoint does not count against your REST API
+    rate limit"), so we can poll it as often as needed without
+    burning quota.
+
+    Returns ``None`` on any failure (network, JSON parse, missing key)
+    so callers can fail-open — checking the rate limit must never
+    block a workflow just because the operator's network can't reach
+    github's status endpoint (could be an offline mirror).
+    """
+    import time as _time
+    headers = {'Accept': 'application/vnd.github.v3+json'}
+    token = os.environ.get('GITHUB_TOKEN')
+    if token:
+        headers['Authorization'] = f'token {token}'
+    try:
+        resp = requests.get(
+            'https://api.github.com/rate_limit',
+            headers=headers, timeout=10,
+        )
+    except requests.RequestException:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        core = resp.json().get('resources', {}).get('core', {})
+    except Exception:
+        return None
+    remaining = core.get('remaining')
+    limit = core.get('limit')
+    used = core.get('used')
+    reset = core.get('reset')
+    if remaining is None or reset is None:
+        return None
+    reset_in = max(0, int(reset) - int(_time.time()))
+    # Format reset time as local HH:MM for the operator-facing message.
+    try:
+        reset_hm = _time.strftime('%H:%M', _time.localtime(int(reset)))
+    except Exception:
+        reset_hm = 'unknown'
+    return {
+        'remaining': int(remaining),
+        'limit': int(limit) if limit is not None else None,
+        'used': int(used) if used is not None else None,
+        'reset_epoch': int(reset),
+        'reset_in_seconds': reset_in,
+        'reset_hm': reset_hm,
+        'authed': bool(token),
+    }
+
+
+class ResolverQuotaError(Exception):
+    """GitHub rate limit too low to start the requested workflow.
+
+    Separate from :class:`ResolverError` so route handlers can map it
+    to HTTP 429 (Too Many Requests) instead of the generic 502.
+    """
+    pass
+
+
+def check_quota_or_raise(needed: int, action_name: str,
+                          log: Optional[Callable] = None) -> None:
+    """Pre-flight: refuse to start an action if quota is insufficient.
+
+    Fail-open semantics — if `get_github_rate_limit()` returns None
+    (endpoint unreachable, network blip), we PROCEED without
+    blocking. The advisory check is to give the operator a clear
+    "you'll hit the limit, wait N minutes" message BEFORE the
+    workflow runs, not to be a hard gate that misbehaves when the
+    operator's network is weird.
+
+    Args:
+        needed: upper-bound rate-limit-counted calls this action makes.
+        action_name: human-readable label for the error / log message.
+        log: optional logger function for the success-case info line.
+
+    Raises:
+        ResolverQuotaError when quota < needed.
+    """
+    # Always print to backend stdout (visible in docker logs) so the
+    # [GH-QUOTA] audit trail is grep-able regardless of whether the
+    # caller passed a logger. If a workflow logger is supplied, also
+    # forward into the workflow log so the operator sees it in the
+    # Workflows tab.
+    def _emit(msg: str, level: str = 'info') -> None:
+        print(msg, flush=True)
+        if log is not None:
+            try:
+                log(msg, level)
+            except Exception:
+                pass
+
+    state = get_github_rate_limit()
+    if state is None:
+        _emit(f"[GH-QUOTA] {action_name}: rate-limit endpoint unreachable; "
+              "proceeding without pre-flight check", "warning")
+        return
+    remaining = state['remaining']
+    limit = state['limit'] or 60
+    reset_hm = state['reset_hm']
+    reset_min = max(0, state['reset_in_seconds'] // 60)
+    if remaining < needed:
+        _emit(f"[GH-QUOTA] {action_name}: REFUSED — needs {needed}, have {remaining}/{limit} "
+              f"(resets {reset_hm}, in {reset_min}m)", "error")
+        # Multi-line actionable instructions in the error message so
+        # the UI's "showMessage(d.error)" surfaces a path the operator
+        # can actually follow, not just "set GITHUB_TOKEN" with no
+        # context. Two options shown — wait OR raise the cap — with
+        # exact commands for the raise-the-cap path.
+        if state['authed']:
+            fix_block = (
+                " (Token IS authed against /5000 cap; "
+                "you're rate-limited by an unusually high call volume — "
+                "wait until reset.)"
+            )
+        else:
+            fix_block = (
+                "\n\nTo raise the cap from 60 → 5000/hr:\n"
+                "  1) Get a token: github.com/settings/tokens "
+                "→ Generate new token (classic). Leave all scopes UNCHECKED "
+                "(public-repo reads only, smaller blast radius if it leaks).\n"
+                "  2) On the IntactAI host:\n"
+                "       echo 'GITHUB_TOKEN=ghp_YOUR_TOKEN' | sudo tee -a "
+                "/home/tenroot/intact/modules/backend/.env\n"
+                "       docker restart intact_backend\n"
+                "  3) Confirm — open this modal again; the [GH-QUOTA] log "
+                "should now show have N/5000 instead of N/60.\n"
+                "Otherwise, wait until reset."
+            )
+        raise ResolverQuotaError(
+            f"GitHub rate limit too low for {action_name}: "
+            f"need {needed}, have {remaining}. "
+            f"Quota resets at {reset_hm} (in {reset_min} minutes).{fix_block}"
+        )
+    _emit(f"[GH-QUOTA] {action_name}: needs {needed} calls, "
+          f"have {remaining}/{limit} remaining (resets {reset_hm})", "info")
+
 
 def list_github_refs(user_action: str = 'fetch') -> List[Dict]:
     """Return the dropdown list for the Fetch button.
@@ -262,6 +404,63 @@ def resolve_upgrade_chain(current_ref: Optional[str],
     step_tags = tags[tgt_idx:cur_idx]
     step_tags.reverse()
     return step_tags
+
+
+def list_upstream_modules(target_ref: str,
+                          user_action: str = 'prepare-list') -> List[Dict]:
+    """Return the flat module list for a given target ref.
+
+    Used by Prepare Package — the build-server's local state is
+    irrelevant when bundling for an unknown air-gap target, so this
+    helper returns every module in the upstream ``versions:`` block
+    without any noop/forced/optional classification.
+
+    The intact module isn't in upstream's versions block as a
+    docker-image-style pin (the upstream key is ``backend`` and the
+    real "version" of intact is the picked ref itself), so we surface
+    it separately with the ref as its target.
+
+    Returns::
+
+        [
+            {'module': 'intact',      'target': 'intact-20260612'},
+            {'module': 'elk',         'target': '9.3.3'},
+            {'module': 'timesketch',  'target': '20260611'},
+            ...
+        ]
+
+    Reuses :func:`fetch_upstream_config` (30-min cache), so this is a
+    no-cost call on repeat clicks within the cache window.
+    """
+    upstream_cfg = fetch_upstream_config(target_ref, user_action=user_action)
+    upstream_versions = upstream_cfg.get('versions') or {}
+
+    # Same key map as compute_plan(). intact's "version" is the ref.
+    KEY_MAP = [
+        ('intact',       'backend'),
+        ('elk',          'elk'),
+        ('timesketch',   'timesketch'),
+        ('plaso',        'plaso'),
+        ('iris',         'iris'),
+        ('velociraptor', 'velociraptor'),
+        ('prowler',      'prowler'),
+        ('o365rc',       'o365rc'),
+        ('volweb',       'volweb'),
+    ]
+
+    out: List[Dict] = []
+    for module_id, cfg_key in KEY_MAP:
+        if module_id == 'intact':
+            out.append({'module': 'intact', 'target': target_ref})
+            continue
+        v = upstream_versions.get(cfg_key)
+        if v is None:
+            # Module not in upstream — skip silently. Future-proof: a
+            # release that drops a module shouldn't show it as
+            # bundleable.
+            continue
+        out.append({'module': module_id, 'target': str(v)})
+    return out
 
 
 def compute_plan(target_ref: str,

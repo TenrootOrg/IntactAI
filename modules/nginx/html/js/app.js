@@ -793,6 +793,182 @@ document.addEventListener('alpine:init', () => {
         // 'online'  → POST /api/upgrade/online (combined prepare + apply)
         prepareModalMode: 'prepare',
 
+        // ─── Apply Uploaded Package state ────────────────────────────
+        // Lists pending tarballs from /api/upgrade/list-packages.
+        // Clicking one opens a review modal that lets the operator
+        // pick which modules from the manifest to actually apply.
+        uploadedPackages: [],
+        loadingPackages: false,
+        showApplyPackageModal: false,
+        applyPackage: null,         // {path, name, size_bytes, mtime, source}
+        applyManifest: null,        // result of /api/upgrade/package-info
+        applySelectedModules: [],   // ticked module IDs (operator unchecks to skip)
+        applyDbOverwrite: {},       // per-module fresh-install flags
+        loadingApplyInfo: false,
+        applying: false,
+
+        async loadUploadedPackages() {
+            this.loadingPackages = true;
+            try {
+                const r = await fetch('/api/upgrade/list-packages', {method: 'POST'});
+                const d = await r.json();
+                if (d && d.success) {
+                    this.uploadedPackages = d.packages || [];
+                } else {
+                    this.showMessage('List packages failed: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('List packages request failed: ' + e.message, 'error');
+            }
+            this.loadingPackages = false;
+        },
+
+        async openApplyPackageModal(pkg) {
+            this.applyPackage = pkg;
+            this.applyManifest = null;
+            this.applySelectedModules = [];
+            this.applyDbOverwrite = {};
+            this.showApplyPackageModal = true;
+            this.loadingApplyInfo = true;
+            try {
+                const r = await fetch('/api/upgrade/package-info', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({package_path: pkg.path}),
+                });
+                const d = await r.json();
+                if (d && (d.success || d.manifest)) {
+                    this.applyManifest = d.manifest || d;
+                    const versions = (this.applyManifest && this.applyManifest.versions) || d.versions || {};
+                    // Default: every packaged module ticked. Operator
+                    // unchecks ones they don't want applied.
+                    this.applySelectedModules = Object.keys(versions);
+                } else {
+                    this.showMessage('Manifest read failed: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Manifest request failed: ' + e.message, 'error');
+            }
+            this.loadingApplyInfo = false;
+        },
+
+        closeApplyPackageModal() {
+            this.showApplyPackageModal = false;
+            this.applyPackage = null;
+            this.applyManifest = null;
+        },
+
+        toggleApplyModule(moduleId) {
+            const idx = this.applySelectedModules.indexOf(moduleId);
+            if (idx >= 0) {
+                this.applySelectedModules.splice(idx, 1);
+            } else {
+                this.applySelectedModules.push(moduleId);
+            }
+        },
+
+        async applyUploadedPackage() {
+            if (!this.applyPackage) return;
+            if (!this.applySelectedModules.length) {
+                this.showMessage('Tick at least one module to apply', 'error');
+                return;
+            }
+            this.applying = true;
+
+            // Two code paths share this function:
+            //  1. peek-flow — applyPackage.path is null because the
+            //     local file hasn't been uploaded yet. Upload now via
+            //     tus, then call /api/upgrade/offline with the
+            //     resulting /data/uploads/<id> path.
+            //  2. legacy-flow — applyPackage.path is already set
+            //     (post-upload review). Skip straight to apply.
+            let packagePath = this.applyPackage.path;
+            if (!packagePath && this.applyPackage._localFile) {
+                // Capture EVERYTHING from the Alpine state BEFORE
+                // closing the modal — close() nulls applyPackage and
+                // applyManifest, so any subsequent read on them throws
+                // and the upload silently never starts. That's why the
+                // operator saw "Apply" close the modal but no workflow
+                // appeared.
+                const file = this.applyPackage._localFile;
+                const selected = this.applySelectedModules.slice();
+                const db_overwrite = Object.assign({}, this.applyDbOverwrite);
+                console.log('[Import] Starting tus upload for', file.name,
+                            '(', file.size, 'bytes), modules:', selected);
+                this.showMessage('Uploading package… (you can watch the upload run in Workflows)', 'info');
+                this.closeApplyPackageModal();
+                Alpine.store('app').switchTab('workflows');
+                this.applying = false;
+                const upload = new tus.Upload(file, {
+                    endpoint: '/api/uploads/',
+                    retryDelays: [0, 1000, 3000, 5000],
+                    chunkSize: 5 * 1024 * 1024,
+                    metadata: {
+                        filename: file.name,
+                        filetype: file.type || 'application/gzip',
+                        purpose: 'upgrade_package',
+                    },
+                    onError: (error) => {
+                        console.error('Upload error:', error);
+                        this.showMessage('Upload failed: ' + error.message, 'error');
+                    },
+                    onSuccess: async () => {
+                        const parts = (upload.url || '').split('/').filter(Boolean);
+                        const uploadId = parts.length ? parts[parts.length - 1] : null;
+                        if (!uploadId) {
+                            this.showMessage('Upload succeeded but no ID returned', 'error');
+                            return;
+                        }
+                        try {
+                            const r = await fetch('/api/upgrade/offline', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({
+                                    package_path: '/data/uploads/' + uploadId,
+                                    selected_modules: selected,
+                                    db_overwrite: db_overwrite,
+                                }),
+                            });
+                            const d = await r.json();
+                            if (r.ok && d.success) {
+                                this.showMessage('Apply started — see Workflows for progress', 'success');
+                            } else {
+                                this.showMessage('Apply failed: ' + (d.error || 'unknown'), 'error');
+                            }
+                        } catch (e) {
+                            this.showMessage('Apply request failed: ' + e.message, 'error');
+                        }
+                    },
+                });
+                upload.start();
+                return;
+            }
+
+            // Legacy-flow: tarball already on disk, just apply.
+            try {
+                const r = await fetch('/api/upgrade/offline', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        package_path: packagePath,
+                        selected_modules: this.applySelectedModules,
+                        db_overwrite: this.applyDbOverwrite,
+                    }),
+                });
+                const d = await r.json();
+                if (r.ok && d.success) {
+                    this.closeApplyPackageModal();
+                    this.showMessage('Apply started — check Workflows for progress', 'success');
+                    setTimeout(() => { Alpine.store('app').switchTab('workflows'); }, 500);
+                } else {
+                    this.showMessage('Apply failed: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Apply request failed: ' + e.message, 'error');
+            }
+            this.applying = false;
+        },
+
         async openPreparePackageModal() {
             this.prepareModalMode = 'prepare';
             await this._openModuleModal();
@@ -808,10 +984,13 @@ document.addEventListener('alpine:init', () => {
         // per-module work list. See services/upgrade/resolver.py.
         upgradeRefs: [],            // populated by fetchUpgradeRefs()
         selectedRef: '',            // the ref the operator picked in the dropdown
-        upgradePlan: null,          // populated by computeUpgradePlan()
-        optedInOptional: [],        // module IDs the operator ticked in the optional table
+        upgradePlan: null,          // ONLINE mode: forced/optional table from /api/upgrade/plan
+        optedInOptional: [],        // ONLINE mode: module IDs the operator ticked in the optional table
+        prepareModules: null,       // PREPARE mode: flat list from /api/upgrade/prepare-list
+        prepareSelected: [],        // PREPARE mode: ticked modules (operator unticks to exclude)
         fetchingRefs: false,
         computingPlan: false,
+        showingPrepareModules: false,
 
         async fetchUpgradeRefs() {
             // Operator-triggered (the Fetch button). Backend caches for
@@ -872,25 +1051,76 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        // ─── PREPARE-mode helpers ────────────────────────────────────
+        // Prepare semantics: bundle a subset of UPSTREAM modules at the
+        // picked release's pinned versions. Build-server's installed
+        // state is irrelevant (we're targeting an air-gap machine we
+        // don't know yet).
+        async showPrepareModules() {
+            if (!this.selectedRef) {
+                this.showMessage('Pick a release first', 'error');
+                return;
+            }
+            this.showingPrepareModules = true;
+            this.prepareModules = null;
+            this.prepareSelected = [];
+            try {
+                const r = await fetch('/api/upgrade/prepare-list', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({target: this.selectedRef}),
+                });
+                const d = await r.json();
+                if (d && d.success) {
+                    this.prepareModules = d.modules || [];
+                    // Default: every module ticked. Operator unchecks to
+                    // exclude from the tarball.
+                    this.prepareSelected = this.prepareModules.map(r => r.module);
+                } else {
+                    this.showMessage('Module list failed: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Module list request failed: ' + e.message, 'error');
+            }
+            this.showingPrepareModules = false;
+        },
+
+        togglePrepareModule(moduleId) {
+            // intact is the platform — a package without it has no
+            // runtime to apply other modules. Guard against any code
+            // path that tries to untick it.
+            if (moduleId === 'intact') return;
+            const idx = this.prepareSelected.indexOf(moduleId);
+            if (idx >= 0) {
+                this.prepareSelected.splice(idx, 1);
+            } else {
+                this.prepareSelected.push(moduleId);
+            }
+        },
+
         async startTrackUpgrade() {
-            if (!this.upgradePlan) {
+            const isOnline = this.prepareModalMode === 'online';
+            if (isOnline && !this.upgradePlan) {
                 this.showMessage('Compute a plan first', 'error');
                 return;
             }
-            const isOnline = this.prepareModalMode === 'online';
+            if (!isOnline && (!this.prepareModules || !this.prepareSelected.length)) {
+                this.showMessage('Show modules + tick at least one to bundle', 'error');
+                return;
+            }
             const endpoint = isOnline ? '/api/upgrade/online' : '/api/upgrade/prepare';
             const successMsg = isOnline
                 ? 'Online upgrade started — check Workflows for progress'
                 : 'Package preparation started — check Workflows for progress';
+            const body = isOnline
+                ? {target: this.selectedRef, opted_in_optional: this.optedInOptional}
+                : {target: this.selectedRef, selected_modules: this.prepareSelected};
             this.prepareLoading = true;
             try {
                 const r = await fetch(endpoint, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        target: this.selectedRef,
-                        opted_in_optional: this.optedInOptional,
-                    }),
+                    body: JSON.stringify(body),
                 });
                 const d = await r.json();
                 if (r.ok && d.success) {
@@ -919,6 +1149,8 @@ document.addEventListener('alpine:init', () => {
             this.selectedRef = '';
             this.upgradePlan = null;
             this.optedInOptional = [];
+            this.prepareModules = null;
+            this.prepareSelected = [];
         },
 
         closePreparePackageModal() {
@@ -944,34 +1176,80 @@ document.addEventListener('alpine:init', () => {
         },
 
         // ===== OFFLINE UPGRADE =====
-        importUpgradePackage(event) {
+        async importUpgradePackage(event) {
             const files = event.target.files;
             if (!files || files.length === 0) return;
-
             const file = files[0];
+            event.target.value = '';
 
-            // Validate file extension
             if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.tgz')) {
                 this.showMessage('Please select a .tar.gz or .tgz file', 'error');
-                event.target.value = ''; // Reset input
                 return;
             }
 
-            // Check if any fresh install is enabled
-            const dbOverwrite = this.getDbOverwrite();
-            const freshInstallModules = Object.entries(dbOverwrite).filter(([k, v]) => v).map(([k]) => k);
-            if (freshInstallModules.length > 0) {
-                if (!confirm(`Fresh install selected for: ${freshInstallModules.join(', ').toUpperCase()}\n\nThis will remove existing data to allow new database schema. Continue?`)) {
-                    event.target.value = ''; // Reset input
-                    return;
-                }
+            // ─── PEEK PHASE ─────────────────────────────────────────────
+            // Read just the first 5 MB of the local file, POST it to
+            // /api/upgrade/peek-manifest, get the manifest back, open
+            // the review modal. The full 5 GB upload only happens after
+            // the operator clicks Apply. If the operator cancels, no
+            // upload bytes get sent at all.
+            //
+            // Why 5 MB: manifest.json lives in the first ~10 KB of any
+            // tarball built by the new prepare flow (tar --files-from
+            // ordering). 5 MB is a generous margin that covers
+            // alignment, headers, and any pre-manifest entries. Costs
+            // ~0.5 s on a typical link.
+            this.showMessage('Reading manifest from local file…', 'info');
+            const slice = file.slice(0, 5 * 1024 * 1024);
+            let peek = null;
+            try {
+                const resp = await fetch('/api/upgrade/peek-manifest', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/octet-stream'},
+                    body: slice,
+                });
+                peek = await resp.json();
+            } catch (e) {
+                console.error('peek-manifest request failed:', e);
+                this.showMessage('Manifest peek failed: ' + e.message, 'error');
+                return;
+            }
+            if (!peek || !peek.success) {
+                // Older tarballs (manifest at end) land here. Operator
+                // can still upload + review post-upload, but warn them
+                // the upload will run with no preview.
+                if (!confirm(
+                    'Could not preview the manifest from the first 5 MB of this tarball ' +
+                    '(likely a package built before the new ordering). Upload the FULL file ' +
+                    'now and review afterwards?'
+                )) return;
+                return this._legacyUploadThenReview(file);
             }
 
-            // Show message and redirect to workflows immediately
-            this.showMessage(`Uploading ${file.name}...`, 'info');
-            Alpine.store('app').switchTab('workflows');
+            // Open the review modal with the peeked manifest. The
+            // package_path stays NULL until the actual upload finishes
+            // (Apply button is what triggers the upload).
+            this.applyPackage = {
+                _localFile: file,                          // kept for the upload step
+                name: file.name,
+                size_bytes: file.size,
+                source: 'local-pending',
+                path: null,                                // filled in after upload
+            };
+            this.applyManifest = peek.manifest || peek;
+            this.applySelectedModules = Object.keys(
+                (this.applyManifest && this.applyManifest.versions) || {}
+            );
+            this.applyDbOverwrite = {};
+            this.showApplyPackageModal = true;
+            this.loadingApplyInfo = false;
+        },
 
-            // Start upload in background - backend will create workflow and auto-start upgrade
+        // Legacy fallback for tarballs where the peek can't find
+        // manifest.json in the first 5 MB. Uploads first, opens the
+        // modal on tus success (matches the previous behavior).
+        _legacyUploadThenReview(file) {
+            this.showMessage(`Uploading ${file.name}...`, 'info');
             const upload = new tus.Upload(file, {
                 endpoint: '/api/uploads/',
                 retryDelays: [0, 1000, 3000, 5000],
@@ -980,20 +1258,27 @@ document.addEventListener('alpine:init', () => {
                     filename: file.name,
                     filetype: file.type || 'application/gzip',
                     purpose: 'upgrade_package',
-                    db_overwrite: JSON.stringify(dbOverwrite)
                 },
                 onError: (error) => {
                     console.error('Upload error:', error);
                     this.showMessage('Upload failed: ' + error.message, 'error');
                 },
                 onSuccess: () => {
-                    // Backend handles everything - just refresh workflows
-                    Alpine.store('workflows').load();
-                }
+                    const parts = (upload.url || '').split('/').filter(Boolean);
+                    const uploadId = parts.length ? parts[parts.length - 1] : null;
+                    if (!uploadId) {
+                        this.showMessage('Upload succeeded but no ID returned', 'error');
+                        return;
+                    }
+                    this.openApplyPackageModal({
+                        path: '/data/uploads/' + uploadId,
+                        name: file.name,
+                        size_bytes: file.size,
+                        source: 'uploads',
+                    });
+                },
             });
-
             upload.start();
-            event.target.value = ''; // Reset input for next upload
         },
 
         async onProviderChange() {

@@ -28,6 +28,14 @@ modules:
     enabled: false
   o365rc:
     enabled: false
+  # Plaso — log2timeline timeline parser. On-demand image: pulled by the
+  # backend when timesketch or a standalone forensic job invokes it.
+  # No long-running container, so this flag is the ONLY signal of
+  # whether the operator wants plaso available on this host (the
+  # PLASO_VERSION pin in modules/backend/.env is shipped as a constant
+  # and doesn't reflect operator intent).
+  plaso:
+    enabled: true
   # CVE Scan — NVD-backed vulnerability matcher. No persistent container
   # (the scan engine runs in-process inside the backend), so this entry
   # only gates whether the sidebar item + routes are exposed. Disable to
@@ -98,38 +106,3 @@ versions:
   # via ${VAR:-default} syntax, NOT pinned here.
   volweb: '3.16.0'
   backend: '1.0.0'
-
-# Transitive container pins — the infrastructure images each PRIMARY
-# module depends on (postgres, opensearch, redis, rabbitmq, nginx).
-# Today these are still ALSO hardcoded in modules/backend/services/
-# upgrade/package.py:DOCKER_IMAGES + each module's docker-compose.yaml
-# default. This block exists so:
-#   1) The operator can see at a glance what infrastructure we ship
-#      for each primary module
-#   2) `services/upgrade/transitive_resolver.py` can probe upstream's
-#      own compose at the pinned tag and surface drift, e.g.:
-#
-#         python3 -m services.upgrade.transitive_resolver timesketch
-#         opensearch=2.19.5
-#         postgres=13.0-alpine          ← upstream prefers 13.0-alpine
-#         redis=7.2.11-alpine           ← upstream prefers 7.2.11-alpine
-#         nginx=1.25.5-alpine-slim      ← upstream prefers 1.25.5-alpine-slim
-#
-#      Compare to the values below to see whether we're aligned.
-# Values below mirror what the current package.py + compose defaults
-# actually ship (initial state; will become the canonical source of
-# truth when the Phase B refactor lands).
-transitive_versions:
-  timesketch:
-    opensearch: '2.19.5'
-    postgres: '15'
-    redis: '7-alpine'
-    nginx: 'alpine'
-  iris:
-    rabbitmq: '3-management-alpine'
-  volweb:
-    postgres: '15'
-    redis: '7'
-  # velociraptor, elk, plaso, prowler, o365rc — no transitive
-  # infrastructure deps (their primary image IS the product, no
-  # postgres/redis/etc. backing it).

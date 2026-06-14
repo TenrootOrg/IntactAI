@@ -166,6 +166,37 @@ def _restore_bundled_artifact_sources(package_dir: str,
         except Exception as e:
             log(f"  custom_artifacts restore raised: {e}", "warning")
 
+    # Legacy Velociraptor binaries (v0.7.x). Prepare staged them at
+    # <package>/binaries/legacy/. Drop them into
+    # {WORKDIR}/modules/nginx/html/downloads/ so the Downloads page's
+    # "Download Legacy EXE / Linux" buttons light up. Without this the
+    # buttons stay greyed-out on any host that added velociraptor via
+    # Online Upgrade (the initial install.sh seed only runs when
+    # velociraptor is enabled at install time).
+    legacy_src = os.path.join(package_dir, 'binaries', 'legacy')
+    if os.path.isdir(legacy_src):
+        legacy_dst = os.path.join(WORKDIR, 'modules', 'nginx', 'html', 'downloads')
+        try:
+            os.makedirs(legacy_dst, exist_ok=True)
+            restored = 0
+            for fname in os.listdir(legacy_src):
+                src_p = os.path.join(legacy_src, fname)
+                if not (os.path.isfile(src_p) and os.path.getsize(src_p) > 1024 * 1024):
+                    continue
+                dst_p = os.path.join(legacy_dst, fname)
+                try:
+                    shutil.copy2(src_p, dst_p)
+                    if not fname.endswith('.exe'):
+                        os.chmod(dst_p, 0o755)
+                    restored += 1
+                except Exception as e:
+                    log(f"  Legacy binary copy failed for {fname}: {e}", "warning")
+            if restored:
+                log(f"  Restored {restored} legacy Velociraptor binar(y/ies) "
+                    f"-> {legacy_dst}/", "info")
+        except Exception as e:
+            log(f"  Legacy binary restore raised: {e}", "warning")
+
 
 def _import_bundled_registry_snapshot(package_dir: str,
                                        logger: Callable = None) -> int:
@@ -350,8 +381,7 @@ def _stage_binaries_for_build(
     misses become zero-byte placeholders + warnings.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    parts = clean_version.split('.')
-    release_tag = f"v{parts[0]}.{parts[1]}" if len(parts) >= 2 else f"v{clean_version}"
+    release_tag = resolve_velociraptor_release_tag(clean_version, logger=log)
     base_url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}"
 
     staged: list = []
@@ -375,8 +405,9 @@ def _stage_binaries_for_build(
             url = f"{base_url}/{upstream_fname}"
             log(f"  [stage] download {upstream_fname}", "info")
             res = run_command(
-                f"curl -fL --retry 5 --retry-delay 5 --retry-max-time 120 -o {dest} {url}",
-                logger=log, timeout=300,
+                f"curl -fL --retry 5 --retry-delay 5 "
+                f"--retry-max-time 600 --connect-timeout 30 -o {dest} {url}",
+                logger=log, timeout=1800,
             )
             ok = res['success'] and os.path.exists(dest) and os.path.getsize(dest) > 0
             if not ok and os.path.exists(dest):
@@ -416,16 +447,61 @@ def _stage_binaries_for_build(
     }
 
 
+def resolve_velociraptor_release_tag(clean_version: str, logger: Callable = None) -> str:
+    """Return the github release tag that actually hosts this version's assets.
+
+    Velocidex's release naming has shifted over time:
+
+    * Older releases (<= 0.7.x and 0.74/0.75/0.76 line) shipped multiple
+      patch builds under a single rolling tag like ``v0.76`` —
+      ``velociraptor-v0.76.5-linux-amd64`` lived at
+      ``releases/download/v0.76/...``.
+    * Starting roughly v0.76.6, Velocidex publishes each patch as its
+      OWN release, e.g. tag ``v0.76.6`` holds the v0.76.6 assets — the
+      old rolling ``v0.76`` release stays frozen at an earlier patch.
+
+    The old code hard-coded ``f"v{major}.{minor}"`` and silently 404'd
+    on every new patch release. We now HEAD-probe the full-version tag
+    first; only if that 404s do we fall back to the rolling tag.
+
+    Why HEAD not API: cheaper than the GitHub releases endpoint, no
+    rate-limit cost, no token needed. One HEAD per upgrade is
+    negligible.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    parts = clean_version.split('.')
+    full_tag = f"v{clean_version}"                              # v0.76.6
+    minor_tag = f"v{parts[0]}.{parts[1]}" if len(parts) >= 2 else full_tag  # v0.76
+
+    binary = f"velociraptor-v{clean_version}-linux-amd64"
+    for candidate in (full_tag, minor_tag):
+        url = f"https://github.com/Velocidex/velociraptor/releases/download/{candidate}/{binary}"
+        try:
+            import requests
+            r = requests.head(url, allow_redirects=False, timeout=10)
+            if r.status_code in (200, 302):
+                log(f"  Release tag resolved: {candidate} (probed {r.status_code})", "info")
+                return candidate
+        except Exception:
+            continue
+    # Last-resort default. The caller's actual download will surface
+    # the 404 with a clear log line.
+    log(f"  Release tag probe failed for both {full_tag} and {minor_tag}; "
+        f"defaulting to {minor_tag} — the download will fail loudly.", "warning")
+    return minor_tag
+
+
 def get_velociraptor_download_url(version: str, logger: Callable = None) -> Tuple[Optional[str], Optional[str]]:
     """Build Velociraptor binary download URL from version string.
 
-    No GitHub API calls - constructs URL directly from version.
+    Velociraptor URL pattern (resolved at call time):
+    https://github.com/Velocidex/velociraptor/releases/download/<resolved-tag>/velociraptor-v{version}-linux-amd64
 
-    Velociraptor URL pattern:
-    https://github.com/Velocidex/velociraptor/releases/download/v{major}.{minor}/velociraptor-v{version}-linux-amd64
+    The resolved-tag is :func:`resolve_velociraptor_release_tag` — tries
+    ``v{full_version}`` first, falls back to ``v{major.minor}``.
 
     Args:
-        version: Version string like "0.75.6" or "v0.75.6" (full version required)
+        version: Version string like "0.76.6" or "v0.76.6" (full version required)
 
     Returns:
         Tuple of (download_url, clean_version) or (None, None) if invalid
@@ -442,15 +518,11 @@ def get_velociraptor_download_url(version: str, logger: Callable = None) -> Tupl
         log(f"  Check https://github.com/Velocidex/velociraptor/releases for available versions", "info")
         return None, None
 
-    # Build release tag (major.minor)
-    release_tag = f"v{parts[0]}.{parts[1]}"
-
-    # Build download URL
+    release_tag = resolve_velociraptor_release_tag(clean_version, logger=log)
     binary_name = f"velociraptor-v{clean_version}-linux-amd64"
     download_url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}/{binary_name}"
 
     log(f"  Version: {clean_version}", "info")
-    log(f"  Release tag: {release_tag}", "info")
     log(f"  Binary: {binary_name}", "info")
 
     return download_url, clean_version
