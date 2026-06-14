@@ -25,11 +25,6 @@ name: Transitive pin drift check
 # The driver does the work — see scripts/check_transitive_drift.py.
 
 on:
-  schedule:
-    # 06:00 UTC daily. Picked early-morning so the PR is waiting when
-    # the team starts the day. Adjust to your team's timezone if
-    # noisy.
-    - cron: "0 6 * * *"
   workflow_dispatch:
     # Hand-fire button on the Actions tab — handy after a manual
     # config.yaml edit, when you want to confirm no drift remains.
@@ -45,12 +40,12 @@ on:
     # versions.timesketch → workflow fires within ~10 s and opens a
     # PR if the bump pulled in transitive drift.
     #
-    # Combined with the cron above, we get coverage from BOTH sides:
-    #   - cron catches the case where upstream bumped but our pins
-    #     didn't (no recent config.yaml commit)
-    #   - push catches the case where we bumped but upstream's
-    #     transitive deps moved with it (the OpenSearch 2.11 → 2.19.5
-    #     class of bug)
+    # Note: only push-driven. There's no daily cron — the resolver
+    # only matters when WE change a primary pin (the bump might pull
+    # transitive deps with it). Upstream-side drift without a local
+    # change is rare enough that the operator can run
+    # `python3 scripts/check_transitive_drift.py --dry-run` or fire
+    # workflow_dispatch manually when curious.
     branches:
       - development
       - main
