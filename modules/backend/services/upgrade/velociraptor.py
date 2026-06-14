@@ -355,6 +355,195 @@ def _velociraptor_binary_set(clean_version: str) -> Dict[str, str]:
 _REQUIRED_BINARY = os.path.join('clients', 'linux', 'velociraptor')
 
 
+# Filenames the operator-facing Downloads page expects in
+# modules/nginx/html/downloads/. The dashboard's /api/clients/legacy/status
+# probes each path; if a file is missing for the configured modern_version
+# the corresponding button greys out. install.sh fetches these at first
+# install via lib/docker.sh:download_offline_collector_binaries, but the
+# upgrade flow didn't refresh them when the pin moves — so a 0.76.5 →
+# 0.76.6 bump left the musl binary stale and the "Download Linux (musl)"
+# button greyed out (operator hit 2026-06-14). _refresh_offline_collector_downloads
+# below closes that gap from both upgrade entry points.
+_OFFLINE_COLLECTOR_FILENAMES = (
+    "velociraptor-v{v}-windows-amd64.exe",
+    "velociraptor-v{v}-windows-amd64.msi",
+    "velociraptor-v{v}-linux-amd64",
+    "velociraptor-v{v}-linux-amd64-musl",
+    "velociraptor-v{v}-darwin-amd64",
+)
+
+
+def _refresh_offline_collector_downloads(clean_version: str,
+                                          source: str,
+                                          package_binaries_dir: Optional[str] = None,
+                                          logger: Optional[Callable] = None) -> Dict:
+    """Ensure the operator-visible downloads dir matches the new pin.
+
+    Mirrors what lib/docker.sh:download_offline_collector_binaries does at
+    install time, but driven from the upgrade flow so a pin bump (e.g.
+    0.76.5 → 0.76.6) refreshes the per-platform binaries that back the
+    Downloads page + offline-collector generation. Includes the
+    linux-amd64-musl variant, which is what /api/clients/legacy/status's
+    `modern_musl` slot checks (and what the Linux (musl) button serves).
+
+    Steps:
+      1. Stale-pin cleanup — remove any velociraptor-v*-{platform}{ext}
+         files in the downloads dir whose version segment isn't the new
+         pin. Same pattern as the install-time loop.
+      2. For each of the 5 platforms, place the new file:
+           source == "github"  → download from upstream
+           source == "package" → copy from <package>/binaries/
+      3. Best-effort: a missing platform binary on upstream (e.g.
+         v0.75.6 has no darwin-amd64) is logged as a warning, not an
+         error. Required-ness is decided by the build path
+         (_stage_binaries_for_build), not here.
+
+    Args:
+        clean_version: target version string (no leading 'v', e.g. '0.76.6').
+        source: 'github' or 'package'.
+        package_binaries_dir: required when source == 'package'; the
+            dir containing the upstream-named files (same layout as
+            prepare's <package>/binaries/).
+        logger: standard (msg, level) callable.
+
+    Returns:
+        {"success": bool, "refreshed": [<fname>...], "missing": [<fname>...]}
+        success is True iff at least one file was placed (operator can
+        still serve some platforms even if upstream is missing one).
+    """
+    log = logger or (lambda msg, level="info": None)
+    downloads_dir = os.path.join(WORKDIR, 'modules', 'nginx', 'html', 'downloads')
+    os.makedirs(downloads_dir, exist_ok=True)
+
+    log(f"Refreshing offline-collector downloads for v{clean_version}...", "info")
+
+    # Step 1 — purge stale-pin binaries so the dir doesn't accumulate
+    # cruft across upgrades. We only touch files matching the
+    # velociraptor-v*-{platform} pattern AND only when the version
+    # segment isn't either the new modern pin OR the configured legacy
+    # pin (versions.velociraptor_legacy in config.yaml). The legacy
+    # binaries back the Windows/Linux Legacy buttons and are managed
+    # separately by lib/docker.sh:download_legacy_velociraptor_binaries
+    # + _restore_bundled_artifact_sources — clobbering them here would
+    # grey those buttons out (regression I caught during the 2026-06-14
+    # smoke test). Anything else (operator artefacts, non-velociraptor
+    # files) is left alone by the prefix filter.
+    legacy_version: Optional[str] = None
+    try:
+        import yaml
+        cfg_path = os.path.join(WORKDIR, 'config.yaml')
+        if os.path.exists(cfg_path):
+            with open(cfg_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            legacy_version = (cfg.get('versions') or {}).get('velociraptor_legacy')
+            if legacy_version is not None:
+                legacy_version = str(legacy_version)
+    except Exception as e:
+        log(f"  Could not read legacy pin from config.yaml ({e}); "
+            f"keeping all non-target version files to be safe", "warning")
+
+    keep_tokens = [f"-v{clean_version}-"]
+    if legacy_version:
+        keep_tokens.append(f"-v{legacy_version}-")
+
+    stale = 0
+    platform_suffixes = (
+        '-windows-amd64.exe', '-windows-amd64.msi',
+        '-linux-amd64', '-linux-amd64-musl', '-darwin-amd64',
+    )
+    for fname in os.listdir(downloads_dir):
+        if not fname.startswith('velociraptor-v'):
+            continue
+        if not any(fname.endswith(suf) for suf in platform_suffixes):
+            continue
+        if any(tok in fname for tok in keep_tokens):
+            continue
+        try:
+            os.remove(os.path.join(downloads_dir, fname))
+            log(f"  Removed stale binary: {fname}", "info")
+            stale += 1
+        except Exception as e:
+            log(f"  Could not remove stale {fname}: {e}", "warning")
+    if stale:
+        log(f"  Stale binaries removed: {stale} "
+            f"(kept pins: modern=v{clean_version}"
+            f"{', legacy=v' + legacy_version if legacy_version else ''})",
+            "info")
+
+    # Step 2 — place each platform binary.
+    release_tag = (
+        resolve_velociraptor_release_tag(clean_version, logger=log)
+        if source == "github" else None
+    )
+    base_url = (
+        f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}"
+        if release_tag else None
+    )
+
+    refreshed: list = []
+    missing: list = []
+    for tmpl in _OFFLINE_COLLECTOR_FILENAMES:
+        fname = tmpl.format(v=clean_version)
+        dest = os.path.join(downloads_dir, fname)
+
+        if os.path.exists(dest) and os.path.getsize(dest) > 1024 * 1024:
+            log(f"  Already present: {fname}", "info")
+            refreshed.append(fname)
+            continue
+
+        ok = False
+        if source == "package":
+            assert package_binaries_dir, (
+                "package_binaries_dir required when source='package'")
+            src = os.path.join(package_binaries_dir, fname)
+            if os.path.exists(src) and os.path.getsize(src) > 1024 * 1024:
+                try:
+                    shutil.copy2(src, dest)
+                    ok = True
+                except Exception as e:
+                    log(f"  Copy failed for {fname}: {e}", "warning")
+            else:
+                log(f"  Not in package: {fname}", "warning")
+        else:  # github
+            url = f"{base_url}/{fname}"
+            log(f"  Downloading: {fname}", "info")
+            res = run_command(
+                f"curl -fL --retry 3 --retry-delay 5 "
+                f"--retry-max-time 900 --connect-timeout 30 -o {dest} {url}",
+                logger=log, timeout=1200,
+            )
+            ok = (
+                res.get('success')
+                and os.path.exists(dest)
+                and os.path.getsize(dest) > 1024 * 1024
+            )
+            if not ok and os.path.exists(dest):
+                # curl -f exits non-zero on 4xx but may have written partial
+                # bytes (404 HTML page, etc.). Drop the bad file so the
+                # API doesn't report it as available.
+                os.remove(dest)
+
+        if ok:
+            if not fname.endswith('.msi'):
+                try:
+                    os.chmod(dest, 0o755)
+                except Exception:
+                    pass
+            log(f"  Placed: {fname} "
+                f"({os.path.getsize(dest) // (1024*1024)} MB)", "success")
+            refreshed.append(fname)
+        else:
+            log(f"  Missing: {fname} (button will grey out on Downloads page)",
+                "warning")
+            missing.append(fname)
+
+    return {
+        "success": bool(refreshed),
+        "refreshed": refreshed,
+        "missing": missing,
+    }
+
+
 def _stage_binaries_for_build(
     module_dir: str,
     clean_version: str,
@@ -733,6 +922,19 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
         # fail an already-healthy upgrade.
         _reimport_artifacts_post_upgrade(velo_data, logger=log)
 
+        # Refresh the operator-visible downloads dir so the Dashboard's
+        # Velociraptor download buttons (Windows / Linux / Linux musl /
+        # Mac) reflect the new pin. Without this, /api/clients/legacy/status
+        # still resolves to the OLD musl filename and greys the "Linux
+        # (musl)" button after the upgrade. Best-effort — a network blip
+        # here must not roll back an already-healthy upgrade.
+        try:
+            _refresh_offline_collector_downloads(
+                clean_version=actual_version, source="github", logger=log,
+            )
+        except Exception as e:
+            log(f"Offline-collector downloads refresh raised: {e}", "warning")
+
         remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
         return {"success": True, "version": actual_version, "health": "green" if healthy else "pending"}
 
@@ -1043,6 +1245,19 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         # (False) so it still benefits from live upstream additions.
         _reimport_artifacts_post_upgrade(velo_data, logger=log,
                                           skip_exchange_imports=True)
+
+        # Refresh the operator-visible downloads dir from the package's
+        # bundled binaries — same gap as the online path, just sourcing
+        # the files locally instead of from GitHub. Best-effort: a missing
+        # platform binary (older packages prepared before musl was bundled)
+        # greys that one button but doesn't fail the upgrade.
+        try:
+            _refresh_offline_collector_downloads(
+                clean_version=actual_version, source="package",
+                package_binaries_dir=binaries_dir, logger=log,
+            )
+        except Exception as e:
+            log(f"Offline-collector downloads refresh raised: {e}", "warning")
 
         remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
         return {"success": True, "version": actual_version, "health": "green" if healthy else "pending"}

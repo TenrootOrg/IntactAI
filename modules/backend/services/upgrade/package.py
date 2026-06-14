@@ -1181,6 +1181,58 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     log(f"  Note: placeholder(s) used for {len(missing_optional)} client binary(ies): {', '.join(missing_optional)}",
                         "warning")
 
+                # linux-amd64-musl: NOT consumed by the Dockerfile (so it
+                # has no staging_map entry), but the apply-side velociraptor
+                # offline upgrade copies it into modules/nginx/html/downloads/
+                # so the Dashboard's "Download Linux (musl)" button stays
+                # lit on the new pin. Best-effort: an older patch with no
+                # musl asset upstream just means that button greys out on
+                # target — doesn't fail prepare.
+                musl_fname = f"velociraptor-v{clean_version}-linux-amd64-musl"
+                musl_pkg_path = f"{package_dir}/binaries/{musl_fname}"
+                musl_local = os.path.join(local_downloads, musl_fname)
+                musl_ok = False
+                if os.path.exists(musl_local) and os.path.getsize(musl_local) > 0:
+                    log(f"  Using local: {musl_fname} "
+                        f"({_format_size(os.path.getsize(musl_local))})", "info")
+                    cp = run_command(
+                        f"cp {musl_local} {musl_pkg_path}",
+                        logger=None, run_id=run_id,
+                    )
+                    if cp.get("cancelled"):
+                        return {"success": False, "error": "cancelled", "cancelled": True}
+                    musl_ok = (
+                        cp['success']
+                        and os.path.exists(musl_pkg_path)
+                        and os.path.getsize(musl_pkg_path) > 0
+                    )
+                else:
+                    musl_url = f"{base_url}/{musl_fname}"
+                    log(f"  Downloading: {musl_fname}", "info")
+                    dl = run_command(
+                        f"curl -L -f --retry 5 --retry-delay 5 "
+                        f"--retry-max-time 600 --connect-timeout 30 "
+                        f"-o {musl_pkg_path} {musl_url}",
+                        timeout=1800, logger=None, run_id=run_id,
+                    )
+                    if dl.get("cancelled"):
+                        return {"success": False, "error": "cancelled", "cancelled": True}
+                    musl_ok = (
+                        dl['success']
+                        and os.path.exists(musl_pkg_path)
+                        and os.path.getsize(musl_pkg_path) > 0
+                    )
+                if musl_ok:
+                    os.chmod(musl_pkg_path, 0o755)
+                    log(f"  Done ({_format_size(os.path.getsize(musl_pkg_path))})",
+                        "success")
+                    manifest["contents"]["binaries"].append(musl_fname)
+                else:
+                    if os.path.exists(musl_pkg_path):
+                        os.remove(musl_pkg_path)
+                    log(f"  {musl_fname} unavailable — Linux (musl) download "
+                        f"button will grey out on target after apply", "warning")
+
                 manifest["versions"]["velociraptor"] = clean_version
 
                 # Build the image with the now-staged binaries. The
