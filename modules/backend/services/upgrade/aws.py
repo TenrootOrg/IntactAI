@@ -39,7 +39,7 @@ def upgrade_aws(version: str, logger: Callable = None) -> Dict:
 
     try:
         log(f"Pulling Prowler {version}...", "info")
-        result = run_command(f"docker pull toniblyx/prowler:{version}", logger=log, timeout=900)
+        result = run_command(f"docker pull toniblyx/prowler:{version}", logger=log, timeout=1800)
         if not result['success']:
             raise Exception(f"Failed to pull Prowler image: {result['error']}")
 

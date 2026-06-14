@@ -31,7 +31,7 @@ def upgrade_plaso(version: str, logger: Callable = None) -> Dict:
     try:
         # Pull new Plaso image
         log(f"Pulling Plaso {version}...", "info")
-        result = run_command(f"docker pull log2timeline/plaso:{version}", logger=log, timeout=600)
+        result = run_command(f"docker pull log2timeline/plaso:{version}", logger=log, timeout=1800)
         if not result['success']:
             raise Exception(f"Failed to pull Plaso image: {result['error']}")
 

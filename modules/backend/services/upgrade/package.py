@@ -282,7 +282,7 @@ def _pull_and_save_image(image: str, output_path: str, logger: Callable,
 
     # Pull the image with output shown
     log(f"  Pulling {image}...", "info")
-    result = run_command(f"docker pull {image}", timeout=1200, logger=log, run_id=run_id)
+    result = run_command(f"docker pull {image}", timeout=1800, logger=log, run_id=run_id)
     if result.get("cancelled"):
         return False
     if not result['success']:
@@ -761,9 +761,10 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         url = f"{base_url}/{fname}"
                         log(f"  Downloading: {fname}", "info")
                         dl = run_command(
-                            f"curl -L -f --retry 5 --retry-delay 5 --retry-max-time 120 "
+                            f"curl -L -f --retry 5 --retry-delay 5 "
+                            f"--retry-max-time 600 --connect-timeout 30 "
                             f"-o {pkg_path} {url}",
-                            timeout=300, logger=None, run_id=run_id,
+                            timeout=1800, logger=None, run_id=run_id,
                         )
                         if dl.get("cancelled"):
                             return {"success": False, "error": "cancelled", "cancelled": True}
@@ -1102,9 +1103,10 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     dst = os.path.join(external_dir, fname)
                     try:
                         cp = run_command(
-                            f"curl -fL --retry 3 --retry-delay 5 --max-time 180 "
+                            f"curl -fL --retry 3 --retry-delay 5 "
+                            f"--max-time 600 --connect-timeout 30 "
                             f"-o {dst} {url}",
-                            logger=None, timeout=200, run_id=run_id,
+                            logger=None, timeout=900, run_id=run_id,
                         )
                         if not (cp.get('success') and os.path.isfile(dst)):
                             log(f"  ✗ {label}: curl failed "

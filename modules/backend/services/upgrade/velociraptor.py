@@ -374,8 +374,9 @@ def _stage_binaries_for_build(
             url = f"{base_url}/{upstream_fname}"
             log(f"  [stage] download {upstream_fname}", "info")
             res = run_command(
-                f"curl -fL --retry 5 --retry-delay 5 --retry-max-time 120 -o {dest} {url}",
-                logger=log, timeout=300,
+                f"curl -fL --retry 5 --retry-delay 5 "
+                f"--retry-max-time 600 --connect-timeout 30 -o {dest} {url}",
+                logger=log, timeout=1800,
             )
             ok = res['success'] and os.path.exists(dest) and os.path.getsize(dest) > 0
             if not ok and os.path.exists(dest):

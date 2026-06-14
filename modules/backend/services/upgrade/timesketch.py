@@ -296,7 +296,11 @@ def _fetch_migrations_dir(version: str, logger: Callable = None) -> Optional[str
     for url in candidates:
         log(f"Fetching Timesketch migrations from {url}", "info")
         # -fL: fail on HTTP errors, follow redirects. -o: output file.
-        result = run_command(f"curl -fLsS -o {shlex.quote(tarball)} {shlex.quote(url)}", timeout=120, logger=None)
+        result = run_command(
+            f"curl -fLsS --retry 5 --retry-delay 5 --retry-max-time 600 "
+            f"--connect-timeout 30 -o {shlex.quote(tarball)} {shlex.quote(url)}",
+            timeout=900, logger=None,
+        )
         if result['success'] and os.path.exists(tarball) and os.path.getsize(tarball) > 1024:
             fetched = True
             break
@@ -601,12 +605,12 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
 
         # Pull new images
         log("Pulling new Timesketch images...", "info")
-        run_command("docker compose pull", cwd=work_dir, timeout=600, logger=log)
+        run_command("docker compose pull", cwd=work_dir, timeout=1800, logger=log)
 
         # Pull and update Plaso image if specified
         if plaso_version:
             log(f"Pulling Plaso {plaso_version}...", "info")
-            run_command(f"docker pull log2timeline/plaso:{plaso_version}", logger=log, timeout=600)
+            run_command(f"docker pull log2timeline/plaso:{plaso_version}", logger=log, timeout=1800)
             log(f"Updating Plaso version to {plaso_version}...", "info")
             update_env_file(backend_env, 'PLASO_VERSION', plaso_version, logger=log)
 

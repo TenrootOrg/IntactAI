@@ -43,7 +43,7 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
 
         # Pull new images
         log("Pulling new images...", "info")
-        run_command("docker compose pull", cwd=work_dir, timeout=600, logger=log)
+        run_command("docker compose pull", cwd=work_dir, timeout=1800, logger=log)
 
         # Start containers
         log("Starting IRIS containers...", "info")
