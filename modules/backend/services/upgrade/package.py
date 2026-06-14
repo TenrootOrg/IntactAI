@@ -187,10 +187,13 @@ _UPSTREAM_CACHE_TTL_SEC = 24 * 60 * 60
 # lifetime of the prepare process.
 _UPSTREAM_MEM_CACHE: Dict[str, Dict[str, str]] = {}
 
-# Floating tags upstream sometimes ships in their compose
-# (e.g. k1nd0ne/VolWeb's `redis:latest`). Don't propagate those — they
-# defeat reproducibility. When upstream uses one of these, fall through
-# to the next layer (config.yaml override → TRANSITIVE_DEFAULTS).
+# Floating tags upstream sometimes ships in their compose (e.g.
+# k1nd0ne/VolWeb's `redis:latest`). Operator decision 2026-06-14: we
+# bundle them verbatim. The tar contains the SPECIFIC image digest
+# pulled at prepare time so the bundle itself is reproducible; only
+# the human-readable .env tag says 'latest'. This set is kept solely
+# to LOG when upstream uses one — useful for debugging / operator
+# awareness of what got bundled.
 _FLOATING_TAGS = frozenset({
     'latest', 'master', 'main', 'develop', 'dev', 'edge', 'stable',
     'rolling',
@@ -272,31 +275,36 @@ def _resolve_from_upstream(module: str,
             "warning")
         raw = {}
 
-    # Strip floating tags so they never feed back through the pipeline.
-    cleaned = {
-        k: v for k, v in raw.items()
-        if str(v).strip().lower() not in _FLOATING_TAGS
-    }
-    dropped = set(raw) - set(cleaned)
-    if dropped:
-        log(f"  [transitive] {module}@{primary_version}: dropped floating "
-            f"tag(s) {sorted(dropped)} (won't trust 'latest'/'master'/etc. "
-            f"for pinned bundle)", "warning")
+    # Trust upstream's tag verbatim — including floating ones like
+    # 'latest'. Operator's decision 2026-06-14: when upstream ships
+    # `image: "redis:latest"` (as VolWeb does), we bundle whatever the
+    # registry's `latest` resolves to at prepare time. The tar holds a
+    # specific image digest, so the bundle itself is still deterministic;
+    # only the human-readable tag label in .env says 'latest'. The
+    # apply side's `docker compose up` finds the loaded-from-tar image
+    # locally and uses it without pulling.
+    floating_seen = [k for k, v in raw.items()
+                     if str(v).strip().lower() in _FLOATING_TAGS]
+    if floating_seen:
+        log(f"  [transitive] {module}@{primary_version}: upstream uses "
+            f"floating tag(s) for {sorted(floating_seen)} — bundling as-is "
+            f"(image in tar is the specific digest pulled at prepare time)",
+            "info")
 
     # Persist (best-effort).
     try:
         os.makedirs(_UPSTREAM_CACHE_DIR, exist_ok=True)
         tmp = cache_path + '.new'
         with open(tmp, 'w') as f:
-            json.dump(cleaned, f)
+            json.dump(raw, f)
         os.replace(tmp, cache_path)
     except Exception as e:
         log(f"  [transitive] {module}@{primary_version}: disk cache write "
             f"failed ({type(e).__name__}: {e}); in-memory cache only",
             "warning")
 
-    _UPSTREAM_MEM_CACHE[cache_key] = cleaned
-    return cleaned
+    _UPSTREAM_MEM_CACHE[cache_key] = raw
+    return raw
 
 
 def get_transitive_tag(module: str, dep: str,
@@ -308,23 +316,21 @@ def get_transitive_tag(module: str, dep: str,
       1. config.yaml's `transitive_versions.<module>.<dep>` — operator
          override. Sparse only; almost never set. Loud log when used.
       2. Upstream scrape via `_resolve_from_upstream` — hits the module's
-         own published compose / config.env at the pinned tag. This is
-         the REQUIRED path: prepare + online-upgrade always run with
-         internet by design, so the scrape MUST succeed.
+         own published compose / config.env at the pinned tag.
+      3. `TRANSITIVE_DEFAULTS[module][dep]` — fallback used ONLY when
+         the scrape SUCCEEDED but this specific dep wasn't in the
+         cleaned result (upstream pinned other deps but floats this one
+         — e.g. VolWeb pins postgres but ships `redis: latest`, which
+         our floating-tag filter strips). Loud warning when used.
 
-    Raises `RuntimeError` when neither the operator override nor the
-    upstream scrape produces a value. This replaces a previous silent
-    fallback to `TRANSITIVE_DEFAULTS[module][dep]` that bit an operator
-    on 2026-06-14 — a stale default bundled the wrong opensearch
-    version and the prepare reported success. Hard-failing instead
-    makes the underlying problem (no internet, upstream URL moved, etc.)
-    impossible to miss.
-
-    `TRANSITIVE_DEFAULTS` survives in this module ONLY as a documented
-    record of the last-known-good upstream pins per module. It is NOT
-    consulted by this resolver. If you ever need an air-gap fallback,
-    add it as an explicit `transitive_versions.<module>.<dep>` override
-    in config.yaml before running prepare.
+    Raises `RuntimeError` only when the scrape itself failed entirely
+    (returned no deps at all) AND no operator override AND no default.
+    This keeps the spirit of the 2026-06-14 mandatory-scrape rule —
+    "no internet → hard fail so the operator notices" — without
+    catching the legitimate case where upstream simply doesn't pin
+    every dep. The earlier all-or-nothing version mis-categorized
+    floating-tag drops as scrape failures, bricking VolWeb prepare on
+    2026-06-14.
 
     Raises `KeyError` when the (module, dep) pair itself is unknown
     (misnamed at the call site).
@@ -338,6 +344,7 @@ def get_transitive_tag(module: str, dep: str,
             "info")
         return pinned
 
+    upstream: Dict[str, str] = {}
     if primary_version:
         upstream = _resolve_from_upstream(module, primary_version, logger=log)
         if upstream and dep in upstream:
@@ -346,17 +353,36 @@ def get_transitive_tag(module: str, dep: str,
                 "success")
             return tag
 
-    # Both override and scrape failed. Raise a hard error so prepare
-    # aborts cleanly with an actionable message instead of silently
-    # bundling a stale default.
+    # Scrape succeeded (returned at least one dep) but this specific
+    # dep wasn't in the cleaned result. Two legitimate reasons:
+    #   - upstream's compose uses a floating tag for it (filtered)
+    #   - upstream doesn't pin this dep at all
+    # Fall back to TRANSITIVE_DEFAULTS for THIS dep with a loud log.
+    # Other deps in the same module are unaffected.
+    if upstream:
+        default = TRANSITIVE_DEFAULTS.get(module, {}).get(dep)
+        if default is not None:
+            log(f"  [transitive] {module}.{dep} = {default} "
+                f"(scrape returned {len(upstream)} other dep(s) but no "
+                f"pinned tag for this one — upstream likely uses a "
+                f"floating tag like 'latest'. Falling back to "
+                f"TRANSITIVE_DEFAULTS. Override in config.yaml's "
+                f"`transitive_versions.{module}.{dep}` to silence.)",
+                "warning")
+            return default
+
+    # Truly nothing: scrape failed entirely (empty result) AND no
+    # operator override AND no default. Hard error so the operator
+    # notices instead of silently bundling stale values.
     last_known = TRANSITIVE_DEFAULTS.get(module, {}).get(dep, '<unknown>')
     msg = (
         f"Cannot resolve transitive dep {module}.{dep}: "
         f"no operator override in config.yaml.transitive_versions, "
-        f"and upstream scrape returned nothing for primary_version="
-        f"{primary_version!r}. Prepare requires internet to scrape each "
-        f"module's own config.env / docker-compose at the pinned tag. "
-        f"Either (a) restore internet access to api.github.com + "
+        f"upstream scrape returned nothing for primary_version="
+        f"{primary_version!r}, and no TRANSITIVE_DEFAULTS entry exists. "
+        f"Prepare requires internet to scrape each module's own "
+        f"config.env / docker-compose at the pinned tag. Either "
+        f"(a) restore internet access to api.github.com + "
         f"raw.githubusercontent.com and re-run, or (b) set "
         f"`transitive_versions.{module}.{dep}: '<tag>'` in config.yaml "
         f"as a manual override (last-known-good value: {last_known!r})."
