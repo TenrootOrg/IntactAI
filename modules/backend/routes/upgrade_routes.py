@@ -362,6 +362,25 @@ def _quota_preflight_or_jsonify(needed: int, action: str):
         return (jsonify({"success": False, "error": str(e)}), 429)
 
 
+def _quota_audit_line(needed: int) -> str:
+    """Build the human-readable quota audit line for the workflow log.
+
+    Mirrors the format that `check_quota_or_raise` prints to stdout so
+    the operator sees the same wording in both `docker logs
+    intact_backend` AND the workflow's log tab in the UI. Returns a
+    fallback message when the rate_limit endpoint is unreachable.
+    """
+    from services.upgrade.resolver import get_github_rate_limit
+    state = get_github_rate_limit()
+    if state is None:
+        return "[GH-QUOTA] rate-limit endpoint unreachable; proceeding without pre-flight"
+    return (
+        f"[GH-QUOTA] needs {needed} GitHub calls; "
+        f"have {state['remaining']}/{state['limit'] or 60} remaining "
+        f"(resets {state['reset_hm']}{' — authed' if state['authed'] else ''})"
+    )
+
+
 @upgrade_bp.route('/api/upgrade/refs', methods=['POST'])
 def list_upgrade_refs():
     """Operator-triggered (Fetch button). Returns the release/branch list.
@@ -516,6 +535,10 @@ def start_offline_upgrade():
         )
         add_log_to_run(run_id, "Starting offline upgrade from package", "info")
         add_log_to_run(run_id, f"Package: {package_path}", "info")
+        # Offline apply doesn't touch github — everything's in the
+        # tarball. Log a 0-needed audit line for consistency with the
+        # other workflows so operators see the same format everywhere.
+        add_log_to_run(run_id, "[GH-QUOTA] needs 0 GitHub calls (offline-only apply)", "info")
         update_run_status(run_id, "running", progress=5)
 
         from services.workflow_service import register_cancel_event, unregister_cancel
@@ -667,6 +690,7 @@ def prepare_upgrade_package():
         )
         add_log_to_run(run_id, "Starting package preparation", "info")
         add_log_to_run(run_id, f"Modules: {', '.join(modules.keys())}", "info")
+        add_log_to_run(run_id, _quota_audit_line(2), "info")
         for w in track_warnings:
             add_log_to_run(run_id, w, "warning")
         update_run_status(run_id, "running", progress=5)
@@ -829,6 +853,7 @@ def start_online_upgrade():
         )
         add_log_to_run(run_id, "Starting online upgrade (prepare + apply in one run)", "info")
         add_log_to_run(run_id, f"Modules: {', '.join(modules.keys())}", "info")
+        add_log_to_run(run_id, _quota_audit_line(2), "info")
         for w in track_warnings:
             add_log_to_run(run_id, w, "warning")
         update_run_status(run_id, "running", progress=2)
