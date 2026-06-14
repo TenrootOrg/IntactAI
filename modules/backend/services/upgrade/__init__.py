@@ -592,6 +592,32 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                 overall_status = "completed_with_errors"
                 continue
 
+            # Stamp transitive container pins (postgres / opensearch /
+            # redis / nginx / rabbitmq) from the bundled manifest into
+            # modules/<module>/.env BEFORE compose up. Mirrors what
+            # run_offline_upgrade_workflow's main loop does at the
+            # equivalent spot; without it, compose's `${VAR:-default}`
+            # interpolation falls back to the shipped DEFAULT tag
+            # (e.g. `redis:${REDIS_VERSION:-7-alpine}` resolves to
+            # `redis:7-alpine`) instead of the actually-bundled tag
+            # (e.g. `redis:7.2.11-alpine`), and compose up fails with
+            # "No such image" — operator hit this 2026-06-14 on a
+            # fresh install run where Phase 1 intact triggered the
+            # restart and Phase 2 timesketch's compose then asked for
+            # an unbundled redis tag. Skipped for intact (no transitive
+            # deps) and for any module without a transitive_versions
+            # block in the manifest (no-op inside the helper).
+            if module_name != 'intact' and package_dir:
+                try:
+                    from .base import stamp_transitive_env_from_manifest
+                    stamp_transitive_env_from_manifest(
+                        module_name, package_dir, logger=log,
+                    )
+                except Exception as _e:
+                    log(f"  transitive .env stamp raised "
+                        f"({type(_e).__name__}: {_e}); proceeding with "
+                        f"existing .env values", "warning")
+
             try:
                 if module_name == 'intact':
                     result = upgrade_fn(logger=log)
