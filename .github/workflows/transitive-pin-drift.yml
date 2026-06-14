@@ -38,6 +38,32 @@ on:
         description: "Detect only; never write or open a PR"
         type: boolean
         default: false
+  push:
+    # Fire on every config.yaml change to development or main. The
+    # paths filter means typo fixes / docs PRs that don't touch the
+    # pin file are not affected. Operator changes
+    # versions.timesketch → workflow fires within ~10 s and opens a
+    # PR if the bump pulled in transitive drift.
+    #
+    # Combined with the cron above, we get coverage from BOTH sides:
+    #   - cron catches the case where upstream bumped but our pins
+    #     didn't (no recent config.yaml commit)
+    #   - push catches the case where we bumped but upstream's
+    #     transitive deps moved with it (the OpenSearch 2.11 → 2.19.5
+    #     class of bug)
+    branches:
+      - development
+      - main
+    paths:
+      - "config.yaml"
+
+# Cancel an in-flight run when a new one starts for the same ref. The
+# workflow is idempotent (re-running just re-checks drift) but back-to-
+# back commits to config.yaml shouldn't queue up overlapping rewrites
+# of the same auto/transitive-pin-drift branch.
+concurrency:
+  group: transitive-pin-drift-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write       # commit the rewrite to a branch
