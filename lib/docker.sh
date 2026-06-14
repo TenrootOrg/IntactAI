@@ -439,6 +439,12 @@ _curl_with_throughput() {
 
 pull_plaso_image() {
     local plaso_version=$(read_config "['versions']['plaso']")
+    # Defensive: older configs shipped `plaso: 'plaso-20260119'` (with a
+    # redundant `plaso-` prefix). Upstream's actual tags are bare dates
+    # (`log2timeline/plaso:20260119`). Strip the legacy prefix so a
+    # stale-config import doesn't re-trigger the 2026-06-14
+    # `manifest unknown` install failure.
+    plaso_version="${plaso_version#plaso-}"
     local plaso_image="log2timeline/plaso:${plaso_version:-20260119}"
 
     log_info "Pulling Plaso image for timeline processing..."

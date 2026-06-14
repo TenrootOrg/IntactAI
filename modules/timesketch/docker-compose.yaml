@@ -4,7 +4,21 @@
 services:
   timesketch-postgres:
     container_name: intact_timesketch_postgres
-    image: postgres:${POSTGRES_VERSION:-15}
+    # Default matches upstream timesketch's published compose
+    # (https://github.com/google/timesketch/blob/.../docker/release/docker-compose.yml).
+    # Bumped 2026-06-14 from `:-15` to `:-13.0-alpine` after an operator
+    # hit the install-vs-upgrade postgres-version mismatch: the install
+    # path didn't stamp POSTGRES_VERSION, the `:-15` default kicked in,
+    # postgres-15 initialized the data volume, and then the next
+    # upgrade scraped upstream (which still pins 13.0-alpine), tried
+    # to stamp POSTGRES_VERSION=13.0-alpine, and postgres-13 failed
+    # to read postgres-15 data ("database files are incompatible").
+    # Matching the default to upstream's pin makes install + upgrade
+    # converge from day one — `${POSTGRES_VERSION:-13.0-alpine}` is
+    # what the upgrade flow stamps anyway via the upstream scrape, so
+    # fresh installs now initialize postgres-13 data and subsequent
+    # upgrades are no-ops for postgres.
+    image: postgres:${POSTGRES_VERSION:-13.0-alpine}
     environment:
       - POSTGRES_USER=timesketch
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-timesketch}
@@ -65,7 +79,14 @@ services:
 
   timesketch-redis:
     container_name: intact_timesketch_redis
-    image: redis:${REDIS_VERSION:-7-alpine}
+    # Default matches upstream timesketch's exact pin
+    # (`redis:7.2.11-alpine`). Bumped 2026-06-14 from `:-7-alpine` to
+    # the specific patch so fresh installs match what the upgrade
+    # flow scrapes from upstream — same rationale as the postgres
+    # pin above. Redis volumes are non-stateful by default in the
+    # timesketch deployment (Celery broker only), so the version
+    # change is safe across in-place restarts.
+    image: redis:${REDIS_VERSION:-7.2.11-alpine}
     command: redis-server
     restart: unless-stopped
     networks:
