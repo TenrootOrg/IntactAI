@@ -214,15 +214,56 @@ jobs:
             echo "[transitive-pin-drift workflow](https://github.com/${{ github.repository }}/actions/workflows/transitive-pin-drift.yml)"
           } > "$body_file"
 
-          # If a PR already exists for this branch, update it; else open new.
+          # If a PR already exists for this branch, update it; else open
+          # new. Org policy may forbid Actions from creating PRs (the
+          # "Allow GitHub Actions to create and approve pull requests"
+          # checkbox in Settings → Actions → Workflow permissions can be
+          # disabled at the org level). In that case, gh pr create exits
+          # non-zero; we fall back to printing a prominent "click here to
+          # open the PR" URL to the workflow log, then exit cleanly. The
+          # branch is already on the remote so no work is lost.
           existing=$(gh pr list --head "$branch" --json number --jq '.[0].number' || true)
           if [ -n "$existing" ]; then
-            gh pr edit "$existing" --body-file "$body_file"
+            gh pr edit "$existing" --body-file "$body_file" || true
             echo "Updated existing PR #$existing"
-          else
-            gh pr create \
-              --base development \
-              --head "$branch" \
-              --title "auto: transitive pin drift detected" \
-              --body-file "$body_file"
+            exit 0
           fi
+
+          pr_url=$(gh pr create \
+            --base development \
+            --head "$branch" \
+            --title "auto: transitive pin drift detected" \
+            --body-file "$body_file" 2>&1) && rc=$? || rc=$?
+
+          if [ "${rc:-0}" -eq 0 ]; then
+            echo "PR opened: $pr_url"
+            exit 0
+          fi
+
+          # PR-create failed. Most common cause: org policy blocks
+          # Actions from creating PRs (the create-PR checkbox is
+          # disabled at the org level). The branch is pushed, the
+          # rewrite is committed; the operator just needs to click
+          # one URL to turn it into a PR.
+          echo "::warning::gh pr create failed (likely org policy)."
+          echo "::warning::Branch is pushed at: ${branch}"
+          manual_url="https://github.com/${{ github.repository }}/pull/new/${branch}"
+          echo "::warning::Click to open the PR manually: ${manual_url}"
+          {
+            echo "## ⚠️ PR auto-open blocked"
+            echo
+            echo "The drift was detected and the rewrite is on branch"
+            echo "\`${branch}\` — but org settings prevent GitHub Actions from"
+            echo "opening the PR automatically."
+            echo
+            echo "**Open it with one click:**"
+            echo
+            echo "${manual_url}"
+            echo
+            echo "_Permanent fix: ask an org owner to enable_"
+            echo "_'Allow GitHub Actions to create and approve pull requests'_"
+            echo "_in Settings → Actions → Workflow permissions, or set it_"
+            echo "_to 'Allowed for selected repositories' and include this repo._"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Exit clean — the branch + rewrite are still valuable artifacts.
+          exit 0
