@@ -1180,11 +1180,25 @@ def stamp_transitive_env_from_manifest(
 
     env_path = os.path.join(WORKDIR, 'modules', module_id, '.env')
     if not os.path.isfile(env_path):
-        # No .env to stamp — the module either doesn't use one, or it
-        # hasn't been initialized yet. Skip silently; the compose
-        # default still wins. Future installs that create the .env
-        # will get re-stamped on the next apply.
-        return {}
+        # No .env yet — create one. UI-driven fresh-install path doesn't
+        # have an .env at this point (install.sh's deploy_* creates it
+        # from a template, but the Python install_*_offline functions
+        # called by the UI/upload flow rely on this helper to bootstrap
+        # the file). Before 2026-06-14 this branch silently returned
+        # empty, which combined with the compose `${VAR:?}` rule meant
+        # fresh installs crashed at compose-up with "VAR required" —
+        # exactly the scenario the operator hit during the timesketch
+        # fresh-install test.
+        try:
+            os.makedirs(os.path.dirname(env_path), exist_ok=True)
+            open(env_path, 'a').close()
+            log(f"  transitive .env stamp: created empty {env_path} "
+                f"for fresh install", "info")
+        except Exception as e:
+            log(f"  transitive .env stamp: cannot create {env_path} "
+                f"({type(e).__name__}: {e}); compose up will fail",
+                "warning")
+            return {}
 
     try:
         with open(env_path, 'r') as f:

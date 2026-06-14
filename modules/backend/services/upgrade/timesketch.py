@@ -945,7 +945,18 @@ def install_timesketch_offline(package_dir: str, version: str, logger=None, run_
     work_dir = os.path.join(WORKDIR, 'modules', 'timesketch')
     env_file = os.path.join(work_dir, '.env')
     log(f"Installing Timesketch (first-time) -> {version or 'tracked default'}...", "info")
-    if os.path.exists(env_file) and version:
+    # Ensure .env exists + has TIMESKETCH_VERSION before compose up.
+    # Fresh-install via UI may run with no pre-existing .env (install.sh's
+    # deploy_timesketch writes one from a template, but UI install bypasses
+    # that). Without writing this here, compose would either fall back to
+    # `${TIMESKETCH_VERSION:-latest}` (pulls from registry — breaks
+    # air-gap) or fail at the `${VAR:?}` rule depending on the compose
+    # file. update_env_file is idempotent: creates the file when missing,
+    # rewrites the line when present.
+    if version:
+        os.makedirs(work_dir, exist_ok=True)
+        if not os.path.exists(env_file):
+            open(env_file, 'a').close()
         update_env_file(env_file, 'TIMESKETCH_VERSION', version, logger=log)
 
     # Bootstrap timesketch.conf + timesketch_legacy.conf from templates

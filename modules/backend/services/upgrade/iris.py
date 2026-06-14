@@ -242,7 +242,14 @@ def install_iris_offline(package_dir: str, version: str, logger=None, run_id=Non
     os.makedirs(secrets_dir, exist_ok=True)
 
     log(f"Installing IRIS (first-time) -> {version or 'tracked default'}...", "info")
-    if os.path.exists(env_file) and version:
+    # Ensure .env exists + has IRIS_VERSION before compose up. Fresh
+    # install via UI may run with no pre-existing .env. Without writing
+    # this unconditionally, compose would either fall back to ${IRIS_VERSION}
+    # (empty) or hit the `${VAR:?}` rule. update_env_file is idempotent.
+    if version:
+        os.makedirs(work_dir, exist_ok=True)
+        if not os.path.exists(env_file):
+            open(env_file, 'a').close()
         update_env_file(env_file, 'IRIS_VERSION', version, logger=log)
 
     iris_admin_pw = '123123'
