@@ -1201,6 +1201,27 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
             except Exception:
                 pass
 
+            # Stamp transitive container pins (postgres / opensearch /
+            # redis / nginx / rabbitmq versions) from the bundled
+            # manifest into modules/<module>/.env BEFORE compose up. The
+            # prepare side wrote them; without this stamp the compose's
+            # `${VAR:-default}` resolves to the shipped default rather
+            # than the tag actually bundled, and air-gapped installs
+            # fail to start the stack. No-op for pre-refactor packages
+            # (manifest has no transitive_versions block) and for
+            # modules without transitive deps. Apply-side only — no
+            # network access.
+            if module_name != 'intact':
+                try:
+                    from .base import stamp_transitive_env_from_manifest
+                    stamp_transitive_env_from_manifest(
+                        module_name, package_dir, logger=log,
+                    )
+                except Exception as _e:
+                    log(f"  transitive .env stamp raised "
+                        f"({type(_e).__name__}: {_e}); proceeding with "
+                        f"existing .env values", "warning")
+
             try:
                 if module_name == 'intact':
                     result = upgrade_fn(package_dir, logger=log, run_id=run_id)

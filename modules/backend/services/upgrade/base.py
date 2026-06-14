@@ -5,6 +5,7 @@ Shared functions used across all module upgrade files.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -1133,6 +1134,99 @@ def load_all_bundled_images(package_dir: str, logger: Callable = None,
                 f"try to pull): {loaded.get('error')}",
                 "warning",
             )
+
+
+def stamp_transitive_env_from_manifest(
+    module_id: str,
+    package_dir: str,
+    logger: Callable = None,
+) -> Dict[str, str]:
+    """Read the bundled manifest's `contents.transitive_versions.<module_id>`
+    block and write each `VAR=tag` pair into modules/<module_id>/.env
+    BEFORE `docker compose up` runs.
+
+    This is the apply-side counterpart to the prepare-side's transitive
+    bundling. Without this, the compose `${VAR:-default}` references
+    would resolve to the static default the compose file shipped with —
+    NOT the tag whose image was actually bundled into the package.
+    Result: compose tries to pull an unavailable image and the stack
+    fails to come up on air-gapped targets.
+
+    Backwards-compatible: pre-refactor packages have no
+    `transitive_versions` block in their manifest, so this is a no-op for
+    those (the apply continues with whatever the operator's existing
+    .env already has).
+
+    Returns: dict of {ENV_VAR: tag} actually written (empty when no
+    block in manifest, or when the .env couldn't be located).
+    """
+    log = logger or (lambda msg, level="info": None)
+    manifest_path = os.path.join(package_dir, 'manifest.json')
+    if not os.path.isfile(manifest_path):
+        return {}
+    try:
+        with open(manifest_path, 'r') as f:
+            manifest = json.load(f)
+    except Exception as e:
+        log(f"  transitive .env stamp: manifest read failed: {e}",
+            "warning")
+        return {}
+
+    tv_root = ((manifest.get('contents') or {})
+                .get('transitive_versions') or {})
+    pins = tv_root.get(module_id) or {}
+    if not pins:
+        return {}
+
+    env_path = os.path.join(WORKDIR, 'modules', module_id, '.env')
+    if not os.path.isfile(env_path):
+        # No .env to stamp — the module either doesn't use one, or it
+        # hasn't been initialized yet. Skip silently; the compose
+        # default still wins. Future installs that create the .env
+        # will get re-stamped on the next apply.
+        return {}
+
+    try:
+        with open(env_path, 'r') as f:
+            lines = f.read().splitlines()
+    except Exception as e:
+        log(f"  transitive .env stamp: read failed for {env_path}: {e}",
+            "warning")
+        return {}
+
+    written = {}
+    keys_remaining = dict(pins)  # var → tag
+    out_lines = []
+    for raw in lines:
+        line = raw.rstrip('\r')
+        # Match `VAR=...` or commented-out `# VAR=...`; rewrite the
+        # value while preserving everything else (comments above,
+        # blank lines, ordering). The replace_all flag at the bottom
+        # handles the "key not yet in file" case.
+        m = re.match(r'^\s*(?:#\s*)?([A-Z][A-Z0-9_]*)\s*=', line)
+        if m and m.group(1) in keys_remaining:
+            var = m.group(1)
+            tag = keys_remaining.pop(var)
+            out_lines.append(f"{var}={tag}")
+            written[var] = tag
+        else:
+            out_lines.append(line)
+    # Append any vars not already present.
+    for var, tag in keys_remaining.items():
+        out_lines.append(f"{var}={tag}")
+        written[var] = tag
+
+    try:
+        with open(env_path, 'w') as f:
+            f.write('\n'.join(out_lines) + '\n')
+    except Exception as e:
+        log(f"  transitive .env stamp: write failed for {env_path}: {e}",
+            "warning")
+        return {}
+
+    log(f"  Stamped transitive pins into {module_id}/.env: " +
+        ", ".join(f"{k}={v}" for k, v in written.items()), "info")
+    return written
 
 
 def install_module_compose_up(

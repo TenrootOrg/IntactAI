@@ -13,73 +13,241 @@ from typing import Dict, Callable, List, Optional
 from .base import run_command, WORKDIR, HOST_PATH
 
 
-# Docker image mappings for each module
-DOCKER_IMAGES = {
+# Primary images per module — the deliverables the operator's
+# `versions:` pin in config.yaml directly drives. `{version}` is
+# substituted with `modules[<module>]` at prepare time.
+PRIMARY_IMAGES = {
     'elk': [
-        ('docker.elastic.co/elasticsearch/elasticsearch:{version}', 'elasticsearch-{version}.tar'),
-        ('docker.elastic.co/kibana/kibana:{version}', 'kibana-{version}.tar'),
-        ('docker.elastic.co/logstash/logstash:{version}', 'logstash-{version}.tar'),
+        ('docker.elastic.co/elasticsearch/elasticsearch:{version}',
+         'elasticsearch-{version}.tar'),
+        ('docker.elastic.co/kibana/kibana:{version}',
+         'kibana-{version}.tar'),
+        ('docker.elastic.co/logstash/logstash:{version}',
+         'logstash-{version}.tar'),
     ],
     'timesketch': [
-        ('us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:{version}', 'timesketch-{version}.tar'),
-        # Base images Timesketch's docker-compose.yaml depends on.
-        # Without bundling these the air-gap install fails at
-        # `docker compose up` trying to pull them. Versions match the
-        # defaults in modules/timesketch/docker-compose.yaml; if a
-        # future pin moves, update both places.
-        ('postgres:15', 'postgres-15.tar'),
-        # Timesketch >=20260611 requires OpenSearch >=2.19.5. Keep this in
-        # sync with the OPENSEARCH_VERSION default in modules/timesketch/
-        # docker-compose.yaml — if it moves, bump both.
-        ('opensearchproject/opensearch:2.19.5', 'opensearch-2.19.5.tar'),
-        ('redis:7-alpine', 'redis-7-alpine.tar'),
-        ('nginx:alpine', 'nginx-alpine.tar'),
+        ('us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:{version}',
+         'timesketch-{version}.tar'),
     ],
     'plaso': [
         ('log2timeline/plaso:{version}', 'plaso-{version}.tar'),
     ],
     'iris': [
-        # Note: iris-worker uses the same iriswebapp_app image
-        # Note: DB image included for air-gap support (data is in volumes, safe to upgrade)
-        ('ghcr.io/dfir-iris/iriswebapp_app:{version}', 'iris-app-{version}.tar'),
-        ('ghcr.io/dfir-iris/iriswebapp_nginx:{version}', 'iris-nginx-{version}.tar'),
-        ('ghcr.io/dfir-iris/iriswebapp_db:{version}', 'iris-db-{version}.tar'),
-        # Infrastructure dep — IRIS compose pulls rabbitmq from Docker
-        # Hub at compose-up time. On an air-gapped or fresh-install
-        # target the pull fails ("No such image: rabbitmq:3-management-
-        # alpine") and the stack can't start. Bundle the image so the
-        # apply step can `docker load` it offline. The tag is fixed
-        # (infrastructure dep, not IRIS-version-coupled — same pattern
-        # as volweb's postgres + redis).
-        ('rabbitmq:3-management-alpine', 'rabbitmq-3-management-alpine.tar'),
+        # iris-worker reuses the same iriswebapp_app image. The DB image
+        # is included for air-gap support; data lives in a volume so the
+        # upgrade is non-destructive.
+        ('ghcr.io/dfir-iris/iriswebapp_app:{version}',
+         'iris-app-{version}.tar'),
+        ('ghcr.io/dfir-iris/iriswebapp_nginx:{version}',
+         'iris-nginx-{version}.tar'),
+        ('ghcr.io/dfir-iris/iriswebapp_db:{version}',
+         'iris-db-{version}.tar'),
     ],
     'prowler': [
-        # Prowler image for AWS posture scans (run on demand, no live container)
         ('toniblyx/prowler:{version}', 'prowler-{version}.tar'),
     ],
     'o365rc': [
-        # DFIR-O365RC image for Azure Unified Audit Log (run on demand). Upstream
-        # only ships ':latest', so {version} is normally 'latest'.
+        # Upstream only ships ':latest', so {version} is normally 'latest'.
         ('anssi/dfir-o365rc:{version}', 'dfir-o365rc-{version}.tar'),
     ],
     'volweb': [
-        # VolWeb backend + frontend (memory-forensics analysis stack).
-        # forensicxlab releases the two images in lockstep so a single
-        # `versions.volweb` pin drives both — same {version} placeholder
-        # for both tars. Postgres + Redis are infrastructure deps
-        # defaulted in modules/volweb/docker-compose.yaml; the
-        # operator's host pulls those directly from Docker Hub at
-        # compose-up time, not from this bundle.
-        ('forensicxlab/volweb-backend:{version}',  'volweb-backend-{version}.tar'),
-        ('forensicxlab/volweb-frontend:{version}', 'volweb-frontend-{version}.tar'),
-        # Base images VolWeb's docker-compose.yaml depends on. Versions
-        # match the pins in modules/volweb/.env (VOLWEB_POSTGRES_VERSION,
-        # VOLWEB_REDIS_VERSION). Without these the air-gap install fails
-        # at `docker compose up` trying to pull from Docker Hub.
-        ('postgres:15', 'volweb-postgres-15.tar'),
-        ('redis:7', 'volweb-redis-7.tar'),
+        # forensicxlab releases backend + frontend in lockstep so a single
+        # `versions.volweb` pin drives both.
+        ('forensicxlab/volweb-backend:{version}',
+         'volweb-backend-{version}.tar'),
+        ('forensicxlab/volweb-frontend:{version}',
+         'volweb-frontend-{version}.tar'),
     ],
 }
+
+
+# Transitive infrastructure images per module — postgres / opensearch /
+# redis / rabbitmq / nginx etc. that the primary module's compose pulls
+# at runtime. Each entry is:
+#   (dep_key, image_pattern, tar_pattern)
+#
+# `dep_key` is looked up at prepare time in config.yaml's
+# `transitive_versions.<module>.<dep_key>` block (see _read_transitive_pin
+# below); the resolved tag fills `{tag}` in both patterns. Fallbacks in
+# TRANSITIVE_DEFAULTS keep the historical behaviour when the operator's
+# config.yaml has no `transitive_versions:` block.
+#
+# Air-gap correctness: at apply time, the resolved tag also lands in the
+# bundled manifest.json under `contents.transitive_versions`, and the
+# offline-apply step writes it to per-module `.env` files BEFORE
+# `docker compose up`. That way the compose's `${VAR:-default}`
+# resolves to the tag of an image actually present in the loaded
+# bundle, not the static default the compose file shipped with.
+TRANSITIVE_IMAGES = {
+    'timesketch': [
+        ('postgres',   'postgres:{tag}',                       'postgres-{tag}.tar'),
+        ('opensearch', 'opensearchproject/opensearch:{tag}',   'opensearch-{tag}.tar'),
+        ('redis',      'redis:{tag}',                          'redis-{tag}.tar'),
+        ('nginx',      'nginx:{tag}',                          'nginx-{tag}.tar'),
+    ],
+    'iris': [
+        # Infrastructure dep — IRIS compose pulls rabbitmq from Docker
+        # Hub at compose-up time. Bundling lets the apply step load it
+        # offline.
+        ('rabbitmq', 'rabbitmq:{tag}', 'rabbitmq-{tag}.tar'),
+    ],
+    'volweb': [
+        # Distinct tar names from timesketch's postgres/redis so both
+        # bundles can coexist on disk without name collisions.
+        ('postgres', 'postgres:{tag}', 'volweb-postgres-{tag}.tar'),
+        ('redis',    'redis:{tag}',    'volweb-redis-{tag}.tar'),
+    ],
+}
+
+
+# Fallback tags when config.yaml has no `transitive_versions.<module>.<dep>`
+# entry. Mirrors today's hardcoded values, so the refactor is a no-op
+# for any operator who hasn't added the block.
+TRANSITIVE_DEFAULTS = {
+    'timesketch': {
+        # Timesketch >=20260611 requires OpenSearch >=2.19.5 (compat-floor
+        # break that bit us when upstream bumped past 2.11.0 — see the
+        # transitive_resolver module's history).
+        'opensearch': '2.19.5',
+        'postgres':   '15',
+        'redis':      '7-alpine',
+        'nginx':      'alpine',
+    },
+    'iris': {
+        'rabbitmq': '3-management-alpine',
+    },
+    'volweb': {
+        'postgres': '15',
+        'redis':    '7',
+    },
+}
+
+
+# Maps each transitive `(module, dep_key)` to the env var name the
+# module's compose file consumes. Used by the apply side to write the
+# right `.env` line before `docker compose up`, and by the prepare side
+# to record bundled tags in the manifest. Keys live in
+# modules/<module>/docker-compose.yaml as `${VAR:-default}` references.
+TRANSITIVE_ENV_KEYS = {
+    'timesketch': {
+        'opensearch': 'OPENSEARCH_VERSION',
+        'postgres':   'POSTGRES_VERSION',
+        'redis':      'REDIS_VERSION',
+        'nginx':      'NGINX_VERSION',
+    },
+    'volweb': {
+        'postgres': 'VOLWEB_POSTGRES_VERSION',
+        'redis':    'VOLWEB_REDIS_VERSION',
+    },
+    # iris's rabbitmq is referenced literally in
+    # modules/iris/docker-compose.yaml — no env var. The apply side
+    # treats a missing env-key as "no .env write needed; the image
+    # already gets loaded and compose's literal `rabbitmq:3-management-
+    # alpine` reference matches".
+    'iris': {},
+}
+
+
+def _read_transitive_pin(module: str, dep: str) -> Optional[str]:
+    """Return config.yaml's `transitive_versions.<module>.<dep>` value, or
+    None when the block / module / key is absent. Fail-soft on any
+    parse error so a malformed config.yaml never blocks a prepare.
+    """
+    config_path = os.path.join(WORKDIR, 'config.yaml')
+    if not os.path.exists(config_path):
+        return None
+    try:
+        import yaml  # local — yaml isn't used elsewhere in this module
+        with open(config_path, 'r') as f:
+            cfg = yaml.safe_load(f) or {}
+        block = ((cfg.get('transitive_versions') or {}).get(module) or {})
+        val = block.get(dep)
+        return str(val).strip() if val is not None else None
+    except Exception:
+        return None
+
+
+def get_transitive_tag(module: str, dep: str) -> str:
+    """Resolve the tag for one transitive container of `module`.
+    config.yaml override wins; otherwise TRANSITIVE_DEFAULTS[module][dep].
+    KeyError on unknown (module, dep) — callers are expected to iterate
+    TRANSITIVE_IMAGES, so misnamed lookups should be loud bugs.
+    """
+    pinned = _read_transitive_pin(module, dep)
+    if pinned:
+        return pinned
+    return TRANSITIVE_DEFAULTS[module][dep]
+
+
+def get_docker_images_for(module: str, version: str) -> list:
+    """Return the list of `(image, tar_filename)` to bundle for one
+    primary module + version. Same shape the old `DOCKER_IMAGES[module]`
+    list returned (already with placeholders expanded), so callers can
+    iterate uniformly.
+
+    Primary images use the operator's `versions.<module>` pin.
+    Transitive images use the operator's
+    `transitive_versions.<module>.<dep>` override, falling back to
+    TRANSITIVE_DEFAULTS.
+    """
+    out = []
+    for image_pat, tar_pat in PRIMARY_IMAGES.get(module, []):
+        out.append((
+            image_pat.format(version=version),
+            tar_pat.format(version=version),
+        ))
+    for dep_key, image_pat, tar_pat in TRANSITIVE_IMAGES.get(module, []):
+        tag = get_transitive_tag(module, dep_key)
+        out.append((
+            image_pat.format(tag=tag),
+            tar_pat.format(tag=tag),
+        ))
+    return out
+
+
+def get_transitive_versions_for(module: str) -> Dict[str, str]:
+    """Return the resolved transitive tags for `module` keyed by env-var
+    name (e.g. {'POSTGRES_VERSION': '15', 'OPENSEARCH_VERSION': '2.19.5'}).
+    Empty dict for modules with no transitive deps. The manifest carries
+    this so the offline apply can stamp per-module `.env` files BEFORE
+    `docker compose up`.
+    """
+    env_map = TRANSITIVE_ENV_KEYS.get(module, {})
+    if not env_map:
+        return {}
+    out = {}
+    for dep_key, env_key in env_map.items():
+        try:
+            out[env_key] = get_transitive_tag(module, dep_key)
+        except KeyError:
+            continue
+    return out
+
+
+# Backwards-compat shim: anything that historically did
+# `DOCKER_IMAGES[<module>]` still works (returns the templated list).
+# The two in-tree callers in this file have been updated to call
+# get_docker_images_for() directly with the version arg; this stays
+# only for any future callers / external tooling that import the dict.
+class _DockerImagesCompat:
+    def __contains__(self, module: str) -> bool:
+        return module in PRIMARY_IMAGES or module in TRANSITIVE_IMAGES
+
+    def __getitem__(self, module: str):
+        # Return the un-expanded templates so old `.format(version=...)`
+        # callers keep working. Transitive entries are returned with the
+        # resolved tag pre-baked (since they have no `{version}` slot).
+        items = list(PRIMARY_IMAGES.get(module, []))
+        for dep_key, image_pat, tar_pat in TRANSITIVE_IMAGES.get(module, []):
+            try:
+                tag = get_transitive_tag(module, dep_key)
+            except KeyError:
+                continue
+            items.append((image_pat.format(tag=tag), tar_pat.format(tag=tag)))
+        return items
+
+
+DOCKER_IMAGES = _DockerImagesCompat()
 
 
 def _format_size(size_bytes: int) -> str:
@@ -1281,13 +1449,25 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         "moved if this is an internet-connected prepare host.",
                         "warning")
 
-            elif module in DOCKER_IMAGES:
+            elif module in PRIMARY_IMAGES or module in TRANSITIVE_IMAGES:
+                # Resolve the full image list for this module + record the
+                # transitive tags in the manifest so the apply side (which
+                # never reads config.yaml — it gets the package from a
+                # potentially-disconnected host) knows which `.env` values
+                # to stamp before `docker compose up`.
+                images_for_module = get_docker_images_for(module, version)
+                tv_env = get_transitive_versions_for(module)
+                if tv_env:
+                    manifest["contents"].setdefault(
+                        "transitive_versions", {})[module] = tv_env
+                    log(f"  Transitive pins for {module}: " +
+                        ', '.join(f'{k}={v}' for k, v in tv_env.items()),
+                        "info")
+
                 # Pull and save Docker images
-                declared = len(DOCKER_IMAGES[module])
+                declared = len(images_for_module)
                 bundled_for_module = 0
-                for image_template, output_template in DOCKER_IMAGES[module]:
-                    image = image_template.format(version=version)
-                    output_name = output_template.format(version=version)
+                for image, output_name in images_for_module:
                     output_path = f"{package_dir}/images/{output_name}"
 
                     if _pull_and_save_image(image, output_path, log, run_id=run_id):
@@ -1523,7 +1703,6 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     pass
 
             for module, version in modules.items():
-                if module in DOCKER_IMAGES:
-                    for image_template, _ in DOCKER_IMAGES[module]:
-                        image = image_template.format(version=version)
+                if module in PRIMARY_IMAGES or module in TRANSITIVE_IMAGES:
+                    for image, _ in get_docker_images_for(module, version):
                         run_command(f"docker rmi {image} 2>/dev/null || true", logger=None, timeout=60)
