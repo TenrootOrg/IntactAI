@@ -1,0 +1,207 @@
+name: Transitive pin drift check
+
+# Every primary module (timesketch, iris, volweb, ...) ships its own
+# docker-compose / config.env defining the postgres / opensearch / redis
+# / rabbitmq / nginx versions IT was tested against. When upstream bumps
+# those defaults (e.g. Timesketch 20260326 → 20260611 raised the
+# OpenSearch floor from 2.11 → 2.19.5), we have to follow or installs
+# break with cryptic "datastore version unsupported" errors.
+#
+# Today the pins live in config.yaml's `transitive_versions:` block and
+# are consumed by `services/upgrade/package.py` to decide which images
+# to bundle into prepared upgrade packages. This workflow keeps that
+# block honest by polling each module's upstream once a day and
+# opening a PR when drift appears.
+#
+# Why this runs out-of-band (GitHub Action) instead of inline (every
+# prepare):
+#   - prepare must stay deterministic; an operator clicking Prepare
+#     shouldn't silently get a different bundle today vs yesterday
+#     because upstream tagged something at 4am
+#   - the GitHub API + raw.githubusercontent.com calls would otherwise
+#     burn quota on every prepare and slow them down
+#   - a PR is reviewable; an inline auto-mutation isn't
+#
+# The driver does the work — see scripts/check_transitive_drift.py.
+
+on:
+  schedule:
+    # 06:00 UTC daily. Picked early-morning so the PR is waiting when
+    # the team starts the day. Adjust to your team's timezone if
+    # noisy.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    # Hand-fire button on the Actions tab — handy after a manual
+    # config.yaml edit, when you want to confirm no drift remains.
+    inputs:
+      dry_run:
+        description: "Detect only; never write or open a PR"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write       # commit the rewrite to a branch
+  pull-requests: write  # open the PR
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout development
+        uses: actions/checkout@v4
+        with:
+          ref: development
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install resolver dependencies
+        # PyYAML for the config.yaml round-trip; requests is OPTIONAL
+        # (the resolver falls back to urllib.request if absent, but
+        # requests' connection pooling makes it a tiny bit faster on
+        # the cron runs).
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pyyaml requests
+
+      - name: Run drift detection
+        id: detect
+        run: |
+          set -euo pipefail
+          mode=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            mode="--dry-run"
+          fi
+          # Capture exit code without bailing on non-zero — 1 means
+          # "no drift", which is a happy path here, not a failure.
+          set +e
+          python3 scripts/check_transitive_drift.py $mode > drift.txt 2>&1
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          echo "------ driver output ------"
+          cat drift.txt
+          echo "---------------------------"
+
+          if [ $code -eq 1 ]; then
+            echo "No drift detected — exiting cleanly."
+            echo "drift_found=false" >> "$GITHUB_OUTPUT"
+          elif [ $code -eq 0 ]; then
+            echo "drift_found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Driver errored (exit $code); failing the workflow."
+            exit $code
+          fi
+
+      - name: Capture rewritten config + structured diff
+        if: steps.detect.outputs.drift_found == 'true' && github.event.inputs.dry_run != 'true'
+        id: structured
+        run: |
+          # Re-run with --json on a clean checkout to capture the
+          # machine-readable summary for the PR body. We already
+          # wrote config.yaml in the previous step; running --json
+          # again re-writes the same values (idempotent).
+          python3 scripts/check_transitive_drift.py --json > drift.json 2>/dev/null || true
+          {
+            echo 'json<<JSON_END'
+            cat drift.json
+            echo 'JSON_END'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open PR with the rewritten config.yaml
+        if: steps.detect.outputs.drift_found == 'true' && github.event.inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Stable branch name — reuse the branch on subsequent runs
+          # so we don't end up with N stale "auto/pin-drift-YYYY-MM-DD"
+          # branches when drift persists for days waiting on review.
+          branch="auto/transitive-pin-drift"
+
+          # If a branch already exists with the same content, do nothing.
+          if [ -z "$(git status --porcelain config.yaml)" ]; then
+            echo "No file change after rewrite — nothing to commit."
+            exit 0
+          fi
+
+          git checkout -B "$branch"
+          git add config.yaml
+          # Use a tempfile so YAML's literal block doesn't fight the
+          # blank lines that would otherwise live inside an inline
+          # `git commit -m "..."` argument.
+          msg_file=$(mktemp)
+          today=$(date -u +%Y-%m-%d)
+          printf '%s\n' \
+            "auto: refresh transitive_versions: from upstream composes" \
+            "" \
+            "Drift surfaced by .github/workflows/transitive-pin-drift.yml on ${today}." \
+            "Each primary module's upstream compose / config.env was polled at the" \
+            "pinned tag; the values below were rewritten to match." \
+            "" \
+            "Review the diff carefully — bumping a transitive pin can require matching" \
+            "changes to module docker-compose.yaml defaults or operator data migrations" \
+            "(especially postgres major-version bumps)." \
+            "" \
+            "If a bump is intentional but you want to defer it, close this PR; the" \
+            "workflow will reopen on the next drift run." \
+            "" \
+            "[skip ci]" > "$msg_file"
+          git commit -F "$msg_file"
+          git push --force-with-lease origin "$branch"
+
+          # Build a human-readable PR body from the JSON summary.
+          body_file=$(mktemp)
+          {
+            echo "## Transitive pin drift detected"
+            echo
+            echo "The daily drift check ran against each primary module's"
+            echo "upstream compose / config.env and found pins that no"
+            echo "longer match upstream's recommendation."
+            echo
+            echo "### Diff"
+            echo
+            echo '```diff'
+            git --no-pager diff origin/development -- config.yaml || true
+            echo '```'
+            echo
+            echo "### Machine-readable summary"
+            echo
+            echo '```json'
+            cat drift.json
+            echo '```'
+            echo
+            echo "### Before merging"
+            echo
+            echo "- Review whether each bump is safe (postgres major"
+            echo "  upgrades may require data migration; redis tag"
+            echo "  changes can shift persistence behavior)"
+            echo "- Confirm the bundled module's compose at our pin"
+            echo "  hasn't ALSO bumped its own default in a way that"
+            echo "  conflicts with the values written here"
+            echo "- A test prepare on a dev host would catch any"
+            echo "  cross-module surprises before this lands"
+            echo
+            echo "🤖 Opened automatically by"
+            echo "[transitive-pin-drift workflow](https://github.com/${{ github.repository }}/actions/workflows/transitive-pin-drift.yml)"
+          } > "$body_file"
+
+          # If a PR already exists for this branch, update it; else open new.
+          existing=$(gh pr list --head "$branch" --json number --jq '.[0].number' || true)
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --body-file "$body_file"
+            echo "Updated existing PR #$existing"
+          else
+            gh pr create \
+              --base development \
+              --head "$branch" \
+              --title "auto: transitive pin drift detected" \
+              --body-file "$body_file"
+          fi

@@ -436,6 +436,70 @@ def set_module_version_in_config(module_key: str, new_version: str,
         return False
 
 
+def set_transitive_version_in_config(module: str, dep: str,
+                                       new_value: str,
+                                       logger=None) -> bool:
+    """Rewrite ``transitive_versions.<module>.<dep>`` in config.yaml.
+
+    Two-level nested cousin of :func:`set_module_version_in_config`.
+    Surgical regex replacement so comments + ordering survive. Used by
+    the auto-resolve path in prepare to land upstream's recommended
+    transitive tag (e.g. `opensearch: 2.19.5 → 2.20`) when the operator
+    bumped the primary pin and upstream's compose now demands more.
+
+    Returns True if a write happened, False on no-op / not-found /
+    parse failure. Never raises — drift handling must never block
+    a prepare.
+    """
+    log = logger or (lambda msg, level="info": None)
+    config_path = os.path.join(WORKDIR, 'config.yaml')
+    if not os.path.exists(config_path):
+        return False
+    try:
+        with open(config_path) as f:
+            content = f.read()
+    except Exception as e:
+        log(f"Could not read config.yaml: {e}", "warning")
+        return False
+
+    # Anchor on the top-level `transitive_versions:` block, snap to the
+    # given module's section, then match the dep line. The .*?\n* in the
+    # middle groups are non-greedy so we don't bleed past the module's
+    # subtree into a later module.
+    pattern = re.compile(
+        rf"(^transitive_versions:\s*\n(?:[ \t]+.*\n)*?"
+        rf"[ \t]+{re.escape(module)}:\s*\n(?:[ \t]+.*\n)*?)"
+        rf"([ \t]+{re.escape(dep)}:\s*(['\"]?))[^\n'\"#]+"
+        rf"((['\"]?)\s*(?:#.*)?$)",
+        re.MULTILINE,
+    )
+    match = pattern.search(content)
+    if not match:
+        return False
+
+    # No-op when already at target.
+    current_line = match.group(0).split('\n')[-1]
+    current_value_match = re.search(
+        rf"{re.escape(dep)}:\s*(['\"]?)([^'\"#\n]+)(['\"]?)",
+        current_line,
+    )
+    if current_value_match and current_value_match.group(2).strip() == new_value:
+        return False
+
+    new_line = match.group(2) + new_value + match.group(4)
+    new_content = (content[:match.start()] + match.group(1) + new_line
+                   + content[match.end():])
+    try:
+        with open(config_path, 'w') as f:
+            f.write(new_content)
+        log(f"Bumped transitive_versions.{module}.{dep} → {new_value} "
+            f"in config.yaml", "info")
+        return True
+    except Exception as e:
+        log(f"Could not write config.yaml: {e}", "warning")
+        return False
+
+
 def get_current_versions() -> Dict:
     """Get current versions for all modules.
 
