@@ -111,13 +111,27 @@ def _rewrite_one_pin(content: str, module: str, dep: str,
              + content[match.end():], True)
 
 
+# Floating / rolling tags upstream sometimes uses in their compose
+# instead of a concrete pin (e.g. k1nd0ne/VolWeb's `image: "redis:latest"`).
+# Treating these as "recommendations" would defeat reproducibility — the
+# next pull at this tag may return a different image. Skip them: when
+# upstream uses one of these, leave our concrete pin alone and surface a
+# warning so the operator knows upstream stopped pinning.
+_FLOATING_TAGS = frozenset({
+    'latest', 'master', 'main', 'develop', 'dev', 'edge', 'stable',
+    'rolling',
+})
+
+
 def detect_drift(cfg: Dict) -> Tuple[Dict[str, Dict[str, Tuple[str, str]]],
                                        List[str]]:
     """Returns:
        (drift_map, warnings)
        drift_map: {module: {dep: (current, upstream)}} — only entries
-                  where current != upstream.
-       warnings:  human-readable notes (unreachable upstream, etc.)
+                  where current != upstream AND upstream is a concrete
+                  tag (floating tags like 'latest' are filtered out).
+       warnings:  human-readable notes (unreachable upstream, floating
+                  tag skipped, etc.).
     """
     resolver_mod = _load_resolver()
     RESOLVERS = resolver_mod.RESOLVERS
@@ -159,6 +173,17 @@ def detect_drift(cfg: Dict) -> Tuple[Dict[str, Dict[str, Tuple[str, str]]],
         cur_for_module = transitive_block.get(module) or {}
         per_dep: Dict[str, Tuple[str, str]] = {}
         for dep, up_tag in upstream.items():
+            up_tag_norm = str(up_tag).strip().lower()
+            if up_tag_norm in _FLOATING_TAGS:
+                # Upstream ships an unpinned tag here. Keep our concrete
+                # pin and tell the operator — bowing to 'latest' would
+                # defeat the whole point of pinning.
+                warnings.append(
+                    f"{module}.{dep}: upstream ships floating tag "
+                    f"{up_tag!r} (not a real recommendation); keeping "
+                    f"our pinned value {cur_for_module.get(dep)!r}"
+                )
+                continue
             our_tag = cur_for_module.get(dep)
             if our_tag is None:
                 # First-time: treat as drift (we should adopt upstream's
