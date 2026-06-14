@@ -300,23 +300,20 @@ def handle_tus_hook():
                     update_run_status(run_id, "completed", progress=100)
 
             elif purpose == 'upgrade_package':
-                # Upload only — DOES NOT auto-apply anymore. The new
-                # "Apply Uploaded Package" card is what triggers
-                # run_offline_upgrade_workflow, after the operator has
-                # reviewed the package's manifest and ticked the
-                # specific modules they want applied. Auto-apply was
-                # the wrong default for air-gap scenarios: the build
-                # server's state had no business deciding what to run
-                # on the target.
+                # Upload only — DOES NOT auto-apply. The operator
+                # triggers run_offline_upgrade_workflow themselves once
+                # they're ready; until then the package just sits at
+                # file_path. The "where to go next" hint that used to
+                # live here was removed 2026-06-14 — it pointed at a
+                # specific UI card name that turned out to be noise in
+                # the workflow log (operator already knows where the
+                # apply control is; the path + completed status is
+                # what matters).
                 print(f"[TUS HOOK] Upgrade package uploaded (deferred apply): "
                       f"{original_filename}", flush=True)
                 if run_id:
                     add_log_to_run(run_id, f"Upload complete: {original_filename}", "success")
                     add_log_to_run(run_id, f"Package path: {file_path}", "info")
-                    add_log_to_run(run_id,
-                                    "Use the 'Apply Uploaded Package' card to "
-                                    "review the manifest and apply.",
-                                    "info")
                     update_run_status(run_id, "completed", progress=100)
 
             return jsonify({"ok": True})
