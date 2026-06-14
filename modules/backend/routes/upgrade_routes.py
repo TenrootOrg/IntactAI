@@ -224,6 +224,9 @@ def list_prepare_modules():
         if not target:
             return jsonify({"success": False, "error": "target required"}), 400
 
+        err = _quota_preflight_or_jsonify(1, "prepare-list (module enumeration)")
+        if err: return err
+
         from services.upgrade.resolver import list_upstream_modules, ResolverError
         try:
             rows = list_upstream_modules(target, user_action='prepare-list')
@@ -338,6 +341,27 @@ def list_pending_packages():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+def _quota_preflight_or_jsonify(needed: int, action: str):
+    """Pre-flight GitHub quota check used by every github-touching route.
+
+    Returns either (None, None) on pass-through OR (jsonify_response,
+    status_code) when the quota is too low. Routes call:
+
+        err = _quota_preflight_or_jsonify(N, "refs fetch")
+        if err: return err
+
+    Fail-open: if the rate_limit endpoint itself is unreachable,
+    `check_quota_or_raise` logs a warning and returns silently — we
+    never block on the check failing.
+    """
+    from services.upgrade.resolver import check_quota_or_raise, ResolverQuotaError
+    try:
+        check_quota_or_raise(needed, action)
+        return None
+    except ResolverQuotaError as e:
+        return (jsonify({"success": False, "error": str(e)}), 429)
+
+
 @upgrade_bp.route('/api/upgrade/refs', methods=['POST'])
 def list_upgrade_refs():
     """Operator-triggered (Fetch button). Returns the release/branch list.
@@ -347,6 +371,8 @@ def list_upgrade_refs():
     (not page-load chatter). Returns cached results within the 30-minute
     TTL — so a double-click only spends one GitHub call.
     """
+    err = _quota_preflight_or_jsonify(1, "refs fetch")
+    if err: return err
     try:
         from services.upgrade.resolver import list_github_refs, ResolverError
         try:
@@ -380,6 +406,9 @@ def compute_upgrade_plan():
         target = (data.get('target') or '').strip()
         if not target:
             return jsonify({"success": False, "error": "target required"}), 400
+
+        err = _quota_preflight_or_jsonify(1, "plan compute")
+        if err: return err
 
         from services.upgrade.resolver import compute_plan, ResolverError
         try:
@@ -586,6 +615,12 @@ def prepare_upgrade_package():
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
+        # Pre-flight: prepare hits api.github.com a few times (intact
+        # branches API + maybe DetectRaptor /latest/ redirect). Refuse
+        # early if quota is too low instead of failing mid-run.
+        err = _quota_preflight_or_jsonify(2, "prepare package")
+        if err: return err
+
         target = (data.get('target') or '').strip()
         track_warnings: list = []
         selected_modules = data.get('selected_modules')
@@ -758,6 +793,12 @@ def start_online_upgrade():
         data = request.json
         if not data:
             return jsonify({"error": "No data provided"}), 400
+
+        # Pre-flight: online upgrade prepares + applies in one run, so
+        # it hits all the same github endpoints as prepare. Same quota
+        # cost — refuse early instead of mid-run.
+        err = _quota_preflight_or_jsonify(2, "online upgrade")
+        if err: return err
 
         target = (data.get('target') or '').strip()
         track_warnings: list = []

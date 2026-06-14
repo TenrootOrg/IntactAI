@@ -428,3 +428,59 @@ render_config_from_template() {
         log_info "  Rendered $out from template (placeholder for ${env_var} left empty — provider disabled)"
     fi
 }
+
+# Pre-flight GitHub REST API quota check used by install.sh + lib/upgrade_check.sh.
+#
+# Args:
+#   $1 — needed: how many api.github.com calls this action will burn (int)
+#   $2 — action: human-readable label for the log/error message
+#
+# Returns 0 if quota is sufficient (or fail-open when the rate_limit
+# endpoint itself is unreachable — don't block on the check failing).
+# Returns 1 only when GitHub reports remaining < needed, with the
+# operator-actionable error printed via log_error.
+#
+# Honors GITHUB_TOKEN env var to authenticate the check (and to raise
+# the cap from 60 to 5000/hour). The check call itself does NOT count
+# against the rate limit (api.github.com/rate_limit is explicitly
+# excluded by GitHub).
+#
+# Mirrors services/upgrade/resolver.py:check_quota_or_raise.
+check_github_quota() {
+    local needed=${1:-1}
+    local action=${2:-"github operation"}
+    local auth_header=()
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        auth_header=(-H "Authorization: token $GITHUB_TOKEN")
+    fi
+    local json
+    json=$(curl -sf -H "Accept: application/vnd.github.v3+json" \
+        "${auth_header[@]}" --max-time 10 \
+        https://api.github.com/rate_limit 2>/dev/null) || {
+        log_warn "[GH-QUOTA] $action: rate-limit endpoint unreachable; proceeding without pre-flight check"
+        return 0
+    }
+    local remaining reset
+    remaining=$(echo "$json" | python3 -c \
+        "import sys, json; print(json.load(sys.stdin)['resources']['core']['remaining'])" 2>/dev/null) || {
+        log_warn "[GH-QUOTA] $action: rate_limit response unparseable; proceeding"
+        return 0
+    }
+    reset=$(echo "$json" | python3 -c \
+        "import sys, json; print(json.load(sys.stdin)['resources']['core']['reset'])" 2>/dev/null)
+    local limit=60
+    [[ -n "${GITHUB_TOKEN:-}" ]] && limit=5000
+    local reset_hm reset_min
+    reset_hm=$(date -d "@$reset" +%H:%M 2>/dev/null || echo "unknown")
+    reset_min=$(( (reset - $(date +%s)) / 60 ))
+    if [[ "$remaining" -lt "$needed" ]]; then
+        log_error "GitHub rate limit too low for $action: need $needed, have $remaining/$limit."
+        log_error "  Quota resets at $reset_hm (in ${reset_min} minutes)."
+        if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+            log_error "  Set GITHUB_TOKEN env var to lift the cap from 60 → 5000/hr."
+        fi
+        return 1
+    fi
+    log_info "[GH-QUOTA] $action: needs $needed, have $remaining/$limit remaining (resets $reset_hm)"
+    return 0
+}

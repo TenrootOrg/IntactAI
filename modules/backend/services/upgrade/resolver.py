@@ -28,7 +28,7 @@ import os
 import re
 import time
 import yaml
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import requests
 
@@ -88,6 +88,124 @@ def _gh_call_log(path: str, action: str):
 
 
 # ─── Public API ───────────────────────────────────────────────────────────
+
+def get_github_rate_limit() -> Optional[Dict]:
+    """Fetch current GitHub REST API quota state.
+
+    The ``api.github.com/rate_limit`` endpoint is explicitly excluded
+    from the rate-limit counter itself (per GitHub's docs:
+    "Accessing this endpoint does not count against your REST API
+    rate limit"), so we can poll it as often as needed without
+    burning quota.
+
+    Returns ``None`` on any failure (network, JSON parse, missing key)
+    so callers can fail-open — checking the rate limit must never
+    block a workflow just because the operator's network can't reach
+    github's status endpoint (could be an offline mirror).
+    """
+    import time as _time
+    headers = {'Accept': 'application/vnd.github.v3+json'}
+    token = os.environ.get('GITHUB_TOKEN')
+    if token:
+        headers['Authorization'] = f'token {token}'
+    try:
+        resp = requests.get(
+            'https://api.github.com/rate_limit',
+            headers=headers, timeout=10,
+        )
+    except requests.RequestException:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        core = resp.json().get('resources', {}).get('core', {})
+    except Exception:
+        return None
+    remaining = core.get('remaining')
+    limit = core.get('limit')
+    used = core.get('used')
+    reset = core.get('reset')
+    if remaining is None or reset is None:
+        return None
+    reset_in = max(0, int(reset) - int(_time.time()))
+    # Format reset time as local HH:MM for the operator-facing message.
+    try:
+        reset_hm = _time.strftime('%H:%M', _time.localtime(int(reset)))
+    except Exception:
+        reset_hm = 'unknown'
+    return {
+        'remaining': int(remaining),
+        'limit': int(limit) if limit is not None else None,
+        'used': int(used) if used is not None else None,
+        'reset_epoch': int(reset),
+        'reset_in_seconds': reset_in,
+        'reset_hm': reset_hm,
+        'authed': bool(token),
+    }
+
+
+class ResolverQuotaError(Exception):
+    """GitHub rate limit too low to start the requested workflow.
+
+    Separate from :class:`ResolverError` so route handlers can map it
+    to HTTP 429 (Too Many Requests) instead of the generic 502.
+    """
+    pass
+
+
+def check_quota_or_raise(needed: int, action_name: str,
+                          log: Optional[Callable] = None) -> None:
+    """Pre-flight: refuse to start an action if quota is insufficient.
+
+    Fail-open semantics — if `get_github_rate_limit()` returns None
+    (endpoint unreachable, network blip), we PROCEED without
+    blocking. The advisory check is to give the operator a clear
+    "you'll hit the limit, wait N minutes" message BEFORE the
+    workflow runs, not to be a hard gate that misbehaves when the
+    operator's network is weird.
+
+    Args:
+        needed: upper-bound rate-limit-counted calls this action makes.
+        action_name: human-readable label for the error / log message.
+        log: optional logger function for the success-case info line.
+
+    Raises:
+        ResolverQuotaError when quota < needed.
+    """
+    # Always print to backend stdout (visible in docker logs) so the
+    # [GH-QUOTA] audit trail is grep-able regardless of whether the
+    # caller passed a logger. If a workflow logger is supplied, also
+    # forward into the workflow log so the operator sees it in the
+    # Workflows tab.
+    def _emit(msg: str, level: str = 'info') -> None:
+        print(msg, flush=True)
+        if log is not None:
+            try:
+                log(msg, level)
+            except Exception:
+                pass
+
+    state = get_github_rate_limit()
+    if state is None:
+        _emit(f"[GH-QUOTA] {action_name}: rate-limit endpoint unreachable; "
+              "proceeding without pre-flight check", "warning")
+        return
+    remaining = state['remaining']
+    limit = state['limit'] or 60
+    reset_hm = state['reset_hm']
+    reset_min = max(0, state['reset_in_seconds'] // 60)
+    authed_note = '' if state['authed'] else ' Set GITHUB_TOKEN to lift the cap from 60 → 5000/hr.'
+    if remaining < needed:
+        _emit(f"[GH-QUOTA] {action_name}: REFUSED — needs {needed}, have {remaining}/{limit} "
+              f"(resets {reset_hm}, in {reset_min}m)", "error")
+        raise ResolverQuotaError(
+            f"GitHub rate limit too low for {action_name}: "
+            f"need {needed}, have {remaining}. "
+            f"Quota resets at {reset_hm} (in {reset_min} minutes).{authed_note}"
+        )
+    _emit(f"[GH-QUOTA] {action_name}: needs {needed} calls, "
+          f"have {remaining}/{limit} remaining (resets {reset_hm})", "info")
+
 
 def list_github_refs(user_action: str = 'fetch') -> List[Dict]:
     """Return the dropdown list for the Fetch button.
