@@ -1286,6 +1286,60 @@ def run_online_upgrade_workflow(modules: Dict[str, str], run_id: str = None,
     persistent_work_dir = f"/app/data/tmp/{package_name}"
     os.makedirs("/app/data/tmp", exist_ok=True)
 
+    # Pre-prepare config.yaml merge: fetch the target intact ref's
+    # config.yaml from GitHub and merge its `versions:` block into the
+    # operator's local config.yaml BEFORE the prepare step reads it.
+    # Without this, prepare reads the operator's STALE versions:
+    # block — an operator on test-1 (timesketch_opensearch: 2.11.0)
+    # who triggers an upgrade to test-2 (which ships 2.19.5) would
+    # otherwise bundle opensearch:2.11.0 because the prepare side
+    # reads config.yaml BEFORE the apply-side intact-step's merge
+    # has run. Operator hit this 2026-06-15. Skipped when intact
+    # isn't in the modules dict.
+    intact_ref = modules.get('intact')
+    if intact_ref:
+        try:
+            from services.upgrade.resolver import fetch_upstream_config
+            from services.upgrade.intact import merge_versions_from_new_config
+            import tempfile, yaml as _yaml
+            log(f"Fetching target config.yaml from intact @ {intact_ref} "
+                f"for pre-prepare versions: merge...", "info")
+            target_cfg = fetch_upstream_config(intact_ref, user_action='submit')
+            # Write the dict to a temp file so the text-level merge
+            # helper can read it (it operates on file paths, not dicts,
+            # to keep the merge logic uniform between online + offline
+            # flows). Dump preserves the source structure well enough
+            # for the helper's regex extractors.
+            with tempfile.NamedTemporaryFile(
+                    mode='w', suffix='.yaml', delete=False) as tmp:
+                _yaml.safe_dump(target_cfg, tmp, sort_keys=False,
+                                default_flow_style=False)
+                tmp_path = tmp.name
+            operator_config = os.path.join(WORKDIR, 'config.yaml')
+            merge_result = merge_versions_from_new_config(
+                tmp_path, operator_config, logger=log,
+            )
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+            if merge_result.get('success'):
+                upd = merge_result.get('updated') or {}
+                add = merge_result.get('added') or {}
+                if upd or add:
+                    log(f"Pre-prepare config.yaml merge: "
+                        f"{len(upd)} updated, {len(add)} added — "
+                        f"prepare will now read the new versions",
+                        "success")
+                else:
+                    log(f"Pre-prepare config.yaml merge: already up-to-date",
+                        "info")
+        except Exception as e:
+            log(f"Pre-prepare config.yaml merge failed "
+                f"({type(e).__name__}: {e}); prepare will use the "
+                f"operator's existing versions — pins may be stale",
+                "warning")
+
     prepare_result = prepare_upgrade_package(
         modules=modules,
         run_id=run_id,
