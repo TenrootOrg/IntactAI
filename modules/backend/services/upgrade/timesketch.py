@@ -797,16 +797,25 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
         log("Clearing stale pip packages from volume...", "info")
         _clear_timesketch_pip_cache(log)
 
-        # Load docker images
-        log("Loading docker images from package...", "info")
-        ts_tar = os.path.join(images_dir, f"timesketch-{version}.tar")
-        if os.path.exists(ts_tar):
-            load_docker_image(ts_tar, logger=log, run_id=run_id)
+        # Load docker images. Use load_all_bundled_images (same helper
+        # the install path uses) so the four timesketch sidecars
+        # (postgres / opensearch / redis / nginx) get loaded alongside
+        # the primary tar. Idempotent — docker load on an
+        # already-loaded image is a no-op, so a later module's upgrade
+        # re-loading the same tar is harmless.
+        #
+        # Before this: the upgrade explicitly loaded ONLY
+        # timesketch-<v>.tar and trusted compose-up to find the
+        # sidecars in the local docker store. On air-gap targets where
+        # the sidecars had never been pulled (or where the pins
+        # changed between install and upgrade — e.g. opensearch
+        # 2.11.0 → 2.19.5) compose-up failed with "No such image:
+        # opensearchproject/opensearch:<new tag>" and the whole
+        # timesketch upgrade rolled back. 2026-06-15 incident.
+        from .base import load_all_bundled_images
+        load_all_bundled_images(package_dir, logger=log, run_id=run_id)
 
         if plaso_version:
-            plaso_tar = os.path.join(images_dir, f"plaso-{plaso_version}.tar")
-            if os.path.exists(plaso_tar):
-                load_docker_image(plaso_tar, logger=log, run_id=run_id)
             log(f"Updating Plaso version to {plaso_version}...", "info")
             update_env_file(backend_env, 'PLASO_VERSION', plaso_version, logger=log)
 
