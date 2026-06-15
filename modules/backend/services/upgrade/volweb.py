@@ -142,26 +142,29 @@ def upgrade_volweb_offline(
         log(f"VolWeb already at {version}; no change", "info")
         return {"success": True, "version": version, "noop": True}
 
-    # 1. Load both images from the bundle. Backend is required;
-    # frontend is best-effort (a transitional prepare-package built
-    # before this refactor will only bundle the backend, in which case
-    # the frontend stays on whatever's already pulled).
+    # 1. Load every bundled image. Same rationale as timesketch's
+    # upgrade path: VolWeb's compose declares two sidecars
+    # (volweb_postgres, volweb_redis) whose tags can drift between
+    # install and upgrade. Loading only the primary tars would leave
+    # compose-up to find sidecars in the local docker store — which
+    # fails air-gap with "No such image" the moment a sidecar pin
+    # bumps. load_all_bundled_images is idempotent (docker load on
+    # an already-loaded image is a no-op).
+    #
+    # Sanity: confirm the primary backend tar is bundled before we
+    # commit to the version bump — without it, compose-up would
+    # silently start the stack at the old pin and the operator
+    # would think the upgrade succeeded.
     backend_tar = os.path.join(package_dir, "images", f"volweb-backend-{version}.tar")
     if not os.path.exists(backend_tar):
         return {
             "success": False,
             "error": f"image bundle missing: {backend_tar}",
         }
-    loaded = load_docker_image(backend_tar, logger=log, run_id=run_id)
-    if not loaded.get("success"):
-        return {"success": False, "error": f"docker load failed (backend): {loaded.get('error')}"}
-
+    from .base import load_all_bundled_images
+    load_all_bundled_images(package_dir, logger=log, run_id=run_id)
     frontend_tar = os.path.join(package_dir, "images", f"volweb-frontend-{version}.tar")
-    if os.path.exists(frontend_tar):
-        loaded = load_docker_image(frontend_tar, logger=log, run_id=run_id)
-        if not loaded.get("success"):
-            log(f"frontend image load failed (continuing with current frontend): {loaded.get('error')}", "warning")
-    else:
+    if not os.path.exists(frontend_tar):
         log(f"frontend image bundle absent ({frontend_tar}) — frontend stays on current pin", "warning")
 
     # 2. Bump both pins + recreate
