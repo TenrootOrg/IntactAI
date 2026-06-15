@@ -30,6 +30,36 @@
         </template>
     </div>
 
+    <!-- Top-of-screen toast for upgrade-modal errors + quota warnings.
+         Distinct from the right-corner stack above: this one sits dead-
+         center at the top so it can't be missed when the operator is
+         scrolled inside a modal. Driven by $store.settings.topToast. -->
+    <div x-data
+         x-show="$store.settings.topToast.show"
+         x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0 -translate-y-2"
+         x-transition:enter-end="opacity-100 translate-y-0"
+         x-transition:leave="transition ease-in duration-150"
+         x-transition:leave-start="opacity-100"
+         x-transition:leave-end="opacity-0"
+         class="fixed top-4 right-4 z-[200] max-w-md w-[28rem]"
+         style="display:none">
+        <div class="rounded-lg shadow-2xl border-2 px-4 py-3 text-sm flex items-start gap-3"
+             :class="$store.settings.topToast.type === 'error' ? 'bg-red-950 border-red-500 text-red-100'
+                     : $store.settings.topToast.type === 'success' ? 'bg-green-950 border-green-500 text-green-100'
+                     : 'bg-blue-950 border-blue-500 text-blue-100'">
+            <svg x-show="$store.settings.topToast.type === 'error'" class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <svg x-show="$store.settings.topToast.type !== 'error'" class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <span class="flex-1" x-text="$store.settings.topToast.msg"></span>
+            <button @click="$store.settings.topToast = { ...$store.settings.topToast, show: false }"
+                    class="text-current opacity-60 hover:opacity-100 flex-shrink-0">&times;</button>
+        </div>
+    </div>
+
     <div class="flex">
         <!-- Left Sidebar -->
         <aside class="sidebar bg-gray-800 overflow-y-auto border-r border-gray-700 transition-all duration-300 flex flex-col"
@@ -4509,59 +4539,65 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
 
                         <!-- ─── TRACK VIEW ────────────────────────────────────
                              Pick one Intact release; backend derives the per-module
-                             work list. Operator can opt-in to modules they don't
-                             currently have (e.g. prowler on a non-AWS environment).
-                             Forced rows have no checkbox — installed modules MUST
-                             be upgraded to keep customers on tested combos. -->
+                             work list. Auto-fetched on modal open — no "Fetch
+                             Releases" / "Compute Plan" / "Show Modules" buttons;
+                             selecting a different release re-runs the next step
+                             automatically. -->
                         <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="space-y-4 max-h-96 overflow-y-auto">
 
-                            <!-- Step 1: release picker -->
+                            <!-- GitHub quota banner -->
+                            <div x-show="$store.settings.githubQuota && $store.settings.githubQuota.success"
+                                 class="text-xs px-3 py-2 rounded border"
+                                 :class="$store.settings.githubQuota && $store.settings.githubQuota.remaining <= 10
+                                     ? 'bg-red-950/40 border-red-700/60 text-red-300'
+                                     : 'bg-gray-900 border-gray-700 text-gray-400'">
+                                <span x-show="$store.settings.githubQuota && $store.settings.githubQuota.remaining > 10">
+                                    GitHub API: <span class="font-mono" x-text="($store.settings.githubQuota?.remaining || 0) + '/' + ($store.settings.githubQuota?.limit || 60)"></span> calls remaining
+                                    (resets <span class="font-mono" x-text="$store.settings.githubQuota?.reset_hm || ''"></span><span x-show="$store.settings.githubQuota && !$store.settings.githubQuota.authed"> — anonymous IP, 60/hr cap</span>).
+                                    Cold-cache fetches can take up to a minute.
+                                </span>
+                                <span x-show="$store.settings.githubQuota && $store.settings.githubQuota.remaining <= 10">
+                                    ⚠ GitHub quota low: <span class="font-mono" x-text="($store.settings.githubQuota?.remaining || 0) + '/' + ($store.settings.githubQuota?.limit || 60)"></span> calls left
+                                    (resets <span class="font-mono" x-text="$store.settings.githubQuota?.reset_hm || ''"></span>). The upgrade flow needs a couple more — wait for reset if you hit a 429.
+                                </span>
+                            </div>
+
+                            <!-- Step 1: release picker (auto-fetched on open) -->
                             <div class="bg-gray-900 rounded border border-gray-700 p-3">
                                 <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">1. Pick an Intact release</label>
                                 <div class="flex gap-2 items-center">
                                     <select x-model="$store.settings.selectedRef"
+                                            @change="$store.settings.onSelectedRefChange()"
                                             :disabled="$store.settings.fetchingRefs || !$store.settings.upgradeRefs.length"
                                             class="flex-1 bg-gray-700 text-white text-sm px-2 py-1.5 rounded border border-gray-600 focus:border-blue-500 disabled:opacity-50">
-                                        <option value="" x-show="!$store.settings.upgradeRefs.length">— click Fetch to load —</option>
+                                        <option value="" disabled x-text="$store.settings.fetchingRefs ? 'Loading releases…' : 'Pick release version'"></option>
                                         <template x-for="ref in $store.settings.upgradeRefs" :key="ref.name">
                                             <option :value="ref.name" x-text="ref.label"></option>
                                         </template>
                                     </select>
                                     <button @click="$store.settings.fetchUpgradeRefs()"
                                             :disabled="$store.settings.fetchingRefs"
-                                            class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-3 py-1.5 rounded text-sm">
-                                        <span x-show="!$store.settings.fetchingRefs">Fetch releases</span>
-                                        <span x-show="$store.settings.fetchingRefs">Fetching…</span>
+                                            title="Refresh release list from GitHub"
+                                            class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-2 py-1.5 rounded text-sm">
+                                        <svg class="w-4 h-4" :class="$store.settings.fetchingRefs ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                                        </svg>
                                     </button>
                                 </div>
                                 <p class="text-gray-500 text-xs mt-2">
-                                    Hitting Fetch calls the GitHub releases API once. Results are cached for 30 minutes — clicking again within that window is free.
+                                    Releases auto-loaded when you opened this dialog. Backend caches for 30 minutes; the refresh button only spends a GitHub call if the cache is stale.
                                 </p>
                             </div>
 
-                            <!-- Step 2 (ONLINE mode): compute plan -->
-                            <div x-show="$store.settings.selectedRef && $store.settings.prepareModalMode === 'online'" class="bg-gray-900 rounded border border-gray-700 p-3">
-                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">2. Compute the plan</label>
-                                <button @click="$store.settings.computeUpgradePlan()"
-                                        :disabled="$store.settings.computingPlan"
-                                        class="bg-blue-700 hover:bg-blue-600 disabled:opacity-50 px-4 py-1.5 rounded text-sm">
-                                    <span x-show="!$store.settings.computingPlan">Compute plan</span>
-                                    <span x-show="$store.settings.computingPlan">Computing…</span>
-                                </button>
-                            </div>
-
-                            <!-- Step 2 (PREPARE mode): show modules -->
-                            <div x-show="$store.settings.selectedRef && $store.settings.prepareModalMode === 'prepare'" class="bg-gray-900 rounded border border-gray-700 p-3">
-                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">2. Show modules to bundle</label>
-                                <button @click="$store.settings.showPrepareModules()"
-                                        :disabled="$store.settings.showingPrepareModules"
-                                        class="bg-blue-700 hover:bg-blue-600 disabled:opacity-50 px-4 py-1.5 rounded text-sm">
-                                    <span x-show="!$store.settings.showingPrepareModules">Show modules</span>
-                                    <span x-show="$store.settings.showingPrepareModules">Loading…</span>
-                                </button>
-                                <p class="text-gray-500 text-xs mt-2">
-                                    Lists every module shipped with this release. Build-server's installed state is ignored — you're choosing what to bundle for a (possibly different) air-gap target.
-                                </p>
+                            <!-- Spinner while plan/modules auto-load -->
+                            <div x-show="$store.settings.selectedRef && ($store.settings.computingPlan || $store.settings.showingPrepareModules)"
+                                 class="flex items-center justify-center py-4 text-sm text-gray-400">
+                                <svg class="animate-spin h-4 w-4 mr-2 text-blue-500" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                <span x-show="$store.settings.prepareModalMode === 'online'">Computing plan from GitHub… (up to 60 s)</span>
+                                <span x-show="$store.settings.prepareModalMode === 'prepare'">Loading module list from GitHub… (up to 60 s)</span>
                             </div>
 
                             <!-- Step 3 (PREPARE mode): flat checkbox list, all pre-checked.
