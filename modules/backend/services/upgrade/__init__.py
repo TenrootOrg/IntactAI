@@ -596,6 +596,27 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     log(f"Modules to upgrade: {', '.join(remaining)}", "info")
     log("=" * 50, "info")
 
+    # STRUCTURAL: pre-load every bundled image into the local docker
+    # store BEFORE the per-module loop. Eliminates the "did this
+    # module's upgrade function remember to load its sidecar tars?"
+    # failure mode that hit timesketch on 2026-06-15 (opensearch /
+    # postgres / redis / nginx tars were bundled but the upgrade
+    # function only loaded the primary timesketch tar; compose-up
+    # then failed with "No such image"). With this call here, every
+    # module's compose-up finds every bundled image already in the
+    # store — regardless of what the per-module upgrade function
+    # does or doesn't do. Per-module load_all_bundled_images calls
+    # (in timesketch.py + volweb.py) become redundant safety nets;
+    # `docker load` is idempotent so re-loading costs nothing.
+    if package_dir:
+        try:
+            from .base import load_all_bundled_images
+            load_all_bundled_images(package_dir, logger=log, run_id=run_id)
+        except Exception as _e:
+            log(f"Pre-load of bundled images raised "
+                f"({type(_e).__name__}: {_e}); per-module load "
+                f"fallbacks will still run.", "warning")
+
     try:
         for module_name in upgrade_order:
             if module_name not in modules or module_name in completed_modules:
@@ -983,6 +1004,22 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     if run_id:
         save_upgrade_state(run_id, 'phase1', modules_dict, [], 'offline', extract_dir, package_path,
                            db_overwrite=db_overwrite)
+
+    # STRUCTURAL: see comment at the equivalent spot in
+    # resume_upgrade_workflow. Same rationale, same idempotency.
+    # This call covers the Phase 1 leg (intact upgrade + any
+    # modules that run before the backend restart). After restart,
+    # resume_upgrade_workflow re-runs the pre-load (cheap no-op
+    # for already-loaded images), keeping both Phase-1-only and
+    # Phase-2-resume paths self-contained.
+    if package_dir:
+        try:
+            from .base import load_all_bundled_images
+            load_all_bundled_images(package_dir, logger=log, run_id=run_id)
+        except Exception as _e:
+            log(f"Pre-load of bundled images raised "
+                f"({type(_e).__name__}: {_e}); per-module load "
+                f"fallbacks will still run.", "warning")
 
     try:
         for module_name in upgrade_order:
