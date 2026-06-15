@@ -4593,7 +4593,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                     </label>
                                 </template>
                                 <div class="text-gray-500 text-xs mt-2"
-                                     x-text="$store.settings.prepareSelected.length + ' / ' + $store.settings.prepareModules.length + ' modules will be bundled'"></div>
+                                     x-text="($store.settings.prepareSelected?.length || 0) + ' / ' + ($store.settings.prepareModules?.length || 0) + ' modules will be bundled'"></div>
                             </div>
 
                             <!-- Step 3 (ONLINE mode): plan preview -->
@@ -4604,8 +4604,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 <div class="mb-3 text-xs text-gray-300 bg-blue-900/30 border border-blue-700/40 rounded p-2"
                                      x-show="$store.settings.upgradePlan && $store.settings.upgradePlan.chain && $store.settings.upgradePlan.chain.length">
                                     <span x-text="'You are on Intact ' + ($store.settings.upgradePlan?.current_intact_version || 'unknown') + '. Target: ' + ($store.settings.upgradePlan?.target || '')"></span>
-                                    <span x-show="$store.settings.upgradePlan && $store.settings.upgradePlan.chain.length > 1"
-                                          x-text="' — will apply ' + $store.settings.upgradePlan.chain.length + ' releases sequentially: ' + $store.settings.upgradePlan.chain.join(' → ')"></span>
+                                    <span x-show="$store.settings.upgradePlan?.chain?.length > 1"
+                                          x-text="' — will apply ' + ($store.settings.upgradePlan?.chain?.length || 0) + ' releases sequentially: ' + ($store.settings.upgradePlan?.chain?.join(' → ') || '')"></span>
                                 </div>
 
                                 <!-- Forced rows (no checkbox) -->
