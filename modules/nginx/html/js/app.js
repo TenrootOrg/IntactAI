@@ -991,41 +991,109 @@ document.addEventListener('alpine:init', () => {
         fetchingRefs: false,
         computingPlan: false,
         showingPrepareModules: false,
+        // GitHub API rate-limit snapshot fetched on modal open. Drives
+        // the in-modal banner — "X calls remaining, resets at HH:MM" —
+        // and the warning when the quota is low enough that the next
+        // workflow might 429.  Shape mirrors /api/upgrade/quota.
+        githubQuota: null,
+        // Persistent top-of-screen toast (separate from the bottom
+        // ephemeral `message`). Used for errors that the operator MUST
+        // see even when the upgrade modal is open and scrolled.
+        topToast: { msg: '', type: 'info', show: false },
+        _topToastTimer: null,
+
+        // ─── Top-of-screen toast ─────────────────────────────────────
+        // Fixed-position notification that floats over modals. Used
+        // when the user MUST see an error even while the upgrade modal
+        // is open and scrolled mid-list. Errors stay 8s; success 4s.
+        showTopToast(msg, type = 'info') {
+            if (this._topToastTimer) {
+                clearTimeout(this._topToastTimer);
+                this._topToastTimer = null;
+            }
+            this.topToast = { msg, type, show: true };
+            const ms = type === 'error' ? 8000 : 4000;
+            this._topToastTimer = setTimeout(() => {
+                this.topToast = { ...this.topToast, show: false };
+            }, ms);
+        },
+
+        // ─── Fetch with timeout ──────────────────────────────────────
+        // Default 60 s — matches GitHub's worst-case response time on
+        // a cold cache. The upgrade modal's three fetches (refs / plan
+        // / prepare-list) all want this generous a budget; the
+        // operator hit silent timeouts at the browser default
+        // (~30 s) on slow upstream days.
+        async _fetchWithTimeout(url, opts = {}, timeoutMs = 60000) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), timeoutMs);
+            try {
+                return await fetch(url, { ...opts, signal: controller.signal });
+            } finally {
+                clearTimeout(timer);
+            }
+        },
+
+        // ─── GitHub quota probe ──────────────────────────────────────
+        // Hits the backend's cached rate_limit snapshot — no GitHub
+        // round-trip. Stores the result on `githubQuota` so the modal
+        // banner can render "X/Y remaining (resets HH:MM)" and the
+        // auto-fetch chain can warn before spending the budget.
+        async fetchGithubQuota() {
+            try {
+                const r = await this._fetchWithTimeout('/api/upgrade/quota', { method: 'GET' }, 10000);
+                const d = await r.json();
+                if (d && d.success) {
+                    this.githubQuota = d;
+                    return d;
+                }
+                this.githubQuota = null;
+                return null;
+            } catch (e) {
+                this.githubQuota = null;
+                return null;
+            }
+        },
 
         async fetchUpgradeRefs() {
-            // Operator-triggered (the Fetch button). Backend caches for
-            // 30 min — clicking twice within that window is free.
+            // Hits GitHub's releases endpoint (one anonymous call).
+            // Backend caches for 30 min — auto-triggered on modal
+            // open + reusable by the operator clicking the manual
+            // refresh affordance. 60s timeout to ride out slow
+            // GitHub days. selectedRef intentionally left empty —
+            // the operator picks one, and the @change handler fires
+            // the next step. No auto-pick + no auto-plan.
             this.fetchingRefs = true;
             this.upgradeRefs = [];
             this.selectedRef = '';
             this.upgradePlan = null;
             try {
-                const r = await fetch('/api/upgrade/refs', {method: 'POST'});
+                const r = await this._fetchWithTimeout('/api/upgrade/refs', { method: 'POST' });
                 const d = await r.json();
                 if (d && d.success) {
                     this.upgradeRefs = d.refs || [];
-                    if (this.upgradeRefs.length) {
-                        this.selectedRef = this.upgradeRefs[0].name;
-                    }
                 } else {
-                    this.showMessage('Could not fetch releases: ' + (d.error || 'unknown'), 'error');
+                    this.showTopToast('Could not fetch releases: ' + (d.error || 'unknown'), 'error');
                 }
             } catch (e) {
-                this.showMessage('Fetch releases failed: ' + e.message, 'error');
+                const msg = e.name === 'AbortError'
+                    ? 'Fetch releases timed out after 60s — GitHub may be slow; try again in a minute.'
+                    : 'Fetch releases failed: ' + e.message;
+                this.showTopToast(msg, 'error');
             }
             this.fetchingRefs = false;
         },
 
         async computeUpgradePlan() {
             if (!this.selectedRef) {
-                this.showMessage('Pick a release first', 'error');
+                this.showTopToast('Pick a release first', 'error');
                 return;
             }
             this.computingPlan = true;
             this.upgradePlan = null;
             this.optedInOptional = [];
             try {
-                const r = await fetch('/api/upgrade/plan', {
+                const r = await this._fetchWithTimeout('/api/upgrade/plan', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({target: this.selectedRef}),
@@ -1034,10 +1102,13 @@ document.addEventListener('alpine:init', () => {
                 if (d && d.success) {
                     this.upgradePlan = d.plan;
                 } else {
-                    this.showMessage('Plan failed: ' + (d.error || 'unknown'), 'error');
+                    this.showTopToast('Plan failed: ' + (d.error || 'unknown'), 'error');
                 }
             } catch (e) {
-                this.showMessage('Plan request failed: ' + e.message, 'error');
+                const msg = e.name === 'AbortError'
+                    ? 'Plan compute timed out after 60s — GitHub may be slow; try again.'
+                    : 'Plan request failed: ' + e.message;
+                this.showTopToast(msg, 'error');
             }
             this.computingPlan = false;
         },
@@ -1058,14 +1129,14 @@ document.addEventListener('alpine:init', () => {
         // don't know yet).
         async showPrepareModules() {
             if (!this.selectedRef) {
-                this.showMessage('Pick a release first', 'error');
+                this.showTopToast('Pick a release first', 'error');
                 return;
             }
             this.showingPrepareModules = true;
             this.prepareModules = null;
             this.prepareSelected = [];
             try {
-                const r = await fetch('/api/upgrade/prepare-list', {
+                const r = await this._fetchWithTimeout('/api/upgrade/prepare-list', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({target: this.selectedRef}),
@@ -1077,10 +1148,13 @@ document.addEventListener('alpine:init', () => {
                     // exclude from the tarball.
                     this.prepareSelected = this.prepareModules.map(r => r.module);
                 } else {
-                    this.showMessage('Module list failed: ' + (d.error || 'unknown'), 'error');
+                    this.showTopToast('Module list failed: ' + (d.error || 'unknown'), 'error');
                 }
             } catch (e) {
-                this.showMessage('Module list request failed: ' + e.message, 'error');
+                const msg = e.name === 'AbortError'
+                    ? 'Module list timed out after 60s — GitHub may be slow; try again.'
+                    : 'Module list request failed: ' + e.message;
+                this.showTopToast(msg, 'error');
             }
             this.showingPrepareModules = false;
         },
@@ -1148,14 +1222,43 @@ document.addEventListener('alpine:init', () => {
             this.prepareRunId = null;
             this.preparePackageReady = false;
             this.preparePackageSize = '';
-            // Reset track-view state. We don't pre-fetch GitHub on modal
-            // open per the call discipline — see services/upgrade/resolver.py.
             this.upgradeRefs = [];
             this.selectedRef = '';
             this.upgradePlan = null;
             this.optedInOptional = [];
             this.prepareModules = null;
             this.prepareSelected = [];
+            this.githubQuota = null;
+
+            // Minimal auto-chain on open: load the quota snapshot (for
+            // the in-modal banner) and the release list (so the
+            // dropdown is populated). The plan/module-list only fires
+            // when the operator actually picks a release in the
+            // dropdown — see onSelectedRefChange. Quota warning is the
+            // only top-toast that fires on open, and only when the
+            // quota is uncomfortably low.
+            const quota = await this.fetchGithubQuota();
+            if (quota && quota.success && quota.remaining <= 10) {
+                this.showTopToast(
+                    `GitHub quota low: ${quota.remaining}/${quota.limit} calls left ` +
+                    `(resets ${quota.reset_hm}). The upgrade flow needs ~2 more.` +
+                    (quota.authed ? '' : ' Set GITHUB_TOKEN in modules/backend/.env to raise the cap.'),
+                    'error'
+                );
+            }
+            await this.fetchUpgradeRefs();
+        },
+
+        // Operator picked a different release in the dropdown — re-run
+        // the matching step automatically (plan for online, modules
+        // for prepare). Saves a click; matches the "auto-show" UX.
+        async onSelectedRefChange() {
+            if (!this.selectedRef) return;
+            if (this.prepareModalMode === 'online') {
+                await this.computeUpgradePlan();
+            } else {
+                await this.showPrepareModules();
+            }
         },
 
         closePreparePackageModal() {

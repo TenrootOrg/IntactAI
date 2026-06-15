@@ -423,6 +423,36 @@ def _quota_audit_lines(needed: int) -> list:
     return lines
 
 
+@upgrade_bp.route('/api/upgrade/quota', methods=['GET'])
+def get_upgrade_quota():
+    """Returns the current GitHub rate-limit state for the UI to surface
+    BEFORE the operator triggers a quota-spending call. Cheap (cached
+    in-process); no GitHub round-trip on most invocations.
+
+    Response shape:
+        {
+          "success": true,
+          "remaining": int,     // calls left in the current window
+          "limit":     int,     // window cap (60 anon / 5000 authed)
+          "reset_hm":  str,     // "14:23" — when the window resets
+          "authed":    bool,    // GITHUB_TOKEN present?
+        }
+    On rate_limit endpoint failure: success=false (UI proceeds without
+    a quota gate — mirrors the server's fail-open posture).
+    """
+    from services.upgrade.resolver import get_github_rate_limit
+    state = get_github_rate_limit()
+    if state is None:
+        return jsonify({"success": False, "error": "rate-limit endpoint unreachable"}), 200
+    return jsonify({
+        "success": True,
+        "remaining": state['remaining'],
+        "limit":     state['limit'] or 60,
+        "reset_hm":  state['reset_hm'],
+        "authed":    state['authed'],
+    })
+
+
 @upgrade_bp.route('/api/upgrade/refs', methods=['POST'])
 def list_upgrade_refs():
     """Operator-triggered (Fetch button). Returns the release/branch list.
