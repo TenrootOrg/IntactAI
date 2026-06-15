@@ -331,6 +331,182 @@ pull_compose_with_retry() {
 }
 
 # ============================================================================
+# Resilience helpers (2026-06-15) — pre-flight host health, transient-error
+# retry on compose-up, skip-already-installed detection, daemon-journal
+# dump on failure. Added after the test-1 install hit a systemd-dbus /
+# cgroup transient mid-deploy that the existing pull-only retry layer
+# couldn't catch (the failure was in `docker compose up`, not in the pull).
+# ============================================================================
+
+# preflight_host_check — fast checks that determine if the host is in a
+# state to safely run docker compose. Logs a warning + returns 0 for
+# soft issues, returns non-zero only for hard blockers. Called BEFORE
+# each module's deploy_* so we fail fast with a clear error instead of
+# burning 90 s on image pulls only to crash at compose-up.
+#
+# Args: $1 = module name (for log lines)
+# Returns: 0 OK, 1 hard blocker
+preflight_host_check() {
+    local module_name="$1"
+    local rc=0
+
+    # systemd status — `degraded` is OK (some unrelated unit failed), but
+    # `offline` / `stopping` / no-systemd means cgroup-unit creation will
+    # break compose-up the way it broke the 2026-06-15 test-1 install.
+    if command -v systemctl >/dev/null 2>&1; then
+        local sysd_state
+        sysd_state=$(systemctl is-system-running 2>/dev/null || true)
+        case "$sysd_state" in
+            running|degraded|maintenance|starting)
+                ;;
+            "")
+                # systemctl present but no reply — usually means systemd
+                # itself is unhealthy; treat as soft warn.
+                log_warn "  [preflight $module_name] systemctl returned no state — systemd may be unhappy"
+                ;;
+            *)
+                log_error "  [preflight $module_name] systemd state = $sysd_state (cgroup-unit creation will fail)"
+                rc=1
+                ;;
+        esac
+    fi
+
+    # Docker daemon reachable + responsive.
+    if ! docker info >/dev/null 2>&1; then
+        log_error "  [preflight $module_name] docker daemon not responding to 'docker info'"
+        rc=1
+    fi
+
+    # DNS — only a warning. Some modules don't need internet (e.g. the
+    # offline-apply path), so a broken /etc/resolv.conf shouldn't block
+    # them. install.sh's online path needs github.com though.
+    if ! getent hosts github.com >/dev/null 2>&1; then
+        log_warn "  [preflight $module_name] DNS lookup for github.com failed — online image pulls may fail"
+    fi
+
+    # Memory — log only. The original cgroup-disconnect bug correlated with
+    # back-to-back container creations exhausting systemd's request queue,
+    # but free memory was fine; checking it would have been a red herring.
+    # Surface it informationally so the operator can spot tight installs.
+    if command -v free >/dev/null 2>&1; then
+        local mem_free_mb
+        mem_free_mb=$(free -m 2>/dev/null | awk '/^Mem:/ {print $7}')
+        if [[ -n "$mem_free_mb" ]]; then
+            log_info "  [preflight $module_name] available memory: ${mem_free_mb} MB"
+        fi
+    fi
+
+    return $rc
+}
+
+# is_module_installed — returns 0 when the module's primary container
+# already exists AND is running. Used by deploy_* to skip the heavy
+# compose-up step on install.sh re-runs after a partial failure (the
+# operator's typical recovery action is just `sudo bash install.sh`
+# again; without this they re-pull every image and re-create every
+# volume which sometimes makes things worse).
+#
+# Args: $1 = primary container name
+# Returns: 0 already installed + running, 1 not installed / not running
+is_module_installed() {
+    local container_name="$1"
+    local status
+    status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "")
+    case "$status" in
+        running)  return 0 ;;
+        *)        return 1 ;;
+    esac
+}
+
+# dump_docker_journal_on_failure — when compose-up fails, immediately
+# dump the last 60 s of docker daemon logs to the install log. Gives the
+# operator the daemon-side root cause (dbus disconnect, cgroup unit
+# rejection, runc failure, etc.) without forcing them to SSH and grep
+# journalctl themselves. Best-effort — silent no-op if journalctl isn't
+# available (non-systemd hosts).
+dump_docker_journal_on_failure() {
+    local module_name="$1"
+    if ! command -v journalctl >/dev/null 2>&1; then
+        return 0
+    fi
+    log_info "  [diag $module_name] dumping last 60s of dockerd journal:"
+    journalctl -u docker --since "60 seconds ago" --no-pager 2>/dev/null \
+        | tail -50 \
+        | sed 's/^/    [dockerd] /' \
+        | tee -a "$LOG_FILE"
+}
+
+# run_compose_up_with_retry — retry the `docker compose up -d` call
+# itself when it fails with a known-transient error pattern (dbus
+# disconnect, cgroup-unit creation, port allocation race, daemon-too-
+# busy). Today only image PULLS retry via pull_compose_with_retry; this
+# closes the gap that bit the operator on 2026-06-15 (systemd-dbus
+# disconnect during the cgroup-unit creation for intact_timesketch_web,
+# 30 s of dbus calm would have cleared it).
+#
+# Permanent errors (no such image, port already allocated by a
+# non-compose process, config error) fail-fast on the first try.
+#
+# Args: $1 = module name, $2 = build_timeout (passed to run_docker_compose)
+# Returns: same as run_docker_compose
+run_compose_up_with_retry() {
+    local module_name="$1"
+    local build_timeout="${2:-1800}"
+    local max_attempts=3
+    local delays=(15 45)
+    local attempt=1
+    local logfile_marker
+
+    while [[ $attempt -le $max_attempts ]]; do
+        # Record where we are in the log file so we can scan only THIS
+        # attempt's output for transient-error patterns.
+        logfile_marker=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
+
+        if run_docker_compose "up -d" "$module_name" "$build_timeout"; then
+            if (( attempt > 1 )); then
+                log_success "  ${module_name} compose up succeeded on attempt ${attempt} (previous failure was transient)"
+                INSTALL_WARNINGS+=("  ↳ resolved: ${module_name} compose up succeeded on attempt ${attempt}")
+            fi
+            return 0
+        fi
+
+        # Read just the new bytes added since logfile_marker
+        local recent
+        recent=$(tail -c +"$((logfile_marker + 1))" "$LOG_FILE" 2>/dev/null || true)
+
+        # Classify: transient (worth retrying) vs permanent (don't bother)
+        if echo "$recent" | grep -qiE 'disconnected from message bus|unable to apply cgroup configuration|unable to start unit "docker-.*\.scope"|temporary failure in name resolution|i/o timeout|connection refused|context deadline exceeded|failed to set up container networking|docker-credential-secretservice|too many open files'; then
+            if [[ $attempt -lt $max_attempts ]]; then
+                local delay=${delays[$((attempt - 1))]}
+                log_warn "  ${module_name} compose up failed with TRANSIENT error pattern; retrying in ${delay}s..."
+                dump_docker_journal_on_failure "$module_name"
+                sleep "$delay"
+                ((attempt++))
+                continue
+            fi
+        elif echo "$recent" | grep -qiE 'no such image|port is already allocated|invalid reference format|pull access denied|manifest unknown|repository .* not found'; then
+            log_error "  ${module_name} compose up failed with PERMANENT error pattern; not retrying"
+            dump_docker_journal_on_failure "$module_name"
+            return 1
+        fi
+
+        # Unknown error class — still retry once but don't loop forever.
+        if [[ $attempt -lt $max_attempts ]]; then
+            local delay=${delays[$((attempt - 1))]}
+            log_warn "  ${module_name} compose up failed (unknown error class); retrying in ${delay}s..."
+            dump_docker_journal_on_failure "$module_name"
+            sleep "$delay"
+        fi
+        ((attempt++))
+    done
+
+    log_error "  ${module_name} compose up failed after ${max_attempts} attempts"
+    dump_docker_journal_on_failure "$module_name"
+    return 1
+}
+
+
+# ============================================================================
 # Shared volumes — created BEFORE any compose runs so every module can
 # treat them as `external: true` and nobody fights over ownership.
 # ============================================================================
@@ -382,9 +558,20 @@ deploy_elk() {
         return
     fi
 
+    if is_module_installed intact_elasticsearch; then
+        log_info "[1/7] ELK Stack: already installed + running (skipping)"
+        return 0
+    fi
+
     log_info "[1/7] Starting ELK Stack..."
     log_info "  Directory: ${SCRIPT_DIR}/modules/elk"
     cd "${SCRIPT_DIR}/modules/elk"
+
+    if ! preflight_host_check "ELK Stack"; then
+        log_error "ELK Stack: host pre-flight FAILED — see warnings above"
+        track_module_failure "ELK Stack"
+        return 1
+    fi
 
     # Show what images will be used
     local elk_version=$(read_config "['versions']['elk']")
@@ -394,7 +581,7 @@ deploy_elk() {
         track_module_failure "ELK Stack"
         return 1
     fi
-    if ! run_docker_compose "up -d" "ELK"; then
+    if ! run_compose_up_with_retry "ELK"; then
         log_error "  Docker compose failed!"
         track_module_failure "ELK Stack"
         return 1
@@ -489,9 +676,28 @@ deploy_timesketch() {
         return
     fi
 
+    # Skip-already-installed: install.sh re-runs after a partial failure
+    # should reuse what's healthy instead of re-pulling + re-creating
+    # everything from scratch (which sometimes makes the original
+    # transient worse). intact_timesketch_web is the canary because it
+    # comes up LAST among timesketch's containers; if it's running, the
+    # whole stack is healthy.
+    if is_module_installed intact_timesketch_web; then
+        log_info "[2/7] TimeSketch: already installed + running (skipping)"
+        return 0
+    fi
+
     log_info "[2/7] Starting TimeSketch..."
     log_info "  Directory: ${SCRIPT_DIR}/modules/timesketch"
     cd "${SCRIPT_DIR}/modules/timesketch"
+
+    # Pre-flight: if the host is in a broken state, fail fast instead of
+    # burning 90 s on image pulls only to crash at compose-up time.
+    if ! preflight_host_check "TimeSketch"; then
+        log_error "TimeSketch: host pre-flight FAILED — see warnings above"
+        track_module_failure "TimeSketch"
+        return 1
+    fi
 
     local ts_version=$(read_config "['versions']['timesketch']")
     log_info "  TimeSketch version: ${ts_version:-latest}"
@@ -540,7 +746,7 @@ deploy_timesketch() {
         track_module_failure "TimeSketch"
         return 1
     fi
-    if ! run_docker_compose "up -d" "TimeSketch"; then
+    if ! run_compose_up_with_retry "TimeSketch"; then
         log_error "  Docker compose failed!"
         track_module_failure "TimeSketch"
         return 1
@@ -741,9 +947,20 @@ deploy_velociraptor() {
         return
     fi
 
+    if is_module_installed intact_velociraptor; then
+        log_info "[3/7] Velociraptor: already installed + running (skipping)"
+        return 0
+    fi
+
     log_info "[3/7] Starting Velociraptor..."
     log_info "  Directory: ${SCRIPT_DIR}/modules/velociraptor"
     cd "${SCRIPT_DIR}/modules/velociraptor"
+
+    if ! preflight_host_check "Velociraptor"; then
+        log_error "Velociraptor: host pre-flight FAILED — see warnings above"
+        track_module_failure "Velociraptor"
+        return 1
+    fi
 
     local velo_version=$(read_config "['versions']['velociraptor']")
     log_info "  Velociraptor version: ${velo_version:-latest}"
@@ -760,7 +977,7 @@ deploy_velociraptor() {
         return 1
     fi
 
-    if ! run_docker_compose "up -d" "Velociraptor"; then
+    if ! run_compose_up_with_retry "Velociraptor" 600; then
         log_error "  Docker compose failed!"
         track_module_failure "Velociraptor"
         return 1
@@ -817,9 +1034,20 @@ deploy_iris() {
         return
     fi
 
+    if is_module_installed intact_iris_app; then
+        log_info "[4/7] IRIS: already installed + running (skipping)"
+        return 0
+    fi
+
     log_info "[4/7] Starting IRIS (Incident Response Platform)..."
     log_info "  Directory: ${SCRIPT_DIR}/modules/iris"
     cd "${SCRIPT_DIR}/modules/iris"
+
+    if ! preflight_host_check "IRIS"; then
+        log_error "IRIS: host pre-flight FAILED — see warnings above"
+        track_module_failure "IRIS"
+        return 1
+    fi
 
     local iris_version=$(read_config "['versions']['iris']")
     log_info "  IRIS version: ${iris_version:-latest}"
@@ -842,7 +1070,7 @@ deploy_iris() {
         track_module_failure "IRIS"
         return 1
     fi
-    if ! run_docker_compose "up -d" "IRIS"; then
+    if ! run_compose_up_with_retry "IRIS"; then
         log_error "  Docker compose failed!"
         track_module_failure "IRIS"
         return 1
@@ -1103,7 +1331,7 @@ deploy_portainer() {
         track_module_failure "Portainer"
         return 1
     fi
-    if ! run_docker_compose "up -d" "Portainer"; then
+    if ! run_compose_up_with_retry "Portainer"; then
         log_error "  Docker compose failed!"
         track_module_failure "Portainer"
         return 1
@@ -1142,9 +1370,20 @@ deploy_volweb() {
         return
     fi
 
+    if is_module_installed intact_volweb_backend; then
+        log_info "[5b/7] VolWeb: already installed + running (skipping)"
+        return 0
+    fi
+
     log_info "[5b/7] Starting VolWeb (memory-forensics)..."
     log_info "  Directory: ${SCRIPT_DIR}/modules/volweb"
     cd "${SCRIPT_DIR}/modules/volweb"
+
+    if ! preflight_host_check "VolWeb"; then
+        log_error "VolWeb: host pre-flight FAILED — see warnings above"
+        track_module_failure "VolWeb"
+        return 1
+    fi
 
     # Render modules/volweb/.env from the template + config.yaml pins.
     # Idempotent: existing .env is preserved across re-installs so the
@@ -1208,7 +1447,7 @@ deploy_volweb() {
         return 1
     fi
 
-    if ! run_docker_compose "up -d" "VolWeb"; then
+    if ! run_compose_up_with_retry "VolWeb"; then
         log_error "  Docker compose failed!"
         track_module_failure "VolWeb"
         return 1
@@ -1346,7 +1585,7 @@ deploy_backend() {
 
     # Start
     log_info "  Starting Backend container..."
-    if ! run_docker_compose "up -d" "Backend"; then
+    if ! run_compose_up_with_retry "Backend"; then
         log_error "  Failed to start Backend containers"
         track_module_failure "Backend API"
         return 1
@@ -1441,7 +1680,7 @@ deploy_nginx() {
         track_module_failure "Nginx"
         return 1
     fi
-    if ! run_docker_compose "up -d" "Nginx"; then
+    if ! run_compose_up_with_retry "Nginx"; then
         log_error "  Docker compose failed!"
         track_module_failure "Nginx"
         return 1
