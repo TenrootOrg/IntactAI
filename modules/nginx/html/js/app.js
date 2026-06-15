@@ -806,6 +806,14 @@ document.addEventListener('alpine:init', () => {
         applyDbOverwrite: {},       // per-module fresh-install flags
         loadingApplyInfo: false,
         applying: false,
+        // Map of module-name → current installed version, fetched in
+        // parallel with the manifest when the apply modal opens. Drives
+        // the "current → target [UPGRADE/NO CHANGE/INSTALL]" row
+        // rendering and the same-version warning so the operator can
+        // see at a glance whether the package would actually change
+        // anything before clicking Apply (2026-06-15 incident: operator
+        // re-applied an identical-versions package by mistake).
+        applyCurrentVersions: {},
 
         async loadUploadedPackages() {
             this.loadingPackages = true;
@@ -828,28 +836,97 @@ document.addEventListener('alpine:init', () => {
             this.applyManifest = null;
             this.applySelectedModules = [];
             this.applyDbOverwrite = {};
+            this.applyCurrentVersions = {};
             this.showApplyPackageModal = true;
             this.loadingApplyInfo = true;
             try {
-                const r = await fetch('/api/upgrade/package-info', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({package_path: pkg.path}),
-                });
-                const d = await r.json();
+                // Fetch in parallel — manifest (what the package WILL
+                // install) and current-versions (what's installed RIGHT
+                // NOW). Both feed the side-by-side comparison rendered
+                // in the modal. Current-versions is best-effort: on
+                // failure we render rows with "?" as the current,
+                // which is better than blocking the apply for a
+                // cosmetic read.
+                const [manifestRes, currentRes] = await Promise.all([
+                    fetch('/api/upgrade/package-info', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({package_path: pkg.path}),
+                    }),
+                    fetch('/api/upgrade/current-versions', {method: 'GET'}),
+                ]);
+                const d = await manifestRes.json();
                 if (d && (d.success || d.manifest)) {
                     this.applyManifest = d.manifest || d;
-                    const versions = (this.applyManifest && this.applyManifest.versions) || d.versions || {};
-                    // Default: every packaged module ticked. Operator
-                    // unchecks ones they don't want applied.
-                    this.applySelectedModules = Object.keys(versions);
                 } else {
                     this.showMessage('Manifest read failed: ' + (d.error || 'unknown'), 'error');
+                }
+                try {
+                    const cur = await currentRes.json();
+                    if (cur && cur.success) {
+                        this.applyCurrentVersions = cur.versions || {};
+                    }
+                } catch (_) { /* current-versions is best-effort */ }
+                // Now that BOTH the manifest and current-versions have
+                // landed, seed the selection per the three rules:
+                //   - upgrade / downgrade → forced (in selection, no opt-out)
+                //   - install (module absent locally) → opt-in (NOT seeded)
+                //   - no-change (already at target) → excluded (NOT seeded)
+                // The HTML disables checkboxes for upgrade/no-change so
+                // the operator can only toggle install rows.
+                const versions = (this.applyManifest && this.applyManifest.versions) || {};
+                this.applySelectedModules = [];
+                for (const [name, target] of Object.entries(versions)) {
+                    const action = this.applyModuleAction(name, target);
+                    if (action === 'upgrade' || action === 'downgrade' || action === 'unknown') {
+                        this.applySelectedModules.push(name);
+                    }
                 }
             } catch (e) {
                 this.showMessage('Manifest request failed: ' + e.message, 'error');
             }
             this.loadingApplyInfo = false;
+        },
+
+        // Classify a packaged module against what's installed locally.
+        // Returns one of: 'no-change' (same version), 'upgrade' (target
+        // differs), 'install' (module not currently installed),
+        // 'unknown' (current-versions probe failed). Drives both row
+        // styling and the apply-button warning.
+        applyModuleAction(module, target) {
+            const cur = this.applyCurrentVersions[module];
+            if (!cur || cur === 'unknown') return 'unknown';
+            if (cur === 'Not installed') return 'install';
+            const curStr = String(cur).trim();
+            const tgtStr = String(target).trim();
+            if (curStr === tgtStr) return 'no-change';
+            // Best-effort semver-ish ordering. Falls back to string
+            // compare for non-numeric tags (timesketch's '20260326' vs
+            // '20260611' compares correctly under both paths). Used
+            // only for the UI chip label — backend doesn't gate.
+            const tryNumeric = (s) => s.replace(/^v/, '').split(/[.\-]/).map(p => parseInt(p, 10));
+            const a = tryNumeric(curStr), b = tryNumeric(tgtStr);
+            if (a.every(n => !isNaN(n)) && b.every(n => !isNaN(n))) {
+                for (let i = 0; i < Math.max(a.length, b.length); i++) {
+                    const x = a[i] || 0, y = b[i] || 0;
+                    if (x < y) return 'upgrade';
+                    if (x > y) return 'downgrade';
+                }
+            }
+            return curStr < tgtStr ? 'upgrade' : 'downgrade';
+        },
+
+        // Count of ticked modules that would actually do work. Used to
+        // warn the operator when they're about to apply a package that
+        // changes nothing (the 2026-06-15 same-version mishap).
+        applyChangingCount() {
+            const versions = (this.applyManifest?.versions) || {};
+            let n = 0;
+            for (const mod of this.applySelectedModules) {
+                const action = this.applyModuleAction(mod, versions[mod]);
+                if (action === 'upgrade' || action === 'install') n++;
+            }
+            return n;
         },
 
         closeApplyPackageModal() {
@@ -859,6 +936,15 @@ document.addEventListener('alpine:init', () => {
         },
 
         toggleApplyModule(moduleId) {
+            // Guard: only INSTALL rows are togglable. Upgrade /
+            // downgrade are forced (matches the online-upgrade
+            // convention — installed modules upgrade together with
+            // the chosen package); no-change is excluded. The HTML
+            // already disables those checkboxes; this is a
+            // belt-and-braces check.
+            const target = (this.applyManifest?.versions || {})[moduleId];
+            const action = this.applyModuleAction(moduleId, target);
+            if (action !== 'install') return;
             const idx = this.applySelectedModules.indexOf(moduleId);
             if (idx >= 0) {
                 this.applySelectedModules.splice(idx, 1);
@@ -991,6 +1077,11 @@ document.addEventListener('alpine:init', () => {
         fetchingRefs: false,
         computingPlan: false,
         showingPrepareModules: false,
+        // Current installed Intact tag, fetched on modal open. Used
+        // by the dropdown filter so older releases are NOT selectable
+        // — prevents the operator from accidentally picking a
+        // downgrade target. Unknown → no filter (permissive fallback).
+        currentIntactVersion: '',
         // GitHub API rate-limit snapshot fetched on modal open. Drives
         // the in-modal banner — "X calls remaining, resets at HH:MM" —
         // and the warning when the quota is low enough that the next
@@ -1039,6 +1130,58 @@ document.addEventListener('alpine:init', () => {
         // round-trip. Stores the result on `githubQuota` so the modal
         // banner can render "X/Y remaining (resets HH:MM)" and the
         // auto-fetch chain can warn before spending the budget.
+        // Fetch the running Intact version (VERSION file). Cheap
+        // GET that doesn't touch GitHub. Drives the dropdown filter
+        // so the operator can't pick an older release.
+        async fetchCurrentIntactVersion() {
+            try {
+                const r = await this._fetchWithTimeout('/api/version', { method: 'GET' }, 5000);
+                const d = await r.json();
+                this.currentIntactVersion = (d && d.version) ? d.version : '';
+            } catch (_) {
+                this.currentIntactVersion = '';
+            }
+        },
+
+        // Classify a ref relative to currentIntactVersion. Returns
+        // 'newer' | 'same' | 'older' | 'rolling' | 'unknown'.
+        //
+        // Strategy: extract the YYYYMMDD date portion from
+        // `intact-<date>[-suffix]` tag names and compare dates.
+        // - same date + same name → 'same' (allow refresh)
+        // - same date + different suffix (e.g. -old-modules) → 'older'
+        //   (these are baseline / companion releases, not upgrade
+        //   targets, so we hide them)
+        // - different dates → numeric date compare
+        // - `development` branch → always 'rolling' (allow)
+        // - unparseable → 'unknown' (allow, permissive fallback)
+        classifyUpgradeRef(ref) {
+            if (!ref || !ref.name) return 'unknown';
+            if (ref.kind === 'branch') return 'rolling';
+            const cur = this.currentIntactVersion || '';
+            const dateRx = /^intact-(\d{8})/;
+            const curMatch = cur.match(dateRx);
+            const refMatch = ref.name.match(dateRx);
+            if (!curMatch || !refMatch) return 'unknown';
+            const curDate = curMatch[1];
+            const refDate = refMatch[1];
+            if (refDate > curDate) return 'newer';
+            if (refDate < curDate) return 'older';
+            // Same date — only the EXACT same tag name counts as
+            // "same release", not a companion variant.
+            return ref.name === cur ? 'same' : 'older';
+        },
+
+        // Dropdown source: filter out 'older' refs so the operator
+        // can't pick a downgrade target. Online mode applies the
+        // filter; prepare mode keeps everything (the operator may
+        // legitimately want to build a package for an older air-gap
+        // host). `development` always survives the filter.
+        filteredUpgradeRefs() {
+            if (this.prepareModalMode !== 'online') return this.upgradeRefs;
+            return this.upgradeRefs.filter(r => this.classifyUpgradeRef(r) !== 'older');
+        },
+
         async fetchGithubQuota() {
             try {
                 const r = await this._fetchWithTimeout('/api/upgrade/quota', { method: 'GET' }, 10000);
@@ -1229,6 +1372,12 @@ document.addEventListener('alpine:init', () => {
             this.prepareModules = null;
             this.prepareSelected = [];
             this.githubQuota = null;
+            this.currentIntactVersion = '';
+            // Fire-and-forget — independent of the refs fetch. Used by
+            // the dropdown filter to hide older releases. Slow result
+            // just means the filter falls back to permissive ("show
+            // all") until it lands.
+            this.fetchCurrentIntactVersion();
 
             // Minimal auto-chain on open: load the quota snapshot (for
             // the in-modal banner) and the release list (so the

@@ -3864,18 +3864,79 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                                      x-text="'Built: ' + ($store.settings.applyManifest?.created || 'unknown')"></div>
                                             </div>
                                             <div class="bg-gray-900 rounded border border-gray-700 p-3">
-                                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">Modules in this package</label>
-                                                <div class="text-gray-400 text-xs mb-2">All pre-checked. Untick any module you do NOT want applied.</div>
-                                                <template x-for="(target, name) in ($store.settings.applyManifest?.versions || {})" :key="name">
-                                                    <label class="flex items-center text-xs px-2 py-1.5 rounded border-l-2 border-blue-500 bg-gray-800 cursor-pointer hover:bg-gray-700 mb-1">
-                                                        <input type="checkbox"
-                                                               :checked="$store.settings.applySelectedModules.includes(name)"
-                                                               @change="$store.settings.toggleApplyModule(name)"
-                                                               class="mr-3 w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500">
-                                                        <span class="flex-1 font-mono" x-text="name"></span>
-                                                        <span class="font-mono text-gray-300" x-text="target"></span>
-                                                    </label>
+                                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">Review &amp; confirm</label>
+
+                                                <!-- Forced rows: installed modules — upgrade / downgrade / no-change.
+                                                     Mirrors the online-upgrade modal's "Installed modules (will be
+                                                     upgraded automatically)" section: same border colors, same chip
+                                                     text, same no-checkbox layout. Downgrade is the only delta — the
+                                                     online flow can't produce one (resolver gates), the offline flow
+                                                     can if the operator imports an older package, so we flag it
+                                                     explicitly in orange. -->
+                                                <template x-if="Object.entries($store.settings.applyManifest?.versions || {}).some(([n, t]) => ['upgrade','downgrade','no-change','unknown'].includes($store.settings.applyModuleAction(n, t)))">
+                                                    <div class="mb-3">
+                                                        <div class="text-gray-400 text-xs mb-1">Installed modules (will be applied automatically):</div>
+                                                        <template x-for="(target, name) in ($store.settings.applyManifest?.versions || {})" :key="'forced-' + name">
+                                                            <template x-if="['upgrade','downgrade','no-change','unknown'].includes($store.settings.applyModuleAction(name, target))">
+                                                                <div class="flex items-center text-xs px-2 py-1.5 rounded border-l-2 mb-1"
+                                                                     :class="{
+                                                                       'border-gray-600 text-gray-500 bg-gray-800/30': $store.settings.applyModuleAction(name, target) === 'no-change',
+                                                                       'border-blue-500 text-gray-200 bg-gray-800':    $store.settings.applyModuleAction(name, target) === 'upgrade',
+                                                                       'border-orange-500 text-gray-200 bg-gray-800':  $store.settings.applyModuleAction(name, target) === 'downgrade',
+                                                                       'border-gray-700 text-gray-300 bg-gray-800':    $store.settings.applyModuleAction(name, target) === 'unknown',
+                                                                     }">
+                                                                    <span class="flex-1 font-mono" x-text="name"></span>
+                                                                    <span class="font-mono" x-text="$store.settings.applyCurrentVersions[name] || '?'"></span>
+                                                                    <span class="mx-2 text-gray-500">→</span>
+                                                                    <span class="font-mono" x-text="target"></span>
+                                                                    <span class="ml-3 text-xs uppercase"
+                                                                          :class="{
+                                                                            'text-gray-500':   $store.settings.applyModuleAction(name, target) === 'no-change',
+                                                                            'text-blue-400':   $store.settings.applyModuleAction(name, target) === 'upgrade',
+                                                                            'text-orange-400': $store.settings.applyModuleAction(name, target) === 'downgrade',
+                                                                            'text-gray-400':   $store.settings.applyModuleAction(name, target) === 'unknown',
+                                                                          }"
+                                                                          x-text="{
+                                                                            'no-change': '(no change)',
+                                                                            'upgrade':   'upgrade',
+                                                                            'downgrade': 'downgrade',
+                                                                            'unknown':   '?',
+                                                                          }[$store.settings.applyModuleAction(name, target)] || ''"></span>
+                                                                </div>
+                                                            </template>
+                                                        </template>
+                                                    </div>
                                                 </template>
+
+                                                <!-- Optional rows: modules not yet installed locally that the
+                                                     package can install on this host. Mirrors the online modal's
+                                                     "Optional new modules (tick to install on this host)" section. -->
+                                                <template x-if="Object.entries($store.settings.applyManifest?.versions || {}).some(([n, t]) => $store.settings.applyModuleAction(n, t) === 'install')">
+                                                    <div class="mb-3">
+                                                        <div class="text-gray-400 text-xs mb-1">Optional new modules (tick to install on this host):</div>
+                                                        <template x-for="(target, name) in ($store.settings.applyManifest?.versions || {})" :key="'install-' + name">
+                                                            <template x-if="$store.settings.applyModuleAction(name, target) === 'install'">
+                                                                <label class="flex items-center text-xs px-2 py-1.5 rounded border-l-2 border-yellow-600/60 bg-gray-800 cursor-pointer hover:bg-gray-700 mb-1">
+                                                                    <input type="checkbox"
+                                                                           :checked="$store.settings.applySelectedModules.includes(name)"
+                                                                           @change="$store.settings.toggleApplyModule(name)"
+                                                                           class="mr-3 w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500">
+                                                                    <span class="flex-1 font-mono" x-text="name"></span>
+                                                                    <span class="font-mono text-gray-500">not installed</span>
+                                                                    <span class="mx-2 text-gray-500">→</span>
+                                                                    <span class="font-mono" x-text="target"></span>
+                                                                    <span class="ml-3 text-xs uppercase text-yellow-400">install if ticked</span>
+                                                                </label>
+                                                            </template>
+                                                        </template>
+                                                    </div>
+                                                </template>
+
+                                                <!-- All-no-change empty state — every packaged module is already
+                                                     installed at the same version. Mirrors the online modal's
+                                                     "Nothing to do" string but adapted for the offline path. -->
+                                                <div x-show="!$store.settings.applySelectedModules.length && Object.entries($store.settings.applyManifest?.versions || {}).every(([n, t]) => $store.settings.applyModuleAction(n, t) === 'no-change')"
+                                                     class="text-gray-500 text-xs italic">Nothing to do — every module in this package is already at the installed version.</div>
                                             </div>
                                             <div class="bg-gray-900 rounded border border-red-700 p-3">
                                                 <p class="text-red-400 text-xs font-medium mb-1">⚠️ Fresh install — DELETES ALL DATA for the selected module</p>
@@ -4571,7 +4632,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                             :disabled="$store.settings.fetchingRefs || !$store.settings.upgradeRefs.length"
                                             class="flex-1 bg-gray-700 text-white text-sm px-2 py-1.5 rounded border border-gray-600 focus:border-blue-500 disabled:opacity-50">
                                         <option value="" disabled x-text="$store.settings.fetchingRefs ? 'Loading releases…' : 'Pick release version'"></option>
-                                        <template x-for="ref in $store.settings.upgradeRefs" :key="ref.name">
+                                        <template x-for="ref in $store.settings.filteredUpgradeRefs()" :key="ref.name">
                                             <option :value="ref.name" x-text="ref.label"></option>
                                         </template>
                                     </select>
@@ -4586,6 +4647,9 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 </div>
                                 <p class="text-gray-500 text-xs mt-2">
                                     Releases auto-loaded when you opened this dialog. Backend caches for 30 minutes; the refresh button only spends a GitHub call if the cache is stale.
+                                    <span x-show="$store.settings.prepareModalMode === 'online' && $store.settings.currentIntactVersion">
+                                        Showing releases ≥ <span class="font-mono text-gray-400" x-text="$store.settings.currentIntactVersion"></span> — older releases and companion variants (e.g. <span class="font-mono">-old-modules</span>) are hidden to prevent accidental downgrade.
+                                    </span>
                                 </p>
                             </div>
 

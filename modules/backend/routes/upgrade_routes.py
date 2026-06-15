@@ -423,6 +423,48 @@ def _quota_audit_lines(needed: int) -> list:
     return lines
 
 
+@upgrade_bp.route('/api/upgrade/current-versions', methods=['GET'])
+def get_upgrade_current_versions():
+    """Return the current installed version of every module + intact.
+
+    Feeds the "current → target" comparison in the Apply Uploaded
+    Package modal (and any other UI that needs to show "what would
+    this package change"). Same data source the offline upgrade flow
+    itself uses, so the UI shows exactly what the apply will see.
+
+    Response:
+        {
+          "success": true,
+          "versions": {
+             "intact":       "intact-20260615",
+             "elk":          "9.3.3",
+             "timesketch":   "20260326",   # or "Not installed"
+             ...
+          }
+        }
+    """
+    out = {}
+    # intact's own version comes from the VERSION file, not from a .env
+    workdir = os.environ.get('INTACT_PATH', '/app/workdir')
+    try:
+        with open(os.path.join(workdir, 'VERSION')) as f:
+            v = f.read().strip()
+        out['intact'] = v or 'unknown'
+    except Exception:
+        out['intact'] = 'unknown'
+
+    try:
+        from services.upgrade.base import get_current_versions
+        modules = get_current_versions() or {}
+        for name, info in modules.items():
+            cur = (info or {}).get('current')
+            out[name] = cur if cur else 'unknown'
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    return jsonify({"success": True, "versions": out})
+
+
 @upgrade_bp.route('/api/upgrade/quota', methods=['GET'])
 def get_upgrade_quota():
     """Returns the current GitHub rate-limit state for the UI to surface
