@@ -151,24 +151,34 @@ def _read_config_yaml_versions() -> Dict[str, str]:
 
 def get_transitive_tag(module: str, dep: str,
                         primary_version: Optional[str] = None,
-                        logger: Optional[Callable] = None) -> str:
-    """Resolve <module>.<dep> from config.yaml's `versions.<module>_<dep>`.
+                        logger: Optional[Callable] = None,
+                        target_versions: Optional[Dict[str, str]] = None) -> str:
+    """Resolve <module>.<dep> from a `versions:` map. By default reads the
+    operator's local `config.yaml`, but the caller can pass
+    `target_versions` to override — this is what the prepare flow does
+    so the BUNDLED transitive pins come from the TARGET release's
+    `config.yaml` rather than whatever the build host happens to have
+    pinned locally.
 
-    Single source of truth. No upstream scrape, no cache layer, no
-    fallback table. To bump a transitive pin, edit config.yaml.
+    No upstream scrape, no cache layer, no fallback table.
 
     `primary_version` is kept in the signature for source-compat with
     callers that used to need it for the live scrape, but is ignored —
-    the pin in config.yaml is authoritative regardless of which primary
-    version is being installed/upgraded.
+    the pin from the chosen `versions:` map is authoritative regardless
+    of which primary version is being installed/upgraded.
 
     Raises `KeyError` when the `versions.<module>_<dep>` entry is
-    missing from config.yaml (or config.yaml itself is unreadable). The
-    error message is operator-facing; it tells them what key to add.
+    missing. The error message is operator-facing; it tells them what
+    key to add.
     """
     log = logger or (lambda msg, lvl='info': None)
     key = f"{module}_{dep}"
-    versions = _read_config_yaml_versions()
+    if target_versions is not None:
+        versions = target_versions
+        source = "target config.yaml"
+    else:
+        versions = _read_config_yaml_versions()
+        source = "config.yaml"
     value = versions.get(key)
     if not value:
         raise KeyError(
@@ -179,12 +189,13 @@ def get_transitive_tag(module: str, dep: str,
             f"For reference, current shipped values are documented in the "
             f"config.yaml comment block above the `<module>_<dep>` entries."
         )
-    log(f"  [transitive] {module}.{dep} = {value} (config.yaml)", "info")
+    log(f"  [transitive] {module}.{dep} = {value} ({source})", "info")
     return value
 
 
 def get_docker_images_for(module: str, version: str,
-                           logger: Optional[Callable] = None) -> list:
+                           logger: Optional[Callable] = None,
+                           target_versions: Optional[Dict[str, str]] = None) -> list:
     """Return the list of `(image, tar_filename)` to bundle for one
     primary module + version. Same shape the old `DOCKER_IMAGES[module]`
     list returned (already with placeholders expanded), so callers can
@@ -208,7 +219,8 @@ def get_docker_images_for(module: str, version: str,
         ))
     for dep_key, image_pat, tar_pat in TRANSITIVE_IMAGES.get(module, []):
         tag = get_transitive_tag(module, dep_key, primary_version=version,
-                                  logger=logger)
+                                  logger=logger,
+                                  target_versions=target_versions)
         out.append((
             image_pat.format(tag=tag),
             tar_pat.format(tag=tag),
@@ -219,6 +231,7 @@ def get_docker_images_for(module: str, version: str,
 def get_transitive_versions_for(module: str,
                                   primary_version: Optional[str] = None,
                                   logger: Optional[Callable] = None,
+                                  target_versions: Optional[Dict[str, str]] = None,
                                   ) -> Dict[str, str]:
     """Return the resolved transitive tags for `module` keyed by env-var
     name (e.g. {'POSTGRES_VERSION': '15', 'OPENSEARCH_VERSION': '2.19.5'}).
@@ -241,7 +254,7 @@ def get_transitive_versions_for(module: str,
         try:
             out[env_key] = get_transitive_tag(
                 module, dep_key, primary_version=primary_version,
-                logger=logger,
+                logger=logger, target_versions=target_versions,
             )
         except KeyError:
             continue
@@ -604,6 +617,33 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
     for module, version in modules.items():
         log(f"  {module.upper()}: {version}", "info")
     log("", "info")
+
+    # Resolve the TARGET release's `versions:` block once. This is what
+    # we'll feed to get_docker_images_for / get_transitive_versions_for
+    # below — bundling the pins the release was cut with, not whatever
+    # the build host has locally (which is divergent the moment the
+    # operator has installed a different baseline). Falls back silently
+    # to the operator's local config.yaml on any fetch failure so a
+    # transient GitHub blip doesn't break the prepare flow.
+    target_versions: Optional[Dict[str, str]] = None
+    target_ref = modules.get('intact')
+    if target_ref:
+        try:
+            from services.upgrade.resolver import fetch_upstream_config
+            cfg = fetch_upstream_config(target_ref, user_action='prepare')
+            v = (cfg.get('versions') or {})
+            target_versions = {str(k): str(val).strip() for k, val in v.items()
+                               if val is not None}
+            log(f"Using `versions:` block from target release "
+                f"{target_ref} ({len(target_versions)} entries) as the "
+                f"source of truth for transitive sidecar pins.", "info")
+        except Exception as e:
+            log(f"Could not fetch target release config.yaml for "
+                f"{target_ref}: {e}. Falling back to operator's local "
+                f"config.yaml for transitive pins — this may produce a "
+                f"mismatched bundle if local pins are out of date.",
+                "warning")
+            target_versions = None
 
     try:
         # Create directory structure (source dirs created only when Intact.AI selected)
@@ -1538,14 +1578,19 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # an operator hit a silent stale-default that bundled
                 # the wrong opensearch version.
                 if module in TRANSITIVE_IMAGES:
+                    src_label = ("target release config.yaml"
+                                 if target_versions is not None
+                                 else "operator's local config.yaml")
                     log(f"  Resolving transitive deps for {module}@{version} "
-                        f"(operator override → upstream scrape → fallback):",
+                        f"(reading from {src_label}):",
                         "info")
                 images_for_module = get_docker_images_for(
                     module, version, logger=log,
+                    target_versions=target_versions,
                 )
                 tv_env = get_transitive_versions_for(
                     module, primary_version=version, logger=log,
+                    target_versions=target_versions,
                 )
                 if tv_env:
                     manifest["contents"].setdefault(
@@ -1794,5 +1839,6 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
 
             for module, version in modules.items():
                 if module in PRIMARY_IMAGES or module in TRANSITIVE_IMAGES:
-                    for image, _ in get_docker_images_for(module, version):
+                    for image, _ in get_docker_images_for(module, version,
+                                                            target_versions=target_versions):
                         run_command(f"docker rmi {image} 2>/dev/null || true", logger=None, timeout=60)
