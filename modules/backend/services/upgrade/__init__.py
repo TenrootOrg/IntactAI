@@ -374,6 +374,22 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                     log(f"MODULE_FAILED: {module_name.upper()} — {result.get('error', 'unknown')}", "error")
                     log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                     overall_status = "completed_with_errors"
+                    # Per-module config.yaml revert: drop only the failing
+                    # module's pin family (timesketch + timesketch_*) back
+                    # to the pre-merge values so a re-run starts from a
+                    # clean state for THIS module while keeping pins for
+                    # modules that succeeded.
+                    try:
+                        from .intact import revert_module_versions_from_backup
+                        revert_module_versions_from_backup(
+                            module_name,
+                            os.path.join(WORKDIR, 'config.yaml'),
+                            logger=log,
+                        )
+                    except Exception as _re:
+                        log(f"  [config-rollback {module_name}] revert raised "
+                            f"({type(_re).__name__}: {_re}); pins left as-is",
+                            "warning")
 
             except Exception as e:
                 # Per-module try/except is what gives the apply step
@@ -386,6 +402,18 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                 log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                 results[module_name] = {"success": False, "error": str(e)}
                 overall_status = "completed_with_errors"
+                # Per-module config.yaml revert (same as above, exception path)
+                try:
+                    from .intact import revert_module_versions_from_backup
+                    revert_module_versions_from_backup(
+                        module_name,
+                        os.path.join(WORKDIR, 'config.yaml'),
+                        logger=log,
+                    )
+                except Exception as _re:
+                    log(f"  [config-rollback {module_name}] revert raised "
+                        f"({type(_re).__name__}: {_re}); pins left as-is",
+                        "warning")
 
     except Exception as unexpected_error:
         # Catch any unexpected error in the workflow itself
@@ -424,6 +452,21 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                 log(f"       -> Rolled back to {result.get('restored_version')}", "warning")
 
         log(f"{'='*50}", "info")
+
+    # Workflow done. Clean up the config.yaml pre-merge backup (if any
+    # — only the online flow creates one). Per-module reverts have
+    # already run for each FAILED module via the orchestrator's
+    # MODULE_FAILED branches above, so the operator's config.yaml is
+    # in the right shape regardless of outcome.
+    try:
+        from .intact import cleanup_config_yaml_backup
+        cleanup_config_yaml_backup(
+            os.path.join(WORKDIR, 'config.yaml'), logger=log,
+        )
+    except Exception as _e:
+        log(f"  [config-cleanup] post-workflow cleanup raised "
+            f"({type(_e).__name__}: {_e}); harmless leftover at "
+            f"config.yaml.pre-upgrade-backup", "warning")
 
     all_success = all(r.get('success', False) for r in results.values() if not isinstance(r, str))
     return {
@@ -639,6 +682,22 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                     log(f"MODULE_FAILED: {module_name.upper()} — {result.get('error', 'unknown')}", "error")
                     log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                     overall_status = "completed_with_errors"
+                    # Per-module config.yaml revert: drop only the failing
+                    # module's pin family (timesketch + timesketch_*) back
+                    # to the pre-merge values so a re-run starts from a
+                    # clean state for THIS module while keeping pins for
+                    # modules that succeeded.
+                    try:
+                        from .intact import revert_module_versions_from_backup
+                        revert_module_versions_from_backup(
+                            module_name,
+                            os.path.join(WORKDIR, 'config.yaml'),
+                            logger=log,
+                        )
+                    except Exception as _re:
+                        log(f"  [config-rollback {module_name}] revert raised "
+                            f"({type(_re).__name__}: {_re}); pins left as-is",
+                            "warning")
 
             except Exception as e:
                 # Per-module try/except is what gives the apply step
@@ -651,6 +710,18 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                 log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                 results[module_name] = {"success": False, "error": str(e)}
                 overall_status = "completed_with_errors"
+                # Per-module config.yaml revert (same as above, exception path)
+                try:
+                    from .intact import revert_module_versions_from_backup
+                    revert_module_versions_from_backup(
+                        module_name,
+                        os.path.join(WORKDIR, 'config.yaml'),
+                        logger=log,
+                    )
+                except Exception as _re:
+                    log(f"  [config-rollback {module_name}] revert raised "
+                        f"({type(_re).__name__}: {_re}); pins left as-is",
+                        "warning")
 
     except Exception as unexpected_error:
         log(f"UNEXPECTED WORKFLOW ERROR: {unexpected_error}", "error")
@@ -696,6 +767,21 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             log(f"  [{icon}] {module_name}: {'success' if result.get('success') else 'failed'}", "info")
 
         log(f"{'='*50}", "info")
+
+    # Workflow done. Clean up the config.yaml pre-merge backup (if any
+    # — only the online flow creates one). Per-module reverts have
+    # already run for each FAILED module via the orchestrator's
+    # MODULE_FAILED branches above, so the operator's config.yaml is
+    # in the right shape regardless of outcome.
+    try:
+        from .intact import cleanup_config_yaml_backup
+        cleanup_config_yaml_backup(
+            os.path.join(WORKDIR, 'config.yaml'), logger=log,
+        )
+    except Exception as _e:
+        log(f"  [config-cleanup] post-workflow cleanup raised "
+            f"({type(_e).__name__}: {_e}); harmless leftover at "
+            f"config.yaml.pre-upgrade-backup", "warning")
 
     all_success = all(r.get('success', False) for r in results.values() if not isinstance(r, str))
     return {
@@ -1101,6 +1187,22 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                     log(f"MODULE_FAILED: {module_name.upper()} — {result.get('error', 'unknown')}", "error")
                     log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                     overall_status = "completed_with_errors"
+                    # Per-module config.yaml revert: drop only the failing
+                    # module's pin family (timesketch + timesketch_*) back
+                    # to the pre-merge values so a re-run starts from a
+                    # clean state for THIS module while keeping pins for
+                    # modules that succeeded.
+                    try:
+                        from .intact import revert_module_versions_from_backup
+                        revert_module_versions_from_backup(
+                            module_name,
+                            os.path.join(WORKDIR, 'config.yaml'),
+                            logger=log,
+                        )
+                    except Exception as _re:
+                        log(f"  [config-rollback {module_name}] revert raised "
+                            f"({type(_re).__name__}: {_re}); pins left as-is",
+                            "warning")
 
             except Exception as e:
                 # Per-module try/except is what gives the apply step
@@ -1113,6 +1215,18 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                 log(f"  Continuing with remaining modules; this failure does not stop the run.", "info")
                 results[module_name] = {"success": False, "error": str(e)}
                 overall_status = "completed_with_errors"
+                # Per-module config.yaml revert (same as above, exception path)
+                try:
+                    from .intact import revert_module_versions_from_backup
+                    revert_module_versions_from_backup(
+                        module_name,
+                        os.path.join(WORKDIR, 'config.yaml'),
+                        logger=log,
+                    )
+                except Exception as _re:
+                    log(f"  [config-rollback {module_name}] revert raised "
+                        f"({type(_re).__name__}: {_re}); pins left as-is",
+                        "warning")
 
     except Exception as unexpected_error:
         # Catch any unexpected error in the workflow itself
@@ -1237,6 +1351,21 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                         status = 'upgraded'
                     log(f"  {mod}: {before_s} -> {after_s}   ({status})", "info")
             log("-" * 64, "info")
+
+    # Workflow done. Clean up the config.yaml pre-merge backup (if any
+    # — only the online flow creates one). Per-module reverts have
+    # already run for each FAILED module via the orchestrator's
+    # MODULE_FAILED branches above, so the operator's config.yaml is
+    # in the right shape regardless of outcome.
+    try:
+        from .intact import cleanup_config_yaml_backup
+        cleanup_config_yaml_backup(
+            os.path.join(WORKDIR, 'config.yaml'), logger=log,
+        )
+    except Exception as _e:
+        log(f"  [config-cleanup] post-workflow cleanup raised "
+            f"({type(_e).__name__}: {_e}); harmless leftover at "
+            f"config.yaml.pre-upgrade-backup", "warning")
 
     all_success = all(r.get('success', False) for r in results.values() if not isinstance(r, str))
     return {
