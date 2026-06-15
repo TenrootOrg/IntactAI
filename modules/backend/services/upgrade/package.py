@@ -67,18 +67,17 @@ PRIMARY_IMAGES = {
 # at runtime. Each entry is:
 #   (dep_key, image_pattern, tar_pattern)
 #
-# `dep_key` is looked up at prepare time in config.yaml's
-# `transitive_versions.<module>.<dep_key>` block (see _read_transitive_pin
-# below); the resolved tag fills `{tag}` in both patterns. Fallbacks in
-# TRANSITIVE_DEFAULTS keep the historical behaviour when the operator's
-# config.yaml has no `transitive_versions:` block.
+# `dep_key` is looked up at prepare time via `get_transitive_tag` which
+# reads `versions.<module>_<dep_key>` from config.yaml (single source of
+# truth — see 2026-06-14 refactor that deleted the live upstream scrape
+# + cache + fallback table layers). The resolved tag fills `{tag}` in
+# both patterns.
 #
 # Air-gap correctness: at apply time, the resolved tag also lands in the
 # bundled manifest.json under `contents.transitive_versions`, and the
 # offline-apply step writes it to per-module `.env` files BEFORE
-# `docker compose up`. That way the compose's `${VAR:-default}`
-# resolves to the tag of an image actually present in the loaded
-# bundle, not the static default the compose file shipped with.
+# `docker compose up`. That way the compose's `${VAR:?...}` interpolation
+# resolves to the tag of an image actually present in the loaded bundle.
 TRANSITIVE_IMAGES = {
     'timesketch': [
         ('postgres',   'postgres:{tag}',                       'postgres-{tag}.tar'),
@@ -101,34 +100,11 @@ TRANSITIVE_IMAGES = {
 }
 
 
-# Fallback tags when config.yaml has no `transitive_versions.<module>.<dep>`
-# entry. Mirrors today's hardcoded values, so the refactor is a no-op
-# for any operator who hasn't added the block.
-TRANSITIVE_DEFAULTS = {
-    'timesketch': {
-        # Timesketch >=20260611 requires OpenSearch >=2.19.5 (compat-floor
-        # break that bit us when upstream bumped past 2.11.0 — see the
-        # transitive_resolver module's history).
-        'opensearch': '2.19.5',
-        'postgres':   '15',
-        'redis':      '7-alpine',
-        'nginx':      'alpine',
-    },
-    'iris': {
-        'rabbitmq': '3-management-alpine',
-    },
-    'volweb': {
-        'postgres': '15',
-        'redis':    '7',
-    },
-}
-
-
 # Maps each transitive `(module, dep_key)` to the env var name the
 # module's compose file consumes. Used by the apply side to write the
 # right `.env` line before `docker compose up`, and by the prepare side
 # to record bundled tags in the manifest. Keys live in
-# modules/<module>/docker-compose.yaml as `${VAR:-default}` references.
+# modules/<module>/docker-compose.yaml as `${VAR:?...}` references.
 TRANSITIVE_ENV_KEYS = {
     'timesketch': {
         'opensearch': 'OPENSEARCH_VERSION',
@@ -136,173 +112,93 @@ TRANSITIVE_ENV_KEYS = {
         'redis':      'REDIS_VERSION',
         'nginx':      'NGINX_VERSION',
     },
+    'iris': {
+        # iris's compose uses `image: rabbitmq:${RABBITMQ_VERSION:?...}`
+        # — the apply side must write RABBITMQ_VERSION into
+        # modules/iris/.env before compose up. Old comment claiming
+        # iris's rabbitmq was a literal tag was incorrect (likely
+        # written when iris first shipped with a hardcoded tag, before
+        # the env-var conversion).
+        'rabbitmq': 'RABBITMQ_VERSION',
+    },
     'volweb': {
         'postgres': 'VOLWEB_POSTGRES_VERSION',
         'redis':    'VOLWEB_REDIS_VERSION',
     },
-    # iris's rabbitmq is referenced literally in
-    # modules/iris/docker-compose.yaml — no env var. The apply side
-    # treats a missing env-key as "no .env write needed; the image
-    # already gets loaded and compose's literal `rabbitmq:3-management-
-    # alpine` reference matches".
-    'iris': {},
 }
 
 
-def _read_transitive_pin(module: str, dep: str) -> Optional[str]:
-    """Return config.yaml's `transitive_versions.<module>.<dep>` value, or
-    None when the block / module / key is absent. Fail-soft on any
-    parse error so a malformed config.yaml never blocks a prepare.
-
-    This is the OPERATOR OVERRIDE layer — when an entry exists here, it
-    wins over upstream scrape + hardcoded defaults. Leave empty (or
-    omit the block entirely) to track upstream automatically.
+def _read_config_yaml_versions() -> Dict[str, str]:
+    """Return the `versions:` block from config.yaml as a flat dict.
+    Fail-soft (empty dict) on any read/parse error so a malformed
+    config.yaml surfaces in get_transitive_tag's KeyError rather than
+    a yaml.YAMLError that's harder to attribute. Caller is expected
+    to validate the keys it cares about.
     """
     config_path = os.path.join(WORKDIR, 'config.yaml')
     if not os.path.exists(config_path):
-        return None
+        return {}
     try:
         import yaml  # local — yaml isn't used elsewhere in this module
         with open(config_path, 'r') as f:
             cfg = yaml.safe_load(f) or {}
-        block = ((cfg.get('transitive_versions') or {}).get(module) or {})
-        val = block.get(dep)
-        return str(val).strip() if val is not None else None
+        v = cfg.get('versions') or {}
+        return {str(k): str(val).strip() for k, val in v.items()
+                if val is not None}
     except Exception:
-        return None
-
-
-# Disk cache for upstream-scraped transitive versions. Keyed by
-# (module, primary_version) — both are immutable on the upstream side
-# (the version is a release tag), so the cached result is valid as long
-# as upstream doesn't force-push the tag (which they shouldn't). 24h
-# TTL guards against rare cases where they do.
-_UPSTREAM_CACHE_DIR = '/app/data/cache/transitive_resolver'
-_UPSTREAM_CACHE_TTL_SEC = 24 * 60 * 60
-
-# In-process LRU layer over the disk cache: prepare iterates the
-# transitive image list per module + version, calling
-# `_resolve_from_upstream` once per dep — without the in-memory layer
-# we'd hit disk N times per module per prepare. Lives for the
-# lifetime of the prepare process.
-_UPSTREAM_MEM_CACHE: Dict[str, Dict[str, str]] = {}
-
-# Floating tags upstream sometimes ships in their compose
-# (e.g. k1nd0ne/VolWeb's `redis:latest`). Don't propagate those — they
-# defeat reproducibility. When upstream uses one of these, fall through
-# to the next layer (config.yaml override → TRANSITIVE_DEFAULTS).
-_FLOATING_TAGS = frozenset({
-    'latest', 'master', 'main', 'develop', 'dev', 'edge', 'stable',
-    'rolling',
-})
-
-
-def _resolve_from_upstream(module: str,
-                            primary_version: str) -> Dict[str, str]:
-    """Fetch `transitive_resolver.resolve_for(module, primary_version)`
-    via a layered cache. Returns dict of `{dep_key: tag}` for whatever
-    upstream's compose / config.env declares at the pinned tag, or `{}`
-    on any failure (fail-open: callers fall back to operator override
-    then TRANSITIVE_DEFAULTS).
-
-    Layers, fastest first:
-      1. _UPSTREAM_MEM_CACHE (process-lifetime dict)
-      2. _UPSTREAM_CACHE_DIR (disk JSON, 24h TTL — survives backend
-         restarts; works across multiple prepares in the same day)
-      3. resolve_for() (live network call to upstream)
-
-    Each layer also strips floating tags before storing.
-    """
-    cache_key = f"{module}@{primary_version}"
-    if cache_key in _UPSTREAM_MEM_CACHE:
-        return _UPSTREAM_MEM_CACHE[cache_key]
-
-    cache_path = os.path.join(
-        _UPSTREAM_CACHE_DIR,
-        f"{module}-{primary_version.replace('/', '_')}.json",
-    )
-    now = time.time()
-    if os.path.isfile(cache_path):
-        try:
-            age = now - os.path.getmtime(cache_path)
-            if age < _UPSTREAM_CACHE_TTL_SEC:
-                with open(cache_path, 'r') as f:
-                    cached = json.load(f) or {}
-                _UPSTREAM_MEM_CACHE[cache_key] = cached
-                return cached
-        except Exception:
-            # Corrupted cache — fall through and re-fetch.
-            pass
-
-    # Cache miss. Hit upstream.
-    try:
-        from .transitive_resolver import resolve_for
-        raw = resolve_for(module, primary_version) or {}
-    except Exception:
-        raw = {}
-
-    # Strip floating tags so they never feed back through the pipeline.
-    cleaned = {
-        k: v for k, v in raw.items()
-        if str(v).strip().lower() not in _FLOATING_TAGS
-    }
-
-    # Persist (best-effort).
-    try:
-        os.makedirs(_UPSTREAM_CACHE_DIR, exist_ok=True)
-        tmp = cache_path + '.new'
-        with open(tmp, 'w') as f:
-            json.dump(cleaned, f)
-        os.replace(tmp, cache_path)
-    except Exception:
-        pass
-
-    _UPSTREAM_MEM_CACHE[cache_key] = cleaned
-    return cleaned
+        return {}
 
 
 def get_transitive_tag(module: str, dep: str,
-                        primary_version: Optional[str] = None) -> str:
-    """Resolve the tag for one transitive container of `module`.
+                        primary_version: Optional[str] = None,
+                        logger: Optional[Callable] = None) -> str:
+    """Resolve <module>.<dep> from config.yaml's `versions.<module>_<dep>`.
 
-    Layered fallback:
-      1. config.yaml's `transitive_versions.<module>.<dep>` — operator
-         override; always wins when set
-      2. Upstream scrape — if `primary_version` is provided, fetch what
-         upstream's own compose / config.env declares at that tag and
-         use it. Cached on disk for 24h so repeated prepares for the
-         same (module, version) pair don't re-hit GitHub.
-      3. `TRANSITIVE_DEFAULTS[module][dep]` — hardcoded last resort
-         (today's pre-resolver behavior; KeyError on unknown dep so
-         misnamed lookups are loud bugs)
+    Single source of truth. No upstream scrape, no cache layer, no
+    fallback table. To bump a transitive pin, edit config.yaml.
 
-    `primary_version` is optional only for backwards compatibility with
-    code paths that don't have it; callers building image lists for a
-    specific prepare run should always pass it through.
+    `primary_version` is kept in the signature for source-compat with
+    callers that used to need it for the live scrape, but is ignored —
+    the pin in config.yaml is authoritative regardless of which primary
+    version is being installed/upgraded.
+
+    Raises `KeyError` when the `versions.<module>_<dep>` entry is
+    missing from config.yaml (or config.yaml itself is unreadable). The
+    error message is operator-facing; it tells them what key to add.
     """
-    pinned = _read_transitive_pin(module, dep)
-    if pinned:
-        return pinned
+    log = logger or (lambda msg, lvl='info': None)
+    key = f"{module}_{dep}"
+    versions = _read_config_yaml_versions()
+    value = versions.get(key)
+    if not value:
+        raise KeyError(
+            f"versions.{key} is missing from config.yaml. The 2026-06-14 "
+            f"refactor moved transitive sidecar pins from an upstream "
+            f"scrape into config.yaml. Add a line under `versions:` like:\n"
+            f"  {key}: '<tag>'\n"
+            f"For reference, current shipped values are documented in the "
+            f"config.yaml comment block above the `<module>_<dep>` entries."
+        )
+    log(f"  [transitive] {module}.{dep} = {value} (config.yaml)", "info")
+    return value
 
-    if primary_version:
-        upstream = _resolve_from_upstream(module, primary_version)
-        if upstream and dep in upstream:
-            return upstream[dep]
 
-    return TRANSITIVE_DEFAULTS[module][dep]
-
-
-def get_docker_images_for(module: str, version: str) -> list:
+def get_docker_images_for(module: str, version: str,
+                           logger: Optional[Callable] = None) -> list:
     """Return the list of `(image, tar_filename)` to bundle for one
     primary module + version. Same shape the old `DOCKER_IMAGES[module]`
     list returned (already with placeholders expanded), so callers can
     iterate uniformly.
 
-    Tag resolution per image (layered, first hit wins):
+    Tag resolution per image:
       - Primary image: `versions.<module>` pin from config.yaml
-      - Transitive image: config.yaml's
-        `transitive_versions.<module>.<dep>` override → upstream scrape
-        for `(module, version)` at the pinned tag → TRANSITIVE_DEFAULTS
+      - Transitive image: `versions.<module>_<dep>` pin from config.yaml
+        (e.g. `timesketch_postgres`, `iris_rabbitmq`). See
+        get_transitive_tag for the resolver.
+
+    `logger` (when provided) emits one info-level line per resolved
+    transitive tag so the prepare log shows which config.yaml entry
+    fed each image.
     """
     out = []
     for image_pat, tar_pat in PRIMARY_IMAGES.get(module, []):
@@ -311,7 +207,8 @@ def get_docker_images_for(module: str, version: str) -> list:
             tar_pat.format(version=version),
         ))
     for dep_key, image_pat, tar_pat in TRANSITIVE_IMAGES.get(module, []):
-        tag = get_transitive_tag(module, dep_key, primary_version=version)
+        tag = get_transitive_tag(module, dep_key, primary_version=version,
+                                  logger=logger)
         out.append((
             image_pat.format(tag=tag),
             tar_pat.format(tag=tag),
@@ -320,7 +217,8 @@ def get_docker_images_for(module: str, version: str) -> list:
 
 
 def get_transitive_versions_for(module: str,
-                                  primary_version: Optional[str] = None
+                                  primary_version: Optional[str] = None,
+                                  logger: Optional[Callable] = None,
                                   ) -> Dict[str, str]:
     """Return the resolved transitive tags for `module` keyed by env-var
     name (e.g. {'POSTGRES_VERSION': '15', 'OPENSEARCH_VERSION': '2.19.5'}).
@@ -331,6 +229,9 @@ def get_transitive_versions_for(module: str,
     `primary_version` enables the upstream-scrape fallback in
     get_transitive_tag — without it, only the operator override +
     hardcoded defaults are consulted.
+
+    `logger` (when provided) is forwarded to get_transitive_tag so each
+    dep's resolution chain is visible in the workflow log.
     """
     env_map = TRANSITIVE_ENV_KEYS.get(module, {})
     if not env_map:
@@ -340,6 +241,7 @@ def get_transitive_versions_for(module: str,
         try:
             out[env_key] = get_transitive_tag(
                 module, dep_key, primary_version=primary_version,
+                logger=logger,
             )
         except KeyError:
             continue
@@ -1096,6 +998,58 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     log(f"  Note: placeholder(s) used for {len(missing_optional)} client binary(ies): {', '.join(missing_optional)}",
                         "warning")
 
+                # linux-amd64-musl: NOT consumed by the Dockerfile (so it
+                # has no staging_map entry), but the apply-side velociraptor
+                # offline upgrade copies it into modules/nginx/html/downloads/
+                # so the Dashboard's "Download Linux (musl)" button stays
+                # lit on the new pin. Best-effort: an older patch with no
+                # musl asset upstream just means that button greys out on
+                # target — doesn't fail prepare.
+                musl_fname = f"velociraptor-v{clean_version}-linux-amd64-musl"
+                musl_pkg_path = f"{package_dir}/binaries/{musl_fname}"
+                musl_local = os.path.join(local_downloads, musl_fname)
+                musl_ok = False
+                if os.path.exists(musl_local) and os.path.getsize(musl_local) > 0:
+                    log(f"  Using local: {musl_fname} "
+                        f"({_format_size(os.path.getsize(musl_local))})", "info")
+                    cp = run_command(
+                        f"cp {musl_local} {musl_pkg_path}",
+                        logger=None, run_id=run_id,
+                    )
+                    if cp.get("cancelled"):
+                        return {"success": False, "error": "cancelled", "cancelled": True}
+                    musl_ok = (
+                        cp['success']
+                        and os.path.exists(musl_pkg_path)
+                        and os.path.getsize(musl_pkg_path) > 0
+                    )
+                else:
+                    musl_url = f"{base_url}/{musl_fname}"
+                    log(f"  Downloading: {musl_fname}", "info")
+                    dl = run_command(
+                        f"curl -L -f --retry 5 --retry-delay 5 "
+                        f"--retry-max-time 600 --connect-timeout 30 "
+                        f"-o {musl_pkg_path} {musl_url}",
+                        timeout=1800, logger=None, run_id=run_id,
+                    )
+                    if dl.get("cancelled"):
+                        return {"success": False, "error": "cancelled", "cancelled": True}
+                    musl_ok = (
+                        dl['success']
+                        and os.path.exists(musl_pkg_path)
+                        and os.path.getsize(musl_pkg_path) > 0
+                    )
+                if musl_ok:
+                    os.chmod(musl_pkg_path, 0o755)
+                    log(f"  Done ({_format_size(os.path.getsize(musl_pkg_path))})",
+                        "success")
+                    manifest["contents"]["binaries"].append(musl_fname)
+                else:
+                    if os.path.exists(musl_pkg_path):
+                        os.remove(musl_pkg_path)
+                    log(f"  {musl_fname} unavailable — Linux (musl) download "
+                        f"button will grey out on target after apply", "warning")
+
                 manifest["versions"]["velociraptor"] = clean_version
 
                 # Build the image with the now-staged binaries. The
@@ -1576,17 +1530,29 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # transitive tags in the manifest so the apply side (which
                 # never reads config.yaml — it gets the package from a
                 # potentially-disconnected host) knows which `.env` values
-                # to stamp before `docker compose up`.
-                images_for_module = get_docker_images_for(module, version)
+                # to stamp before `docker compose up`. The `log` callable
+                # is threaded into get_docker_images_for and
+                # get_transitive_versions_for so each dep's resolution
+                # chain (operator override / upstream scrape / fallback)
+                # is recorded in the workflow log — added 2026-06-14 after
+                # an operator hit a silent stale-default that bundled
+                # the wrong opensearch version.
+                if module in TRANSITIVE_IMAGES:
+                    log(f"  Resolving transitive deps for {module}@{version} "
+                        f"(operator override → upstream scrape → fallback):",
+                        "info")
+                images_for_module = get_docker_images_for(
+                    module, version, logger=log,
+                )
                 tv_env = get_transitive_versions_for(
-                    module, primary_version=version,
+                    module, primary_version=version, logger=log,
                 )
                 if tv_env:
                     manifest["contents"].setdefault(
                         "transitive_versions", {})[module] = tv_env
-                    log(f"  Transitive pins for {module}: " +
+                    log(f"  Transitive pins bundled for {module}: " +
                         ', '.join(f'{k}={v}' for k, v in tv_env.items()),
-                        "info")
+                        "success")
 
                 # Pull and save Docker images
                 declared = len(images_for_module)

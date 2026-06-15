@@ -215,15 +215,69 @@ def install_volweb_offline(
                 "Intact.AI source first so the VolWeb template lands on disk"
             ),
         }
-    if not os.path.exists(_VOLWEB_ENV):
-        log(f"  Rendering {_VOLWEB_ENV} from .env.template...", "info")
+    # Need to render the template when secrets are missing — not just
+    # when the file doesn't exist. The orchestrator's pre-stamp may have
+    # CREATED a bare .env with only POSTGRES_VERSION/REDIS_VERSION lines
+    # (apply-side stamp_transitive_env_from_manifest); without
+    # VOLWEB_POSTGRES_USER + DJANGO_SECRET + etc. compose up fails on
+    # the missing env interpolation. Detect "secrets missing" by
+    # checking for VOLWEB_POSTGRES_USER specifically.
+    needs_render = True
+    if os.path.exists(_VOLWEB_ENV):
+        try:
+            with open(_VOLWEB_ENV) as f:
+                existing = f.read()
+            if 'VOLWEB_POSTGRES_USER=' in existing and 'VOLWEB_DJANGO_SECRET=' in existing:
+                needs_render = False
+        except Exception:
+            pass
+    if needs_render:
+        log(f"  Rendering {_VOLWEB_ENV} from .env.template "
+            f"(secrets missing — first-time install)...", "info")
+        # Preserve any transitive-version lines the orchestrator's
+        # stamp wrote, so they survive the template render.
+        preserved = {}
+        if os.path.exists(_VOLWEB_ENV):
+            try:
+                with open(_VOLWEB_ENV) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith('VOLWEB_POSTGRES_VERSION=') or \
+                           line.startswith('VOLWEB_REDIS_VERSION='):
+                            k, _, v = line.partition('=')
+                            preserved[k] = v
+            except Exception:
+                pass
         with open(env_template) as f:
             content = f.read()
+        # POSTGRES/REDIS pins come from config.yaml's
+        # `versions.volweb_postgres` and `versions.volweb_redis` after the
+        # 2026-06-14 refactor. The hardcoded "15" and "7" that used to
+        # live here were the source of the install-vs-upgrade postgres
+        # drift bug — install used 15 from this hardcode, upgrade pulled
+        # 14.1 from upstream, postgres-14 refused to start against
+        # postgres-15 data. Read from config.yaml so install + upgrade
+        # converge.
+        from .package import _read_config_yaml_versions
+        cfg_versions = _read_config_yaml_versions()
+        volweb_pg = cfg_versions.get('volweb_postgres')
+        volweb_rd = cfg_versions.get('volweb_redis')
+        if not volweb_pg or not volweb_rd:
+            return {
+                "success": False,
+                "error": (
+                    "versions.volweb_postgres and versions.volweb_redis "
+                    "must be set in config.yaml. The 2026-06-14 refactor "
+                    "moved transitive sidecar pins out of hardcoded "
+                    "Python defaults; check the config.yaml `versions:` "
+                    "block."
+                ),
+            }
         substitutions = {
             "__VOLWEB_BACKEND_VERSION__":  version or 'latest',
             "__VOLWEB_FRONTEND_VERSION__": version or 'latest',
-            "__VOLWEB_POSTGRES_VERSION__": "15",
-            "__VOLWEB_REDIS_VERSION__":    "7",
+            "__VOLWEB_POSTGRES_VERSION__": volweb_pg,
+            "__VOLWEB_REDIS_VERSION__":    volweb_rd,
             "__VOLWEB_POSTGRES_PASSWORD__": _secrets.token_hex(24),
             "__VOLWEB_DJANGO_SECRET__":    _secrets.token_hex(32),
             "__VOLWEB_CSRF_TRUSTED_ORIGINS__": "http://localhost:3000,https://localhost",
@@ -232,7 +286,8 @@ def install_volweb_offline(
             content = content.replace(ph, val)
         with open(_VOLWEB_ENV, "w") as f:
             f.write(content)
-        log("  .env rendered", "success")
+        log(f"  .env rendered (postgres={volweb_pg}, redis={volweb_rd} "
+            f"from config.yaml)", "success")
 
     log("  Ensuring shared volume `intact_memory_dumps`...", "info")
     run_command("docker volume create intact_memory_dumps", logger=None)
@@ -248,6 +303,18 @@ def install_volweb_offline(
     # already-loaded images.
     from .base import load_all_bundled_images
     load_all_bundled_images(package_dir, logger=log, run_id=run_id)
+
+    # Stamp transitive container versions from the bundled manifest
+    # (VOLWEB_POSTGRES_VERSION, VOLWEB_REDIS_VERSION) into
+    # modules/volweb/.env BEFORE compose up. The compose file's
+    # `${VAR:?...}` interpolation will fail without these.
+    from .base import stamp_transitive_env_from_manifest
+    try:
+        stamp_transitive_env_from_manifest('volweb', package_dir, logger=log)
+    except Exception as _e:
+        log(f"  transitive .env stamp raised "
+            f"({type(_e).__name__}: {_e}); compose up will likely fail",
+            "warning")
 
     log("  docker compose up -d ...", "info")
     up = _compose_up(log, run_id=run_id)

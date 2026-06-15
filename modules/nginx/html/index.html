@@ -4688,7 +4688,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                             <button @click="$store.settings.startTrackUpgrade()"
                                     :disabled="$store.settings.prepareLoading
                                         || ($store.settings.prepareModalMode === 'online' && !$store.settings.upgradePlan)
-                                        || ($store.settings.prepareModalMode === 'prepare' && (!$store.settings.prepareModules || !$store.settings.prepareSelected.length))"
+                                        || ($store.settings.prepareModalMode === 'prepare' && !$store.settings.prepareModules)"
                                     class="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 px-4 py-2 rounded text-sm font-medium flex items-center gap-2">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"

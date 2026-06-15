@@ -317,22 +317,31 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                     if module_name == 'timesketch' and db_overwrite.get('timesketch', False):
                         recreate_timesketch_user(logger=log)
 
-                    # Special handling for Intact.AI - trigger Phase 2
+                    # Special handling for Intact.AI - trigger backend restart.
+                    # The container's Python interpreter cached the OLD
+                    # services/upgrade/*.py at startup; without a restart any
+                    # subsequent module work in this run (Phase 2) AND any work
+                    # in a future separate run would still execute the old
+                    # in-memory code — and miss new module-integration logic
+                    # like the post-2026-06-14 mandatory-scrape transitive
+                    # resolver. Restart unconditionally, regardless of whether
+                    # remaining modules follow in this same run (operator hit
+                    # the split-run footgun 2026-06-14: ran intact alone, then
+                    # a second workflow with timesketch — the old in-memory
+                    # backend bundled opensearch:2.11.0 from the stale
+                    # TRANSITIVE_DEFAULTS).
                     if module_name == 'intact' and run_id:
-                        # Check if there are more modules to upgrade
                         remaining = [m for m in upgrade_order if m in modules and m not in completed_modules]
                         if remaining:
+                            # In-run Phase 2: save state, restart, resume after boot.
                             log("", "info")
                             log(f"{'='*50}", "info")
                             log("PHASE 1 COMPLETE - Intact.AI upgraded", "info")
                             log(f"Remaining modules for Phase 2: {', '.join(remaining)}", "info")
                             log(f"{'='*50}", "info")
 
-                            # Save state for Phase 2 resume (include db_overwrite)
                             save_upgrade_state(run_id, 'awaiting_restart', modules, completed_modules, mode,
                                                db_overwrite=db_overwrite)
-
-                            # Schedule backend restart (nginx will restart at Phase 2 start)
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
                             schedule_backend_restart()
 
@@ -345,6 +354,18 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                                 "completed": completed,
                                 "total": total
                             }
+                        else:
+                            # Intact-alone run: still restart, but no Phase 2
+                            # to resume — workflow finishes its own cleanup
+                            # first, then the delayed restart (sleep 3 inside
+                            # schedule_backend_restart) fires after this
+                            # function returns. Next upgrade run starts with
+                            # the new code already in memory.
+                            log("Backend will restart to load new code so the "
+                                "next upgrade picks up new module-integration "
+                                "logic. (Sleep-3 delay lets this workflow "
+                                "finish + return first.)", "info")
+                            schedule_backend_restart()
 
                     # Update state after each module
                     if run_id:
@@ -570,6 +591,32 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                 results[module_name] = {"success": False, "error": "Unknown module"}
                 overall_status = "completed_with_errors"
                 continue
+
+            # Stamp transitive container pins (postgres / opensearch /
+            # redis / nginx / rabbitmq) from the bundled manifest into
+            # modules/<module>/.env BEFORE compose up. Mirrors what
+            # run_offline_upgrade_workflow's main loop does at the
+            # equivalent spot; without it, compose's `${VAR:-default}`
+            # interpolation falls back to the shipped DEFAULT tag
+            # (e.g. `redis:${REDIS_VERSION:-7-alpine}` resolves to
+            # `redis:7-alpine`) instead of the actually-bundled tag
+            # (e.g. `redis:7.2.11-alpine`), and compose up fails with
+            # "No such image" — operator hit this 2026-06-14 on a
+            # fresh install run where Phase 1 intact triggered the
+            # restart and Phase 2 timesketch's compose then asked for
+            # an unbundled redis tag. Skipped for intact (no transitive
+            # deps) and for any module without a transitive_versions
+            # block in the manifest (no-op inside the helper).
+            if module_name != 'intact' and package_dir:
+                try:
+                    from .base import stamp_transitive_env_from_manifest
+                    stamp_transitive_env_from_manifest(
+                        module_name, package_dir, logger=log,
+                    )
+                except Exception as _e:
+                    log(f"  transitive .env stamp raised "
+                        f"({type(_e).__name__}: {_e}); proceeding with "
+                        f"existing .env values", "warning")
 
             try:
                 if module_name == 'intact':
@@ -993,21 +1040,30 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                     if module_name == 'timesketch' and db_overwrite.get('timesketch', False):
                         recreate_timesketch_user(logger=log)
 
-                    # Special handling for Intact.AI - trigger Phase 2
+                    # Special handling for Intact.AI - trigger backend restart.
+                    # See run_upgrade_workflow's twin block for the full
+                    # "why always-restart" rationale; short version: the
+                    # container's Python interpreter cached the OLD
+                    # services/upgrade/*.py at startup, so without a restart
+                    # any module work in this run (Phase 2) OR any module
+                    # work in a future separate run still executes old
+                    # in-memory code. Restart unconditionally — the split-run
+                    # footgun on 2026-06-14 bundled the wrong opensearch
+                    # version because run #1 was intact-alone and never
+                    # restarted, so run #2's timesketch prepare ran the old
+                    # in-memory TRANSITIVE_DEFAULTS.
                     if module_name == 'intact' and run_id and not result.get('skipped'):
                         remaining = [m for m in upgrade_order if m in modules_dict and m not in completed_modules]
                         if remaining:
+                            # In-run Phase 2: save state, restart, resume after boot.
                             log("", "info")
                             log(f"{'='*50}", "info")
                             log("PHASE 1 COMPLETE - Intact.AI upgraded", "info")
                             log(f"Remaining modules for Phase 2: {', '.join(remaining)}", "info")
                             log(f"{'='*50}", "info")
 
-                            # Save state for Phase 2 resume (include package_path for cleanup)
                             save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline',
                                                extract_dir, package_path, db_overwrite=db_overwrite)
-
-                            # Schedule backend restart (nginx will restart at Phase 2 start)
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
                             schedule_backend_restart()
 
@@ -1024,6 +1080,19 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                                 "total": total,
                                 "versions": versions
                             }
+                        else:
+                            # Intact-alone run: still restart, but no Phase 2
+                            # to resume. The schedule_backend_restart's
+                            # sleep-3 delay lets this workflow finish its
+                            # own cleanup (nginx refresh, final summary)
+                            # and return before docker restart kicks in.
+                            # Next upgrade run starts with the new code
+                            # already loaded in memory.
+                            log("Backend will restart to load new code so the "
+                                "next upgrade picks up new module-integration "
+                                "logic. (Sleep-3 delay lets this workflow "
+                                "finish + return first.)", "info")
+                            schedule_backend_restart()
 
                     # Update state after each module
                     if run_id:

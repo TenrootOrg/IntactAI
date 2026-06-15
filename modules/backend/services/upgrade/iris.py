@@ -242,7 +242,14 @@ def install_iris_offline(package_dir: str, version: str, logger=None, run_id=Non
     os.makedirs(secrets_dir, exist_ok=True)
 
     log(f"Installing IRIS (first-time) -> {version or 'tracked default'}...", "info")
-    if os.path.exists(env_file) and version:
+    # Ensure .env exists + has IRIS_VERSION before compose up. Fresh
+    # install via UI may run with no pre-existing .env. Without writing
+    # this unconditionally, compose would either fall back to ${IRIS_VERSION}
+    # (empty) or hit the `${VAR:?}` rule. update_env_file is idempotent.
+    if version:
+        os.makedirs(work_dir, exist_ok=True)
+        if not os.path.exists(env_file):
+            open(env_file, 'a').close()
         update_env_file(env_file, 'IRIS_VERSION', version, logger=log)
 
     iris_admin_pw = '123123'
@@ -292,6 +299,18 @@ def install_iris_offline(package_dir: str, version: str, logger=None, run_id=Non
         # install path doesn't hit this. Matching that policy here.
         os.chmod(path, 0o644)
         log(f"  Generated {name}", "info")
+
+    # Stamp transitive container versions from the bundled manifest
+    # (RABBITMQ_VERSION) into modules/iris/.env BEFORE compose up.
+    # The compose file's `${RABBITMQ_VERSION:?...}` interpolation will
+    # fail without it.
+    from .base import stamp_transitive_env_from_manifest
+    try:
+        stamp_transitive_env_from_manifest('iris', package_dir, logger=log)
+    except Exception as _e:
+        log(f"  transitive .env stamp raised "
+            f"({type(_e).__name__}: {_e}); compose up will likely fail",
+            "warning")
 
     compose_result = install_module_compose_up(
         'iris', package_dir, version,

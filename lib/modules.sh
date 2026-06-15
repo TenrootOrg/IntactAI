@@ -426,6 +426,59 @@ deploy_elk() {
 }
 
 # ============================================================================
+# Shared: stamp transitive container pins from config.yaml into a module's .env
+# ============================================================================
+
+# Stamp transitive container version pins (POSTGRES_VERSION,
+# OPENSEARCH_VERSION, RABBITMQ_VERSION, etc.) into a module's .env file
+# from config.yaml's `versions:` block. Counterpart of the Python apply
+# side's stamp_transitive_env_from_manifest — for the install.sh path
+# that runs BEFORE any manifest exists.
+#
+# Args:
+#   $1    module name (used as the modules/<name>/.env path)
+#   $2..  one or more "ENV_VAR:config_key" pairs (config_key is the
+#         flat key under versions: in config.yaml, e.g.
+#         timesketch_postgres → versions.timesketch_postgres)
+#
+# Idempotent: rewrites any line that already starts with one of the
+# named ENV_VARs; appends any missing ones. Other lines in .env (e.g.
+# operator-set passwords) are untouched.
+#
+# Added 2026-06-14 alongside the move-pins-to-config.yaml refactor:
+# install.sh's deploy_* now does the same thing the apply side has
+# been doing all along, so install + upgrade converge on the same
+# pins (single source of truth = config.yaml).
+_stamp_transitive_env_from_config() {
+    local module="$1"
+    shift
+    local env_file="${SCRIPT_DIR}/modules/${module}/.env"
+    mkdir -p "$(dirname "$env_file")"
+    touch "$env_file"
+
+    local pair env_var config_key value tmp
+    tmp="$(mktemp)"
+    cp "$env_file" "$tmp"
+
+    for pair in "$@"; do
+        env_var="${pair%%:*}"
+        config_key="${pair#*:}"
+        value=$(read_config "['versions']['${config_key}']")
+        if [[ -z "$value" || "$value" == "None" ]]; then
+            log_warn "  [stamp] versions.${config_key} missing from config.yaml; ${env_var} will be unset (compose ${VAR:?...} will fail)"
+            continue
+        fi
+        # Drop any existing line for this var, then append the new one.
+        # `sed -E '/^ENV_VAR=/d'` handles commented or active lines.
+        sed -i -E "/^[#[:space:]]*${env_var}[[:space:]]*=/d" "$tmp"
+        echo "${env_var}=${value}" >> "$tmp"
+    done
+    mv "$tmp" "$env_file"
+    log_info "  [stamp] modules/${module}/.env updated from config.yaml.versions"
+}
+
+
+# ============================================================================
 # TimeSketch Module
 # ============================================================================
 
@@ -442,6 +495,18 @@ deploy_timesketch() {
 
     local ts_version=$(read_config "['versions']['timesketch']")
     log_info "  TimeSketch version: ${ts_version:-latest}"
+
+    # Stamp transitive container pins from config.yaml into
+    # modules/timesketch/.env BEFORE compose up. The compose file's
+    # `${POSTGRES_VERSION:?...}` references will fail loudly without
+    # this. 2026-06-14 refactor: pins moved from a live upstream scrape
+    # into config.yaml's `versions.timesketch_<dep>` entries — same
+    # source the apply-side stamper reads from the bundled manifest.
+    _stamp_transitive_env_from_config "timesketch" \
+        "OPENSEARCH_VERSION:timesketch_opensearch" \
+        "POSTGRES_VERSION:timesketch_postgres" \
+        "REDIS_VERSION:timesketch_redis" \
+        "NGINX_VERSION:timesketch_nginx"
 
     # Copy timesketch.conf / timesketch_legacy.conf from templates BEFORE
     # docker compose up — the conf files are bind-mounted into the
@@ -758,6 +823,12 @@ deploy_iris() {
 
     local iris_version=$(read_config "['versions']['iris']")
     log_info "  IRIS version: ${iris_version:-latest}"
+
+    # Stamp transitive container pins from config.yaml. iris's compose
+    # uses `${RABBITMQ_VERSION:?...}`; loud failure here is preferable
+    # to a silent stale literal.
+    _stamp_transitive_env_from_config "iris" \
+        "RABBITMQ_VERSION:iris_rabbitmq"
 
     # Check if this is a fresh install (no existing database volume)
     local is_fresh_install=false
@@ -1086,8 +1157,12 @@ deploy_volweb() {
     elif [[ -f "$env_tmpl" ]]; then
         # Single `versions.volweb` pin drives both backend + frontend
         # (forensicxlab releases them in lockstep). Postgres + Redis
-        # are infrastructure deps — the compose file defaults them
-        # via ${VAR:-x} so we don't render them into .env at all.
+        # are transitive deps — pulled from config.yaml's
+        # `versions.volweb_postgres` + `versions.volweb_redis` via
+        # the stamping helper BELOW (which also covers the upgrade
+        # case where .env already exists — operator pin bumps
+        # propagate on the next deploy without touching the .env by
+        # hand).
         local volweb_ver=$(read_config "['versions']['volweb']")
         local domain=$(read_config "['domain']")
         # Per-install random secrets. Mirrors the IRIS_SECRET_KEY +
@@ -1102,17 +1177,31 @@ deploy_volweb() {
         sed -i \
             -e "s|__VOLWEB_BACKEND_VERSION__|${volweb_ver:-latest}|g" \
             -e "s|__VOLWEB_FRONTEND_VERSION__|${volweb_ver:-latest}|g" \
-            -e "s|__VOLWEB_POSTGRES_VERSION__|14.1|g" \
-            -e "s|__VOLWEB_REDIS_VERSION__|7|g" \
             -e "s|__VOLWEB_DJANGO_SECRET__|${django_secret}|g" \
             -e "s|__VOLWEB_POSTGRES_PASSWORD__|${pg_password}|g" \
             -e "s|__VOLWEB_CSRF_TRUSTED_ORIGINS__|${csrf}|g" \
+            "$env_out"
+        # Drop the old __VOLWEB_POSTGRES_VERSION__ / __VOLWEB_REDIS_VERSION__
+        # placeholder lines — the stamping helper below writes the
+        # real values from config.yaml. Tolerant if the template
+        # doesn't ship those placeholders any more.
+        sed -i \
+            -e "s|^VOLWEB_POSTGRES_VERSION=__VOLWEB_POSTGRES_VERSION__||g" \
+            -e "s|^VOLWEB_REDIS_VERSION=__VOLWEB_REDIS_VERSION__||g" \
             "$env_out"
         log_success "  modules/volweb/.env rendered (per-install secrets generated)"
     else
         log_warn "  modules/volweb/.env.template missing — skipping VolWeb"
         return 1
     fi
+
+    # Stamp transitive container pins from config.yaml — always runs,
+    # so an operator pin edit in config.yaml propagates on the next
+    # deploy without manual .env surgery. Compose's
+    # `${VOLWEB_POSTGRES_VERSION:?...}` would fail loudly otherwise.
+    _stamp_transitive_env_from_config "volweb" \
+        "VOLWEB_POSTGRES_VERSION:volweb_postgres" \
+        "VOLWEB_REDIS_VERSION:volweb_redis"
 
     if ! pull_compose_with_retry "VolWeb"; then
         track_module_failure "VolWeb"

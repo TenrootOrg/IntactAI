@@ -1104,10 +1104,15 @@ document.addEventListener('alpine:init', () => {
                 this.showMessage('Compute a plan first', 'error');
                 return;
             }
-            if (!isOnline && (!this.prepareModules || !this.prepareSelected.length)) {
-                this.showMessage('Show modules + tick at least one to bundle', 'error');
+            if (!isOnline && !this.prepareModules) {
+                this.showMessage('Click "Show modules" first to load the list', 'error');
                 return;
             }
+            // Zero ticks is intentionally allowed: the backend always
+            // adds 'intact' to selected_set in upgrade_routes.py
+            // (_modules_for_prepare), so a no-tick prepare ships an
+            // intact-only package — useful for operators bundling a
+            // platform-code-only refresh for an air-gap target.
             const endpoint = isOnline ? '/api/upgrade/online' : '/api/upgrade/prepare';
             const successMsg = isOnline
                 ? 'Online upgrade started — check Workflows for progress'

@@ -945,7 +945,18 @@ def install_timesketch_offline(package_dir: str, version: str, logger=None, run_
     work_dir = os.path.join(WORKDIR, 'modules', 'timesketch')
     env_file = os.path.join(work_dir, '.env')
     log(f"Installing Timesketch (first-time) -> {version or 'tracked default'}...", "info")
-    if os.path.exists(env_file) and version:
+    # Ensure .env exists + has TIMESKETCH_VERSION before compose up.
+    # Fresh-install via UI may run with no pre-existing .env (install.sh's
+    # deploy_timesketch writes one from a template, but UI install bypasses
+    # that). Without writing this here, compose would either fall back to
+    # `${TIMESKETCH_VERSION:-latest}` (pulls from registry — breaks
+    # air-gap) or fail at the `${VAR:?}` rule depending on the compose
+    # file. update_env_file is idempotent: creates the file when missing,
+    # rewrites the line when present.
+    if version:
+        os.makedirs(work_dir, exist_ok=True)
+        if not os.path.exists(env_file):
+            open(env_file, 'a').close()
         update_env_file(env_file, 'TIMESKETCH_VERSION', version, logger=log)
 
     # Bootstrap timesketch.conf + timesketch_legacy.conf from templates
@@ -993,6 +1004,20 @@ def install_timesketch_offline(package_dir: str, version: str, logger=None, run_
                 log(f"  {base} bootstrap failed: {e}", "warning")
     else:
         log(f"  Config dir missing at {cfg_dir} — Timesketch will crash-loop on missing conf. Check package extraction.", "warning")
+
+    # Stamp transitive container versions from the bundled manifest
+    # into modules/timesketch/.env BEFORE compose up. Without this,
+    # compose's `${VAR:?...}` interpolation fails because the env
+    # vars (POSTGRES_VERSION etc.) aren't set. The manifest was
+    # populated at prepare time from config.yaml's
+    # `versions.timesketch_<dep>` entries — single source of truth.
+    from .base import stamp_transitive_env_from_manifest
+    try:
+        stamp_transitive_env_from_manifest('timesketch', package_dir, logger=log)
+    except Exception as _e:
+        log(f"  transitive .env stamp raised "
+            f"({type(_e).__name__}: {_e}); compose up will likely fail",
+            "warning")
 
     compose_result = install_module_compose_up(
         'timesketch', package_dir, version,

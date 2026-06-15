@@ -545,7 +545,19 @@ def compute_plan(target_ref: str,
             continue
 
         # Module is installed. action depends on version delta.
-        if cur_state == upstream_ver:
+        # SPECIAL CASE — intact: the platform code itself never gets a
+        # 'noop' even when the ref/version string matches. Rolling refs
+        # like 'development' map the SAME name to DIFFERENT commits over
+        # time, and bumping a pinned numeric version isn't the only way
+        # new module-integration logic ships (a bugfix re-push to the
+        # same ref must still re-copy files + restart). Always running
+        # the intact step also unblocks the "Bug: nothing to upgrade →
+        # button greyed" footgun the operator hit 2026-06-14: even when
+        # every module is at-target, the operator can still click Start
+        # to refresh intact and pick up new commits on the rolling ref.
+        if module_id == 'intact':
+            action = 'upgrade'
+        elif cur_state == upstream_ver:
             action = 'noop'
         else:
             action = 'upgrade'
