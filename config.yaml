@@ -76,11 +76,11 @@ modules:
 project_name: intact
 versions:
   elk: 9.3.3
-  iris: v2.4.26
-  plaso: '20260119'
+  iris: v2.4.27
+  plaso: '20260512'
   portainer: 2.39.1
-  timesketch: '20260326'
-  velociraptor: '0.76.1'
+  timesketch: '20260611'
+  velociraptor: '0.76.6'
   # AWS posture scans run the Prowler image (toniblyx/prowler). Pinned to a
   # real release tag for reproducible installs + upgrades.
   prowler: '5.28.1'
@@ -102,7 +102,7 @@ versions:
   # — current latest = 3.16.0 pushed 2026-03-20). Backend + frontend
   # release in lockstep so a SINGLE pin drives both (same pattern as
   # IRIS, where `iris: v2.4.27` drives 4 containers).
-  volweb: '3.15.0'
+  volweb: '3.16.0'
   backend: '1.0.0'
 
   # ── External sidecar pins (postgres / opensearch / redis / nginx / rabbitmq) ──
@@ -121,10 +121,10 @@ versions:
   # To bump any sidecar: edit the value here, then re-run the module's
   # install/upgrade flow. Both online + offline (air-gap) paths read
   # the SAME entries via the bundled manifest.
-  timesketch_opensearch: '2.11.0'
+  timesketch_opensearch: '2.19.5'
   timesketch_postgres:   '13.0-alpine'
-  timesketch_redis:      '7-alpine'
-  timesketch_nginx:      'alpine'
+  timesketch_redis:      '7.2.11-alpine'
+  timesketch_nginx:      '1.25.5-alpine-slim'
   iris_rabbitmq:         '3-management-alpine'
   volweb_postgres:       '14.1'
   volweb_redis:          '7'
