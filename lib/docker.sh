@@ -28,6 +28,15 @@ check_ubuntu() {
 install_dependencies() {
     log_info "Installing system dependencies..."
 
+    # Block on Ubuntu's unattended-upgrades daemon if it's holding the
+    # dpkg lock (common on fresh-boot VMs). Without this, install.sh
+    # races and aborts with "Could not get lock /var/lib/dpkg/lock-frontend"
+    # — exactly what bit a 2026-06-16 install at 09:18.
+    if ! wait_for_dpkg_lock; then
+        log_error "Cannot install dependencies — dpkg lock not available"
+        return 1
+    fi
+
     if ! apt-get update -qq 2>> "$LOG_FILE"; then
         log_warn "apt-get update had issues, continuing..."
     fi
@@ -221,6 +230,16 @@ install_docker_online() {
 
     # Install Docker Engine
     log_info "Installing Docker packages..."
+    # Same dpkg-lock guard as install_dependencies — unattended-upgrades
+    # may still be holding the lock from the security-patch pass that
+    # fires on first VM boot. The fresh install_dependencies above
+    # already waited, but it's been a minute since then and apt-daily
+    # cron could have re-grabbed the lock; re-check here.
+    if ! wait_for_dpkg_lock; then
+        log_error "Cannot install Docker — dpkg lock not available"
+        return 1
+    fi
+
     if ! apt-get update -qq 2>> "$LOG_FILE"; then
         log_warn "apt-get update had issues"
     fi
