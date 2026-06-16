@@ -240,6 +240,73 @@ wait_for_container() {
         "docker ps --filter 'name=${container}' --filter 'status=running' --format '{{.Names}}' | grep -q '${container}'"
 }
 
+# Wait for the dpkg / apt lock to free before running apt commands.
+# Ubuntu fresh-boot VMs run `unattended-upgrades` automatically in the
+# background to install security patches — it can hold the dpkg lock
+# for several minutes, racing against install.sh's apt-get calls. The
+# 2026-06-16 09:18 install hit this race and aborted at "Failed to
+# install Docker packages" because of:
+#
+#   E: Could not get lock /var/lib/dpkg/lock-frontend.
+#      It is held by process 5682 (unattended-upgr)
+#
+# This helper polls every 5s for up to 10 min, then fails cleanly with
+# a clear remediation hint. Call it BEFORE any apt-get install /
+# apt-get update step. Idempotent — no-ops when the lock is already
+# free (the common case).
+#
+# Usage: wait_for_dpkg_lock [timeout_seconds]
+wait_for_dpkg_lock() {
+    local max_wait="${1:-600}"
+    local start=$SECONDS
+    local notified=0
+
+    while true; do
+        # Check all four apt/dpkg lock files. fuser -s exits 0 when
+        # ANY process holds the file open. We need all four to be
+        # unheld.
+        local held=0
+        for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
+                    /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
+            if [[ -e "$lock" ]] && fuser -s "$lock" 2>/dev/null; then
+                held=1
+                break
+            fi
+        done
+
+        if [[ $held -eq 0 ]]; then
+            if [[ $notified -eq 1 ]]; then
+                log_success "  dpkg lock free after $((SECONDS - start))s — proceeding"
+            fi
+            return 0
+        fi
+
+        local elapsed=$((SECONDS - start))
+        if (( elapsed >= max_wait )); then
+            local holder_pid=$(fuser /var/lib/dpkg/lock-frontend 2>/dev/null | tr -dc '0-9 ' | awk '{print $1}')
+            local holder_cmd="unknown"
+            [[ -n "$holder_pid" ]] && holder_cmd=$(ps -o comm= -p "$holder_pid" 2>/dev/null || echo unknown)
+            log_error "  dpkg lock still held after ${max_wait}s — giving up"
+            log_error "  Process holding lock: $holder_cmd (pid $holder_pid)"
+            log_error "  Remediation: sudo systemctl stop unattended-upgrades; "
+            log_error "               sudo killall apt apt-get 2>/dev/null;"
+            log_error "               then re-run install.sh"
+            return 1
+        fi
+
+        if [[ $notified -eq 0 ]]; then
+            local holder_pid=$(fuser /var/lib/dpkg/lock-frontend 2>/dev/null | tr -dc '0-9 ' | awk '{print $1}')
+            local holder_cmd="unknown"
+            [[ -n "$holder_pid" ]] && holder_cmd=$(ps -o comm= -p "$holder_pid" 2>/dev/null || echo unknown)
+            log_info "  Waiting for dpkg lock (held by $holder_cmd, pid $holder_pid; up to ${max_wait}s)..."
+            notified=1
+        elif (( elapsed > 0 && elapsed % 30 == 0 )); then
+            log_info "  ...still waiting on dpkg lock (${elapsed}s elapsed)"
+        fi
+        sleep 5
+    done
+}
+
 # Wait for HTTP endpoint to respond
 # Usage: wait_for_http "url" timeout_seconds
 wait_for_http() {
