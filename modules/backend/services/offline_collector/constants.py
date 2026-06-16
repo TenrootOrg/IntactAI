@@ -60,11 +60,49 @@ def _discover_latest_binary(platform_glob: str) -> str:
     return candidates[-1][1]
 
 
-VELO_CLIENT_PATHS = {
-    "windows": _discover_latest_binary("windows-amd64.exe"),
-    "linux":   _discover_latest_binary("linux-amd64"),
-    "darwin":  _discover_latest_binary("darwin-amd64"),
-}
+def get_velo_client_path(os_type: str) -> str:
+    """Resolve the velociraptor client binary path for the given OS,
+    fresh from /app/downloads/ on every call.
+
+    Replaces the old `VELO_CLIENT_PATHS` dict that resolved at import
+    time and stranded the collector at the old binary path after a
+    velociraptor upgrade. Concrete failure (2026-06-15): upgrade
+    0.76.1 → 0.76.6 ran Phase 1 backend restart BEFORE Phase 2 swapped
+    the binaries on disk; the new backend process imported this module
+    while v0.76.1 binaries were still present, cached those paths,
+    and never re-resolved after Phase 2 placed v0.76.6. The collector
+    generator then tried to read `velociraptor-v0.76.1-windows-amd64.exe`
+    from disk and failed with "Velociraptor binary not found".
+    Re-running `_discover_latest_binary` per lookup eliminates the
+    cache. Cost is one `glob.glob` per collector generation (~ms),
+    dwarfed by the docker copy + repack work.
+    """
+    platform_glob = {
+        "windows": "windows-amd64.exe",
+        "linux":   "linux-amd64",
+        "darwin":  "darwin-amd64",
+    }.get(os_type)
+    if not platform_glob:
+        return ""
+    return _discover_latest_binary(platform_glob)
+
+
+class _LazyVeloPaths(dict):
+    """Backwards-compat shim — existing `VELO_CLIENT_PATHS["windows"]`
+    callsites work unchanged, but each lookup triggers a fresh
+    `_discover_latest_binary` scan via `get_velo_client_path()`.
+
+    Note for future callers: this implements only `__getitem__`. Don't
+    iterate it, don't call `.get()`, don't call `.keys()` — use
+    `get_velo_client_path(os_type)` directly instead. The shim exists
+    purely so that the six existing direct-lookup sites in
+    `generator.py` keep working without touching them.
+    """
+    def __getitem__(self, key):
+        return get_velo_client_path(key)
+
+
+VELO_CLIENT_PATHS = _LazyVeloPaths()
 
 # Default artifacts (same as BestPractice)
 # All artifacts verified to exist in Velociraptor 0.75.x

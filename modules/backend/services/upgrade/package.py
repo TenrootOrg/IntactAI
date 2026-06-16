@@ -1432,9 +1432,27 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         # Velociraptor. Operator only loses bespoke
                         # artifacts they imported manually that aren't
                         # in those public sources.
-                        log(f"  Registry snapshot SQL failed (continuing — direct "
-                            f"downloads below will cover the standard sources): "
-                            f"{snap.get('error', '')[:120]}", "warning")
+                        #
+                        # Special-case the "container absent" failure —
+                        # that's the EXPECTED state when prepare runs
+                        # on a build host that doesn't have velociraptor
+                        # installed (clean VM, backend-only deployment).
+                        # Logging it at WARNING made operators panic
+                        # mid-run on otherwise-clean prepare flows.
+                        # Other failure causes (real SQL errors, docker
+                        # transients) still get WARNING.
+                        snap_err = snap.get('error', '') or ''
+                        if 'No such container' in snap_err:
+                            log("  Velociraptor not running on this host — "
+                                "skipping live artifact-registry snapshot. "
+                                "The direct downloads below cover the "
+                                "standard set (ArtifactExchange, DetectRaptor, "
+                                "Sigma, Triage, etc.); only operator-curated "
+                                "bespoke artifacts won't be included.", "info")
+                        else:
+                            log(f"  Registry snapshot SQL failed (continuing — direct "
+                                f"downloads below will cover the standard sources): "
+                                f"{snap_err[:120]}", "warning")
                 except Exception as e:
                     log(f"  Registry snapshot raised: {e}", "warning")
 
@@ -1663,8 +1681,28 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     if dl.get("cancelled"):
                         return {"success": False, "error": "cancelled", "cancelled": True}
                     if not dl['success'] or not os.path.exists(src_tarball) or os.path.getsize(src_tarball) < 1024:
-                        log(f"  Failed to download Timesketch source for migrations from {mig_url}", "warning")
-                        log("  Offline upgrade may fall back to GitHub for migrations at apply time", "warning")
+                        # Mode-aware message — online apply has internet
+                        # and can re-fetch on the fly, offline apply on
+                        # an air-gap target genuinely needs the bundled
+                        # migrations. Don't shout WARNING during online
+                        # mode (it scared operators on otherwise-clean
+                        # runs 2026-06-15); only WARN when the missing
+                        # migrations actually matter (offline tar).
+                        if compress:
+                            log(
+                                "  Timesketch migrations not bundled; the apply "
+                                "on the air-gap target will need GitHub access "
+                                "for migrations. Re-run prepare if the target "
+                                "has no internet.",
+                                "warning",
+                            )
+                        else:
+                            log(
+                                "  Timesketch migrations not bundled "
+                                "(online mode — apply will fetch from GitHub "
+                                "directly).",
+                                "info",
+                            )
                     else:
                         ts_mig_dir = f"{package_dir}/migrations/timesketch"
                         os.makedirs(ts_mig_dir, exist_ok=True)

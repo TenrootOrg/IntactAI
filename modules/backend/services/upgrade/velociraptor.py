@@ -570,8 +570,18 @@ def _stage_binaries_for_build(
     misses become zero-byte placeholders + warnings.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    release_tag = resolve_velociraptor_release_tag(clean_version, logger=log)
-    base_url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}"
+    # Probe GitHub for the release tag only when we'll actually fetch
+    # from there. Offline-apply paths pass source="package" and copy
+    # from the bundled binaries — the probe's result is unused, and
+    # logging "tag probe failed" during offline apply was misleading
+    # operators into thinking the upgrade was failing when it wasn't
+    # (2026-06-15 incident).
+    if source == "github":
+        release_tag = resolve_velociraptor_release_tag(clean_version, logger=log)
+        base_url = f"https://github.com/Velocidex/velociraptor/releases/download/{release_tag}"
+    else:
+        release_tag = None
+        base_url = None
 
     staged: list = []
     placeholder: list = []

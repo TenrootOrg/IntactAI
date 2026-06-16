@@ -375,9 +375,16 @@ def _bootstrap_alembic_if_needed(current_version: str, logger: Callable = None,
         if marker:
             log(f"DB already alembic-tracked at revision {marker} — no bootstrap needed", "info")
             return True
-        log("alembic_version table exists but is empty — bootstrap needed", "warning")
+        # Both branches below are the EXPECTED state on a first upgrade
+        # after alembic tracking was added. The very next line bootstraps
+        # the table and proceeds normally. Logging as WARNING made
+        # operators panic on otherwise-clean upgrades (2026-06-15).
+        log("alembic_version table exists but is empty — bootstrapping "
+            "(one-time, expected on first upgrade)...", "info")
     else:
-        log("alembic_version table missing — bootstrap needed", "warning")
+        log("alembic_version table not yet initialized — bootstrapping "
+            "(one-time, expected on first upgrade after alembic tracking "
+            "was added)...", "info")
 
     # Need to stamp. Use the CURRENT version's migrations against the
     # still-running OLD web container.
