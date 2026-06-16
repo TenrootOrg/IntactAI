@@ -67,6 +67,293 @@ def _compose_up(log: Callable, run_id: str | None = None) -> Dict:
     )
 
 
+# ---------------------------------------------------------------------------
+# Air-gap YARA seeding (install + upgrade)
+# ---------------------------------------------------------------------------
+#
+# Stock VolWeb's `yararulesets` table is empty on a fresh install. The
+# operator-facing path is `POST /api/yararulesets/import/github/` per
+# ruleset — but that requires internet at apply time on the VolWeb
+# host. For air-gap targets the prepare side (`package.py` —
+# `manifest["contents"]["yara_rulesets"]`) bundles each repo as a
+# `.zip` in `package_dir/yara_rulesets/`; the helper below imports
+# them from those local bundles via a small in-container Python
+# script that mirrors what VolWeb's own `GitHubImportView` does
+# internally minus the clone step.
+#
+# Idempotent — re-runs are safe. The helper looks up YaraRuleSet by
+# `name` (get_or_create) and YaraRule by `etag` (which is a hash of
+# name+content+source_url, so identical content → same etag → no
+# duplicate row, just an update of metadata).
+
+_VOLWEB_BACKEND_CONTAINER = "intact_volweb_backend"
+
+# Python script executed INSIDE the volweb backend container. Imports
+# YaraRule + YaraRuleSet from VolWeb's own Django app — no need to
+# reverse-engineer the schema. Reads zip paths + names + descriptions
+# from environment variables we set on the docker exec call.
+_YARA_INGEST_SCRIPT = r"""
+import os, sys, re, zipfile, hashlib, tempfile, shutil, json
+sys.path.insert(0, '/home/app/web')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.settings')
+import django
+django.setup()
+from yararulesets.models import YaraRuleSet
+from yararules.models import YaraRule
+try:
+    from yararules.utils import BatchUploadManager
+except Exception:
+    BatchUploadManager = None
+
+with open(os.environ['INTACT_YARA_SPECS_FILE']) as _f:
+    specs = json.loads(_f.read())
+out = {'total': 0, 'rulesets': []}
+for spec in specs:
+    name = spec['name']
+    zip_path = spec['zip_path']
+    description = spec.get('description', '')
+    source_url = spec.get('source_url', 'bundled')
+    if not os.path.exists(zip_path):
+        out['rulesets'].append({'name': name, 'error': 'zip missing on container'})
+        continue
+    ruleset, _ = YaraRuleSet.objects.get_or_create(name=name, defaults={'description': description})
+    created = 0
+    skipped = 0
+    extract_dir = tempfile.mkdtemp(prefix='intact-yara-')
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(extract_dir)
+        yara_files = []
+        for root, _, files in os.walk(extract_dir):
+            for fn in files:
+                low = fn.lower()
+                if low.endswith('.yar') or low.endswith('.yara'):
+                    yara_files.append(os.path.join(root, fn))
+        # BatchUploadManager disables per-rule ruleset validation, so
+        # we trigger one final compile at the end instead of N. Mirrors
+        # what GitHubImportView does internally.
+        ctx = BatchUploadManager(ruleset_id=ruleset.id).batch_context() if BatchUploadManager else None
+        if ctx is not None:
+            ctx.__enter__()
+        try:
+            for path in yara_files:
+                try:
+                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                    rule_name = os.path.splitext(os.path.basename(path))[0]
+                    m = re.search(r'rule\s+(\w+)', content)
+                    if m:
+                        rule_name = m.group(1)
+                    etag = hashlib.md5(f"{rule_name}_{content}_{source_url}".encode()).hexdigest()
+                    obj, was_created = YaraRule.objects.get_or_create(
+                        etag=etag,
+                        defaults={
+                            'name': rule_name,
+                            'rule_content': content,
+                            'description': description or f"Imported from bundled package: {os.path.basename(path)}",
+                            'linked_yararuleset': ruleset,
+                            'source': 'bundled',
+                            'url': source_url,
+                            'is_active': True,
+                        },
+                    )
+                    if was_created:
+                        created += 1
+                    else:
+                        skipped += 1
+                except Exception:
+                    continue
+        finally:
+            if ctx is not None:
+                ctx.__exit__(None, None, None)
+    finally:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+    out['total'] += created
+    out['rulesets'].append({
+        'name': name,
+        'files_found': len(yara_files),
+        'created': created,
+        'skipped_duplicates': skipped,
+    })
+print('INTACT_YARA_RESULT=' + json.dumps(out))
+"""
+
+
+def _seed_yara_from_bundle(package_dir: str, logger: Callable, run_id: str | None = None) -> Dict:
+    """Import the prepare-side-bundled YARA rule zips into VolWeb's
+    yararulesets table. Idempotent; safe to call on fresh installs AND
+    after every upgrade.
+
+    Expects the manifest at ``{package_dir}/manifest.json`` to list the
+    bundled rulesets (`contents.yara_rulesets`), each entry with
+    ``filename`` / ``name`` / ``description`` / ``source_url``.
+    Each zip lives at ``{package_dir}/yara_rulesets/{filename}``.
+
+    Strategy: docker cp each zip into the volweb backend container's
+    /tmp, then docker exec a single Python script that imports them
+    all via VolWeb's own ORM (`yararules.models.YaraRule` +
+    `yararulesets.models.YaraRuleSet`). This mirrors what
+    `GitHubImportView` does internally without the network step.
+
+    Returns ``{"success": bool, "imported": int, "rulesets": [...]}``.
+    Soft-fails on any error — caller logs the result but doesn't
+    fail the install/upgrade over a YARA seed hiccup.
+    """
+    log = logger or _log_default
+    import json
+
+    manifest_path = os.path.join(package_dir, 'manifest.json')
+    if not os.path.exists(manifest_path):
+        log("  YARA seed: package manifest missing — skipping", "warning")
+        return {"success": False, "error": "manifest missing"}
+    try:
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+    except Exception as e:
+        log(f"  YARA seed: failed to parse manifest ({e}) — skipping", "warning")
+        return {"success": False, "error": f"manifest parse error: {e}"}
+
+    yara_entries = (manifest.get('contents') or {}).get('yara_rulesets') or []
+    if not yara_entries:
+        log("  YARA seed: no rulesets bundled in package (operator can run "
+            "Maintenance → Refresh YARA Rulesets to seed online).", "info")
+        return {"success": True, "imported": 0, "rulesets": []}
+
+    yara_dir = os.path.join(package_dir, 'yara_rulesets')
+    log(f"  YARA seed: importing {len(yara_entries)} bundled ruleset(s) "
+        f"into VolWeb...", "info")
+
+    # Verify volweb backend is up before trying to docker cp / exec.
+    chk = run_command(
+        f"docker inspect -f '{{{{.State.Running}}}}' {_VOLWEB_BACKEND_CONTAINER}",
+        logger=None, timeout=10,
+    )
+    if not (chk.get('success') and 'true' in (chk.get('stdout') or '').lower()):
+        log(f"  YARA seed: {_VOLWEB_BACKEND_CONTAINER} not running — "
+            f"skipping (operator can run Maintenance → Refresh YARA Rulesets later)", "warning")
+        return {"success": False, "error": "volweb backend not running"}
+
+    # Copy each zip into the container and build the spec list
+    # describing what the in-container script should import.
+    specs = []
+    for entry in yara_entries:
+        fname = entry.get('filename')
+        name = entry.get('name')
+        if not fname or not name:
+            continue
+        src = os.path.join(yara_dir, fname)
+        if not os.path.exists(src):
+            log(f"    ✗ {name}: bundled zip missing on disk ({src})", "warning")
+            continue
+        # docker cp the zip into /tmp/intact-yara/ in the container.
+        host_src = src.replace(WORKDIR, HOST_PATH, 1)
+        container_path = f"/tmp/intact-yara-{fname}"
+        cp = run_command(
+            f"docker cp {host_src} {_VOLWEB_BACKEND_CONTAINER}:{container_path}",
+            logger=None, timeout=120,
+        )
+        if not cp.get('success'):
+            log(f"    ✗ {name}: docker cp failed ({cp.get('error', '')[:100]})", "warning")
+            continue
+        specs.append({
+            'name': name,
+            'zip_path': container_path,
+            'description': entry.get('description', ''),
+            'source_url': entry.get('source_url', 'bundled'),
+        })
+
+    if not specs:
+        log("  YARA seed: no zips successfully copied; aborting", "warning")
+        return {"success": False, "error": "no zips copied"}
+
+    # Run the ingest script via docker exec. The script reads the spec
+    # list from INTACT_YARA_SPECS env var (avoids quoting nightmares
+    # of inlining JSON into a shell argument). The script's `print`
+    # at the end emits a parseable result line.
+    script_path = f"/tmp/intact-yara-ingest.py"
+    write_cmd = (
+        f"docker exec -i {_VOLWEB_BACKEND_CONTAINER} "
+        f"sh -c 'cat > {script_path}'"
+    )
+    # Use subprocess directly with stdin to avoid shell-quote breakage
+    try:
+        _subprocess.run(
+            write_cmd, input=_YARA_INGEST_SCRIPT,
+            shell=True, check=True, text=True, timeout=30,
+        )
+    except Exception as e:
+        log(f"    ✗ YARA seed: couldn't write ingest script ({e})", "warning")
+        return {"success": False, "error": f"script write failed: {e}"}
+
+    # Write the specs JSON into the container as a file so the script
+    # can read it. Avoids stuffing multi-KB JSON through the exec
+    # command line / env vars (some kernels cap env to 128 KB).
+    specs_json = json.dumps(specs)
+    specs_path = "/tmp/intact-yara-specs.json"
+    try:
+        _subprocess.run(
+            f"docker exec -i {_VOLWEB_BACKEND_CONTAINER} sh -c 'cat > {specs_path}'",
+            input=specs_json, shell=True, check=True, text=True, timeout=30,
+        )
+    except Exception as e:
+        log(f"    ✗ YARA seed: couldn't write spec file ({e})", "warning")
+        return {"success": False, "error": f"spec write failed: {e}"}
+
+    # Run the script — point it at the in-container specs file via
+    # env var. Reading the JSON from a file inside the container
+    # sidesteps the docker-exec command-substitution + shell-quote
+    # nightmare of inlining JSON into the exec command line.
+    run = run_command(
+        f"docker exec --user app "
+        f"-e INTACT_YARA_SPECS_FILE={specs_path} "
+        f"{_VOLWEB_BACKEND_CONTAINER} python {script_path}",
+        logger=None, timeout=900, run_id=run_id,
+    )
+
+    # Cleanup zips and scripts inside the container (best-effort).
+    cleanup_paths = " ".join(s['zip_path'] for s in specs) + f" {script_path} {specs_path}"
+    run_command(
+        f"docker exec {_VOLWEB_BACKEND_CONTAINER} rm -f {cleanup_paths}",
+        logger=None, timeout=30,
+    )
+
+    if not run.get('success'):
+        log(f"  YARA seed: ingest script failed: "
+            f"{(run.get('error') or run.get('stderr') or '')[:200]}", "warning")
+        return {"success": False, "error": "ingest script failed"}
+
+    stdout = run.get('stdout', '') or ''
+    result_line = None
+    for line in stdout.splitlines():
+        if line.startswith('INTACT_YARA_RESULT='):
+            result_line = line[len('INTACT_YARA_RESULT='):]
+            break
+    if not result_line:
+        log(f"  YARA seed: ingest script ran but didn't emit result "
+            f"(stdout: {stdout[-200:]})", "warning")
+        return {"success": False, "error": "no result line"}
+
+    try:
+        result = json.loads(result_line)
+    except Exception as e:
+        log(f"  YARA seed: couldn't parse result line ({e})", "warning")
+        return {"success": False, "error": f"result parse: {e}"}
+
+    total = result.get('total', 0)
+    log(f"  YARA seed: imported {total} new rules across "
+        f"{len(result.get('rulesets', []))} ruleset(s)", "success")
+    for rs in result.get('rulesets', []):
+        if 'error' in rs:
+            log(f"    ✗ {rs['name']}: {rs['error']}", "warning")
+        else:
+            log(f"    ✓ {rs['name']}: "
+                f"{rs.get('files_found', 0)} files → "
+                f"{rs.get('created', 0)} new, "
+                f"{rs.get('skipped_duplicates', 0)} already present", "info")
+
+    return {"success": True, "imported": total, "rulesets": result.get('rulesets', [])}
+
+
 def upgrade_volweb(version: str, logger: Callable = None, run_id: str | None = None) -> Dict:
     """Online upgrade — pull the new backend + frontend images, bump
     both pins, recreate containers.
@@ -173,6 +460,19 @@ def upgrade_volweb_offline(
     up = _compose_up(log, run_id=run_id)
     if not up.get("success"):
         return {"success": False, "error": f"compose up failed: {up.get('error')}"}
+
+    # Re-seed YARA rules from the bundled rule sources. Idempotent
+    # via etag-based de-duplication in the in-container script — safe
+    # to run on every upgrade. Covers the cross-major case where the
+    # operator was on volweb<3.16 (no yararulesets table) and the
+    # upgrade brought them up to a YARA-aware version: the table now
+    # exists but is empty, so seeding here populates it.
+    try:
+        _seed_yara_from_bundle(package_dir, logger=log, run_id=run_id)
+    except Exception as _e:
+        log(f"  YARA re-seed raised ({type(_e).__name__}: {_e}); "
+            f"upgrade still succeeded — operator can refresh via "
+            f"Maintenance → Refresh YARA Rulesets if needed.", "warning")
 
     log(f"VolWeb offline upgrade completed: {cur} → {version}", "success")
     remove_old_module_image('volweb', cur, version, logger=log)
@@ -441,12 +741,24 @@ def install_volweb_offline(
     except Exception as e:
         log(f"  VolWeb admin seeding errored: {e}. Continuing.", "warning")
 
+    # Seed YARA rules from the bundled rule sources. Same helper the
+    # upgrade path uses. Idempotent via etag-based de-dup, so running
+    # this here AND later from Maintenance → Refresh is safe.
+    try:
+        seed_result = _seed_yara_from_bundle(package_dir, logger=log, run_id=run_id)
+        if seed_result.get('success') and seed_result.get('imported', 0) > 0:
+            log(f"  YARA corpus seeded automatically from bundled sources "
+                f"({seed_result.get('imported')} rules)", "success")
+        elif not seed_result.get('success'):
+            log("  YARA bundle seed did not run — operator can use "
+                "Settings → Maintenance → 'Refresh YARA Rulesets' to seed online.",
+                "info")
+    except Exception as _e:
+        log(f"  YARA seed raised ({type(_e).__name__}: {_e}); "
+            f"install still succeeded — operator can run Maintenance → "
+            f"Refresh YARA Rulesets manually.", "warning")
+
     log("VolWeb first-time install complete", "success")
-    log(
-        "  Next step (operator): Settings → Maintenance → 'Refresh YARA Rulesets' "
-        "to seed the YARA corpus (3 sources, ~3 min, idempotent).",
-        "info",
-    )
     return {"success": True, "version": version, "first_install": True}
 
 
