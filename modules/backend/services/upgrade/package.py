@@ -1090,6 +1090,45 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     log(f"  {musl_fname} unavailable — Linux (musl) download "
                         f"button will grey out on target after apply", "warning")
 
+                # velociraptor-collector — small (~80 KB) standalone
+                # collector binary that velociraptor's server-side
+                # client_repack uses as the base for Hunt-collector
+                # generation. Without it bundled, air-gap targets fail
+                # collector generation with "lookup github.com on
+                # 127.0.0.11:53: server misbehaving" (2026-06-16
+                # incident). Apply side stages it from
+                # binaries/velociraptor-collector into /data/tools/
+                # via _ensure_velociraptor_collector_tool.
+                collector_fname = "velociraptor-collector"
+                collector_pkg_path = f"{package_dir}/binaries/{collector_fname}"
+                collector_url = f"{base_url}/{collector_fname}"
+                log(f"  Downloading: {collector_fname} (for Hunt-collector generation)", "info")
+                dl = run_command(
+                    f"curl -L -f --retry 5 --retry-delay 5 "
+                    f"--retry-max-time 300 --connect-timeout 30 "
+                    f"-o {collector_pkg_path} {collector_url}",
+                    timeout=600, logger=None, run_id=run_id,
+                )
+                if dl.get("cancelled"):
+                    return {"success": False, "error": "cancelled", "cancelled": True}
+                collector_ok = (
+                    dl['success']
+                    and os.path.exists(collector_pkg_path)
+                    and os.path.getsize(collector_pkg_path) > 50000
+                )
+                if collector_ok:
+                    os.chmod(collector_pkg_path, 0o755)
+                    log(f"  Done ({_format_size(os.path.getsize(collector_pkg_path))})",
+                        "success")
+                    manifest["contents"]["binaries"].append(collector_fname)
+                else:
+                    if os.path.exists(collector_pkg_path):
+                        os.remove(collector_pkg_path)
+                    log(f"  {collector_fname} unavailable from upstream — "
+                        f"apply will fall back to fetching at runtime (requires "
+                        f"internet on apply host) or Hunt-collector generation "
+                        f"will fail until file manually placed.", "warning")
+
                 manifest["versions"]["velociraptor"] = clean_version
 
                 # Build the image with the now-staged binaries. The

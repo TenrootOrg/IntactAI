@@ -863,13 +863,26 @@ download_legacy_velociraptor_binaries() {
 }
 
 create_velociraptor_collector() {
-    # Download the special velociraptor-collector binary from GitHub
-    # This is a small (~80KB) template binary designed for config embedding
-    # NOT the same as the regular velociraptor binary (70+ MB)
-    # The file is placed in /data/tools/ where maintenance will configure it
-    # in Velociraptor's inventory with serve_locally=true
+    # Download the special velociraptor-collector binary from GitHub.
+    # This is a small (~80KB) template binary used by velociraptor's
+    # server-side `client_repack` VQL function for Hunt-collector
+    # generation. NOT the same as the regular velociraptor binary
+    # (70+ MB). Placed in /data/tools/ where configure_inventory
+    # registers it with Velociraptor as serve_locally=true.
+    #
+    # Version pin: read from config.yaml.versions.velociraptor so the
+    # downloaded collector matches the velociraptor server version.
+    # The old hardcoded v0.75 URL drifted from the installed velociraptor
+    # version (which can be 0.76.x or newer), causing Hunt-collector
+    # generation to fail with "lookup github.com" at runtime when
+    # velociraptor server tried to fetch the version-matching binary
+    # from upstream itself.
 
-    local collector_url="https://github.com/Velocidex/velociraptor/releases/download/v0.75/velociraptor-collector"
+    local velo_version=$(read_config "['versions']['velociraptor']" 2>/dev/null)
+    [[ -z "$velo_version" ]] && velo_version="0.76.6"   # safe fallback
+    velo_version="${velo_version#v}"   # strip leading v if present
+
+    local collector_url="https://github.com/Velocidex/velociraptor/releases/download/v${velo_version}/velociraptor-collector"
     local tools_dir="${SCRIPT_DIR}/data/tools"
     local dest_path="${tools_dir}/velociraptor-collector"
     local min_size=50000  # ~80KB expected

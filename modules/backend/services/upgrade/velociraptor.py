@@ -373,6 +373,126 @@ _OFFLINE_COLLECTOR_FILENAMES = (
 )
 
 
+# ---------------------------------------------------------------------------
+# velociraptor-collector — small (~80 KB) template binary that velociraptor's
+# server-side `client_repack` VQL function uses as a base when generating
+# Hunt offline collectors. Distinct from the per-OS velociraptor binaries
+# we already stage:
+#   - velociraptor-v{v}-windows-amd64.exe  → operator-facing Downloads page
+#   - velociraptor-v{v}-linux-amd64        → server image build context
+#   - velociraptor-collector               → server's tools dir, used by
+#                                            client_repack at runtime
+#
+# If this file isn't present in /data/tools/, velociraptor server falls back
+# to fetching https://github.com/Velocidex/velociraptor/releases/download/v<track>/velociraptor-collector
+# at the moment the operator clicks "Generate Collector" — which fails on
+# air-gap targets AND on online targets with transient DNS issues
+# (2026-06-16 incident: Hunt: Quick Scan collector generation died with
+# "lookup github.com on 127.0.0.11:53: server misbehaving" because the
+# file wasn't in /data/tools/ on this fresh-install host).
+
+
+def _velociraptor_collector_url(clean_version: str) -> str:
+    """Build the upstream URL for the velociraptor-collector binary
+    matching the operator's pinned velociraptor version. Velociraptor
+    publishes this as a per-release asset since at least v0.6 (verified
+    on 2026-06-16: 0.1 MB asset at every recent v0.76.x release)."""
+    return f"https://github.com/Velocidex/velociraptor/releases/download/v{clean_version}/velociraptor-collector"
+
+
+def _tools_dir() -> str:
+    """Velociraptor server's tools dir as seen from the intact_backend
+    container. /app/data/tools (container view) = /home/tenroot/intact/data/tools
+    (host view) = /tools (velociraptor container view via bind mount).
+    All three map to the same dir; we write from the backend's view."""
+    return os.path.join(WORKDIR, '..', 'data', 'tools') \
+        if not os.path.isdir(os.path.join(WORKDIR, 'data', 'tools')) \
+        else os.path.join(WORKDIR, 'data', 'tools')
+
+
+def _ensure_velociraptor_collector_tool(
+    clean_version: str,
+    source: str = "github",
+    package_binaries_dir: Optional[str] = None,
+    logger: Optional[Callable] = None,
+) -> Dict:
+    """Make sure /data/tools/velociraptor-collector exists + matches the
+    operator's velociraptor pin. Called from install_velociraptor_offline
+    and upgrade_velociraptor_offline so the file is present BEFORE the
+    operator tries to generate a Hunt collector.
+
+    Sources:
+      - source="github" → curl from upstream (online installs/upgrades)
+      - source="package" → copy from <package>/binaries/velociraptor-collector
+        (offline / air-gap path; the prepare side bundles the file)
+
+    Best-effort: a missing-on-upstream / missing-from-bundle case is
+    logged as a warning and the function returns success=False, so the
+    caller can decide whether to fail the upgrade or proceed without.
+    The current callers proceed — generating a Hunt collector will
+    still fail at runtime if the file is missing, but the rest of the
+    velociraptor upgrade is unaffected.
+
+    No-op (returns success=True) when the file already exists at the
+    target path with the right size — re-runs from upgrades on each
+    pin bump don't re-download unless the file is missing or stale.
+    """
+    log = logger or (lambda msg, level="info": None)
+    # Use /app/data/tools/ — the path that's bind-mounted into velociraptor
+    # at /tools and discoverable by configure_inventory's glob.
+    tools_dir = "/app/data/tools"
+    os.makedirs(tools_dir, exist_ok=True)
+    dest = os.path.join(tools_dir, "velociraptor-collector")
+    min_size = 50000   # ~80 KB expected; reject anything smaller
+
+    # Already in place + valid?
+    if os.path.exists(dest) and os.path.getsize(dest) > min_size:
+        log(f"  velociraptor-collector already in tools dir "
+            f"({os.path.getsize(dest)} bytes) — skipping fetch", "info")
+        return {"success": True, "skipped": True}
+
+    if source == "package":
+        if not package_binaries_dir:
+            log("  velociraptor-collector: package_binaries_dir required "
+                "for source='package' — skipping", "warning")
+            return {"success": False, "error": "no package_binaries_dir"}
+        src = os.path.join(package_binaries_dir, "velociraptor-collector")
+        if not os.path.exists(src) or os.path.getsize(src) < min_size:
+            log(f"  velociraptor-collector: not bundled in package at "
+                f"{src} — Hunt collector generation will fail without it. "
+                f"Re-prepare from current intact tag to bundle it.",
+                "warning")
+            return {"success": False, "error": "not bundled"}
+        import shutil
+        shutil.copy2(src, dest)
+        os.chmod(dest, 0o755)
+        log(f"  velociraptor-collector placed from package "
+            f"({os.path.getsize(dest)} bytes)", "success")
+        return {"success": True, "from": "package"}
+
+    # source == "github"
+    url = _velociraptor_collector_url(clean_version)
+    log(f"  Downloading velociraptor-collector from {url}...", "info")
+    cp = run_command(
+        f"curl -fL --retry 3 --retry-delay 5 --max-time 300 "
+        f"--connect-timeout 30 -o {dest} {url}",
+        logger=None, timeout=600,
+    )
+    if not cp.get('success') or not os.path.exists(dest) or os.path.getsize(dest) < min_size:
+        sz = os.path.getsize(dest) if os.path.exists(dest) else 0
+        try: os.remove(dest)
+        except Exception: pass
+        log(f"  velociraptor-collector download failed (size={sz}, "
+            f"err={(cp.get('error') or '')[:120]}) — Hunt collector "
+            f"generation will fail at runtime until this file is "
+            f"manually placed at {dest}.", "warning")
+        return {"success": False, "error": "download failed"}
+    os.chmod(dest, 0o755)
+    log(f"  velociraptor-collector downloaded "
+        f"({os.path.getsize(dest)} bytes)", "success")
+    return {"success": True, "from": "upstream"}
+
+
 def _refresh_offline_collector_downloads(clean_version: str,
                                           source: str,
                                           package_binaries_dir: Optional[str] = None,
@@ -1269,6 +1389,23 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         except Exception as e:
             log(f"Offline-collector downloads refresh raised: {e}", "warning")
 
+        # Stage velociraptor-collector for Hunt-collector generation.
+        # See _ensure_velociraptor_collector_tool docstring + 2026-06-16
+        # incident comment above. Try package first (offline-safe), fall
+        # back to upstream if the package was prepared before the
+        # bundling step landed (newer packages bundle it).
+        try:
+            r = _ensure_velociraptor_collector_tool(
+                clean_version=actual_version, source="package",
+                package_binaries_dir=binaries_dir, logger=log,
+            )
+            if not r.get("success"):
+                _ensure_velociraptor_collector_tool(
+                    clean_version=actual_version, source="github", logger=log,
+                )
+        except Exception as e:
+            log(f"velociraptor-collector staging raised: {e}", "warning")
+
         remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
         return {"success": True, "version": actual_version, "health": "green" if healthy else "pending"}
 
@@ -1496,5 +1633,25 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
             f"the operator runs the script manually on the host.",
             "warning",
         )
+
+    # Stage velociraptor-collector for Hunt-collector generation. Same
+    # call as upgrade_velociraptor_offline — fresh installs from a
+    # prepared package were hitting the 2026-06-16 incident where Hunt
+    # collector generation died with "lookup github.com on 127.0.0.11:53"
+    # because the file wasn't in /data/tools/. Bundled-first, falls
+    # back to upstream when the package was prepared before bundling
+    # landed.
+    binaries_dir_install = os.path.join(package_dir, 'binaries')
+    try:
+        r = _ensure_velociraptor_collector_tool(
+            clean_version=version.lstrip('v'), source="package",
+            package_binaries_dir=binaries_dir_install, logger=log,
+        )
+        if not r.get("success"):
+            _ensure_velociraptor_collector_tool(
+                clean_version=version.lstrip('v'), source="github", logger=log,
+            )
+    except Exception as e:
+        log(f"velociraptor-collector staging raised: {e}", "warning")
 
     return compose_result
