@@ -1756,10 +1756,20 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             "Elastic security YARA detection rules (~695 active)",
                         ),
                         (
+                            # YARA-Forge ships its actual rule packs
+                            # as GitHub release assets — the source
+                            # repo is just the build tooling and
+                            # contains ZERO .yar files. Use the "full"
+                            # asset (includes core + extended). The
+                            # /releases/latest/download/ redirect
+                            # resolves to whichever tag is latest
+                            # without needing an API call. Same trick
+                            # the velociraptor bundler uses for
+                            # DetectRaptor up above.
                             "YARA-Forge",
                             "yara-forge.zip",
-                            "https://github.com/YARAHQ/yara-forge/archive/refs/heads/master.zip",
-                            "Community-curated YARA rule aggregation",
+                            "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-full.zip",
+                            "Community-curated YARA rule aggregation (full release pack)",
                         ),
                     ]
                     yara_bundled = []
