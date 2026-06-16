@@ -54,17 +54,66 @@ def _log_default(msg: str, level: str = "info") -> None:
     print(f"[{level}] {msg}", flush=True)
 
 
+# Transient compose-up error substrings that a retry resolves. The
+# big one is the shared-volume init race: VolWeb's image ships
+# /home/app/web/media/{symbols,temp_uploads} baked in, so when the 4-6
+# containers that mount the shared `volweb_media` volume start nearly
+# simultaneously on a FRESH install, docker's per-container
+# volume-from-image population races — whichever container loses gets
+#   "failed to mkdir .../volweb_media/_data/temp_uploads: file exists"
+# (or symbols/). The dirs exist after the first attempt, so a second
+# compose-up succeeds cleanly. Verified 2026-06-16. depends_on in the
+# compose file serializes START order but NOT docker's volume-init, so
+# it can't fully prevent the race on its own — the retry closes it.
+_VOLWEB_TRANSIENT_COMPOSE_ERRORS = (
+    "file exists",
+    "failed to mkdir",
+    "device or resource busy",
+    "error while creating mount source path",
+)
+
+
 def _compose_up(log: Callable, run_id: str | None = None) -> Dict:
     """Recreate VolWeb containers so they pick up the new image
     + .env values. ``docker compose up -d`` is idempotent — services
     whose image hasn't changed stay running.
+
+    Retries up to 3 times on the known-transient shared-volume init
+    race (see _VOLWEB_TRANSIENT_COMPOSE_ERRORS). A permanent error
+    (bad image, port conflict, missing env) fails fast on the first
+    attempt — we only retry when the error string matches a transient
+    pattern.
     """
     host_volweb_dir = _VOLWEB_DIR.replace(WORKDIR, HOST_PATH, 1)
-    return run_command(
+    cmd = (
         f"docker compose -f {host_volweb_dir}/docker-compose.yaml "
-        f"--project-directory {host_volweb_dir} up -d",
-        timeout=300, logger=log, run_id=run_id,
+        f"--project-directory {host_volweb_dir} up -d"
     )
+    max_attempts = 3
+    last = None
+    for attempt in range(1, max_attempts + 1):
+        last = run_command(cmd, timeout=300, logger=log, run_id=run_id)
+        if last.get("success"):
+            if attempt > 1:
+                log(f"  VolWeb compose up succeeded on attempt {attempt} "
+                    f"(transient volume-init race cleared)", "success")
+            return last
+        if last.get("cancelled"):
+            return last
+        err = (last.get("error") or "") + (last.get("stderr") or "") + (last.get("stdout") or "")
+        err_low = err.lower()
+        is_transient = any(p in err_low for p in _VOLWEB_TRANSIENT_COMPOSE_ERRORS)
+        if not is_transient or attempt == max_attempts:
+            if is_transient:
+                log(f"  VolWeb compose up still failing after {max_attempts} "
+                    f"attempts on the volume-init race — giving up", "error")
+            return last
+        log(f"  VolWeb compose up hit a transient volume-init race "
+            f"(attempt {attempt}/{max_attempts}); the shared-volume dirs "
+            f"now exist, retrying in 3s...", "warning")
+        import time as _t
+        _t.sleep(3)
+    return last
 
 
 # ---------------------------------------------------------------------------
