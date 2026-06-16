@@ -226,6 +226,19 @@ class VolWebClient:
     _MAX_ATTEMPTS = 4
     _RETRY_STATUSES = (502, 503, 504)
     _BACKOFF_BASE_SECONDS = 0.5
+    # A bare ConnectionError (Errno 111 "Connection refused") means the
+    # VolWeb backend isn't listening AT ALL — almost always because the
+    # container is mid-restart. During a long memory pipeline the heavy
+    # yarascan (full rule corpus vs a multi-GB dump) can OOM-kill or
+    # crash the volweb backend; `restart: unless-stopped` brings it back
+    # but a container + daphne cold-start takes ~10-30s — far longer than
+    # the 4-attempt / ~3.5s default budget. 2026-06-16: a memory run died
+    # with "Connection refused to intact_volweb_backend:8000" after the
+    # 4 short retries, losing a successfully-acquired 5 GB dump. For
+    # connection-refused specifically we retry on a much longer budget
+    # (capped backoff, ~90s total) so a backend restart is ridden out.
+    _CONN_REFUSED_MAX_ATTEMPTS = 18
+    _CONN_REFUSED_BACKOFF_CAP_SECONDS = 8.0
 
     def _request(
         self,
@@ -241,9 +254,17 @@ class VolWebClient:
         url = f"{self.base_url}{path}"
         is_upload = files is not None
         last_exc: BaseException | None = None
+        conn_refused_attempts = 0  # tracked separately from the main counter
         max_attempts = 2 if is_upload else self._MAX_ATTEMPTS
 
-        for attempt in range(1, max_attempts + 1):
+        # `attempt` counts NON-connection-refused tries (capped at
+        # max_attempts); connection-refused tries are counted + capped
+        # separately on the longer budget (see _CONN_REFUSED_*). The
+        # while-loop lets a backend-restart wait outlast the short
+        # max_attempts budget without inflating it.
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 r = requests.request(
                     method,
@@ -260,6 +281,38 @@ class VolWebClient:
                 )
             except requests.RequestException as e:
                 last_exc = e
+                # Connection-refused = backend not listening (mid-restart).
+                # Retry on the long budget so a container + daphne
+                # cold-start (~10-30s) is ridden out instead of failing
+                # the whole memory pipeline. Only the FIRST request of a
+                # call benefits from this; uploads still never replay
+                # their body (the auth-refresh path handles those).
+                is_conn_refused = (
+                    isinstance(e, requests.exceptions.ConnectionError)
+                    and not is_upload
+                )
+                if is_conn_refused:
+                    conn_refused_attempts += 1
+                    attempt -= 1  # don't count refused tries against the short budget
+                    if conn_refused_attempts < self._CONN_REFUSED_MAX_ATTEMPTS:
+                        wait = min(
+                            self._BACKOFF_BASE_SECONDS * (2 ** (conn_refused_attempts - 1)),
+                            self._CONN_REFUSED_BACKOFF_CAP_SECONDS,
+                        )
+                        self._log(
+                            f"VolWeb {method} {path} connection refused — backend may be "
+                            f"restarting; waiting {wait:.1f}s then retrying "
+                            f"({conn_refused_attempts}/{self._CONN_REFUSED_MAX_ATTEMPTS})",
+                            "warning",
+                        )
+                        time.sleep(wait)
+                        continue
+                    raise VolWebError(
+                        f"{method} {path}: VolWeb backend unreachable after "
+                        f"{conn_refused_attempts} attempts (~90s) — it never came "
+                        f"back. Check `docker logs intact_volweb_backend` (likely "
+                        f"OOM during yarascan). {e}"
+                    ) from e
                 if attempt >= max_attempts:
                     raise VolWebError(
                         f"{method} {path}: network error after {attempt} attempt(s) — {e}"
