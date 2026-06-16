@@ -433,9 +433,19 @@ def _ensure_velociraptor_collector_tool(
     still fail at runtime if the file is missing, but the rest of the
     velociraptor upgrade is unaffected.
 
-    No-op (returns success=True) when the file already exists at the
-    target path with the right size — re-runs from upgrades on each
-    pin bump don't re-download unless the file is missing or stale.
+    Two distinct steps, BOTH of which must happen for Hunt-collector
+    generation to work offline:
+      1. STAGE the binary into /app/data/tools/ (download or copy).
+      2. REGISTER it in velociraptor's inventory with serve_locally=TRUE
+         so the server's `client_repack` uses the local file instead of
+         constructing a github download URL.
+
+    Step 2 is the one the 2026-06-16 fix originally MISSED — the binary
+    was on disk but unregistered, so velociraptor still reached github
+    and failed with "lookup github.com on 127.0.0.11:53: server
+    misbehaving". Registration ALWAYS runs (even when the file is
+    already staged from a prior run), because a re-install may have
+    reset velociraptor's inventory.
     """
     log = logger or (lambda msg, level="info": None)
     # Use /app/data/tools/ — the path that's bind-mounted into velociraptor
@@ -445,52 +455,153 @@ def _ensure_velociraptor_collector_tool(
     dest = os.path.join(tools_dir, "velociraptor-collector")
     min_size = 50000   # ~80 KB expected; reject anything smaller
 
-    # Already in place + valid?
-    if os.path.exists(dest) and os.path.getsize(dest) > min_size:
-        log(f"  velociraptor-collector already in tools dir "
-            f"({os.path.getsize(dest)} bytes) — skipping fetch", "info")
-        return {"success": True, "skipped": True}
+    staged = os.path.exists(dest) and os.path.getsize(dest) > min_size
 
-    if source == "package":
-        if not package_binaries_dir:
-            log("  velociraptor-collector: package_binaries_dir required "
-                "for source='package' — skipping", "warning")
-            return {"success": False, "error": "no package_binaries_dir"}
-        src = os.path.join(package_binaries_dir, "velociraptor-collector")
-        if not os.path.exists(src) or os.path.getsize(src) < min_size:
-            log(f"  velociraptor-collector: not bundled in package at "
-                f"{src} — Hunt collector generation will fail without it. "
-                f"Re-prepare from current intact tag to bundle it.",
-                "warning")
-            return {"success": False, "error": "not bundled"}
-        import shutil
-        shutil.copy2(src, dest)
-        os.chmod(dest, 0o755)
-        log(f"  velociraptor-collector placed from package "
-            f"({os.path.getsize(dest)} bytes)", "success")
-        return {"success": True, "from": "package"}
+    # ---- Step 1: stage the binary (skip if already valid on disk) ----
+    if not staged:
+        if source == "package":
+            if not package_binaries_dir:
+                log("  velociraptor-collector: package_binaries_dir required "
+                    "for source='package' — skipping", "warning")
+                return {"success": False, "error": "no package_binaries_dir"}
+            src = os.path.join(package_binaries_dir, "velociraptor-collector")
+            if not os.path.exists(src) or os.path.getsize(src) < min_size:
+                log(f"  velociraptor-collector: not bundled in package at "
+                    f"{src} — Hunt collector generation will fail without it. "
+                    f"Re-prepare from current intact tag to bundle it.",
+                    "warning")
+                return {"success": False, "error": "not bundled"}
+            import shutil
+            shutil.copy2(src, dest)
+            os.chmod(dest, 0o755)
+            log(f"  velociraptor-collector placed from package "
+                f"({os.path.getsize(dest)} bytes)", "success")
+        else:  # source == "github"
+            url = _velociraptor_collector_url(clean_version)
+            log(f"  Downloading velociraptor-collector from {url}...", "info")
+            cp = run_command(
+                f"curl -fL --retry 3 --retry-delay 5 --max-time 300 "
+                f"--connect-timeout 30 -o {dest} {url}",
+                logger=None, timeout=600,
+            )
+            if not cp.get('success') or not os.path.exists(dest) or os.path.getsize(dest) < min_size:
+                sz = os.path.getsize(dest) if os.path.exists(dest) else 0
+                try: os.remove(dest)
+                except Exception: pass
+                log(f"  velociraptor-collector download failed (size={sz}, "
+                    f"err={(cp.get('error') or '')[:120]}) — Hunt collector "
+                    f"generation will fail at runtime until this file is "
+                    f"manually placed at {dest}.", "warning")
+                return {"success": False, "error": "download failed"}
+            os.chmod(dest, 0o755)
+            log(f"  velociraptor-collector downloaded "
+                f"({os.path.getsize(dest)} bytes)", "success")
+    else:
+        log(f"  velociraptor-collector already staged "
+            f"({os.path.getsize(dest)} bytes)", "info")
 
-    # source == "github"
-    url = _velociraptor_collector_url(clean_version)
-    log(f"  Downloading velociraptor-collector from {url}...", "info")
-    cp = run_command(
-        f"curl -fL --retry 3 --retry-delay 5 --max-time 300 "
-        f"--connect-timeout 30 -o {dest} {url}",
-        logger=None, timeout=600,
-    )
-    if not cp.get('success') or not os.path.exists(dest) or os.path.getsize(dest) < min_size:
-        sz = os.path.getsize(dest) if os.path.exists(dest) else 0
-        try: os.remove(dest)
-        except Exception: pass
-        log(f"  velociraptor-collector download failed (size={sz}, "
-            f"err={(cp.get('error') or '')[:120]}) — Hunt collector "
-            f"generation will fail at runtime until this file is "
-            f"manually placed at {dest}.", "warning")
-        return {"success": False, "error": "download failed"}
-    os.chmod(dest, 0o755)
-    log(f"  velociraptor-collector downloaded "
-        f"({os.path.getsize(dest)} bytes)", "success")
-    return {"success": True, "from": "upstream"}
+    # ---- Step 2: register in velociraptor inventory (ALWAYS) ----
+    reg = _register_collector_serve_locally(dest, logger=log)
+    return {
+        "success": True,
+        "staged": True,
+        "registered": reg.get("success", False),
+        "register_error": reg.get("error"),
+    }
+
+
+def _register_collector_serve_locally(collector_path: str,
+                                       logger: Optional[Callable] = None) -> Dict:
+    """Register the staged velociraptor-collector in velociraptor's tool
+    inventory with serve_locally=TRUE so `client_repack` reads it from
+    the server's local filestore instead of fetching from github.
+
+    Mirrors the inventory_add VQL in
+    tools_download_service.py:configure_inventory, scoped to the single
+    VelociraptorCollector tool. Requires the velociraptor server to be
+    up + its gRPC API reachable; on a fresh install/upgrade this runs
+    after the readiness wait so the API is live.
+
+    The tool name MUST be "VelociraptorCollector" — that's what the
+    inventory entry in data/tools_inventory.yaml uses and what
+    velociraptor's Server.Utils.CreateCollector / client_repack looks
+    up. The file inside velociraptor is at /tools/velociraptor-collector
+    (the bind-mount of /app/data/tools).
+    """
+    log = logger or (lambda msg, level="info": None)
+    try:
+        from services.tools_download_service import setup_velociraptor_connection
+        from pyvelociraptor import api_pb2, api_pb2_grpc
+        import json as _json
+
+        channel = setup_velociraptor_connection()
+        if not channel:
+            log("  collector inventory registration: velociraptor gRPC "
+                "not reachable — Hunt collector may reach github until "
+                "Maintenance → Refresh Tool Inventory is run", "warning")
+            return {"success": False, "error": "no grpc"}
+
+        stub = api_pb2_grpc.APIStub(channel)
+        # Velociraptor sees the tools dir bind-mounted at /tools.
+        velo_file_path = "/tools/velociraptor-collector"
+        vql = f'''
+        SELECT inventory_add(
+            tool="VelociraptorCollector",
+            serve_locally=TRUE,
+            file="{velo_file_path}",
+            filename="velociraptor-collector",
+            accessor="file"
+        ) AS Result FROM scope()
+        '''
+        request = api_pb2.VQLCollectorArgs(
+            max_wait=60, max_row=10,
+            Query=[api_pb2.VQLRequest(VQL=vql)],
+        )
+        file_hash = None
+        ok = False
+        for response in stub.Query(request, timeout=65):
+            if response.Response:
+                data = _json.loads(response.Response)
+                if data and data[0].get('Result'):
+                    ok = True
+                    file_hash = data[0]['Result'].get('hash', '')
+        if not ok:
+            log("  collector inventory registration: inventory_add "
+                "returned no result", "warning")
+            return {"success": False, "error": "no result"}
+
+        # Copy into the filestore so the served file survives even if the
+        # bind-mount path shifts. Same belt-and-braces copy configure_inventory
+        # does. Best-effort.
+        if file_hash:
+            copy_vql = f'''
+            SELECT copy(
+                filename="{velo_file_path}",
+                accessor="file",
+                dest="/var./public/{file_hash}",
+                permissions="0600"
+            ) FROM scope()
+            '''
+            try:
+                copy_req = api_pb2.VQLCollectorArgs(
+                    max_wait=30, max_row=1,
+                    Query=[api_pb2.VQLRequest(VQL=copy_vql)],
+                )
+                for _ in stub.Query(copy_req, timeout=35):
+                    pass
+            except Exception:
+                pass
+
+        log("  ✓ velociraptor-collector registered in inventory "
+            "(serve_locally=TRUE) — Hunt collector generation will use "
+            "the local binary, no github fetch", "success")
+        return {"success": True}
+    except Exception as e:
+        log(f"  collector inventory registration raised "
+            f"({type(e).__name__}: {e}) — Hunt collector may reach "
+            f"github until Maintenance → Refresh Tool Inventory is run",
+            "warning")
+        return {"success": False, "error": str(e)}
 
 
 def _refresh_offline_collector_downloads(clean_version: str,

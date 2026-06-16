@@ -201,6 +201,38 @@ def generate_offline_collector():
         def do_generate():
             try:
                 add_log_to_run(run_id, "Connecting to Velociraptor...", "info")
+                update_run_status(run_id, "running", progress=10)
+
+                # ── Self-heal pre-flight ──────────────────────────────
+                # Velociraptor's server-side client_repack needs the
+                # `velociraptor-collector` base binary served locally
+                # from its tool inventory. If it isn't (e.g. velociraptor
+                # was installed via the offline-apply path that staged
+                # the binary but never registered it), client_repack
+                # constructs a github download URL and the whole
+                # generation dies in ~5s with "lookup github.com on
+                # 127.0.0.11:53: server misbehaving" (2026-06-16
+                # incident). Ensure the tool is staged + registered
+                # BEFORE generation so it can't fail that way. Every
+                # step is logged into the workflow so the operator sees
+                # exactly what happened. Best-effort: a failure here is
+                # logged but generation still proceeds (velociraptor may
+                # still have the tool from a prior maintenance run).
+                add_log_to_run(run_id, "Preflight: ensuring velociraptor-collector tool is served locally (offline-safe)...", "info")
+                try:
+                    from services.offline_collector.collector_tool import ensure_collector_tool_ready
+                    pf = ensure_collector_tool_ready(
+                        logger=lambda m, lvl="info": add_log_to_run(run_id, m, lvl),
+                    )
+                    if pf.get("registered"):
+                        add_log_to_run(run_id, "Preflight OK: collector tool served locally — generation will not reach github.", "success")
+                    elif pf.get("staged"):
+                        add_log_to_run(run_id, "Preflight: collector binary present but inventory registration could not be confirmed; proceeding (velociraptor may still serve it from a prior run).", "warning")
+                    else:
+                        add_log_to_run(run_id, "Preflight: could not stage/register the collector tool (no local binary + no internet). Generation will attempt velociraptor's own fetch and may fail on an air-gapped host. Run Settings → Maintenance → Refresh Tool Inventory once with internet to fix permanently.", "warning")
+                except Exception as _pf_e:
+                    add_log_to_run(run_id, f"Preflight raised ({type(_pf_e).__name__}: {_pf_e}); proceeding with generation anyway.", "warning")
+
                 update_run_status(run_id, "running", progress=20)
 
                 result = generate_collector(
