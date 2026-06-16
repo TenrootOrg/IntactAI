@@ -5,13 +5,22 @@ WORKDIR /app
 # Install Docker CLI, compose plugin, and Pango/Cairo system libraries
 # (the latter are required by WeasyPrint for engagement-report PDF
 # rendering — the customer-facing IR deliverable).
-RUN apt-get update && \
-    apt-get install -y \
+# apt-get with retries — a transient network blip mid-install used to
+# kill the whole build (2026-06-16: a fresh install died here with
+# "curl: (56) Recv failure: Connection reset by peer", exit 56, while
+# pulling docker-compose; the operator had to re-run install.sh). The
+# apt::Retries option + the curl --retry flags below make this step
+# ride out short network interruptions instead of aborting the install.
+RUN apt-get -o Acquire::Retries=5 update && \
+    apt-get -o Acquire::Retries=5 install -y \
         docker.io curl ca-certificates \
         libpango-1.0-0 libpangoft2-1.0-0 libcairo2 libffi8 \
         shared-mime-info fonts-dejavu && \
     mkdir -p /usr/local/lib/docker/cli-plugins && \
-    curl -SL https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose && \
+    curl -fSL --retry 5 --retry-delay 5 --retry-max-time 600 \
+        --connect-timeout 30 --retry-connrefused \
+        https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64 \
+        -o /usr/local/lib/docker/cli-plugins/docker-compose && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose && \
     rm -rf /var/lib/apt/lists/*
 
