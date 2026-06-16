@@ -540,7 +540,15 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             package_dir = package_dir_raw
             extract_dir = package_dir_raw
 
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc']
+    # 2026-06-16 incident: volweb was silently dropped from Phase 2
+    # because resume_upgrade_workflow's upgrade_order didn't include it,
+    # even though run_offline_upgrade_workflow and run_online_upgrade
+    # (the other two copies of this list) DID. Operator selected volweb,
+    # Phase 1 ran, backend restarted, this loop iterated — volweb wasn't
+    # in the list, never got dispatched, never appeared in the summary.
+    # All three copies of upgrade_order must include the same modules;
+    # this one drifted. Keep them in sync.
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb']
 
     # Use online or offline functions based on mode
     if mode == 'offline':
