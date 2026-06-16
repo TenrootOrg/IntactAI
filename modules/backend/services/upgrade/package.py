@@ -1725,6 +1725,92 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             manifest["contents"].setdefault("migrations", []).append("timesketch")
                         else:
                             log(f"  Failed to extract migrations from source tarball", "warning")
+
+                # VolWeb-specific: bundle the three curated YARA rule
+                # repos so apply (install or upgrade) can seed VolWeb's
+                # yararulesets table without needing internet at apply
+                # time. Mirrors how velociraptor artifacts are bundled
+                # above. Sources match what
+                # `lib/modules.sh:seed_yara_rulesets` and
+                # `routes/maintenance_routes.py:_YARA_RULESETS` use, so
+                # bundled vs online refresh produce equivalent corpora.
+                #
+                # The three repos download as ~10-25 MB zips each;
+                # adds ~50 MB to the bundle. Worth the size — air-gap
+                # targets need these to do useful memory forensics.
+                if module == 'volweb':
+                    log("Bundling VolWeb YARA rule sources...", "info")
+                    yara_dir = os.path.join(package_dir, 'yara_rulesets')
+                    os.makedirs(yara_dir, exist_ok=True)
+                    yara_sources = [
+                        (
+                            "Neo23x0 signature-base",
+                            "signature-base.zip",
+                            "https://github.com/Neo23x0/signature-base/archive/refs/heads/master.zip",
+                            "Florian Roth's curated YARA rules (~749 active)",
+                        ),
+                        (
+                            "Elastic protections",
+                            "protections-artifacts.zip",
+                            "https://github.com/elastic/protections-artifacts/archive/refs/heads/main.zip",
+                            "Elastic security YARA detection rules (~695 active)",
+                        ),
+                        (
+                            "YARA-Forge",
+                            "yara-forge.zip",
+                            "https://github.com/YARAHQ/yara-forge/archive/refs/heads/master.zip",
+                            "Community-curated YARA rule aggregation",
+                        ),
+                    ]
+                    yara_bundled = []
+                    for name, fname, url, desc in yara_sources:
+                        dst = os.path.join(yara_dir, fname)
+                        try:
+                            cp = run_command(
+                                f"curl -fL --retry 3 --retry-delay 5 "
+                                f"--max-time 600 --connect-timeout 30 "
+                                f"-o {dst} {url}",
+                                logger=None, timeout=900, run_id=run_id,
+                            )
+                            # GitHub serves master/main branch zips —
+                            # one of them 404s depending on the repo's
+                            # default branch name. Retry the other.
+                            if not (cp.get('success') and os.path.isfile(dst) and os.path.getsize(dst) > 1024):
+                                alt_url = url.replace('/master.zip', '/main.zip') if 'master.zip' in url else url.replace('/main.zip', '/master.zip')
+                                if alt_url != url:
+                                    log(f"  ✗ {name}: primary branch zip not found; trying {alt_url.rsplit('/', 1)[-1]}...", "info")
+                                    cp = run_command(
+                                        f"curl -fL --retry 3 --retry-delay 5 "
+                                        f"--max-time 600 --connect-timeout 30 "
+                                        f"-o {dst} {alt_url}",
+                                        logger=None, timeout=900, run_id=run_id,
+                                    )
+                            if not (cp.get('success') and os.path.isfile(dst) and os.path.getsize(dst) > 1024):
+                                log(f"  ✗ {name}: download failed; apply will skip this ruleset", "warning")
+                                try: os.remove(dst)
+                                except Exception: pass
+                                continue
+                            size_mb = os.path.getsize(dst) / (1024 * 1024)
+                            log(f"  ✓ {name} → {fname} ({size_mb:.1f} MB)", "success")
+                            yara_bundled.append({
+                                "name": name,
+                                "filename": fname,
+                                "description": desc,
+                                "source_url": url,
+                            })
+                        except Exception as e:
+                            log(f"  ✗ {name}: {e}", "warning")
+                    if yara_bundled:
+                        manifest["contents"]["yara_rulesets"] = yara_bundled
+                        log(f"  VolWeb YARA rule sources bundled "
+                            f"({len(yara_bundled)}/{len(yara_sources)})",
+                            "success")
+                    else:
+                        log("  WARNING: no YARA rule sources bundled — "
+                            "VolWeb will start with an empty YARA corpus on "
+                            "the air-gap target. Operator can run "
+                            "Maintenance → Refresh YARA Rulesets later if "
+                            "the target gets internet.", "warning")
             else:
                 log(f"  Unknown module: {module}", "warning")
 
