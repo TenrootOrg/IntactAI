@@ -249,6 +249,162 @@ def _import_bundled_registry_snapshot(package_dir: str,
     return ok
 
 
+def _verify_blueprint_artifacts_loaded(logger: Callable = None) -> Dict:
+    """Verify every artifact referenced by the default forensics
+    blueprints is actually present in velociraptor's registry after
+    import, and log the result. Serves the operator ask "make sure all
+    of them was loaded" + "log everything" — if a hunt later fails on a
+    missing artifact, the install log already shows exactly which one
+    (or confirms all are present so artifacts are ruled out).
+
+    Reads the artifact union from
+    modules/backend/config/default_blueprints.yaml at runtime so it
+    stays in sync as blueprints change. Best-effort: a velociraptor
+    gRPC hiccup logs a warning and returns inconclusive — never fails
+    the install/upgrade over a verification step.
+
+    Returns {present: int, missing: [names], total: int, ok: bool}.
+    """
+    log = logger or (lambda msg, level="info": None)
+    import re as _re
+    # Blueprint file location: the backend container sees it under /app.
+    bp_path = os.path.join(WORKDIR, 'modules', 'backend', 'config', 'default_blueprints.yaml')
+    if not os.path.exists(bp_path):
+        # Fallback to the in-image copy.
+        bp_path = '/app/config/default_blueprints.yaml'
+    try:
+        with open(bp_path) as f:
+            bp_text = f.read()
+    except Exception as e:
+        log(f"  Artifact verification: could not read blueprints ({e}) — skipping", "warning")
+        return {"ok": False, "present": 0, "missing": [], "total": 0}
+
+    # Collect artifact names: list items that look like Velociraptor
+    # artifact identifiers (Foo.Bar.Baz with a leading capital).
+    wanted = sorted(set(
+        m.strip() for m in _re.findall(r'^\s*-\s+([A-Z][A-Za-z0-9]+(?:\.[A-Za-z0-9]+)+)\s*$', bp_text, _re.MULTILINE)
+    ))
+    if not wanted:
+        return {"ok": True, "present": 0, "missing": [], "total": 0}
+
+    try:
+        from services.tools_download_service import setup_velociraptor_connection
+        from pyvelociraptor import api_pb2, api_pb2_grpc
+        import json as _json
+        ch = setup_velociraptor_connection()
+        if not ch:
+            log("  Artifact verification: velociraptor gRPC unreachable — skipping (will retry on Maintenance → Refresh)", "warning")
+            return {"ok": False, "present": 0, "missing": [], "total": len(wanted)}
+        stub = api_pb2_grpc.APIStub(ch)
+        have = set()
+        for resp in stub.Query(api_pb2.VQLCollectorArgs(
+                max_wait=60, max_row=5000,
+                Query=[api_pb2.VQLRequest(VQL='SELECT name FROM artifact_definitions()')]), timeout=65):
+            if resp.Response:
+                for d in _json.loads(resp.Response):
+                    have.add(d.get('name'))
+        missing = [a for a in wanted if a not in have]
+        if not missing:
+            log(f"  ✓ Artifact verification: all {len(wanted)} blueprint artifacts loaded "
+                f"— hunts will not fail on missing artifacts", "success")
+        else:
+            log(f"  ⚠ Artifact verification: {len(wanted)-len(missing)}/{len(wanted)} blueprint "
+                f"artifacts loaded; {len(missing)} MISSING — hunts using these will fail:", "warning")
+            for m in missing:
+                log(f"      ✗ {m}", "warning")
+            log(f"  To fix: run Settings → Maintenance → Refresh Tool Inventory (needs internet), "
+                f"or re-prepare the package on a host where Velociraptor is running so the full "
+                f"artifact registry is snapshotted.", "warning")
+        return {"ok": not missing, "present": len(wanted) - len(missing), "missing": missing, "total": len(wanted)}
+    except Exception as e:
+        log(f"  Artifact verification raised ({type(e).__name__}: {e}) — skipping", "warning")
+        return {"ok": False, "present": 0, "missing": [], "total": len(wanted)}
+
+
+def _verify_and_backfill_blueprint_artifacts(package_dir: str,
+                                              logger: Callable = None) -> Dict:
+    """Verify all default-blueprint artifacts are loaded; if any are
+    missing, backfill them from the bundled zips and re-verify. One
+    call covers the whole "make sure all artifacts are there" contract
+    for both install + upgrade paths.
+    """
+    log = logger or (lambda msg, level="info": None)
+    res = _verify_blueprint_artifacts_loaded(logger=log)
+    missing = res.get("missing") or []
+    if not missing:
+        return res
+    # Backfill the gaps from the bundled zips, then re-verify.
+    _backfill_missing_artifacts(package_dir, missing, logger=log)
+    return _verify_blueprint_artifacts_loaded(logger=log)
+
+
+def _backfill_missing_artifacts(package_dir: str, missing_names: list,
+                                 logger: Callable = None) -> Dict:
+    """Re-import specific artifacts that the bulk import missed.
+
+    The bulk _import_bundled_external_artifacts does one gRPC call per
+    artifact (320+ for the exchange) with a short timeout; under that
+    load a handful time out and fail transiently — 2026-06-16 a fresh
+    air-gap install came up with Windows.Detection.Malfind missing
+    even though it's in the bundled exchange zip and imports fine in
+    isolation. This targeted pass walks the bundled zips, finds the
+    YAMLs whose `name:` matches a still-missing blueprint artifact,
+    and re-imports each with retries — fast because it only touches
+    the few that the bulk pass dropped.
+
+    Returns {recovered: [names], still_missing: [names]}.
+    """
+    log = logger or (lambda msg, level="info": None)
+    if not missing_names:
+        return {"recovered": [], "still_missing": []}
+    import tempfile, zipfile, re as _re, time as _t
+    want = set(missing_names)
+    ext_dir = os.path.join(package_dir, 'artifacts', 'velociraptor', 'external')
+    if not os.path.isdir(ext_dir):
+        return {"recovered": [], "still_missing": list(want)}
+    try:
+        from services.velociraptor_init_service import import_custom_artifact
+    except Exception:
+        return {"recovered": [], "still_missing": list(want)}
+
+    log(f"  Backfilling {len(want)} blueprint artifact(s) the bulk import "
+        f"missed (transient timeouts): {sorted(want)}", "info")
+    recovered = set()
+    for zpath in sorted(os.path.join(ext_dir, f) for f in os.listdir(ext_dir) if f.endswith('.zip')):
+        if not want - recovered:
+            break
+        try:
+            with tempfile.TemporaryDirectory(prefix='backfill_') as tmp:
+                with zipfile.ZipFile(zpath) as zf:
+                    zf.extractall(tmp)
+                for root, _, files in os.walk(tmp):
+                    for fn in files:
+                        if not fn.endswith(('.yaml', '.yml')):
+                            continue
+                        try:
+                            content = open(os.path.join(root, fn), 'r', encoding='utf-8', errors='ignore').read()
+                        except Exception:
+                            continue
+                        m = _re.search(r'^\s*name:\s*([A-Za-z0-9._]+)', content, _re.MULTILINE)
+                        if not m or m.group(1) not in want or m.group(1) in recovered:
+                            continue
+                        name = m.group(1)
+                        # Retry up to 3× — these are the timeout-prone ones.
+                        for attempt in range(3):
+                            if import_custom_artifact(content, logger_func=None):
+                                recovered.add(name)
+                                log(f"    ✓ recovered {name}", "success")
+                                break
+                            _t.sleep(1)
+        except Exception:
+            continue
+    still = sorted(want - recovered)
+    if still:
+        log(f"  ⚠ {len(still)} artifact(s) still missing after backfill "
+            f"(not in any bundled zip): {still}", "warning")
+    return {"recovered": sorted(recovered), "still_missing": still}
+
+
 def _import_bundled_external_artifacts(package_dir: str,
                                         logger: Callable = None) -> int:
     """Import the artifact zips that prepare downloaded directly from
@@ -601,6 +757,84 @@ def _register_collector_serve_locally(collector_path: str,
             f"({type(e).__name__}: {e}) — Hunt collector may reach "
             f"github until Maintenance → Refresh Tool Inventory is run",
             "warning")
+        return {"success": False, "error": str(e)}
+
+
+def _restore_and_configure_tools(package_dir: str,
+                                 logger: Optional[Callable] = None) -> Dict:
+    """Place package-bundled Velociraptor tools into /data/tools/ and
+    register them in velociraptor's inventory with serve_locally=TRUE.
+
+    This is what makes air-gap COLLECTOR GENERATION work for artifacts
+    that embed external tools. Artifacts like
+    DetectRaptor.Windows.Detection.LolRMM reference a tool
+    (DetectRaptorLolRMM = lolrmm.csv) that velociraptor's client_repack
+    fetches from the internet at generation time. Without the tool
+    served locally, generation dies on an air-gap host with
+    `client_repack: Get ".../lolrmm.csv": lookup github.com ...
+    connection refused` (2026-06-16 incident: cve_management collector).
+
+    The prepare side bundles every tools_inventory.yaml tool into
+    <package>/tools/. Here we:
+      1. Copy them into /app/data/tools/ (bind-mounted into
+         velociraptor at /tools).
+      2. Run configure_inventory() — the same Phase-2 step the
+         install.sh / Maintenance→Refresh-Tools path uses — to register
+         each tool serve_locally=TRUE so client_repack reads from the
+         local filestore instead of the internet.
+
+    Best-effort: a failure logs a warning naming the consequence but
+    never fails the velociraptor install/upgrade. Tools the operator
+    doesn't use won't matter; the ones they do (cve_management's
+    lolrmm) now resolve locally.
+    """
+    log = logger or (lambda msg, level="info": None)
+    import shutil
+    pkg_tools = os.path.join(package_dir, 'tools')
+    if not os.path.isdir(pkg_tools):
+        log("  No bundled tools dir in package — air-gap collector "
+            "generation for tool-backed artifacts (cve_management, etc.) "
+            "will fetch tools from the internet and fail on air-gap. "
+            "Re-prepare with a build that bundles tools.", "warning")
+        return {"success": False, "error": "no bundled tools"}
+
+    dest_tools = "/app/data/tools"
+    os.makedirs(dest_tools, exist_ok=True)
+    placed = 0
+    for fn in os.listdir(pkg_tools):
+        src = os.path.join(pkg_tools, fn)
+        if not os.path.isfile(src):
+            continue
+        try:
+            shutil.copy2(src, os.path.join(dest_tools, fn))
+            placed += 1
+        except Exception as e:
+            log(f"    ✗ tool copy failed for {fn}: {e}", "warning")
+    log(f"  Placed {placed} bundled tools into {dest_tools}", "info")
+
+    # Register them serve_locally via the existing inventory configurator.
+    try:
+        from services.tools_download_service import load_tools_config, configure_inventory
+        cfg = load_tools_config()
+        if not cfg:
+            log("  tools_inventory.yaml not loadable — tools placed but "
+                "not registered serve_locally; collector generation may "
+                "still reach the internet for them", "warning")
+            return {"success": False, "error": "no tools config"}
+        # configure_inventory reads from the container-visible tools dir.
+        res = configure_inventory("/tools", cfg, logger=log)
+        configured = len((res.get("results") or {}).get("configured", []))
+        already = len((res.get("results") or {}).get("already_served", []))
+        log(f"  ✓ Velociraptor tools registered serve_locally "
+            f"({configured} configured, {already} already served) — "
+            f"air-gap collector generation will use local tool copies",
+            "success")
+        return {"success": True, "placed": placed, "configured": configured}
+    except Exception as e:
+        log(f"  Tool inventory configuration raised "
+            f"({type(e).__name__}: {e}) — tools placed but registration "
+            f"incomplete; run Maintenance → Refresh Tool Inventory to "
+            f"finish", "warning")
         return {"success": False, "error": str(e)}
 
 
@@ -1487,6 +1721,12 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         _reimport_artifacts_post_upgrade(velo_data, logger=log,
                                           skip_exchange_imports=True)
 
+        # Verify + backfill all default-blueprint artifacts (see install path).
+        try:
+            _verify_and_backfill_blueprint_artifacts(package_dir, logger=log)
+        except Exception as _ve:
+            log(f"  Artifact verify/backfill raised: {_ve}", "warning")
+
         # Refresh the operator-visible downloads dir from the package's
         # bundled binaries — same gap as the online path, just sourcing
         # the files locally instead of from GitHub. Best-effort: a missing
@@ -1516,6 +1756,15 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
                 )
         except Exception as e:
             log(f"velociraptor-collector staging raised: {e}", "warning")
+
+        # Place + register the bundled Velociraptor tools (lolrmm,
+        # Hayabusa, YARA, EZ tools) serve_locally so air-gap collector
+        # generation for tool-backed artifacts (cve_management, etc.)
+        # doesn't reach the internet. See _restore_and_configure_tools.
+        try:
+            _restore_and_configure_tools(package_dir, logger=log)
+        except Exception as e:
+            log(f"velociraptor tool restore raised: {e}", "warning")
 
         remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
         return {"success": True, "version": actual_version, "health": "green" if healthy else "pending"}
@@ -1703,6 +1952,15 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
             "warning",
         )
 
+    # Verify + backfill every default-blueprint artifact (2026-06-16
+    # operator ask: "all the artifacts should be there"). Verify finds
+    # gaps; backfill re-imports any the bulk pass dropped to transient
+    # timeouts. Re-verify logs the final state.
+    try:
+        _verify_and_backfill_blueprint_artifacts(package_dir, logger=log)
+    except Exception as _ve:
+        log(f"  Artifact verify/backfill raised: {_ve}", "warning")
+
     # Generate pre-configured client installers (MSI / EXE / Linux /
     # Mac / musl). lib/modules.sh:730-739 does this for the install.sh
     # path; the offline-apply path was missing the parallel step, so
@@ -1764,5 +2022,13 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
             )
     except Exception as e:
         log(f"velociraptor-collector staging raised: {e}", "warning")
+
+    # Place + register bundled Velociraptor tools serve_locally (same
+    # as the upgrade path) so air-gap collector generation for
+    # tool-backed artifacts (cve_management's lolrmm, etc.) works.
+    try:
+        _restore_and_configure_tools(package_dir, logger=log)
+    except Exception as e:
+        log(f"velociraptor tool restore raised: {e}", "warning")
 
     return compose_result

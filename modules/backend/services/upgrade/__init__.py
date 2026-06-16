@@ -702,6 +702,33 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                     completed_modules.add(module_name)
                     log(f"{module_name.upper()} upgrade completed: {current} -> {target_version}", "success")
 
+                    # Write back version + flip enabled flag in config.yaml.
+                    # Mirrors run_offline_upgrade_workflow's main loop
+                    # (the equivalent block ~line 1157). resume_upgrade_workflow
+                    # is the Phase-2-after-restart path; modules installed
+                    # here (e.g. volweb selected in the apply modal) were
+                    # NOT getting modules.<name>.enabled=true set, so the
+                    # containers came up but the UI still showed the
+                    # module disabled — operator hit this 2026-06-16 with
+                    # "Memory module is not enabled" after a successful
+                    # volweb install. Same three-copies-drift class as the
+                    # upgrade_order bug. Keep in sync with the main loop.
+                    try:
+                        from .base import set_module_version_in_config, set_module_enabled_in_config
+                        yaml_key = 'backend' if module_name == 'intact' else module_name
+                        if target_version and target_version != 'from_package':
+                            try:
+                                set_module_version_in_config(yaml_key, target_version, logger=log)
+                            except Exception as _ve:
+                                log(f"  config.yaml version-writeback failed for {module_name}: {_ve}", "warning")
+                        if action_word == 'INSTALLING' and module_name != 'intact':
+                            try:
+                                set_module_enabled_in_config(module_name, logger=log)
+                            except Exception as _ee:
+                                log(f"  config.yaml enable-flip failed for {module_name}: {_ee}", "warning")
+                    except Exception as _ce:
+                        log(f"  config.yaml writeback raised for {module_name}: {_ce}", "warning")
+
                     # Recreate Timesketch user after fresh install
                     if module_name == 'timesketch' and db_overwrite.get('timesketch', False):
                         recreate_timesketch_user(logger=log)
