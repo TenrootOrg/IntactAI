@@ -1622,6 +1622,58 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         "moved if this is an internet-connected prepare host.",
                         "warning")
 
+                # ── Bundle Velociraptor TOOLS for air-gap ──────────────
+                # Artifacts reference external tools (lolrmm.csv,
+                # Hayabusa, YARA, Eric Zimmerman tools, etc.) that
+                # velociraptor's client_repack fetches from the
+                # internet at COLLECTOR-GENERATION time. On an air-gap
+                # target that fetch fails — 2026-06-16 incident:
+                # cve_management collector died with
+                # `client_repack: Get ".../lolrmm.csv": lookup
+                # github.com ... connection refused`. The artifacts
+                # themselves were present (bundled zips); the TOOL the
+                # artifact embeds was not. Download every tool from
+                # data/tools_inventory.yaml into the package so the
+                # apply side can place them in /data/tools/ + register
+                # them serve_locally. Reuses the same downloader the
+                # install.sh / Maintenance→Refresh-Tools path uses.
+                log("Bundling Velociraptor tools (lolrmm, Hayabusa, YARA, "
+                    "EZ tools, etc.) for air-gap collector generation...", "info")
+                try:
+                    from services.tools_download_service import (
+                        load_tools_config, download_tools_from_config,
+                    )
+                    tcfg = load_tools_config()
+                    if tcfg:
+                        pkg_tools_dir = os.path.join(package_dir, 'tools')
+                        os.makedirs(pkg_tools_dir, exist_ok=True)
+                        tdl = download_tools_from_config(
+                            pkg_tools_dir, tcfg, logger=log, run_id=run_id,
+                        )
+                        if tdl.get('cancelled'):
+                            return {"success": False, "error": "cancelled", "cancelled": True}
+                        n_tools = len(tdl.get('downloaded', [])) + len(tdl.get('already_exists', []))
+                        n_failed = len(tdl.get('failed', []))
+                        if n_tools:
+                            manifest["contents"]["velociraptor_tools"] = n_tools
+                            log(f"  ✓ Bundled {n_tools} Velociraptor tools "
+                                f"into package ({n_failed} failed)",
+                                "success")
+                        else:
+                            log(f"  No Velociraptor tools bundled "
+                                f"({n_failed} failed) — air-gap collector "
+                                f"generation for tool-backed artifacts "
+                                f"(cve_management, etc.) will fail until "
+                                f"tools are available.", "warning")
+                    else:
+                        log("  tools_inventory.yaml not loadable — skipping "
+                            "tool bundling", "warning")
+                except Exception as _te:
+                    log(f"  Velociraptor tool bundling raised "
+                        f"({type(_te).__name__}: {_te}); air-gap collector "
+                        f"generation may fail for tool-backed artifacts",
+                        "warning")
+
             elif module in PRIMARY_IMAGES or module in TRANSITIVE_IMAGES:
                 # Resolve the full image list for this module + record the
                 # transitive tags in the manifest so the apply side (which
