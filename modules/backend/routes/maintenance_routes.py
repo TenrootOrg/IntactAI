@@ -1771,10 +1771,16 @@ def purge_selected_sections():
 # ============================================================================
 #
 # Refresh the curated YARA corpus VolWeb scans against. Re-imports the
-# three seeded sources from GitHub — Neo23x0/signature-base,
-# elastic/protections-artifacts, YARA-Forge — via VolWeb's existing
-# `POST /api/yararulesets/import/github/` endpoint. Idempotent on
+# two seeded sources from GitHub — Neo23x0/signature-base and
+# elastic/protections-artifacts — via VolWeb's existing
+# `POST /api/yararulesets/import/github/` endpoint, which downloads each
+# repo's source archive and globs its .yar files. Idempotent on
 # (name, source) so running it weekly is safe.
+#
+# YARA-Forge was intentionally dropped: it publishes rules ONLY as
+# release assets (its repo has zero .yar files), so this repo-archive
+# importer seeded a single useless rule. Both sources here are
+# native-importable repos that ship .yar files in-tree.
 #
 # Tracked as a workflow row (`automation_type='maintenance'`) so the
 # operator sees progress in the Workflows tab and can Stop mid-flight.
@@ -1789,11 +1795,6 @@ _YARA_RULESETS = [
         "name": "Elastic protections",
         "github_url": "https://github.com/elastic/protections-artifacts",
         "description": "Elastic security YARA detection rules (~695 active)",
-    },
-    {
-        "name": "YARA-Forge",
-        "github_url": "https://github.com/YARAHQ/yara-forge",
-        "description": "Community-curated YARA rule aggregation",
     },
 ]
 

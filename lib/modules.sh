@@ -1542,8 +1542,12 @@ seed_yara_rulesets() {
     local rulesets=(
         "Neo23x0 signature-base|https://github.com/Neo23x0/signature-base|Florian Roth's curated YARA rules (~749 active)"
         "Elastic protections|https://github.com/elastic/protections-artifacts|Elastic security YARA detection rules (~695 active)"
-        "YARA-Forge|https://github.com/YARAHQ/yara-forge|Community-curated YARA rule aggregation"
     )
+    # NOTE: YARA-Forge was dropped here — its rules ship only as release
+    # assets (the repo has zero .yar files), so import-from-github seeded
+    # a single useless rule. The two curated repos above ship .yar files
+    # in-tree and import natively. See routes/maintenance_routes.py +
+    # upgrade/package.py.
 
     for entry in "${rulesets[@]}"; do
         local name="${entry%%|*}"

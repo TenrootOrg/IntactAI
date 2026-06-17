@@ -1846,22 +1846,13 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             "https://github.com/elastic/protections-artifacts/archive/refs/heads/main.zip",
                             "Elastic security YARA detection rules (~695 active)",
                         ),
-                        (
-                            # YARA-Forge ships its actual rule packs
-                            # as GitHub release assets — the source
-                            # repo is just the build tooling and
-                            # contains ZERO .yar files. Use the "full"
-                            # asset (includes core + extended). The
-                            # /releases/latest/download/ redirect
-                            # resolves to whichever tag is latest
-                            # without needing an API call. Same trick
-                            # the velociraptor bundler uses for
-                            # DetectRaptor up above.
-                            "YARA-Forge",
-                            "yara-forge.zip",
-                            "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-full.zip",
-                            "Community-curated YARA rule aggregation (full release pack)",
-                        ),
+                        # YARA-Forge was dropped: it publishes rules ONLY
+                        # as release assets (its repo has zero .yar files)
+                        # AND ships them as one giant concatenated .yar
+                        # that the whole-file bundle importer can't split
+                        # or keep imports for — it seeded a single useless
+                        # rule. The two curated repos above ship .yar
+                        # files in-tree and import natively.
                     ]
                     yara_bundled = []
                     for name, fname, url, desc in yara_sources:
