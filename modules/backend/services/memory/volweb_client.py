@@ -821,6 +821,71 @@ class VolWebClient:
         if isinstance(resp, dict) and resp.get("error"):
             raise VolWebError(f"yarascan error: {resp.get('error')}")
 
+    def resolve_yara_rule_ids(self, keywords: list[str]) -> list[int]:
+        """Resolve name-substring keywords to active YARA rule IDs.
+
+        Turns a blueprint's ``yara_categories`` (expanded to keywords by
+        the pipeline) into the concrete ``rules=[...]`` list for
+        :meth:`trigger_yarascan`. Runs the match inside the backend
+        container via the Django ORM — same approach as
+        :meth:`list_plugins` — so it's an exact case-insensitive
+        ``name__icontains`` union and costs one ``docker exec`` instead
+        of paginating (and deserialising) the HTTP rules API.
+
+        Only ``is_active=True, status=100`` (compiled-and-valid) rules
+        are eligible, mirroring what VolWeb's own all-rules scan uses.
+
+        Returns ``[]`` on any failure or zero match. Callers treat empty
+        as "couldn't scope — fall back to scanning the full corpus";
+        never as "scan nothing".
+        """
+        import json
+        import subprocess
+
+        kws = [k for k in (keywords or []) if k]
+        if not kws:
+            return []
+        container = self._resolve_backend_container()
+        if not container:
+            self._log(
+                "yara: backend container not found — can't scope rules, "
+                "will scan full corpus", "warning",
+            )
+            return []
+        code = (
+            "import django,os,json,sys,operator;"
+            "from functools import reduce;"
+            "os.environ['DJANGO_SETTINGS_MODULE']='backend.settings';"
+            "django.setup();"
+            "from django.db.models import Q;"
+            "from yararules.models import YaraRule;"
+            "kws=json.loads(sys.argv[1]);"
+            "q=reduce(operator.or_,[Q(name__icontains=k) for k in kws]);"
+            "ids=list(YaraRule.objects.filter(is_active=True,status=100)"
+            ".filter(q).values_list('id',flat=True));"
+            "print(json.dumps(ids))"
+        )
+        try:
+            r = subprocess.run(
+                ["docker", "exec", "--user", "app", "-w", "/home/app/web",
+                 container, "python3", "-c", code, json.dumps(kws)],
+                capture_output=True, text=True, timeout=20,
+            )
+            if r.returncode == 0 and r.stdout:
+                ids = json.loads(r.stdout.strip().splitlines()[-1])
+                return [int(i) for i in ids]
+            self._log(
+                f"yara rule resolution exited {r.returncode}: "
+                f"{(r.stderr or '').strip()[:200]} — will scan full corpus",
+                "warning",
+            )
+        except Exception as e:
+            self._log(
+                f"yara rule resolution failed ({e!s}) — will scan full corpus",
+                "warning",
+            )
+        return []
+
     def yarascan_history(self, evidence_id: int) -> list[dict]:
         return self._get_json(f"/api/evidence/{evidence_id}/yarascan/history/") or []
 

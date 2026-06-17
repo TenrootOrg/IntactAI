@@ -49,6 +49,7 @@ from .defaults import (
     ACQUISITION_DEFAULTS,
     CURATED_PLUGINS,
     DISK_PREFLIGHT_MULTIPLIER,
+    YARA_CATEGORY_KEYWORDS,
 )
 from .volweb_client import VolWebClient, VolWebError
 
@@ -86,6 +87,64 @@ def _resolve_plugin_set(blueprint: dict | None, client: "VolWebClient",
         return names
 
     return tuple(raw) if raw else CURATED_PLUGINS
+
+
+def _resolve_yara_scan_targets(
+    blueprint: dict | None, client: "VolWebClient", log
+) -> tuple[list[int] | None, list[int] | None]:
+    """Pick the YARA scan scope for this run from the blueprint.
+
+    Returns ``(rulesets, rules)`` to hand to :meth:`trigger_yarascan`:
+      * ``(None, None)``  → scan the full active corpus (broad-net
+        default — every seeded rule).
+      * ``(None, [ids])`` → scan only the rules matching the blueprint's
+        ``settings.yara_categories`` (a threat-typed subset).
+
+    Resolution: if ``yara_categories`` is non-empty and not the ``['*']``
+    marker, expand each category to its keywords
+    (``defaults.YARA_CATEGORY_KEYWORDS``), union them, and resolve to
+    concrete rule IDs via the backend. A non-empty result scopes the
+    scan; anything else falls through to the full corpus.
+
+    Fail-open by design: a memory YARA sweep that silently scans ZERO
+    rules is worse than one that scans everything, so unknown categories,
+    a resolution error, or a zero-rule match all return ``(None, None)``
+    with a warning — never an empty ``rules=[]`` that would scan nothing.
+    """
+    settings = (blueprint or {}).get("settings") or {}
+    cats = [c for c in (settings.get("yara_categories") or []) if c]
+    if not cats or cats == ["*"]:
+        return None, None
+
+    keywords: list[str] = []
+    unknown: list[str] = []
+    for c in cats:
+        kw = YARA_CATEGORY_KEYWORDS.get(str(c).strip().lower())
+        if kw:
+            keywords.extend(kw)
+        else:
+            unknown.append(str(c))
+    if unknown:
+        log(
+            f"yara: ignoring unknown categories {unknown} "
+            f"(known: {sorted(YARA_CATEGORY_KEYWORDS)})",
+            "warning",
+        )
+    if not keywords:
+        log("yara: no known categories resolved — scanning full corpus", "warning")
+        return None, None
+
+    try:
+        ids = client.resolve_yara_rule_ids(keywords)
+    except Exception as e:
+        log(f"yara: category resolution errored ({e!s}) — scanning full corpus", "warning")
+        return None, None
+    if not ids:
+        log(f"yara: categories {cats} matched 0 rules — scanning full corpus", "warning")
+        return None, None
+
+    log(f"yara: scoped to categories {cats} → {len(ids)} rules", "info")
+    return None, ids
 
 
 # Phase progress weights (sum to ~95; the final 5 is reserved for
@@ -482,8 +541,9 @@ def run_memory_pipeline(
             log("pipeline: extract — selective-extraction + yarascan", "info")
             client.stage_media_dir(evidence_id)
             plugins_to_run = _resolve_plugin_set(blueprint, client, evidence_id, log)
+            _yara_rulesets, _yara_rules = _resolve_yara_scan_targets(blueprint, client, log)
             client.trigger_extraction(evidence_id, plugins_to_run)
-            client.trigger_yarascan(evidence_id, rulesets=None, rules=None)
+            client.trigger_yarascan(evidence_id, rulesets=_yara_rulesets, rules=_yara_rules)
             log(
                 f"pipeline: extract — {len(plugins_to_run)} plugins queued + yarascan queued",
                 "info",
@@ -612,11 +672,14 @@ def run_memory_pipeline(
 
             # Determine plugin set (blueprint override or curated default).
             plugins_to_run = _resolve_plugin_set(blueprint, client, evidence_id, log)
+            # Determine YARA scope (blueprint yara_categories → rule subset,
+            # or full corpus). None,None == scan everything.
+            _yara_rulesets, _yara_rules = _resolve_yara_scan_targets(blueprint, client, log)
 
             # Trigger BOTH tasks before waiting on either — they run on
             # separate Celery queues and execute concurrently.
             client.trigger_extraction(evidence_id, plugins_to_run)
-            client.trigger_yarascan(evidence_id, rulesets=None, rules=None)
+            client.trigger_yarascan(evidence_id, rulesets=_yara_rulesets, rules=_yara_rules)
 
             log(
                 f"pipeline: extract — {len(plugins_to_run)} plugins queued + yarascan queued",

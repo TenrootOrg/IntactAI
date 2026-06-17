@@ -147,6 +147,45 @@ DEFAULT_MAX_YARA_HITS: int = 500
 PROMPT_BYTE_GUARD: int = 350_000
 
 # ---------------------------------------------------------------------------
+# YARA scan scoping — threat-type categories
+# ---------------------------------------------------------------------------
+#
+# A blueprint can narrow the yarascan from the full corpus to a few
+# threat types via ``settings.yara_categories``. That cuts the heavy
+# step (compile + page-walk all 1,467 seeded rules) down to a focused
+# subset — faster, lighter on the yarascan worker, and fewer false
+# positives — at the cost of breadth. So only the FOCUSED blueprints
+# scope; the broad-net ones (Curated standard, the dedicated YARA-only
+# sweep, the all-plugins deep dive) leave it empty = scan everything.
+#
+# Why substring-on-name and not ruleset/prefix: the two seeded sources
+# name rules with INCOMPATIBLE schemes. Neo23x0 signature-base prefixes
+# by threat type (MAL_/APT_/HKTL_/WEBSHELL_/EXPL_…); Elastic prefixes by
+# PLATFORM (Windows_/Linux_/MacOS_) with the threat type as the SECOND
+# token (Windows_Ransomware_…). A leading-token match can't categorise
+# both, but a case-insensitive substring on the rule NAME catches the
+# threat word wherever it sits. Each category below maps to the
+# substrings that select its rules; the pipeline unions the keywords for
+# the blueprint's chosen categories and resolves them to rule IDs at run
+# time (volweb_client.resolve_yara_rule_ids). Empty / missing / ['*']
+# means "scan the full corpus".
+#
+# Validated match counts on the install-time corpus (1,467 active rules):
+#   ransomware 105 · hacktool 120 · webshell 16 · apt 108 ·
+#   trojan/rat 399 · exploit/vuln 201 · stealer 33
+YARA_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "ransomware": ("ransom",),
+    "hacktool":   ("hacktool", "hktl", "mimikatz", "cobalt", "metasploit",
+                   "meterpreter", "rubeus", "sharphound", "bloodhound"),
+    "webshell":   ("webshell",),
+    "apt":        ("apt_", "_apt_", "sofacy", "lazarus", "equation",
+                   "turla", "winnti", "kimsuky"),
+    "trojan":     ("trojan", "_rat_", "backdoor", "_bot_", "implant"),
+    "exploit":    ("expl_", "exploit", "_cve_", "vuln"),
+    "stealer":    ("stealer", "infostealer", "keylog", "passworddump"),
+}
+
+# ---------------------------------------------------------------------------
 # Velociraptor — Windows.Memory.Acquisition kwargs
 # ---------------------------------------------------------------------------
 #

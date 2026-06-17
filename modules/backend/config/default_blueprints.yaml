@@ -387,12 +387,22 @@ azure:
 # ============================================================================
 # Memory Forensics Blueprints
 # ============================================================================
-# Each blueprint is a PURE VolWeb plugin set — what to extract, nothing
-# more. Whether to also run yarascan is the operator's separate decision
-# in the Memory page (the "Include YARA" checkbox), not baked into the
-# blueprint. Treat the per-blueprint `yara_rulesets: []` and the
-# legacy `mode:` field as schema-only placeholders that the runtime
-# overrides from the memory page UI.
+# Each blueprint defines what to extract (`plugin_set`) and, optionally,
+# how to SCOPE the YARA scan (`yara_categories`). Whether yarascan runs
+# at all is still the operator's separate decision in the Memory page
+# (the "Include YARA" checkbox); `yara_categories` only narrows WHICH
+# rules run when it does.
+#
+# `yara_categories` (threat-type tokens — see services/memory/defaults.py
+# YARA_CATEGORY_KEYWORDS: ransomware, hacktool, webshell, apt, trojan,
+# exploit, stealer) cuts the 1,467-rule full corpus to a focused subset:
+# faster, lighter on the yarascan worker, fewer false positives — at the
+# cost of breadth. So only FOCUSED blueprints scope; the broad-net ones
+# (Curated standard, the dedicated YARA-only sweep, the all-plugins deep
+# dive) leave it empty (`[]`) = scan the full corpus. An unknown token or
+# a zero-rule match fails open to the full corpus (a memory sweep that
+# scans nothing is worse than one that scans everything). The `mode:`
+# field stays a schema-only placeholder the runtime overrides.
 #
 # The 12-plugin curated set (excludes HollowProcesses — known to take
 # 12+ min on a 5 GB dump) is the empirically validated sweet spot from
@@ -419,6 +429,7 @@ memory:
         - volatility3.plugins.windows.registry.userassist.UserAssist
         - volatility3.plugins.windows.registry.printkey.PrintKey
       yara_rulesets: []
+      yara_categories: []          # broad-net: scan the full corpus (recommended default)
       compression: "None"         # MUST stay None — see services/memory/defaults.py
       max_bytes: 68719476736      # 64 GiB cap
       cpu_limit: 80
@@ -431,6 +442,7 @@ memory:
       mode: plugin
       plugin_set: []
       yara_rulesets: []
+      yara_categories: []          # broad-net: dedicated YARA sweep wants full coverage
       compression: "None"
       max_bytes: 68719476736
       cpu_limit: 80
@@ -452,6 +464,10 @@ memory:
         - volatility3.plugins.windows.netscan.NetScan
         - volatility3.plugins.windows.netstat.NetStat
       yara_rulesets: []
+      # Fast triage: "is this box owned right now" — the high-signal,
+      # actively-malicious families. Skips the APT + exploit/vuln long
+      # tail to keep the scan quick.
+      yara_categories: [ransomware, hacktool, trojan, webshell]
       compression: "None"
       max_bytes: 68719476736
       cpu_limit: 80
@@ -469,6 +485,7 @@ memory:
       plugin_set:
         - '*'
       yara_rulesets: []
+      yara_categories: []          # broad-net: deep dive scans the full corpus (the "run all")
       compression: "None"
       max_bytes: 68719476736
       cpu_limit: 80
@@ -497,6 +514,9 @@ memory:
         - volatility3.plugins.windows.hollowfind.Hollowfind
         - volatility3.plugins.windows.hollowprocesses.HollowProcesses
       yara_rulesets: []
+      # Process anomalies: in-memory implants, injected code, offensive
+      # tooling staged in a process.
+      yara_categories: [trojan, hacktool, apt]
       compression: "None"
       max_bytes: 68719476736
       cpu_limit: 80
@@ -517,6 +537,9 @@ memory:
         - volatility3.plugins.windows.callbacks.Callbacks
         - volatility3.plugins.windows.ssdt.SSDT
       yara_rulesets: []
+      # Persistence: backdoors/implants and the offensive tooling that
+      # installs them.
+      yara_categories: [trojan, apt, hacktool]
       compression: "None"
       max_bytes: 68719476736
       cpu_limit: 80
@@ -534,6 +557,9 @@ memory:
         - volatility3.plugins.windows.cmdline.CmdLine
         - volatility3.plugins.windows.dlllist.DllList
       yara_rulesets: []
+      # Network: C2 — remote-access trojans, backdoors, and APT/offensive
+      # frameworks (Cobalt Strike, Metasploit) that own the connections.
+      yara_categories: [trojan, apt, hacktool]
       compression: "None"
       max_bytes: 68719476736
       cpu_limit: 80
@@ -549,6 +575,9 @@ memory:
         - volatility3.plugins.windows.cachedump.Cachedump
         - volatility3.plugins.windows.lsadump.Lsadump
       yara_rulesets: []
+      # Credentials: credential-theft tooling — Mimikatz/Rubeus and
+      # info-stealers that harvest secrets from memory.
+      yara_categories: [hacktool, stealer]
       compression: "None"
       max_bytes: 68719476736
       cpu_limit: 80
