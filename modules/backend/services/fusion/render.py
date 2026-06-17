@@ -129,7 +129,7 @@ def report(graph, *, window=None, min_severity="informational", initial_access=N
         out.append(f"### {a.label}  ({a.severity})")
         afind = [f for f in findings if a.id in f.asset_ids]
         for f in afind:
-            out.append(f"- **[{f.severity}]** {f.title} — {f.summary}")
+            out.append(f"- **[{f.severity}]** {f.summary}")
         # notable entities on this host
         procs = sorted((e for e in graph.by_type("process") if a.id in _assets_of(e) and e.anomaly > 0),
                        key=lambda e: -e.anomaly)[:8]
