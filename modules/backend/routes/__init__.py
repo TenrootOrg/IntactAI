@@ -23,8 +23,10 @@ from routes.support_bundle_routes import support_bundle_bp
 from routes.engagement_routes import engagement_bp
 from routes.cve_routes import cve_bp
 from routes.memory_routes import memory_bp
+from routes.case_routes import case_bp
 
 __all__ = [
+    'case_bp',
     'client_bp',
     'velociraptor_bp',
     'velociraptor_offline_bp',

@@ -1,0 +1,158 @@
+"""Fusion correlation + report tests, fixture-driven (no live infra).
+
+Run inside the backend container:
+    python3 -m services.fusion.tests.test_fusion          # prints the demo report
+    python3 -m pytest services/fusion/tests/test_fusion.py # asserts
+"""
+
+import sys
+if "/app" not in sys.path:
+    sys.path.insert(0, "/app")
+
+from services.fusion import correlate, render, llm_sim, keys  # noqa: E402
+from services.fusion.mappers import map_memory, map_agentic   # noqa: E402
+
+# ---- fixtures: a 3-host intrusion, initial access ~ 2026-05-19 ------------
+WS01, DC01, SRVVC = "C.aaa1", "C.bbb2", "C.ccc3"
+
+MEMORY_PAYLOAD = {
+    "host": "WS01",
+    "plugins": {
+        "volatility3.plugins.windows.pslist.PsList": [
+            {"PID": 2396, "PPID": 6352, "ImageFileName": "powershell_ise.exe",
+             "CreateTime": "2026-05-19T08:14:20+00:00"},
+            {"PID": 6352, "PPID": 5000, "ImageFileName": "explorer.exe",
+             "CreateTime": "2026-05-19T07:55:00+00:00"},
+        ],
+        "volatility3.plugins.windows.malfind.Malfind": [
+            {"PID": 2396, "Process": "powershell_ise.exe",
+             "Protection": "PAGE_EXECUTE_READWRITE"},
+        ],
+        "volatility3.plugins.windows.netscan.NetScan": [
+            {"PID": 2396, "LocalAddr": "10.0.0.5", "LocalPort": 50001,
+             "RemoteAddr": "5.100.251.10", "RemotePort": 443, "State": "ESTABLISHED"},
+        ],
+    },
+    "yara": [{"rule": "REDLEAVES_CoreImplant", "pid": 2396, "tags": "APT"}],
+}
+
+AGENTIC_DATA = {
+    "Generic.System.Pstree": [
+        {"_client_id": WS01, "_hostname": "WS01", "Pid": 2396, "Ppid": 6352,
+         "Name": "powershell_ise.exe", "CreateTime": "2026-05-19T08:14:20Z",
+         "CommandLine": "powershell_ise -enc ...", "User": "jsmith", "Domain": "CORP"},
+        {"_client_id": DC01, "_hostname": "DC01", "Pid": 1000, "Ppid": 4,
+         "Name": "svchost.exe", "CreateTime": "2026-05-19T07:00:00Z"},
+    ],
+    "Windows.Network.NetstatEnriched": [
+        {"_client_id": DC01, "_hostname": "DC01", "Pid": 1000,
+         "RemoteAddr": "5.100.251.10", "RemotePort": 443, "State": "ESTABLISHED"},
+    ],
+    "Windows.EventLogs.RDPAuth": [
+        {"_client_id": DC01, "_hostname": "DC01", "User": "administrator",
+         "Domain": "CORP", "LogonType": 10, "TimeCreated": "2026-05-19T09:30:00Z"},
+        {"_client_id": SRVVC, "_hostname": "SRV-VC", "User": "administrator",
+         "Domain": "CORP", "LogonType": 10, "TimeCreated": "2026-05-19T10:15:00Z"},
+    ],
+}
+HOSTNAMES = {WS01: "WS01", DC01: "DC01", SRVVC: "SRV-VC"}
+WINDOW = {"start": "2026-05-17T00:00:00", "end": "2026-05-26T00:00:00"}
+
+
+def build():
+    mem = map_memory(MEMORY_PAYLOAD, run_id="mem_1", asset=keys.asset_id(WS01), hostname="WS01")
+    agt = map_agentic(AGENTIC_DATA, run_id="agt_1", hostnames=HOSTNAMES)
+    return correlate.assemble("case_demo", [mem, agt], ["mem_1", "agt_1"])
+
+
+# --------------------------------------------------------------------- tests
+def test_process_merge_cross_module():
+    g = build()
+    pid_eid = keys.process_id(keys.asset_id(WS01), 2396, "2026-05-19T08:14:20")
+    e = g.entities.get(pid_eid)
+    assert e is not None, "powershell_ise process must exist with the bucketed key"
+    assert set(e.sources) == {"memory", "agentic"}, f"must merge both modules, got {e.sources}"
+    assert "injected" in e.flags
+
+
+def test_pid_reuse_not_merged():
+    base = build()
+    n_before = len([e for e in base.entities.values() if e.type == "process"])
+    extra = ([], [])
+    reuse = map_agentic({"Generic.System.Pstree": [
+        {"_client_id": WS01, "_hostname": "WS01", "Pid": 2396, "Ppid": 1,
+         "Name": "evil.exe", "CreateTime": "2026-05-19T20:00:00Z"}]},
+        run_id="agt_2", hostnames=HOSTNAMES)
+    g = correlate.assemble("c", [map_memory(MEMORY_PAYLOAD, run_id="m", asset=keys.asset_id(WS01)),
+                                 map_agentic(AGENTIC_DATA, run_id="a", hostnames=HOSTNAMES),
+                                 reuse], ["m", "a", "agt_2"])
+    procs = [e for e in g.entities.values() if e.type == "process"
+             and e.attrs.get("pid") == "2396" and keys.asset_id(WS01) in (e.attrs.get("_assets") or [])]
+    assert len(procs) == 2, "same PID, different createtime+image must stay separate"
+    assert any("pid_reused" in p.flags for p in procs)
+
+
+def test_cross_host_ioc():
+    g = build()
+    iid = keys.ioc_id("ip", "5.100.251.10")
+    e = g.entities[iid]
+    assert len(e.attrs.get("_assets") or []) == 2, "C2 IP must be on WS01 + DC01"
+    assert "cross_host" in e.flags
+    assert any(f.kind == "cross_host" and iid in f.entity_ids for f in g.findings)
+
+
+def test_cross_host_account_lateral_movement():
+    g = build()
+    acct = [e for e in g.entities.values() if e.type == "account" and "administrator" in e.id]
+    assert acct, "domain admin account node must exist"
+    a = acct[0]
+    assert len(a.attrs.get("_assets") or []) == 2, "admin used on DC01 + SRV-VC"
+    lat = [f for f in g.findings if f.kind == "cross_host" and a.id in f.entity_ids]
+    assert lat and "T1021" in lat[0].mitre
+
+
+def test_injected_process_with_c2_finding():
+    g = build()
+    c2 = [f for f in g.findings if f.title.startswith("Injected process with C2")]
+    assert c2, "must derive the injected+C2 finding"
+    assert c2[0].severity == "critical"
+    assert set(c2[0].sources) >= {"memory", "agentic"}
+
+
+def test_time_window_scope():
+    g = build()
+    _, inwin = render.scope(g, window=WINDOW, min_severity="informational")
+    _, outwin = render.scope(g, window={"start": "2030-01-01", "end": "2030-02-01"},
+                             min_severity="informational")
+    assert inwin and not [f for f in outwin if f.ts], "out-of-window time-anchored findings dropped"
+
+
+def test_report_has_three_altitudes_and_cross_host():
+    g = build()
+    md = llm_sim.generate_report(g, window=WINDOW, min_severity="low",
+                                 initial_access="2026-05-19T08:14:20", case_name="INTRUSION-MAY")
+    for section in ("Executive / Risk Overview", "Infrastructural Attack Timeline", "Per-Host Detail"):
+        assert section in md, f"missing section: {section}"
+    assert "Lateral Movement" in md
+    assert "5.100.251.10" in md
+
+
+def test_chat_grounded():
+    g = build()
+    a1 = llm_sim.chat(g, "how did they move laterally?", window=WINDOW, min_severity="low")
+    assert "administrator" in a1.lower() or "lateral" in a1.lower()
+    a2 = llm_sim.chat(g, "what about 5.100.251.10?", window=WINDOW, min_severity="low")
+    assert "cross-host" in a2.lower()
+
+
+if __name__ == "__main__":
+    g = build()
+    print(f"=== GRAPH: {len(g.entities)} entities, {len(g.relationships)} rels, "
+          f"{len(g.findings)} findings "
+          f"({sum(1 for f in g.findings if f.kind=='cross_host')} cross-host) ===\n")
+    print(llm_sim.generate_report(g, window=WINDOW, min_severity="low",
+                                  initial_access="2026-05-19T08:14:20", case_name="INTRUSION-MAY"))
+    print("\n=== CHAT DEMO ===")
+    for q in ("how did they move laterally?", "what about 5.100.251.10?",
+              "tell me about WS01", "show me the timeline"):
+        print(f"\nQ: {q}\n{llm_sim.chat(g, q, window=WINDOW, min_severity='low')}")

@@ -34,6 +34,7 @@ from routes import (
     engagement_bp,
     cve_bp,
     memory_bp,
+    case_bp,
 )
 
 # Import initialization services
@@ -69,6 +70,7 @@ app.register_blueprint(support_bundle_bp)
 app.register_blueprint(engagement_bp)
 app.register_blueprint(cve_bp)
 app.register_blueprint(memory_bp)
+app.register_blueprint(case_bp)
 
 # Global flag to track initialization status
 initialization_status = {
