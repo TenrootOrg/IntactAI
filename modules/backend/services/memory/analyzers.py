@@ -48,13 +48,59 @@ _NOISE_KEYS = {
 }
 
 
+# Severity ordering for plugin rows. Vol3 rows carry no native severity
+# field, so we approximate it by scanning each row's stringified values
+# for forensic IOCs and weighting them. Rows float to the top by score
+# so that when a plugin's output is truncated to max_rows, the slice we
+# keep is the highest-signal rows rather than the first N in native
+# order. Rows with no IOC hit score 0 and retain the plugin's native
+# order (stable sort) — so benign plugins behave exactly as before.
+#
+# CRITICAL (x100): executable+writable / injected memory — the single
+# strongest in-memory IOC (malfind RWX regions, code injection).
+_SEV_CRITICAL = (
+    "page_execute_readwrite", "execute_writecopy", "execute_readwrite", "rwx",
+)
+# HIGH (x10): suspicious tooling / paths / attributes.
+_SEV_HIGH = (
+    "powershell", "certutil", "rundll32", "regsvr32", "mshta", "wmic",
+    "bitsadmin", "wscript", "cscript", "schtasks", "psexec", "mimikatz",
+    "\\temp\\", "\\appdata\\", "\\programdata\\", "\\public\\",
+    "unsigned", "hidden", "inject", "hollow", "orphan", ".tmp",
+)
+# MEDIUM (x1): live network state worth surfacing.
+_SEV_MED = ("established", "listening", "syn_sent")
+
+
+def _row_severity(row: Any) -> int:
+    """Heuristic severity score for a single plugin row (higher = more
+    significant). Approximate by IOC keywords present in the row's
+    values; benign rows score 0."""
+    if not isinstance(row, dict):
+        return 0
+    blob = " ".join(str(v) for v in row.values()).lower()
+    score = 0
+    for kw in _SEV_CRITICAL:
+        if kw in blob:
+            score += 100
+    for kw in _SEV_HIGH:
+        if kw in blob:
+            score += 10
+    for kw in _SEV_MED:
+        if kw in blob:
+            score += 1
+    return score
+
+
 def _trim_artefacts(artefacts: Any, max_rows: int) -> list[dict]:
     if not isinstance(artefacts, list):
         return []
+    rows = [r for r in artefacts if isinstance(r, dict)]
+    # Severity-order BEFORE truncating so the kept slice is the highest-
+    # signal rows. Stable sort: equal-score rows keep native order.
+    rows.sort(key=_row_severity, reverse=True)
     out: list[dict] = []
-    for row in artefacts[:max_rows]:
-        if not isinstance(row, dict):
-            continue
+    for row in rows[:max_rows]:
         clean = {
             k: v for k, v in row.items()
             if k not in _NOISE_KEYS and v not in (None, "", 0)

@@ -125,12 +125,16 @@ KNOWN_VOL3_PLUGINS: tuple[tuple[str, str], ...] = (
 
 # Per-plugin row cap used when assembling the LLM prompt.
 #
-# A Win10 dump's malfind/dlllist easily produce hundreds of rows; the
-# LLM only needs a representative slice. 80 rows per plugin × 12
-# plugins ≈ 950 rows ≈ 80-150 KB JSON = ~25K tokens — well under the
-# Opus context window and the price-vs-signal sweet spot the PoC
-# settled on.
-DEFAULT_MAX_ROWS_PER_PLUGIN: int = 80
+# A Win10 dump's malfind/dlllist easily produce hundreds of rows. Each
+# plugin's rows are SEVERITY-ORDERED (analyzers._row_severity) BEFORE
+# truncating to this cap, so the slice we keep is the highest-signal
+# rows (RWX/injected memory, LOLBins, suspicious paths, established
+# connections) — not the first N in the plugin's native order. That
+# makes the truncation safe to widen: raised 80 → 250 on 2026-06-17
+# after a run produced a narrow report. 250 × ~9-12 emitting plugins
+# still sits under PROMPT_BYTE_GUARD, which truncates anything over
+# 350 KB as a final backstop.
+DEFAULT_MAX_ROWS_PER_PLUGIN: int = 250
 
 # Per-hit cap for yarascan output handed to the LLM.
 #
