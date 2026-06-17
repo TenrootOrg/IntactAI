@@ -188,6 +188,19 @@ def _derive_findings(g: FusionGraph) -> None:
                 entity_ids=[e.id], asset_ids=asset, sources=e.sources,
                 evidence=list(e.evidence), ts=e.first_seen, kind="single"))
 
+    # persistence — suspicious services
+    for e in g.by_type("service"):
+        if e.anomaly >= 10:
+            asset = _assets_of(e)
+            host = _host_label(g, asset[0]) if asset else "?"
+            g.add_finding(Finding(
+                id=_fid("svc", e.id), title=f"Suspicious service — {e.label} on {host}",
+                severity=sev.from_anomaly(e.anomaly), confidence="medium",
+                summary=f"Service '{e.label}' on {host} has a suspicious binary/path "
+                        f"({e.attrs.get('binary') or e.attrs.get('state') or '?'}).",
+                entity_ids=[e.id], asset_ids=asset, sources=e.sources,
+                evidence=list(e.evidence), mitre=["T1543"], ts=e.first_seen, kind="single"))
+
     # vulnerabilities
     for e in g.by_type("vuln"):
         g.add_finding(Finding(

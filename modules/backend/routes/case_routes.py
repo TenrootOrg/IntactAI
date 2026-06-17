@@ -63,7 +63,34 @@ def attach(case_id):
     if not rids:
         return jsonify({"error": "run_ids required"}), 400
     members = store.attach_runs(case_id, rids)
-    return jsonify({"case_id": case_id, "member_run_ids": members})
+    resp = {"case_id": case_id, "member_run_ids": members}
+    if d.get("fuse"):                                   # auto-fuse after attach
+        g = store.fuse_case(case_id)
+        resp.update({"fused": True, "entities": len(g.entities), "findings": len(g.findings)})
+    return jsonify(resp)
+
+
+@case_bp.route("/api/cases/quick", methods=["POST"])
+def quick_case():
+    """0 -> 1 in one call: create a case, attach runs, fuse, return the report."""
+    d = request.get_json(silent=True) or {}
+    name = (d.get("name") or "").strip()
+    rids = d.get("run_ids") or []
+    if not name or not rids:
+        return jsonify({"error": "name and run_ids are required"}), 400
+    tw = d.get("time_window") or {}
+    cid = store.create_case(
+        name, time_window={"start": tw.get("start"), "end": tw.get("end")} if tw else {},
+        initial_access=d.get("initial_access_estimate") or d.get("initial_access"),
+        min_severity=(d.get("min_severity") or "medium"), member_run_ids=rids)
+    logs = []
+    g = store.fuse_case(cid, log=lambda m, l="info": logs.append((l, m)))
+    return jsonify({
+        "case_id": cid, "status": "fused", "entities": len(g.entities),
+        "relationships": len(g.relationships), "findings": len(g.findings),
+        "cross_host_findings": sum(1 for f in g.findings if f.kind == "cross_host"),
+        "warnings": [m for lv, m in logs if lv == "warning"],
+        "report_md": store.get_case(cid).get("report_md", "")})
 
 
 @case_bp.route("/api/cases/<case_id>/fuse", methods=["POST"])

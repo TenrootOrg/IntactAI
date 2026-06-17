@@ -145,6 +145,28 @@ def test_chat_grounded():
     assert "cross-host" in a2.lower()
 
 
+def test_ioc_and_mitre_sections():
+    g = build()
+    md = llm_sim.generate_report(g, window=WINDOW, min_severity="low", case_name="X")
+    assert "Key Indicators" in md and "5.100.251.10" in md
+    assert "MITRE ATT&CK" in md and "T1071" in md and "T1021" in md
+
+
+def test_persistence_service_finding():
+    payload = {"host": "H", "yara": [], "plugins": {"svcscan": [
+        {"Name": "EvilSvc", "State": "SERVICE_RUNNING", "PID": 4444,
+         "Binary": "C:\\Users\\x\\AppData\\Local\\Temp\\evil.exe"}]}}
+    g = correlate.assemble("c", [map_memory(payload, run_id="m", asset=keys.asset_id("C.x"))], ["m"])
+    svc = [f for f in g.findings if "service" in f.title.lower()]
+    assert svc and "T1543" in svc[0].mitre
+
+
+def test_host_severity_rollup():
+    g = build()
+    ws01 = g.entities[keys.asset_id(WS01)]
+    assert ws01.severity == "critical", f"WS01 should roll up to critical, got {ws01.severity}"
+
+
 if __name__ == "__main__":
     g = build()
     print(f"=== GRAPH: {len(g.entities)} entities, {len(g.relationships)} rels, "

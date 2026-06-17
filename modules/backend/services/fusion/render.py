@@ -130,17 +130,54 @@ def report(graph, *, window=None, min_severity="informational", initial_access=N
         afind = [f for f in findings if a.id in f.asset_ids]
         for f in afind:
             out.append(f"- **[{f.severity}]** {f.summary}")
-        # notable entities on this host
-        procs = sorted((e for e in graph.by_type("process") if a.id in _assets_of(e) and e.anomaly > 0),
+        # notable entities on this host (suspicious only — no benign baseline noise)
+        procs = sorted((e for e in graph.by_type("process")
+                        if a.id in _assets_of(e) and (e.anomaly >= 20 or "injected" in e.flags)),
                        key=lambda e: -e.anomaly)[:8]
         if procs:
-            out.append("  - _processes:_ " + ", ".join(
+            out.append("  - _suspicious processes:_ " + ", ".join(
                 f"{p.label}{'⚠' if 'injected' in p.flags else ''}" for p in procs))
         iocs = [e for e in graph.by_type("ioc") if a.id in _assets_of(e)]
         if iocs:
             out.append("  - _indicators:_ " + ", ".join(i.label for i in iocs[:12]))
+        accts = [e for e in graph.by_type("account") if a.id in _assets_of(e)]
+        if accts:
+            out.append("  - _accounts:_ " + ", ".join(
+                f"{x.label}{'⚠' if 'cross_host' in x.flags else ''}" for x in accts[:10]))
         if not afind and not procs and not iocs:
             out.append("- _no findings above threshold._")
         out.append("")
 
+    # ---- 4. Key Indicators (IOCs) -------------------------------------
+    iocs = graph.by_type("ioc")
+    if iocs:
+        out.append("## 4. Key Indicators\n")
+        out.append("| Indicator | Type | Hosts | Cross-host |")
+        out.append("|---|---|---|---|")
+        for i in sorted(iocs, key=lambda e: (-len(_assets_of(e)), e.label)):
+            hosts = ", ".join(_host_label(graph, x) for x in _assets_of(i))
+            out.append(f"| `{i.label}` | {i.attrs.get('ioc_kind', '?')} | {hosts} | "
+                       f"{'⚠ YES' if 'cross_host' in i.flags else 'no'} |")
+        out.append("")
+
+    # ---- 5. MITRE ATT&CK ----------------------------------------------
+    techs: dict[str, list] = {}
+    for f in findings:
+        for t in f.mitre:
+            techs.setdefault(t, []).append(f.title)
+    if techs:
+        out.append("## 5. MITRE ATT&CK\n")
+        for t in sorted(techs):
+            extra = f" (+{len(techs[t]) - 1} more)" if len(techs[t]) > 1 else ""
+            out.append(f"- **{t} — {_MITRE_NAMES.get(t, '')}** · {techs[t][0]}{extra}")
+        out.append("")
+
     return "\n".join(out)
+
+
+_MITRE_NAMES = {
+    "T1055": "Process Injection", "T1071": "Application Layer Protocol (C2)",
+    "T1021": "Remote Services", "T1078": "Valid Accounts",
+    "T1543": "Create/Modify System Process", "T1053": "Scheduled Task/Job",
+    "T1547": "Boot/Logon Autostart", "T1059": "Command & Scripting Interpreter",
+}
