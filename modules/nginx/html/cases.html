@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>IntactAI — Cases (Entity Fusion)</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c232c;--bd:#2a323c;--tx:#e6edf3;
+        --muted:#8b949e;--acc:#e0556e;--ok:#3fb950;--crit:#f85149;--high:#db6d28;
+        --med:#d29922;--low:#3fb950;--info:#58a6ff;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:12px;padding:12px 18px;background:#000;border-bottom:1px solid var(--bd)}
+  header h1{font-size:18px;margin:0;font-weight:600}
+  header .logo{color:var(--acc);font-size:22px}
+  .badge{font-size:11px;color:var(--muted);border:1px solid var(--bd);padding:2px 8px;border-radius:10px}
+  .wrap{display:grid;grid-template-columns:340px 1fr;gap:0;height:calc(100vh - 53px)}
+  .side{border-right:1px solid var(--bd);overflow-y:auto;padding:14px;background:var(--panel)}
+  .main{overflow-y:auto;padding:18px 24px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:18px 0 8px}
+  input,select,textarea,button{font:inherit;color:var(--tx);background:var(--panel2);
+        border:1px solid var(--bd);border-radius:6px;padding:7px 9px;width:100%}
+  textarea{resize:vertical;min-height:54px}
+  label{display:block;font-size:12px;color:var(--muted);margin:8px 0 3px}
+  button{cursor:pointer;background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600;width:auto;padding:8px 14px}
+  button.ghost{background:var(--panel2);border-color:var(--bd);color:var(--tx);font-weight:500}
+  button:hover{filter:brightness(1.1)}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .runs{max-height:170px;overflow-y:auto;border:1px solid var(--bd);border-radius:6px;padding:6px;margin-top:4px}
+  .run{display:flex;gap:6px;align-items:center;padding:3px 4px;font-size:12px;border-radius:4px}
+  .run:hover{background:var(--panel2)}
+  .run .t{color:var(--info)} .run .h{color:var(--muted)}
+  .caseitem{padding:9px 10px;border:1px solid var(--bd);border-radius:7px;margin:6px 0;cursor:pointer;background:var(--panel2)}
+  .caseitem:hover{border-color:var(--acc)} .caseitem.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+  .caseitem .nm{font-weight:600} .caseitem .meta{font-size:11px;color:var(--muted)}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--bd);margin-bottom:14px}
+  .tab{padding:8px 14px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent}
+  .tab.on{color:var(--tx);border-color:var(--acc)}
+  .md h1{font-size:22px;border-bottom:1px solid var(--bd);padding-bottom:6px}
+  .md h2{font-size:16px;color:var(--tx);text-transform:none;letter-spacing:0;margin-top:22px}
+  .md h3{font-size:14px;color:var(--acc)}
+  .md code{background:#000;padding:1px 5px;border-radius:4px;color:#79c0ff;font-size:12px}
+  .md table{border-collapse:collapse;margin:8px 0;font-size:13px}
+  .md th,.md td{border:1px solid var(--bd);padding:5px 9px;text-align:left}
+  .md th{background:var(--panel2)}
+  .md li{margin:2px 0}
+  .md strong{color:#fff}
+  .chip{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;margin-right:5px}
+  .c-critical{background:rgba(248,81,73,.18);color:var(--crit)} .c-high{background:rgba(219,109,40,.18);color:var(--high)}
+  .c-medium{background:rgba(210,153,34,.18);color:var(--med)} .c-low{background:rgba(63,185,80,.16);color:var(--low)}
+  .c-informational{background:rgba(88,166,255,.15);color:var(--info)}
+  .chat{display:flex;flex-direction:column;height:calc(100vh - 200px)}
+  .msgs{flex:1;overflow-y:auto;padding:6px 2px} .msg{margin:8px 0;padding:9px 12px;border-radius:8px;max-width:88%}
+  .msg.u{background:var(--acc);color:#fff;margin-left:auto} .msg.a{background:var(--panel2);border:1px solid var(--bd);white-space:pre-wrap}
+  .chatbar{display:flex;gap:8px;margin-top:8px}
+  .empty{color:var(--muted);text-align:center;margin-top:60px}
+  .stat{display:inline-block;margin-right:16px;font-size:13px} .stat b{color:#fff;font-size:18px}
+  .toast{position:fixed;bottom:18px;right:18px;background:var(--panel2);border:1px solid var(--acc);padding:10px 14px;border-radius:8px;display:none}
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">◭</span><h1>IntactAI — Cases</h1>
+  <span class="badge">Entity Fusion · cross-module + cross-host</span>
+  <span class="badge" id="llmbadge">LLM: simulated</span>
+</header>
+<div class="wrap">
+  <div class="side">
+    <h2>New Case</h2>
+    <label>Name</label><input id="cname" placeholder="INTRUSION-MAY"/>
+    <div class="row" style="margin-top:6px">
+      <div style="flex:1"><label>Window start</label><input id="wstart" placeholder="2026-06-14"/></div>
+      <div style="flex:1"><label>Window end</label><input id="wend" placeholder="2026-06-18"/></div>
+    </div>
+    <label>Initial access ≈</label><input id="iacc" placeholder="2026-06-15T07:00"/>
+    <label>Min severity</label>
+    <select id="msev"><option>informational</option><option>low</option><option selected>medium</option><option>high</option><option>critical</option></select>
+    <label>Attach runs</label>
+    <div class="runs" id="runlist">loading runs…</div>
+    <div class="row" style="margin-top:10px">
+      <button onclick="createAndFuse()">Create &amp; Fuse</button>
+      <button class="ghost" onclick="loadRuns()">↻ runs</button>
+    </div>
+    <h2>Cases</h2>
+    <div id="caselist"></div>
+  </div>
+  <div class="main" id="main">
+    <div class="empty">Create a case (pick runs on the left) — it fuses into one cross-module,<br/>cross-host graph and gives you a report + chat.</div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const $=s=>document.querySelector(s), api=(p,o)=>fetch(p,o).then(r=>r.json());
+let sel=null, runs=[], tab='report';
+function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2600);}
+
+function loadRuns(){
+  $('#runlist').textContent='loading…';
+  api('/api/cases/runs').then(d=>{runs=d.runs||[];
+    $('#runlist').innerHTML=runs.map(r=>`<label class="run"><input type="checkbox" value="${r.run_id}" style="width:auto"/>
+      <span class="t">${r.type}</span> <span>${r.host||r.run_id}</span> <span class="h">${(r.status||'')}${r.evidence_id?(' ev'+r.evidence_id):''}</span></label>`).join('')||'<i style="color:var(--muted)">no memory/agentic runs found</i>';
+  }).catch(_=>$('#runlist').textContent='runs unavailable');
+}
+function pickedRuns(){return [...document.querySelectorAll('#runlist input:checked')].map(c=>c.value);}
+
+function createAndFuse(){
+  const name=$('#cname').value.trim(); const rids=pickedRuns();
+  if(!name){toast('name required');return;} if(!rids.length){toast('pick at least one run');return;}
+  const body={name,run_ids:rids,min_severity:$('#msev').value,
+    time_window:{start:$('#wstart').value||null,end:$('#wend').value||null},
+    initial_access:$('#iacc').value||null};
+  toast('fusing…');
+  api('/api/cases/quick',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+   .then(d=>{toast(`fused: ${d.entities} entities, ${d.findings} findings, ${d.cross_host_findings} cross-host`);
+     loadCases(()=>openCase(d.case_id));});
+}
+
+function loadCases(cb){
+  api('/api/cases').then(d=>{const cs=d.cases||[];
+    $('#caselist').innerHTML=cs.map(c=>`<div class="caseitem ${sel===c.case_id?'sel':''}" onclick="openCase('${c.case_id}')">
+      <div class="nm">${c.name||c.case_id}</div><div class="meta">${c.members} run(s) · ${c.status}</div></div>`).join('')||'<i style="color:var(--muted)">no cases yet</i>';
+    if(cb)cb();
+  });
+}
+
+function openCase(id){
+  sel=id; loadCases();
+  Promise.all([api('/api/cases/'+id),api('/api/cases/'+id+'/report'),api('/api/cases/'+id+'/graph')])
+   .then(([info,rep,gr])=>{render(info,rep.report_md||'',gr.fusion_graph||{});});
+}
+
+function statline(g){
+  const ents=Object.keys(g.entities||{}).length, fnd=(g.findings||[]).length,
+    xh=(g.findings||[]).filter(f=>f.kind==='cross_host').length,
+    rel=(g.relationships||[]).length, assets=(Object.values(g.entities||{})).filter(e=>e.type==='asset').length;
+  return `<div style="margin:6px 0 16px">
+    <span class="stat"><b>${assets}</b> hosts</span><span class="stat"><b>${ents}</b> entities</span>
+    <span class="stat"><b>${rel}</b> links</span><span class="stat"><b>${fnd}</b> findings</span>
+    <span class="stat"><b style="color:var(--acc)">${xh}</b> cross-host</span></div>`;
+}
+
+function render(info,md,g){
+  $('#main').innerHTML=`
+    <div class="row" style="justify-content:space-between">
+      <div><h1 style="margin:0;font-size:20px">${info.name||info.case_id}</h1>
+        <div style="color:var(--muted);font-size:12px">window ${(info.time_window||{}).start||'—'} → ${(info.time_window||{}).end||'—'} · sev ≥ ${info.min_severity} · IA ≈ ${info.initial_access_estimate||'?'}</div></div>
+      <div class="row"><button class="ghost" onclick="refuse('${info.case_id}')">↻ Re-fuse</button></div>
+    </div>
+    ${statline(g)}
+    <div class="tabs">
+      <div class="tab ${tab==='report'?'on':''}" onclick="tab='report';openCase('${info.case_id}')">Report</div>
+      <div class="tab ${tab==='chat'?'on':''}" onclick="tab='chat';openCase('${info.case_id}')">Chat</div>
+    </div>
+    <div id="tabc"></div>`;
+  if(tab==='report') $('#tabc').innerHTML=`<div class="md">${mdToHtml(md)}</div>`;
+  else renderChat(info.case_id);
+}
+
+function refuse(id){toast('re-fusing…');api('/api/cases/'+id+'/fuse',{method:'POST'}).then(_=>{toast('re-fused');openCase(id);});}
+
+let chatHist=[];
+function renderChat(id){
+  $('#tabc').innerHTML=`<div class="chat"><div class="msgs" id="msgs"></div>
+    <div class="chatbar"><input id="q" placeholder="how did they move laterally?  ·  what about 5.100.251.x?  ·  show the timeline"/>
+    <button onclick="ask('${id}')">Ask</button></div></div>`;
+  $('#q').addEventListener('keydown',e=>{if(e.key==='Enter')ask(id);});
+  drawMsgs();
+}
+function drawMsgs(){$('#msgs').innerHTML=chatHist.map(m=>`<div class="msg ${m.role==='user'?'u':'a'}">${m.role==='user'?escape(m.content):mdToHtml(m.content)}</div>`).join('');
+  const m=$('#msgs'); if(m)m.scrollTop=m.scrollHeight;}
+function ask(id){const q=$('#q').value.trim(); if(!q)return; $('#q').value='';
+  chatHist.push({role:'user',content:q}); drawMsgs();
+  api('/api/cases/'+id+'/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+   .then(d=>{chatHist.push({role:'assistant',content:d.answer||'(no answer)'});drawMsgs();});
+}
+
+// minimal, air-gap-safe markdown renderer
+function escape(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function inline(s){return escape(s).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/_([^_]+)_/g,'<em>$1</em>');}
+function mdToHtml(md){
+  const out=[]; let inUL=false,inTbl=false;
+  const closeUL=()=>{if(inUL){out.push('</ul>');inUL=false;}};
+  const closeTbl=()=>{if(inTbl){out.push('</table>');inTbl=false;}};
+  (md||'').split('\n').forEach(line=>{
+    if(/^\|(.+)\|\s*$/.test(line)){
+      if(/^\|[\s:|-]+\|\s*$/.test(line))return; // separator
+      const cells=line.split('|').slice(1,-1).map(c=>c.trim());
+      if(!inTbl){closeUL();out.push('<table>');inTbl=true;}
+      const cell = (md.indexOf(line)>-1 && !inTbl)?'th':'td';
+      out.push('<tr>'+cells.map(c=>'<td>'+inline(c)+'</td>').join('')+'</tr>');return;
+    } else closeTbl();
+    let m;
+    if(m=line.match(/^### (.*)/)){closeUL();out.push('<h3>'+inline(m[1])+'</h3>');}
+    else if(m=line.match(/^## (.*)/)){closeUL();out.push('<h2>'+inline(m[1])+'</h2>');}
+    else if(m=line.match(/^# (.*)/)){closeUL();out.push('<h1>'+inline(m[1])+'</h1>');}
+    else if(m=line.match(/^\s*[-*] (.*)/)){if(!inUL){out.push('<ul>');inUL=true;}
+      let t=inline(m[1]).replace(/\[(critical|high|medium|low|informational)\]/i,(_,s)=>`<span class="chip c-${s.toLowerCase()}">${s}</span>`);
+      out.push('<li>'+t+'</li>');}
+    else if(/^\s*$/.test(line)){closeUL();out.push('<br/>');}
+    else {closeUL();out.push('<p>'+inline(line)+'</p>');}
+  });
+  closeUL();closeTbl();return out.join('\n');
+}
+loadRuns();loadCases();
+</script>
+</body>
+</html>

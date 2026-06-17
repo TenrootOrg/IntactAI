@@ -43,6 +43,29 @@ def list_cases():
     return jsonify({"cases": cases})
 
 
+@case_bp.route("/api/cases/runs", methods=["GET"])
+def attachable_runs():
+    """Module runs that can be attached to a case (for the UI picker)."""
+    from services import workflow_service as ws
+    runs = ws.get_all_automation_runs() if hasattr(ws, "get_all_automation_runs") else []
+    out = []
+    for r in runs:
+        if r.get("automation_type") in ("memory", "agentic", "timesketch", "cve_scan"):
+            d = r.get("details") or {}
+            host = d.get("client_name")
+            if not host:
+                hn = d.get("hostnames")
+                if isinstance(hn, dict):
+                    host = ", ".join(str(v) for v in hn.values()) or None
+                elif isinstance(hn, list):
+                    host = ", ".join(str(v) for v in hn) or None
+            out.append({"run_id": r.get("run_id"), "type": r.get("automation_type"),
+                        "status": r.get("status"), "host": host,
+                        "evidence_id": d.get("evidence_id"), "created_at": r.get("created_at")})
+    out.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    return jsonify({"runs": out[:200]})
+
+
 @case_bp.route("/api/cases/<case_id>", methods=["GET"])
 def get_case(case_id):
     d = store.get_case(case_id)
