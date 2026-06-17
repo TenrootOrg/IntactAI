@@ -76,6 +76,35 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
             if af:
                 return f"On **{a.label}**:\n" + "\n".join(cite(f) for f in af)
 
+    # summary / overview / who is worst
+    if any(k in q for k in ("summary", "overview", "brief", "tl;dr", "what happened")):
+        hosts = sorted(graph.by_type("asset"), key=lambda a: -sev.rank(a.severity))
+        top = sorted(findings, key=lambda f: -sev.rank(f.severity))[:3]
+        return (f"{len(hosts)} host(s); worst: "
+                + ", ".join(f"{a.label} ({a.severity})" for a in hosts[:4]) + ".\n"
+                + "Top findings:\n" + "\n".join(cite(f) for f in top))
+    if any(k in q for k in ("who", "most malicious", "worst", "patient zero", "most affected")):
+        hosts = sorted(graph.by_type("asset"), key=lambda a: -sev.rank(a.severity))
+        if hosts:
+            a = hosts[0]
+            af = [f for f in findings if a.id in f.asset_ids]
+            return (f"**{a.label}** is the most affected host ({a.severity}, {len(af)} findings) — "
+                    f"likely patient zero.\n" + "\n".join(cite(f) for f in af[:4]))
+    if any(k in q for k in ("initial access", "get in", "got in", "entry", "first compromise")):
+        tl = render.timeline(graph, window=window)
+        if tl:
+            r = tl[0]
+            return (f"Earliest in-window activity: `{r['ts']}` on **{r['host']}** — {r['title']}. "
+                    f"That is the most likely initial-access anchor.")
+    if any(k in q for k in ("vuln", "cve", "patch", "exposure")):
+        vf = [f for f in findings if f.title.lower().startswith("vulnerability")]
+        return ("Vulnerabilities:\n" + "\n".join(cite(f) for f in vf)) if vf \
+            else "No vulnerabilities (CVE) above threshold in this case."
+    if any(k in q for k in ("persist", "service", "autorun", "scheduled task", "stay")):
+        pf = [f for f in findings if any(k in f.title.lower() for k in ("service", "persist", "task"))]
+        return ("Persistence:\n" + "\n".join(cite(f) for f in pf)) if pf \
+            else "No persistence findings above threshold in this case."
+
     # 2) lateral movement / how did they move / pivot
     if any(k in q for k in ("lateral", "move", "moved", "pivot", "spread", "how did")):
         xh = [f for f in findings if f.kind == "cross_host"]

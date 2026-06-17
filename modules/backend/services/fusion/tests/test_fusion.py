@@ -161,6 +161,25 @@ def test_persistence_service_finding():
     assert svc and "T1543" in svc[0].mitre
 
 
+def test_cve_mapper_and_finding():
+    from services.fusion.mappers import map_cve
+    rows = [{"Hostname": "WS01", "Product": "Acme", "Version": "1.0",
+             "CVE": "CVE-2024-1234", "CVSS_Score": 9.8}]
+    g = correlate.assemble("c", [map_cve(rows, run_id="cve_1")], ["cve_1"])
+    v = [e for e in g.entities.values() if e.type == "vuln"]
+    assert v and v[0].severity == "critical"
+    assert any(f.title.startswith("Vulnerability") for f in g.findings)
+    assert any(r.kind == "has_cve" for r in g.relationships)
+
+
+def test_chat_more_intents():
+    g = build()
+    assert "host" in llm_sim.chat(g, "give me a summary", window=WINDOW, min_severity="low").lower()
+    assert "WS01" in llm_sim.chat(g, "who is the most affected host?", window=WINDOW, min_severity="low")
+    ia = llm_sim.chat(g, "how did they get in?", window=WINDOW, min_severity="low")
+    assert "initial-access" in ia.lower() or "earliest" in ia.lower()
+
+
 def test_host_severity_rollup():
     g = build()
     ws01 = g.entities[keys.asset_id(WS01)]

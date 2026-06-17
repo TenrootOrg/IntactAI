@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from .schema import FusionGraph
 from . import correlate, llm_sim, keys
-from .mappers import map_memory, map_agentic
+from .mappers import map_memory, map_agentic, map_cve
 
 CASE_TYPE = "case"
 
@@ -58,6 +58,18 @@ def _memory_contribution(rid, det):
                       run_id=rid, asset=asset, hostname=host)
 
 
+def _cve_contribution(rid, det):
+    import json
+    import os
+    for base in (f"/app/data/downloads/{rid}", f"/data/downloads/{rid}",
+                 det.get("output_dir") or ""):
+        fp = os.path.join(base, "findings.json") if base else ""
+        if fp and os.path.exists(fp):
+            with open(fp) as f:
+                return map_cve(json.load(f), run_id=rid)
+    return [], []
+
+
 def _contribution_for_run(run, log=None):
     atype, rid = run.get("automation_type"), run.get("run_id")
     det = run.get("details") or {}
@@ -67,6 +79,8 @@ def _contribution_for_run(run, log=None):
         if atype == "agentic":
             return map_agentic(det.get("collected_data") or {}, run_id=rid,
                                hostnames=det.get("hostnames") or {})
+        if atype == "cve_scan":
+            return _cve_contribution(rid, det)
     except Exception as e:  # never let one run break the fuse
         if log:
             log(f"fuse: run {rid} ({atype}) skipped: {e}", "warning")
