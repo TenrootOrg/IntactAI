@@ -1067,10 +1067,22 @@ class VolWebClient:
         poll_s: int = 15,
         cancel_check: Callable[[], bool] | None = None,
         no_rules_grace_s: int = 30,
-    ) -> int:
+    ) -> tuple[int, bool]:
         """Block until yarascan has emitted at least one history entry
-        for the evidence (signaling completion). Returns the reported
-        ``count``.
+        for the evidence (signaling completion).
+
+        Returns ``(count, completed)``:
+          * ``completed=True``  — a real terminal state was reached (a
+            history row appeared, or there are no active rules). The
+            scan is DONE; cleanup of the per-evidence media dir is safe.
+          * ``completed=False`` — the wait hit ``timeout_s`` while the
+            scan was still running. The worker may STILL be streaming
+            results to media/<id>/yarascan_results.jsonl; the caller
+            must NOT remove that dir or it will destroy in-flight
+            matches (2026-06-17 incident: a 700s override on a 5 GB
+            dump whose scan needed ~1595s timed out, cleanup removed
+            media/<id>, and 84 real matches were lost — "Output path
+            does not exist: media/1/").
 
         A scan with zero matches still produces a history entry with
         ``count=0`` on a successful run — UNLESS VolWeb has no active
@@ -1086,7 +1098,7 @@ class VolWebClient:
                 "(seed rulesets via Maintenance → YARA → Refresh to enable scanning)",
                 "warning",
             )
-            return 0
+            return 0, True
 
         deadline = time.time() + timeout_s
         # Secondary safety net: if rules ARE configured but no history
@@ -1100,7 +1112,7 @@ class VolWebClient:
             if hist:
                 count = int(hist[0].get("count", 0))
                 self._log(f"yarascan completed: {count} hits")
-                return count
+                return count, True
             elapsed = time.time() - first_seen_at
             if elapsed > no_rules_grace_s and elapsed < no_rules_grace_s + poll_s:
                 # Log the soft-fail intent once; keep polling until
@@ -1111,8 +1123,15 @@ class VolWebClient:
                     "info",
                 )
             if time.time() > deadline:
-                self._log(f"yarascan timed out after {timeout_s}s — assuming 0 hits", "warning")
-                return 0
+                self._log(
+                    f"yarascan wait hit the {timeout_s}s budget — the scan may STILL "
+                    f"be running in the worker. Reporting hits=0 for now, but the "
+                    f"per-evidence results dir will be PRESERVED (not cleaned up) so "
+                    f"any matches the scan finds aren't lost. Bump yarascan_timeout_s "
+                    f"for large dumps to capture the count in this run.",
+                    "warning",
+                )
+                return 0, False
             slept = 0
             while slept < poll_s:
                 if cancel_check and cancel_check():

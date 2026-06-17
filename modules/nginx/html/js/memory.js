@@ -188,10 +188,13 @@ document.addEventListener('alpine:init', () => {
                 this.currentStatus = 'running';
                 this.currentProgress = 1;
                 this.lastStatus = `started: ${j.run_id}`;
-                this._startPolling();
-                // Refresh the workflows table so the new row appears there too.
+                // Run status lives on the Workflows page like every other
+                // module — refresh it and navigate there on dispatch.
                 if (Alpine.store('workflows') && typeof Alpine.store('workflows').refresh === 'function') {
                     Alpine.store('workflows').refresh();
+                }
+                if (Alpine.store('app')?.switchTab) {
+                    Alpine.store('app').switchTab('workflows');
                 }
             } catch (e) {
                 this.lastStatus = String(e);
@@ -265,9 +268,13 @@ document.addEventListener('alpine:init', () => {
                         // Reset file picker so a successful run is
                         // visually distinct from "still queued".
                         this.uploadFile = null;
-                        this._startPolling();
+                        // Run status lives on the Workflows page — refresh
+                        // it and navigate there on dispatch.
                         if (Alpine.store('workflows') && typeof Alpine.store('workflows').refresh === 'function') {
                             Alpine.store('workflows').refresh();
+                        }
+                        if (Alpine.store('app')?.switchTab) {
+                            Alpine.store('app').switchTab('workflows');
                         }
                     } else {
                         this.uploadStatus = j.error || `HTTP ${xhr.status}`;

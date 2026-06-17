@@ -103,6 +103,7 @@ def cleanup_after_run(
     evidence_filename: str | None,
     volweb_client: VolWebClient | None,
     delete_evidence_row: bool = False,
+    preserve_evidence_dir: bool = False,
     logger: Callable[[str, str], None] | None = None,
 ) -> None:
     """Sweep every place memory data lands.
@@ -144,9 +145,28 @@ def cleanup_after_run(
         # Belt-and-suspenders: even if we don't delete the row, the
         # media .raw is the multi-GB hog. Remove it. Plugin + yarascan
         # results stay in the DB.
+        #
+        # The .raw staging file is safe to remove even while a yarascan
+        # is still reading it: the worker holds an open fd, so Linux
+        # keeps the inode alive until the scan finishes (unlink only
+        # drops the name). Freeing the path matters on disk-tight hosts.
         if evidence_filename:
             _remove_volweb_media_raw(evidence_filename, log)
-        _remove_volweb_media_dir(evidence_id, log)
+        # The per-evidence dir (media/<id>/) holds the yarascan
+        # results jsonl the worker streams into. If the scan is STILL
+        # running (the yarascan wait timed out rather than completing),
+        # removing this dir destroys the in-flight matches — exactly
+        # what cost 84 real hits on 2026-06-17. Preserve it in that
+        # case; a later run's cleanup or the operator can reclaim it.
+        if preserve_evidence_dir:
+            log(
+                f"cleanup: PRESERVING media/{evidence_id}/ — yarascan still "
+                f"running; removing it now would destroy in-flight matches. "
+                f"The dir + results survive for this evidence.",
+                "warning",
+            )
+        else:
+            _remove_volweb_media_dir(evidence_id, log)
 
         if delete_evidence_row and volweb_client is not None:
             try:

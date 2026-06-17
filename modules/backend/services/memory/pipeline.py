@@ -27,6 +27,7 @@ single ``call_llm`` invocation records to the workflow row's
 
 from __future__ import annotations
 
+import os
 import shutil
 import time
 import traceback
@@ -100,6 +101,60 @@ _PHASE_WEIGHTS = {
     "analyze":   8,
     "cleanup":   5,
 }
+
+# Volatility's YaraScan plugin scans the whole image against the full
+# rule corpus at roughly ~400 s/GB (measured 2026-06-16: a 5 GB dump ×
+# 1454 rules took ~1595 s). A FIXED yarascan timeout is therefore wrong
+# for some dump size — too low and the wait gives up while the scan is
+# still running, reporting hits=0 and (pre-fix) destroying the results.
+# These drive a size-aware floor.
+_YARASCAN_BASE_OVERHEAD_S = 600     # fixed setup cost (symbol scan, rule compile)
+_YARASCAN_SECONDS_PER_GB  = 400     # generous; real rate ~320 s/GB
+
+
+def _effective_yarascan_timeout(
+    base_s: int,
+    host_path: str | None,
+    operator_set: bool,
+    log: Callable[[str, str], None],
+) -> int:
+    """Return the yarascan wait budget scaled to the dump size.
+
+    - operator did NOT set it → silently raise to the size-aware floor
+      so the default just works for any dump size.
+    - operator DID set it but it's below the floor → respect their
+      value (they asked for a bounded run) but warn loudly; the cleanup
+      safety net preserves results if it overruns, only the in-run hit
+      count is at risk.
+    """
+    try:
+        size_gb = (
+            os.path.getsize(host_path) / (1024 ** 3)
+            if host_path and os.path.exists(host_path) else 0.0
+        )
+    except Exception:
+        size_gb = 0.0
+    if size_gb <= 0:
+        return base_s
+    recommended = int(_YARASCAN_BASE_OVERHEAD_S + _YARASCAN_SECONDS_PER_GB * size_gb)
+    if base_s >= recommended:
+        return base_s
+    if operator_set:
+        log(
+            f"yarascan_timeout_s={base_s}s is below the ~{recommended}s a "
+            f"{size_gb:.1f} GB dump usually needs (~{_YARASCAN_SECONDS_PER_GB} s/GB). "
+            f"Respecting your value — results survive if the scan overruns "
+            f"(dir preserved), but the hit count may not land in THIS run. "
+            f"Raise it to ~{recommended}s to capture the count in-run.",
+            "warning",
+        )
+        return base_s
+    log(
+        f"yarascan: scaling wait {base_s}s → {recommended}s for the "
+        f"{size_gb:.1f} GB dump (~{_YARASCAN_SECONDS_PER_GB} s/GB).",
+        "info",
+    )
+    return recommended
 
 
 def _llm_config_from_runtime() -> dict:
@@ -282,7 +337,11 @@ def run_memory_pipeline(
             return default
     acquire_flow_timeout_s = _t("acquire_flow_timeout_s", 5400)   # 90 min
     plugin_timeout_s       = _t("plugin_timeout_s",       1800)   # 30 min
-    yarascan_timeout_s     = _t("yarascan_timeout_s",     2400)   # 40 min
+    yarascan_timeout_s     = _t("yarascan_timeout_s",     3600)   # 60 min default (bumped 2026-06-17)
+    # Did the operator explicitly set the yarascan timeout (vs default/
+    # blueprint)? If so we respect it but warn when it's too low for the
+    # dump size; if not, we silently scale it up to a size-aware floor.
+    yarascan_timeout_operator_set = "yarascan_timeout_s" in _to
     """Run a memory-forensics pipeline end-to-end.
 
     Contract: takes a pre-created workflow ``run_id`` (the route
@@ -322,6 +381,10 @@ def run_memory_pipeline(
     host_path: str | None = None
     evidence_id: int | None = None
     evidence_filename: str | None = None
+    # Set True when the yarascan wait times out while the scan is still
+    # running — tells cleanup to PRESERVE media/<id>/ so in-flight
+    # matches aren't destroyed (2026-06-17 incident).
+    yarascan_incomplete: bool = False
     client = VolWebClient(
         logger=lambda m, level="info": add_log_to_run(run_id, m, level),
     )
@@ -342,6 +405,7 @@ def run_memory_pipeline(
             evidence_filename=evidence_filename,
             volweb_client=client,
             delete_evidence_row=False,   # operator's report+plugin rows stay
+            preserve_evidence_dir=yarascan_incomplete,
             logger=log,
         )
 
@@ -443,11 +507,15 @@ def run_memory_pipeline(
             if cancel():
                 raise RuntimeError("cancelled after plugin extract")
             yara_started = time.time()
-            hit_count = client.wait_for_yarascan(
+            _eff_yara_to = _effective_yarascan_timeout(
+                yarascan_timeout_s, host_path, yarascan_timeout_operator_set, log,
+            )
+            hit_count, _yara_done = client.wait_for_yarascan(
                 evidence_id,
-                timeout_s=yarascan_timeout_s,
+                timeout_s=_eff_yara_to,
                 cancel_check=cancel,
             )
+            yarascan_incomplete = not _yara_done
             cumulative += _PHASE_WEIGHTS["yarascan"]
             log(
                 f"pipeline: yarascan — complete in {int(time.time() - yara_started)}s  hits={hit_count}",
@@ -577,11 +645,15 @@ def run_memory_pipeline(
 
             # Phase 4b — wait for yarascan history record.
             yara_started = time.time()
-            hit_count = client.wait_for_yarascan(
+            _eff_yara_to = _effective_yarascan_timeout(
+                yarascan_timeout_s, host_path, yarascan_timeout_operator_set, log,
+            )
+            hit_count, _yara_done = client.wait_for_yarascan(
                 evidence_id,
-                timeout_s=yarascan_timeout_s,
+                timeout_s=_eff_yara_to,
                 cancel_check=cancel,
             )
+            yarascan_incomplete = not _yara_done
             cumulative += _PHASE_WEIGHTS["yarascan"]
             log(
                 f"pipeline: yarascan — complete in {int(time.time() - yara_started)}s  hits={hit_count}",
