@@ -120,11 +120,20 @@ services:
       nofile:
         soft: 65536
         hard: 65536
-    # Memory limit — the backend handles chunked uploads up to 64 GiB
-    # for memory dumps, but the request handler itself stays small;
-    # 2 GiB is generous headroom and prevents a runaway upload from
-    # ballooning the rest of the host.
-    mem_limit: 2g
+    # Memory limit. Raised 2 GiB → 4 GiB on 2026-06-17 after the daphne
+    # backend was OOM-killed repeatedly mid memory-pipeline run
+    # (RestartCount climbed to 8; kernel cgroup log:
+    #   "Memory cgroup out of memory: Killed process (daphne)
+    #    anon-rss:2084416kB" — i.e. ~2.08 GB, just over the old 2 GiB cap).
+    # Docker's container-level OOMKilled flag stays false for a cgroup
+    # process-kill, which masked the cause. The spike comes from DRF
+    # serializing the full YARA ruleset response — `GET /api/yararulesets/`
+    # returns ~84 MB (all ~1467 rules) and the VolWeb frontend polls it.
+    # 4 GiB clears the observed ~2.08 GB peak with headroom; kept at 4
+    # (not 6) to fit memory-constrained hosts. If OOM recurs under heavy
+    # concurrent UI polling, the real fix is paginating /api/yararulesets/
+    # upstream rather than raising this further.
+    mem_limit: 4g
 
   intact_volweb_workers:
     container_name: intact_volweb_workers
