@@ -64,7 +64,12 @@ def attach(case_id):
         return jsonify({"error": "run_ids required"}), 400
     members = store.attach_runs(case_id, rids)
     resp = {"case_id": case_id, "member_run_ids": members}
-    if d.get("fuse"):                                   # auto-fuse after attach
+    if d.get("watch"):                                  # auto-fuse when in-flight runs land
+        import threading
+        for rid in rids:
+            threading.Thread(target=store.watch_and_fuse, args=(case_id, rid), daemon=True).start()
+        resp["watching"] = rids
+    elif d.get("fuse"):                                 # fuse now
         g = store.fuse_case(case_id)
         resp.update({"fused": True, "entities": len(g.entities), "findings": len(g.findings)})
     return jsonify(resp)

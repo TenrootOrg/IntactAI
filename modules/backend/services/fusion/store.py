@@ -96,6 +96,24 @@ def fuse_case(case_id, *, contributions_override=None, log=None) -> FusionGraph:
     return g
 
 
+def watch_and_fuse(case_id, run_id, *, poll=10, timeout=10800) -> None:
+    """Background: wait until a member run reaches a terminal state, then
+    re-fuse the whole case. Makes a Case a living workspace — attach an
+    in-flight run and the graph/report refresh themselves when it lands."""
+    import time
+    ws = _ws()
+    start = time.time()
+    while time.time() - start < timeout:
+        r = ws.get_automation_run(run_id) or {}
+        if (r.get("status") or "") in ("completed", "failed", "cancelled"):
+            break
+        time.sleep(poll)
+    try:
+        fuse_case(case_id)
+    except Exception:
+        pass
+
+
 def load_graph(case_id) -> FusionGraph:
     d = get_case(case_id)
     return FusionGraph.from_dict(d.get("fusion_graph") or {"case_id": case_id})

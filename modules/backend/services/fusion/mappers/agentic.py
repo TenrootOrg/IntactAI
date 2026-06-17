@@ -140,15 +140,39 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     ents.append(_ent(iid, "ioc", str(url), asset, run_id, loc, anomaly=1,
                                      ioc_kind=kind, first=ts))
 
-            # ---- everything else high-signal -> execution/event ----------
+            # ---- persistence: services / autoruns / scheduled tasks ------
+            elif any(k in an for k in ("autoruns", "services", "scheduledtask",
+                                       "taskscheduler", "scheduled")):
+                sname = (F.get(r, "Name", "ServiceName", "TaskName", "Entry", "Rule", default=None)
+                         or artifact)
+                sid = keys.service_id(asset, sname)
+                ents.append(_ent(sid, "service", str(sname), asset, run_id, loc,
+                                 anomaly=score_row(r), first=ts, artifact=artifact,
+                                 binary=F.get(r, "Binary", "BinaryPath", "ImagePath", "Command",
+                                              *F.PATH, default=None)))
+
+            # ---- execution evidence -> event (+ file + hash ioc) ---------
             elif any(k in an for k in ("amcache", "prefetch", "userassist", "shimcache",
-                                       "appcompat", "srum", "evtx", "eventlog", "hayabusa",
-                                       "binaryrename", "untrusted", "autoruns", "services",
-                                       "scheduledtask", "taskscheduler", "lnk")):
+                                       "appcompat", "srum", "bam")):
+                path = F.get(r, *F.PATH) or F.get(r, "Name", default=artifact)
+                eid = keys.event_id(run_id, ts, f"exec:{path}")
+                ents.append(_ent(eid, "event", f"executed: {str(path)[:60]}", asset, run_id, loc,
+                                 anomaly=score_row(r), first=ts, artifact=artifact))
+
+            # ---- other high-signal detections -> event -------------------
+            elif any(k in an for k in ("evtx", "eventlog", "hayabusa", "binaryrename",
+                                       "untrusted", "lnk", "detection")):
                 msg = F.get(r, "Message", "Description", "Name", *F.PATH, default=artifact)
                 eid = keys.event_id(run_id, ts, f"{an}:{msg}")
                 ents.append(_ent(eid, "event", f"{artifact}: {str(msg)[:80]}", asset, run_id,
                                  loc, anomaly=score_row(r), first=ts, artifact=artifact))
+
+            # ---- hash extraction (ANY artifact) -> cross-host-capable IOC -
+            h = F.get(r, *F.SHA256)
+            if h and keys.classify_indicator(h) == "hash":
+                iid = keys.ioc_id("hash", h)
+                ents.append(_ent(iid, "ioc", str(h)[:16] + "…", asset, run_id, loc,
+                                 anomaly=10, ioc_kind="hash", first=ts, full_hash=str(h)))
 
     # ---- spawned edges (ppid) across the processes we created -----------
     for artifact, rows in (collected_data or {}).items():
