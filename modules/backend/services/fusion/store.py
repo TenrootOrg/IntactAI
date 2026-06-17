@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from .schema import FusionGraph
 from . import correlate, llm_sim, keys
-from .mappers import map_memory, map_agentic, map_cve
+from .mappers import map_memory, map_agentic, map_cve, map_timesketch
 
 CASE_TYPE = "case"
 
@@ -81,6 +81,12 @@ def _contribution_for_run(run, log=None):
                                hostnames=det.get("hostnames") or {})
         if atype == "cve_scan":
             return _cve_contribution(rid, det)
+        if atype == "timesketch":
+            evs = det.get("events") or det.get("timeline_events")
+            if evs:
+                asset = keys.asset_id(det.get("client_id") or rid)
+                return map_timesketch(evs, run_id=rid, asset=asset,
+                                      hostname=det.get("client_name"))
     except Exception as e:  # never let one run break the fuse
         if log:
             log(f"fuse: run {rid} ({atype}) skipped: {e}", "warning")

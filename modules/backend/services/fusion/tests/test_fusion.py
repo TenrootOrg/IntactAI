@@ -186,6 +186,33 @@ def test_host_severity_rollup():
     assert ws01.severity == "critical", f"WS01 should roll up to critical, got {ws01.severity}"
 
 
+def test_timesketch_mapper_extracts_iocs():
+    from services.fusion.mappers import map_timesketch
+    evs = [{"datetime": "2026-06-15T08:00:00", "message": "connection to 5.100.251.10 observed",
+            "parser": "winevtx"}]
+    g = correlate.assemble("c", [map_timesketch(evs, run_id="ts_1", asset=keys.asset_id("C.x"),
+                                                hostname="H")], ["ts_1"])
+    assert any(e.type == "event" for e in g.entities.values())
+    assert keys.ioc_id("ip", "5.100.251.10") in g.entities
+
+
+def test_four_module_integration():
+    from services.fusion.mappers import map_cve, map_timesketch
+    mem = map_memory(MEMORY_PAYLOAD, run_id="m", asset=keys.asset_id(WS01), hostname="WS01")
+    agt = map_agentic(AGENTIC_DATA, run_id="a", hostnames=HOSTNAMES)
+    cve = map_cve([{"Hostname": "WS01", "CVE": "CVE-2024-0001", "CVSS_Score": 9.0}], run_id="c")
+    ts = map_timesketch([{"datetime": "2026-05-19T08:00:00", "message": "beacon to 5.100.251.10",
+                          "parser": "evtx"}], run_id="t", asset=keys.asset_id(WS01), hostname="WS01")
+    g = correlate.assemble("case", [mem, agt, cve, ts], ["m", "a", "c", "t"])
+    srcs = set()
+    for e in g.entities.values():
+        srcs.update(e.sources)
+    assert {"memory", "agentic", "cve", "timesketch"} <= srcs, f"all 4 modules merge, got {srcs}"
+    md = llm_sim.generate_report(g, window=WINDOW, min_severity="medium", case_name="FULL")
+    assert "Vulnerability" in md or "CVE-2024-0001" in md
+    assert "Lateral Movement" in md
+
+
 if __name__ == "__main__":
     g = build()
     print(f"=== GRAPH: {len(g.entities)} entities, {len(g.relationships)} rels, "
