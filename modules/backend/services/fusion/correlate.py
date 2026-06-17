@@ -37,6 +37,7 @@ def assemble(case_id: str, contributions, run_ids) -> FusionGraph:
             g.upsert(e)
         for r in rels:
             g.relate(r)
+    _resolve_host_assets(g)
     _rollup_severity(g)
     _flag_pid_reuse(g)
     _cross_host_findings(g)
@@ -55,6 +56,54 @@ def _rollup_asset_severity(g: FusionGraph) -> None:
             if a.id in f.asset_ids:
                 best = sev.max_level(best, f.severity)
         a.severity = best
+
+
+def _resolve_host_assets(g: FusionGraph) -> None:
+    """Merge hostname-keyed assets (e.g. from CVE rows that only have a
+    Hostname) into the canonical client_id asset when the hostname matches —
+    so one physical host is ONE node, not two."""
+    from .keys import norm_host
+    canon: dict[str, str] = {}
+    for a in g.by_type("asset"):
+        if a.id.startswith("asset:endpoint:host="):
+            continue
+        h = norm_host(a.attrs.get("hostname") or "")
+        if h:
+            canon[h] = a.id
+    remap: dict[str, str] = {}
+    for a in g.by_type("asset"):
+        if not a.id.startswith("asset:endpoint:host="):
+            continue
+        h = a.id[len("asset:endpoint:host="):]
+        tgt = canon.get(norm_host(h))
+        if tgt and tgt != a.id:
+            remap[a.id] = tgt
+    if not remap:
+        return
+    for old, new in remap.items():                 # merge the asset node itself
+        if old in g.entities:
+            e = g.entities.pop(old)
+            e.id = new
+            g.upsert(e)
+    for e in g.entities.values():                  # remap every entity's asset list
+        al = e.attrs.get("_assets")
+        if al:
+            e.attrs["_assets"] = list(dict.fromkeys(remap.get(x, x) for x in al))
+    for r in g.relationships:                       # remap edge endpoints
+        r.src, r.dst = remap.get(r.src, r.src), remap.get(r.dst, r.dst)
+    g._rel_index = {}                               # rebuild edge dedup index
+    fresh: list = []
+    for r in g.relationships:
+        k = r.key()
+        if k in g._rel_index:
+            cur = fresh[g._rel_index[k]]
+            for s in r.sources:
+                if s not in cur.sources:
+                    cur.sources.append(s)
+        else:
+            g._rel_index[k] = len(fresh)
+            fresh.append(r)
+    g.relationships = fresh
 
 
 def _rollup_severity(g: FusionGraph) -> None:

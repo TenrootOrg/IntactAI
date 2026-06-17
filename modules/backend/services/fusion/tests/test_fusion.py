@@ -196,6 +196,21 @@ def test_timesketch_mapper_extracts_iocs():
     assert keys.ioc_id("ip", "5.100.251.10") in g.entities
 
 
+def test_hostname_asset_merges_into_client_id_asset():
+    from services.fusion.mappers import map_cve, map_agentic
+    DC = "C.dcdcdc"
+    agt = map_agentic({"Generic.System.Pstree": [
+        {"_client_id": DC, "_hostname": "DC01", "Pid": 1, "Name": "x",
+         "CreateTime": "2026-06-15T07:00:00Z"}]}, run_id="a", hostnames={DC: "DC01"})
+    cve = map_cve([{"Hostname": "DC01", "CVE": "CVE-2021-26855", "CVSS_Score": 9.8}], run_id="c")
+    g = correlate.assemble("c", [agt, cve], ["a", "c"])
+    assets = g.by_type("asset")
+    assert len(assets) == 1, f"DC01 must be ONE node, got {[a.id for a in assets]}"
+    assert keys.asset_id(DC) in g.entities, "canonical client_id asset survives"
+    vuln = [e for e in g.entities.values() if e.type == "vuln"][0]
+    assert keys.asset_id(DC) in (vuln.attrs.get("_assets") or []), "CVE re-pointed to the real host"
+
+
 def test_four_module_integration():
     from services.fusion.mappers import map_cve, map_timesketch
     mem = map_memory(MEMORY_PAYLOAD, run_id="m", asset=keys.asset_id(WS01), hostname="WS01")
