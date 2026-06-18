@@ -38,6 +38,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
         for r in rels:
             g.relate(r)
     _resolve_host_assets(g)
+    _bridge_hashes(g)
     _rollup_severity(g)
     _flag_pid_reuse(g)
     _cross_host_findings(g)
@@ -167,6 +168,61 @@ def _resolve_host_assets(g: FusionGraph) -> None:
             fresh.append(r)
     g.relationships = fresh
     g.rebuild_indexes()                             # refresh src/dst/key indexes
+
+
+def _bridge_hashes(g: FusionGraph) -> None:
+    """Collapse hash IOC nodes that are the SAME binary keyed by different algos.
+    A node carrying both SHA256 (full_hash) and a SHA1/MD5 attr (Pslist nested Hash,
+    Hayabusa Details) defines the alias SHA1/MD5 -> SHA256; a node keyed by that bare
+    SHA1/MD5 (e.g. Amcache, sha1-only) is remapped INTO the canonical SHA256 node.
+    Reuses the proven _resolve_host_assets remap; cross-host still works (SHA256 key
+    is global, _assets union on merge). Alias only toward a co-observed SHA256."""
+    from . import keys
+    alias: dict[str, str] = {}                      # sha1|md5 -> sha256
+    for e in g.by_type("ioc"):
+        if e.attrs.get("ioc_kind") != "hash":
+            continue
+        sha256 = str(e.attrs.get("full_hash") or "").lower()
+        if len(sha256) != 64:
+            continue
+        for k in ("sha1", "md5"):
+            v = str(e.attrs.get(k) or "").lower()
+            if v and v != sha256:
+                alias[v] = sha256
+    if not alias:
+        return
+    remap: dict[str, str] = {}
+    for e in list(g.by_type("ioc")):
+        if e.attrs.get("ioc_kind") != "hash":
+            continue
+        val = str(e.attrs.get("full_hash") or "").lower()
+        if val in alias:                            # keyed by a sha1/md5 with a sha256 twin
+            canon = keys.ioc_id("hash", alias[val])
+            if canon != e.id:
+                remap[e.id] = canon
+    if not remap:
+        return
+    for old, new in remap.items():
+        if old in g.entities:
+            e = g.entities.pop(old)
+            e.id = new
+            g.upsert(e)                             # merges sources/flags/_assets/evidence
+    for r in g.relationships:
+        r.src, r.dst = remap.get(r.src, r.src), remap.get(r.dst, r.dst)
+    seen: dict = {}
+    fresh: list = []
+    for r in g.relationships:
+        k = r.key()
+        if k in seen:
+            cur = fresh[seen[k]]
+            for s in r.sources:
+                if s not in cur.sources:
+                    cur.sources.append(s)
+        else:
+            seen[k] = len(fresh)
+            fresh.append(r)
+    g.relationships = fresh
+    g.rebuild_indexes()
 
 
 def _rollup_severity(g: FusionGraph) -> None:

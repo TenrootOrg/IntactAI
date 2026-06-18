@@ -67,6 +67,23 @@ def _sha256_of(row) -> str | None:
     return str(v) if isinstance(v, str) and v else None
 
 
+def _hash_attrs(row) -> dict:
+    """All non-SHA256 algos for the hash-identity bridge — md5/sha1/imphash from a
+    nested Hash struct or flat columns, lowercased. Bridge alias fuel."""
+    out = {}
+    h = F.get(row, "Hash", "Hashes", default=None)
+    src = h if isinstance(h, dict) else row
+    for algo, keyset in (("md5", ("MD5", "md5", "Md5")), ("sha1", ("SHA1", "sha1", "Sha1")),
+                         ("imphash", ("IMPHASH", "Imphash", "imphash", "ImpHash"))):
+        v = None
+        for k in keyset:
+            if isinstance(src, dict) and src.get(k):
+                v = src[k]; break
+        if v:
+            out[algo] = str(v).strip().lower()
+    return out
+
+
 # Roots where an "untrusted" Authenticode verdict is NOT signal — MS Store apps
 # (Program Files\WindowsApps), system + Program Files binaries are catalog-signed,
 # which the per-file Authenticode check reports as untrusted though they're legit.
@@ -231,7 +248,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     iid = keys.ioc_id("hash", phash)
                     ents.append(_ent(iid, "ioc", phash[:16] + "…", asset, run_id, loc,
                                      anomaly=20, ioc_kind="hash", first=ts, full_hash=phash,
-                                     image=name))
+                                     image=name, **_hash_attrs(r)))   # md5/sha1 = bridge fuel
                     rels.append(Relationship(eid, iid, "matched", sources=[MODULE], ts=ts))
                 owner = F.get(r, *F.USER)
                 if owner:
@@ -406,11 +423,19 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             # Process artifacts handle their own hashes selectively above (only
             # unsigned), so skip them here to avoid flooding benign hashes.
             is_proc = "pstree" in an or "pslist" in an or "processes" in an
-            h = None if is_proc else _sha256_of(r)
-            if h and keys.classify_indicator(h) == "hash":
+            is_exec = any(k in an for k in ("amcache", "prefetch", "userassist",
+                                            "shimcache", "appcompat", "srum", "bam"))
+            # sha256 preferred; sha1 fallback for Amcache (sha1-only) — the bridge
+            # collapses a sha1 node into its sha256 twin later.
+            h = None if is_proc else (_sha256_of(r) or F.get(r, "SHA1", "Sha1", "sha1"))
+            if h and keys.classify_indicator(str(h)) == "hash":
+                h = str(h)
                 iid = keys.ioc_id("hash", h)
-                ents.append(_ent(iid, "ioc", str(h)[:16] + "…", asset, run_id, loc,
-                                 anomaly=10, ioc_kind="hash", first=ts, full_hash=str(h)))
+                # execution-evidence hashes are benign context (anomaly 0, never
+                # auto cross-host); detection hashes (binaryrename) stay suspicious.
+                ents.append(_ent(iid, "ioc", h[:16] + "…", asset, run_id, loc,
+                                 anomaly=0 if is_exec else 10, ioc_kind="hash",
+                                 first=ts, full_hash=h, **_hash_attrs(r)))
 
     # ---- spawned edges (ppid) across the processes we created -----------
     for artifact, rows in (collected_data or {}).items():
@@ -475,5 +500,15 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                              anomaly=0, ioc_kind="ip", first=ts, from_detection=True))
             if proc_eid:
                 rels.append(Relationship(proc_eid, iid, "connected", sources=[MODULE], ts=ts))
+        # Details carry MD5+SHA256 together -> the bridge's alias fuel (anomaly 0).
+        hh = DET.hashes(pd)
+        sha = hh.get("sha256")
+        if sha and keys.classify_indicator(sha) == "hash":
+            hid = keys.ioc_id("hash", sha)
+            ents.append(_ent(hid, "ioc", sha[:16] + "…", asset, run_id, "hayabusa/details",
+                             anomaly=0, ioc_kind="hash", first=ts, full_hash=sha,
+                             md5=hh.get("md5"), imphash=hh.get("imphash")))
+            if proc_eid:
+                rels.append(Relationship(proc_eid, hid, "matched", sources=[MODULE], ts=ts))
 
     return ents, rels
