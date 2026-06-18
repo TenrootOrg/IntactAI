@@ -112,7 +112,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None) -> FusionGraph:
         initial_access=d.get("initial_access_estimate"),
         case_name=d.get("name", "Case"), run_id=case_id)
     ws.update_run_status(case_id, "completed",
-                         details={"fusion_graph": g.to_dict(), "report_md": report})
+                         details={"fusion_graph": g.pruned().to_dict(), "report_md": report})
     return g
 
 

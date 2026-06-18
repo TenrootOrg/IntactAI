@@ -173,6 +173,8 @@ class FusionGraph:
     run_ids: list[str] = field(default_factory=list)
     schema_version: int = SCHEMA_VERSION
     _rel_index: dict[tuple[str, str, str], int] = field(default_factory=dict, repr=False)
+    _src_index: dict[str, list] = field(default_factory=dict, repr=False)
+    _dst_index: dict[str, list] = field(default_factory=dict, repr=False)
 
     # -- entity merge (forensic-integrity preserving) ----------------------
     def upsert(self, e: Entity) -> Entity:
@@ -219,6 +221,8 @@ class FusionGraph:
         if idx is None:
             self._rel_index[k] = len(self.relationships)
             self.relationships.append(r)
+            self._src_index.setdefault(r.src, []).append(r)
+            self._dst_index.setdefault(r.dst, []).append(r)
             return r
         cur = self.relationships[idx]
         _union(cur.sources, r.sources)
@@ -241,10 +245,46 @@ class FusionGraph:
         return [e for e in self.entities.values() if e.type == etype]
 
     def out_edges(self, eid: str) -> list[Relationship]:
-        return [r for r in self.relationships if r.src == eid]
+        return self._src_index.get(eid, [])
 
     def in_edges(self, eid: str) -> list[Relationship]:
-        return [r for r in self.relationships if r.dst == eid]
+        return self._dst_index.get(eid, [])
+
+    def rebuild_indexes(self) -> None:
+        self._rel_index, self._src_index, self._dst_index = {}, {}, {}
+        for i, r in enumerate(self.relationships):
+            self._rel_index[r.key()] = i
+            self._src_index.setdefault(r.src, []).append(r)
+            self._dst_index.setdefault(r.dst, []).append(r)
+
+    def pruned(self, max_entities: int = 2500) -> "FusionGraph":
+        """A storage-bounded copy: keep all findings + their entities + the
+        high-value types (assets/IOCs/accounts/vulns/yara), fill the rest of
+        the budget with top-anomaly entities. Keeps the SQLite blob small on
+        big multi-host cases without losing the signal."""
+        if len(self.entities) <= max_entities:
+            return self
+        keep: set[str] = set()
+        for e in self.entities.values():
+            if e.type in ("asset", "ioc", "account", "vuln", "yarahit"):
+                keep.add(e.id)
+        for f in self.findings:
+            keep.update(f.entity_ids)
+        for e in sorted((e for e in self.entities.values() if e.id not in keep),
+                        key=lambda e: -e.anomaly):
+            if len(keep) >= max_entities:
+                break
+            keep.add(e.id)
+        g = FusionGraph(case_id=self.case_id, schema_version=self.schema_version)
+        g.run_ids = list(self.run_ids)
+        for eid in keep:
+            if eid in self.entities:
+                g.upsert(self.entities[eid])
+        for r in self.relationships:
+            if r.src in keep and r.dst in keep:
+                g.relate(r)
+        g.findings = list(self.findings)
+        return g
 
     # -- (de)serialisation -------------------------------------------------
     def to_dict(self) -> dict:

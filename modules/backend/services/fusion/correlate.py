@@ -91,19 +91,20 @@ def _resolve_host_assets(g: FusionGraph) -> None:
             e.attrs["_assets"] = list(dict.fromkeys(remap.get(x, x) for x in al))
     for r in g.relationships:                       # remap edge endpoints
         r.src, r.dst = remap.get(r.src, r.src), remap.get(r.dst, r.dst)
-    g._rel_index = {}                               # rebuild edge dedup index
+    seen: dict = {}                                 # dedup (src,dst,kind) after remap
     fresh: list = []
     for r in g.relationships:
         k = r.key()
-        if k in g._rel_index:
-            cur = fresh[g._rel_index[k]]
+        if k in seen:
+            cur = fresh[seen[k]]
             for s in r.sources:
                 if s not in cur.sources:
                     cur.sources.append(s)
         else:
-            g._rel_index[k] = len(fresh)
+            seen[k] = len(fresh)
             fresh.append(r)
     g.relationships = fresh
+    g.rebuild_indexes()                             # refresh src/dst/key indexes
 
 
 def _rollup_severity(g: FusionGraph) -> None:
@@ -190,6 +191,13 @@ def _matched_yara(g: FusionGraph, proc_id: str) -> list:
             if r.kind == "matched" and g.entities.get(r.src)]
 
 
+def _parent(g: FusionGraph, proc_id: str):
+    for r in g.in_edges(proc_id):
+        if r.kind == "spawned" and g.entities.get(r.src):
+            return g.entities[r.src]
+    return None
+
+
 def _derive_findings(g: FusionGraph) -> None:
     for e in list(g.entities.values()):
         if e.type != "process":
@@ -236,6 +244,34 @@ def _derive_findings(g: FusionGraph) -> None:
                         f"{' (cmdline: ' + str(e.attrs.get('cmdline'))[:80] + ')' if e.attrs.get('cmdline') else ''}.",
                 entity_ids=[e.id], asset_ids=asset, sources=e.sources,
                 evidence=list(e.evidence), ts=e.first_seen, kind="single"))
+
+    # suspicious spawn chains (office/browser -> script interpreter = phishing exec)
+    _OFFICE = ("winword", "excel", "powerpnt", "outlook", "onenote", "chrome",
+               "msedge", "firefox", "acrord", "msaccess", "mspub")
+    _SCRIPT = ("powershell", "cmd.exe", "wscript", "cscript", "mshta", "rundll32",
+               "regsvr32", "bitsadmin", "certutil")
+    for e in g.by_type("process"):
+        name = (e.attrs.get("name") or "").lower()
+        if not any(s in name for s in _SCRIPT):
+            continue
+        par = next((g.entities[r.src] for r in g.in_edges(e.id)
+                    if r.kind == "spawned" and g.entities.get(r.src)
+                    and any(o in (g.entities[r.src].attrs.get("name") or "").lower()
+                            for o in _OFFICE)), None)
+        if par:
+            asset = _assets_of(e)
+            host = _host_label(g, asset[0]) if asset else "?"
+            g.add_finding(Finding(
+                id=_fid("chain", e.id),
+                title=f"Suspicious spawn chain — {par.label} → {e.label} on {host}",
+                severity="high", confidence="high",
+                summary=f"{par.label} spawned {e.label} on {host} — an office/browser app "
+                        f"launching a script interpreter is a hallmark of phishing-driven "
+                        f"execution.",
+                entity_ids=[par.id, e.id], asset_ids=asset,
+                sources=sorted(set(e.sources + par.sources)),
+                evidence=list(e.evidence), mitre=["T1059", "T1566"],
+                ts=e.first_seen, kind="derived"))
 
     # persistence — suspicious services
     for e in g.by_type("service"):

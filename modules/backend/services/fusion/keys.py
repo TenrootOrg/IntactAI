@@ -90,16 +90,39 @@ def ioc_id(kind: str, value) -> str:
     return f"ioc:{kind}:{str(value).strip().lower()}"
 
 
+_FILE_EXT = {"exe", "dll", "sys", "txt", "log", "dat", "tmp", "bin", "ini", "xml",
+             "json", "db", "lnk", "bat", "ps1", "vbs", "js", "msi", "cab", "zip",
+             "png", "jpg", "jpeg", "ico", "mui", "config", "manifest", "etl",
+             "evtx", "pf", "old", "bak", "rs", "py", "html", "css", "node"}
+_BENIGN_DOM = {"microsoft.com", "windows.com", "msftncsi.com", "windowsupdate.com",
+               "office.com", "live.com", "msn.com", "bing.com", "google.com",
+               "gstatic.com", "office365.com", "azureedge.net", "akamaized.net"}
+
+
 def classify_indicator(value) -> str | None:
-    """Return 'ip' | 'domain' | 'hash' for a raw value, else None."""
-    s = str(value).strip()
+    """Return 'ip' | 'domain' | 'hash' for a *useful* IOC, else None.
+
+    Excludes filenames (evil.exe is not a domain), benign update domains, and
+    private/loopback/link-local/multicast IPs (noise, not C2 infrastructure)."""
+    s = str(value).strip().lower()
     if not s:
         return None
-    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", s):
+    m = re.match(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$", s)
+    if m:
+        o = [int(x) for x in m.groups()]
+        if any(x > 255 for x in o):
+            return None
+        if (o[0] in (0, 127, 255, 10) or o[0] >= 224
+                or (o[0] == 192 and o[1] == 168) or (o[0] == 172 and 16 <= o[1] <= 31)
+                or (o[0] == 169 and o[1] == 254)):
+            return None                       # private / loopback / link-local / multicast
         return "ip"
-    if re.match(r"^[0-9a-fA-F]{32}$|^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$", s):
+    if re.match(r"^[0-9a-f]{32}$|^[0-9a-f]{40}$|^[0-9a-f]{64}$", s):
         return "hash"
-    if re.match(r"^[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)+$", s) and not _HEXISH.match(s):
+    if re.match(r"^([a-z0-9-]+\.)+[a-z]{2,24}$", s):
+        last = s.rsplit(".", 1)[-1]
+        if last in _FILE_EXT or s in _BENIGN_DOM:
+            return None                       # filename or benign-update domain
         return "domain"
     return None
 

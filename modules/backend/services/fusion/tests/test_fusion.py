@@ -228,6 +228,44 @@ def test_four_module_integration():
     assert "Lateral Movement" in md
 
 
+def test_ioc_classification_quality():
+    from services.fusion.keys import classify_indicator as C
+    assert C("evil.exe") is None and C("a.dll") is None        # filenames, not domains
+    assert C("10.0.0.5") is None and C("127.0.0.1") is None    # private/loopback
+    assert C("192.168.1.1") is None and C("169.254.1.1") is None
+    assert C("microsoft.com") is None                          # benign update domain
+    assert C("5.100.251.140") == "ip"                          # external C2
+    assert C("evil-c2.net") == "domain"
+    assert C("a" * 64) == "hash"
+
+
+def test_spawn_chain_finding():
+    payload = {"host": "H", "yara": [], "plugins": {"pslist": [
+        {"PID": 100, "PPID": 4, "ImageFileName": "winword.exe", "CreateTime": "2026-06-15T08:00:00"},
+        {"PID": 200, "PPID": 100, "ImageFileName": "powershell.exe", "CreateTime": "2026-06-15T08:01:00"}]}}
+    g = correlate.assemble("c", [map_memory(payload, run_id="m", asset=keys.asset_id("C.x"))], ["m"])
+    assert any("spawn chain" in f.title.lower() for f in g.findings)
+
+
+def test_attack_story_in_report():
+    g = build()
+    md = llm_sim.generate_report(g, window=WINDOW, min_severity="low", case_name="X",
+                                 initial_access="2026-05-19")
+    assert "most affected" in md and "Cross-host" in md
+
+
+def test_pruned_keeps_signal():
+    g = build()
+    p = g.pruned(max_entities=3)
+    assert len(p.findings) == len(g.findings)
+    for e in g.entities.values():
+        if e.type in ("asset", "ioc", "account", "vuln", "yarahit"):
+            assert e.id in p.entities, f"high-value {e.type} dropped"
+    for f in g.findings:
+        for eid in f.entity_ids:
+            assert eid in p.entities, "finding-referenced entity dropped"
+
+
 if __name__ == "__main__":
     g = build()
     print(f"=== GRAPH: {len(g.entities)} entities, {len(g.relationships)} rels, "
