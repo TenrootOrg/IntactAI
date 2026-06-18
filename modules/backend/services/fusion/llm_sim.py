@@ -13,55 +13,102 @@ No graph/correlation code changes — only this boundary swaps.
 
 from __future__ import annotations
 
-from . import render, severity as sev
+import json
+
+from . import render, budget, severity as sev
 from .correlate import _assets_of, _host_label
 
-SIMULATED = True   # flip to False once a real model is wired
+SIMULATED = True   # default; per-call mode resolves from frontend_config (see _use_real)
 
 
 # ---------------------------------------------------------------------------
-# Real-LLM boundary (commented — this is the ONLY place the API is touched)
+# Real-LLM boundary — the ONLY place the model API is touched. Default OFF
+# (mode='simulated'); flip frontend_config agentic.fusion_llm_mode='real' with an
+# API key to enable. Any failure falls back to the deterministic narrator.
 # ---------------------------------------------------------------------------
-# def _real_llm(system_prompt: str, user_message: str, *, run_id=None) -> str:
-#     """Production path. The distilled graph is small (KB), so this is cheap.
-#     from services.agentic.analyzers import call_llm
-#     from services.memory.pipeline import _llm_config_from_runtime
-#     return call_llm(user_message, system_prompt,
-#                     _llm_config_from_runtime(), run_id=run_id)
-# ---------------------------------------------------------------------------
+def _agentic_cfg() -> dict:
+    try:
+        from services.memory.pipeline import _llm_config_from_runtime
+        return (_llm_config_from_runtime() or {}).get("agentic", {}) or {}
+    except Exception:
+        return {}
+
+
+def _use_real() -> bool:
+    cfg = _agentic_cfg()
+    if str(cfg.get("fusion_llm_mode", "simulated")).lower() != "real":
+        return False
+    # need a usable transport: online needs an api_key, offline (ollama) is self-hosted
+    if str(cfg.get("llm_mode", "online")).lower() == "offline":
+        return True
+    return bool((cfg.get("online_llm") or {}).get("api_key"))
+
+
+def _real_llm(system_prompt: str, user_message: str, *, run_id=None) -> str:
+    """Production path. The distilled graph is KB-sized, so this is cheap. Token
+    counts land on the run's llm_metrics automatically via call_llm's recorder."""
+    from services.agentic.analyzers import call_llm
+    from services.memory.pipeline import _llm_config_from_runtime
+    return call_llm(user_message, system_prompt, _llm_config_from_runtime(), run_id=run_id)
 
 
 REPORT_SYSTEM_PROMPT = (
-    "You are a senior DFIR consultant. Narrate the provided correlated incident "
-    "graph as a customer-facing case report with three sections: executive/risk "
-    "overview, an infrastructural attack timeline (kill-chain phased, per host), "
-    "and per-host detail. Cite hosts, processes, accounts, and IOCs verbatim. Do "
-    "not invent anything not in the graph."
+    "You are a senior DFIR consultant. From the provided correlated incident graph "
+    "(JSON), write ONLY a concise executive narrative and an attack-story paragraph: "
+    "what happened, the most affected hosts, the kill-chain progression, and the lead "
+    "finding. Structured fact tables (IOCs, MITRE, per-host detail) are appended "
+    "separately, so do NOT re-list them. Cite hosts/accounts verbatim. Invent nothing "
+    "not in the graph."
 )
 CHAT_SYSTEM_PROMPT = (
     "You are a DFIR assistant answering questions about ONE correlated incident "
-    "graph. Answer only from the graph facts provided; cite the host + evidence "
+    "graph (JSON). Answer only from the graph facts provided; cite the host + evidence "
     "source for each claim; never speculate beyond the data."
 )
+
+_SIM_TAG = ("\n\n---\n_Narrative by the in-graph narrator (simulated — deterministic). "
+            "Set agentic.fusion_llm_mode='real' to use a live model._\n")
 
 
 def generate_report(graph, *, window=None, min_severity="informational",
                     initial_access=None, case_name="Case", run_id=None) -> str:
-    """The case report. (Simulated narrator = deterministic render.)"""
-    # PRODUCTION: payload = render.distilled(graph, window=window, min_severity=min_severity)
-    #             return _real_llm(REPORT_SYSTEM_PROMPT, json.dumps(payload), run_id=run_id)
+    """Case report. Real path = LLM narrative over distilled() + deterministic
+    fact tables appended verbatim. Falls back to the deterministic narrator on any
+    failure (or when mode='simulated')."""
+    if _use_real():
+        try:
+            payload = render.distilled(graph, window=window, min_severity=min_severity,
+                                       max_entities=budget.REPORT_MAX_ENTITIES,
+                                       budget_chars=budget.REPORT_BUDGET_CHARS)
+            narrative = _real_llm(REPORT_SYSTEM_PROMPT, json.dumps(payload), run_id=run_id)
+            facts = render.facts_md(graph, window=window, min_severity=min_severity,
+                                    initial_access=initial_access)
+            return (f"# Incident Case Report — {case_name}\n\n{narrative}\n\n{facts}"
+                    "\n\n---\n_Narrative by live LLM; fact tables deterministic._\n")
+        except Exception as e:  # noqa: BLE001 — never let LLM failure break a case
+            md = render.report(graph, window=window, min_severity=min_severity,
+                               initial_access=initial_access, case_name=case_name)
+            return md + (f"\n\n---\n_Live LLM unavailable ({type(e).__name__}); "
+                         "deterministic fallback._\n")
     md = render.report(graph, window=window, min_severity=min_severity,
                        initial_access=initial_access, case_name=case_name)
-    return md + "\n\n---\n_Report generated by the in-graph narrator " \
-                "(simulated LLM — deterministic). Switch to a live model in llm_sim.py._\n"
+    return md + _SIM_TAG
 
 
 def chat(graph, question: str, history=None, *, window=None, min_severity="informational",
          run_id=None) -> str:
-    """Grounded Q&A over the graph (simulated = deterministic retrieval)."""
-    # PRODUCTION: payload = render.distilled(graph, window=window, min_severity=min_severity)
-    #   ctx = json.dumps(payload); turns = history or []
-    #   return _real_llm(CHAT_SYSTEM_PROMPT, f"{ctx}\n\nQ: {question}", run_id=run_id)
+    """Grounded Q&A. Real path narrates the distilled graph; simulated = deterministic
+    retrieval. (Phase 4 swaps the real-path payload for a question-scoped subgraph.)"""
+    if _use_real():
+        try:
+            payload = render.distilled(graph, window=window, min_severity=min_severity,
+                                       max_entities=budget.CHAT_MAX_ENTITIES,
+                                       budget_chars=budget.CHAT_BUDGET_CHARS)
+            turns = "".join(f"{m.get('role')}: {m.get('content')}\n" for m in (history or []))
+            return _real_llm(CHAT_SYSTEM_PROMPT,
+                             f"{json.dumps(payload)}\n\n{turns}Q: {question}", run_id=run_id)
+        except Exception:  # noqa: BLE001 — fall through to deterministic retrieval
+            pass
     q = (question or "").lower()
     _, findings = render.scope(graph, window=window, min_severity=min_severity)
 

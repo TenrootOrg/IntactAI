@@ -9,11 +9,22 @@ fetched, dispatched to their module mapper, assembled into one graph by
 
 from __future__ import annotations
 
+import json
+
 from .schema import FusionGraph
-from . import correlate, llm_sim, keys
+from . import correlate, llm_sim, keys, render, budget
 from .mappers import map_memory, map_agentic, map_cve, map_timesketch, map_cloud
 
 CASE_TYPE = "case"
+
+
+def _raw_payload_size(run) -> int:
+    """Approx tokens a NORMAL (non-fusion) LLM run would feed for this run — the
+    raw module rows. Best-effort; used only for the fusion-vs-raw A/B headline."""
+    det = run.get("details") or {}
+    blob = (det.get("collected_data") or det.get("plugins") or det.get("events")
+            or det.get("timeline_events") or det.get("findings") or det.get("sigma_findings"))
+    return budget.approx_tokens(blob) if blob else 0
 
 
 def _ws():
@@ -117,13 +128,34 @@ def fuse_case(case_id, *, contributions_override=None, log=None) -> FusionGraph:
             if run:
                 contributions.append(_contribution_for_run(run, log=log))
     g = correlate.assemble(case_id, contributions, members)
+    window = d.get("time_window") or None
+    min_sev = d.get("min_severity", "informational")
     report = llm_sim.generate_report(
-        g, window=d.get("time_window") or None,
-        min_severity=d.get("min_severity", "informational"),
+        g, window=window, min_severity=min_sev,
         initial_access=d.get("initial_access_estimate"),
         case_name=d.get("name", "Case"), run_id=case_id)
+
+    # Token A/B: raw rows a normal run would feed vs the distilled payload the LLM
+    # actually sees. raw_approx is necessarily an estimate (we never send raw), so
+    # it's labelled _approx; real model tokens land on llm_metrics via call_llm.
+    try:
+        raw_approx = 0
+        for rid in members:
+            run = ws.get_automation_run(rid)
+            if run:
+                raw_approx += _raw_payload_size(run)
+        distilled = render.distilled(g, window=window, min_severity=min_sev,
+                                     max_entities=budget.REPORT_MAX_ENTITIES,
+                                     budget_chars=budget.REPORT_BUDGET_CHARS)
+        fusion_approx = budget.approx_tokens(json.dumps(distilled))
+        token_ab = {"raw_approx": raw_approx, "fusion_approx": fusion_approx,
+                    "reduction_ratio": round(raw_approx / max(fusion_approx, 1), 1)}
+    except Exception:
+        token_ab = {}
+
     ws.update_run_status(case_id, "completed",
-                         details={"fusion_graph": g.pruned().to_dict(), "report_md": report})
+                         details={"fusion_graph": g.pruned().to_dict(), "report_md": report,
+                                  "token_ab": token_ab})
     return g
 
 
