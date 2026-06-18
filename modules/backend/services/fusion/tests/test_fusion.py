@@ -397,6 +397,30 @@ def test_pslist_catalog_signed_store_app_not_flagged():
     assert keys.ioc_id("hash", "c" * 64) not in g.entities, "benign hash not flooded into graph"
 
 
+def test_mft_detection_typed_by_criticality_but_no_finding():
+    cd = {"DetectRaptor.Windows.Detection.MFT": [
+        {"Detection": {"Name": "Eventlog Erasing Tool", "Criticality": "High"},
+         "OSPath": "C:\\Users\\x\\wevtutil.exe", "_client_id": "C.z", "_hostname": "H"},
+        {"Detection": {"Name": "BAU Cloud Data Transfer", "Criticality": "Low"},
+         "OSPath": "C:\\OneDrive.exe", "_client_id": "C.z", "_hostname": "H"}]}
+    g = correlate.assemble("c", [map_agentic(cd, run_id="a", hostnames={"C.z": "H"})], ["a"])
+    evs = [e for e in g.by_type("event") if "mft_detection" in e.flags]
+    assert len(evs) == 2
+    assert {e.severity for e in evs} == {"high", "low"}, "criticality -> severity faithfully"
+    assert not [f for f in g.findings if "MFT" in f.title], "MFT detections are context, not auto-findings"
+
+
+def test_applications_rmm_flagged():
+    cd = {"DetectRaptor.Windows.Detection.Applications": [
+        {"Category": "RMM - TeamViewer", "DisplayName": "TeamViewer", "_client_id": "C.z", "_hostname": "H"},
+        {"Category": "Data Transfer - OneDrive", "DisplayName": "OneDrive", "_client_id": "C.z", "_hostname": "H"}]}
+    ents, _ = map_agentic(cd, run_id="a", hostnames={"C.z": "H"})
+    evs = [e for e in ents if e.type == "event"]
+    rmm = [e for e in evs if "rmm_tool" in e.flags]
+    assert len(rmm) == 1 and "TeamViewer" in rmm[0].label, "RMM/remote tools flagged for lateral/persistence"
+    assert rmm[0].anomaly >= 20
+
+
 def test_hayabusa_sigma_level_drives_severity_and_findings():
     # Real Windows.Hayabusa.Rules columns: Title + Level. Level must drive the
     # event severity (not the anomaly bucket), and only high/critical surface as

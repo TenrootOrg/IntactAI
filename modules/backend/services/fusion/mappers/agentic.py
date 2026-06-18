@@ -353,6 +353,34 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 ev.severity = from_string(str(level))   # true SIGMA level, not anomaly-derived
                 ents.append(ev)
 
+            # ---- MFT detections -> criticality-typed event ----------------
+            # Detection={Name,Criticality}; OSPath is the file. Criticality is
+            # the rule author's rating (often benign BAU), so type + rank but do
+            # NOT auto-finding.
+            elif "mft" in an and ("detection" in an or "erasing" in an):
+                det = F.get(r, "Detection", default=None)
+                dname = (det.get("Name") if isinstance(det, dict) else det) or artifact
+                crit = (det.get("Criticality") if isinstance(det, dict) else None) or "low"
+                path = F.get(r, "OSPath", *F.PATH, default="")
+                ev = _ent(keys.event_id(run_id, f"{asset}:{path}", f"mft:{dname}"),
+                          "event", f"MFT: {str(dname)[:70]}", asset, run_id, loc,
+                          anomaly=_level_anomaly(crit), first=ts, artifact=artifact,
+                          flags=["mft_detection"], detection=str(dname),
+                          criticality=str(crit).lower(), path=str(path)[:200])
+                ev.severity = from_string(str(crit))
+                ents.append(ev)
+
+            # ---- application inventory detections (RMM / LOLRMM) ----------
+            elif ("application" in an and "detection" in an) or "lolrmm" in an:
+                cat = F.get(r, "Category", default="") or ""
+                name = F.get(r, "DisplayName", "Name", default=artifact)
+                rmm = any(k in str(cat).lower() for k in ("rmm", "remote", "lolrmm"))
+                ents.append(_ent(keys.event_id(run_id, f"{asset}:{name}", f"app:{cat}:{name}"),
+                                 "event", f"app: {str(name)[:50]} [{str(cat)[:30]}]", asset,
+                                 run_id, loc, anomaly=30 if rmm else 1, first=ts, artifact=artifact,
+                                 flags=(["rmm_tool"] if rmm else None), category=str(cat),
+                                 app=str(name), version=F.get(r, "DisplayVersion", default=None)))
+
             # ---- execution evidence -> event (+ file + hash ioc) ---------
             elif any(k in an for k in ("amcache", "prefetch", "userassist", "shimcache",
                                        "appcompat", "srum", "bam")):
