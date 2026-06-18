@@ -228,6 +228,31 @@ def test_four_module_integration():
     assert "Lateral Movement" in md
 
 
+def test_cloud_endpoint_correlation():
+    """A cloud user/IP that also appears on an endpoint must be ONE node
+    (the cross-domain pivot)."""
+    from services.fusion.mappers import map_cloud, map_agentic
+    agt = map_agentic({
+        "Windows.EventLogs.RDPAuth": [{"_client_id": "C.a", "_hostname": "WS01",
+                                       "User": "administrator", "Domain": "OMCDOM",
+                                       "TimeCreated": "2026-06-15T09:00:00Z"}],
+        "Windows.Network.NetstatEnriched": [{"_client_id": "C.a", "Pid": 1,
+                                             "RemoteAddr": "5.6.7.8"}]},
+        run_id="a", hostnames={"C.a": "WS01"})
+    cloud = map_cloud([{"rule_title": "Risky sign-in", "_severity": "high",
+                        "matched_record": {"userPrincipalName": "administrator@omcdom.com",
+                                           "ipAddress": "5.6.7.8"},
+                        "_timestamp": "2026-06-15T08:55:00", "mitre_attack": ["T1078"]}],
+                      run_id="az", provider="azure", account="tenant1")
+    g = correlate.assemble("c", [agt, cloud], ["a", "az"])
+    acct = [e for e in g.entities.values() if e.type == "account" and "administrator" in e.id]
+    assert acct and {"agentic", "cloud"} <= set(acct[0].sources), \
+        f"cloud UPN must bridge endpoint domain account, got {[(a.id, a.sources) for a in acct]}"
+    ip = g.entities[keys.ioc_id("ip", "5.6.7.8")]
+    assert {"agentic", "cloud"} <= set(ip.sources), "shared source-IP must merge cloud+endpoint"
+    assert any(f.title.startswith("AZURE:") for f in g.findings), "cloud SIGMA -> finding"
+
+
 def test_escalation_recommendation():
     # a host that looks malicious under broad collection (agentic only) -> escalate
     from services.fusion.mappers import map_agentic

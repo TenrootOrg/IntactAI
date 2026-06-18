@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from .schema import FusionGraph
 from . import correlate, llm_sim, keys
-from .mappers import map_memory, map_agentic, map_cve, map_timesketch
+from .mappers import map_memory, map_agentic, map_cve, map_timesketch, map_cloud
 
 CASE_TYPE = "case"
 
@@ -87,6 +87,17 @@ def _contribution_for_run(run, log=None):
                 asset = keys.asset_id(det.get("client_id") or rid)
                 return map_timesketch(evs, run_id=rid, asset=asset,
                                       hostname=det.get("client_name"))
+        if atype in ("aws_scan", "azure_scan"):
+            prov = "aws" if atype == "aws_scan" else "azure"
+            finds = det.get("findings") or det.get("sigma_findings")
+            if not finds:
+                fb = det.get("findings_by_severity")
+                if isinstance(fb, dict):
+                    finds = [x for v in fb.values() for x in (v or [])]
+            if finds:
+                return map_cloud(finds, run_id=rid, provider=prov,
+                                 account=det.get("account") or det.get("account_id")
+                                 or det.get("tenant_id"))
     except Exception as e:  # never let one run break the fuse
         if log:
             log(f"fuse: run {rid} ({atype}) skipped: {e}", "warning")

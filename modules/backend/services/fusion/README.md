@@ -16,7 +16,7 @@ pipeline is modified, no new database.
 | `severity.py` | one 5-level scale across memory(numeric)/SIGMA(str)/CVE(CVSS) |
 | `anomaly.py` | reuses `memory._row_severity` (bundled fallback) |
 | `mappers/fieldspec.py` | `get(row,*aliases)` — tames Velociraptor per-artifact naming (`Hostname/HostName/host`, `Pid/PID`…) |
-| `mappers/{memory,agentic,cve}.py` | raw module output → entities+relationships (agentic splits N clients by `_client_id`) |
+| `mappers/{memory,agentic,timesketch,cve,cloud}.py` | raw module output → entities+relationships (agentic splits N clients by `_client_id`; **cloud bridges UPN/source-IP to endpoint accounts** for cross-domain correlation) |
 | `correlate.py` | assemble + PID-reuse + cross-host (lateral movement) + derived findings (injected+C2, yara, persistence) + severity rollup |
 | `render.py` | 3 altitudes: macro / **infrastructural attack timeline** / per-asset; + IOC table + MITRE |
 | `llm_sim.py` | **LLM engine — SIMULATED** (real `call_llm` commented; deterministic narrator + grounded chat). One-line swap to live. |
@@ -50,10 +50,16 @@ Validated end-to-end on real VolWeb evidence-6 (isolates the MsMpEng + powershel
 RWX injections) and on a multi-host fixture (cross-module process merge, cross-host
 C2 IP + admin account → lateral movement, cross-host file hash, injected-process-with-C2).
 
+## Workflow fit (staged triage → escalation)
+Real flow: **Phase 1** = Velociraptor + AWS/Azure across everything → the report's
+**Escalation** section ranks hosts and flags which look extremely malicious. **Phase 2** =
+run memory + Timesketch only on those hosts → attach to the same Case → re-fuse enriches
+them. The Case is a living workspace (`attach {watch:true}` auto-fuses on completion).
+
 ## Roadmap
-- Phase 2: timesketch mapper (window-bounded ES projection); CVE live-fetch.
+- **Done:** memory/agentic/cve/timesketch/cloud(AWS+Azure) mappers; cross-module +
+  cross-host + cross-domain (cloud↔endpoint) correlation; triage/escalation; report+chat+UI.
 - Phase 3: `engagement/builder.py` consumes the case graph (retires the regex fusion).
-- Future: AWS/Azure mappers (`asset:cloud_*` keys, same engine) + cross-case ELK
-  knowledge base (threat-intel / baseline over all cases).
-- Launch-under-case (start a run *in* a case) + auto-fuse-on-completion (the
-  `watch_and_fuse` plumbing is already in place).
+- Wire the real LLM (one line in `llm_sim.py`); validate mappers on a live hunt.
+- Cross-case ELK knowledge base (threat-intel / baseline over all cases); launch-runs-
+  from-a-case (the `watch_and_fuse` plumbing is already in place).

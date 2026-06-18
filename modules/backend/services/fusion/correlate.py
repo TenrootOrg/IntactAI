@@ -311,6 +311,21 @@ def _derive_findings(g: FusionGraph) -> None:
                 entity_ids=[e.id], asset_ids=asset, sources=e.sources,
                 evidence=list(e.evidence), mitre=["T1543"], ts=e.first_seen, kind="single"))
 
+    # cloud SIGMA detections (AWS/Azure) -> findings; cross-domain corroboration
+    # (same account/IP also on an endpoint) is surfaced automatically via the
+    # global account/IOC keys + the cross-host pass.
+    for e in g.by_type("event"):
+        if not e.attrs.get("cloud_finding"):
+            continue
+        prov = e.attrs.get("provider", "cloud")
+        g.add_finding(Finding(
+            id=_fid("cloud", e.id), title=f"{prov.upper()}: {e.attrs.get('rule')}",
+            severity=e.severity, confidence="high",
+            summary=f"{prov.upper()} detection — {e.attrs.get('rule')}.",
+            entity_ids=[e.id], asset_ids=_assets_of(e), sources=e.sources,
+            evidence=list(e.evidence), mitre=list(e.attrs.get("mitre") or []),
+            ts=e.first_seen, kind="single"))
+
     # vulnerabilities
     for e in g.by_type("vuln"):
         g.add_finding(Finding(
