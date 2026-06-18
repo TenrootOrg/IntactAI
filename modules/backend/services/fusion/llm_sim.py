@@ -14,9 +14,63 @@ No graph/correlation code changes — only this boundary swaps.
 from __future__ import annotations
 
 import json
+import re
 
 from . import render, budget, severity as sev
 from .correlate import _assets_of, _host_label
+
+# FP-triage intent detection (deterministic, grounded).
+_DISP_BENIGN = ("benign", "false positive", "false-positive", "ignore", "expected",
+                "legitimate", "sanctioned", "is fine", "is our", "is the", "was the",
+                "was our", "backup", "not malicious", "authorized", "authorised", "approved",
+                "that's it", "that was it", "known good")
+_DISP_MAL = ("confirmed malicious", "is malicious", "real attack", "true positive",
+             "actually malicious")
+_GENERIC_TITLE_TOK = {"sigma", "host", "suspicious", "activity", "detection", "coordinated",
+                      "alert", "process", "service", "indicator", "account", "driver"}
+
+
+def _disp_attribution(q: str) -> str:
+    if "service account" in q:
+        return "service_account"
+    if "it admin" in q or "sysadmin" in q or " it " in q or "helpdesk" in q or "admin" in q:
+        return "it_admin"
+    if "employee" in q or "staff" in q or "user" in q:
+        return "employee"
+    if any(k in q for k in ("backup", "sanctioned", "approved tool", "our tool", "software")):
+        return "sanctioned_tool"
+    return "other"
+
+
+def detect_disposition(graph, question: str):
+    """If the message attributes activity as benign/IT/etc AND grounds to a real finding or
+    entity, return a disposition dict; else None (caller falls back to normal chat). Grounding
+    is mandatory — the same anti-hallucination discipline as the analyst pass."""
+    q = (question or "").lower()
+    verdict = ("malicious" if any(k in q for k in _DISP_MAL)
+               else ("benign" if any(k in q for k in _DISP_BENIGN) else None))
+    if not verdict:
+        return None
+    scope = ("environment" if any(k in q for k in ("environment", "everywhere", "always",
+                                                   "fleet", "all hosts", "every host"))
+             else "case")
+    target = label = None
+    for f in graph.findings:                       # ground to a finding by a distinctive token
+        toks = [w for w in re.findall(r"[a-z0-9]{4,}", f.title.lower())
+                if w not in _GENERIC_TITLE_TOK]
+        if any(t in q for t in toks):
+            target, label = f.id, f.title.split(" on ")[0]
+            break
+    if not target:                                 # or to an entity by its label
+        for e in graph.entities.values():
+            if e.type in ("ioc", "account", "process", "service", "module") and e.label \
+                    and len(str(e.label)) >= 4 and str(e.label).lower() in q:
+                target, label = e.id, e.label
+                break
+    if not target:
+        return None
+    return {"target": target, "label": label, "verdict": verdict,
+            "attribution": _disp_attribution(q), "scope": scope}
 
 SIMULATED = True   # default; per-call mode resolves from frontend_config (see _use_real)
 
@@ -212,9 +266,18 @@ def analyze(graph, *, window=None, min_severity="informational", run_id=None,
 
 
 def chat(graph, question: str, history=None, *, window=None, min_severity="informational",
-         run_id=None) -> str:
+         run_id=None, dispositions=None) -> str:
     """Grounded Q&A. Real path narrates the distilled graph; simulated = deterministic
-    retrieval. (Phase 4 swaps the real-path payload for a question-scoped subgraph.)"""
+    retrieval. Surfaces operator dispositions (what's been triaged as benign/IT)."""
+    q0 = (question or "").lower()
+    # "what's been marked benign / explained / dispositioned"
+    if dispositions and any(k in q0 for k in ("disposition", "marked benign", "what did i mark",
+                                              "triaged", "explained", "marked as", "benign list",
+                                              "what's benign", "whats benign")):
+        lines = [f"- **{x.get('target')}** → {x.get('verdict')} ({x.get('attribution')}"
+                 + (f", {x.get('reason')}" if x.get('reason') else "") + f") [{x.get('scope')}]"
+                 for x in dispositions]
+        return "Operator dispositions on this case:\n" + "\n".join(lines)
     if _use_real():
         try:
             # question-scoped subgraph (not the whole graph) — keeps chat tokens flat

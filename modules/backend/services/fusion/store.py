@@ -56,6 +56,46 @@ def capture_baseline(case_id, *, env_key=None) -> dict:
     return fp
 
 
+def set_disposition(case_id, target, *, verdict="benign", attribution="it_admin",
+                    reason="", scope="case", by="operator") -> dict:
+    """Record an operator triage on a finding/entity ('that PsExec was IT'), re-fuse so it
+    takes effect, and — when scope='environment' — fold it into the env baseline so it
+    suppresses across FUTURE cases too. Returns the disposition."""
+    ws = _ws()
+    d = get_case(case_id)
+    disp = {"target": target, "verdict": verdict, "attribution": attribution,
+            "reason": reason, "scope": scope, "by": by}
+    existing = [x for x in (d.get("dispositions") or []) if x.get("target") != target]
+    ws.update_run_status(case_id, "pending", details={"dispositions": existing + [disp]})
+    if scope == "environment" and verdict == "benign":
+        _promote_disposition_to_baseline(case_id, target)
+    fuse_case(case_id)
+    return disp
+
+
+def _promote_disposition_to_baseline(case_id, target) -> None:
+    """Fold a dispositioned finding's SIGMA title into the environment baseline fingerprint
+    so future cases on the same host subtract it (reuses the baseline mechanism)."""
+    g = fuse_case(case_id, _record=False)
+    titles = {f.title.split(" on ")[0] for f in g.findings
+              if f.id == target or target in (f.entity_ids or [])}
+    if not titles:
+        return
+    members = (get_case(case_id).get("member_run_ids") or [])
+    env = _env_key_from_members(members)
+    fp = load_baseline(env) or {"sigma_titles": [], "finding_titles": [], "service_paths": []}
+    fp["finding_titles"] = sorted(set(fp.get("finding_titles") or []) | titles)
+    fp["sigma_titles"] = sorted(set(fp.get("sigma_titles") or [])
+                                | {t.replace("SIGMA: ", "") for t in titles})
+    ws = _ws()
+    rid = ws.create_automation_run(automation_type=BASELINE_TYPE,
+                                   name=f"Baseline — {env}",
+                                   details={"env_key": env, "source_case": case_id,
+                                            "fingerprint": fp, "from_disposition": True})
+    ws.update_run_status(rid, "completed", details={"env_key": env, "source_case": case_id,
+                                                    "fingerprint": fp, "from_disposition": True})
+
+
 def load_baseline(env_key) -> dict | None:
     """Most recent baseline fingerprint for an environment, or None."""
     if not env_key:
@@ -187,7 +227,8 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     # subtract the environment baseline (if one was captured) so provisioning /
     # automation noise doesn't read as attack signal.
     baseline = None if d.get("is_baseline") else load_baseline(_env_key_from_members(members))
-    g = correlate.assemble(case_id, contributions, members, baseline=baseline, window=window)
+    g = correlate.assemble(case_id, contributions, members, baseline=baseline, window=window,
+                           dispositions=d.get("dispositions") or None)
     if not _record:
         return g
     # cross-case KB: enrich with prior sightings, then index this case (best-effort,
@@ -257,9 +298,21 @@ def load_graph(case_id) -> FusionGraph:
 def chat_case(case_id, question) -> str:
     d = get_case(case_id)
     g = load_graph(case_id)
-    ans = llm_sim.chat(g, question, history=d.get("chat_messages") or [],
-                       window=d.get("time_window") or None,
-                       min_severity=d.get("min_severity", "informational"), run_id=case_id)
+    # FP-triage via chat: if the message attributes activity to IT/employee/etc and grounds
+    # to a real finding/entity, record the disposition + re-fuse, then confirm.
+    disp = llm_sim.detect_disposition(g, question)
+    if disp:
+        set_disposition(case_id, disp["target"], verdict=disp["verdict"],
+                        attribution=disp["attribution"], reason=disp.get("reason", ""),
+                        scope=disp.get("scope", "case"))
+        ans = (f"Noted — marked **{disp['label']}** as {disp['verdict']} "
+               f"({disp['attribution']}). It's suppressed from active findings and won't "
+               f"drive host risk; re-fused. Say 'environment' to suppress it fleet-wide.")
+    else:
+        ans = llm_sim.chat(g, question, history=d.get("chat_messages") or [],
+                           window=d.get("time_window") or None,
+                           min_severity=d.get("min_severity", "informational"),
+                           run_id=case_id, dispositions=d.get("dispositions") or None)
     msgs = (d.get("chat_messages") or []) + [
         {"role": "user", "content": question}, {"role": "assistant", "content": ans}]
     _ws().update_run_status(case_id, "completed", details={"chat_messages": msgs})

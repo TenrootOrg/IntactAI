@@ -28,7 +28,8 @@ def _assets_of(e) -> list[str]:
     return list(dict.fromkeys(e.attrs.get("_assets") or []))
 
 
-def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None) -> FusionGraph:
+def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None,
+             dispositions=None) -> FusionGraph:
     g = FusionGraph(case_id=case_id)
     for rid in run_ids or []:
         g.note_run(rid)
@@ -45,10 +46,42 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _derive_findings(g, baseline=baseline, window=window)
     _coordinated_activity(g, window=window, baseline=baseline)
     _corroboration(g)
+    _apply_dispositions(g, dispositions)      # operator triage — before severity rollup
     _rollup_asset_severity(g)
     _score_assets(g)
     g.findings.sort(key=lambda f: (-sev.rank(f.severity), f.ts or "9999"))
     return g
+
+
+def _apply_dispositions(g: FusionGraph, dispositions) -> None:
+    """Operator triage — the human-in-the-loop FP killer. A finding whose id or a cited
+    entity is dispositioned `benign` (e.g. 'that PsExec was IT') is down-ranked to
+    informational + annotated with the attribution, so it stops driving host risk; never
+    silently for >=critical (surfaced anyway for review). `malicious` raises confidence."""
+    for d in (dispositions or []):
+        if not isinstance(d, dict):
+            continue
+        target = d.get("target")
+        if not target:
+            continue
+        verdict = (d.get("verdict") or "benign").lower()
+        attr = d.get("attribution") or "operator"
+        reason = d.get("reason") or ""
+        note = f" [operator: {attr}" + (f" — {reason}" if reason else "") + "]"
+        for f in g.findings:
+            if f.id != target and target not in (f.entity_ids or []):
+                continue
+            if verdict == "benign":
+                if sev.at_least(f.severity, "critical"):
+                    f.summary += note + " (≥critical — surfaced anyway for review)"
+                else:
+                    f.severity = "informational"
+                    f.confidence = "low"
+                    f.kind = "dispositioned"
+                    f.summary += note
+            elif verdict == "malicious":
+                f.confidence = "high"
+                f.summary += f" [operator-confirmed malicious{(' — ' + reason) if reason else ''}]"
 
 
 def _baseline_sigma_titles(baseline) -> set:
