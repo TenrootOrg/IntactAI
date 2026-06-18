@@ -50,9 +50,11 @@ def attachable_runs():
     runs = ws.get_all_automation_runs() if hasattr(ws, "get_all_automation_runs") else []
     out = []
     for r in runs:
-        if r.get("automation_type") in ("memory", "agentic", "timesketch", "cve_scan"):
+        if r.get("automation_type") in ("memory", "agentic", "timesketch", "cve_scan",
+                                        "aws_scan", "azure_scan"):
             d = r.get("details") or {}
-            host = d.get("client_name")
+            host = d.get("client_name") or d.get("account") or d.get("account_id") \
+                or d.get("tenant_id")
             if not host:
                 hn = d.get("hostnames")
                 if isinstance(hn, dict):
@@ -66,6 +68,15 @@ def attachable_runs():
     return jsonify({"runs": out[:200]})
 
 
+def _llm_enabled() -> bool:
+    try:
+        from services.agentic.analyzers import is_llm_configured
+        from services.memory.pipeline import _llm_config_from_runtime
+        return is_llm_configured(_llm_config_from_runtime())
+    except Exception:
+        return False
+
+
 @case_bp.route("/api/cases/<case_id>", methods=["GET"])
 def get_case(case_id):
     d = store.get_case(case_id)
@@ -76,7 +87,12 @@ def get_case(case_id):
                     "initial_access_estimate": d.get("initial_access_estimate"),
                     "min_severity": d.get("min_severity"),
                     "member_run_ids": d.get("member_run_ids") or [],
-                    "has_graph": bool(d.get("fusion_graph"))})
+                    "has_graph": bool(d.get("fusion_graph")),
+                    # null-guarded for cases created before these existed
+                    "analysis": d.get("analysis") or {},
+                    "dispositions": d.get("dispositions") or [],
+                    "token_ab": d.get("token_ab") or {},
+                    "llm_enabled": _llm_enabled()})
 
 
 @case_bp.route("/api/cases/<case_id>/attach", methods=["POST"])
@@ -162,3 +178,59 @@ def chat(case_id):
         return jsonify({"error": "question required"}), 400
     ans = store.chat_case(case_id, q)
     return jsonify({"case_id": case_id, "answer": ans})
+
+
+@case_bp.route("/api/cases/<case_id>/analysis", methods=["GET"])
+def analysis(case_id):
+    """The ADVISORY analyst pass (incident_groups + grounded hypotheses) — separate from
+    the deterministic findings, never a determination."""
+    d = store.get_case(case_id)
+    if not d:
+        return jsonify({"error": "case not found"}), 404
+    return jsonify({"case_id": case_id, "analysis": d.get("analysis") or {}})
+
+
+@case_bp.route("/api/cases/<case_id>/dispositions", methods=["GET"])
+def dispositions(case_id):
+    d = store.get_case(case_id)
+    if not d:
+        return jsonify({"error": "case not found"}), 404
+    return jsonify({"case_id": case_id, "dispositions": d.get("dispositions") or []})
+
+
+@case_bp.route("/api/cases/<case_id>/metrics", methods=["GET"])
+def metrics(case_id):
+    d = store.get_case(case_id)
+    if not d:
+        return jsonify({"error": "case not found"}), 404
+    return jsonify({"case_id": case_id, "token_ab": d.get("token_ab") or {},
+                    "llm_enabled": _llm_enabled()})
+
+
+@case_bp.route("/api/cases/<case_id>/disposition", methods=["POST"])
+def disposition(case_id):
+    """Operator triage: mark a finding/entity benign (IT/employee/etc) -> suppressed +
+    annotated on re-fuse. The structured path alongside the chat-driven one."""
+    d = request.get_json(silent=True) or {}
+    target = (d.get("target") or "").strip()
+    if not target:
+        return jsonify({"error": "target (finding_id or entity_id) required"}), 400
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    disp = store.set_disposition(
+        case_id, target, verdict=(d.get("verdict") or "benign"),
+        attribution=(d.get("attribution") or "it_admin"), reason=(d.get("reason") or ""),
+        scope=(d.get("scope") or "case"))
+    return jsonify({"case_id": case_id, "disposition": disp})
+
+
+@case_bp.route("/api/cases/<case_id>/baseline", methods=["POST"])
+def baseline(case_id):
+    """Snapshot this (clean) case as the environment baseline so its noise subtracts from
+    future cases on the same host(s)."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    fp = store.capture_baseline(case_id)
+    return jsonify({"case_id": case_id, "baseline": {
+        "sigma_titles": len(fp.get("sigma_titles") or []),
+        "host_role": fp.get("host_role")}})

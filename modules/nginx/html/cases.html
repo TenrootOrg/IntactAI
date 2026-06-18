@@ -133,28 +133,89 @@ function statline(g){
   const ents=Object.keys(g.entities||{}).length, fnd=(g.findings||[]).length,
     xh=(g.findings||[]).filter(f=>f.kind==='cross_host').length,
     rel=(g.relationships||[]).length, assets=(Object.values(g.entities||{})).filter(e=>e.type==='asset').length;
-  return `<div style="margin:6px 0 16px">
-    <span class="stat"><b>${assets}</b> hosts</span><span class="stat"><b>${ents}</b> entities</span>
+  return `<div style="margin:6px 0 16px">${statSpans(g)}</div>`;
+}
+function statSpans(g){
+  const ents=Object.keys(g.entities||{}).length, fnd=(g.findings||[]).length,
+    xh=(g.findings||[]).filter(f=>f.kind==='cross_host').length,
+    rel=(g.relationships||[]).length, assets=(Object.values(g.entities||{})).filter(e=>e.type==='asset').length;
+  return `<span class="stat"><b>${assets}</b> hosts</span><span class="stat"><b>${ents}</b> entities</span>
     <span class="stat"><b>${rel}</b> links</span><span class="stat"><b>${fnd}</b> findings</span>
-    <span class="stat"><b style="color:var(--acc)">${xh}</b> cross-host</span></div>`;
+    <span class="stat"><b style="color:var(--acc)">${xh}</b> cross-host</span>`;
 }
 
+let curInfo=null, curGraph=null;
+function tokenBadge(ab){
+  if(!ab||!ab.fusion_approx) return '';
+  return `<span class="stat" title="raw rows a normal LLM run would feed vs the distilled fusion payload">
+    <b style="color:var(--ok)">${ab.reduction_ratio||'?'}×</b> token cut
+    <span style="color:var(--muted)">(${(ab.raw_approx||0).toLocaleString()}→${(ab.fusion_approx||0).toLocaleString()})</span></span>`;
+}
 function render(info,md,g){
+  curInfo=info; curGraph=g;
+  const adv=info.analysis||{}, nadv=((adv.incident_groups||[]).length)+((adv.hypotheses||[]).length);
+  const ndisp=(info.dispositions||[]).length;
+  $('#llmbadge').textContent='LLM: '+(info.llm_enabled?'real':'simulated (no key)');
   $('#main').innerHTML=`
     <div class="row" style="justify-content:space-between">
       <div><h1 style="margin:0;font-size:20px">${info.name||info.case_id}</h1>
         <div style="color:var(--muted);font-size:12px">window ${(info.time_window||{}).start||'—'} → ${(info.time_window||{}).end||'—'} · sev ≥ ${info.min_severity} · IA ≈ ${info.initial_access_estimate||'?'}</div></div>
-      <div class="row"><button class="ghost" onclick="refuse('${info.case_id}')">↻ Re-fuse</button></div>
+      <div class="row">
+        <button class="ghost" onclick="captureBaseline('${info.case_id}')" title="snapshot this clean case so its noise subtracts from future cases">⚑ Baseline</button>
+        <button class="ghost" onclick="refuse('${info.case_id}')">↻ Re-fuse</button></div>
     </div>
-    ${statline(g)}
+    <div style="margin:6px 0 16px">${statSpans(g)}${tokenBadge(info.token_ab)}</div>
     <div class="tabs">
-      <div class="tab ${tab==='report'?'on':''}" onclick="tab='report';openCase('${info.case_id}')">Report</div>
-      <div class="tab ${tab==='chat'?'on':''}" onclick="tab='chat';openCase('${info.case_id}')">Chat</div>
+      <div class="tab ${tab==='report'?'on':''}" onclick="setTab('report')">Report</div>
+      <div class="tab ${tab==='advisory'?'on':''}" onclick="setTab('advisory')">⚠ Advisory${nadv?` (${nadv})`:''}</div>
+      <div class="tab ${tab==='timeline'?'on':''}" onclick="setTab('timeline')">Timeline</div>
+      <div class="tab ${tab==='dispositions'?'on':''}" onclick="setTab('dispositions')">Dispositions${ndisp?` (${ndisp})`:''}</div>
+      <div class="tab ${tab==='chat'?'on':''}" onclick="setTab('chat')">Chat</div>
     </div>
     <div id="tabc"></div>`;
-  if(tab==='report') $('#tabc').innerHTML=`<div class="md">${mdToHtml(md)}</div>`;
+  drawTab(md);
+}
+function setTab(t){tab=t;drawTab(window._md||'');}
+function drawTab(md){
+  if(md)window._md=md;
+  const info=curInfo;
+  if(tab==='report') $('#tabc').innerHTML=`<div class="md">${mdToHtml(window._md||'')}</div>`;
+  else if(tab==='advisory') renderAdvisory(info);
+  else if(tab==='timeline') renderTimeline(info.case_id);
+  else if(tab==='dispositions') renderDispositions(info);
   else renderChat(info.case_id);
 }
+function renderAdvisory(info){
+  const a=info.analysis||{}; const ig=a.incident_groups||[], hy=a.hypotheses||[];
+  if(a.simulated && !ig.length){$('#tabc').innerHTML=`<p style="color:var(--muted)">No LLM advisory analysis (simulated mode). Set <code>fusion_llm_mode=real</code> with an API key for incident-grouping + grounded hypotheses. The deterministic Report is authoritative.</p>`;return;}
+  let h=`<p style="color:var(--med)">⚠ Advisory — analyst verification required. NOT a determination; the deterministic findings in the Report are authoritative.</p>`;
+  h+=`<h2 style="text-transform:none;color:var(--tx)">Incident groups</h2>`;
+  h+= ig.length? ig.map(x=>`<div class="caseitem"><div class="nm">${escape(x.name||'group')}</div><div class="meta">${(x.finding_ids||[]).length} findings — ${escape(x.rationale||'')}</div></div>`).join('') : '<i style="color:var(--muted)">none</i>';
+  h+=`<h2 style="text-transform:none;color:var(--tx)">Hypotheses (for verification)</h2>`;
+  h+= hy.length? hy.map(x=>`<div class="caseitem"><div class="nm">${escape(x.title||'')} <span class="chip c-${(x.confidence||'low')==='high'?'high':'low'}">${x.confidence||'low'}</span></div><div class="meta">${escape(x.reason||'')} · cites ${(x.entity_ids||[]).length} entities</div></div>`).join('') : '<i style="color:var(--muted)">none</i>';
+  $('#tabc').innerHTML=h;
+}
+function renderTimeline(id){
+  $('#tabc').innerHTML='<i style="color:var(--muted)">loading timeline…</i>';
+  api('/api/cases/'+id+'/timeline').then(d=>{const t=d.timeline||[];
+    $('#tabc').innerHTML=t.length? '<div class="md"><ul>'+t.map(r=>`<li><code>${r.ts||'—'}</code> · <strong>${escape(r.host||'')}</strong> · [${escape(r.phase||'')}] ${escape(r.title||'')} <span class="chip c-${r.severity}">${r.severity}</span></li>`).join('')+'</ul></div>' : '<i style="color:var(--muted)">no time-anchored activity</i>';
+  });
+}
+function renderDispositions(info){
+  const ds=info.dispositions||[];
+  let h=`<p style="color:var(--muted)">Operator triage. Mark a finding/host benign in <b>Chat</b> ("the PsExec on DC01 was IT") or below — it's suppressed + remembered. Add "environment" to suppress fleet-wide.</p>`;
+  h+= ds.length? ds.map(d=>`<div class="caseitem"><div class="nm">${escape(d.target||'')} → <span class="chip ${d.verdict==='benign'?'c-low':'c-high'}">${d.verdict}</span> ${escape(d.attribution||'')}</div><div class="meta">${escape(d.reason||'')} · ${d.scope||'case'}</div></div>`).join('') : '<i style="color:var(--muted)">none yet</i>';
+  h+=`<div class="row" style="margin-top:12px"><input id="dtgt" placeholder="finding_id or entity_id" style="flex:1"/>
+    <select id="dattr" style="width:auto"><option value="it_admin">IT admin</option><option value="employee">employee</option><option value="sanctioned_tool">sanctioned tool</option><option value="service_account">service account</option></select>
+    <button onclick="markBenign('${info.case_id}')">Mark benign</button></div>`;
+  $('#tabc').innerHTML=h;
+}
+function markBenign(id){const t=$('#dtgt').value.trim(); if(!t){toast('target required');return;}
+  api('/api/cases/'+id+'/disposition',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({target:t,verdict:'benign',attribution:$('#dattr').value})})
+   .then(_=>{toast('marked benign + re-fused');openCase(id);});}
+function captureBaseline(id){toast('capturing baseline…');
+  api('/api/cases/'+id+'/baseline',{method:'POST'}).then(d=>toast('baseline captured: '+((d.baseline||{}).sigma_titles||0)+' titles'));}
 
 function refuse(id){toast('re-fusing…');api('/api/cases/'+id+'/fuse',{method:'POST'}).then(_=>{toast('re-fused');openCase(id);});}
 
