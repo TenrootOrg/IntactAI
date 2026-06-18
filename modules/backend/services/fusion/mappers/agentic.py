@@ -12,7 +12,7 @@ from __future__ import annotations
 from .. import keys
 from ..schema import Entity, Relationship, EvidenceRef
 from ..anomaly import score_row
-from ..severity import from_anomaly
+from ..severity import from_anomaly, from_string
 from . import fieldspec as F
 
 MODULE = "agentic"
@@ -100,6 +100,17 @@ def _ps_anomaly(line: str) -> int:
     return 25 if any(p in low for p in _PS_SUSPICIOUS) else 1
 
 
+# Hayabusa / SIGMA level -> anomaly. Kept in lock-step with severity.from_anomaly
+# buckets (>=100 crit, >=20 high, >=10 medium, >=1 low) so the anomaly-derived
+# severity AGREES with the explicit SIGMA level (correlate maxes the two).
+_HAYABUSA_ANOM = {"critical": 100, "crit": 100, "high": 50, "medium": 15, "med": 15,
+                  "low": 5, "informational": 0, "info": 0}
+
+
+def _level_anomaly(level) -> int:
+    return _HAYABUSA_ANOM.get(str(level or "").strip().lower(), 1)
+
+
 def _ent(eid, etype, label, asset, run_id, locator, *, anomaly=0, first=None,
          flags=None, **attrs):
     a = {"_assets": [asset]}
@@ -150,8 +161,49 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             ts = F.first_ts(r)
             loc = f"{artifact}/row={i}"
 
+            # ---- malfind -> injected process (memory injection via agentic) -
+            # Must precede the generic 'detection' catch-all, which would
+            # otherwise mis-type this rich injection signal as a plain event.
+            if "malfind" in an:
+                pid = F.get(r, *F.PID)
+                if pid is None:
+                    continue
+                name = F.get(r, *F.PROC_NAME) or "?"
+                ct = F.get(r, *F.CREATETIME)
+                prot = str(F.get(r, "Protection", default="") or "")
+                rwx = "x" in prot.lower() and "w" in prot.lower()
+                eid = keys.process_id(asset, pid, ct, name)
+                proc_by_asset_pid[(asset, str(pid))] = eid
+                ents.append(_ent(eid, "process", f"{name} ({pid})", asset, run_id, loc,
+                                 anomaly=100 if rwx else 60, first=keys.norm_ts(ct or ts),
+                                 flags=["injected"], pid=str(pid), name=name,
+                                 protection=prot,
+                                 address_range=F.get(r, "AddressRange", default=None),
+                                 createtime=keys.norm_ts(ct)))
+                yh = F.get(r, "YaraHit", "Rule", "rule", default=None)
+                rule = (yh.get("Rule") if isinstance(yh, dict) else yh) if yh else None
+                if rule:
+                    yid = keys.yarahit_id(asset, rule, pid)
+                    ents.append(_ent(yid, "yarahit", str(rule), asset, run_id, loc,
+                                     anomaly=50, first=ts, rule=rule))
+                    rels.append(Relationship(yid, eid, "matched", sources=[MODULE], ts=ts))
+
+            # ---- named pipes -> event (C2 / lateral movement signal) --------
+            elif "namedpipe" in an:
+                pipe = F.get(r, "PipeName", "Name", default=None)
+                if not pipe:
+                    continue
+                pid = F.get(r, "ProcPid", *F.PID)
+                eid = keys.event_id(run_id, f"{asset}:{pid}", f"pipe:{pipe}")
+                ents.append(_ent(eid, "event", f"named pipe: {str(pipe)[:60]}", asset, run_id,
+                                 loc, anomaly=score_row(r) or 10, first=ts, artifact=artifact,
+                                 pipe=str(pipe), proc_name=F.get(r, "ProcName", default=None)))
+                src = proc_by_asset_pid.get((asset, str(pid))) if pid is not None else None
+                if src:
+                    rels.append(Relationship(src, eid, "event_about", sources=[MODULE], ts=ts))
+
             # ---- processes -------------------------------------------------
-            if "pstree" in an or "pslist" in an or "processes" in an:
+            elif "pstree" in an or "pslist" in an or "processes" in an:
                 pid = F.get(r, *F.PID)
                 if pid is None:
                     continue
@@ -282,6 +334,25 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  start_mode=F.get(r, "StartMode", "StartType", default=None),
                                  state=F.get(r, *F.STATE)))
 
+            # ---- Hayabusa / SIGMA detections -> severity-typed event ------
+            # The richest agentic signal: Title is the detection, Level the
+            # severity. Generic handling discarded both, so SIGMA hits never
+            # became findings. Keep them as level-scored events flagged 'sigma'.
+            elif "hayabusa" in an or "sigma" in an:
+                title = F.get(r, "Title", "RuleTitle", "Rule", "Message", default=artifact)
+                level = F.get(r, "Level", "Severity", default="informational")
+                anom = _level_anomaly(level)
+                eid = keys.event_id(run_id, f"{F.get(r, 'EID', 'EventID', default='')}",
+                                    f"sigma:{title}:{F.get(r, 'RecordID', default=ts)}")
+                ev = _ent(eid, "event", f"SIGMA: {str(title)[:80]}", asset, run_id, loc,
+                          anomaly=anom, first=ts, artifact=artifact,
+                          flags=["sigma"], title=str(title), level=str(level).lower(),
+                          channel=F.get(r, "Channel", default=None),
+                          eid_num=F.get(r, "EID", "EventID", default=None),
+                          details=str(F.get(r, "Details", "Message", default=""))[:300])
+                ev.severity = from_string(str(level))   # true SIGMA level, not anomaly-derived
+                ents.append(ev)
+
             # ---- execution evidence -> event (+ file + hash ioc) ---------
             elif any(k in an for k in ("amcache", "prefetch", "userassist", "shimcache",
                                        "appcompat", "srum", "bam")):
@@ -291,7 +362,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  anomaly=score_row(r), first=ts, artifact=artifact))
 
             # ---- other high-signal detections -> event -------------------
-            elif any(k in an for k in ("evtx", "eventlog", "hayabusa", "binaryrename",
+            elif any(k in an for k in ("evtx", "eventlog", "binaryrename",
                                        "untrusted", "lnk", "detection")):
                 msg = F.get(r, "Message", "Description", "Name", *F.PATH, default=artifact)
                 eid = keys.event_id(run_id, ts, f"{an}:{msg}")

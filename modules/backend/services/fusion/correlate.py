@@ -312,6 +312,31 @@ def _derive_findings(g: FusionGraph) -> None:
                 entity_ids=[e.id], asset_ids=asset, sources=e.sources,
                 evidence=list(e.evidence), mitre=["T1543"], ts=e.first_seen, kind="single"))
 
+    # endpoint SIGMA detections (Hayabusa) -> findings, grouped by detection
+    # title per host so a rule firing N times is ONE finding (not N). Only
+    # high/critical surface as findings; medium/low stay as ranked events.
+    _sigma_groups: dict = {}
+    for e in g.by_type("event"):
+        if "sigma" not in e.flags:
+            continue
+        if not sev.at_least(e.severity, "high"):
+            continue
+        for a in _assets_of(e) or ["?"]:
+            _sigma_groups.setdefault((a, e.attrs.get("title") or e.label), []).append(e)
+    for (asset_id, title), evs in _sigma_groups.items():
+        host = _host_label(g, asset_id)
+        top = max(evs, key=lambda x: x.anomaly)
+        chans = sorted({x.attrs.get("channel") for x in evs if x.attrs.get("channel")})
+        g.add_finding(Finding(
+            id=_fid("sigma", f"{asset_id}:{title}"),
+            title=f"SIGMA: {title} on {host}",
+            severity=top.severity, confidence="medium",
+            summary=f"Hayabusa/SIGMA rule '{title}' matched {len(evs)}× on {host}"
+                    f"{(' (' + ', '.join(chans) + ')') if chans else ''}.",
+            entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
+            sources=top.sources, evidence=list(top.evidence), mitre=[],
+            ts=top.first_seen, kind="single"))
+
     # cloud SIGMA detections (AWS/Azure) -> findings; cross-domain corroboration
     # (same account/IP also on an endpoint) is surfaced automatically via the
     # global account/IOC keys + the cross-host pass.

@@ -397,6 +397,54 @@ def test_pslist_catalog_signed_store_app_not_flagged():
     assert keys.ioc_id("hash", "c" * 64) not in g.entities, "benign hash not flooded into graph"
 
 
+def test_hayabusa_sigma_level_drives_severity_and_findings():
+    # Real Windows.Hayabusa.Rules columns: Title + Level. Level must drive the
+    # event severity (not the anomaly bucket), and only high/critical surface as
+    # findings; same title firing N times collapses to one finding.
+    rows = [{"Title": "Important Windows Eventlog Cleared", "Level": "high", "EID": 104,
+             "Channel": "System", "RecordID": i, "Timestamp": "2026-05-19T08:00:00Z",
+             "_client_id": "C.z", "_hostname": "H"} for i in range(5)]
+    rows += [{"Title": "Net Conn (Sysmon Alert)", "Level": "medium", "EID": 3, "RecordID": 900,
+              "Channel": "Sysmon", "Timestamp": "2026-05-19T08:00:00Z",
+              "_client_id": "C.z", "_hostname": "H"}]
+    g = correlate.assemble("c", [map_agentic({"Windows.Hayabusa.Rules": rows},
+                                             run_id="a", hostnames={"C.z": "H"})], ["a"])
+    sigma = [e for e in g.by_type("event") if "sigma" in e.flags]
+    assert any(e.severity == "high" for e in sigma) and any(e.severity == "medium" for e in sigma), \
+        "level maps straight to severity"
+    sigma_finds = [f for f in g.findings if f.title.startswith("SIGMA:")]
+    assert len(sigma_finds) == 1, "5x high same-title -> ONE finding; medium -> none"
+    assert "5×" in sigma_finds[0].summary and sigma_finds[0].severity == "high"
+
+
+def test_agentic_malfind_to_injected_process():
+    # Windows.Detection.Malfind: RWX section in a process = injection. Must
+    # become a process with the 'injected' flag (not a generic event), so the
+    # injected-process finding fires from agentic data too.
+    cd = {"Windows.Detection.Malfind": [
+        {"Pid": 2396, "Name": "powershell_ise.exe", "CreateTime": "2026-05-19T08:14:20Z",
+         "Protection": "rwx", "AddressRange": "1a0000-1b0000", "YaraHit": {"Rule": "REDLEAVES"},
+         "_client_id": "C.z", "_hostname": "H"}]}
+    g = correlate.assemble("c", [map_agentic(cd, run_id="a", hostnames={"C.z": "H"})], ["a"])
+    proc = [e for e in g.by_type("process") if "injected" in e.flags]
+    assert proc and proc[0].anomaly >= 100, "RWX malfind hit -> injected process, critical anomaly"
+    assert g.by_type("yarahit"), "YaraHit inside the section -> yarahit entity"
+    assert any(r.kind == "matched" for r in g.relationships)
+
+
+def test_agentic_namedpipe_to_event_linked_to_process():
+    cd = {"Generic.System.Pstree": [
+              {"Pid": 800, "Ppid": 4, "Name": "rundll32.exe", "CreateTime": "2026-06-15T08:00:00Z",
+               "_client_id": "C.z", "_hostname": "H"}],
+          "DetectRaptor.Windows.Detection.NamedPipes": [
+              {"PipeName": "\\msagent_cc", "ProcPid": 800, "ProcName": "rundll32.exe",
+               "_client_id": "C.z", "_hostname": "H"}]}
+    g = correlate.assemble("c", [map_agentic(cd, run_id="a", hostnames={"C.z": "H"})], ["a"])
+    pipe_ev = [e for e in g.by_type("event") if "named pipe" in e.label]
+    assert pipe_ev, "named pipe -> event"
+    assert any(r.kind == "event_about" for r in g.relationships), "pipe event linked to its process"
+
+
 if __name__ == "__main__":
     g = build()
     print(f"=== GRAPH: {len(g.entities)} entities, {len(g.relationships)} rels, "
