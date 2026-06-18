@@ -66,6 +66,26 @@ CHAT_SYSTEM_PROMPT = (
     "source for each claim; never speculate beyond the data."
 )
 
+# The grounded analyst pass. Anti-hallucination discipline mirrors the agentic HARD
+# RULES (FACT vs INFERENCE, cite only what's in the graph). The deterministic findings
+# are authoritative; this pass is ADVISORY.
+ANALYST_SYSTEM_PROMPT = (
+    "You are a senior DFIR analyst reviewing a correlated incident graph (JSON) that "
+    "already contains deterministic findings. Do THREE things and return STRICT JSON:\n"
+    "1) incident_groups: cluster the EXISTING findings into named campaigns. Each group "
+    "cites finding_ids that appear in the graph's findings.\n"
+    "2) hypotheses: novel patterns the deterministic rules may have MISSED. Each MUST cite "
+    "entity_ids that appear in the graph's top_entities, a confidence (low|medium|high), "
+    "and a one-line reason. These are FOR ANALYST VERIFICATION — not confirmed.\n"
+    "3) (optional) note operator dispositions you were given.\n"
+    "HARD RULES: reference ONLY ids/values present in the provided graph. Do NOT invent "
+    "hosts, hashes, accounts, campaign names, or threat actors. If you cannot ground a "
+    "hypothesis in a real entity_id, omit it. Distinguish FACT (in the graph) from "
+    "INFERENCE (your reasoning). Output JSON only: "
+    '{"incident_groups":[{"name","finding_ids","rationale"}],'
+    '"hypotheses":[{"title","entity_ids","confidence","reason"}]}'
+)
+
 _SIM_TAG = ("\n\n---\n_Narrative by the in-graph narrator (simulated — deterministic). "
             "Set agentic.fusion_llm_mode='real' to use a live model._\n")
 
@@ -93,6 +113,102 @@ def generate_report(graph, *, window=None, min_severity="informational",
     md = render.report(graph, window=window, min_severity=min_severity,
                        initial_access=initial_access, case_name=case_name)
     return md + _SIM_TAG
+
+
+def _parse_json(text):
+    """Tolerant extraction of the first JSON object from an LLM response."""
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    s, e = text.find("{"), text.rfind("}")
+    if 0 <= s < e:
+        try:
+            return json.loads(text[s:e + 1])
+        except Exception:
+            return {}
+    return {}
+
+
+def _ground(analysis: dict, graph) -> dict:
+    """Deterministic post-filter: drop any cited id not present in the graph; reject a
+    hypothesis left citing zero real entities. Grounding is enforced, not trusted."""
+    valid_ent = set(graph.entities)
+    valid_find = {f.id for f in graph.findings}
+    groups = []
+    for grp in (analysis.get("incident_groups") or []):
+        if not isinstance(grp, dict):
+            continue
+        cited = [i for i in (grp.get("finding_ids") or []) if i in valid_find]
+        removed = [i for i in (grp.get("finding_ids") or []) if i not in valid_find]
+        if cited:
+            grp = dict(grp); grp["finding_ids"] = cited
+            if removed:
+                grp["ungrounded_refs_removed"] = removed
+            groups.append(grp)
+    hyps = []
+    for h in (analysis.get("hypotheses") or []):
+        if not isinstance(h, dict):
+            continue
+        cited = [i for i in (h.get("entity_ids") or []) if i in valid_ent]
+        removed = [i for i in (h.get("entity_ids") or []) if i not in valid_ent]
+        if not cited:
+            continue                              # zero real entities = hallucination, drop
+        h = dict(h); h["entity_ids"] = cited
+        h["status"] = "for_analyst_verification"
+        if removed:
+            h["ungrounded_refs_removed"] = removed
+        hyps.append(h)
+    return {"incident_groups": groups, "hypotheses": hyps}
+
+
+def _simulated_analysis(graph, findings) -> dict:
+    """Deterministic analyst output (no model): group findings by host, no hypotheses."""
+    by_host: dict = {}
+    for f in findings:
+        for a in (f.asset_ids or ["?"]):
+            by_host.setdefault(a, []).append(f.id)
+    groups = [{"name": f"Activity on {_host_label(graph, a)}", "finding_ids": fids,
+               "rationale": "deterministic grouping by host (simulated)."}
+              for a, fids in by_host.items() if fids]
+    return {"incident_groups": groups, "hypotheses": [], "simulated": True}
+
+
+def analyze(graph, *, window=None, min_severity="informational", run_id=None,
+            dispositions=None) -> dict:
+    """ADVISORY analyst pass over the distilled graph: incident-grouping + grounded
+    hypotheses. Reuses the agentic skills corpus for expertise. Never mutates
+    graph.findings. Real path is grounding-gated; simulated path is deterministic."""
+    _, findings = render.scope(graph, window=window, min_severity=min_severity)
+    if not _use_real():
+        return _simulated_analysis(graph, findings)
+    try:
+        payload = render.distilled(graph, window=window, min_severity=min_severity,
+                                   max_entities=budget.REPORT_MAX_ENTITIES,
+                                   budget_chars=budget.REPORT_BUDGET_CHARS)
+        # select the curated DFIR macro playbook FROM THE GRAPH (reuse agentic skills)
+        system = ANALYST_SYSTEM_PROMPT
+        try:
+            from services.agentic.skills import select_macro_skill, compose_system_prompt
+            from services.fusion.render import _sev_tally
+            mitre = [m for f in findings for m in (f.mitre or [])]
+            arts = sorted({e.attrs.get("artifact") for e in graph.entities.values()
+                           if e.attrs.get("artifact")})
+            macro = select_macro_skill(aggregated_mitre=mitre,
+                                       severity_counts=_sev_tally(findings),
+                                       artifact_names=arts)
+            if macro:
+                system = compose_system_prompt(ANALYST_SYSTEM_PROMPT, [macro])
+        except Exception:  # noqa: BLE001 — skills are enrichment, never required
+            pass
+        user = json.dumps(payload)
+        if dispositions:
+            user += ("\n\nOPERATOR DISPOSITIONS (already triaged — do not re-flag): "
+                     + json.dumps(dispositions))
+        raw = _real_llm(system, user, run_id=run_id)
+        return _ground(_parse_json(raw), graph)
+    except Exception:  # noqa: BLE001 — advisory only; never break a case
+        return _simulated_analysis(graph, findings)
 
 
 def chat(graph, question: str, history=None, *, window=None, min_severity="informational",

@@ -17,6 +17,7 @@ MODULES = [
     "services.fusion.tests.test_hash_bridge",
     "services.fusion.tests.test_auth_kerberos",
     "services.fusion.tests.test_blindspot_mappers",
+    "services.fusion.tests.test_analysis_contract",
     "services.fusion.tests.test_budget",
     "services.fusion.tests.test_llm_contract",
     "services.fusion.tests.test_baseline_fp",

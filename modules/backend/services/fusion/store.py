@@ -202,6 +202,10 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         g, window=window, min_severity=min_sev,
         initial_access=d.get("initial_access_estimate"),
         case_name=d.get("name", "Case"), run_id=case_id)
+    # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored SEPARATELY
+    # from the deterministic findings (never conflated); fed prior operator dispositions.
+    analysis = llm_sim.analyze(g, window=window, min_severity=min_sev, run_id=case_id,
+                               dispositions=d.get("dispositions") or None)
 
     # Token A/B: raw rows a normal run would feed vs the distilled payload the LLM
     # actually sees. raw_approx is necessarily an estimate (we never send raw), so
@@ -223,7 +227,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
 
     ws.update_run_status(case_id, "completed",
                          details={"fusion_graph": g.pruned().to_dict(), "report_md": report,
-                                  "token_ab": token_ab})
+                                  "token_ab": token_ab, "analysis": analysis})
     return g
 
 
