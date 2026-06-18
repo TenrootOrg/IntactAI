@@ -117,16 +117,31 @@ def report(graph, *, window=None, min_severity="informational", initial_access=N
     if story:
         out.append("> " + story + "\n")
 
+    # ---- Escalation (the Phase-1 triage hero) -------------------------
+    esc = sorted((a for a in assets if a.attrs.get("escalate")),
+                 key=lambda a: -(a.attrs.get("risk_score") or 0))
+    if esc:
+        out.append("## ⚠ Escalation — recommend deep-dive\n")
+        out.append("Malicious under broad collection (Velociraptor / cloud) but **no "
+                   "memory or Timesketch yet** — run those on these hosts next:\n")
+        for a in esc:
+            out.append(f"- **{a.label}** — {a.severity}, risk {a.attrs.get('risk_score', 0)} "
+                       f"· seen by [{', '.join(a.attrs.get('modules') or [])}]")
+        out.append("")
+
     # ---- 1. Macro / risk ----------------------------------------------
     out.append("## 1. Executive / Risk Overview\n")
     tally = _sev_tally(findings)
     out.append("**Findings by severity:** " + ", ".join(
         f"{tally[lv]} {lv}" for lv in reversed(sev.LEVELS) if tally[lv]) + "\n")
-    ranked_assets = sorted(assets, key=lambda a: -sev.rank(a.severity))
-    out.append("**Hosts (most → least severe):**")
+    ranked_assets = sorted(assets, key=lambda a: -(a.attrs.get("risk_score") or 0))
+    out.append("**Hosts (by risk):**")
     for a in ranked_assets:
         nf = sum(1 for f in findings if a.id in f.asset_ids)
-        out.append(f"- **{a.label}** — {a.severity} ({nf} findings)")
+        mods = ", ".join(a.attrs.get("modules") or [])
+        flag = "  🔺 escalate" if a.attrs.get("escalate") else ("  ✓ deep" if a.attrs.get("deep") else "")
+        out.append(f"- **{a.label}** — {a.severity} · risk {a.attrs.get('risk_score', 0)} · "
+                   f"{nf} findings · [{mods}]{flag}")
     xh = [f for f in findings if f.kind == "cross_host"]
     if xh:
         out.append(f"\n**Cross-host activity:** {len(xh)} finding(s) span multiple hosts "

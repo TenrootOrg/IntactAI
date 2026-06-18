@@ -76,6 +76,20 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
             if af:
                 return f"On **{a.label}**:\n" + "\n".join(cite(f) for f in af)
 
+    # triage / escalation — which hosts to deep-dive next
+    if any(k in q for k in ("escalate", "deep-dive", "deep dive", "what next", "run memory",
+                            "run timesketch", "which host", "investigate next", "prioriti")):
+        esc = sorted((a for a in graph.by_type("asset") if a.attrs.get("escalate")),
+                     key=lambda a: -(a.attrs.get("risk_score") or 0))
+        if esc:
+            return ("Deep-dive candidates (malicious under broad collection, no memory/"
+                    "Timesketch yet — run those next):\n"
+                    + "\n".join(f"- **{a.label}** — risk {a.attrs.get('risk_score', 0)}, "
+                                f"{a.severity}, seen by [{', '.join(a.attrs.get('modules') or [])}]"
+                                for a in esc))
+        return ("No escalation candidates — either nothing is high-risk, or the high-risk "
+                "hosts already have memory/Timesketch coverage.")
+
     # summary / overview / who is worst
     if any(k in q for k in ("summary", "overview", "brief", "tl;dr", "what happened")):
         hosts = sorted(graph.by_type("asset"), key=lambda a: -sev.rank(a.severity))

@@ -228,6 +228,22 @@ def test_four_module_integration():
     assert "Lateral Movement" in md
 
 
+def test_escalation_recommendation():
+    # a host that looks malicious under broad collection (agentic only) -> escalate
+    from services.fusion.mappers import map_agentic
+    agt = map_agentic({"Generic.System.Pstree": [
+        {"_client_id": "C.zz", "_hostname": "WS9", "Pid": 9, "Name": "powershell.exe",
+         "CommandLine": "powershell -enc bypass mimikatz", "CreateTime": "2026-06-15T08:00:00Z"}]},
+        run_id="a", hostnames={"C.zz": "WS9"})
+    g = correlate.assemble("c", [agt], ["a"])
+    a = g.entities[keys.asset_id("C.zz")]
+    assert a.attrs.get("escalate") is True, f"sev={a.severity} deep={a.attrs.get('deep')}"
+    assert a.attrs.get("modules") == ["agentic"]
+    md = llm_sim.generate_report(g, min_severity="low", case_name="X")
+    assert "Escalation" in md and "WS9" in md
+    assert "deep-dive" in llm_sim.chat(g, "what should I investigate next?", min_severity="low").lower()
+
+
 def test_ioc_classification_quality():
     from services.fusion.keys import classify_indicator as C
     assert C("evil.exe") is None and C("a.dll") is None        # filenames, not domains

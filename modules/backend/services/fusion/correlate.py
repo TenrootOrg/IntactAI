@@ -43,8 +43,33 @@ def assemble(case_id: str, contributions, run_ids) -> FusionGraph:
     _cross_host_findings(g)
     _derive_findings(g)
     _rollup_asset_severity(g)
+    _score_assets(g)
     g.findings.sort(key=lambda f: (-sev.rank(f.severity), f.ts or "9999"))
     return g
+
+
+_RISK_W = {"critical": 100, "high": 40, "medium": 10, "low": 2, "informational": 0}
+
+
+def _score_assets(g: FusionGraph) -> None:
+    """Per-host triage score + which modules have data on it — drives the
+    Phase-1 'which endpoints to deep-dive' recommendation. A high-risk host
+    seen ONLY by the broad tools (velociraptor/cloud), with no memory/
+    timesketch yet, is an escalation candidate."""
+    for a in g.by_type("asset"):
+        score = 0
+        for f in g.findings:
+            if a.id in f.asset_ids:
+                score += _RISK_W.get(f.severity, 0) * (2 if f.kind == "cross_host" else 1)
+        modules = set()
+        for e in g.entities.values():
+            if a.id in _assets_of(e):
+                modules.update(e.sources)
+        a.attrs["risk_score"] = score
+        a.attrs["modules"] = sorted(modules)
+        a.attrs["deep"] = bool({"memory", "timesketch"} & modules)
+        # escalate: looks malicious (high/critical) but only broad tooling has touched it
+        a.attrs["escalate"] = (sev.at_least(a.severity, "high") and not a.attrs["deep"])
 
 
 def _rollup_asset_severity(g: FusionGraph) -> None:
