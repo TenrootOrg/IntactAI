@@ -14,6 +14,7 @@ from ..schema import Entity, Relationship, EvidenceRef
 from ..anomaly import score_row
 from ..severity import from_anomaly, from_string
 from . import fieldspec as F
+from . import details as DET
 
 MODULE = "agentic"
 
@@ -146,6 +147,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
 
     assets_seen: dict[str, str] = {}
     proc_by_asset_pid: dict[tuple, str] = {}
+    sigma_events: list = []   # (event_id, asset, parsed_details, ts) for the linking pass
 
     for artifact, rows in (collected_data or {}).items():
         an = artifact.lower()
@@ -352,6 +354,9 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                           details=str(F.get(r, "Details", "Message", default=""))[:300])
                 ev.severity = from_string(str(level))   # true SIGMA level, not anomaly-derived
                 ents.append(ev)
+                # stash the FULL details (not the truncated attr) for the linking pass
+                sigma_events.append((eid, asset,
+                                     DET.parse_details(F.get(r, "Details", "Message", default="")), ts))
 
             # ---- MFT detections -> criticality-typed event ----------------
             # Detection={Name,Criticality}; OSPath is the file. Criticality is
@@ -423,5 +428,52 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             parent = proc_by_asset_pid.get((asset, str(ppid)))
             if child and parent and child != parent:
                 rels.append(Relationship(parent, child, "spawned", sources=[MODULE]))
+
+    # ---- detection -> entity linking (Hayabusa Details) -----------------
+    # Attach each SIGMA detection to the process/account/IOC it references, and
+    # RECONSTRUCT short-lived processes that exited before Pstree ran (their PIDs
+    # only survive in the detection's Details). Order-independent second pass.
+    _DET_CAP = 300                                   # per-asset flood guard
+    _det_made: dict = {}
+    # (A) create from_detection processes where Pstree missed them
+    for eid, asset, pd, ts in sigma_events:
+        p, pname = DET.pid(pd), DET.proc(pd)
+        if not p or not pname or (asset, p) in proc_by_asset_pid:
+            continue
+        if _det_made.get(asset, 0) >= _DET_CAP:
+            continue
+        name = pname.replace("\\", "/").rstrip("/").split("/")[-1] or pname
+        peid = keys.process_id(asset, p, ts, name)   # event ts = createtime fallback
+        proc_by_asset_pid[(asset, p)] = peid
+        _det_made[asset] = _det_made.get(asset, 0) + 1
+        ents.append(_ent(peid, "process", f"{name} ({p})", asset, run_id, "hayabusa/details",
+                         anomaly=0, first=keys.norm_ts(ts), flags=["from_detection"],
+                         pid=p, name=name, cmdline=DET.cmdline(pd), createtime=keys.norm_ts(ts)))
+    # (B) edges: event_about(proc), spawned(parent), executed(account), connected(ioc)
+    for eid, asset, pd, ts in sigma_events:
+        p = DET.pid(pd)
+        proc_eid = proc_by_asset_pid.get((asset, p)) if p else None
+        if proc_eid:
+            rels.append(Relationship(proc_eid, eid, "event_about", sources=[MODULE], ts=ts))
+            pp = DET.parentpid(pd)
+            parent = proc_by_asset_pid.get((asset, pp)) if pp else None
+            if parent and parent != proc_eid:
+                rels.append(Relationship(parent, proc_eid, "spawned", sources=[MODULE], ts=ts))
+        dom, usr = DET.user(pd)
+        if usr:
+            aeid, d, u = _account_eid(asset, dom, usr)
+            if aeid:
+                ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
+                                 "hayabusa/details", user=u, domain=d))
+                if proc_eid:
+                    rels.append(Relationship(aeid, proc_eid, "executed", sources=[MODULE], ts=ts))
+        tip = DET.tgtip(pd)
+        if tip and keys.classify_indicator(tip) == "ip":
+            # link only — anomaly 0 so benign cloud telemetry never auto-finds
+            iid = keys.ioc_id("ip", tip)
+            ents.append(_ent(iid, "ioc", str(tip), asset, run_id, "hayabusa/details",
+                             anomaly=0, ioc_kind="ip", first=ts, from_detection=True))
+            if proc_eid:
+                rels.append(Relationship(proc_eid, iid, "connected", sources=[MODULE], ts=ts))
 
     return ents, rels

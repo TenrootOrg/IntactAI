@@ -199,6 +199,10 @@ def _cross_host_findings(g: FusionGraph) -> None:
         assets = _assets_of(e)
         if len(assets) < 2 or e.type not in ("ioc", "account", "yarahit"):
             continue
+        # a pure-context indicator (anomaly 0 — e.g. benign cloud telemetry linked
+        # from a detection's Details) on N hosts is NOT lateral movement; skip it.
+        if e.type == "ioc" and e.anomaly < 1:
+            continue
         if "cross_host" not in e.flags:
             e.flags.append("cross_host")
         hosts = ", ".join(_host_label(g, a) for a in assets)
