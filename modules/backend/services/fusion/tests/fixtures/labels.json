@@ -20,5 +20,21 @@
       "Service Binary in Suspicious Folder",
       "Driver Load From A Temporary Directory"
     ]
+  },
+  "attack2": {
+    "_comment": "Richer purple-team: masquerade (cmd->svchost.exe), renamed PowerShell, service + scheduled-task persistence, DLL-sideload bait, recon. Tests the new detection-linking + blind-spot typing on REAL data.",
+    "baseline": "clean",
+    "window": {"start": "2026-06-18T17:50:00Z", "end": "2026-06-18T18:20:00Z"},
+    "expected_findings": [
+      {"title_contains": "Defender Alert", "min_severity": "critical"},
+      {"title_contains": "Masquerading As SvcHost", "min_severity": "high"},
+      {"title_contains": "Renamed PowerShell", "min_severity": "high"},
+      {"title_contains": "DLL sideloading", "min_severity": "medium"},
+      {"title_contains": "Coordinated suspicious activity", "min_severity": "high"}
+    ],
+    "must_not_fire_titles": [
+      "Important Log File Cleared",
+      "Important Windows Eventlog Cleared"
+    ]
   }
 }
