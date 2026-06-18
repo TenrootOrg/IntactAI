@@ -18,6 +18,7 @@ MODULES = [
     "services.fusion.tests.test_baseline_subtraction",
     "services.fusion.tests.test_chat_retrieval",
     "services.fusion.tests.test_kb_enrichment",
+    "services.fusion.tests.test_fuzz_mappers",
 ]
 
 
