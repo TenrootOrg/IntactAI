@@ -62,9 +62,15 @@
   .defbadge{font-size:10px;color:var(--med);border:1px solid var(--bd);border-radius:8px;padding:1px 6px}
   #wsbar{display:flex;align-items:center;gap:8px}
   #wsbar select{width:auto}
+  /* embed mode: hosted as the "Cases" tab inside the main app — drop our own
+     header (the app's top bar already shows the active workspace) and fill the frame */
+  html.embed header{display:none}
+  html.embed .wrap{height:100vh}
 </style>
 <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
 <script src="js/active-case.js?v=1"></script>
+<!-- set embed mode before body renders (no flash of the standalone header) -->
+<script>if(new URLSearchParams(location.search).get('embed')==='1')document.documentElement.classList.add('embed');</script>
 </head>
 <body>
 <header>
