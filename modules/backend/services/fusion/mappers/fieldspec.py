@@ -46,8 +46,10 @@ DOMAIN = ("Domain", "domain", "SubjectDomainName", "TargetDomainName", "DnsDomai
 PATH = ("Path", "FullPath", "FileName", "Filename", "path", "OSPath", "Source",
         "TargetPath", "LinkTarget")
 SHA256 = ("SHA256", "Sha256", "sha256", "Hash")
-LOCAL_ADDR = ("LocalAddr", "Laddr", "local_address", "LocalAddress", "Local")
-REMOTE_ADDR = ("RemoteAddr", "Raddr", "remote_address", "ForeignAddress",
+# Velociraptor flattens nested structs into dotted columns ("Raddr.IP"),
+# so the dotted forms are first-class aliases here.
+LOCAL_ADDR = ("LocalAddr", "Laddr.IP", "Laddr", "local_address", "LocalAddress", "Local")
+REMOTE_ADDR = ("RemoteAddr", "Raddr.IP", "Raddr", "remote_address", "ForeignAddress",
                "RemoteAddress", "Foreign", "Remote")
 STATE = ("State", "Status", "state")
 TIMES = ("CreateTime", "Created", "TimeCreated", "EventTime", "Timestamp",

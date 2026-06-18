@@ -20,6 +20,40 @@ MODULE = "agentic"
 _LOCAL_DOMAINS = {"", "nt authority", "workgroup", "builtin", "font driver host",
                   "window manager", "local service", "network service"}
 
+# Roots a legitimately-installed Windows service binary lives under. A service
+# pointing here is NOT suspicious on path alone (svchost, Defender's signed
+# ProgramData platform dir, .NET runtime, etc. — every Windows box has these).
+_TRUSTED_SVC_ROOTS = (
+    "c:\\windows\\system32", "c:\\windows\\syswow64", "c:\\windows\\servicing",
+    "c:\\windows\\microsoft.net", "c:\\windows\\winsxs",
+    "c:\\program files\\", "c:\\program files (x86)\\",
+    "c:\\programdata\\microsoft\\windows defender",
+)
+# User-writable / odd locations a service binary should never live in.
+_SUSPICIOUS_SVC_DIRS = ("\\temp\\", "\\tmp\\", "\\appdata\\", "\\users\\public",
+                        "\\downloads\\", "\\$recycle", "\\perflogs\\", "\\windows\\temp\\")
+# Interpreters/LOLBins are normal as svchost but abnormal as a service's own image.
+_SVC_INTERPRETERS = ("powershell", "cmd.exe", "wscript", "cscript", "mshta",
+                     "rundll32", "regsvr32", "msbuild", "installutil")
+
+
+def _service_anomaly(path: str) -> int:
+    """Path-aware service scoring — avoids flagging every svchost/Defender
+    service the generic process heuristic would. 0 = trusted, higher = odd."""
+    p = (str(path or "")).strip().lower().strip('"')
+    if not p:
+        return 5                                   # no path is mildly odd
+    if p.startswith("\\\\"):
+        return 50                                  # UNC-hosted service binary
+    if any(d in p for d in _SUSPICIOUS_SVC_DIRS):
+        return 50
+    if any(p.startswith(r) for r in _TRUSTED_SVC_ROOTS):
+        return 0
+    img = p.split("-k")[0]                          # the image, before svchost args
+    if "svchost.exe" not in img and any(t in img for t in _SVC_INTERPRETERS):
+        return 30                                  # interpreter as the service image
+    return 8                                        # unrecognised location — note, don't alarm
+
 
 def _ent(eid, etype, label, asset, run_id, locator, *, anomaly=0, first=None,
          flags=None, **attrs):
@@ -105,6 +139,18 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     rels.append(Relationship(aeid, asset, "authenticated", sources=[MODULE],
                                              ts=ts, attrs={"logon_type": F.get(r, "LogonType", default=None)}))
 
+            # ---- user inventory (Sys.Users / AllUsers / SAM) -> account ---
+            elif "sys.users" in an or "allusers" in an or "localusers" in an \
+                    or an.endswith(".users") or an.endswith(".sam"):
+                uname = F.get(r, "Name", *F.USER)
+                aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), uname)
+                if aeid:
+                    sid = F.get(r, "UUID", "Sid", "SID", "Uid", default=None)
+                    ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
+                                     run_id, loc, first=ts, user=u, domain=d, sid=sid,
+                                     home=F.get(r, "Directory", "HomeDir", "ProfilePath",
+                                                default=None)))
+
             # ---- network -> netconn + ioc --------------------------------
             elif "netstat" in an or "network" in an:
                 raddr = F.get(r, *F.REMOTE_ADDR)
@@ -145,11 +191,15 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                        "taskscheduler", "scheduled")):
                 sname = (F.get(r, "Name", "ServiceName", "TaskName", "Entry", "Rule", default=None)
                          or artifact)
+                binary = F.get(r, "AbsoluteExePath", "PathName", "Binary", "BinaryPath",
+                               "ImagePath", "Command", *F.PATH, default=None)
+                # path-aware scoring for real service rows; generic fallback otherwise
+                anom = _service_anomaly(binary) if "service" in an else score_row(r)
                 sid = keys.service_id(asset, sname)
                 ents.append(_ent(sid, "service", str(sname), asset, run_id, loc,
-                                 anomaly=score_row(r), first=ts, artifact=artifact,
-                                 binary=F.get(r, "Binary", "BinaryPath", "ImagePath", "Command",
-                                              *F.PATH, default=None)))
+                                 anomaly=anom, first=ts, artifact=artifact, binary=binary,
+                                 start_mode=F.get(r, "StartMode", "StartType", default=None),
+                                 state=F.get(r, *F.STATE)))
 
             # ---- execution evidence -> event (+ file + hash ioc) ---------
             elif any(k in an for k in ("amcache", "prefetch", "userassist", "shimcache",

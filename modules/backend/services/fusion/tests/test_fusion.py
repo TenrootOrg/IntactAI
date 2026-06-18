@@ -307,6 +307,56 @@ def test_pruned_keeps_signal():
             assert eid in p.entities, "finding-referenced entity dropped"
 
 
+# ---- regression: real Velociraptor schemas (validated on a live client) ---
+def test_netstat_dotted_raddr_yields_ioc_and_edge():
+    # Real Windows.Network.Netstat flattens structs to dotted columns. LISTEN
+    # sockets (Raddr.IP 0.0.0.0) must be skipped; ESTABLISHED externals become
+    # IOCs and link to their owning process by PID.
+    cd = {"Generic.System.Pstree": [
+              {"Pid": 900, "Ppid": 4, "Name": "evil.exe",
+               "CreateTime": "2026-06-15T08:00:00Z", "_client_id": "C.z", "_hostname": "H"}],
+          "Windows.Network.Netstat": [
+              {"Pid": 22, "Name": "sshd.exe", "Status": "LISTEN",
+               "Laddr.IP": "0.0.0.0", "Raddr.IP": "0.0.0.0", "_client_id": "C.z", "_hostname": "H"},
+              {"Pid": 900, "Name": "evil.exe", "Status": "ESTAB",
+               "Laddr.IP": "10.0.0.5", "Raddr.IP": "5.100.251.10", "_client_id": "C.z", "_hostname": "H"}]}
+    g = correlate.assemble("c", [map_agentic(cd, run_id="a", hostnames={"C.z": "H"})], ["a"])
+    iid = keys.ioc_id("ip", "5.100.251.10")
+    assert iid in g.entities, "external Raddr.IP must become an IOC"
+    assert not any(e.label == "0.0.0.0" for e in g.by_type("ioc")), "LISTEN 0.0.0.0 must be skipped"
+    assert any(r.kind == "connected" and r.dst == iid for r in g.relationships), \
+        "owning process must link to the remote IP"
+
+
+def test_sys_users_maps_to_accounts():
+    cd = {"Windows.Sys.Users": [
+        {"Name": "SYSTEM", "UUID": "S-1-5-18", "Directory": "%systemroot%\\system32\\config",
+         "_client_id": "C.z", "_hostname": "H"},
+        {"Name": "tenroot", "UUID": "S-1-5-21-1-2-3-1001", "Directory": "C:\\Users\\tenroot",
+         "_client_id": "C.z", "_hostname": "H"}]}
+    ents, _ = map_agentic(cd, run_id="a", hostnames={"C.z": "H"})
+    accts = [e for e in ents if e.type == "account"]
+    assert len(accts) == 2, "each user row must become an account"
+    assert any(a.attrs.get("sid") == "S-1-5-21-1-2-3-1001" for a in accts), "SID captured from UUID"
+
+
+def test_service_scoring_no_false_positive_but_catches_temp():
+    # Benign Windows services (svchost, Defender in ProgramData) must NOT flag;
+    # a service whose image lives in a user-writable temp dir MUST.
+    cd = {"Windows.System.Services": [
+        {"Name": "vmicvmsession", "AbsoluteExePath": "C:\\WINDOWS\\system32\\svchost.exe",
+         "_client_id": "C.z", "_hostname": "H"},
+        {"Name": "WinDefend", "_client_id": "C.z", "_hostname": "H",
+         "AbsoluteExePath": "C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\4.18\\MsMpEng.exe"},
+        {"Name": "EvilSvc", "AbsoluteExePath": "C:\\Users\\x\\AppData\\Local\\Temp\\evil.exe",
+         "_client_id": "C.z", "_hostname": "H"}]}
+    g = correlate.assemble("c", [map_agentic(cd, run_id="a", hostnames={"C.z": "H"})], ["a"])
+    svc_finds = {f.title for f in g.findings if "service" in f.title.lower()}
+    assert not any("vmicvmsession" in t or "WinDefend" in t for t in svc_finds), \
+        "trusted-root services must not be flagged"
+    assert any("EvilSvc" in t for t in svc_finds), "temp-dir service must be flagged"
+
+
 if __name__ == "__main__":
     g = build()
     print(f"=== GRAPH: {len(g.entities)} entities, {len(g.relationships)} rels, "

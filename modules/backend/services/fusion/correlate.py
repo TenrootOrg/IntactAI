@@ -298,9 +298,10 @@ def _derive_findings(g: FusionGraph) -> None:
                 evidence=list(e.evidence), mitre=["T1059", "T1566"],
                 ts=e.first_seen, kind="derived"))
 
-    # persistence — suspicious services
+    # persistence — suspicious services (path-aware score; trusted roots = 0,
+    # so this no longer flags every svchost/Defender service)
     for e in g.by_type("service"):
-        if e.anomaly >= 10:
+        if e.anomaly >= 20:
             asset = _assets_of(e)
             host = _host_label(g, asset[0]) if asset else "?"
             g.add_finding(Finding(
