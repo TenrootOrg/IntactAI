@@ -50,8 +50,7 @@ def _phase(f) -> str:
     return "Execution / Injection"
 
 
-def distilled(graph, *, window=None, min_severity="informational", max_entities=60):
-    """Compact, in-window, high-signal payload — what a real LLM would get."""
+def _distilled_at(graph, *, window, min_severity, max_entities):
     assets, findings = scope(graph, window=window, min_severity=min_severity)
     ents = sorted((e for e in graph.entities.values()
                    if e.type != "asset" and sev.at_least(e.severity, min_severity)
@@ -69,6 +68,25 @@ def distilled(graph, *, window=None, min_severity="informational", max_entities=
                           "anomaly": e.anomaly, "flags": e.flags,
                           "hosts": [_host_label(graph, x) for x in _assets_of(e)]} for e in ents],
     }
+
+
+def distilled(graph, *, window=None, min_severity="informational", max_entities=60,
+              budget_chars=None):
+    """Compact, in-window, high-signal payload — what a real LLM would get.
+
+    If ``budget_chars`` is set and the payload exceeds it, halve ``max_entities``
+    up to ``budget.MAX_STEPDOWNS`` times. Findings/assets/timeline are always kept
+    (they are the signal); only the ranked ``top_entities`` tail is trimmed."""
+    from . import budget as _b
+    p = _distilled_at(graph, window=window, min_severity=min_severity, max_entities=max_entities)
+    if budget_chars:
+        steps = 0
+        while _b.over_budget(p, budget_chars) and steps < _b.MAX_STEPDOWNS and max_entities > 5:
+            max_entities = max(5, max_entities // 2)
+            p = _distilled_at(graph, window=window, min_severity=min_severity,
+                              max_entities=max_entities)
+            steps += 1
+    return p
 
 
 # ------------------------------------------------------------------ report
@@ -103,8 +121,11 @@ def _sev_tally(findings):
     return t
 
 
-def report(graph, *, window=None, min_severity="informational", initial_access=None,
-           case_name="Case") -> str:
+def narrative_md(graph, *, window=None, min_severity="informational",
+                 initial_access=None, case_name="Case") -> str:
+    """The LLM-REPLACEABLE prose: title, scope, attack story. When the real LLM is
+    wired it regenerates exactly this from ``distilled()`` — the deterministic fact
+    tables in ``facts_md`` are never sent to it (so IOCs/CVEs can't be hallucinated)."""
     assets, findings = scope(graph, window=window, min_severity=min_severity)
     out: list[str] = []
     out.append(f"# Incident Case Report — {case_name}\n")
@@ -112,10 +133,17 @@ def report(graph, *, window=None, min_severity="informational", initial_access=N
     out.append(f"_Scope: {len(assets)} host(s), window {win}, initial access ≈ "
                f"{initial_access or 'unknown'}; severity ≥ {min_severity}. "
                f"{len(findings)} findings._\n")
-
     story = _attack_story(graph, findings, assets, initial_access)
     if story:
         out.append("> " + story + "\n")
+    return "\n".join(out)
+
+
+def facts_md(graph, *, window=None, min_severity="informational", initial_access=None) -> str:
+    """DETERMINISTIC fact tables — escalation, risk ranking, timeline, per-host,
+    IOC table, MITRE. Appended verbatim to every report; NEVER sent to the LLM."""
+    assets, findings = scope(graph, window=window, min_severity=min_severity)
+    out: list[str] = []
 
     # ---- Escalation (the Phase-1 triage hero) -------------------------
     esc = sorted((a for a in assets if a.attrs.get("escalate")),
@@ -216,6 +244,17 @@ def report(graph, *, window=None, min_severity="informational", initial_access=N
         out.append("")
 
     return "\n".join(out)
+
+
+def report(graph, *, window=None, min_severity="informational", initial_access=None,
+           case_name="Case") -> str:
+    """Full deterministic report = narrative prose + deterministic fact tables.
+    The real-LLM path (llm_sim) swaps ONLY ``narrative_md`` for an LLM call over
+    ``distilled()`` and re-appends ``facts_md`` verbatim."""
+    return (narrative_md(graph, window=window, min_severity=min_severity,
+                         initial_access=initial_access, case_name=case_name)
+            + "\n" + facts_md(graph, window=window, min_severity=min_severity,
+                              initial_access=initial_access))
 
 
 _MITRE_NAMES = {
