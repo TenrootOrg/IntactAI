@@ -246,6 +246,10 @@ velociraptor:
       - Generic.System.Pstree
       - Windows.Forensics.SAM
       - Windows.Forensics.Lnk
+      # Authentication / lateral movement (domain hosts) + Kerberos abuse
+      - Windows.EventLogs.LogonSessions
+      - Windows.EventLogs.CondensedAccountUsage
+      - Windows.Kerberos.GoldenTicketTriage
 
 # ============================================================================
 # Timesketch Blueprints

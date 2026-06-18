@@ -41,8 +41,9 @@ HOSTNAME = ("_hostname", "Hostname", "HostName", "host", "host_name", "Computer"
             "ComputerName", "Fqdn", "FQDN", "Machine")
 CLIENT_ID = ("_client_id", "ClientId", "client_id", "ClientID")
 USER = ("User", "UserName", "user", "Account", "AccountName", "SubjectUserName",
-        "TargetUserName", "userPrincipalName")
-DOMAIN = ("Domain", "domain", "SubjectDomainName", "TargetDomainName", "DnsDomain")
+        "TargetUserName", "userPrincipalName", "SourceUser")
+DOMAIN = ("Domain", "domain", "SubjectDomainName", "TargetDomainName", "DnsDomain",
+          "DomainName", "ConnectedDomain")
 PATH = ("Path", "FullPath", "FileName", "Filename", "path", "OSPath", "Source",
         "TargetPath", "LinkTarget")
 SHA256 = ("SHA256", "Sha256", "sha256", "Hash")
@@ -52,6 +53,12 @@ LOCAL_ADDR = ("LocalAddr", "Laddr.IP", "Laddr", "local_address", "LocalAddress",
 REMOTE_ADDR = ("RemoteAddr", "Raddr.IP", "Raddr", "remote_address", "ForeignAddress",
                "RemoteAddress", "Foreign", "Remote")
 STATE = ("State", "Status", "state")
+# Authentication / logon (4624/4625/4768/4769, LogonSessions, CondensedAccountUsage)
+IP_ADDR = ("IpAddress", "ClientAddress", "SourceIP", "SourceAddress")
+WORKSTATION = ("WorkstationName", "ClientName", "SourceHost", "Workstation")
+AUTH_PKG = ("AuthenticationPackageName", "AuthenticationPackage", "PackageName")
+LOGON_PROC = ("LogonProcessName", "LogonProcess")
+EVENT_ID = ("EventID", "EID", "Id", "event_id")
 TIMES = ("CreateTime", "Created", "TimeCreated", "EventTime", "Timestamp",
          "datetime", "Mtime", "LastWriteTime", "Last Updated", "LastUpdated",
          "Atime", "_ts")

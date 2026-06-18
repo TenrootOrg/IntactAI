@@ -410,6 +410,22 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
                 entity_ids=[e.id], asset_ids=asset, sources=e.sources,
                 evidence=list(e.evidence), mitre=["T1543"], ts=e.first_seen, kind="single"))
 
+    # suspicious Kerberos tickets (Golden/Silver-Ticket triage)
+    for e in g.by_type("event"):
+        if "kerberos_suspicious" not in e.flags:
+            continue
+        asset = _assets_of(e)
+        host = _host_label(g, asset[0]) if asset else "?"
+        g.add_finding(Finding(
+            id=_fid("krb", e.id),
+            title=f"Suspicious Kerberos {e.attrs.get('ticket_type', 'ticket')} on {host}",
+            severity="high", confidence="medium",
+            summary=f"Kerberos {e.attrs.get('ticket_type')} {e.attrs.get('client')} -> "
+                    f"{e.attrs.get('server')} on {host} flagged suspicious "
+                    f"(enctype {e.attrs.get('enctype')}) — possible Golden/Silver Ticket.",
+            entity_ids=[e.id], asset_ids=asset, sources=e.sources,
+            evidence=list(e.evidence), mitre=["T1558"], ts=e.first_seen, kind="single"))
+
     # endpoint SIGMA detections (Hayabusa) -> findings, grouped by detection
     # title per host so a rule firing N times is ONE finding (not N). Only
     # high/critical surface as findings; medium/low stay as ranked events.

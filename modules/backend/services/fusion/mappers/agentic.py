@@ -262,14 +262,42 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             # handled in finalize below
 
             # ---- logon / auth -> account authenticated to asset ----------
-            elif "logon" in an or "rdpauth" in an or "authentication" in an:
+            elif any(k in an for k in ("logon", "rdpauth", "rdpclient", "authentication",
+                                       "accountusage")):
                 user = F.get(r, *F.USER)
                 aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), user)
                 if aeid:
+                    lproc = str(F.get(r, *F.LOGON_PROC) or "").lower()
+                    # runas/psexec/WinRM logon mechanisms are lateral-movement signals —
+                    # a conservative bump, never an auto-finding (protects clean silence).
+                    bump = 5 if any(k in lproc for k in ("seclogon", "psexec", "winrm",
+                                                         "wsmprovhost", "wmiprvse")) else 0
                     ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
-                                     loc, anomaly=score_row(r), first=ts, user=u, domain=d))
-                    rels.append(Relationship(aeid, asset, "authenticated", sources=[MODULE],
-                                             ts=ts, attrs={"logon_type": F.get(r, "LogonType", default=None)}))
+                                     loc, anomaly=score_row(r) + bump, first=ts, user=u, domain=d))
+                    rels.append(Relationship(
+                        aeid, asset, "authenticated", sources=[MODULE], ts=ts,
+                        attrs={"logon_type": F.get(r, "LogonType", "LogonTypeDescription", default=None),
+                               "src_ip": F.get(r, *F.IP_ADDR, default=None),
+                               "workstation": F.get(r, *F.WORKSTATION, default=None),
+                               "auth_package": F.get(r, *F.AUTH_PKG, default=None),
+                               "logon_process": F.get(r, *F.LOGON_PROC, default=None),
+                               "event_id": F.get(r, *F.EVENT_ID, default=None),
+                               "dest_host": F.get(r, "DestinationHost", default=None)}))
+
+            # ---- Kerberos tickets -> suspicious-TGT event/finding ---------
+            elif "kerberos" in an or "goldenticket" in an:
+                susp = F.get(r, "Suspicious", default=None)
+                tt = F.get(r, "TicketType", default="ticket")
+                client = F.get(r, "Client", default="?")
+                server = F.get(r, "Server", default="?")
+                kid = keys.event_id(run_id, f"{asset}:{client}", f"krb:{tt}:{server}")
+                truthy = str(susp).strip().lower() in ("true", "1", "yes") or susp is True
+                ents.append(_ent(kid, "event", f"Kerberos {tt}: {client} -> {server}", asset,
+                                 run_id, loc, anomaly=60 if truthy else 1, first=ts,
+                                 artifact=artifact, flags=(["kerberos_suspicious"] if truthy
+                                                           else ["kerberos"]),
+                                 ticket_type=str(tt), client=str(client), server=str(server),
+                                 enctype=F.get(r, "EncType", default=None)))
 
             # ---- user inventory (Sys.Users / AllUsers / SAM) -> account ---
             elif "sys.users" in an or "allusers" in an or "localusers" in an \
