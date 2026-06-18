@@ -28,7 +28,7 @@ def _assets_of(e) -> list[str]:
     return list(dict.fromkeys(e.attrs.get("_assets") or []))
 
 
-def assemble(case_id: str, contributions, run_ids) -> FusionGraph:
+def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None) -> FusionGraph:
     g = FusionGraph(case_id=case_id)
     for rid in run_ids or []:
         g.note_run(rid)
@@ -41,11 +41,48 @@ def assemble(case_id: str, contributions, run_ids) -> FusionGraph:
     _rollup_severity(g)
     _flag_pid_reuse(g)
     _cross_host_findings(g)
-    _derive_findings(g)
+    _derive_findings(g, baseline=baseline, window=window)
+    _coordinated_activity(g, window=window, baseline=baseline)
+    _corroboration(g)
     _rollup_asset_severity(g)
     _score_assets(g)
     g.findings.sort(key=lambda f: (-sev.rank(f.severity), f.ts or "9999"))
     return g
+
+
+def _baseline_sigma_titles(baseline) -> set:
+    return set((baseline or {}).get("sigma_titles") or [])
+
+
+def baseline_fingerprint(g: FusionGraph) -> dict:
+    """A per-environment fingerprint of 'normal' from a known-CLEAN fused graph:
+    the SIGMA detection titles + finding titles + suspicious service binary paths
+    that fired with no attack present. Set-membership; subtracted in _derive_findings."""
+    sigma_titles = sorted({e.attrs.get("title") or e.label
+                           for e in g.by_type("event") if "sigma" in e.flags
+                           and (e.attrs.get("title") or e.label)})
+    finding_titles = sorted({f.title.split(" on ")[0] for f in g.findings})
+    svc_paths = sorted({(e.attrs.get("binary") or "").lower()
+                        for e in g.by_type("service") if e.attrs.get("binary")})
+    assets = list(g.by_type("asset"))
+    return {"sigma_titles": sigma_titles, "finding_titles": finding_titles,
+            "service_paths": svc_paths,
+            "host_role": assets[0].label if assets else "?"}
+
+
+def _corroboration(g: FusionGraph) -> None:
+    """Raise confidence on findings corroborated by >=2 distinct modules (the
+    entities they cite were observed by multiple collectors). Post-processing
+    only — never creates findings, so it cannot add false positives."""
+    for f in g.findings:
+        mods = set()
+        for eid in f.entity_ids:
+            e = g.entities.get(eid)
+            if e:
+                mods.update(e.sources)
+        if len(mods) >= 2 and f.confidence != "high":
+            f.confidence = "high"
+            f.summary += f" [corroborated by {len(mods)} modules: {', '.join(sorted(mods))}]"
 
 
 _RISK_W = {"critical": 100, "high": 40, "medium": 10, "low": 2, "informational": 0}
@@ -223,7 +260,8 @@ def _parent(g: FusionGraph, proc_id: str):
     return None
 
 
-def _derive_findings(g: FusionGraph) -> None:
+def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
+    base_titles = _baseline_sigma_titles(baseline)
     for e in list(g.entities.values()):
         if e.type != "process":
             continue
@@ -326,6 +364,11 @@ def _derive_findings(g: FusionGraph) -> None:
     for (asset_id, title), evs in _sigma_groups.items():
         host = _host_label(g, asset_id)
         top = max(evs, key=lambda x: x.anomaly)
+        # baseline-subtraction: a rule that ALSO fires on the clean environment is
+        # provisioning/automation noise, not signal — suppress it. Never suppress
+        # >=critical (a real critical that happens to match baseline still surfaces).
+        if title in base_titles and not sev.at_least(top.severity, "critical"):
+            continue
         chans = sorted({x.attrs.get("channel") for x in evs if x.attrs.get("channel")})
         g.add_finding(Finding(
             id=_fid("sigma", f"{asset_id}:{title}"),
@@ -361,6 +404,75 @@ def _derive_findings(g: FusionGraph) -> None:
                     f" (CVSS {e.attrs.get('cvss', '?')}).",
             entity_ids=[e.id], asset_ids=_assets_of(e), sources=e.sources,
             evidence=list(e.evidence), ts=e.first_seen, kind="single"))
+
+
+# ---------------------------------------------------- coordinated activity
+# Tactic buckets — a cheap, robust proxy for ATT&CK tactics when Hayabusa rows
+# lack consistent MITRE tags. Keyword match on the SIGMA detection title.
+_TACTIC_KW = {
+    "execution": ("powershell", "base64", "encoded", "scriptblock", "mshta",
+                  "rundll", "wscript", "cscript", "pwsh", "wmi exec"),
+    "persistence": ("autorun", "run key", "service install", "scheduled task",
+                    "new service", "registry run", "startup"),
+    "defense_evasion": ("log file cleared", "eventlog cleared", "insecure level",
+                        "disable", "bypass", "policies", "amsi", "etw"),
+    "discovery": ("discovery", "recon", "whoami", "net user", "nltest", "dclist",
+                  "enumerat", "reconnaissance"),
+    "c2_network": ("net conn", "download", "beacon", "webrequest", "remote thread",
+                   "dns query", "named pipe"),
+    "credential": ("lsass", "mimikatz", "credential", "ntds", "sam dump"),
+}
+# Tunable by calibrate.sweep — the bar for a coordinated-activity finding AFTER
+# baseline-subtraction (so these count only NON-baseline detections).
+COORD_MIN_TITLES = 3
+COORD_MIN_TACTICS = 2
+
+
+def _tactics_of(title: str) -> set:
+    t = (title or "").lower()
+    return {k for k, kws in _TACTIC_KW.items() if any(w in t for w in kws)}
+
+
+def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None:
+    """Within the operator's INCIDENT window, a burst of diverse medium+ SIGMA
+    detections that are NOT in the environment baseline is coordinated activity —
+    one high-confidence finding tying the scattered medium signals together.
+
+    Gated on BOTH a window (background outside it is excluded) AND baseline-
+    subtraction (provisioning noise removed) — the two levers that make this safe;
+    a global volume heuristic could not tell provisioning from attack (measured)."""
+    if not window or not (window.get("start") or window.get("end")):
+        return
+    base_titles = _baseline_sigma_titles(baseline)
+    per_asset: dict = {}
+    for e in g.by_type("event"):
+        if "sigma" not in e.flags or not sev.at_least(e.severity, "medium"):
+            continue
+        title = e.attrs.get("title") or e.label
+        if title in base_titles:                    # baseline noise — not signal
+            continue
+        if not in_window(e.first_seen, window):
+            continue
+        for a in _assets_of(e) or ["?"]:
+            per_asset.setdefault(a, []).append(e)
+    for asset_id, evs in per_asset.items():
+        titles = {e.attrs.get("title") or e.label for e in evs}
+        tactics = set().union(*[_tactics_of(e.attrs.get("title") or e.label) for e in evs]) \
+            if evs else set()
+        if len(titles) < COORD_MIN_TITLES or len(tactics) < COORD_MIN_TACTICS:
+            continue
+        host = _host_label(g, asset_id)
+        g.add_finding(Finding(
+            id=_fid("coord", asset_id), title=f"Coordinated suspicious activity on {host}",
+            severity="high", confidence="high",
+            summary=f"{len(titles)} distinct non-baseline SIGMA detections spanning "
+                    f"{len(tactics)} ATT&CK tactics ({', '.join(sorted(tactics))}) fired on "
+                    f"{host} inside the incident window — a coordinated-activity pattern, not "
+                    f"isolated noise. Detections: {', '.join(sorted(titles)[:8])}.",
+            entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
+            sources=["agentic"], evidence=list(evs[0].evidence),
+            mitre=[], ts=min((e.first_seen for e in evs if e.first_seen), default=None),
+            kind="derived"))
 
 
 # ------------------------------------------------------------------ scope

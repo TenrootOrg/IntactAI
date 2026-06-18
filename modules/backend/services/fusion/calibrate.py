@@ -37,20 +37,9 @@ def _contribution(fx: dict):
 
 
 def build_baseline(name: str) -> dict:
-    """A per-environment fingerprint of 'normal' from a clean fixture: the set of
-    SIGMA detection titles + finding titles + suspicious service binary paths that
-    fired with no attack present. Set-membership, no index needed."""
-    g = fuse(name)
-    sigma_titles = {e.attrs.get("title") or e.label
-                    for e in g.by_type("event") if "sigma" in e.flags}
-    finding_titles = {f.title.split(" on ")[0] for f in g.findings}
-    svc_paths = {(e.attrs.get("binary") or "").lower()
-                 for e in g.by_type("service") if e.attrs.get("binary")}
-    return {"sigma_titles": sorted(t for t in sigma_titles if t),
-            "finding_titles": sorted(finding_titles),
-            "service_paths": sorted(p for p in svc_paths if p),
-            "host_role": g.entities and next(iter(g.by_type("asset")), None)
-            and next(iter(g.by_type("asset"))).label or "?"}
+    """Per-environment 'normal' fingerprint from a clean fixture (delegates to the
+    shared correlate.baseline_fingerprint so calibration and production agree)."""
+    return correlate.baseline_fingerprint(fuse(name))
 
 
 def fuse(name: str, *, baseline=None, window=None):
@@ -121,8 +110,37 @@ def evaluate(verbose=True) -> dict:
     return out
 
 
+def sweep(titles_grid=(2, 3, 4, 5), tactics_grid=(2, 3)) -> list:
+    """Grid-sweep the coordinated-activity thresholds over the labeled fixtures and
+    report each config's macro-F1 — so the operating point is chosen against ground
+    truth (recognise the attack, zero FP on clean), not guessed."""
+    rows = []
+    saved = (correlate.COORD_MIN_TITLES, correlate.COORD_MIN_TACTICS)
+    try:
+        for mt in titles_grid:
+            for ta in tactics_grid:
+                correlate.COORD_MIN_TITLES, correlate.COORD_MIN_TACTICS = mt, ta
+                res = evaluate(verbose=False)
+                macro = sum(s["f1"] for s in res.values()) / max(len(res), 1)
+                clean_fp = res.get("clean", {}).get("fp", 0)
+                attack_r = res.get("attack", {}).get("recall", 0)
+                rows.append({"min_titles": mt, "min_tactics": ta, "macro_f1": round(macro, 3),
+                             "clean_fp": clean_fp, "attack_recall": attack_r})
+    finally:
+        correlate.COORD_MIN_TITLES, correlate.COORD_MIN_TACTICS = saved
+    rows.sort(key=lambda r: (-r["macro_f1"], r["clean_fp"], -r["min_titles"]))
+    print("min_titles min_tactics macro_f1 clean_fp attack_recall")
+    for r in rows:
+        print(f"    {r['min_titles']:>2}        {r['min_tactics']:>2}        "
+              f"{r['macro_f1']:>5}     {r['clean_fp']:>2}        {r['attack_recall']}")
+    return rows
+
+
 if __name__ == "__main__":
     import sys
     if "/app" not in sys.path:
         sys.path.insert(0, "/app")
     evaluate()
+    if "--sweep" in sys.argv:
+        print("\n=== threshold sweep ===")
+        sweep()

@@ -16,9 +16,9 @@ if "/app" not in sys.path:
 
 from services.fusion import calibrate, severity as sev  # noqa: E402
 
-# Flips to False at Phase 3 (baseline-subtraction). Until then these are EXPECTED
-# failures that document the measured coordinated-activity false-positive class.
-EXPECTED_RED = True
+# GREEN since Phase 3 (baseline-subtraction). The clean box now subtracts to silence
+# against its own baseline — the coordinated-activity false positive is regression-locked.
+EXPECTED_RED = False
 
 
 def test_clean_box_is_silent_against_its_own_baseline():
