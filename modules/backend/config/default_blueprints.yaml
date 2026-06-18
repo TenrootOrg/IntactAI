@@ -251,6 +251,48 @@ velociraptor:
       - Windows.EventLogs.CondensedAccountUsage
       - Windows.Kerberos.GoldenTicketTriage
 
+  - id: agentic_domain_sweep
+    name: "Velociraptor Agentic: Domain Sweep (cross-host)"
+    description: "Optimised for a hunt across MANY clients at once — maximises globally-keyed entities (domain accounts, IPs, hashes) so the fusion layer correlates lateral movement / shared C2 / shared binaries across hosts. Light enough to run fleet-wide (16 artifacts)."
+    is_default: true
+    settings:
+      hunt_expiry: 720
+      timeout: 3600
+      cpu_limit: 80          # leave headroom — this fans out to the whole fleet
+      flow_max_rows: 10000000
+      flow_max_logs: 1000000
+      flow_max_upload_mb: 51200
+    artifacts:
+      # Identity & lateral movement — the domain payoff. Domain accounts are keyed
+      # GLOBALLY, so the same account/logon across hosts surfaces as one cross-host
+      # lateral-movement finding (T1021/T1078); Kerberos triage flags Golden/Silver
+      # tickets (T1558).
+      - Windows.EventLogs.CondensedAccountUsage   # 4624/4625/4648/4672/4768/4769 + IpAddress/AuthPkg
+      - Windows.EventLogs.LogonSessions           # session start/end + LogonProcess + IpAddress
+      - Windows.EventLogs.RDPAuth                  # inbound RDP logons
+      - Windows.EventLogs.RDPClientActivity        # OUTBOUND RDP (source->dest = lateral origin)
+      - Windows.Kerberos.GoldenTicketTriage        # Golden/Silver ticket
+      - Windows.Sys.Users                          # local-account inventory (compare across hosts)
+      # Process graph + identity — Pslist carries Ppid (lineage) AND Hash + Authenticode
+      # + elevation, so it drives spawn edges, the unsigned-in-temp signal, and the
+      # cross-host hash bridge in one artifact.
+      - Windows.System.Pslist
+      # Detections (the keystone) — Hayabusa Details links each detection to the
+      # process/account/IOC it names; Malfind = injection; BinaryRename = masquerade +
+      # hashes; NamedPipes = C2 / lateral pipes.
+      - Windows.Hayabusa.Rules
+      - Windows.Detection.Malfind
+      - DetectRaptor.Windows.Detection.BinaryRename
+      - DetectRaptor.Windows.Detection.NamedPipes
+      # Network / C2 — shared infrastructure across hosts (cross-host IP/domain IOCs).
+      - Windows.Network.Netstat
+      - Windows.System.DNSCache
+      # Persistence — same suspicious service across hosts.
+      - Windows.System.Services
+      # Execution evidence + hash-bridge fuel (Amcache SHA1 collapses into Pslist SHA256).
+      - DetectRaptor.Windows.Detection.Amcache
+      - Windows.System.Powershell.PSReadline
+
 # ============================================================================
 # Timesketch Blueprints
 # ============================================================================
