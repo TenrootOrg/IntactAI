@@ -1,0 +1,24 @@
+{
+  "_comment": "Ground-truth labels for the real purple-team fixtures. The clean box is its OWN baseline (provisioning noise must subtract to silence). The attack must be recognized: Defender caught the masquerade/download chain (critical), and after baseline-subtraction the non-baseline medium chain (encoded-PS/autorun/named-pipe) surfaces as coordinated activity. Matching is finding-level.",
+  "clean": {
+    "baseline": "clean",
+    "window": null,
+    "expected_findings": [],
+    "must_not_fire_min_severity": "high",
+    "must_not_fire_titles": []
+  },
+  "attack": {
+    "baseline": "clean",
+    "window": {"start": "2026-06-18T12:45:00Z", "end": "2026-06-18T13:05:00Z"},
+    "expected_findings": [
+      {"title_contains": "Defender Alert", "min_severity": "critical"},
+      {"title_contains": "Coordinated suspicious activity", "min_severity": "high"}
+    ],
+    "must_not_fire_titles": [
+      "Important Log File Cleared",
+      "Important Windows Eventlog Cleared",
+      "Service Binary in Suspicious Folder",
+      "Driver Load From A Temporary Directory"
+    ]
+  }
+}
