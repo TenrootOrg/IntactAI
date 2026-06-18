@@ -1286,6 +1286,17 @@ def _log_llm_totals(run_id, log):
         print(f"[ANALYZER] llm totals log failed: {ex}", flush=True)
 
 
+def is_llm_configured(config) -> bool:
+    """True iff an LLM transport is usable (online has an api_key, or offline has a URL).
+    The single gate the pipeline consults to decide LLM vs COLLECT-ONLY. Mirrors the
+    fusion layer's llm_sim._use_real precedent so the whole product is LLM-optional."""
+    agentic_config = (config or {}).get('agentic', {}) or {}
+    mode = agentic_config.get('llm_mode', 'online')
+    if mode == 'online':
+        return bool((agentic_config.get('online_llm') or {}).get('api_key'))
+    return bool((agentic_config.get('offline_llm') or {}).get('url'))
+
+
 def validate_llm_config(config):
     """Validate LLM configuration before starting analysis.
 

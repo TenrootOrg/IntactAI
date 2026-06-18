@@ -105,31 +105,37 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         update_run_status(run_id, "running", progress=2)
         add_log_to_run(run_id, "[Pipeline] Starting Agentic Forensics pipeline", "info")
 
-        # Validate LLM configuration before starting
-        from services.agentic.analyzers import validate_llm_config, ping_llm
-        try:
-            validate_llm_config(llm_config)
-        except ValueError as e:
-            add_log_to_run(run_id, f"[Pipeline] Configuration error: {str(e)}", "error")
-            update_run_status(run_id, "failed", progress=0, error=str(e))
-            return
-
-        # Pre-flight LLM reachability — fail fast (within ~30s) if the
-        # endpoint is unreachable, instead of triggering Velociraptor
-        # collection and discovering the problem 2+ minutes later when
-        # the first artifact analysis crashes.
-        add_log_to_run(run_id, "[Pipeline] Pre-flight LLM reachability check...", "info")
-        try:
-            ping_llm(llm_config, timeout_seconds=30)
-            add_log_to_run(run_id, "[Pipeline] ✓ LLM is reachable", "success")
-        except Exception as e:
-            err = f"LLM unreachable before pipeline start: {str(e)[:200]}"
-            add_log_to_run(run_id, f"[Pipeline] ✗ {err}", "error")
+        # LLM is OPTIONAL. With a key/URL we validate + ping; without one we run
+        # COLLECT-ONLY (collect artifacts, skip per-artifact analysis + synthesis) so
+        # the product works with no LLM agreement. The run still completes + is fuseable.
+        from services.agentic.analyzers import (
+            validate_llm_config, ping_llm, is_llm_configured)
+        llm_enabled = is_llm_configured(llm_config)
+        if not llm_enabled:
             add_log_to_run(run_id,
-                "Check Settings > Agentic that your API key / Ollama URL is correct "
-                "and the endpoint is reachable from this host.", "error")
-            update_run_status(run_id, "failed", progress=0, error=err)
-            return
+                "[Pipeline] No LLM configured — running COLLECT-ONLY (no per-artifact "
+                "analysis / synthesis). The run completes and is fuseable in a Case.", "info")
+        else:
+            try:
+                validate_llm_config(llm_config)
+            except ValueError as e:
+                add_log_to_run(run_id, f"[Pipeline] Configuration error: {str(e)}", "error")
+                update_run_status(run_id, "failed", progress=0, error=str(e))
+                return
+            # Pre-flight LLM reachability — fail fast (within ~30s) if the endpoint is
+            # unreachable, instead of discovering it mid-collection.
+            add_log_to_run(run_id, "[Pipeline] Pre-flight LLM reachability check...", "info")
+            try:
+                ping_llm(llm_config, timeout_seconds=30)
+                add_log_to_run(run_id, "[Pipeline] ✓ LLM is reachable", "success")
+            except Exception as e:
+                err = f"LLM unreachable before pipeline start: {str(e)[:200]}"
+                add_log_to_run(run_id, f"[Pipeline] ✗ {err}", "error")
+                add_log_to_run(run_id,
+                    "Check Settings > Agentic that your API key / Ollama URL is correct "
+                    "and the endpoint is reachable from this host.", "error")
+                update_run_status(run_id, "failed", progress=0, error=err)
+                return
 
         # Store report_types in workflow details for UI
         workflow = get_workflow(run_id)
@@ -360,6 +366,17 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         multi_reports = None
         zip_path = None
 
+        # No LLM -> emit a collect-only report (the rows are persisted below for
+        # fusion). Skips the LLM report generators entirely.
+        if not llm_enabled:
+            add_log_to_run(run_id, f"[Report] Collect-only (no LLM): {total_rows} rows across "
+                           f"{len(all_results)} artifacts — fuse this run into a Case for "
+                           f"deterministic findings.", "info")
+            report_content = {'technical': _collect_only_report(
+                total_rows, all_results, len(client_ids))}
+            save_report_content(run_id, report_content)
+            report_types = []   # skip the LLM report block below
+
         if report_types:
             _update_phase(run_id, "generating_report", 85)
 
@@ -563,6 +580,22 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         unregister_cancel(run_id)
 
 
+def _collect_only_report(total_rows, all_results, client_count) -> str:
+    """Deterministic report when no LLM is configured — states what was collected and
+    points the operator at the Case fusion path for LLM-free findings."""
+    arts = ", ".join(sorted(all_results.keys())) if all_results else "(none)"
+    return (
+        "# Collection complete — no LLM analysis\n\n"
+        f"Collected **{total_rows} rows** across **{len(all_results)} artifact(s)** from "
+        f"**{client_count} client(s)**.\n\n"
+        "No LLM is configured, so per-artifact AI analysis and the narrative report were "
+        "skipped. **This run is fully usable**: fuse it into a **Case** (Cases UI / "
+        "`/api/cases`) to get deterministic, LLM-free correlation, findings, timeline, and "
+        "interactive chat.\n\n"
+        f"**Artifacts collected:** {arts}\n"
+    )
+
+
 def _update_phase(run_id, phase, progress):
     """Update workflow with current phase and progress"""
     workflow = get_workflow(run_id)
@@ -651,31 +684,37 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
             else:
                 add_log_to_run(run_id, f"[Pipeline] Time filter: {time_filter.get('start_datetime')} to {time_filter.get('end_datetime', 'now')}", "info")
 
-        # Validate LLM configuration before starting
-        from services.agentic.analyzers import validate_llm_config, ping_llm
-        try:
-            validate_llm_config(llm_config)
-        except ValueError as e:
-            add_log_to_run(run_id, f"[Pipeline] Configuration error: {str(e)}", "error")
-            update_run_status(run_id, "failed", progress=0, error=str(e))
-            return
-
-        # Pre-flight LLM reachability — fail fast (within ~30s) if the
-        # endpoint is unreachable, instead of triggering Velociraptor
-        # collection and discovering the problem 2+ minutes later when
-        # the first artifact analysis crashes.
-        add_log_to_run(run_id, "[Pipeline] Pre-flight LLM reachability check...", "info")
-        try:
-            ping_llm(llm_config, timeout_seconds=30)
-            add_log_to_run(run_id, "[Pipeline] ✓ LLM is reachable", "success")
-        except Exception as e:
-            err = f"LLM unreachable before pipeline start: {str(e)[:200]}"
-            add_log_to_run(run_id, f"[Pipeline] ✗ {err}", "error")
+        # LLM is OPTIONAL. With a key/URL we validate + ping; without one we run
+        # COLLECT-ONLY (collect artifacts, skip per-artifact analysis + synthesis) so
+        # the product works with no LLM agreement. The run still completes + is fuseable.
+        from services.agentic.analyzers import (
+            validate_llm_config, ping_llm, is_llm_configured)
+        llm_enabled = is_llm_configured(llm_config)
+        if not llm_enabled:
             add_log_to_run(run_id,
-                "Check Settings > Agentic that your API key / Ollama URL is correct "
-                "and the endpoint is reachable from this host.", "error")
-            update_run_status(run_id, "failed", progress=0, error=err)
-            return
+                "[Pipeline] No LLM configured — running COLLECT-ONLY (no per-artifact "
+                "analysis / synthesis). The run completes and is fuseable in a Case.", "info")
+        else:
+            try:
+                validate_llm_config(llm_config)
+            except ValueError as e:
+                add_log_to_run(run_id, f"[Pipeline] Configuration error: {str(e)}", "error")
+                update_run_status(run_id, "failed", progress=0, error=str(e))
+                return
+            # Pre-flight LLM reachability — fail fast (within ~30s) if the endpoint is
+            # unreachable, instead of discovering it mid-collection.
+            add_log_to_run(run_id, "[Pipeline] Pre-flight LLM reachability check...", "info")
+            try:
+                ping_llm(llm_config, timeout_seconds=30)
+                add_log_to_run(run_id, "[Pipeline] ✓ LLM is reachable", "success")
+            except Exception as e:
+                err = f"LLM unreachable before pipeline start: {str(e)[:200]}"
+                add_log_to_run(run_id, f"[Pipeline] ✗ {err}", "error")
+                add_log_to_run(run_id,
+                    "Check Settings > Agentic that your API key / Ollama URL is correct "
+                    "and the endpoint is reachable from this host.", "error")
+                update_run_status(run_id, "failed", progress=0, error=err)
+                return
 
         _update_phase(run_id, "fetching_results", 5)
 
@@ -806,23 +845,25 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         if cancel_event and cancel_event.is_set():
             return
 
-        add_log_to_run(run_id, "[LLM] Starting artifact analysis...", "info")
-        _update_phase(run_id, "analyzing", 20)
-        # Read master_prompt early (same pattern the main pipeline uses)
-        # so analyze_artifacts can thread it into every per-artifact call.
-        # Re-reads happen later for the report-generation step, but that's
-        # cheap (in-memory dict access on the workflow row).
-        _wf_for_mp = get_workflow(run_id)
-        _master_prompt_early = (((_wf_for_mp or {}).get('details') or {}).get('master_prompt')) or None
-        if _master_prompt_early:
-            add_log_to_run(run_id, "[Pipeline] Master prompt active — operator corrections will be applied to all LLM calls.", "info")
-        from services.agentic.analyzers import analyze_artifacts
-        artifact_summaries = analyze_artifacts(
-            run_id, all_results, llm_config, anonymizer,
-            master_prompt=_master_prompt_early,
-        )
-        add_log_to_run(run_id, f"[LLM] Analysis complete: {len(artifact_summaries)} artifact summaries", "success")
-        _update_phase(run_id, "analyzing", 80)
+        if llm_enabled:
+            add_log_to_run(run_id, "[LLM] Starting artifact analysis...", "info")
+            _update_phase(run_id, "analyzing", 20)
+            # Read master_prompt early (same pattern the main pipeline uses)
+            # so analyze_artifacts can thread it into every per-artifact call.
+            _wf_for_mp = get_workflow(run_id)
+            _master_prompt_early = (((_wf_for_mp or {}).get('details') or {}).get('master_prompt')) or None
+            if _master_prompt_early:
+                add_log_to_run(run_id, "[Pipeline] Master prompt active — operator corrections will be applied to all LLM calls.", "info")
+            from services.agentic.analyzers import analyze_artifacts
+            artifact_summaries = analyze_artifacts(
+                run_id, all_results, llm_config, anonymizer,
+                master_prompt=_master_prompt_early,
+            )
+            add_log_to_run(run_id, f"[LLM] Analysis complete: {len(artifact_summaries)} artifact summaries", "success")
+            _update_phase(run_id, "analyzing", 80)
+        else:
+            artifact_summaries = {}
+            add_log_to_run(run_id, "[Pipeline] Collect-only (no LLM) — skipping artifact analysis.", "info")
 
         # Log masking summary before report generation
         if anonymizer:
@@ -856,6 +897,13 @@ def run_agentic_on_existing(run_id, flow_id, hunt_id, llm_config,
         report_content = {}
         multi_reports = None
         zip_path = None
+        if not llm_enabled:
+            add_log_to_run(run_id, f"[Report] Collect-only (no LLM): {total_rows} rows across "
+                           f"{len(all_results)} artifacts — fuse into a Case for findings.", "info")
+            report_content = {'technical': _collect_only_report(
+                total_rows, all_results, len(client_info))}
+            save_report_content(run_id, report_content)
+            report_types = []
         if report_types:
             _update_phase(run_id, "generating_report", 85)
 

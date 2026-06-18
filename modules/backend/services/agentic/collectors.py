@@ -500,8 +500,12 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
 
     STREAMING OPTIMIZATION: LLM analysis starts immediately when an artifact's flow completes,
     rather than waiting for all collections to finish."""
-    from services.agentic.analyzers import analyze_single_artifact
+    from services.agentic.analyzers import analyze_single_artifact, is_llm_configured
     from services.agentic.utils import filter_row_by_time
+
+    # No LLM configured -> COLLECT-ONLY: collect/poll/merge/filter rows normally but
+    # skip every per-artifact LLM analysis. The run stays fuseable (rows are persisted).
+    _llm_on = is_llm_configured(llm_config)
 
     total_seconds = collection_minutes * 60
     elapsed = 0
@@ -574,6 +578,10 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
         if artifact_name in analyzed_artifacts:
             return
         analyzed_artifacts.add(artifact_name)
+        if not _llm_on:
+            # collect-only: mark analyzed (keeps completion accounting correct) but
+            # never call the LLM; rows already live in all_results for fusion.
+            return
         # In multi-client mode, rows from all clients for a given artifact
         # are merged into a single pan-client list (analyzers don't know or
         # care which client a row came from — that's by design). The

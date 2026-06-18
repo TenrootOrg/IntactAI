@@ -179,12 +179,17 @@ def start_memory_run():
     if mode not in _VALID_MODES:
         return jsonify({"error": f"invalid mode: {mode!r}"}), 400
 
-    # use_llm: operator-toggleable in the UI. Default True (keeps the
-    # existing behavior — full LLM analysis runs). False = skip Phase 5,
-    # emit an extraction-only markdown report.
+    # use_llm: operator-toggleable in the UI. When unset, default to whether an LLM
+    # is actually configured — so with NO key the run is extraction-only (Phase 5
+    # skipped) instead of failing. Explicit True/False from the UI still wins.
     use_llm = data.get("use_llm")
     if use_llm is None:
-        use_llm = True
+        try:
+            from services.agentic.analyzers import is_llm_configured
+            from services.memory.pipeline import _llm_config_from_runtime
+            use_llm = is_llm_configured(_llm_config_from_runtime())
+        except Exception:
+            use_llm = False
     use_llm = bool(use_llm)
 
     # Optional per-run timeout overrides (seconds). Each is honored in

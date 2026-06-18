@@ -20,6 +20,7 @@ MODULES = [
     "services.fusion.tests.test_analysis_contract",
     "services.fusion.tests.test_dispositions",
     "services.fusion.tests.test_validation_attack2",
+    "services.fusion.tests.test_no_llm",
     "services.fusion.tests.test_budget",
     "services.fusion.tests.test_llm_contract",
     "services.fusion.tests.test_baseline_fp",

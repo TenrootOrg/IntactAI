@@ -176,6 +176,27 @@ def _cve_contribution(rid, det):
     return [], []
 
 
+def _agentic_collected_data(rid, det):
+    """The real agentic pipeline persists rows to /data/downloads/<rid>/raw_results.json
+    (not into details, to avoid bloating the SQLite blob). Prefer details.collected_data
+    (test/legacy runs), else read the file. This is what makes a REAL agentic run fuseable."""
+    cd = det.get("collected_data")
+    if cd:
+        return cd
+    import json
+    import os
+    for base in (f"/app/data/downloads/{rid}", f"/data/downloads/{rid}",
+                 det.get("output_dir") or ""):
+        fp = os.path.join(base, "raw_results.json") if base else ""
+        if fp and os.path.exists(fp):
+            try:
+                with open(fp) as f:
+                    return json.load(f)
+            except Exception:
+                return {}
+    return {}
+
+
 def _contribution_for_run(run, log=None):
     atype, rid = run.get("automation_type"), run.get("run_id")
     det = run.get("details") or {}
@@ -183,7 +204,7 @@ def _contribution_for_run(run, log=None):
         if atype == "memory":
             return _memory_contribution(rid, det)
         if atype == "agentic":
-            return map_agentic(det.get("collected_data") or {}, run_id=rid,
+            return map_agentic(_agentic_collected_data(rid, det), run_id=rid,
                                hostnames=det.get("hostnames") or {})
         if atype == "cve_scan":
             return _cve_contribution(rid, det)
