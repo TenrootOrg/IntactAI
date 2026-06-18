@@ -89,6 +89,72 @@ def distilled(graph, *, window=None, min_severity="informational", max_entities=
     return p
 
 
+def _finding_dict(graph, f):
+    return {"title": f.title, "severity": f.severity, "confidence": f.confidence,
+            "hosts": [_host_label(graph, x) for x in f.asset_ids],
+            "summary": f.summary, "mitre": f.mitre, "kind": f.kind, "ts": f.ts}
+
+
+def _entity_dict(graph, e):
+    return {"type": e.type, "label": e.label, "severity": e.severity, "anomaly": e.anomaly,
+            "flags": e.flags, "hosts": [_host_label(graph, x) for x in _assets_of(e)]}
+
+
+def chat_subgraph(graph, question, *, window=None, min_severity="informational",
+                  max_entities=20):
+    """Question-scoped subgraph for chat — far smaller than the whole distilled graph,
+    so chat tokens stay flat as cases grow. ALWAYS includes every >=high finding
+    (escalation-critical facts must never be retrieved away), plus the findings and
+    entities lexically relevant to the question."""
+    q = (question or "").lower()
+    _, findings = scope(graph, window=window, min_severity=min_severity)
+    picked: dict = {f.id: f for f in findings if sev.at_least(f.severity, "high")}
+    rel_ents: list = []
+
+    for a in graph.by_type("asset"):                       # host mentioned
+        if a.label and a.label.lower() in q:
+            for f in findings:
+                if a.id in f.asset_ids:
+                    picked[f.id] = f
+    for e in graph.entities.values():                      # ioc/account/process mentioned
+        if e.type in ("ioc", "account", "process", "service") and e.label \
+                and e.label.lower() in q:
+            rel_ents.append(e)
+            for f in findings:
+                if e.id in f.entity_ids:
+                    picked[f.id] = f
+    intents = [(("lateral", "move", "pivot", "spread"), lambda f: f.kind == "cross_host"),
+               (("persist", "service", "autorun", "task"),
+                lambda f: any(k in f.title.lower() for k in ("service", "persist", "task"))),
+               (("vuln", "cve", "patch"), lambda f: f.title.lower().startswith("vulnerab")),
+               (("inject", "c2", "beacon"),
+                lambda f: any(k in f.title.lower() for k in ("inject", "c2", "indicator")))]
+    for kws, pred in intents:
+        if any(k in q for k in kws):
+            for f in findings:
+                if pred(f):
+                    picked[f.id] = f
+
+    # entity budget: question-relevant first, then high-anomaly fill
+    fill = sorted((e for e in graph.entities.values()
+                   if e.type != "asset" and sev.at_least(e.severity, "high")),
+                  key=lambda e: -e.anomaly)
+    ents, seen = [], set()
+    for e in rel_ents + fill:
+        if e.id not in seen:
+            seen.add(e.id); ents.append(e)
+        if len(ents) >= max_entities:
+            break
+    return {
+        "case_id": graph.case_id,
+        "question_scope": True,
+        "assets": [{"id": a.id, "host": a.label, "severity": a.severity}
+                   for a in graph.by_type("asset")],
+        "findings": [_finding_dict(graph, f) for f in picked.values()],
+        "top_entities": [_entity_dict(graph, e) for e in ents],
+    }
+
+
 # ------------------------------------------------------------------ report
 def _attack_story(graph, findings, assets, initial_access=None):
     """A short templated narrative (this is where a live LLM would shine)."""

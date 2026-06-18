@@ -101,9 +101,10 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
     retrieval. (Phase 4 swaps the real-path payload for a question-scoped subgraph.)"""
     if _use_real():
         try:
-            payload = render.distilled(graph, window=window, min_severity=min_severity,
-                                       max_entities=budget.CHAT_MAX_ENTITIES,
-                                       budget_chars=budget.CHAT_BUDGET_CHARS)
+            # question-scoped subgraph (not the whole graph) — keeps chat tokens flat
+            payload = render.chat_subgraph(graph, question, window=window,
+                                           min_severity=min_severity,
+                                           max_entities=budget.CHAT_MAX_ENTITIES)
             turns = "".join(f"{m.get('role')}: {m.get('content')}\n" for m in (history or []))
             return _real_llm(CHAT_SYSTEM_PROMPT,
                              f"{json.dumps(payload)}\n\n{turns}Q: {question}", run_id=run_id)
