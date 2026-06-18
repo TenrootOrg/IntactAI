@@ -85,6 +85,14 @@ def start_agentic_run():
 
         # Time filter options (handle null from frontend)
         time_filter = data.get('time_filter') or {}
+        # Case-window propagation: a run launched UNDER a Case can pass the case's
+        # {start,end} window directly; translate it to a time_filter so the incident
+        # window bounds collection (per-artifact DateAfter + post-collection filter) —
+        # cutting wasted rows/tokens. Explicit time_filter still wins.
+        tw = data.get('time_window') or {}
+        if not time_filter.get('enabled') and (tw.get('start') or tw.get('end')):
+            time_filter = {'enabled': True, 'mode': 'between',
+                           'start_datetime': tw.get('start'), 'end_datetime': tw.get('end')}
 
         # Severity filter (post-collection, before LLM)
         min_severity = data.get('min_severity', 'informational')

@@ -163,13 +163,49 @@ def calculate_time_range(time_filter_settings):
     return start_iso, end_iso
 
 
+# Artifacts that accept VQL time-bound params — pushing the incident window into
+# collection cuts row VOLUME at the source (e.g. Hayabusa parses fewer event-log
+# entries), which is the biggest token/cost lever for the heaviest artifact. Add a
+# one-line entry to extend; the post-collection Python time filter stays authoritative.
+ARTIFACT_TIME_PARAMS = {
+    "Windows.Hayabusa.Rules": {"date_after": "DateAfter", "date_before": "DateBefore",
+                               "rule_level": "RuleLevel"},
+}
+_SEV_TO_RULELEVEL = {"low": "low", "medium": "medium", "high": "high", "critical": "critical"}
+
+
+def _vql_quote(v) -> str:
+    return str(v).replace("\\", "\\\\").replace("'", "\\'")
+
+
 def build_artifact_spec(artifacts, settings=None):
-    """Build the artifact spec dict for collection.
-    Time filtering is done post-collection via filter_results_by_time().
-    Returns a VQL-compatible spec string."""
-    # All artifacts get empty spec - time/severity filtering done post-collection
-    spec_parts = [f'`{artifact}`=dict()' for artifact in artifacts]
-    return ", ".join(spec_parts)
+    """Build the per-artifact VQL spec string. Time-bound params (Hayabusa DateAfter/
+    DateBefore + RuleLevel) are AUTO-DERIVED from the run's time_filter + min_severity for
+    allow-listed artifacts; everything else stays `=dict()`. The post-collection Python
+    filter (filter_results_by_time) still runs and is authoritative — these params only
+    pre-trim volume. Operators can override via settings['artifact_params'][artifact]."""
+    settings = settings or {}
+    start_iso, end_iso = calculate_time_range(settings.get('time_filter'))
+    min_sev = (settings.get('min_severity') or 'informational')
+    overrides = settings.get('artifact_params') or {}
+    parts = []
+    for artifact in artifacts:
+        params = {}
+        spec = ARTIFACT_TIME_PARAMS.get(artifact)
+        if spec:
+            if start_iso and 'date_after' in spec:
+                params[spec['date_after']] = start_iso
+            if end_iso and 'date_before' in spec:
+                params[spec['date_before']] = end_iso
+            if 'rule_level' in spec and min_sev in _SEV_TO_RULELEVEL:
+                params[spec['rule_level']] = _SEV_TO_RULELEVEL[min_sev]
+        params.update(overrides.get(artifact) or {})        # operator escape-hatch wins
+        if params:
+            kv = ", ".join(f"{k}='{_vql_quote(v)}'" for k, v in params.items())
+            parts.append(f'`{artifact}`=dict({kv})')
+        else:
+            parts.append(f'`{artifact}`=dict()')
+    return ", ".join(parts)
 
 
 def get_client_hostnames(stub, client_ids):
