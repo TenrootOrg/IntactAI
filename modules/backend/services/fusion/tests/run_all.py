@@ -17,6 +17,7 @@ MODULES = [
     "services.fusion.tests.test_baseline_fp",
     "services.fusion.tests.test_baseline_subtraction",
     "services.fusion.tests.test_chat_retrieval",
+    "services.fusion.tests.test_kb_enrichment",
 ]
 
 

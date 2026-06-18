@@ -190,6 +190,14 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     g = correlate.assemble(case_id, contributions, members, baseline=baseline, window=window)
     if not _record:
         return g
+    # cross-case KB: enrich with prior sightings, then index this case (best-effort,
+    # degrades silently when ES is down — never a dependency).
+    try:
+        from . import kb
+        kb.enrich(g, current_case_id=case_id)
+        kb.index_case_entities(case_id, g)
+    except Exception:
+        pass
     report = llm_sim.generate_report(
         g, window=window, min_severity=min_sev,
         initial_access=d.get("initial_access_estimate"),
