@@ -410,6 +410,47 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
                 entity_ids=[e.id], asset_ids=asset, sources=e.sources,
                 evidence=list(e.evidence), mitre=["T1543"], ts=e.first_seen, kind="single"))
 
+    # BYOVD / malicious loaded driver (LolDrivers)
+    for e in g.by_type("module"):
+        if "byovd" not in e.flags and "loldriver" not in e.flags:
+            continue
+        asset = _assets_of(e)
+        host = _host_label(g, asset[0]) if asset else "?"
+        byovd = "byovd" in e.flags
+        g.add_finding(Finding(
+            id=_fid("loldrv", e.id),
+            title=f"{'Malicious' if byovd else 'Vulnerable'} driver — "
+                  f"{e.attrs.get('driver', e.label)} on {host}",
+            severity="high" if byovd else "medium", confidence="medium",
+            summary=f"{'Known-malicious' if byovd else 'Known-vulnerable (LOLDriver)'} driver "
+                    f"'{e.attrs.get('driver', e.label)}' on {host}"
+                    f"{' — bring-your-own-vulnerable-driver' if byovd else ''}.",
+            entity_ids=[e.id], asset_ids=asset, sources=e.sources,
+            evidence=list(e.evidence), mitre=["T1068"], ts=e.first_seen, kind="single"))
+
+    # DLL sideloading (HijackLibs) + bad bootloader (firmware)
+    for e in g.by_type("event"):
+        if "dll_hijack" in e.flags:
+            asset = _assets_of(e)
+            host = _host_label(g, asset[0]) if asset else "?"
+            g.add_finding(Finding(
+                id=_fid("hijack", e.id),
+                title=f"DLL sideloading — {e.attrs.get('dll', e.label)} on {host}",
+                severity=sev.from_anomaly(e.anomaly), confidence="medium",
+                summary=f"Possible DLL search-order hijack / sideload of "
+                        f"'{e.attrs.get('dll', e.label)}' on {host}.",
+                entity_ids=[e.id], asset_ids=asset, sources=e.sources,
+                evidence=list(e.evidence), mitre=["T1574"], ts=e.first_seen, kind="single"))
+        elif "firmware_bad" in e.flags:
+            asset = _assets_of(e)
+            host = _host_label(g, asset[0]) if asset else "?"
+            g.add_finding(Finding(
+                id=_fid("boot", e.id), title=f"Suspicious bootloader on {host}",
+                severity="high", confidence="medium",
+                summary=f"Bootloader '{e.label}' on {host} flagged (revoked/known-bad).",
+                entity_ids=[e.id], asset_ids=asset, sources=e.sources,
+                evidence=list(e.evidence), mitre=["T1542"], ts=e.first_seen, kind="single"))
+
     # suspicious Kerberos tickets (Golden/Silver-Ticket triage)
     for e in g.by_type("event"):
         if "kerberos_suspicious" not in e.flags:

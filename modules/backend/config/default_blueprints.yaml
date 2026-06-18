@@ -284,6 +284,13 @@ velociraptor:
       - Windows.Detection.Malfind
       - DetectRaptor.Windows.Detection.BinaryRename
       - DetectRaptor.Windows.Detection.NamedPipes
+      # BYOVD / sideloading / firmware — typed to driver/dll/firmware entities
+      # (T1068 / T1574 / T1542). 0 rows on a clean host; pure signal when they fire.
+      - DetectRaptor.Windows.Detection.LolDriversMalicious
+      - DetectRaptor.Windows.Detection.LolDriversVulnerable
+      - DetectRaptor.Windows.Detection.HijackLibsEnv
+      - DetectRaptor.Windows.Detection.HijackLibsMFT
+      - DetectRaptor.Windows.Detection.Bootloaders
       # Network / C2 — shared infrastructure across hosts (cross-host IP/domain IOCs).
       - Windows.Network.Netstat
       - Windows.System.DNSCache

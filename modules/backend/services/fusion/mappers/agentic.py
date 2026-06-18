@@ -407,7 +407,8 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             # Detection={Name,Criticality}; OSPath is the file. Criticality is
             # the rule author's rating (often benign BAU), so type + rank but do
             # NOT auto-finding.
-            elif "mft" in an and ("detection" in an or "erasing" in an):
+            elif "mft" in an and ("detection" in an or "erasing" in an) \
+                    and "hijacklib" not in an:
                 det = F.get(r, "Detection", default=None)
                 dname = (det.get("Name") if isinstance(det, dict) else det) or artifact
                 crit = (det.get("Criticality") if isinstance(det, dict) else None) or "low"
@@ -438,6 +439,44 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 eid = keys.event_id(run_id, ts, f"exec:{path}")
                 ents.append(_ent(eid, "event", f"executed: {str(path)[:60]}", asset, run_id, loc,
                                  anomaly=score_row(r), first=ts, artifact=artifact))
+
+            # ---- LolDrivers -> driver/module entity (BYOVD, T1068) --------
+            elif "loldriver" in an:
+                dname = F.get(r, "Name", "DriverName", *F.PATH, default=artifact)
+                malicious = "malicious" in an
+                sha = _sha256_of(r) or F.get(r, "SHA1", "Sha1", "sha1")
+                path = F.get(r, "OSPath", "EntryKey", "HivePath", *F.PATH, default=None)
+                mid = keys.module_id(asset, str(path or dname))
+                ents.append(_ent(mid, "module", f"driver: {str(dname)[:50]}", asset, run_id, loc,
+                                 anomaly=60 if malicious else 20, first=ts, artifact=artifact,
+                                 flags=(["loldriver", "byovd"] if malicious else ["loldriver"]),
+                                 driver=str(dname), path=str(path) if path else None,
+                                 full_hash=str(sha) if sha else None, **_hash_attrs(r)))
+
+            # ---- HijackLibs -> DLL-sideload event (T1574) -----------------
+            elif "hijacklib" in an:
+                info = F.get(r, "HijackLibInfo", default=None)
+                dll = (info.get("DllName") if isinstance(info, dict) else None) \
+                    or F.get(r, "DllName", "OSPath", "Name", *F.PATH, default=artifact)
+                historical = "mft" in an
+                eid = keys.event_id(run_id, f"{asset}:{dll}", f"hijacklib:{dll}")
+                ents.append(_ent(eid, "event", f"DLL sideload: {str(dll)[:50]}", asset, run_id,
+                                 loc, anomaly=15 if historical else 40, first=ts, artifact=artifact,
+                                 flags=["dll_hijack"], dll=str(dll),
+                                 path=F.get(r, "OSPath", "ExecutablePath", default=None),
+                                 hijack_type=(info.get("Type") if isinstance(info, dict) else
+                                              F.get(r, "Type", default=None))))
+
+            # ---- Bootloaders -> firmware event (verdict-gated finding) -----
+            elif "bootloader" in an:
+                name = F.get(r, "Name", "OSPath", *F.PATH, default=artifact)
+                bad = bool(F.get(r, "Revoked", "Malicious", "Vulnerable", "Detection",
+                                 default=None))
+                eid = keys.event_id(run_id, f"{asset}:{name}", f"boot:{name}")
+                ents.append(_ent(eid, "event", f"bootloader: {str(name)[:50]}", asset, run_id,
+                                 loc, anomaly=50 if bad else 1, first=ts, artifact=artifact,
+                                 flags=(["firmware", "firmware_bad"] if bad else ["firmware"]),
+                                 path=F.get(r, "OSPath", default=None)))
 
             # ---- other high-signal detections -> event -------------------
             elif any(k in an for k in ("evtx", "eventlog", "binaryrename",
