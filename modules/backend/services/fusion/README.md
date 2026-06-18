@@ -17,6 +17,7 @@ pipeline is modified, no new database.
 | `anomaly.py` | reuses `memory._row_severity` (bundled fallback) |
 | `mappers/fieldspec.py` | `get(row,*aliases)` — tames Velociraptor per-artifact naming (`Hostname/HostName/host`, `Pid/PID`…) |
 | `mappers/{memory,agentic,timesketch,cve,cloud}.py` | raw module output → entities+relationships (agentic splits N clients by `_client_id`; **cloud bridges UPN/source-IP to endpoint accounts** for cross-domain correlation) |
+| `mappers/details.py` | parses the Hayabusa `Details` KV string → links each SIGMA detection to the **process/account/IOC** it names + reconstructs short-lived processes Pstree missed |
 | `correlate.py` | assemble + PID-reuse + cross-host (lateral movement) + derived findings (injected+C2, yara, persistence) + severity rollup |
 | `render.py` | 3 altitudes: macro / **infrastructural attack timeline** / per-asset; + IOC table + MITRE |
 | `llm_sim.py` | **LLM engine — flag-gated** (`agentic.fusion_llm_mode` = `simulated`/`real`). Real path narrates `distilled()` via `call_llm(run_id=…)`; **any failure → deterministic fallback**. Default simulated. |
@@ -45,6 +46,23 @@ Set `agentic.fusion_llm_mode = "real"` in `frontend_config` (with an API key in
 `llm_metrics`, and the deterministic **fact tables (IOC/MITRE/per-host) are appended
 verbatim, never sent to the model** (so they can't be hallucinated and cost no tokens).
 Any LLM failure → deterministic fallback. Default `simulated` (airgap-safe, no key).
+
+## Cross-module / cross-host "combining" (the join points)
+Independent observations fuse through **global natural keys**, so correlation spans modules
+and hosts in one graph:
+- **Detection→entity linking** — Hayabusa `Details` (PID/Proc/User/ParentPID/Hashes/TgtIP)
+  attaches every SIGMA detection to the process/account/IOC it's about (no more orphan
+  events) and reconstructs short-lived attack processes that exited before Pstree ran.
+- **Cross-host indicators** — same `ip`/`domain`/`hash`/domain-`account`/`yarahit` on ≥2
+  hosts → a lateral-movement / shared-C2 finding. Benign anomaly-0 telemetry IPs are gated
+  out so cloud noise on many hosts never false-alarms.
+- **Hash-identity bridge** — the same binary keyed by SHA1 (Amcache), SHA256 (Pslist), or
+  MD5+SHA256 (Hayabusa) collapses to ONE node (`correlate._bridge_hashes`), so cross-host
+  binary tracking works regardless of which algo each source reported.
+- **Auth / Kerberos** — `LogonSessions`/`CondensedAccountUsage` enrich the
+  `account→authenticated→asset` edge (src_ip, auth_package, logon_process); domain accounts
+  are global-keyed → cross-host lateral movement; `Kerberos.GoldenTicketTriage` `Suspicious`
+  → a Golden/Silver-Ticket finding (T1558).
 
 ## Accuracy: baseline-subtraction (the FP fix)
 Provisioning/automation produces attack-like SIGMA bursts. Capture a known-clean
