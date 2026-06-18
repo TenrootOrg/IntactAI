@@ -19,8 +19,11 @@ pipeline is modified, no new database.
 | `mappers/{memory,agentic,timesketch,cve,cloud}.py` | raw module output → entities+relationships (agentic splits N clients by `_client_id`; **cloud bridges UPN/source-IP to endpoint accounts** for cross-domain correlation) |
 | `correlate.py` | assemble + PID-reuse + cross-host (lateral movement) + derived findings (injected+C2, yara, persistence) + severity rollup |
 | `render.py` | 3 altitudes: macro / **infrastructural attack timeline** / per-asset; + IOC table + MITRE |
-| `llm_sim.py` | **LLM engine — SIMULATED** (real `call_llm` commented; deterministic narrator + grounded chat). One-line swap to live. |
-| `store.py` | Case CRUD + `fuse_case` (fetch members → map → assemble → narrate) + `watch_and_fuse` |
+| `llm_sim.py` | **LLM engine — flag-gated** (`agentic.fusion_llm_mode` = `simulated`/`real`). Real path narrates `distilled()` via `call_llm(run_id=…)`; **any failure → deterministic fallback**. Default simulated. |
+| `budget.py` | tokenizer-free `chars/4` budget guard + per-altitude caps (report/chat); `distilled()` step-down |
+| `calibrate.py` | finding-level precision/recall/F1 scorer + `build_baseline` + threshold `sweep` over the labeled fixtures |
+| `kb.py` | cross-case knowledge base on the running ES — index case entities, enrich new cases with prior sightings (**enrichment-only**, degrades silently without ES) |
+| `store.py` | Case CRUD + `fuse_case` (map → assemble w/ baseline+window → narrate → token A/B → KB) + `capture_baseline`/`load_baseline` + `watch_and_fuse` |
 
 ## API (`routes/case_routes.py`)
 ```
@@ -36,16 +39,32 @@ GET  /api/cases/<id>/report|graph|timeline
 **UI:** `/<host>/cases.html` — pick runs, fuse, view report (chips/IOC/MITRE), chat.
 
 ## Use a real LLM
-In `llm_sim.py`: uncomment `_real_llm` (it wires `services.agentic.analyzers.call_llm` +
-`memory.pipeline._llm_config_from_runtime`), set the LLM config/API key, and route
-`generate_report`/`chat` through it. Nothing else changes — the graph/correlation are
-LLM-free; only this boundary swaps. Token deltas auto-record via `call_llm(run_id=…)`.
+Set `agentic.fusion_llm_mode = "real"` in `frontend_config` (with an API key in
+`agentic.online_llm`, or an offline Ollama). `generate_report`/`chat` then narrate the
+**distilled graph** via `call_llm(run_id=case_id)` — real token/cost land on the case's
+`llm_metrics`, and the deterministic **fact tables (IOC/MITRE/per-host) are appended
+verbatim, never sent to the model** (so they can't be hallucinated and cost no tokens).
+Any LLM failure → deterministic fallback. Default `simulated` (airgap-safe, no key).
+
+## Accuracy: baseline-subtraction (the FP fix)
+Provisioning/automation produces attack-like SIGMA bursts. Capture a known-clean
+snapshot as a baseline (`store.capture_baseline`, an `automation_type='fusion_baseline'`
+row keyed by host); `fuse_case` then **subtracts** baseline SIGMA titles before emitting
+findings (never suppresses ≥critical), and the window-scoped **coordinated-activity**
+finding counts only *non-baseline* detections. On the committed purple-team fixtures this
+takes macro-F1 from 0.143 → **1.0** (clean silent, simulated attack fully recognized).
 
 ## Test
 ```
-docker exec -w /app intact_backend python3 -m services.fusion.tests.test_fusion   # prints demo report + chat
-# (pytest if installed) python3 -m pytest services/fusion/tests/
+# full suite (8 modules, 62 tests) + calibration F1 — the fix-test loop:
+docker exec -w /app intact_backend python3 -m services.fusion.tests.run_all
+# calibration only (precision/recall on the real clean/attack fixtures) + threshold sweep:
+docker exec -w /app intact_backend python3 -m services.fusion.calibrate --sweep
 ```
+Suites: `test_fusion` (correlation), `test_budget` (token caps + facts-not-sent),
+`test_llm_contract` (mocked real-LLM seam), `test_baseline_fp` + `test_baseline_subtraction`
+(the FP regression gate), `test_chat_retrieval`, `test_kb_enrichment`, `test_fuzz_mappers`.
+Fixtures `tests/fixtures/{clean,attack}.json` are real Velociraptor purple-team data.
 Validated end-to-end on real VolWeb evidence-6 (isolates the MsMpEng + powershell_ise
 RWX injections) and on a multi-host fixture (cross-module process merge, cross-host
 C2 IP + admin account → lateral movement, cross-host file hash, injected-process-with-C2).
