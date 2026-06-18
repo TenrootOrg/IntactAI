@@ -20,7 +20,7 @@ pipeline is modified, no new database.
 | `mappers/details.py` | parses the Hayabusa `Details` KV string → links each SIGMA detection to the **process/account/IOC** it names + reconstructs short-lived processes Pstree missed |
 | `correlate.py` | assemble + PID-reuse + cross-host (lateral movement) + derived findings (injected+C2, yara, persistence) + severity rollup |
 | `render.py` | 3 altitudes: macro / **infrastructural attack timeline** / per-asset; + IOC table + MITRE |
-| `llm_sim.py` | **LLM engine — flag-gated** (`agentic.fusion_llm_mode` = `simulated`/`real`). Real path narrates `distilled()` via `call_llm(run_id=…)`; **any failure → deterministic fallback**. Default simulated. |
+| `llm_sim.py` | **LLM engine — flag-gated** (`agentic.fusion_llm_mode`). `generate_report` (narrate) + `analyze` (**grounded, skill-guided analyst pass**: incident-grouping + advisory hypotheses, `_ground()`-gated, never auto-findings) + `chat` (+ `detect_disposition` FP-triage). Any failure → deterministic fallback. |
 | `budget.py` | tokenizer-free `chars/4` budget guard + per-altitude caps (report/chat); `distilled()` step-down |
 | `calibrate.py` | finding-level precision/recall/F1 scorer + `build_baseline` + threshold `sweep` over the labeled fixtures |
 | `kb.py` | cross-case knowledge base on the running ES — index case entities, enrich new cases with prior sightings (**enrichment-only**, degrades silently without ES) |
@@ -63,6 +63,29 @@ and hosts in one graph:
   `account→authenticated→asset` edge (src_ip, auth_package, logon_process); domain accounts
   are global-keyed → cross-host lateral movement; `Kerberos.GoldenTicketTriage` `Suspicious`
   → a Golden/Silver-Ticket finding (T1558).
+
+## The layered detection architecture (signatures + ontology + LLM)
+Three paradigms combined, not competing:
+- **Signatures** (Hayabusa SIGMA + DetectRaptor) = high-precision sensors for known
+  techniques. Detection-linking (`mappers/details.py`) makes them self-contextualizing; the
+  blind-spot detections (LolDrivers→BYOVD T1068, HijackLibs→DLL-hijack T1574, Bootloaders)
+  are typed to driver/dll/firmware entities + findings.
+- **Ontology** (`correlate`) = deterministic cross-host/cross-module correlation. The
+  precision core; produces detections signatures can't (cross-host campaigns, coordinated
+  activity). **Never mutated by the LLM.**
+- **Grounded LLM** (`llm_sim.analyze`) = an ADVISORY pass over the *distilled* graph that adds
+  the three things rules+ontology can't — incident-grouping, grounded novel-pattern
+  *hypotheses* (`for_analyst_verification`, `_ground()`-gated so a hypothesis citing a
+  non-existent entity is rejected), and triage — reusing the curated agentic skills/playbooks.
+  Stored in `details["analysis"]`, separate from `findings`.
+
+## Interactive FP-triage (the human-in-the-loop)
+Most domain detections are benign IT/employee activity. The chat is the disposition loop:
+the analyst says "that PsExec on DC01 was our IT admin" → `detect_disposition` grounds it to
+a real finding/entity → `store.set_disposition` records it + re-fuses → `correlate.
+_apply_dispositions` down-ranks it to informational + annotates the attribution (never
+silently for ≥critical). `scope=environment` folds it into the baseline → suppresses across
+future cases. One correction → durable fleet-wide noise reduction.
 
 ## Accuracy: baseline-subtraction (the FP fix)
 Provisioning/automation produces attack-like SIGMA bursts. Capture a known-clean
