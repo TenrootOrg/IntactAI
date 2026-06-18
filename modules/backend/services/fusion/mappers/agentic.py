@@ -55,6 +55,51 @@ def _service_anomaly(path: str) -> int:
     return 8                                        # unrecognised location — note, don't alarm
 
 
+def _sha256_of(row) -> str | None:
+    """SHA256 from a flat column OR a nested Hash struct ({MD5,SHA1,SHA256})."""
+    h = F.get(row, "Hash", "Hashes", default=None)
+    if isinstance(h, dict):
+        v = h.get("SHA256") or h.get("sha256") or h.get("Sha256")
+        if v:
+            return str(v)
+    v = F.get(row, "SHA256", "Sha256", "sha256")
+    return str(v) if isinstance(v, str) and v else None
+
+
+# Roots where an "untrusted" Authenticode verdict is NOT signal — MS Store apps
+# (Program Files\WindowsApps), system + Program Files binaries are catalog-signed,
+# which the per-file Authenticode check reports as untrusted though they're legit.
+_TRUSTED_IMG_ROOTS = ("c:\\windows\\", "c:\\program files\\", "c:\\program files (x86)\\",
+                      "c:\\programdata\\microsoft\\")
+
+
+def _image_untrusted_and_odd(row) -> bool:
+    """True only when Authenticode says untrusted AND the image lives in a
+    user-writable / non-standard location — i.e. actionable, not catalog-signed."""
+    a = F.get(row, "Authenticode", default=None)
+    if not isinstance(a, dict):
+        return False
+    if str(a.get("Trusted", "")).strip().lower() != "untrusted":
+        return False
+    img = str(F.get(row, "Exe", *F.PATH) or a.get("Filename") or "").strip().lower().strip('"')
+    if not img:
+        return True                                # untrusted with no resolvable path
+    return not any(img.startswith(r) for r in _TRUSTED_IMG_ROOTS)
+
+
+# PowerShell history / scriptblock patterns worth surfacing in the narrative.
+_PS_SUSPICIOUS = ("downloadstring", "downloadfile", "iex", "invoke-expression",
+                  "frombase64string", "-enc", "-encodedcommand", "-w hidden",
+                  "-windowstyle hidden", "bypass", "invoke-webrequest", "iwr ",
+                  "new-object net.webclient", "start-bitstransfer", "certutil",
+                  "bitsadmin", "add-mppreference", "set-mppreference")
+
+
+def _ps_anomaly(line: str) -> int:
+    low = (str(line or "")).lower()
+    return 25 if any(p in low for p in _PS_SUSPICIOUS) else 1
+
+
 def _ent(eid, etype, label, asset, run_id, locator, *, anomaly=0, first=None,
          flags=None, **attrs):
     a = {"_assets": [asset]}
@@ -114,10 +159,26 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 ct = F.get(r, *F.CREATETIME)
                 eid = keys.process_id(asset, pid, ct, name)
                 proc_by_asset_pid[(asset, str(pid))] = eid
+                # Pslist enrichment: unsigned image raises suspicion; elevation
+                # is privilege context. Both are forensic signal, not noise.
+                untrusted = _image_untrusted_and_odd(r)
+                phash = _sha256_of(r)
+                anom = score_row(r) + (40 if untrusted else 0)
+                pflags = ["unsigned"] if untrusted else []
                 ents.append(_ent(eid, "process", f"{name} ({pid})", asset, run_id, loc,
-                                 anomaly=score_row(r), first=keys.norm_ts(ct or ts),
+                                 anomaly=anom, first=keys.norm_ts(ct or ts), flags=pflags,
                                  pid=str(pid), name=name, cmdline=F.get(r, *F.CMDLINE),
-                                 createtime=keys.norm_ts(ct)))
+                                 createtime=keys.norm_ts(ct), sha256=phash,
+                                 elevated=F.get(r, "TokenIsElevated", default=None),
+                                 signed=(not untrusted) if F.get(r, "Authenticode") else None))
+                # Cross-host pivot: hash an UNSIGNED binary only (signed system
+                # binaries would flood the graph with benign hashes).
+                if phash and untrusted and keys.classify_indicator(phash) == "hash":
+                    iid = keys.ioc_id("hash", phash)
+                    ents.append(_ent(iid, "ioc", phash[:16] + "…", asset, run_id, loc,
+                                     anomaly=20, ioc_kind="hash", first=ts, full_hash=phash,
+                                     image=name))
+                    rels.append(Relationship(eid, iid, "matched", sources=[MODULE], ts=ts))
                 owner = F.get(r, *F.USER)
                 if owner:
                     aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), owner)
@@ -150,6 +211,26 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                      run_id, loc, first=ts, user=u, domain=d, sid=sid,
                                      home=F.get(r, "Directory", "HomeDir", "ProfilePath",
                                                 default=None)))
+
+            # ---- powershell command history -> execution event -----------
+            elif "psreadline" in an:
+                line = F.get(r, "Line", "Command", "CommandLine", default=None)
+                if not line or str(line).lstrip().startswith("#"):
+                    continue                       # skip comments / blanks
+                an_ps = _ps_anomaly(line)
+                eid = keys.event_id(run_id, f"{asset}:{F.get(r, 'OSPath', default='')}",
+                                    f"ps:{line}")
+                ents.append(_ent(eid, "event", f"powershell: {str(line)[:80]}", asset, run_id,
+                                 loc, anomaly=an_ps, first=ts, artifact=artifact,
+                                 command=str(line)[:400],
+                                 flags=(["suspicious_powershell"] if an_ps >= 25 else None)))
+                owner = F.get(r, "Username", *F.USER)
+                if owner:
+                    aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), owner)
+                    if aeid:
+                        ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
+                                         run_id, loc, user=u, domain=d))
+                        rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ts))
 
             # ---- network -> netconn + ioc --------------------------------
             elif "netstat" in an or "network" in an:
@@ -217,8 +298,11 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 ents.append(_ent(eid, "event", f"{artifact}: {str(msg)[:80]}", asset, run_id,
                                  loc, anomaly=score_row(r), first=ts, artifact=artifact))
 
-            # ---- hash extraction (ANY artifact) -> cross-host-capable IOC -
-            h = F.get(r, *F.SHA256)
+            # ---- hash extraction -> cross-host-capable IOC ---------------
+            # Process artifacts handle their own hashes selectively above (only
+            # unsigned), so skip them here to avoid flooding benign hashes.
+            is_proc = "pstree" in an or "pslist" in an or "processes" in an
+            h = None if is_proc else _sha256_of(r)
             if h and keys.classify_indicator(h) == "hash":
                 iid = keys.ioc_id("hash", h)
                 ents.append(_ent(iid, "ioc", str(h)[:16] + "…", asset, run_id, loc,

