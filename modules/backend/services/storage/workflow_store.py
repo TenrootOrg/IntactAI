@@ -26,8 +26,9 @@ def save_workflow(workflow_data: Dict[str, Any]) -> bool:
         conn.execute(
             """INSERT OR REPLACE INTO workflows
                (run_id, automation_type, name, details, status, progress, logs, phase, error,
-                created_at, updated_at, phase_timings, llm_metrics, sigma_rule_tally, error_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                created_at, updated_at, phase_timings, llm_metrics, sigma_rule_tally, error_count,
+                case_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (workflow_data.get('run_id'),
              workflow_data.get('automation_type'),
              workflow_data.get('name'),
@@ -42,7 +43,8 @@ def save_workflow(workflow_data: Dict[str, Any]) -> bool:
              _json_or_default(workflow_data.get('phase_timings'), None),
              _json_or_default(workflow_data.get('llm_metrics'), None),
              _json_or_default(workflow_data.get('sigma_rule_tally'), None),
-             int(workflow_data.get('error_count') or 0))
+             int(workflow_data.get('error_count') or 0),
+             workflow_data.get('case_id'))
         )
         conn.commit()
         return True
@@ -60,6 +62,35 @@ def load_workflows() -> List[Dict[str, Any]]:
     except Exception as e:
         print(f"[STORAGE] Error loading workflows: {e}", flush=True)
         return []
+
+
+def get_workflows_by_case(case_id: str) -> List[Dict[str, Any]]:
+    """Load all workflows tagged to a case (workspace)."""
+    try:
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT * FROM workflows WHERE case_id = ?", (case_id,)).fetchall()
+        return [row_to_dict(r, _JSON_FIELDS) for r in rows]
+    except Exception as e:
+        print(f"[STORAGE] Error loading workflows by case: {e}", flush=True)
+        return []
+
+
+def reassign_null_case(case_id: str, automation_types: List[str]) -> int:
+    """One-time backfill: tag legacy analysis runs that have no case to `case_id`.
+    Returns the number of rows updated. Idempotent (only touches NULL case_id)."""
+    try:
+        conn = get_connection()
+        placeholders = ",".join("?" for _ in automation_types)
+        cur = conn.execute(
+            f"UPDATE workflows SET case_id = ? "
+            f"WHERE case_id IS NULL AND automation_type IN ({placeholders})",
+            (case_id, *automation_types))
+        conn.commit()
+        return cur.rowcount or 0
+    except Exception as e:
+        print(f"[STORAGE] Error reassigning null-case workflows: {e}", flush=True)
+        return 0
 
 
 def get_workflow(run_id: str) -> Optional[Dict[str, Any]]:

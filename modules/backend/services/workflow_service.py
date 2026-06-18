@@ -10,8 +10,48 @@ from datetime import datetime
 from services.file_storage_service import (
     save_workflow,
     load_workflows,
-    get_workflow as file_get_workflow
+    get_workflow as file_get_workflow,
+    get_workflows_by_case,
 )
+
+# Analysis run types that belong to a case (workspace). Infra/admin runs
+# (upgrade, maintenance, msi, support_bundle, init, …) and the case/baseline
+# rows themselves are deliberately NOT case-scoped.
+AGENTIC_TYPES = {"agentic", "memory", "cve_scan", "timesketch",
+                 "aws_scan", "azure_scan", "engagement_report"}
+
+
+_DEFAULT_CASE_CACHE = {"id": None}
+
+
+def _active_case_from_request():
+    """The browser's active case (X-Case-Id header), read off the Flask request
+    context. Returns None outside a request (e.g. a background re-fuse)."""
+    try:
+        from flask import g, has_request_context
+        if has_request_context():
+            return getattr(g, "case_id", None)
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_case_id(automation_type, case_id):
+    """Tag an analysis run to a workspace: explicit case_id wins; else the request's
+    active case; else (scheduler/background, no request) the Default workspace, so an
+    analysis run is never orphaned. Infra/admin runs stay untagged (global)."""
+    if case_id or automation_type not in AGENTIC_TYPES:
+        return case_id
+    cid = _active_case_from_request()
+    if cid:
+        return cid
+    if not _DEFAULT_CASE_CACHE["id"]:
+        try:
+            from services.fusion import store
+            _DEFAULT_CASE_CACHE["id"] = store.ensure_default_case()
+        except Exception:
+            pass
+    return _DEFAULT_CASE_CACHE["id"]
 
 # Try to import Elasticsearch service
 try:
@@ -126,9 +166,15 @@ def unregister_cancel(run_id):
 # Initialize file storage on module load
 print("[WORKFLOW] Using SQLite + Elasticsearch storage for workflows", flush=True)
 
-def create_automation_run(automation_type, name, details=None):
-    """Create a new automation run entry with logging"""
+def create_automation_run(automation_type, name, details=None, case_id=None):
+    """Create a new automation run entry with logging.
+
+    `case_id` tags the run to a case (workspace). When not given explicitly and
+    this is an analysis run type, it defaults to the browser's active case
+    (X-Case-Id header on the current request). Infra/admin runs stay untagged."""
     run_id = f"{automation_type}_{int(time.time() * 1000)}"
+
+    case_id = _resolve_case_id(automation_type, case_id)
 
     # Create workflow run structure. `error_count` is incremented every
     # time add_log_to_run() is called with level='error'; it surfaces as
@@ -146,6 +192,7 @@ def create_automation_run(automation_type, name, details=None):
         "progress": 0,
         "logs": [],
         "error_count": 0,
+        "case_id": case_id,
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat()
     }
@@ -154,6 +201,14 @@ def create_automation_run(automation_type, name, details=None):
     save_workflow(workflow_data)
 
     return run_id
+
+
+def get_automation_runs_by_case(case_id):
+    """All runs tagged to a case (workspace), newest first. SQLite-backed
+    (the case_id column); ES-only rows are not case-scoped."""
+    runs = get_workflows_by_case(case_id) or []
+    runs.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+    return runs
 
 # Per-run mutex registry. add_log_to_run does load-modify-save against the
 # workflow row; without serialization, parallel worker threads (e.g. the

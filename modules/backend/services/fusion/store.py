@@ -17,6 +17,7 @@ from .mappers import map_memory, map_agentic, map_cve, map_timesketch, map_cloud
 
 CASE_TYPE = "case"
 BASELINE_TYPE = "fusion_baseline"
+DEFAULT_CASE_NAME = "Default"
 
 
 def _env_key_from_members(members) -> str | None:
@@ -44,7 +45,7 @@ def capture_baseline(case_id, *, env_key=None) -> dict:
     as its own workflow row (automation_type='fusion_baseline') — no new table."""
     ws = _ws()
     d = get_case(case_id)
-    members = d.get("member_run_ids") or []
+    members = _members_for_case(case_id, d)
     env_key = env_key or _env_key_from_members(members) or case_id
     g = fuse_case(case_id, _record=False)
     fp = correlate.baseline_fingerprint(g)
@@ -128,12 +129,15 @@ def _ws():
 
 
 def create_case(name, *, time_window=None, initial_access=None,
-                min_severity="medium", member_run_ids=None) -> str:
+                min_severity="medium", member_run_ids=None, is_default=False) -> str:
+    # The case row is itself a workflow row but is NEVER case-scoped — pass
+    # case_id=None explicitly so the request's active case doesn't tag it.
     return _ws().create_automation_run(
-        automation_type=CASE_TYPE, name=f"Case — {name}",
+        automation_type=CASE_TYPE, name=f"Case — {name}", case_id=None,
         details={"name": name, "time_window": time_window or {},
                  "initial_access_estimate": initial_access, "min_severity": min_severity,
                  "member_run_ids": list(member_run_ids or []),
+                 "is_default": bool(is_default),
                  "fusion_graph": {}, "report_md": "", "chat_messages": []})
 
 
@@ -141,11 +145,79 @@ def get_case(case_id) -> dict:
     return (_ws().get_automation_run(case_id) or {}).get("details") or {}
 
 
+def _members_for_case(case_id, d=None) -> list:
+    """A case's members = every analysis run TAGGED to it (the workspace model),
+    unioned with any legacy explicit member_run_ids for back-compat."""
+    ws = _ws()
+    tagged = [r.get("run_id") for r in ws.get_automation_runs_by_case(case_id)
+              if r.get("automation_type") in ws.AGENTIC_TYPES]
+    if d is None:
+        d = get_case(case_id)
+    seen = set(tagged)
+    legacy = [r for r in (d.get("member_run_ids") or []) if r not in seen]
+    return tagged + legacy
+
+
 def attach_runs(case_id, run_ids) -> list:
+    """Legacy explicit attach (kept for back-compat / the API). In the workspace
+    model runs auto-belong via their case_id tag; this also stamps the tag so a
+    manually-attached run shows up under the case everywhere."""
+    from services.file_storage_service import get_workflow
     d = get_case(case_id)
     members = list(dict.fromkeys((d.get("member_run_ids") or []) + list(run_ids)))
     _ws().update_run_status(case_id, "pending", details={"member_run_ids": members})
+    for rid in run_ids:                       # tag the run into this workspace too
+        run = get_workflow(rid)
+        if run and not run.get("case_id"):
+            run["case_id"] = case_id
+            from services.file_storage_service import save_workflow
+            save_workflow(run)
     return members
+
+
+def ensure_default_case() -> str:
+    """Return the id of the Default workspace, creating it if missing. Idempotent —
+    safe to call on every startup."""
+    ws = _ws()
+    for r in ws.get_all_automation_runs() or []:
+        if r.get("automation_type") != CASE_TYPE:
+            continue
+        det = r.get("details") or {}
+        if det.get("is_default") or det.get("name") == DEFAULT_CASE_NAME:
+            return r.get("run_id")
+    return create_case(DEFAULT_CASE_NAME, is_default=True)
+
+
+def is_default_case(case_id) -> bool:
+    d = get_case(case_id)
+    return bool(d.get("is_default") or d.get("name") == DEFAULT_CASE_NAME)
+
+
+def delete_case(case_id) -> dict:
+    """Delete a workspace and EVERYTHING in it: every tagged run, the baseline this
+    case captured, and the case row. Refuses to delete the Default workspace."""
+    from services.file_storage_service import delete_workflow
+    ws = _ws()
+    d = get_case(case_id)
+    if not d:
+        return {"deleted": False, "error": "not found"}
+    if d.get("is_default") or d.get("name") == DEFAULT_CASE_NAME:
+        return {"deleted": False, "error": "default workspace cannot be deleted"}
+    run_ids = [r.get("run_id") for r in ws.get_automation_runs_by_case(case_id)]
+    for rid in run_ids:
+        delete_workflow(rid)
+    # baselines this case captured (match by source_case only — never touch a
+    # baseline another workspace may rely on)
+    removed_baselines = 0
+    for r in ws.get_all_automation_runs() or []:
+        if r.get("automation_type") != BASELINE_TYPE:
+            continue
+        if (r.get("details") or {}).get("source_case") == case_id:
+            delete_workflow(r.get("run_id"))
+            removed_baselines += 1
+    delete_workflow(case_id)
+    return {"deleted": True, "runs_deleted": len(run_ids),
+            "baselines_deleted": removed_baselines}
 
 
 def _memory_contribution(rid, det):
@@ -234,7 +306,7 @@ def _contribution_for_run(run, log=None):
 def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -> FusionGraph:
     ws = _ws()
     d = get_case(case_id)
-    members = d.get("member_run_ids") or []
+    members = _members_for_case(case_id, d)
     if contributions_override is not None:
         contributions = contributions_override
     else:

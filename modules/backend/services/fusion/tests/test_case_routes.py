@@ -21,7 +21,13 @@ def _client():
 
 
 def _fake_case(c):
-    """Create a case + fuse a real attack fixture into it (deterministic, no live infra)."""
+    """Create a case + fuse a real attack fixture into it (deterministic, no live infra).
+    Purges any prior same-named test cases first so repeated runs don't accumulate."""
+    from services import workflow_service as ws
+    for r in ws.get_all_automation_runs() or []:
+        if r.get("automation_type") == store.CASE_TYPE and \
+                (r.get("details") or {}).get("name") == "route-contract-test":
+            store.delete_case(r.get("run_id"))
     contrib = calibrate._contribution(calibrate.load_fixture("attack2"))
     cid = store.create_case("route-contract-test", min_severity="medium")
     store.fuse_case(cid, contributions_override=[contrib])

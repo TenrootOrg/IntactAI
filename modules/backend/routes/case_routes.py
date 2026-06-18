@@ -15,6 +15,33 @@ from services.fusion.schema import FusionGraph
 
 case_bp = Blueprint("case", __name__)
 
+_BOOTSTRAP_DONE = False
+
+
+@case_bp.before_app_request
+def _bind_active_case():
+    """Workspace model (runs app-wide via before_app_request, so it does NOT depend
+    on editing the single-file-mounted app.py): the browser sends its active case as
+    the X-Case-Id header on every /api request. Stash it on `g` so
+    create_automation_run() tags new analysis runs and the list endpoints filter by
+    workspace. Also does a one-time Default-case bootstrap + legacy backfill."""
+    from flask import g, request
+    g.case_id = (request.headers.get("X-Case-Id") or "").strip() or None
+
+    global _BOOTSTRAP_DONE
+    if not _BOOTSTRAP_DONE:
+        _BOOTSTRAP_DONE = True
+        try:
+            from services import workflow_service as ws
+            from services.file_storage_service import reassign_null_case
+            default_id = store.ensure_default_case()
+            n = reassign_null_case(default_id, list(ws.AGENTIC_TYPES))
+            if n:
+                print(f"[CASES] backfilled {n} legacy run(s) into Default ({default_id})",
+                      flush=True)
+        except Exception as e:
+            print(f"[CASES] default-case bootstrap failed: {e}", flush=True)
+
 
 @case_bp.route("/api/cases", methods=["POST"])
 def create_case():
@@ -35,19 +62,35 @@ def create_case():
 def list_cases():
     from services import workflow_service as ws
     runs = ws.get_all_automation_runs() if hasattr(ws, "get_all_automation_runs") else []
-    cases = [{"case_id": r.get("run_id"), "name": (r.get("details") or {}).get("name"),
-              "status": r.get("status"),
-              "members": len(((r.get("details") or {}).get("member_run_ids") or [])),
-              "created_at": r.get("created_at")}
-             for r in runs if r.get("automation_type") == store.CASE_TYPE]
+    cases = []
+    for r in runs:
+        if r.get("automation_type") != store.CASE_TYPE:
+            continue
+        det = r.get("details") or {}
+        cid = r.get("run_id")
+        is_default = bool(det.get("is_default") or det.get("name") == store.DEFAULT_CASE_NAME)
+        # member count = runs tagged to this workspace (+ legacy explicit members)
+        members = ws.get_automation_runs_by_case(cid) if hasattr(ws, "get_automation_runs_by_case") else []
+        cases.append({"case_id": cid, "name": det.get("name"),
+                      "status": r.get("status"), "is_default": is_default,
+                      "members": len(members) or len(det.get("member_run_ids") or []),
+                      "created_at": r.get("created_at")})
+    # Default first, then newest-first among the rest (two stable passes)
+    cases.sort(key=lambda c: c.get("created_at") or "", reverse=True)
+    cases.sort(key=lambda c: not c["is_default"])
     return jsonify({"cases": cases})
 
 
 @case_bp.route("/api/cases/runs", methods=["GET"])
 def attachable_runs():
-    """Module runs that can be attached to a case (for the UI picker)."""
+    """Module runs in the active workspace (the X-Case-Id header scopes this)."""
+    from flask import g
     from services import workflow_service as ws
-    runs = ws.get_all_automation_runs() if hasattr(ws, "get_all_automation_runs") else []
+    case_id = getattr(g, "case_id", None)
+    if case_id:
+        runs = ws.get_automation_runs_by_case(case_id)
+    else:
+        runs = ws.get_all_automation_runs() if hasattr(ws, "get_all_automation_runs") else []
     out = []
     for r in runs:
         if r.get("automation_type") in ("memory", "agentic", "timesketch", "cve_scan",
@@ -88,11 +131,26 @@ def get_case(case_id):
                     "min_severity": d.get("min_severity"),
                     "member_run_ids": d.get("member_run_ids") or [],
                     "has_graph": bool(d.get("fusion_graph")),
+                    "is_default": bool(d.get("is_default")
+                                       or d.get("name") == store.DEFAULT_CASE_NAME),
                     # null-guarded for cases created before these existed
                     "analysis": d.get("analysis") or {},
                     "dispositions": d.get("dispositions") or [],
                     "token_ab": d.get("token_ab") or {},
                     "llm_enabled": _llm_enabled()})
+
+
+@case_bp.route("/api/cases/<case_id>", methods=["DELETE"])
+def delete_case(case_id):
+    """Delete a workspace and everything in it (its tagged runs + baseline). The
+    Default workspace cannot be deleted (409)."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    res = store.delete_case(case_id)
+    if not res.get("deleted"):
+        code = 409 if "default" in (res.get("error") or "") else 400
+        return jsonify(res), code
+    return jsonify({"case_id": case_id, **res})
 
 
 @case_bp.route("/api/cases/<case_id>/attach", methods=["POST"])

@@ -56,71 +56,89 @@
   .empty{color:var(--muted);text-align:center;margin-top:60px}
   .stat{display:inline-block;margin-right:16px;font-size:13px} .stat b{color:#fff;font-size:18px}
   .toast{position:fixed;bottom:18px;right:18px;background:var(--panel2);border:1px solid var(--acc);padding:10px 14px;border-radius:8px;display:none}
+  .casehead{display:flex;align-items:center;gap:8px;justify-content:space-between}
+  .del{background:transparent;border:1px solid var(--bd);color:var(--crit);font-size:11px;padding:3px 8px;border-radius:5px}
+  .del:hover{background:rgba(248,81,73,.12)}
+  .defbadge{font-size:10px;color:var(--med);border:1px solid var(--bd);border-radius:8px;padding:1px 6px}
+  #wsbar{display:flex;align-items:center;gap:8px}
+  #wsbar select{width:auto}
 </style>
+<!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
+<script src="js/active-case.js?v=1"></script>
 </head>
 <body>
 <header>
-  <span class="logo">◭</span><h1>IntactAI — Cases</h1>
+  <span class="logo">◭</span><h1>IntactAI — Workspaces</h1>
   <span class="badge">Entity Fusion · cross-module + cross-host</span>
   <span class="badge" id="llmbadge">LLM: simulated</span>
+  <div id="wsbar" style="margin-left:auto"></div>
 </header>
 <div class="wrap">
   <div class="side">
-    <h2>New Case</h2>
-    <label>Name</label><input id="cname" placeholder="INTRUSION-MAY"/>
+    <h2>New Workspace</h2>
+    <label>Name</label><input id="cname" placeholder="GOOGLE IR 05-03-2026"/>
     <div class="row" style="margin-top:6px">
       <div style="flex:1"><label>Window start</label><input id="wstart" placeholder="2026-06-14"/></div>
       <div style="flex:1"><label>Window end</label><input id="wend" placeholder="2026-06-18"/></div>
     </div>
-    <label>Initial access ≈</label><input id="iacc" placeholder="2026-06-15T07:00"/>
     <label>Min severity</label>
     <select id="msev"><option>informational</option><option>low</option><option selected>medium</option><option>high</option><option>critical</option></select>
-    <label>Attach runs</label>
-    <div class="runs" id="runlist">loading runs…</div>
     <div class="row" style="margin-top:10px">
-      <button onclick="createAndFuse()">Create &amp; Fuse</button>
-      <button class="ghost" onclick="loadRuns()">↻ runs</button>
+      <button onclick="createWorkspace()">Create workspace</button>
     </div>
-    <h2>Cases</h2>
+    <p style="color:var(--muted);font-size:11px;margin-top:8px">Runs you launch (Agentic, Memory, CVE, cloud…) while this workspace is active are tagged to it automatically. Open it any time to fuse them.</p>
+    <h2>Workspaces</h2>
     <div id="caselist"></div>
   </div>
   <div class="main" id="main">
-    <div class="empty">Create a case (pick runs on the left) — it fuses into one cross-module,<br/>cross-host graph and gives you a report + chat.</div>
+    <div class="empty">Pick a workspace (left) to fuse the runs tagged to it into one<br/>cross-module, cross-host graph — report, advisory, timeline + chat.</div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
 <script>
 const $=s=>document.querySelector(s), api=(p,o)=>fetch(p,o).then(r=>r.json());
-let sel=null, runs=[], tab='report';
+let sel=null, tab='report';
 function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2600);}
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 
-function loadRuns(){
-  $('#runlist').textContent='loading…';
-  api('/api/cases/runs').then(d=>{runs=d.runs||[];
-    $('#runlist').innerHTML=runs.map(r=>`<label class="run"><input type="checkbox" value="${r.run_id}" style="width:auto"/>
-      <span class="t">${r.type}</span> <span>${r.host||r.run_id}</span> <span class="h">${(r.status||'')}${r.evidence_id?(' ev'+r.evidence_id):''}</span></label>`).join('')||'<i style="color:var(--muted)">no memory/agentic runs found</i>';
-  }).catch(_=>$('#runlist').textContent='runs unavailable');
+function createWorkspace(){
+  const name=$('#cname').value.trim();
+  if(!name){toast('name required');return;}
+  const body={name,min_severity:$('#msev').value,
+    time_window:{start:$('#wstart').value||null,end:$('#wend').value||null}};
+  api('/api/cases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+   .then(d=>{ if(!d||!d.case_id){toast('create failed');return;}
+     $('#cname').value=''; $('#wstart').value=''; $('#wend').value='';
+     window.ActiveCase.set(d.case_id); toast('workspace created + activated');
+     loadCases(()=>openCase(d.case_id)); refreshSelector(); });
 }
-function pickedRuns(){return [...document.querySelectorAll('#runlist input:checked')].map(c=>c.value);}
 
-function createAndFuse(){
-  const name=$('#cname').value.trim(); const rids=pickedRuns();
-  if(!name){toast('name required');return;} if(!rids.length){toast('pick at least one run');return;}
-  const body={name,run_ids:rids,min_severity:$('#msev').value,
-    time_window:{start:$('#wstart').value||null,end:$('#wend').value||null},
-    initial_access:$('#iacc').value||null};
-  toast('fusing…');
-  api('/api/cases/quick',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-   .then(d=>{toast(`fused: ${d.entities} entities, ${d.findings} findings, ${d.cross_host_findings} cross-host`);
-     loadCases(()=>openCase(d.case_id));});
+function delWorkspace(id, name, ev){
+  if(ev) ev.stopPropagation();
+  if(!confirm(`Delete workspace "${name}" and ALL of its runs, fusion + baseline? This cannot be undone.`)) return;
+  fetch('/api/cases/'+id,{method:'DELETE'}).then(async r=>{
+    const d=await r.json().catch(()=>({}));
+    if(r.status===409){toast('the Default workspace cannot be deleted');return;}
+    if(!r.ok){toast('delete failed: '+(d.error||r.status));return;}
+    toast(`deleted (${d.runs_deleted||0} run(s))`);
+    if(window.ActiveCase.get()===id){ await window.ActiveCase.ensureActiveCase(); }
+    if(sel===id){ sel=null; $('#main').innerHTML='<div class="empty">Workspace deleted. Pick another on the left.</div>'; }
+    loadCases(); refreshSelector();
+  });
 }
 
 function loadCases(cb){
-  api('/api/cases').then(d=>{const cs=d.cases||[];
+  api('/api/cases').then(d=>{const cs=d.cases||[]; const active=window.ActiveCase.get();
     $('#caselist').innerHTML=cs.map(c=>`<div class="caseitem ${sel===c.case_id?'sel':''}" onclick="openCase('${c.case_id}')">
-      <div class="nm">${c.name||c.case_id}</div><div class="meta">${c.members} run(s) · ${c.status}</div></div>`).join('')||'<i style="color:var(--muted)">no cases yet</i>';
+      <div class="casehead"><span class="nm">${c.case_id===active?'● ':''}${esc(c.name||c.case_id)}</span>
+        ${c.is_default?'<span class="defbadge">default</span>':`<button class="del" onclick="delWorkspace('${c.case_id}','${esc(c.name||'').replace(/'/g,"\\'")}',event)">delete</button>`}</div>
+      <div class="meta">${c.members} run(s) · ${c.status}</div></div>`).join('')||'<i style="color:var(--muted)">no workspaces yet</i>';
     if(cb)cb();
   });
+}
+
+async function refreshSelector(){
+  const bar=$('#wsbar'); if(bar&&window.ActiveCase) await window.ActiveCase.renderCaseSelector(bar,{manageLink:false});
 }
 
 function openCase(id){
@@ -262,7 +280,14 @@ function mdToHtml(md){
   });
   closeUL();closeTbl();return out.join('\n');
 }
-loadRuns();loadCases();
+
+(async function init(){
+  await window.ActiveCase.ensureActiveCase();
+  await refreshSelector();
+  loadCases();
+  // re-render the list highlight when the workspace changes elsewhere
+  window.addEventListener('active-case-changed', ()=>loadCases());
+})();
 </script>
 </body>
 </html>

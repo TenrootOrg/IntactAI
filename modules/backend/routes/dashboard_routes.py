@@ -44,8 +44,18 @@ def _transform_run(run):
 
 @dashboard_bp.route('/api/dashboard/automations')
 def get_all_automations():
-    """Get all automation runs with their logs for the dashboard"""
+    """Get automation runs for the dashboard. When a workspace is active (X-Case-Id),
+    show that workspace's analysis runs plus the always-global infra/admin runs."""
+    from flask import g
+    from services.workflow_service import AGENTIC_TYPES
     automation_runs = get_all_automation_runs()
+    case_id = getattr(g, "case_id", None)
+    if case_id:
+        automation_runs = [
+            r for r in automation_runs
+            if r.get("case_id") == case_id
+            or r.get("automation_type") not in AGENTIC_TYPES   # infra = global
+        ]
     transformed = [_transform_run(run) for run in automation_runs]
     return jsonify({
         "runs": transformed,

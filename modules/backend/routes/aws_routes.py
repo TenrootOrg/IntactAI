@@ -621,8 +621,15 @@ def get_run_analysis(run_id):
 @aws_bp.route('/api/aws/runs', methods=['GET'])
 def list_runs():
     try:
+        from flask import g
+        from services.file_storage_service import get_workflow
+        case_id = getattr(g, 'case_id', None)
         runs = []
         for run_id, run_data in _aws_runs.items():
+            if case_id:                       # workspace isolation
+                wf = get_workflow(run_id)
+                if wf and wf.get('case_id') and wf.get('case_id') != case_id:
+                    continue
             runs.append({
                 'run_id': run_id,
                 'status': run_data.get('status'),

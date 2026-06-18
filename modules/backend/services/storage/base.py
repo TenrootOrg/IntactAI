@@ -190,6 +190,13 @@ def create_tables():
     # initial CREATE TABLE shipped. SQLite has no IF NOT EXISTS for ADD
     # COLUMN, so we introspect via PRAGMA table_info and skip if present.
     _ensure_column(conn, "workflows", "error_count", "INTEGER DEFAULT 0")
+    # Workspace model: every analysis run is tagged to a case (workspace).
+    _ensure_column(conn, "workflows", "case_id", "TEXT")
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_workflows_case_id ON workflows(case_id)")
+        conn.commit()
+    except Exception as e:
+        print(f"[STORAGE] Could not create idx_workflows_case_id: {e}", flush=True)
 
 
 def _ensure_column(conn, table: str, column: str, decl: str):
