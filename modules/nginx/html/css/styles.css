@@ -1,150 +1,79 @@
 /**
- * TenRoot Intact.AI - Cyberpunk Dark Mode
- * Red / Blue / Purple Neon Aesthetic
+ * TenRoot Intact.AI — dashboard styles (clean "intactdark")
+ *
+ * This file holds ONLY the genuinely-custom rules the markup needs (app shell,
+ * sidebar/nav, the few custom card classes, focus ring, scrollbars, flatpickr,
+ * a couple of helpers). Everything else is plain Tailwind + DaisyUI utilities
+ * (see tailwind.config.js → daisyui "intactdark" theme). The old cyberpunk
+ * override layer (CRT scanlines, Orbitron, neon glows, clip-path buttons,
+ * !important Tailwind-class overrides) has been removed — the markup's own
+ * Tailwind classes now render as a clean, professional dark theme.
  */
 
-/* ============================================
-   CYBERPUNK COLOR PALETTE
-   ============================================ */
+/* ============================================================
+   BASE
+   ============================================================ */
 :root {
-    /* Pure Black Background */
-    --black: #000000;
-    --black-soft: #0c0c14;
-    --surface: #14141e;
-    --surface-light: #1c1c28;
-    --surface-hover: #252535;
-
-    /* TenRoot Red - Primary */
-    --red: #ff0033;
-    --red-bright: #ff1a4d;
-    --red-dark: #cc0029;
-    --red-glow: rgba(255, 0, 51, 0.6);
-
-    /* Electric Blue - Secondary */
-    --blue: #0055ff;
-    --blue-bright: #3377ff;
-    --blue-dark: #0044cc;
-    --blue-glow: rgba(0, 85, 255, 0.6);
-
-    /* Neon Purple - Accent */
-    --purple: #aa00ff;
-    --purple-bright: #bb33ff;
-    --purple-dark: #8800cc;
-    --purple-glow: rgba(170, 0, 255, 0.6);
-
-    /* Cyber Green - Success */
-    --green: #00ff66;
-    --green-glow: rgba(0, 255, 102, 0.6);
-
-    /* Warning */
-    --yellow: #ffcc00;
-    --yellow-glow: rgba(255, 204, 0, 0.5);
-
-    /* Borders */
-    --border: rgba(255, 0, 51, 0.2);
-    --border-blue: rgba(0, 85, 255, 0.3);
-
-    /* Text */
-    --text: #ffffff;
-    --text-dim: #888899;
-    --text-muted: #555566;
+    --bd: #2a323c;          /* divider / border */
+    --tx-muted: #8b949e;    /* secondary text / labels */
+    --tx-faint: #6e7681;    /* help text / captions */
+    --focus: #58a6ff;       /* focus ring */
+    /* severity (single source of truth, mirrors cases.html) */
+    --sev-critical: #f85149;
+    --sev-high: #db6d28;
+    --sev-med: #d29922;
+    --sev-low: #3fb950;
+    --sev-info: #58a6ff;
 }
 
-/* ============================================
-   DARK BASE + CRT SCANLINES
-   ============================================ */
 body {
-    background: linear-gradient(180deg, #0a0a12 0%, #000000 100%);
     min-height: 100vh;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    /* On smaller monitors, wide content (the Workflows table) can
-       force the body itself to scroll horizontally. When that
-       happens the fixed sidebar — anchored at document x=0 — gets
-       scrolled off the visible viewport, leaving only the empty
-       260px margin we reserved on .main-content. Contain the
-       horizontal overflow at the body so the only horizontal
-       scrolling happens inside `.overflow-x-auto` wrappers
-       (where it belongs). */
-    overflow-x: hidden;
-    color: var(--text);
+    /* Clean system UI sans (no webfont dependency). Data/IDs use .font-mono. */
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial,
+                 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    /* Keep horizontal overflow contained at the body so only `.overflow-x-auto`
+       wrappers scroll sideways (keeps the sticky sidebar in view). */
+    overflow-x: hidden;
 }
 
-/* Subtle scanlines - very light */
-body::before {
-    content: '';
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: repeating-linear-gradient(
-        0deg,
-        rgba(0, 0, 0, 0.03) 0px,
-        rgba(0, 0, 0, 0.03) 1px,
-        transparent 1px,
-        transparent 4px
-    );
-    pointer-events: none;
-    z-index: 9999;
+code, pre, kbd, samp, .font-mono {
+    font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular,
+                 Menlo, Consolas, monospace !important;
 }
 
-/* Very subtle vignette - corners only */
-body::after {
-    content: '';
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: radial-gradient(ellipse at center, transparent 60%, rgba(0, 0, 0, 0.3) 100%);
-    pointer-events: none;
-    z-index: 9998;
+/* Global focus-visible ring — crisp keyboard affordance (was missing). */
+:where(a, button, input, select, textarea, [tabindex], summary):focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+    box-shadow: none;
 }
 
-/* ============================================
-   TYPOGRAPHY - Cyberpunk Style
-   ============================================ */
-h1, h2, h3, .header-text {
-    font-family: 'Orbitron', 'JetBrains Mono', monospace;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: #ffffff !important;
+/* Native <select> options render with OS chrome; keep them readable on dark. */
+select option {
+    background: #1f2937;
+    color: #e6edf3;
 }
 
-/* Main content headings */
-.main-content h2,
-.tab-content h2,
-.tab-content h3 {
-    color: #ffffff !important;
-}
-
-/* ============================================
-   SIDEBAR - Dark Glass Panel
-   ============================================ */
+/* ============================================================
+   APP SHELL — sidebar + main content
+   ============================================================ */
 .sidebar {
-    /* Pin to viewport top using position:sticky — same scroll-with-
-       page-then-stick behaviour we want, but unlike position:fixed
-       it does NOT take the element out of flex flow. The flex
-       parent still allocates 260px for the sidebar; <main> with
-       flex-1 gets the rest naturally. Avoids all the
-       containing-block / horizontal-scroll edge cases that
-       position:fixed creates (which were behind the "sidebar
-       disappears on Workflows" symptom).
-       width is also set with !important so Tailwind utility
-       overrides on the <aside> (or browser zoom + media queries)
-       can't shrink it to zero. */
+    /* Sticky (stays in flex flow): parent <div class="flex"> reserves 260px,
+       <main flex-1> gets the rest. width !important so utilities/zoom can't
+       collapse it. */
     width: 260px !important;
     flex-shrink: 0;
     min-height: 100vh;
     height: 100vh;
-    background: rgba(12, 12, 18, 0.98);
-    border-right: 1px solid var(--border);
+    background: #0d1117;            /* darkest surface = app chrome */
+    border-right: 1px solid var(--bd);
     position: sticky;
     top: 0;
     align-self: flex-start;
     z-index: 10;
-    transition: width 0.3s ease;
+    transition: width 0.2s ease;
     display: flex;
     flex-direction: column;
 }
@@ -154,991 +83,176 @@ h1, h2, h3, .header-text {
     overflow-x: hidden;
 }
 
-.sidebar-collapsed .sidebar-logo {
-    display: none;
-}
+.sidebar-collapsed .sidebar-logo { display: none; }
 
 .sidebar-collapsed .nav-item {
-    padding: 0.75rem 0.5rem;
+    padding: 0.625rem 0.5rem;
     justify-content: center;
 }
 
 .sidebar-collapsed .nav-item svg {
     margin: 0 auto;
-    width: 1.5rem;
-    height: 1.5rem;
-}
-
-/* No-op anchor — the JS still toggles this class for the transition
-   timing, but with position:sticky the sidebar collapse is handled
-   by .sidebar-collapsed { width: 72px } and the flex flow
-   reallocates space to <main> automatically. */
-.main-content-collapsed {
-    /* intentionally empty */
+    width: 1.25rem;
+    height: 1.25rem;
 }
 
 .sidebar-logo {
-    width: 180px;
+    width: 170px;
     height: auto;
-    filter: drop-shadow(0 0 15px var(--red-glow)) drop-shadow(0 0 30px rgba(255, 0, 51, 0.3));
-    transition: filter 0.3s ease;
 }
 
-.sidebar-logo:hover {
-    filter: drop-shadow(0 0 20px var(--red-glow)) drop-shadow(0 0 40px rgba(255, 0, 51, 0.5));
-}
+/* No-op anchor kept for the JS transition toggle (sticky sidebar handles space). */
+.main-content-collapsed { /* intentionally empty */ }
 
-.sidebar h1 {
-    color: var(--red);
-    font-size: 1.5rem;
-    font-weight: 700;
-    letter-spacing: 0.15em;
-    text-shadow: 0 0 20px var(--red-glow), 0 0 40px var(--red-glow);
-}
-
-.sidebar p {
-    color: var(--blue-bright);
-    text-transform: uppercase;
-    letter-spacing: 0.2em;
-    font-size: 0.6rem;
-    text-shadow: 0 0 10px var(--blue-glow);
-}
-
-/* ============================================
-   NAVIGATION - Neon Borders
-   ============================================ */
-.nav-item {
-    cursor: pointer;
-    padding: 0.75rem 1rem;
-    margin: 0.25rem 0.5rem;
-    transition: all 0.2s ease;
-    color: var(--text-dim) !important;
-    border-left: 2px solid transparent;
-    background: transparent;
-    clip-path: polygon(0 0, 100% 0, 98% 100%, 0 100%);
-}
-
-.nav-item span {
-    color: inherit !important;
-}
-
-.nav-item svg {
-    color: inherit !important;
-}
-
-.nav-item:hover {
-    background: rgba(255, 0, 51, 0.1);
-    color: var(--text) !important;
-    border-left-color: var(--red);
-    text-shadow: 0 0 10px var(--red-glow);
-}
-
-.nav-item.active {
-    background: linear-gradient(90deg, rgba(255, 0, 51, 0.2) 0%, transparent 100%);
-    color: var(--red) !important;
-    border-left-color: var(--red);
-    text-shadow: 0 0 15px var(--red-glow);
-    box-shadow: inset 0 0 20px rgba(255, 0, 51, 0.1);
-}
-
-.nav-item.active span,
-.nav-item.active svg {
-    color: var(--red) !important;
-    filter: drop-shadow(0 0 5px var(--red-glow));
-}
-
-.nav-sub-item {
-    cursor: pointer;
-    padding: 0.5rem 0.75rem;
-    margin: 0.125rem 0;
-    transition: all 0.2s ease;
-    font-size: 0.85rem;
-    color: var(--text-dim) !important;
-    border-left: 2px solid transparent;
-}
-
-.nav-sub-item:hover {
-    background: rgba(0, 85, 255, 0.1);
-    color: var(--text) !important;
-    border-left-color: var(--blue);
-}
-
-.nav-sub-item.active {
-    background: rgba(0, 85, 255, 0.15);
-    color: var(--blue-bright) !important;
-    border-left-color: var(--blue);
-    text-shadow: 0 0 10px var(--blue-glow);
-}
-
-.nav-dropdown-content {
-    transition: all 0.2s ease;
-}
-
-.rotate {
-    transform: rotate(180deg);
-}
-
-/* ============================================
-   MAIN CONTENT
-   ============================================ */
 .main-content {
-    /* No margin-left or max-width needed — the sidebar uses
-       position:sticky (see .sidebar above) which keeps it IN the
-       flex flow. The parent <div class="flex"> allocates 260px for
-       the sidebar and <main flex-1> gets the rest. Container queries
-       and content sizing all "just work" the way the original
-       comment intended. min-width:0 prevents flex children from
-       refusing to shrink (default min-width:auto on flex items
-       causes the wide workflows table to push <main> wider than
-       its allotted space, which used to push the body horizontal). */
-    min-width: 0;
+    min-width: 0;            /* let flex children shrink (wide tables) */
     background: transparent;
     min-height: 100vh;
     position: relative;
     z-index: 1;
 }
 
-/* Main page titles (outside cards) - dark for light background */
-.tab-content h2.text-3xl {
-    color: #1a1a2e !important;
+/* ============================================================
+   NAVIGATION
+   ============================================================ */
+.nav-item {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.5rem 0.75rem;
+    margin: 0.125rem 0.5rem;
+    border-radius: 0.375rem;
+    border-left: 2px solid transparent;
+    color: var(--tx-muted);
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
-.tab-content > p.text-gray-400,
-.tab-content > div p.text-gray-400:first-of-type {
-    color: #444455 !important;
+.nav-item:hover {
+    background: #161b22;
+    color: #e6edf3;
 }
 
-/* Keep titles inside dark cards white */
-.bg-gray-800 h2,
-.bg-gray-800 h3 {
-    color: #ffffff !important;
+.nav-item.active {
+    background: rgba(59, 130, 246, 0.12);
+    color: #58a6ff;
+    border-left-color: #3b82f6;
 }
 
-/* Inside cards/boxes - keep light text on dark backgrounds */
-.bg-gray-800 h2,
-.bg-gray-800 h3,
-.glass-card h2,
-.glass-card h3,
-.service-card h2,
-.service-card h3 {
-    color: #ffffff !important;
+.nav-item.active svg { color: #58a6ff; }
+
+.nav-sub-item {
+    cursor: pointer;
+    padding: 0.4rem 0.75rem;
+    margin: 0.1rem 0;
+    font-size: 0.85rem;
+    border-left: 2px solid transparent;
+    color: var(--tx-muted);
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
-.bg-gray-800 label,
-.bg-gray-800 span,
-.bg-gray-800 p,
-.bg-gray-800 div {
-    color: inherit;
+.nav-sub-item:hover { background: #161b22; color: #e6edf3; }
+
+.nav-sub-item.active {
+    background: rgba(59, 130, 246, 0.12);
+    color: #58a6ff;
+    border-left-color: #3b82f6;
 }
 
-/* ============================================
-   CARDS - Cyber Glass Panels
-   ============================================ */
+.nav-dropdown-content { transition: all 0.2s ease; }
+.rotate { transform: rotate(180deg); }
+
+/* ============================================================
+   CARDS — flat, one elevation, border-step hover (no glow/sweep)
+   ============================================================ */
 .service-card,
-.glass-card {
-    background: rgba(20, 20, 30, 0.95);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    transition: all 0.3s ease;
-    position: relative;
-    overflow: hidden;
-}
-
-.service-card::before,
-.glass-card::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: -100%;
-    width: 100%;
-    height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(255, 0, 51, 0.1), transparent);
-    transition: left 0.5s ease;
-}
-
-.service-card:hover::before,
-.glass-card:hover::before {
-    left: 100%;
+.stat-card {
+    background: #1f2937;                 /* gray-800 */
+    border: 1px solid #374151;          /* gray-700 */
+    border-radius: 0.5rem;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 
 .service-card:hover,
-.glass-card:hover {
-    border-color: var(--red);
-    box-shadow:
-        0 0 20px var(--red-glow),
-        inset 0 0 30px rgba(255, 0, 51, 0.05);
-    transform: translateY(-2px);
-}
-
-.stat-card {
-    background: linear-gradient(135deg, rgba(25, 20, 35, 0.98) 0%, rgba(15, 15, 22, 0.98) 100%);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    position: relative;
-    overflow: hidden;
-}
-
-.stat-card::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, var(--red) 0%, var(--purple) 50%, var(--blue) 100%);
-    box-shadow: 0 0 15px var(--red-glow);
-}
-
 .stat-card:hover {
-    border-color: var(--purple);
-    box-shadow: 0 0 30px var(--purple-glow);
+    border-color: #4b5563;              /* gray-600 */
 }
 
-.stat-card.client-count-container {
-    overflow: visible;
+.stat-card.client-count-container { overflow: visible; }
+
+/* ============================================================
+   MISC HELPERS
+   ============================================================ */
+[x-cloak] { display: none !important; }
+
+.spinner {
+    border: 2px solid var(--bd);
+    border-top-color: #3b82f6;
+    border-radius: 50%;
+    width: 16px;
+    height: 16px;
+    animation: spin 0.8s linear infinite;
 }
 
-/* ============================================
-   BUTTONS - Chamfered Cyber Style
-   ============================================ */
-button, .btn, [type="submit"] {
-    font-family: 'Orbitron', 'JetBrains Mono', monospace;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-weight: 600;
-    font-size: 0.8rem;
-    transition: all 0.2s ease;
-}
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
-/* Red Button - Primary Action */
-.bg-red-600 {
-    background: linear-gradient(180deg, var(--red) 0%, var(--red-dark) 100%) !important;
-    border: none !important;
-    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
-    box-shadow: 0 0 20px var(--red-glow);
-}
-
-.bg-red-600:hover {
-    box-shadow: 0 0 40px var(--red-glow), 0 0 60px rgba(255, 0, 51, 0.3);
-    transform: translateY(-2px);
-}
-
-/* Blue Button - Secondary */
-.bg-blue-600 {
-    background: linear-gradient(180deg, var(--blue-bright) 0%, var(--blue-dark) 100%) !important;
-    border: none !important;
-    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
-    box-shadow: 0 0 20px var(--blue-glow);
-}
-
-.bg-blue-600:hover {
-    box-shadow: 0 0 40px var(--blue-glow), 0 0 60px rgba(0, 85, 255, 0.3);
-    transform: translateY(-2px);
-}
-
-/* Purple Button - Accent */
-.bg-purple-600 {
-    background: linear-gradient(180deg, var(--purple-bright) 0%, var(--purple-dark) 100%) !important;
-    border: none !important;
-    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
-    box-shadow: 0 0 20px var(--purple-glow);
-}
-
-.bg-purple-600:hover {
-    box-shadow: 0 0 40px var(--purple-glow), 0 0 60px rgba(170, 0, 255, 0.3);
-    transform: translateY(-2px);
-}
-
-/* Green Button - Success */
-.bg-green-600 {
-    background: linear-gradient(180deg, var(--green) 0%, #00cc55 100%) !important;
-    border: none !important;
-    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
-    box-shadow: 0 0 20px var(--green-glow);
-    color: #000 !important;
-}
-
-.bg-green-600:hover {
-    box-shadow: 0 0 40px var(--green-glow);
-    transform: translateY(-2px);
-}
-
-/* Gray Button - Ghost */
-.bg-gray-600, .bg-gray-700 {
-    background: rgba(20, 20, 30, 0.9) !important;
-    border: 1px solid var(--border) !important;
-    clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
-}
-
-.bg-gray-600:hover, .bg-gray-700:hover {
-    border-color: var(--blue) !important;
-    box-shadow: 0 0 20px var(--blue-glow);
-}
-
-/* Cyan maps to blue */
-.bg-cyan-600 {
-    background: linear-gradient(180deg, var(--blue-bright) 0%, var(--blue-dark) 100%) !important;
-    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
-    box-shadow: 0 0 20px var(--blue-glow);
-}
-
-/* ============================================
-   INPUTS - Terminal Style
-   ============================================ */
-input, select, textarea {
-    background: rgba(0, 0, 0, 0.8) !important;
-    border: 1px solid var(--border) !important;
-    color: var(--text);
-    font-family: 'JetBrains Mono', monospace;
-    transition: all 0.2s ease;
-}
-
-input:focus, select:focus, textarea:focus {
-    border-color: var(--red) !important;
-    box-shadow: 0 0 15px var(--red-glow), inset 0 0 10px rgba(255, 0, 51, 0.1) !important;
-    outline: none !important;
-}
-
-input::placeholder {
-    color: var(--text-muted);
-}
-
-select option {
-    background: #1a1a2e !important;
-    color: #ffffff !important;
-    padding: 8px;
-}
-
-/* ============================================
-   STATUS - Neon Indicators
-   ============================================ */
-.status-online {
-    background: var(--green);
-    box-shadow: 0 0 15px var(--green-glow);
-}
-
-.status-offline {
-    background: var(--red);
-    box-shadow: 0 0 15px var(--red-glow);
-}
-
-.status-checking {
-    background: var(--yellow);
-    box-shadow: 0 0 15px var(--yellow-glow);
-    animation: neon-pulse 1.5s infinite;
-}
-
-@keyframes neon-pulse {
-    0%, 100% {
-        opacity: 1;
-        box-shadow: 0 0 15px var(--yellow-glow);
-    }
-    50% {
-        opacity: 0.7;
-        box-shadow: 0 0 25px var(--yellow-glow);
-    }
-}
-
-@keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
-}
-
-/* ============================================
-   TABLES - Data Grid
-   ============================================ */
-table {
-    border-collapse: separate;
-    border-spacing: 0;
-}
-
-thead {
-    background: rgba(255, 0, 51, 0.1);
-}
-
-th {
-    font-family: 'Orbitron', monospace;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-size: 0.7rem;
-    color: var(--red);
-    border-bottom: 1px solid var(--red) !important;
-    padding: 1rem;
-    text-shadow: 0 0 10px var(--red-glow);
-}
-
-tr {
-    transition: all 0.15s ease;
-}
-
-tbody tr:hover {
-    background: rgba(255, 0, 51, 0.05);
-}
-
-td {
-    border-bottom: 1px solid var(--border);
-}
-
-/* ============================================
-   LOG CONTAINER - Terminal
-   ============================================ */
-.log-container {
-    max-height: 400px;
-    overflow-y: auto;
-    background: rgba(0, 0, 0, 0.9);
-    border: 1px solid var(--border);
-    font-size: 0.8rem;
-}
-
-.log-container::-webkit-scrollbar {
-    width: 6px;
-}
-
-.log-container::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.5);
-}
-
-.log-container::-webkit-scrollbar-thumb {
-    background: var(--red);
-    box-shadow: 0 0 10px var(--red-glow);
-}
-
-.log-tab {
-    cursor: pointer;
-    transition: all 0.15s ease;
-    color: var(--text-dim);
-}
-
-.log-tab:hover {
-    color: var(--text);
-}
-
-.log-tab.active {
-    color: var(--red);
-    border-color: var(--red) !important;
-    text-shadow: 0 0 10px var(--red-glow);
-}
-
-/* ============================================
-   TOOLTIPS
-   ============================================ */
+/* Client tooltip (hover popover on the dashboard client-count card) */
 .client-tooltip {
     display: none;
     position: absolute;
     top: 100%;
     right: 0;
     margin-top: 10px;
-    background: rgba(10, 10, 15, 0.98);
-    border: 1px solid var(--blue);
-    border-radius: 8px;
+    background: #161b22;
+    border: 1px solid var(--bd);
+    border-radius: 0.5rem;
     padding: 1rem;
-    z-index: 9999;
+    z-index: 50;
     min-width: 300px;
     max-height: 400px;
     overflow-y: auto;
-    box-shadow: 0 0 30px var(--blue-glow);
-    backdrop-filter: blur(10px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.client-count-container:hover .client-tooltip { display: block; }
+
+.log-container {
+    max-height: 400px;
+    overflow-y: auto;
+    background: #0d1117;
+    border: 1px solid var(--bd);
+    font-size: 0.8rem;
 }
 
-.client-count-container:hover .client-tooltip {
-    display: block;
-}
-
-/* ============================================
-   BADGES - Neon Tags
-   ============================================ */
-.bg-purple-600.text-\[10px\],
-.badge {
-    background: var(--purple) !important;
-    color: #fff;
-    font-family: 'Orbitron', monospace;
-    font-size: 0.55rem;
-    letter-spacing: 0.05em;
-    box-shadow: 0 0 15px var(--purple-glow);
-}
-
-/* ============================================
-   PROGRESS BARS - Neon
-   ============================================ */
-.bg-blue-500 {
-    background: linear-gradient(90deg, var(--blue-dark) 0%, var(--blue-bright) 100%) !important;
-    box-shadow: 0 0 15px var(--blue-glow);
-}
-
-.bg-purple-500 {
-    background: linear-gradient(90deg, var(--purple-dark) 0%, var(--purple-bright) 100%) !important;
-    box-shadow: 0 0 15px var(--purple-glow);
-}
-
-.bg-green-500 {
-    background: linear-gradient(90deg, #00aa44 0%, var(--green) 100%) !important;
-    box-shadow: 0 0 15px var(--green-glow);
-}
-
-.bg-red-500 {
-    background: linear-gradient(90deg, var(--red-dark) 0%, var(--red-bright) 100%) !important;
-    box-shadow: 0 0 15px var(--red-glow);
-}
-
-/* ============================================
-   MODALS
-   ============================================ */
-.modal-overlay {
-    background: rgba(0, 0, 0, 0.95);
-    backdrop-filter: blur(5px);
-}
-
-.modal-content {
-    background: rgba(10, 10, 15, 0.98);
-    border: 1px solid var(--red);
-    box-shadow: 0 0 50px var(--red-glow), inset 0 0 50px rgba(255, 0, 51, 0.02);
-}
-
-/* ============================================
-   SCROLLBARS - Neon
-   ============================================ */
-::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-}
-
-::-webkit-scrollbar-track {
-    background: var(--black);
-}
-
-::-webkit-scrollbar-thumb {
-    background: var(--red-dark);
-}
-
-::-webkit-scrollbar-thumb:hover {
-    background: var(--red);
-    box-shadow: 0 0 10px var(--red-glow);
-}
-
-/* ============================================
-   LINKS
-   ============================================ */
-a {
-    color: var(--blue-bright);
-    transition: all 0.2s ease;
-}
-
-a:hover {
-    color: var(--purple-bright);
-    text-shadow: 0 0 10px var(--purple-glow);
-}
-
-/* ============================================
-   TEXT COLORS - Neon
-   ============================================ */
-.text-blue-400, .text-blue-500 {
-    color: var(--blue-bright) !important;
-    text-shadow: 0 0 10px var(--blue-glow);
-}
-
-.text-purple-400, .text-purple-500 {
-    color: var(--purple-bright) !important;
-    text-shadow: 0 0 10px var(--purple-glow);
-}
-
-.text-green-400, .text-green-500 {
-    color: var(--green) !important;
-    text-shadow: 0 0 10px var(--green-glow);
-}
-
-.text-yellow-400, .text-yellow-500 {
-    color: var(--yellow) !important;
-    text-shadow: 0 0 10px var(--yellow-glow);
-}
-
-.text-red-400, .text-red-500 {
-    color: var(--red) !important;
-    text-shadow: 0 0 10px var(--red-glow);
-}
-
-.text-cyan-400, .text-cyan-500 {
-    color: var(--blue-bright) !important;
-    text-shadow: 0 0 10px var(--blue-glow);
-}
-
-.text-gray-400 {
-    color: var(--text-dim) !important;
-}
-
-/* Border colors */
-.border-blue-500, .border-blue-400 {
-    border-color: var(--blue) !important;
-}
-
-.border-purple-500, .border-purple-400 {
-    border-color: var(--purple) !important;
-}
-
-.border-gray-700, .border-gray-600 {
-    border-color: var(--border) !important;
-}
-
-/* Background overrides */
-.bg-gray-800 {
-    background: var(--surface) !important;
-}
-
-.bg-gray-900 {
-    background: var(--black-soft) !important;
-}
-
-/* Only body should be transparent to show gradient */
-body.bg-gray-900 {
-    background: transparent !important;
-}
-
-/* ============================================
-   RESPONSIVE
-   ============================================ */
 @media (max-width: 768px) {
-    .sidebar {
-        width: 100%;
-        min-height: auto;
-    }
-    .main-content,
-    .main-content-collapsed {
-        margin-left: 0;
-    }
+    .sidebar { width: 100%; min-height: auto; }
+    .main-content, .main-content-collapsed { margin-left: 0; }
 }
 
-/* ============================================
-   UTILITIES
-   ============================================ */
-[x-cloak] {
-    display: none !important;
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
 
-.spinner {
-    border: 2px solid var(--border);
-    border-top-color: var(--red);
-    border-radius: 50%;
-    width: 16px;
-    height: 16px;
-    animation: spin 0.8s linear infinite;
-    box-shadow: 0 0 10px var(--red-glow);
+/* ============================================================
+   SCROLLBARS — neutral, thin
+   ============================================================ */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: #30363d;
+    border-radius: 6px;
+    border: 2px solid transparent;
+    background-clip: content-box;
 }
+::-webkit-scrollbar-thumb:hover { background: #3f4651; }
+* { scrollbar-color: #30363d transparent; }
 
-@keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
-}
-
-/* Removed accidental global override of Tailwind's `.flex` utility — it
-   was forcing `position: relative; z-index: 1` on every element with the
-   `flex` class, which broke any `fixed inset-0` overlay that also had
-   `flex items-center justify-center` (e.g. the workflow logs modal).
-   Tailwind's `.flex` should only set `display: flex`. */
-
-/* ============================================
-   UTILITY CLASSES - Color & Effects
-   ============================================ */
-
-/* CSS Variable Aliases for Tailwind-style usage */
-:root {
-    --tenroot-red: #ff0033;
-    --electric-blue: #0055ff;
-    --neon-purple: #aa00ff;
-}
-
-/* Text Colors */
-.text-electric-blue { color: var(--electric-blue) !important; }
-.text-neon-purple { color: var(--neon-purple) !important; }
-.text-tenroot-red { color: var(--tenroot-red) !important; }
-
-/* Background Colors */
-.bg-electric-blue { background-color: var(--electric-blue) !important; }
-.bg-neon-purple { background-color: var(--neon-purple) !important; }
-.bg-tenroot-red { background-color: var(--tenroot-red) !important; }
-
-/* Border Colors */
-.border-electric-blue { border-color: var(--electric-blue) !important; }
-.border-neon-purple { border-color: var(--neon-purple) !important; }
-.border-tenroot-red { border-color: var(--tenroot-red) !important; }
-
-/* Glow Text Effects */
-.text-glow-red {
-    color: var(--tenroot-red);
-    text-shadow: 0 0 10px rgba(255, 0, 51, 0.5), 0 0 20px rgba(255, 0, 51, 0.3);
-}
-.text-glow-blue {
-    color: var(--electric-blue);
-    text-shadow: 0 0 10px rgba(0, 85, 255, 0.5), 0 0 20px rgba(0, 85, 255, 0.3);
-}
-.text-glow-purple {
-    color: var(--neon-purple);
-    text-shadow: 0 0 10px rgba(170, 0, 255, 0.5), 0 0 20px rgba(170, 0, 255, 0.3);
-}
-
-/* Font Classes */
-.font-orbitron { font-family: 'Orbitron', 'JetBrains Mono', monospace !important; }
-.font-mono { font-family: 'JetBrains Mono', 'Fira Code', monospace !important; }
-
-/* Cyberpunk Background for standalone pages */
-.cyberpunk-bg {
-    background: linear-gradient(180deg, #0a0a12 0%, #000000 100%);
-    min-height: 100vh;
-}
-
-/* CRT Overlay for standalone pages */
-.crt-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    pointer-events: none;
-    z-index: 9999;
-}
-
-.crt-overlay::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: repeating-linear-gradient(
-        0deg,
-        rgba(0, 0, 0, 0.03) 0px,
-        rgba(0, 0, 0, 0.03) 1px,
-        transparent 1px,
-        transparent 4px
-    );
-}
-
-.crt-overlay::after {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: radial-gradient(ellipse at center, transparent 60%, rgba(0, 0, 0, 0.3) 100%);
-}
-
-/* ============================================
-   BUTTONS - Ensure White Text
-   ============================================ */
-button,
-a[class*="bg-red-"],
-a[class*="bg-blue-"],
-a[class*="bg-purple-"],
-a[class*="bg-gray-"] {
-    color: #ffffff !important;
-}
-
-/* Small/muted text */
-.text-muted,
-.text-sm.text-gray-400,
-.text-xs.text-gray-500 {
-    color: var(--text-dim);
-}
-
-/* Form labels */
-label {
-    color: var(--text-dim) !important;
-}
-
-label.text-white,
-span.text-white {
-    color: #ffffff !important;
-}
-
-/* ============================================
-   FLATPICKR CUSTOM DARK THEME
-   ============================================ */
-.flatpickr-calendar {
-    background: #1a1a2e !important;
-    border: 1px solid rgba(139, 92, 246, 0.3) !important;
-    border-radius: 12px !important;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), 0 0 20px rgba(139, 92, 246, 0.1) !important;
-}
-
-.flatpickr-months {
-    background: linear-gradient(180deg, #252540 0%, #1a1a2e 100%) !important;
-    border-radius: 12px 12px 0 0 !important;
-    padding: 8px 0 !important;
-}
-
-.flatpickr-months .flatpickr-month {
-    color: #fff !important;
-}
-
-.flatpickr-current-month {
-    font-weight: 600 !important;
-    color: #fff !important;
-}
-
-.flatpickr-current-month .flatpickr-monthDropdown-months,
-.flatpickr-current-month input.cur-year {
-    background: transparent !important;
-    color: #fff !important;
-    font-weight: 600 !important;
-}
-
-.flatpickr-weekdays {
-    background: #252540 !important;
-}
-
-.flatpickr-weekday {
-    color: #8b5cf6 !important;
-    font-weight: 600 !important;
-}
-
-.flatpickr-day {
-    color: #e5e5e5 !important;
-    border-radius: 8px !important;
-}
-
-.flatpickr-day:hover {
-    background: #8b5cf6 !important;
-    border-color: #8b5cf6 !important;
-    color: #fff !important;
-}
-
-.flatpickr-day.selected,
-.flatpickr-day.startRange,
-.flatpickr-day.endRange {
-    background: #8b5cf6 !important;
-    border-color: #8b5cf6 !important;
-    color: #fff !important;
-}
-
-.flatpickr-day.today {
-    border-color: #8b5cf6 !important;
-}
-
-.flatpickr-day.today:hover {
-    background: #8b5cf6 !important;
-    color: #fff !important;
-}
-
-.flatpickr-day.inRange {
-    background: rgba(139, 92, 246, 0.2) !important;
-    border-color: rgba(139, 92, 246, 0.2) !important;
-}
-
-.flatpickr-day.disabled,
-.flatpickr-day.prevMonthDay,
-.flatpickr-day.nextMonthDay {
-    color: #555 !important;
-}
-
-.flatpickr-time {
-    background: #1a1a2e !important;
-    border-top: 1px solid #333 !important;
-    padding: 10px 0 !important;
-    max-height: none !important;
-    height: auto !important;
-}
-
-.flatpickr-time .numInputWrapper {
-    height: 50px !important;
-}
-
-.flatpickr-time input {
-    color: #fff !important;
-    background: #252540 !important;
-    border-radius: 6px !important;
-    font-size: 18px !important;
-    font-weight: 600 !important;
-    height: 50px !important;
-}
-
-.flatpickr-time input:hover,
-.flatpickr-time input:focus {
-    background: #333355 !important;
-}
-
-.flatpickr-time .flatpickr-am-pm {
-    color: #fff !important;
-    background: #252540 !important;
-    border-radius: 6px !important;
-}
-
-.flatpickr-time .flatpickr-time-separator {
-    color: #8b5cf6 !important;
-    font-size: 20px !important;
-    font-weight: bold !important;
-    line-height: 50px !important;
-}
-
-/* Time arrows - always visible */
-.flatpickr-time .numInputWrapper span {
-    opacity: 1 !important;
-    width: 20px !important;
-    height: 22px !important;
-    background: #8b5cf6 !important;
-    border: none !important;
-    border-radius: 4px !important;
-    right: 4px !important;
-}
-
-.flatpickr-time .numInputWrapper span:hover {
-    background: #a78bfa !important;
-}
-
-.flatpickr-time .numInputWrapper span.arrowUp {
-    top: 2px !important;
-}
-
-.flatpickr-time .numInputWrapper span.arrowDown {
-    bottom: 2px !important;
-}
-
-.flatpickr-time .numInputWrapper span::after {
-    border-color: #fff transparent transparent transparent !important;
-}
-
-.flatpickr-time .numInputWrapper span.arrowUp::after {
-    border-color: transparent transparent #fff transparent !important;
-}
-
-.numInputWrapper span {
-    border-color: #444 !important;
-}
-
-.numInputWrapper span:hover {
-    background: rgba(139, 92, 246, 0.3) !important;
-}
-
-.numInputWrapper span svg path {
-    fill: #fff !important;
-}
-
-/* Make time picker scrollable with mouse wheel */
-.flatpickr-time input::-webkit-inner-spin-button,
-.flatpickr-time input::-webkit-outer-spin-button {
-    -webkit-appearance: none;
-    margin: 0;
-}
-
-.flatpickr-months .flatpickr-prev-month,
-.flatpickr-months .flatpickr-next-month {
-    fill: #8b5cf6 !important;
-}
-
-.flatpickr-months .flatpickr-prev-month:hover svg,
-.flatpickr-months .flatpickr-next-month:hover svg {
-    fill: #a78bfa !important;
-}
-
-/* ---------------------------------------------------------------------------
- * Tailwind extensions — color shades NOT in the precompiled css/tailwind.css
- * bundle. Added by hand because rebuilding Tailwind requires the node
- * toolchain and these are just static color utilities. Values match
- * Tailwind's default palette so they look identical to the compiled set.
- *
- * Used by:
- *   - Action buttons (Data ZIP, CVE CSV, multi-client ZIP, Support Bundle)
- *     for the "raw/data export" indigo grouping.
- *   - getTypeColor() in js/app.js for the workflow-dashboard type chips.
- * --------------------------------------------------------------------------- */
+/* ============================================================
+   STATIC TAILWIND COLOR UTILITIES
+   Shades the precompiled bundle may not emit (used by getTypeColor() in
+   js/app.js for workflow type chips + the module-themed action buttons).
+   Plain Tailwind-default values — no neon.
+   ============================================================ */
 .bg-indigo-600 { background-color: #4f46e5; }
 .bg-indigo-700 { background-color: #4338ca; }
 .bg-slate-700  { background-color: #334155; }
@@ -1146,18 +260,79 @@ span.text-white {
 .bg-rose-700   { background-color: #be123c; }
 .bg-teal-700   { background-color: #0f766e; }
 .bg-purple-700 { background-color: #6d28d9; }
-.hover\:bg-indigo-700:hover { background-color: #4338ca; }
-.hover\:bg-amber-800:hover  { background-color: #92400e; }
-.hover\:bg-rose-800:hover   { background-color: #9f1239; }
-
-/* Additional shade-800 utilities + hover variants used by the module-themed
- * action buttons (AWS=orange, Azure=blue, agentic=green, etc.) so each row's
- * primary/secondary actions can step from shade-600 → shade-700 → shade-800. */
 .bg-orange-800 { background-color: #9a3412; }
 .bg-yellow-800 { background-color: #854d0e; }
 .bg-green-800  { background-color: #166534; }
+.hover\:bg-indigo-700:hover { background-color: #4338ca; }
+.hover\:bg-amber-800:hover  { background-color: #92400e; }
+.hover\:bg-rose-800:hover   { background-color: #9f1239; }
 .hover\:bg-orange-800:hover { background-color: #9a3412; }
 .hover\:bg-blue-800:hover   { background-color: #1e40af; }
 .hover\:bg-green-800:hover  { background-color: #166534; }
 .hover\:bg-yellow-700:hover { background-color: #a16207; }
 .hover\:bg-yellow-800:hover { background-color: #854d0e; }
+
+/* ============================================================
+   FLATPICKR — calm dark theme (blue accent, no purple/neon)
+   ============================================================ */
+.flatpickr-calendar {
+    background: #161b22 !important;
+    border: 1px solid var(--bd) !important;
+    border-radius: 0.5rem !important;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6) !important;
+}
+.flatpickr-months,
+.flatpickr-weekdays { background: #1c232c !important; }
+.flatpickr-months .flatpickr-month,
+.flatpickr-current-month,
+.flatpickr-current-month .flatpickr-monthDropdown-months,
+.flatpickr-current-month input.cur-year { color: #e6edf3 !important; }
+.flatpickr-weekday { color: var(--tx-muted) !important; font-weight: 600 !important; }
+.flatpickr-day { color: #c9d1d9 !important; border-radius: 0.375rem !important; }
+.flatpickr-day:hover { background: #1c232c !important; border-color: #1c232c !important; }
+.flatpickr-day.selected,
+.flatpickr-day.startRange,
+.flatpickr-day.endRange,
+.flatpickr-day.today:hover {
+    background: #3b82f6 !important;
+    border-color: #3b82f6 !important;
+    color: #fff !important;
+}
+.flatpickr-day.today { border-color: #3b82f6 !important; }
+.flatpickr-day.inRange {
+    background: rgba(59, 130, 246, 0.18) !important;
+    border-color: rgba(59, 130, 246, 0.18) !important;
+}
+.flatpickr-day.disabled,
+.flatpickr-day.prevMonthDay,
+.flatpickr-day.nextMonthDay { color: #484f58 !important; }
+.flatpickr-time { background: #161b22 !important; border-top: 1px solid var(--bd) !important; }
+.flatpickr-time input,
+.flatpickr-time .flatpickr-am-pm {
+    color: #e6edf3 !important;
+    background: #1c232c !important;
+    border-radius: 0.375rem !important;
+    font-weight: 600 !important;
+}
+.flatpickr-time input:hover,
+.flatpickr-time input:focus { background: #262d38 !important; }
+.flatpickr-time .flatpickr-time-separator { color: var(--tx-muted) !important; }
+.flatpickr-months .flatpickr-prev-month,
+.flatpickr-months .flatpickr-next-month { fill: #8b949e !important; }
+.flatpickr-months .flatpickr-prev-month:hover svg,
+.flatpickr-months .flatpickr-next-month:hover svg { fill: #58a6ff !important; }
+.numInputWrapper span svg path { fill: #fff !important; }
+
+/* ============================================================
+   FILLED BRAND BUTTONS — keep readable white text on colored fills
+   (behavior-preserving until per-component DaisyUI migration).
+   ============================================================ */
+button[class*="bg-blue-"],
+button[class*="bg-red-"],
+button[class*="bg-purple-"],
+button[class*="bg-orange-"],
+a[class*="bg-blue-6"], a[class*="bg-blue-7"],
+a[class*="bg-red-6"], a[class*="bg-red-7"],
+a[class*="bg-purple-6"], a[class*="bg-purple-7"],
+a[class*="bg-orange-6"], a[class*="bg-orange-7"],
+a[class*="bg-indigo-"], a[class*="bg-slate-7"] { color: #ffffff; }
