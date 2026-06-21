@@ -125,7 +125,9 @@
     </div>
     <p style="color:var(--muted);font-size:11px;margin-top:8px">Runs you launch (Agentic, Memory, CVE, cloud…) while this workspace is active are tagged to it automatically. Open it any time to fuse them.</p>
     <h2 style="display:flex;align-items:center;justify-content:space-between">Workspaces
-      <button class="ghost" style="font-size:11px;padding:4px 10px" onclick="document.getElementById('case-import-file').click()" title="Import a workspace from an exported .intactcase.json bundle">⬆ Import</button>
+      <!-- Export/Import is built + backend-ready but HIDDEN pending more testing.
+           Re-enable by removing display:none here and on the per-row Export button. -->
+      <button class="ghost" style="font-size:11px;padding:4px 10px;display:none" onclick="document.getElementById('case-import-file').click()" title="Import a workspace from an exported .intactcase.json bundle">⬆ Import</button>
     </h2>
     <input id="case-import-file" type="file" accept=".json,application/json" style="display:none" onchange="importWorkspace(event)"/>
     <div id="caselist"></div>
@@ -178,8 +180,16 @@ function activateWorkspace(id, ev){ if(ev) ev.stopPropagation();
 // <a download> + server Content-Disposition triggers a file download without
 // navigating the (iframed) page.
 function exportWorkspace(id, ev){ if(ev) ev.stopPropagation();
-  const a=document.createElement('a'); a.href='/api/cases/'+id+'/export'; a.download='';
-  document.body.appendChild(a); a.click(); a.remove(); toast('exporting workspace…'); }
+  toast('exporting workspace…');
+  fetch('/api/cases/'+id+'/export').then(async r=>{
+    if(!r.ok){ const d=await r.json().catch(()=>({})); toast('export failed: '+(d.error||r.status)); return; }
+    const blob=await r.blob();
+    const cd=r.headers.get('Content-Disposition')||''; const m=cd.match(/filename="?([^"]+)"?/);
+    const url=URL.createObjectURL(blob), a=document.createElement('a');
+    a.href=url; a.download=(m&&m[1])||('case_'+id+'.intactcase.json');
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  }).catch(e=>toast('export failed: '+e.message));
+}
 
 // Import a workspace from an exported bundle. Runs as a System-workspace op on
 // the backend (creates a fresh case container; doesn't touch the active case).
@@ -204,7 +214,7 @@ function loadCases(cb){
         <div class="row" style="gap:6px">
           ${isAct?'<span class="defbadge" style="color:var(--ok)">active</span>'
                  :`<button class="ghost" style="font-size:11px;padding:3px 8px" onclick="activateWorkspace('${c.case_id}',event)">Use</button>`}
-          <button class="ghost" style="font-size:11px;padding:3px 8px" onclick="exportWorkspace('${c.case_id}',event)" title="Download this workspace as a portable bundle">Export</button>
+          <button class="ghost" style="font-size:11px;padding:3px 8px;display:none" onclick="exportWorkspace('${c.case_id}',event)" title="Download this workspace as a portable bundle">Export</button>
           ${c.is_default?'<span class="defbadge">default</span>'
             :c.is_system?'<span class="defbadge">system</span>'
                        :`<button class="del" onclick="delWorkspace('${c.case_id}','${nm}',event)">delete</button>`}
