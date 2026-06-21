@@ -24,6 +24,26 @@ def test_default_case_cannot_be_deleted():
     assert store.get_case(did), "Default must still exist after a refused delete"
 
 
+def test_ensure_system_case_is_idempotent_and_undeletable():
+    a = store.ensure_system_case()
+    b = store.ensure_system_case()
+    assert a == b, "ensure_system_case must return the same id (no duplicate System)"
+    assert store.is_system_case(a) and not store.is_default_case(a)
+    res = store.delete_case(a)
+    assert res.get("deleted") is False and "system" in (res.get("error") or "").lower()
+    assert store.get_case(a), "System must still exist after a refused delete"
+
+
+def test_system_run_types_route_to_system_workspace():
+    sysid = store.ensure_system_case()
+    rid = ws.create_automation_run("maintenance", "sys run", details={})
+    from services.file_storage_service import get_workflow
+    assert get_workflow(rid).get("case_id") == sysid, \
+        "a system-type run must tag to the System workspace regardless of active case"
+    from services.storage.workflow_store import delete_workflow
+    delete_workflow(rid)
+
+
 def test_members_are_tag_based():
     cid = store.create_case("ws-test-members")
     rid = ws.create_automation_run("agentic", "tagged run", details={"client_name": "H"},

@@ -35,12 +35,14 @@ def _bind_active_case():
             from services import workflow_service as ws
             from services.file_storage_service import reassign_null_case
             default_id = store.ensure_default_case()
+            system_id = store.ensure_system_case()
             n = reassign_null_case(default_id, list(ws.AGENTIC_TYPES))
-            if n:
-                print(f"[CASES] backfilled {n} legacy run(s) into Default ({default_id})",
+            m = reassign_null_case(system_id, list(ws.SYSTEM_TYPES))
+            if n or m:
+                print(f"[CASES] backfilled {n} run(s) into Default, {m} into System",
                       flush=True)
         except Exception as e:
-            print(f"[CASES] default-case bootstrap failed: {e}", flush=True)
+            print(f"[CASES] workspace bootstrap failed: {e}", flush=True)
 
 
 @case_bp.route("/api/cases", methods=["POST"])
@@ -69,15 +71,17 @@ def list_cases():
         det = r.get("details") or {}
         cid = r.get("run_id")
         is_default = bool(det.get("is_default") or det.get("name") == store.DEFAULT_CASE_NAME)
+        is_system = bool(det.get("is_system") or det.get("name") == store.SYSTEM_CASE_NAME)
         # member count = runs tagged to this workspace (+ legacy explicit members)
         members = ws.get_automation_runs_by_case(cid) if hasattr(ws, "get_automation_runs_by_case") else []
         cases.append({"case_id": cid, "name": det.get("name"),
                       "status": r.get("status"), "is_default": is_default,
+                      "is_system": is_system, "builtin": is_default or is_system,
                       "members": len(members) or len(det.get("member_run_ids") or []),
                       "created_at": r.get("created_at")})
-    # Default first, then newest-first among the rest (two stable passes)
+    # Default first, then System, then newest-first among the rest (stable passes)
     cases.sort(key=lambda c: c.get("created_at") or "", reverse=True)
-    cases.sort(key=lambda c: not c["is_default"])
+    cases.sort(key=lambda c: (not c["is_default"], not c["is_system"]))
     return jsonify({"cases": cases})
 
 
@@ -133,6 +137,8 @@ def get_case(case_id):
                     "has_graph": bool(d.get("fusion_graph")),
                     "is_default": bool(d.get("is_default")
                                        or d.get("name") == store.DEFAULT_CASE_NAME),
+                    "is_system": bool(d.get("is_system")
+                                      or d.get("name") == store.SYSTEM_CASE_NAME),
                     # null-guarded for cases created before these existed
                     "analysis": d.get("analysis") or {},
                     "dispositions": d.get("dispositions") or [],
@@ -143,12 +149,12 @@ def get_case(case_id):
 @case_bp.route("/api/cases/<case_id>", methods=["DELETE"])
 def delete_case(case_id):
     """Delete a workspace and everything in it (its tagged runs + baseline). The
-    Default workspace cannot be deleted (409)."""
+    built-in Default and System workspaces cannot be deleted (409)."""
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     res = store.delete_case(case_id)
     if not res.get("deleted"):
-        code = 409 if "default" in (res.get("error") or "") else 400
+        code = 409 if "cannot be deleted" in (res.get("error") or "") else 400
         return jsonify(res), code
     return jsonify({"case_id": case_id, **res})
 

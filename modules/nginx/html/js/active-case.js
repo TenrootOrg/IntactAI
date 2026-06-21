@@ -74,7 +74,7 @@
     const { id, cases } = await ensureActiveCase();
     const options = cases.map(c =>
       `<option value="${c.case_id}" ${c.case_id === id ? 'selected' : ''}>` +
-      `${c.is_default ? '★ ' : ''}${escapeHtml(c.name || c.case_id)}</option>`).join('');
+      `${c.is_default ? '★ ' : c.is_system ? '⚙ ' : ''}${escapeHtml(c.name || c.case_id)}</option>`).join('');
     el.innerHTML =
       `<span style="font-size:12px;color:var(--muted,#8b949e)">Workspace</span>
        <select class="ac-select" style="width:auto;min-width:160px">${options}

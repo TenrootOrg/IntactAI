@@ -111,13 +111,6 @@
                     <span x-show="!$store.app.sidebarCollapsed">Workflows</span>
                 </div>
 
-                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'cases', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('cases')" :title="$store.app.sidebarCollapsed ? 'Cases' : ''">
-                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
-                    </svg>
-                    <span x-show="!$store.app.sidebarCollapsed">Cases</span>
-                </div>
-
                 <!-- Automation (collapsible parent) — hides entirely when
                      ALL its sub-modules are not_installed. Without this the
                      header would float over an empty space on a bare VM. -->
@@ -294,6 +287,20 @@
                     <span x-show="!$store.app.sidebarCollapsed">Downloads</span>
                 </div>
 
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'case-analysis', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('case-analysis')" :title="$store.app.sidebarCollapsed ? 'Case Analysis' : ''">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                    </svg>
+                    <span x-show="!$store.app.sidebarCollapsed">Case Analysis</span>
+                </div>
+
+                <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'cases', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('cases')" :title="$store.app.sidebarCollapsed ? 'Case Management' : ''">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+                    </svg>
+                    <span x-show="!$store.app.sidebarCollapsed">Case Management</span>
+                </div>
+
                 <div class="nav-item flex items-center gap-3" :class="{ 'active': $store.app.currentTab === 'settings', 'justify-center': $store.app.sidebarCollapsed }" @click="$store.app.switchTab('settings')" :title="$store.app.sidebarCollapsed ? 'Settings' : ''">
                     <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
@@ -337,14 +344,23 @@
             <div id="workspace-bar"
                  class="flex items-center gap-3 mb-5 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700"></div>
 
-            <!-- Cases Tab — the workspace manager (create/select/delete) + fusion view.
-                 Embeds cases.html in manage mode; the top bar above shows the active case. -->
+            <!-- Case Management Tab — create / switch / delete workspaces only. -->
             <div x-show="$store.app.currentTab === 'cases'" x-transition class="tab-content">
                 <div class="mb-4">
-                    <h2 class="text-3xl font-bold text-white">Cases</h2>
-                    <p class="text-gray-400 mt-1 text-sm">Workspaces — create, switch, delete, and fuse the runs in each case.</p>
+                    <h2 class="text-3xl font-bold text-white">Case Management</h2>
+                    <p class="text-gray-400 mt-1 text-sm">Create, switch, and delete workspaces.</p>
                 </div>
-                <iframe id="cases-frame" src="cases.html?embed=1"
+                <iframe id="cases-frame" src="cases.html?embed=1&view=manage"
+                        style="width:100%;height:calc(100vh - 210px);border:1px solid #2a323c;border-radius:8px;background:#0d1117"></iframe>
+            </div>
+
+            <!-- Case Analysis Tab — the fused report/advisory/timeline/chat for the active workspace. -->
+            <div x-show="$store.app.currentTab === 'case-analysis'" x-transition class="tab-content">
+                <div class="mb-4">
+                    <h2 class="text-3xl font-bold text-white">Case Analysis</h2>
+                    <p class="text-gray-400 mt-1 text-sm">Fused report, advisory, timeline &amp; chat for the active workspace.</p>
+                </div>
+                <iframe id="analysis-frame" src="cases.html?embed=1&view=analysis"
                         style="width:100%;height:calc(100vh - 210px);border:1px solid #2a323c;border-radius:8px;background:#0d1117"></iframe>
             </div>
 
@@ -4830,18 +4846,29 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
     <script src="js/scheduler.js"></script>
     <!-- Render the active-workspace selector + keep run lists scoped to it -->
     <script>
+    function escWs(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+    async function renderTopWorkspace(bar) {
+        const { id, cases } = await window.ActiveCase.ensureActiveCase();
+        const active = (cases || []).find(c => c.case_id === id);
+        const name = active ? (active.name || active.case_id) : '—';
+        // Top bar = just the active workspace name, as a link to the Case Management tab.
+        bar.innerHTML =
+            `<span style="font-size:12px;color:#8b949e">Workspace:</span>
+             <a href="#cases" id="ws-link" style="color:#58a6ff;font-weight:600">${escWs(name)}</a>
+             <span style="font-size:12px;color:#8b949e">· manage ▸</span>`;
+        bar.querySelector('#ws-link').addEventListener('click', function (e) {
+            e.preventDefault();
+            if (window.Alpine) Alpine.store('app').switchTab('cases');
+        });
+    }
     document.addEventListener('DOMContentLoaded', async function () {
         const bar = document.getElementById('workspace-bar');
         if (bar && window.ActiveCase) {
-            await window.ActiveCase.ensureActiveCase();
-            // No "Manage" link — the sidebar Cases tab is the manager now.
-            await window.ActiveCase.renderCaseSelector(bar, { manageLink: false });
-            // Keep the top selector in sync when the embedded Cases tab (a separate
-            // window) changes the active workspace — localStorage fires 'storage' cross-frame.
+            await renderTopWorkspace(bar);
+            // Refresh the name when the Case Management tab (a separate window) changes
+            // the active workspace — localStorage fires 'storage' cross-frame.
             window.addEventListener('storage', function (e) {
-                if (e.key === 'activeCaseId') {
-                    window.ActiveCase.renderCaseSelector(bar, { manageLink: false });
-                }
+                if (e.key === 'activeCaseId') renderTopWorkspace(bar);
             });
         }
     });

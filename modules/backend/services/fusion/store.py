@@ -18,6 +18,7 @@ from .mappers import map_memory, map_agentic, map_cve, map_timesketch, map_cloud
 CASE_TYPE = "case"
 BASELINE_TYPE = "fusion_baseline"
 DEFAULT_CASE_NAME = "Default"
+SYSTEM_CASE_NAME = "System"
 
 
 def _env_key_from_members(members) -> str | None:
@@ -129,7 +130,8 @@ def _ws():
 
 
 def create_case(name, *, time_window=None, initial_access=None,
-                min_severity="medium", member_run_ids=None, is_default=False) -> str:
+                min_severity="medium", member_run_ids=None, is_default=False,
+                is_system=False) -> str:
     # The case row is itself a workflow row but is NEVER case-scoped — pass
     # case_id=None explicitly so the request's active case doesn't tag it.
     return _ws().create_automation_run(
@@ -137,7 +139,7 @@ def create_case(name, *, time_window=None, initial_access=None,
         details={"name": name, "time_window": time_window or {},
                  "initial_access_estimate": initial_access, "min_severity": min_severity,
                  "member_run_ids": list(member_run_ids or []),
-                 "is_default": bool(is_default),
+                 "is_default": bool(is_default), "is_system": bool(is_system),
                  "fusion_graph": {}, "report_md": "", "chat_messages": []})
 
 
@@ -188,14 +190,32 @@ def ensure_default_case() -> str:
     return create_case(DEFAULT_CASE_NAME, is_default=True)
 
 
+def ensure_system_case() -> str:
+    """Return the id of the System workspace (where Settings-page/system runs live),
+    creating it if missing. Idempotent — safe to call on every startup."""
+    ws = _ws()
+    for r in ws.get_all_automation_runs() or []:
+        if r.get("automation_type") != CASE_TYPE:
+            continue
+        det = r.get("details") or {}
+        if det.get("is_system") or det.get("name") == SYSTEM_CASE_NAME:
+            return r.get("run_id")
+    return create_case(SYSTEM_CASE_NAME, is_system=True)
+
+
 def is_default_case(case_id) -> bool:
     d = get_case(case_id)
     return bool(d.get("is_default") or d.get("name") == DEFAULT_CASE_NAME)
 
 
+def is_system_case(case_id) -> bool:
+    d = get_case(case_id)
+    return bool(d.get("is_system") or d.get("name") == SYSTEM_CASE_NAME)
+
+
 def delete_case(case_id) -> dict:
     """Delete a workspace and EVERYTHING in it: every tagged run, the baseline this
-    case captured, and the case row. Refuses to delete the Default workspace."""
+    case captured, and the case row. Refuses to delete the Default/System workspaces."""
     from services.file_storage_service import delete_workflow
     ws = _ws()
     d = get_case(case_id)
@@ -203,6 +223,8 @@ def delete_case(case_id) -> dict:
         return {"deleted": False, "error": "not found"}
     if d.get("is_default") or d.get("name") == DEFAULT_CASE_NAME:
         return {"deleted": False, "error": "default workspace cannot be deleted"}
+    if d.get("is_system") or d.get("name") == SYSTEM_CASE_NAME:
+        return {"deleted": False, "error": "system workspace cannot be deleted"}
     run_ids = [r.get("run_id") for r in ws.get_automation_runs_by_case(case_id)]
     for rid in run_ids:
         delete_workflow(rid)

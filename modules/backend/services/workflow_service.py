@@ -14,14 +14,24 @@ from services.file_storage_service import (
     get_workflows_by_case,
 )
 
-# Analysis run types that belong to a case (workspace). Infra/admin runs
-# (upgrade, maintenance, msi, support_bundle, init, …) and the case/baseline
-# rows themselves are deliberately NOT case-scoped.
+# Investigation run types that belong to a case (workspace) — these get tagged
+# with the active case and are shown ONLY in that workspace. System/admin runs
+# (upgrade, online_upgrade, prepare_package, maintenance, support_bundle, settings,
+# system_purge) and the internal case/fusion_baseline rows are NOT case work and
+# never appear in a workspace's run list.
 AGENTIC_TYPES = {"agentic", "memory", "cve_scan", "timesketch",
-                 "aws_scan", "azure_scan", "engagement_report"}
+                 "aws_scan", "azure_scan", "engagement_report",
+                 "velociraptor_hunt"}
+
+# Settings-page / system-operation run types. These always run under the built-in
+# "System" workspace (regardless of the browser's active case) so they have a home
+# and never clutter an investigation workspace.
+SYSTEM_TYPES = {"upgrade", "online_upgrade", "prepare_package", "maintenance",
+                "system_purge", "support_bundle", "settings"}
 
 
 _DEFAULT_CASE_CACHE = {"id": None}
+_SYSTEM_CASE_CACHE = {"id": None}
 
 
 def _active_case_from_request():
@@ -37,9 +47,20 @@ def _active_case_from_request():
 
 
 def _resolve_case_id(automation_type, case_id):
-    """Tag an analysis run to a workspace: explicit case_id wins; else the request's
-    active case; else (scheduler/background, no request) the Default workspace, so an
-    analysis run is never orphaned. Infra/admin runs stay untagged (global)."""
+    """Tag a run to a workspace:
+    - System-operation runs (SYSTEM_TYPES) ALWAYS go to the System workspace,
+      regardless of the request's active case.
+    - Investigation runs (AGENTIC_TYPES): explicit case_id wins; else the request's
+      active case; else (scheduler/background) the Default workspace.
+    - Anything else stays untagged."""
+    if automation_type in SYSTEM_TYPES:
+        if not _SYSTEM_CASE_CACHE["id"]:
+            try:
+                from services.fusion import store
+                _SYSTEM_CASE_CACHE["id"] = store.ensure_system_case()
+            except Exception:
+                pass
+        return _SYSTEM_CASE_CACHE["id"] or case_id
     if case_id or automation_type not in AGENTIC_TYPES:
         return case_id
     cid = _active_case_from_request()

@@ -62,15 +62,23 @@
   .defbadge{font-size:10px;color:var(--med);border:1px solid var(--bd);border-radius:8px;padding:1px 6px}
   #wsbar{display:flex;align-items:center;gap:8px}
   #wsbar select{width:auto}
-  /* embed mode: hosted as the "Cases" tab inside the main app — drop our own
-     header (the app's top bar already shows the active workspace) and fill the frame */
+  /* embed mode: hosted inside the main app as a tab — drop our own header
+     (the app's top bar already shows the active workspace) and fill the frame */
   html.embed header{display:none}
   html.embed .wrap{height:100vh}
+  /* view=manage  -> only the left management panel (create / switch / delete)   */
+  /* view=analysis-> only the right fusion view for the active workspace          */
+  html.v-manage .main{display:none}
+  html.v-manage .wrap{grid-template-columns:1fr}
+  html.v-analysis .side{display:none}
+  html.v-analysis .wrap{grid-template-columns:1fr}
 </style>
 <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
 <script src="js/active-case.js?v=1"></script>
-<!-- set embed mode before body renders (no flash of the standalone header) -->
-<script>if(new URLSearchParams(location.search).get('embed')==='1')document.documentElement.classList.add('embed');</script>
+<!-- set embed + view mode before body renders (no flash) -->
+<script>(function(){var q=new URLSearchParams(location.search);
+  if(q.get('embed')==='1')document.documentElement.classList.add('embed');
+  var v=q.get('view'); if(v)document.documentElement.classList.add('v-'+v);})();</script>
 </head>
 <body>
 <header>
@@ -83,12 +91,8 @@
   <div class="side">
     <h2>New Workspace</h2>
     <label>Name</label><input id="cname" placeholder="GOOGLE IR 05-03-2026"/>
-    <div class="row" style="margin-top:6px">
-      <div style="flex:1"><label>Window start</label><input id="wstart" placeholder="2026-06-14"/></div>
-      <div style="flex:1"><label>Window end</label><input id="wend" placeholder="2026-06-18"/></div>
-    </div>
-    <label>Min severity</label>
-    <select id="msev"><option>informational</option><option>low</option><option selected>medium</option><option>high</option><option>critical</option></select>
+    <label>Start date <span style="color:var(--muted)">(optional)</span></label>
+    <input id="wstart" placeholder="2026-06-14"/>
     <div class="row" style="margin-top:10px">
       <button onclick="createWorkspace()">Create workspace</button>
     </div>
@@ -104,19 +108,23 @@
 <script>
 const $=s=>document.querySelector(s), api=(p,o)=>fetch(p,o).then(r=>r.json());
 let sel=null, tab='report';
+const VIEW=new URLSearchParams(location.search).get('view')||'';
+// In manage mode a row click switches the active workspace (no fusion panel here);
+// otherwise it opens the workspace's fusion view.
+function rowClick(id){ if(VIEW==='manage') activateWorkspace(id); else openCase(id); }
 function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2600);}
 function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 
 function createWorkspace(){
   const name=$('#cname').value.trim();
   if(!name){toast('name required');return;}
-  const body={name,min_severity:$('#msev').value,
-    time_window:{start:$('#wstart').value||null,end:$('#wend').value||null}};
+  // start only — an incident has no known end; severity defaults server-side
+  const body={name,time_window:{start:$('#wstart').value||null}};
   api('/api/cases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
    .then(d=>{ if(!d||!d.case_id){toast('create failed');return;}
-     $('#cname').value=''; $('#wstart').value=''; $('#wend').value='';
+     $('#cname').value=''; $('#wstart').value='';
      window.ActiveCase.set(d.case_id); toast('workspace created + activated');
-     loadCases(()=>openCase(d.case_id)); refreshSelector(); });
+     loadCases(()=>{ if(VIEW!=='manage') openCase(d.case_id); }); refreshSelector(); });
 }
 
 function delWorkspace(id, name, ev){
@@ -133,12 +141,23 @@ function delWorkspace(id, name, ev){
   });
 }
 
+function activateWorkspace(id, ev){ if(ev) ev.stopPropagation();
+  window.ActiveCase.set(id); toast('switched active workspace'); loadCases(); refreshSelector(); }
+
 function loadCases(cb){
   api('/api/cases').then(d=>{const cs=d.cases||[]; const active=window.ActiveCase.get();
-    $('#caselist').innerHTML=cs.map(c=>`<div class="caseitem ${sel===c.case_id?'sel':''}" onclick="openCase('${c.case_id}')">
-      <div class="casehead"><span class="nm">${c.case_id===active?'● ':''}${esc(c.name||c.case_id)}</span>
-        ${c.is_default?'<span class="defbadge">default</span>':`<button class="del" onclick="delWorkspace('${c.case_id}','${esc(c.name||'').replace(/'/g,"\\'")}',event)">delete</button>`}</div>
-      <div class="meta">${c.members} run(s) · ${c.status}</div></div>`).join('')||'<i style="color:var(--muted)">no workspaces yet</i>';
+    $('#caselist').innerHTML=cs.map(c=>{const isAct=c.case_id===active;
+      const nm=esc(c.name||'').replace(/'/g,"\\'");
+      return `<div class="caseitem ${sel===c.case_id?'sel':''}" onclick="rowClick('${c.case_id}')">
+      <div class="casehead"><span class="nm">${isAct?'● ':''}${esc(c.name||c.case_id)}</span>
+        <div class="row" style="gap:6px">
+          ${isAct?'<span class="defbadge" style="color:var(--ok)">active</span>'
+                 :`<button class="ghost" style="font-size:11px;padding:3px 8px" onclick="activateWorkspace('${c.case_id}',event)">Use</button>`}
+          ${c.is_default?'<span class="defbadge">default</span>'
+            :c.is_system?'<span class="defbadge">system</span>'
+                       :`<button class="del" onclick="delWorkspace('${c.case_id}','${nm}',event)">delete</button>`}
+        </div></div>
+      <div class="meta">${c.members} run(s) · ${c.status}</div></div>`;}).join('')||'<i style="color:var(--muted)">no workspaces yet</i>';
     if(cb)cb();
   });
 }
@@ -183,7 +202,7 @@ function render(info,md,g){
   $('#main').innerHTML=`
     <div class="row" style="justify-content:space-between">
       <div><h1 style="margin:0;font-size:20px">${info.name||info.case_id}</h1>
-        <div style="color:var(--muted);font-size:12px">window ${(info.time_window||{}).start||'—'} → ${(info.time_window||{}).end||'—'} · sev ≥ ${info.min_severity} · IA ≈ ${info.initial_access_estimate||'?'}</div></div>
+        <div style="color:var(--muted);font-size:12px">${(info.time_window||{}).start?('since '+esc((info.time_window||{}).start)):'no start date'}</div></div>
       <div class="row">
         <button class="ghost" onclick="captureBaseline('${info.case_id}')" title="snapshot this clean case so its noise subtracts from future cases">⚑ Baseline</button>
         <button class="ghost" onclick="refuse('${info.case_id}')">↻ Re-fuse</button></div>
@@ -293,6 +312,13 @@ function mdToHtml(md){
   loadCases();
   // re-render the list highlight when the workspace changes elsewhere
   window.addEventListener('active-case-changed', ()=>loadCases());
+  // analysis view: always show the ACTIVE workspace's fusion; follow active changes
+  if(VIEW==='analysis'){
+    const open=()=>{ const a=window.ActiveCase.get(); if(a) openCase(a); };
+    open();
+    window.addEventListener('active-case-changed', open);
+    window.addEventListener('storage', e=>{ if(e.key==='activeCaseId') open(); });
+  }
 })();
 </script>
 </body>
