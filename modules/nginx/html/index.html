@@ -6,7 +6,7 @@
     <title>TenRoot Intact.AI</title>
     <link rel="icon" type="image/png" href="img/tenroot-logo.png">
     <!-- Local scripts - no CDN dependencies -->
-    <link rel="stylesheet" href="css/tailwind.css?v=9">
+    <link rel="stylesheet" href="css/tailwind.css?v=10">
     <script defer src="js/alpine.min.js"></script>
     <link rel="stylesheet" href="css/styles.css?v=12">
     <!-- Flatpickr date picker (local) -->
@@ -1490,14 +1490,13 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                      without Velociraptor. Solid red so it stays readable
                      on the light tab-content surface. -->
                 <div x-show="$store.services.statuses['velociraptor'] === 'not_installed'"
-                     class="rounded-lg p-4 mb-6 flex items-start gap-3"
-                     style="background-color:#7f1d1d; border:1px solid #dc2626;">
-                    <svg class="w-6 h-6 flex-shrink-0 mt-0.5" style="color:#fecaca;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                     class="bg-red-900/30 border border-red-700 rounded-lg p-4 mb-6 flex items-start gap-3">
+                    <svg class="w-6 h-6 flex-shrink-0 mt-0.5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
                     </svg>
                     <div>
-                        <p class="font-semibold" style="color:#ffffff;">Velociraptor is not installed</p>
-                        <p class="text-sm mt-1" style="color:#fecaca;">KAPE collection dispatches the <code class="px-1.5 py-0.5 rounded" style="background-color:#450a0a; color:#ffffff;">Windows.KapeFiles.Targets</code> Velociraptor artifact — this workflow cannot run on a host without Velociraptor. Install it via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span> (or enable <code class="px-1.5 py-0.5 rounded" style="background-color:#450a0a; color:#ffffff;">modules.velociraptor.enabled: true</code> in config.yaml and re-run install.sh).</p>
+                        <p class="font-semibold text-red-200">Velociraptor is not installed</p>
+                        <p class="text-sm mt-1 text-red-100/80">KAPE collection dispatches the <code class="px-1.5 py-0.5 rounded bg-gray-800 text-red-200">Windows.KapeFiles.Targets</code> Velociraptor artifact — this workflow cannot run on a host without Velociraptor. Install it via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span> (or enable <code class="px-1.5 py-0.5 rounded bg-gray-800 text-red-200">modules.velociraptor.enabled: true</code> in config.yaml and re-run install.sh).</p>
                     </div>
                 </div>
 
@@ -1647,14 +1646,13 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                      hunt. Solid red so it stays readable on the light tab-content
                      surface. The manual CSV-upload path still works. -->
                 <div x-show="$store.services.statuses['velociraptor'] === 'not_installed'"
-                     class="rounded-lg p-4 mb-4 flex items-start gap-3"
-                     style="background-color:#7f1d1d; border:1px solid #dc2626;">
-                    <svg class="w-6 h-6 flex-shrink-0 mt-0.5" style="color:#fecaca;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                     class="bg-red-900/30 border border-red-700 rounded-lg p-4 mb-4 flex items-start gap-3">
+                    <svg class="w-6 h-6 flex-shrink-0 mt-0.5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
                     </svg>
                     <div>
-                        <p class="font-semibold" style="color:#ffffff;">Velociraptor is not installed</p>
-                        <p class="text-sm mt-1" style="color:#fecaca;">The "Run from Velociraptor" and "From existing flow" paths dispatch the inventory artifacts (<code class="px-1.5 py-0.5 rounded" style="background-color:#450a0a; color:#ffffff;">Windows.Sys.Programs</code> + 3 others) — these need a running Velociraptor server. The manual CSV-upload path still works without Velociraptor. To enable hunt dispatch, install Velociraptor via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span>.</p>
+                        <p class="font-semibold text-red-200">Velociraptor is not installed</p>
+                        <p class="text-sm mt-1 text-red-100/80">The "Run from Velociraptor" and "From existing flow" paths dispatch the inventory artifacts (<code class="px-1.5 py-0.5 rounded bg-gray-800 text-red-200">Windows.Sys.Programs</code> + 3 others) — these need a running Velociraptor server. The manual CSV-upload path still works without Velociraptor. To enable hunt dispatch, install Velociraptor via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span>.</p>
                     </div>
                 </div>
                 <p class="text-gray-400 mb-4 max-w-4xl">
@@ -1823,14 +1821,13 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                      light tab-content surface (the faded "/30" alpha
                      palette washes out against pale glass). -->
                 <div x-show="$store.services.statuses['velociraptor'] === 'not_installed'"
-                     class="rounded-lg p-4 mb-6 flex items-start gap-3"
-                     style="background-color:#7f1d1d; border:1px solid #dc2626;">
-                    <svg class="w-6 h-6 flex-shrink-0 mt-0.5" style="color:#fecaca;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                     class="bg-red-900/30 border border-red-700 rounded-lg p-4 mb-6 flex items-start gap-3">
+                    <svg class="w-6 h-6 flex-shrink-0 mt-0.5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
                     </svg>
                     <div>
-                        <p class="font-semibold" style="color:#ffffff;">Velociraptor is not installed</p>
-                        <p class="text-sm mt-1" style="color:#fecaca;">Endpoint memory acquisition uses the <code class="px-1.5 py-0.5 rounded" style="background-color:#450a0a; color:#ffffff;">Windows.Memory.Acquisition</code> Velociraptor artifact — that path is unavailable on this host. The upload path (operator-supplied memory dump) still works. To enable acquisition, install Velociraptor via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span>.</p>
+                        <p class="font-semibold text-red-200">Velociraptor is not installed</p>
+                        <p class="text-sm mt-1 text-red-100/80">Endpoint memory acquisition uses the <code class="px-1.5 py-0.5 rounded bg-gray-800 text-red-200">Windows.Memory.Acquisition</code> Velociraptor artifact — that path is unavailable on this host. The upload path (operator-supplied memory dump) still works. To enable acquisition, install Velociraptor via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span>.</p>
                     </div>
                 </div>
 
@@ -2069,14 +2066,13 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                              so an empty checkbox list doesn't suggest the
                              blueprint is usable. -->
                         <div x-show="$store.services.statuses['velociraptor'] === 'not_installed'"
-                             class="rounded-lg p-4 mb-4 flex items-start gap-3"
-                             style="background-color:#7f1d1d; border:1px solid #dc2626;">
-                            <svg class="w-6 h-6 flex-shrink-0 mt-0.5" style="color:#fecaca;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                             class="bg-red-900/30 border border-red-700 rounded-lg p-4 mb-4 flex items-start gap-3">
+                            <svg class="w-6 h-6 flex-shrink-0 mt-0.5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
                             </svg>
                             <div>
-                                <p class="font-semibold" style="color:#ffffff;">Velociraptor is not installed</p>
-                                <p class="text-sm mt-1" style="color:#fecaca;">Hunt-based blueprints (Velociraptor, Agentic, CVE) dispatch their artifacts via the Velociraptor server. With Velociraptor absent on this host the artifact list can't be populated and saving this blueprint won't make it runnable. Install Velociraptor via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span>, then come back to edit. Timesketch / Memory blueprints are unaffected.</p>
+                                <p class="font-semibold text-red-200">Velociraptor is not installed</p>
+                                <p class="text-sm mt-1 text-red-100/80">Hunt-based blueprints (Velociraptor, Agentic, CVE) dispatch their artifacts via the Velociraptor server. With Velociraptor absent on this host the artifact list can't be populated and saving this blueprint won't make it runnable. Install Velociraptor via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span>, then come back to edit. Timesketch / Memory blueprints are unaffected.</p>
                             </div>
                         </div>
 
