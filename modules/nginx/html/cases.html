@@ -271,6 +271,11 @@ function renderConfig(info){
       </div>
       <div class="cfgcol">
         <h4>Hosts (include)</h4>
+        <input id="cf-hostfilter" placeholder="filter by name…" oninput="renderHosts()"/>
+        <div class="row" style="gap:6px;margin:5px 0">
+          <button class="ghost" style="font-size:11px;padding:3px 8px" onclick="hostSelectAll(true)">Select all</button>
+          <button class="ghost" style="font-size:11px;padding:3px 8px" onclick="hostSelectAll(false)">None</button>
+        </div>
         <div id="cf-hosts" style="max-height:200px;overflow:auto;border:1px solid var(--bd);border-radius:6px;padding:6px">loading…</div>
       </div>
       <div class="cfgcol">
@@ -310,15 +315,46 @@ function renderReport(info){
   $('#tabc').innerHTML=`<div class="row" style="gap:8px;margin-bottom:10px">${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}</div>${advHtml}<div class="md">${mdToHtml(window._md||'')}</div>`;
 }
 function _fileToDataUrl(f){return new Promise(res=>{if(!f)return res(null);const r=new FileReader();r.onload=()=>res(r.result);r.readAsDataURL(f);});}
+let _members=[], _hostSel=new Set();
+function _hosts(){           // dedupe runs → one entry per host (a host may have many runs)
+  const by={};
+  _members.forEach(m=>{const h=m.host||m.run_id;
+    if(!by[h]) by[h]={host:h, os:m.os||'unknown', run_ids:[], types:new Set(), included:false};
+    by[h].run_ids.push(m.run_id); by[h].types.add(m.type||''); if(m.included) by[h].included=true;});
+  return Object.values(by);
+}
 function loadHosts(id){
-  api('/api/cases/'+id+'/members').then(d=>{const m=d.members||[];
-    $('#cf-hosts').innerHTML=m.length? m.map(x=>`<label class="hostrow"><input type="checkbox" class="cf-host" value="${x.run_id}" ${x.included?'checked':''} style="width:auto"/> <span class="t">${esc(x.host||x.run_id)}</span> <span style="color:var(--muted)">${x.type}</span></label>`).join('') : '<i style="color:var(--muted)">no runs in this case</i>';
+  $('#cf-hosts').innerHTML='loading…';
+  api('/api/cases/'+id+'/members').then(d=>{_members=d.members||[];
+    _hostSel=new Set(_hosts().filter(h=>h.included).map(h=>h.host));
+    renderHosts();
   });
+}
+function renderHosts(){
+  const q=(($('#cf-hostfilter')||{}).value||'').toLowerCase();
+  const hs=_hosts().filter(h=>!q||h.host.toLowerCase().includes(q));
+  if(!hs.length){$('#cf-hosts').innerHTML='<i style="color:var(--muted)">no hosts</i>';return;}
+  const groups={}; hs.forEach(h=>{(groups[h.os]=groups[h.os]||[]).push(h);});
+  let out='';
+  Object.keys(groups).sort().forEach(os=>{
+    out+=`<div style="font-size:10px;text-transform:uppercase;color:var(--muted);margin:6px 0 2px">${esc(os)} (${groups[os].length})</div>`;
+    out+=groups[os].map(h=>`<label class="hostrow"><input type="checkbox" ${_hostSel.has(h.host)?'checked':''} style="width:auto" onchange="toggleHost('${esc(h.host).replace(/'/g,"\\'")}',this.checked)"/> <span class="t">${esc(h.host)}</span> <span style="color:var(--muted)">${esc([...h.types].join('/'))}${h.run_ids.length>1?' ×'+h.run_ids.length:''}</span></label>`).join('');
+  });
+  $('#cf-hosts').innerHTML=out;
+}
+function toggleHost(host,on){ on?_hostSel.add(host):_hostSel.delete(host); }
+function hostSelectAll(on){
+  const q=(($('#cf-hostfilter')||{}).value||'').toLowerCase();
+  _hosts().filter(h=>!q||h.host.toLowerCase().includes(q)).forEach(h=>on?_hostSel.add(h.host):_hostSel.delete(h.host));
+  renderHosts();
+}
+function _selectedRunIds(){   // expand selected hosts → their run_ids
+  const sel=[]; _hosts().forEach(h=>{ if(_hostSel.has(h.host)) sel.push(...h.run_ids); }); return sel;
 }
 async function doRescan(id){
   const logo=await _fileToDataUrl($('#cf-logo').files[0]);
-  const allHosts=[...document.querySelectorAll('.cf-host')];
-  const picked=allHosts.filter(c=>c.checked).map(c=>c.value);
+  const picked=_selectedRunIds();          // run_ids expanded from the selected hosts
+  const totalRuns=_members.length;
   const cfg={
     time_window:{start:$('#cf-start').value||null,end:$('#cf-end').value||null},
     min_severity:$('#cf-sev').value, audience:$('#cf-aud').value,
@@ -328,7 +364,7 @@ async function doRescan(id){
   };
   if(logo) cfg.customer_logo_b64=logo;
   // include/exclude only when the operator narrowed the set (else leave all)
-  if(picked.length && picked.length<allHosts.length) cfg.included_run_ids=picked; else cfg.included_run_ids=null;
+  if(picked.length && picked.length<totalRuns) cfg.included_run_ids=picked; else cfg.included_run_ids=null;
   toast('saving + rescanning…');
   await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
   toast('saved — report regenerated'); tab='report'; openCase(id);

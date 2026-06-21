@@ -573,6 +573,18 @@ def case_members(case_id) -> list:
     d = get_case(case_id)
     inc = d.get("included_run_ids")
     inc_set = set(inc) if inc is not None else None
+    # best-effort OS per host, reusing the velociraptor snapshot (host/client_id -> os)
+    os_by = {}
+    try:
+        from services.velociraptor_service import get_clients_from_snapshot
+        for c in (get_clients_from_snapshot(include_offline=True) or []):
+            o = (c.get("os") or "").lower() or "unknown"
+            if c.get("hostname"):
+                os_by[str(c["hostname"]).lower()] = o
+            if c.get("client_id"):
+                os_by[str(c["client_id"]).lower()] = o
+    except Exception:
+        pass
     out = []
     for rid in _members_for_case(case_id, d):
         r = ws.get_automation_run(rid) or {}
@@ -585,8 +597,17 @@ def case_members(case_id) -> list:
                 host = ", ".join(str(v) for v in hn.values()) or None
             elif isinstance(hn, list):
                 host = ", ".join(str(v) for v in hn) or None
-        out.append({"run_id": rid, "type": r.get("automation_type"),
-                    "host": host or rid, "status": r.get("status"),
+        host = host or rid
+        # cloud scans are their own "OS" bucket; else resolve from the snapshot
+        atype = r.get("automation_type")
+        if atype in ("aws_scan", "azure_scan"):
+            os_name = "aws" if atype == "aws_scan" else "azure"
+        else:
+            cid = det.get("client_id")
+            os_name = os_by.get(str(host).lower()) \
+                or (os_by.get(str(cid).lower()) if cid else None) or "unknown"
+        out.append({"run_id": rid, "type": atype, "host": host, "os": os_name,
+                    "status": r.get("status"),
                     "included": (inc_set is None) or (rid in inc_set)})
     return out
 
