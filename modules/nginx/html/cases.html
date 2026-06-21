@@ -231,11 +231,11 @@ function render(info,md,g){
       </div>
       <div style="margin:6px 0 14px">${statSpans(g)}${tokenBadge(info.token_ab)}</div>
       <div class="tabs">
+        <div class="tab ${tab==='config'?'on':''}" onclick="setTab('config')">⚙ Configuration</div>
         <div class="tab ${tab==='report'?'on':''}" onclick="setTab('report')">Report</div>
         <div class="tab ${tab==='checklist'?'on':''}" onclick="setTab('checklist')">Checklist</div>
         <div class="tab ${tab==='timeline'?'on':''}" onclick="setTab('timeline')">Timeline</div>
         <div class="tab ${tab==='chat'?'on':''}" onclick="setTab('chat')">Chat</div>
-        <div class="tab ${tab==='config'?'on':''}" onclick="setTab('config')">⚙ Configuration</div>
       </div>
       <div id="tabc"></div>
     </div>`;
