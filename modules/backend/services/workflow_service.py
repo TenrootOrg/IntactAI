@@ -27,7 +27,8 @@ AGENTIC_TYPES = {"agentic", "memory", "cve_scan", "timesketch",
 # "System" workspace (regardless of the browser's active case) so they have a home
 # and never clutter an investigation workspace.
 SYSTEM_TYPES = {"upgrade", "online_upgrade", "prepare_package", "maintenance",
-                "system_purge", "support_bundle", "settings"}
+                "system_purge", "support_bundle", "settings",
+                "case_import", "case_export"}
 
 
 _DEFAULT_CASE_CACHE = {"id": None}

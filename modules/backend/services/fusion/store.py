@@ -177,6 +177,73 @@ def attach_runs(case_id, run_ids) -> list:
     return members
 
 
+EXPORT_KIND = "intact_case_export"
+EXPORT_SCHEMA = 1
+
+
+def export_case(case_id) -> dict | None:
+    """Build a self-contained, importable bundle for one case (workspace):
+    the case record (its details cache the fused graph + report + config +
+    dispositions) plus every member run's full record (the fusion inputs). A
+    later import recreates the case verbatim and can re-fuse from the runs."""
+    ws = _ws()
+    case_run = ws.get_automation_run(case_id)
+    if not case_run or case_run.get("automation_type") != CASE_TYPE:
+        return None
+    member_ids = _members_for_case(case_id)
+    runs = [r for r in (ws.get_automation_run(rid) for rid in member_ids) if r]
+    det = case_run.get("details") or {}
+    return {
+        "kind": EXPORT_KIND,
+        "schema": EXPORT_SCHEMA,
+        "name": det.get("name") or case_run.get("name") or "case",
+        "case": case_run,
+        "runs": runs,
+    }
+
+
+def import_case(bundle: dict, *, name: str | None = None) -> dict:
+    """Recreate a case from an export bundle. Creates a FRESH case container and
+    re-tags the bundled member runs into it (run ids are preserved so the cached
+    graph/findings, which reference run ids, stay consistent — intended for
+    moving a case to another install). Returns {case_id, name, runs_imported}."""
+    if not isinstance(bundle, dict) or bundle.get("kind") != EXPORT_KIND:
+        raise ValueError("not an Intact case export bundle")
+    src_case = bundle.get("case") or {}
+    src_runs = bundle.get("runs") or []
+    src_det = src_case.get("details") or {}
+    disp_name = (name or src_det.get("name") or src_case.get("name") or "Imported case").strip()
+
+    ws = _ws()
+    from services.file_storage_service import save_workflow
+
+    # Fresh case container (never inherits default/system status from the source).
+    new_case_id = ws.create_automation_run(
+        automation_type=CASE_TYPE, name=f"Case — {disp_name}", case_id=None, details={},
+    )
+
+    # Upsert each member run, preserving its id + payload, re-tagged to the new case.
+    member_ids = []
+    for r in src_runs:
+        rid = (r or {}).get("run_id")
+        if not rid:
+            continue
+        rec = dict(r)
+        rec["case_id"] = new_case_id
+        save_workflow(rec)
+        member_ids.append(rid)
+
+    # New case details = the source case's cached state, re-pointed + de-privileged.
+    new_det = dict(src_det)
+    new_det["name"] = disp_name
+    new_det["member_run_ids"] = member_ids
+    new_det.pop("is_default", None)
+    new_det.pop("is_system", None)
+    ws.update_run_status(new_case_id, src_case.get("status") or "completed", details=new_det)
+
+    return {"case_id": new_case_id, "name": disp_name, "runs_imported": len(member_ids)}
+
+
 def ensure_default_case() -> str:
     """Return the id of the Default workspace, creating it if missing. Idempotent —
     safe to call on every startup."""

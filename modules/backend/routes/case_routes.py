@@ -161,6 +161,55 @@ def delete_case(case_id):
     return jsonify({"case_id": case_id, **res})
 
 
+@case_bp.route("/api/cases/<case_id>/export", methods=["GET"])
+def export_case(case_id):
+    """Download a self-contained bundle for one workspace (case record + member
+    runs) that `POST /api/cases/import` can recreate on this or another install."""
+    import json as _json
+    bundle = store.export_case(case_id)
+    if bundle is None:
+        return jsonify({"error": "case not found"}), 404
+    safe = "".join(c if c.isalnum() or c in "-_" else "_"
+                   for c in (bundle.get("name") or "case"))[:60] or "case"
+    payload = _json.dumps(bundle, indent=2, default=str)
+    return Response(payload, mimetype="application/json", headers={
+        "Content-Disposition": f'attachment; filename="{safe}.intactcase.json"'})
+
+
+@case_bp.route("/api/cases/import", methods=["POST"])
+def import_case():
+    """Recreate a workspace from an exported bundle (multipart `file`, or a raw
+    JSON body). Tracked as a System-workspace operation, not the active case."""
+    import json as _json
+    bundle = None
+    f = request.files.get("file")
+    if f is not None:
+        try:
+            bundle = _json.loads(f.read().decode("utf-8"))
+        except Exception as e:
+            return jsonify({"error": f"could not parse file: {e}"}), 400
+    else:
+        bundle = request.get_json(silent=True)
+    if not isinstance(bundle, dict):
+        return jsonify({"error": "no case bundle provided"}), 400
+    name = request.form.get("name") or None
+    try:
+        res = store.import_case(bundle, name=name)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    # Audit the import as a System-workspace op (case_import is a SYSTEM_TYPE).
+    try:
+        from services import workflow_service as ws
+        rid = ws.create_automation_run(
+            "case_import", f"Import workspace: {res['name']}",
+            details={"imported_case_id": res["case_id"],
+                     "runs_imported": res["runs_imported"]})
+        ws.update_run_status(rid, "completed", progress=100)
+    except Exception:
+        pass
+    return jsonify(res)
+
+
 @case_bp.route("/api/cases/<case_id>/attach", methods=["POST"])
 def attach(case_id):
     d = request.get_json(silent=True) or {}
