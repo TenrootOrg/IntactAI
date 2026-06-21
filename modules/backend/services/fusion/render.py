@@ -24,7 +24,8 @@ def timeline(graph, *, window=None, initial_access=None):
     for f in graph.findings:
         if not in_window(f.ts, window):
             continue
-        rows.append({"ts": f.ts or "", "host": ", ".join(_host_label(graph, a) for a in f.asset_ids) or "-",
+        rows.append({"finding_id": f.id,            # stable key for real/not-real validation
+                     "ts": f.ts or "", "host": ", ".join(_host_label(graph, a) for a in f.asset_ids) or "-",
                      "phase": _phase(f), "title": f.title, "severity": f.severity,
                      "mitre": f.mitre})
     rows.sort(key=lambda r: (r["ts"] or "9999"))

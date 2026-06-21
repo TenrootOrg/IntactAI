@@ -144,19 +144,59 @@ _SIM_TAG = ("\n\n---\n_Narrative by the in-graph narrator (simulated — determi
             "Set agentic.fusion_llm_mode='real' to use a live model._\n")
 
 
+def _build_mask_mapping(graph, mask):
+    """Populate the anonymizer's mapping from the graph's sensitive entity labels
+    (hosts, accounts, IPs), using typed rows so its field-name detection fires. We then
+    literal-replace those originals everywhere (payload + report) for consistency."""
+    rows = []
+    for e in graph.entities.values():
+        lbl = (e.label or "").strip()
+        if not lbl:
+            continue
+        if e.type == "asset":
+            rows.append({"hostname": lbl})
+        elif e.type == "account":
+            rows.append({"username": lbl})
+        elif e.type in ("netconn", "ioc"):
+            rows.append({"ipaddress": lbl})
+    if rows:
+        try:
+            mask.mask_data(rows)
+        except Exception:
+            pass
+
+
+def _apply_mask(text, mask):
+    """Literal-replace originals→pseudonyms (longest-first) using the anonymizer's
+    accumulated mapping, so the LLM input + fact tables + narrative are masked
+    consistently. No-op when masking is off."""
+    if not mask:
+        return text
+    mapping = getattr(mask, "mapping", {}) or {}
+    for orig in sorted((k for k in mapping if k), key=len, reverse=True):
+        text = text.replace(orig, mapping[orig])
+    return text
+
+
 def generate_report(graph, *, window=None, min_severity="informational",
                     initial_access=None, case_name="Case", run_id=None,
-                    audience="both", language="en", master_prompt=None) -> str:
+                    audience="both", language="en", master_prompt=None, mask=None) -> str:
     """Case report. Real path = LLM narrative over distilled() + deterministic
     fact tables appended verbatim. `audience` (exec/technical/both) + `language`
     tailor the narrative (reusing the engagement directive); `master_prompt` is the
-    operator's "remove X / focus Y" steering, prepended as ground truth. Falls back to
-    the deterministic narrator on any failure (or when mode='simulated')."""
+    operator's "remove X / focus Y" steering, prepended as ground truth. `mask` is an
+    optional DataAnonymizer — when set, the distilled LLM payload AND the rendered
+    markdown are anonymized (customer-facing). Falls back to the deterministic narrator
+    on any failure (or when mode='simulated')."""
     if _use_real():
         try:
             payload = render.distilled(graph, window=window, min_severity=min_severity,
                                        max_entities=budget.REPORT_MAX_ENTITIES,
                                        budget_chars=budget.REPORT_BUDGET_CHARS)
+            payload_str = json.dumps(payload)
+            if mask:                                  # anonymize the LLM input too
+                _build_mask_mapping(graph, mask)
+                payload_str = _apply_mask(payload_str, mask)
             system = REPORT_SYSTEM_PROMPT
             if (audience and audience != "both") or (language and language != "en"):
                 try:                              # reuse engagement audience/language tailoring
@@ -168,19 +208,23 @@ def generate_report(graph, *, window=None, min_severity="informational",
                 system = ("## OPERATOR CONTEXT (from interactive validation) — treat as "
                           "ground truth; apply the removals/focus described:\n"
                           f"{master_prompt.strip()}\n\n---\n\n") + system
-            narrative = _real_llm(system, json.dumps(payload), run_id=run_id)
+            narrative = _real_llm(system, payload_str, run_id=run_id)
             facts = render.facts_md(graph, window=window, min_severity=min_severity,
                                     initial_access=initial_access)
-            return (f"# Incident Case Report — {case_name}\n\n{narrative}\n\n{facts}"
-                    "\n\n---\n_Narrative by live LLM; fact tables deterministic._\n")
+            md = (f"# Incident Case Report — {case_name}\n\n{narrative}\n\n{facts}"
+                  "\n\n---\n_Narrative by live LLM; fact tables deterministic._\n")
+            return _apply_mask(md, mask)
         except Exception as e:  # noqa: BLE001 — never let LLM failure break a case
             md = render.report(graph, window=window, min_severity=min_severity,
                                initial_access=initial_access, case_name=case_name)
-            return md + (f"\n\n---\n_Live LLM unavailable ({type(e).__name__}); "
-                         "deterministic fallback._\n")
+            return _apply_mask(md, mask) + (f"\n\n---\n_Live LLM unavailable "
+                                            f"({type(e).__name__}); deterministic fallback._\n")
     md = render.report(graph, window=window, min_severity=min_severity,
-                       initial_access=initial_access, case_name=case_name)
-    return md + _SIM_TAG
+                       initial_access=initial_access, case_name=case_name) + _SIM_TAG
+    if mask:                                          # populate the mapping, then mask the md
+        _build_mask_mapping(graph, mask)
+        md = _apply_mask(md, mask)
+    return md
 
 
 def _parse_json(text):
@@ -277,6 +321,55 @@ def analyze(graph, *, window=None, min_severity="informational", run_id=None,
         return _ground(_parse_json(raw), graph)
     except Exception:  # noqa: BLE001 — advisory only; never break a case
         return _simulated_analysis(graph, findings)
+
+
+CHECKLIST_SYSTEM_PROMPT = (
+    "You are a DFIR consultant preparing a CUSTOMER-CONFIRMATION checklist. For each "
+    "notable finding in the provided case graph, write ONE plain-language yes/no question "
+    "asking the customer to confirm whether the activity is EXPECTED / AUTHORISED (benign) "
+    "— e.g. scheduled IT work, a sanctioned tool, a known service account. Every item MUST "
+    "cite the exact finding_id from the graph. Return STRICT JSON only: "
+    '{"checklist":[{"finding_id":"...","question":"...","suggestion":"benign"}]}'
+)
+
+
+def _checklist_id(finding_id, question):
+    import hashlib
+    return "chk_" + hashlib.sha1(f"{finding_id}|{question}".encode()).hexdigest()[:12]
+
+
+def _simulated_checklist(findings) -> list:
+    return [{"id": _checklist_id(f.id, f.title), "finding_id": f.id,
+             "question": f"Is “{f.title}” expected / authorised activity (benign)?",
+             "suggestion": "benign", "status": "pending"} for f in findings]
+
+
+def generate_disposition_checklist(graph, *, window=None, min_severity="high",
+                                   run_id=None) -> list:
+    """Customer-confirmation checklist: per high finding, a likely-benign yes/no question
+    the customer accepts (=> dispositioned benign) or declines (=> kept). Grounded to real
+    finding_ids; deterministic fallback when no real LLM. Never raises."""
+    _, findings = render.scope(graph, window=window, min_severity=min_severity)
+    high = [f for f in findings if sev.at_least(f.severity, "high")] or findings
+    if not _use_real():
+        return _simulated_checklist(high)
+    try:
+        payload = render.distilled(graph, window=window, min_severity=min_severity,
+                                   max_entities=budget.REPORT_MAX_ENTITIES,
+                                   budget_chars=budget.REPORT_BUDGET_CHARS)
+        raw = _real_llm(CHECKLIST_SYSTEM_PROMPT, json.dumps(payload), run_id=run_id)
+        data = _parse_json(raw)
+        valid = {f.id for f in graph.findings}
+        out = []
+        for it in (data.get("checklist") or []):
+            fid = it.get("finding_id")
+            q = (it.get("question") or "").strip()
+            if fid in valid and q:                    # grounding: only real findings
+                out.append({"id": _checklist_id(fid, q), "finding_id": fid, "question": q,
+                            "suggestion": it.get("suggestion", "benign"), "status": "pending"})
+        return out or _simulated_checklist(high)
+    except Exception:  # noqa: BLE001
+        return _simulated_checklist(high)
 
 
 def chat(graph, question: str, history=None, *, window=None, min_severity="informational",

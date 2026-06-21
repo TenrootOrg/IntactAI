@@ -72,6 +72,22 @@
   html.v-manage .wrap{grid-template-columns:1fr}
   html.v-analysis .side{display:none}
   html.v-analysis .wrap{grid-template-columns:1fr}
+  /* Case Analysis console: left config rail + output */
+  .console{display:grid;grid-template-columns:300px 1fr;gap:0;height:100%}
+  .rail{border-right:1px solid var(--bd);background:var(--panel);overflow-y:auto;padding:14px}
+  .rail h3{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:16px 0 6px}
+  .rail h3:first-child{margin-top:0}
+  .rail .hostrow{display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0}
+  .output{overflow-y:auto;padding:16px 20px}
+  .runbtn{width:100%;margin-top:6px}
+  .ck{border:1px solid var(--bd);border-radius:7px;padding:10px;margin:8px 0;background:var(--panel2)}
+  .ck.accepted{border-color:var(--ok)} .ck.declined{opacity:.6}
+  .ck .q{font-size:13px} .ck .acts{margin-top:8px;display:flex;gap:6px}
+  .ck button{font-size:11px;padding:4px 10px}
+  .tlrow{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--bd);font-size:12px}
+  .tlrow .tlt{flex:1} .tlrow.notreal{opacity:.5;text-decoration:line-through}
+  .info{cursor:help;color:var(--info);border:1px solid var(--bd);border-radius:50%;width:15px;height:15px;
+        display:inline-flex;align-items:center;justify-content:center;font-size:10px}
 </style>
 <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
 <script src="js/active-case.js?v=1"></script>
@@ -200,80 +216,118 @@ function tokenBadge(ab){
 }
 function render(info,md,g){
   curInfo=info; curGraph=g;
-  const adv=info.analysis||{}, nadv=((adv.incident_groups||[]).length)+((adv.hypotheses||[]).length);
-  const ndisp=(info.dispositions||[]).length;
   $('#llmbadge').textContent='LLM: '+(info.llm_enabled?'real':'simulated (no key)');
+  const aud=info.audience||'both', mk=info.masking||{};
+  const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
+  const tw=info.time_window||{};
   $('#main').innerHTML=`
-    <div class="row" style="justify-content:space-between">
-      <div><h1 style="margin:0;font-size:20px">${info.name||info.case_id}</h1>
-        <div style="color:var(--muted);font-size:12px">${(info.time_window||{}).start?('since '+esc((info.time_window||{}).start)):'no start date'}</div></div>
-      <div class="row">
-        <button class="ghost" onclick="captureBaseline('${info.case_id}')" title="snapshot this clean case so its noise subtracts from future cases">⚑ Baseline</button>
-        <button class="ghost" onclick="refuse('${info.case_id}')">↻ Re-fuse</button></div>
+   <div class="console">
+    <div class="rail">
+      <h3>Configure analysis</h3>
+      <label>Time window — start</label><input id="cf-start" value="${esc(tw.start||'')}" placeholder="2026-06-14"/>
+      <label>Time window — end</label><input id="cf-end" value="${esc(tw.end||'')}" placeholder="(open)"/>
+      <label>Min severity</label>
+      <select id="cf-sev">${['informational','low','medium','high','critical'].map(s=>opt(s,s,info.min_severity||'informational')).join('')}</select>
+      <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled?'checked':''} style="width:auto"/> Mask hosts / users / IPs (customer-facing)</label>
+      <textarea id="cf-maskpat" placeholder="extra patterns, one per line (optional)" style="min-height:38px">${esc((mk.patterns||[]).join('\n'))}</textarea>
+      <h3>Hosts (include)</h3>
+      <div id="cf-hosts" style="max-height:140px;overflow:auto;border:1px solid var(--bd);border-radius:6px;padding:6px">loading…</div>
+      <h3>Report</h3>
+      <label>Audience</label>
+      <select id="cf-aud">${opt('both','Both (exec + technical)',aud)}${opt('executive','Executive',aud)}${opt('technical','Technical',aud)}</select>
+      <label>Customer</label><input id="cf-cust" value="${esc(info.customer_name||'')}" placeholder="Acme Corp"/>
+      <label>TLP</label>
+      <select id="cf-tlp">${['CLEAR','GREEN','AMBER','AMBER+STRICT','RED'].map(t=>`<option ${info.tlp===t?'selected':''}>${t}</option>`).join('')}</select>
+      <label>Logo ${info.has_logo?'<span style="color:var(--ok)">✓ set</span>':''}</label><input id="cf-logo" type="file" accept="image/*" style="padding:3px"/>
+      <label>Steering / master-prompt <span class="info" title="Plain-language 'what to remove / what to focus on'. Applied to the report on Rescan. Use ⤵ to draft it from your Chat.">i</span></label>
+      <textarea id="cf-mp" placeholder="e.g. ignore the backup host noise; focus on lateral movement" style="min-height:44px">${esc(info.master_prompt||'')}</textarea>
+      <button class="ghost" style="width:100%;font-size:11px" onclick="synthFromChat('${info.case_id}')">⤵ Draft from chat</button>
+      <button class="runbtn" onclick="doRescan('${info.case_id}')">↻ Rescan</button>
+      <button class="ghost runbtn" onclick="captureBaseline('${info.case_id}')">⚑ Capture baseline <span class="info" title="Snapshot this CLEAN case's normal noise (provisioning, scheduled tasks, known services). Future cases on the same host automatically subtract it, so real attacks stand out. Use after a host is confirmed clean.">i</span></button>
     </div>
-    <div style="margin:6px 0 16px">${statSpans(g)}${tokenBadge(info.token_ab)}</div>
-    <div class="tabs">
-      <div class="tab ${tab==='report'?'on':''}" onclick="setTab('report')">Report</div>
-      <div class="tab ${tab==='advisory'?'on':''}" onclick="setTab('advisory')">⚠ Advisory${nadv?` (${nadv})`:''}</div>
-      <div class="tab ${tab==='timeline'?'on':''}" onclick="setTab('timeline')">Timeline</div>
-      <div class="tab ${tab==='dispositions'?'on':''}" onclick="setTab('dispositions')">Dispositions${ndisp?` (${ndisp})`:''}</div>
-      <div class="tab ${tab==='chat'?'on':''}" onclick="setTab('chat')">Chat</div>
+    <div class="output">
+      <div class="row" style="justify-content:space-between">
+        <div><h1 style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
+          <div style="color:var(--muted);font-size:12px">${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
+      </div>
+      <div style="margin:6px 0 14px">${statSpans(g)}${tokenBadge(info.token_ab)}</div>
+      <div class="tabs">
+        <div class="tab ${tab==='report'?'on':''}" onclick="setTab('report')">Report</div>
+        <div class="tab ${tab==='checklist'?'on':''}" onclick="setTab('checklist')">Checklist</div>
+        <div class="tab ${tab==='timeline'?'on':''}" onclick="setTab('timeline')">Timeline</div>
+        <div class="tab ${tab==='chat'?'on':''}" onclick="setTab('chat')">Chat</div>
+      </div>
+      <div id="tabc"></div>
     </div>
-    <div id="tabc"></div>`;
+   </div>`;
+  loadHosts(info.case_id);
   drawTab(md);
 }
 function setTab(t){tab=t;drawTab(window._md||'');}
 function drawTab(md){
   if(md)window._md=md;
   const info=curInfo;
-  if(tab==='report') renderReport(info);
-  else if(tab==='advisory') renderAdvisory(info);
+  if(tab==='checklist') renderChecklist(info.case_id);
   else if(tab==='timeline') renderTimeline(info.case_id);
-  else if(tab==='dispositions') renderDispositions(info);
-  else renderChat(info.case_id);
+  else if(tab==='chat') renderChat(info.case_id);
+  else renderReport(info);
 }
 function renderReport(info){
-  const id=info.case_id, aud=info.audience||'both';
-  const opt=(v,l)=>`<option value="${v}" ${aud===v?'selected':''}>${l}</option>`;
-  const ctrl=`<div class="row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:flex-end">
-    <div><label>Audience</label><select id="rep-aud" style="width:auto">
-      ${opt('both','Both (exec + technical)')}${opt('executive','Executive')}${opt('technical','Technical')}</select></div>
-    <div><label>Customer</label><input id="rep-cust" value="${esc(info.customer_name||'')}" placeholder="Acme Corp" style="width:160px"/></div>
-    <div><label>TLP</label><select id="rep-tlp" style="width:auto">
-      ${['CLEAR','GREEN','AMBER','AMBER+STRICT','RED'].map(t=>`<option ${info.tlp===t?'selected':''}>${t}</option>`).join('')}</select></div>
-    <div><label>Logo ${info.has_logo?'<span style="color:var(--ok)">✓</span>':''}</label>
-      <input id="rep-logo" type="file" accept="image/*" style="width:150px;padding:3px"/></div>
-    <button onclick="saveBrandingAndRegen('${id}')">↻ Generate</button>
-    <a class="ghost" style="text-decoration:none;padding:8px 12px;border:1px solid var(--bd);border-radius:6px" href="/api/cases/${id}/report/download" target="_blank">⬇ MD</a>
-    <a class="ghost" style="text-decoration:none;padding:8px 12px;border:1px solid var(--bd);border-radius:6px" href="/api/cases/${id}/report/download/pdf" target="_blank">⬇ PDF</a>
-  </div>
-  <div class="row" style="gap:8px;margin-bottom:12px;align-items:flex-end">
-    <div style="flex:1"><label>Steering / master-prompt <span style="color:var(--muted)">(what to remove / focus — applied on Generate)</span></label>
-      <textarea id="rep-mp" style="width:100%;min-height:46px">${esc(info.master_prompt||'')}</textarea></div>
-    <button class="ghost" onclick="saveMasterPrompt('${id}')">Save</button>
-    <button class="ghost" onclick="synthFromChat('${id}')" title="compress the Chat into a steering brief (needs a real LLM)">⤵ From chat</button>
-  </div>`;
-  $('#tabc').innerHTML=ctrl+`<div class="md">${mdToHtml(window._md||'')}</div>`;
+  const id=info.case_id;
+  const dl=(p,l)=>`<a class="ghost" style="text-decoration:none;padding:6px 11px;border:1px solid var(--bd);border-radius:6px" href="/api/cases/${id}${p}" target="_blank">${l}</a>`;
+  const adv=info.analysis||{}; const ig=(adv.incident_groups||[]);
+  let advHtml='';
+  if(ig.length){advHtml=`<details style="margin:10px 0"><summary style="cursor:pointer;color:var(--med)">⚠ Advisory — ${ig.length} incident group(s) (analyst-verify, not a determination)</summary>`+
+    ig.map(x=>`<div class="caseitem"><div class="nm">${escape(x.name||'group')}</div><div class="meta">${(x.finding_ids||[]).length} findings — ${escape(x.rationale||'')}</div></div>`).join('')+`</details>`;}
+  $('#tabc').innerHTML=`<div class="row" style="gap:8px;margin-bottom:10px">${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}</div>${advHtml}<div class="md">${mdToHtml(window._md||'')}</div>`;
 }
 function _fileToDataUrl(f){return new Promise(res=>{if(!f)return res(null);const r=new FileReader();r.onload=()=>res(r.result);r.readAsDataURL(f);});}
-async function saveBrandingAndRegen(id){
-  const logo=await _fileToDataUrl($('#rep-logo').files[0]);
-  const body={customer_name:$('#rep-cust').value,tlp:$('#rep-tlp').value,audience:$('#rep-aud').value};
-  if(logo) body.customer_logo_b64=logo;
-  await api('/api/cases/'+id+'/branding',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  toast('generating report…');
-  await api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({audience:$('#rep-aud').value})});
-  toast('report regenerated'); openCase(id);
+function loadHosts(id){
+  api('/api/cases/'+id+'/members').then(d=>{const m=d.members||[];
+    $('#cf-hosts').innerHTML=m.length? m.map(x=>`<label class="hostrow"><input type="checkbox" class="cf-host" value="${x.run_id}" ${x.included?'checked':''} style="width:auto"/> <span class="t">${esc(x.host||x.run_id)}</span> <span style="color:var(--muted)">${x.type}</span></label>`).join('') : '<i style="color:var(--muted)">no runs in this case</i>';
+  });
 }
-function saveMasterPrompt(id){
-  api('/api/cases/'+id+'/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({master_prompt:$('#rep-mp').value})})
-   .then(_=>toast('steering saved — Generate to apply'));
+async function doRescan(id){
+  const logo=await _fileToDataUrl($('#cf-logo').files[0]);
+  const allHosts=[...document.querySelectorAll('.cf-host')];
+  const picked=allHosts.filter(c=>c.checked).map(c=>c.value);
+  const cfg={
+    time_window:{start:$('#cf-start').value||null,end:$('#cf-end').value||null},
+    min_severity:$('#cf-sev').value, audience:$('#cf-aud').value,
+    customer_name:$('#cf-cust').value, tlp:$('#cf-tlp').value,
+    master_prompt:$('#cf-mp').value,
+    masking:{enabled:$('#cf-mask').checked, patterns:$('#cf-maskpat').value.split('\n').map(s=>s.trim()).filter(Boolean)}
+  };
+  if(logo) cfg.customer_logo_b64=logo;
+  // include/exclude only when the operator narrowed the set (else leave all)
+  if(picked.length && picked.length<allHosts.length) cfg.included_run_ids=picked; else cfg.included_run_ids=null;
+  toast('rescanning…');
+  await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+  toast('rescanned'); openCase(id);
 }
 function synthFromChat(id){toast('synthesizing from chat…');
   fetch('/api/cases/'+id+'/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(async r=>{
     const d=await r.json().catch(()=>({}));
-    if(!r.ok){toast(d.error||'synth failed (needs chat + real LLM)');return;}
-    $('#rep-mp').value=d.master_prompt||''; toast('steering drafted from chat');});
+    if(!r.ok){toast(d.error||'needs chat + real LLM');return;}
+    const el=$('#cf-mp'); if(el)el.value=d.master_prompt||''; toast('steering drafted from chat');});
+}
+function renderChecklist(id){
+  $('#tabc').innerHTML='<i style="color:var(--muted)">loading checklist…</i>';
+  api('/api/cases/'+id+'/checklist').then(d=>{const items=d.checklist||[];
+    let h=`<p style="color:var(--muted)">The analyst proposes activity that looks <b>legitimate/expected</b>. Customer confirms: <b>Accept</b> = benign (suppressed from findings) · <b>Decline</b> = it's real (kept).</p>`;
+    h+= items.length? items.map(it=>`<div class="ck ${it.status==='accepted'?'accepted':it.status==='declined'?'declined':''}">
+        <div class="q">${esc(it.question||'')}</div>
+        <div class="acts">${it.status==='pending'
+          ?`<button onclick="decide('${id}','${it.id}','accept')">✓ Accept (benign)</button><button class="ghost" onclick="decide('${id}','${it.id}','decline')">✕ Decline (real)</button>`
+          :`<span class="defbadge">${it.status}</span> <button class="ghost" onclick="decide('${id}','${it.id}','${it.status==='accepted'?'decline':'accept'}')">change</button>`}</div></div>`).join('')
+      : '<i style="color:var(--muted)">no checklist items (no high findings, or simulated mode produced none)</i>';
+    $('#tabc').innerHTML=h;
+  });
+}
+function decide(id,item,decision){
+  api('/api/cases/'+id+'/checklist/'+item,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision})})
+   .then(_=>{toast(decision==='accept'?'accepted — suppressed + re-fused':'declined — kept');
+     if(decision==='accept'){openCase(id);} else {renderChecklist(id);}});
 }
 function renderAdvisory(info){
   const a=info.analysis||{}; const ig=a.incident_groups||[], hy=a.hypotheses||[];
@@ -288,26 +342,24 @@ function renderAdvisory(info){
 function renderTimeline(id){
   $('#tabc').innerHTML='<i style="color:var(--muted)">loading timeline…</i>';
   api('/api/cases/'+id+'/timeline').then(d=>{const t=d.timeline||[];
-    $('#tabc').innerHTML=t.length? '<div class="md"><ul>'+t.map(r=>`<li><code>${r.ts||'—'}</code> · <strong>${escape(r.host||'')}</strong> · [${escape(r.phase||'')}] ${escape(r.title||'')} <span class="chip c-${r.severity}">${r.severity}</span></li>`).join('')+'</ul></div>' : '<i style="color:var(--muted)">no time-anchored activity</i>';
+    let h=`<p style="color:var(--muted)">Validate each entry. <b>Not real</b> marks it a false positive (suppressed + re-fused); <b>Real</b> just records confirmation.</p>`;
+    h+= t.length? t.map(r=>`<div class="tlrow ${r.validation==='not_real'?'notreal':''}">
+        <code>${esc(r.ts||'—')}</code><span class="tlt"><strong>${esc(r.host||'')}</strong> [${esc(r.phase||'')}] ${esc(r.title||'')}</span>
+        <span class="chip c-${r.severity}">${r.severity}</span>
+        ${r.validation==='real'?'<span class="defbadge" style="color:var(--ok)">real</span>'
+          :r.validation==='not_real'?'<span class="defbadge">not real</span>'
+          :`<button class="ghost" style="font-size:11px;padding:3px 7px" onclick="validateTl('${id}','${r.finding_id}','real')">real</button><button class="ghost" style="font-size:11px;padding:3px 7px" onclick="validateTl('${id}','${r.finding_id}','not_real')">not real</button>`}
+      </div>`).join('') : '<i style="color:var(--muted)">no time-anchored activity</i>';
+    $('#tabc').innerHTML=h;
   });
 }
-function renderDispositions(info){
-  const ds=info.dispositions||[];
-  let h=`<p style="color:var(--muted)">Operator triage. Mark a finding/host benign in <b>Chat</b> ("the PsExec on DC01 was IT") or below — it's suppressed + remembered. Add "environment" to suppress fleet-wide.</p>`;
-  h+= ds.length? ds.map(d=>`<div class="caseitem"><div class="nm">${escape(d.target||'')} → <span class="chip ${d.verdict==='benign'?'c-low':'c-high'}">${d.verdict}</span> ${escape(d.attribution||'')}</div><div class="meta">${escape(d.reason||'')} · ${d.scope||'case'}</div></div>`).join('') : '<i style="color:var(--muted)">none yet</i>';
-  h+=`<div class="row" style="margin-top:12px"><input id="dtgt" placeholder="finding_id or entity_id" style="flex:1"/>
-    <select id="dattr" style="width:auto"><option value="it_admin">IT admin</option><option value="employee">employee</option><option value="sanctioned_tool">sanctioned tool</option><option value="service_account">service account</option></select>
-    <button onclick="markBenign('${info.case_id}')">Mark benign</button></div>`;
-  $('#tabc').innerHTML=h;
+function validateTl(id,fid,status){
+  api('/api/cases/'+id+'/timeline/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({finding_id:fid,status})})
+   .then(_=>{toast(status==='not_real'?'marked not real — suppressed':'confirmed real');
+     if(status==='not_real'){openCase(id);} else {renderTimeline(id);}});
 }
-function markBenign(id){const t=$('#dtgt').value.trim(); if(!t){toast('target required');return;}
-  api('/api/cases/'+id+'/disposition',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({target:t,verdict:'benign',attribution:$('#dattr').value})})
-   .then(_=>{toast('marked benign + re-fused');openCase(id);});}
 function captureBaseline(id){toast('capturing baseline…');
   api('/api/cases/'+id+'/baseline',{method:'POST'}).then(d=>toast('baseline captured: '+((d.baseline||{}).sigma_titles||0)+' titles'));}
-
-function refuse(id){toast('re-fusing…');api('/api/cases/'+id+'/fuse',{method:'POST'}).then(_=>{toast('re-fused');openCase(id);});}
 
 let chatHist=[];
 function renderChat(id){

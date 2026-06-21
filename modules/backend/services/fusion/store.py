@@ -329,6 +329,10 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     ws = _ws()
     d = get_case(case_id)
     members = _members_for_case(case_id, d)
+    # include/exclude: scope the fusion to a chosen subset of the case's runs (None = all)
+    inc = d.get("included_run_ids")
+    if inc is not None:
+        members = [m for m in members if m in set(inc)]
     if contributions_override is not None:
         contributions = contributions_override
     else:
@@ -354,16 +358,33 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         kb.index_case_entities(case_id, g)
     except Exception:
         pass
+    # masking (customer-facing): anonymize host/user/ip in the report + LLM payload
+    mask = None
+    mk = d.get("masking") or {}
+    if mk.get("enabled"):
+        try:
+            from services.data_anonymizer import DataAnonymizer
+            mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
+        except Exception:
+            mask = None
     report = llm_sim.generate_report(
         g, window=window, min_severity=min_sev,
         initial_access=d.get("initial_access_estimate"),
         case_name=d.get("name", "Case"), run_id=case_id,
         audience=d.get("audience", "both"), language=d.get("language", "en"),
-        master_prompt=d.get("master_prompt"))
+        master_prompt=d.get("master_prompt"), mask=mask)
     # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored SEPARATELY
     # from the deterministic findings (never conflated); fed prior operator dispositions.
     analysis = llm_sim.analyze(g, window=window, min_severity=min_sev, run_id=case_id,
                                dispositions=d.get("dispositions") or None)
+    # customer-confirmation checklist — generate once (preserve operator decisions on re-fuse)
+    checklist = d.get("disposition_checklist")
+    if not checklist:
+        try:
+            checklist = llm_sim.generate_disposition_checklist(
+                g, window=window, min_severity=min_sev, run_id=case_id)
+        except Exception:
+            checklist = []
 
     # Token A/B: raw rows a normal run would feed vs the distilled payload the LLM
     # actually sees. raw_approx is necessarily an estimate (we never send raw), so
@@ -385,7 +406,8 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
 
     ws.update_run_status(case_id, "completed",
                          details={"fusion_graph": g.pruned().to_dict(), "report_md": report,
-                                  "token_ab": token_ab, "analysis": analysis})
+                                  "token_ab": token_ab, "analysis": analysis,
+                                  "disposition_checklist": checklist})
     return g
 
 
@@ -507,6 +529,112 @@ def engagement_markdown(case_id) -> str:
                         customer_name=d.get("customer_name", ""))
     body = d.get("report_md") or "_No report yet — fuse the case first._"
     return f"{cover}\n\n{body}"
+
+
+# ---- Case Analysis console: config + rescan + checklist + timeline validation ----
+
+def set_analysis_config(case_id, cfg) -> dict:
+    """Persist the analysis variables from the config rail (time window, severity,
+    masking, included runs, audience/branding/language). Only provided keys change."""
+    patch = {}
+    if "time_window" in cfg:
+        tw = cfg.get("time_window") or {}
+        patch["time_window"] = {"start": tw.get("start"), "end": tw.get("end")}
+    for k in ("min_severity", "audience", "language", "tlp", "customer_name",
+              "customer_logo_b64", "master_prompt"):
+        if cfg.get(k) is not None:
+            patch[k] = cfg[k]
+    if "masking" in cfg:
+        mk = cfg.get("masking") or {}
+        patch["masking"] = {"enabled": bool(mk.get("enabled")),
+                            "patterns": [p for p in (mk.get("patterns") or []) if p]}
+    if "included_run_ids" in cfg:          # None = all; list = subset
+        patch["included_run_ids"] = cfg["included_run_ids"]
+    if patch:
+        _merge_case_details(case_id, patch)
+    return {k: ("<logo>" if k == "customer_logo_b64" else v) for k, v in patch.items()}
+
+
+def rescan(case_id, cfg=None) -> dict:
+    """THE config-driven action: persist the rail's variables then re-correlate +
+    regenerate. Replaces the bare re-fuse for the UI."""
+    if cfg:
+        set_analysis_config(case_id, cfg)
+    g = fuse_case(case_id)
+    return {"entities": len(g.entities), "relationships": len(g.relationships),
+            "findings": len(g.findings),
+            "cross_host_findings": sum(1 for f in g.findings if f.kind == "cross_host")}
+
+
+def case_members(case_id) -> list:
+    """Runs tagged to the case + their host + whether they're currently included — feeds
+    the include/exclude picker in the config rail."""
+    ws = _ws()
+    d = get_case(case_id)
+    inc = d.get("included_run_ids")
+    inc_set = set(inc) if inc is not None else None
+    out = []
+    for rid in _members_for_case(case_id, d):
+        r = ws.get_automation_run(rid) or {}
+        det = r.get("details") or {}
+        host = det.get("client_name") or det.get("account") or det.get("account_id") \
+            or det.get("tenant_id")
+        if not host:
+            hn = det.get("hostnames")
+            if isinstance(hn, dict):
+                host = ", ".join(str(v) for v in hn.values()) or None
+            elif isinstance(hn, list):
+                host = ", ".join(str(v) for v in hn) or None
+        out.append({"run_id": rid, "type": r.get("automation_type"),
+                    "host": host or rid, "status": r.get("status"),
+                    "included": (inc_set is None) or (rid in inc_set)})
+    return out
+
+
+def decide_checklist_item(case_id, item_id, decision) -> dict:
+    """Customer confirms a checklist item. accept => the finding is benign (dispositioned
+    + re-fused, suppressed); decline => kept as a real finding."""
+    d = get_case(case_id)
+    items = d.get("disposition_checklist") or []
+    item = next((x for x in items if x.get("id") == item_id), None)
+    if not item:
+        return {"error": "checklist item not found"}
+    decision = "accept" if decision == "accept" else "decline"
+    item["status"] = "accepted" if decision == "accept" else "declined"
+    _merge_case_details(case_id, {"disposition_checklist": items})
+    if decision == "accept" and item.get("finding_id"):
+        # benign confirmation -> disposition + re-fuse (this re-persists the checklist too)
+        set_disposition(case_id, item["finding_id"], verdict="benign",
+                        attribution="customer",
+                        reason=f"customer-confirmed benign: {item.get('question', '')}",
+                        scope="case")
+    return {"item_id": item_id, "status": item["status"]}
+
+
+def validate_timeline(case_id, finding_id, status, notes="") -> dict:
+    """Operator marks a timeline entry real / not_real. not_real => suppress (disposition
+    benign) + re-fuse; real => just recorded."""
+    d = get_case(case_id)
+    vals = [v for v in (d.get("timeline_validations") or []) if v.get("finding_id") != finding_id]
+    status = status if status in ("real", "not_real") else "unknown"
+    vals.append({"finding_id": finding_id, "status": status, "notes": notes})
+    _merge_case_details(case_id, {"timeline_validations": vals})
+    if status == "not_real":
+        set_disposition(case_id, finding_id, verdict="benign", attribution="operator",
+                        reason=f"timeline entry marked not real: {notes}", scope="case")
+    return {"finding_id": finding_id, "status": status}
+
+
+def get_timeline(case_id) -> list:
+    """Case timeline rows + each row's validation status (real/not_real/unknown)."""
+    d = get_case(case_id)
+    g = load_graph(case_id)
+    vmap = {v.get("finding_id"): v.get("status")
+            for v in (d.get("timeline_validations") or [])}
+    rows = render.timeline(g, window=d.get("time_window") or None)
+    for r in rows:
+        r["validation"] = vmap.get(r.get("finding_id"), "unknown")
+    return rows
 
 
 def chat_case(case_id, question) -> str:

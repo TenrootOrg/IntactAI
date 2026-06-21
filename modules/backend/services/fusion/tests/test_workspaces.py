@@ -44,6 +44,26 @@ def test_system_run_types_route_to_system_workspace():
     delete_workflow(rid)
 
 
+def test_checklist_is_grounded_to_real_findings():
+    from services.fusion import llm_sim
+    g = calibrate.fuse("attack2")
+    cl = llm_sim.generate_disposition_checklist(g, min_severity="informational")
+    valid = {f.id for f in g.findings}
+    assert cl, "expected checklist items for the attack2 fixture"
+    assert all(it.get("finding_id") in valid for it in cl), \
+        "every checklist item must cite a real finding_id"
+
+
+def test_masked_report_anonymizes_host_labels():
+    from services.fusion import llm_sim
+    from services.data_anonymizer import DataAnonymizer
+    g = calibrate.fuse("attack2")
+    hosts = [e.label for e in g.entities.values() if e.type == "asset" and e.label]
+    md = llm_sim.generate_report(g, case_name="X", mask=DataAnonymizer())
+    assert hosts, "fixture should have host assets"
+    assert all(h not in md for h in hosts), "host labels must be masked in the report"
+
+
 def test_multi_run_case_merges_all_runs():
     """A case fuses EVERY run tagged to it (guards the 'can't merge multiple' misconception)."""
     cid = store.create_case("ws-multi", min_severity="informational")

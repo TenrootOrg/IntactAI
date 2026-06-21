@@ -139,6 +139,8 @@ def get_case(case_id):
                                        or d.get("name") == store.DEFAULT_CASE_NAME),
                     "is_system": bool(d.get("is_system")
                                       or d.get("name") == store.SYSTEM_CASE_NAME),
+                    "masking": d.get("masking") or {"enabled": False, "patterns": []},
+                    "included_run_ids": d.get("included_run_ids"),
                     # null-guarded for cases created before these existed
                     "analysis": d.get("analysis") or {},
                     "dispositions": d.get("dispositions") or [],
@@ -210,6 +212,57 @@ def fuse(case_id):
                     "findings": len(g.findings),
                     "cross_host_findings": sum(1 for f in g.findings if f.kind == "cross_host"),
                     "warnings": [m for l, m in logs if l == "warning"]})
+
+
+@case_bp.route("/api/cases/<case_id>/rescan", methods=["POST"])
+def rescan(case_id):
+    """THE Case Analysis action: persist the config rail's variables (time window,
+    severity, masking, included hosts, audience/branding/master-prompt) then re-correlate
+    + regenerate the report/advisory/checklist."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    cfg = request.get_json(silent=True) or {}
+    res = store.rescan(case_id, cfg)
+    return jsonify({"case_id": case_id, "status": "rescanned", **res})
+
+
+@case_bp.route("/api/cases/<case_id>/members", methods=["GET"])
+def members(case_id):
+    """Runs tagged to the case + host + included flag (the include/exclude picker)."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    return jsonify({"case_id": case_id, "members": store.case_members(case_id)})
+
+
+@case_bp.route("/api/cases/<case_id>/checklist", methods=["GET"])
+def get_checklist(case_id):
+    d = store.get_case(case_id)
+    if not d:
+        return jsonify({"error": "case not found"}), 404
+    return jsonify({"case_id": case_id, "checklist": d.get("disposition_checklist") or []})
+
+
+@case_bp.route("/api/cases/<case_id>/checklist/<item_id>", methods=["POST"])
+def decide_checklist(case_id, item_id):
+    """accept = customer confirms benign (dispositioned + re-fused); decline = keep."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    decision = (request.get_json(silent=True) or {}).get("decision", "accept")
+    res = store.decide_checklist_item(case_id, item_id, decision)
+    return (jsonify(res), 404) if res.get("error") else jsonify({"case_id": case_id, **res})
+
+
+@case_bp.route("/api/cases/<case_id>/timeline/validate", methods=["POST"])
+def timeline_validate(case_id):
+    """Mark a timeline entry real / not_real. not_real => suppressed on re-fuse."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    b = request.get_json(silent=True) or {}
+    fid = (b.get("finding_id") or "").strip()
+    if not fid:
+        return jsonify({"error": "finding_id required"}), 400
+    res = store.validate_timeline(case_id, fid, b.get("status", "real"), b.get("notes", ""))
+    return jsonify({"case_id": case_id, **res})
 
 
 @case_bp.route("/api/cases/<case_id>/report", methods=["GET"])
@@ -300,10 +353,10 @@ def graph(case_id):
 
 @case_bp.route("/api/cases/<case_id>/timeline", methods=["GET"])
 def timeline(case_id):
-    d = store.get_case(case_id)
-    g = FusionGraph.from_dict(d.get("fusion_graph") or {"case_id": case_id})
-    return jsonify({"case_id": case_id,
-                    "timeline": render.timeline(g, window=d.get("time_window") or None)})
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    # each row carries finding_id + validation status (real/not_real/unknown)
+    return jsonify({"case_id": case_id, "timeline": store.get_timeline(case_id)})
 
 
 @case_bp.route("/api/cases/<case_id>/chat", methods=["POST"])
