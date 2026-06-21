@@ -4316,7 +4316,12 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
 
     <!-- JavaScript - Alpine app + module-specific scripts -->
     <script src="js/api-client.js"></script>
-    <script src="js/app.js?v=20"></script>
+    <!-- App stores (split from the former monolithic app.js) -->
+    <script src="js/stores/app.js?v=1"></script>
+    <script src="js/stores/services.js?v=1"></script>
+    <script src="js/stores/workflows.js?v=1"></script>
+    <script src="js/stores/settings.js?v=1"></script>
+    <script src="js/legacy/handlers.js?v=1"></script>
     <script src="js/velociraptor.js?v=2"></script>
     <script src="js/blueprints.js?v=3"></script>
     <script src="js/blueprints-forensics.js?v=2"></script>
