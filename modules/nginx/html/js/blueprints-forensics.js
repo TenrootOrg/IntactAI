@@ -211,14 +211,6 @@ async function startForensicsCollection() {
     const aiButton = document.getElementById('forensics-mode-ai');
     const rawButton = document.getElementById('forensics-mode-raw');
     const isAiMode = aiButton?.className.includes('border-purple-500') && !rawButton?.className.includes('border-blue-500');
-    const collectionSource = document.querySelector('input[name="collection-source"]:checked')?.value || 'new';
-
-    console.log('[Forensics] Mode detection:', { isAiMode, collectionSource, aiClass: aiButton?.className, rawClass: rawButton?.className });
-
-    // If existing flow mode in AI mode, delegate to analyzeExistingCollection
-    if (isAiMode && collectionSource === 'existing') {
-        return analyzeExistingCollection();
-    }
 
     const blueprintId = document.getElementById('forensics-blueprint-select')?.value;
     if (!blueprintId) {
@@ -226,8 +218,8 @@ async function startForensicsCollection() {
         return;
     }
 
-    // Only check for clients in AI mode with new collection
-    if (isAiMode && collectionSource === 'new') {
+    // Collection mode requires at least one client.
+    if (isAiMode) {
         const selectedClients = Array.from(forensicsSelectedClients);
         if (selectedClients.length === 0) {
             alert('Please select at least one client');
@@ -309,108 +301,6 @@ async function startForensicsCollection() {
             } else {
                 statusEl.innerHTML = `<span class="text-red-400">Error: ${data.error}</span>`;
             }
-        }
-    } catch (error) {
-        statusEl.innerHTML = `<span class="text-red-400">Error: ${error.message}</span>`;
-    }
-}
-
-// Called from index.html's existing-id input @input handler.
-// Whenever the analyst edits the Flow/Hunt ID, drop any client selection
-// that was held over from the previous picker view. Without this the
-// `forensicsSelectedClients` Set persists globally — a single client
-// picked for a `F.xxx.H` run would silently leak into the next submission
-// (visible as "Hunt scoped to 1 selected client(s)" in the workflow log
-// even after the user thought they'd switched to a standalone hunt).
-//
-// Always clear on change. The picker re-renders with no checks; if the
-// new ID re-shows the picker, the analyst makes a fresh selection. Tiny
-// UX cost, eliminates a class of state-leak bugs.
-let _lastExistingId = '';
-let _pickerLoadedWithOffline = false;
-function onExistingIdChange(newValue) {
-    if (newValue === _lastExistingId) return;
-    _lastExistingId = newValue;
-    if (forensicsSelectedClients.size > 0) {
-        forensicsSelectedClients.clear();
-        // Re-render so any visible checkboxes uncheck.
-        if (typeof renderForensicsClients === 'function') {
-            renderForensicsClients(forensicsClientsCache || []);
-        }
-    }
-    // Hunt-derived flow (`F.xxx.H`) — reload picker including offline
-    // clients (data already collected, liveness irrelevant). Cache the
-    // mode so we don't refetch on every keystroke.
-    const isHuntDerived = newValue.startsWith('F.') && newValue.endsWith('.H');
-    if (isHuntDerived && !_pickerLoadedWithOffline) {
-        loadForensicsClients('', true);
-        _pickerLoadedWithOffline = true;
-    } else if (!isHuntDerived && _pickerLoadedWithOffline) {
-        // User left the F.xxx.H state — reset to online-only on next load.
-        _pickerLoadedWithOffline = false;
-    }
-}
-
-async function analyzeExistingCollection() {
-    const existingId = document.getElementById('forensics-existing-id')?.value?.trim();
-    if (!existingId) {
-        alert('Please enter a Flow ID or Hunt ID');
-        return;
-    }
-
-    // Determine the ID kind. Three accepted shapes:
-    //   F.xxx       single-client flow (no client picker)
-    //   H.xxx       standalone hunt    (no client picker — analyzes all clients)
-    //   F.xxx.H     hunt-derived flow  (REQUIRES client picker — combined data)
-    const endsWithH = existingId.endsWith('.H');
-    const isFlow = existingId.startsWith('F.') && !endsWithH;
-    const isHunt = existingId.startsWith('H.') || endsWithH;
-
-    if (!isFlow && !isHunt) {
-        alert('Invalid ID format. Flow IDs start with "F.", Hunt IDs start with "H.", and hunt-derived flow IDs end with ".H".');
-        return;
-    }
-
-    // For hunt-derived flows (F.xxx.H), the analyst must pick at least one
-    // client — otherwise the VQL filter would have nothing to scope to.
-    if (endsWithH && forensicsSelectedClients.size === 0) {
-        alert('This is a hunt-derived flow (ends with .H). Please select at least one client to analyze from the picker above.');
-        return;
-    }
-
-    // Use main status element (unified UI)
-    const statusEl = document.getElementById('forensics-status') || document.getElementById('forensics-existing-status');
-    statusEl?.classList.remove('hidden');
-    statusEl.textContent = 'Ingesting existing collection...';
-
-    try {
-        // Ingest-only — report_types=[] persists the raw data without any LLM
-        // work. The case console handles analysis/filtering/masking afterward.
-        const response = await fetch('/api/agentic/analyze-existing', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                flow_id: isFlow ? existingId : null,
-                hunt_id: isHunt ? existingId : null,
-                // Only send client_ids on the hunt-derived-flow path
-                // (`F.xxx.H`). Standalone `H.xxx` keeps the historical
-                // "all clients" semantic by omitting the field.
-                client_ids: endsWithH ? Array.from(forensicsSelectedClients) : undefined,
-                report_types: []
-            })
-        });
-
-        const data = await response.json();
-        if (response.ok) {
-            statusEl.innerHTML = `<span class="text-green-400">Collection ingest started! Run ID: ${data.run_id}</span><br>Redirecting to Workflows...`;
-            // Redirect to workflows tab after short delay
-            setTimeout(() => {
-                if (window.Alpine && Alpine.store('app')) {
-                    Alpine.store('app').switchTab('workflows');
-                }
-            }, 1000);
-        } else {
-            statusEl.innerHTML = `<span class="text-red-400">Error: ${data.error}</span>`;
         }
     } catch (error) {
         statusEl.innerHTML = `<span class="text-red-400">Error: ${error.message}</span>`;

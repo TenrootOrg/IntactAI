@@ -50,30 +50,13 @@
                     </div>
                     <p class="text-gray-400 mb-6 text-sm" x-text="forensicsMode === 'raw' ? 'Run artifact hunts and collect raw data from clients' : 'Collect artifacts from clients (new or existing collection) — analysis happens at the case level'"></p>
                     <!-- Collection Section -->
-                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4" x-data="{ collectionSource: 'new', existingId: '' }">
-                        <!-- Collection Source Radio (AI mode only) -->
-                        <div x-show="forensicsMode === 'ai'" class="mb-4">
-                            <label class="block text-sm font-medium text-gray-300 mb-2">Collection Source</label>
-                            <div class="flex gap-4">
-                                <label class="flex items-center gap-2 cursor-pointer">
-                                    <input type="radio" name="collection-source" value="new" x-model="collectionSource"
-                                        class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
-                                    <span class="text-sm text-gray-300">New Collection</span>
-                                </label>
-                                <label class="flex items-center gap-2 cursor-pointer">
-                                    <input type="radio" name="collection-source" value="existing" x-model="collectionSource"
-                                        class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
-                                    <span class="text-sm text-gray-300">Existing Collection</span>
-                                </label>
-                            </div>
-                        </div>
-
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
                         <!-- Raw mode title -->
                         <h3 x-show="forensicsMode === 'raw'" class="text-lg font-semibold text-white mb-4">New Hunt</h3>
 
                         <div class="space-y-4">
-                            <!-- Blueprint (only for new collection) -->
-                            <div x-show="collectionSource === 'new' || forensicsMode === 'raw'">
+                            <!-- Blueprint -->
+                            <div>
                                 <label class="block text-sm font-medium text-gray-300 mb-1">Blueprint</label>
                                 <div class="flex items-center gap-3">
                                     <select id="forensics-blueprint-select" onchange="onForensicsBlueprintChange(this.value)"
@@ -92,13 +75,8 @@
                                 </div>
                             </div>
 
-                            <!-- Clients picker — shown for new collections AND for existing
-                                 hunt-derived flows (`F.<base>.H`), where the analyst must
-                                 scope the analysis to one or more clients in the hunt.
-                                 Tightened to require BOTH F. prefix AND .H suffix so a
-                                 stale `existingId` like `H.xxx.H` doesn't keep the picker
-                                 visible after the user clears their input. -->
-                            <div x-show="forensicsMode === 'ai' && (collectionSource === 'new' || (collectionSource === 'existing' && existingId.startsWith('F.') && existingId.endsWith('.H')))">
+                            <!-- Clients picker (Collection mode) -->
+                            <div x-show="forensicsMode === 'ai'">
                                 <div class="flex items-center justify-between mb-2">
                                     <label class="block text-sm font-medium text-gray-300">Clients</label>
                                     <div class="flex gap-2">
@@ -112,22 +90,6 @@
                                 <div id="forensics-client-list" class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
                                     <p class="text-sm text-gray-500">Loading clients...</p>
                                 </div>
-                                <p x-show="collectionSource === 'existing' && existingId.startsWith('F.') && existingId.endsWith('.H')" class="text-xs text-purple-400 mt-1">
-                                    Hunt-derived flow detected (F.xxx.H) — pick the clients you want analyzed from this hunt.
-                                </p>
-                            </div>
-
-                            <!-- Existing Flow ID (AI mode, existing flow only) -->
-                            <div x-show="forensicsMode === 'ai' && collectionSource === 'existing'">
-                                <label class="block text-sm font-medium text-gray-300 mb-1">Flow or Hunt ID</label>
-                                <!-- @input clears any stale client selection so changing the
-                                     ID (e.g. from F.xxx.H → H.xxx) doesn't carry the previous
-                                     picker selection into the next run. -->
-                                <input type="text" id="forensics-existing-id" x-model="existingId"
-                                    @input="onExistingIdChange($event.target.value)"
-                                    placeholder="F.C1234567890, H.ABC123..., or F.xxx.H (hunt-derived flow)"
-                                    class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-purple-500 focus:outline-none">
-                                <p class="text-xs text-gray-500 mt-1">Flow ID (<code>F.xxx</code>), Hunt ID (<code>H.xxx</code>), or hunt-derived flow (<code>F.xxx.H</code>) from a previous collection.</p>
                             </div>
 
                             <!-- Hunt Info (Raw mode only) -->
@@ -162,8 +124,8 @@
                                  time/severity scoping now live on the case console. -->
                             <template x-if="forensicsMode === 'ai'">
                                 <div class="space-y-4 border-t border-gray-700 pt-4">
-                                    <!-- Collection Time (only for new collection) -->
-                                    <div x-show="collectionSource === 'new'">
+                                    <!-- Collection window -->
+                                    <div>
                                         <label class="block text-sm font-medium text-gray-300 mb-1">Collection Time</label>
                                         <div class="flex items-center gap-2">
                                             <input type="number" id="forensics-collection-time" value="30" min="1" max="1440"
@@ -184,7 +146,7 @@
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path>
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                             </svg>
-                            <span x-text="forensicsMode === 'raw' ? 'Run Hunt' : (collectionSource === 'existing' ? 'Ingest Existing Collection' : 'Start Collection')"></span>
+                            <span x-text="forensicsMode === 'raw' ? 'Run Hunt' : 'Start Collection'"></span>
                         </button>
                         <div id="forensics-status" class="mt-3 text-sm text-gray-400 hidden"></div>
                     </div>
