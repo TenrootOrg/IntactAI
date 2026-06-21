@@ -34,7 +34,6 @@ from services.aws.collectors import parse_uploaded_logs
 from services.aws.sigma_runner import validate_rules_directory
 from services.workflow_logger import add_log_to_run
 from services.workflow_service import update_run_status, get_automation_run
-from services.agentic import chat as interactive_chat
 import threading
 
 
@@ -252,7 +251,7 @@ def start_scan():
                 mepr = None
 
             options = {
-                'enable_llm': data.get('enable_llm', False),
+                'enable_llm': False,  # collection-only; LLM lives at the case level
                 'llm_config': llm_config,
                 'time_filter': data.get('time_filter'),
                 'min_severity': data.get('min_severity', 'medium'),
@@ -445,7 +444,7 @@ def analyze_offline():
         blueprint = next((b for b in blueprints if b['id'] == blueprint_id), blueprints[0])
 
         options = {
-            'enable_llm': data.get('enable_llm', False),
+            'enable_llm': False,  # collection-only; LLM lives at the case level
             'llm_config': llm_config,
             'time_filter': data.get('time_filter'),
             'min_severity': data.get('min_severity', 'medium'),
@@ -644,36 +643,6 @@ def list_runs():
         return jsonify({'error': str(e)}), 500
 
 
-@aws_bp.route('/api/aws/report/<run_id>/download', methods=['GET'])
-def download_aws_report(run_id):
-    from services.aws.reports import get_aws_report, get_aws_report_types
-    try:
-        report_type = request.args.get('type')
-        content = get_aws_report(run_id, report_type)
-        if not content:
-            available = get_aws_report_types(run_id)
-            if available:
-                return jsonify({'error': f"Report type '{report_type}' not found. Available: {available}"}), 404
-            return jsonify({'error': 'No report found for this run'}), 404
-        filename = f"aws_{report_type}_report_{run_id}.md" if report_type else f"aws_report_{run_id}.md"
-        return Response(
-            content,
-            mimetype='text/markdown',
-            headers={'Content-Disposition': f'attachment; filename="{filename}"'},
-        )
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@aws_bp.route('/api/aws/report/<run_id>/types', methods=['GET'])
-def aws_report_types(run_id):
-    from services.aws.reports import get_aws_report_types
-    try:
-        return jsonify({'types': get_aws_report_types(run_id)})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
 @aws_bp.route('/api/aws/data/<run_id>/download', methods=['GET'])
 def download_aws_raw_data(run_id):
     """Bundle collected data + findings + analysis as a ZIP."""
@@ -731,160 +700,3 @@ def delete_run(run_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-
-# ---------------------------------------------------------------------------
-# Interactive mode: chat about the report, synthesise a master prompt, then
-# re-run the analysis with the master prompt threaded through every LLM call.
-# Mirrors /api/agentic/run/<id>/{chat,rerun} — same shared chat backend.
-# ---------------------------------------------------------------------------
-
-
-def _aws_load_llm_config():
-    from services.file_storage_service import load_frontend_config
-    return load_frontend_config() or {}
-
-
-@aws_bp.route('/api/aws/run/<run_id>/chat', methods=['GET'])
-def get_aws_chat(run_id):
-    """Snapshot of chat state + scope availability for the AWS run.
-    Used by the modal on open."""
-    try:
-        run = get_automation_run(run_id)
-        if not run:
-            return jsonify({"error": "Run not found"}), 404
-        return jsonify(interactive_chat.get_chat_state(run_id))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@aws_bp.route('/api/aws/run/<run_id>/chat', methods=['POST'])
-def post_aws_chat(run_id):
-    """Append an operator turn; get the assistant reply (synchronous)."""
-    if not is_module_enabled('prowler'):
-        return jsonify({"error": "AWS module is not enabled."}), 400
-    try:
-        run = get_automation_run(run_id)
-        if not run:
-            return jsonify({"error": "Run not found"}), 404
-        data = request.get_json() or {}
-        try:
-            reply = interactive_chat.send_chat_message(run_id, data.get('message', ''), _aws_load_llm_config())
-        except ValueError as ve:
-            return jsonify({"error": str(ve)}), 400
-        except RuntimeError as re_:
-            return jsonify({"error": str(re_)}), 502
-        return jsonify({"assistant": reply})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@aws_bp.route('/api/aws/run/<run_id>/chat', methods=['DELETE'])
-def clear_aws_chat(run_id):
-    """Wipe chat transcript + synthesised master prompt."""
-    try:
-        run = get_automation_run(run_id)
-        if not run:
-            return jsonify({"error": "Run not found"}), 404
-        interactive_chat.clear_chat(run_id)
-        return jsonify({"ok": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@aws_bp.route('/api/aws/run/<run_id>/rerun', methods=['POST'])
-def rerun_aws(run_id):
-    """Re-run the AWS analysis with the chat-synthesised master prompt.
-
-    Body: {scope: "reports_only" | "full"}
-      - reports_only: re-call the report-synthesis LLM only, using
-        cached per-rule analyses. ~1 LLM call.
-      - full: re-call analyze_artifacts on the persisted findings,
-        then re-synthesise the report. Per-rule LLM call per rule.
-    """
-    if not is_module_enabled('prowler'):
-        return jsonify({"error": "AWS module is not enabled."}), 400
-    try:
-        run = get_automation_run(run_id)
-        if not run:
-            return jsonify({"error": "Run not found"}), 404
-        if run.get('automation_type') != 'aws_scan':
-            return jsonify({"error": "Re-run is only supported for AWS scan runs"}), 400
-        if run.get('status') == 'running':
-            return jsonify({"error": "Run is already in progress"}), 409
-
-        data = request.get_json() or {}
-        scope = (data.get('scope') or 'reports_only').strip()
-        if scope not in ('reports_only', 'full'):
-            return jsonify({"error": "scope must be 'reports_only' or 'full'"}), 400
-
-        details = run.get('details') or {}
-        if not (details.get('chat_messages') or []):
-            return jsonify({
-                "error": "No chat history — send at least one message "
-                         "describing what to correct or investigate."
-            }), 400
-
-        # Pre-flight: the cached AWS run data must exist for either
-        # scope (collected_data + findings live there).
-        data_path = f"/app/data/aws_runs/{run_id}.json"
-        if not os.path.exists(data_path):
-            return jsonify({
-                "error": "No persisted AWS run data on file — this run "
-                         "predates the interactive-mode plumbing or its "
-                         "data has been pruned."
-            }), 409
-
-        llm_config = _aws_load_llm_config()
-        add_log_to_run(run_id, f"[Pipeline] Interactive re-run (scope={scope}) starting", "info")
-
-        # Read filters captured at dispatch. Old runs predate this field
-        # and get a "no filters" warning + the legacy un-filtered behaviour.
-        original_filters = {
-            'min_severity': details.get('min_severity'),
-            'time_filter': details.get('time_filter'),
-            'target_principals': details.get('target_principals') or [],
-        }
-        if original_filters['min_severity']:
-            tf = original_filters['time_filter']
-            tf_desc = f", time_filter={tf}" if tf else ''
-            add_log_to_run(
-                run_id,
-                f"[RERUN] Re-applying original filters: min_severity={original_filters['min_severity']}{tf_desc}",
-                "info",
-            )
-        else:
-            add_log_to_run(
-                run_id,
-                "[RERUN] Original run has no persisted filters — running with full data. "
-                "Re-dispatch the scan to enable filtered reruns.",
-                "warning",
-            )
-            original_filters = None
-
-        update_run_status(run_id, 'running', progress=5)
-
-        def _worker():
-            try:
-                add_log_to_run(run_id, "[Interactive] Synthesising master prompt from chat…", "info")
-                mp = interactive_chat.synthesize_master_prompt(run_id, llm_config)
-                mp = (mp or '').strip()
-                if not mp:
-                    raise RuntimeError("synthesised master prompt was empty — add more detail to the chat")
-                _run_aws_reanalyze(run_id, mp, llm_config, scope=scope, original_filters=original_filters)
-                update_run_status(run_id, 'completed', progress=100, force=True)
-                add_log_to_run(run_id, f"[Pipeline] AWS re-run ({scope}) complete", "success")
-            except FileNotFoundError as fe:
-                add_log_to_run(run_id, f"[Pipeline] AWS re-run aborted: {fe}", "warning")
-                update_run_status(run_id, run.get('status') or 'completed', force=True)
-            except Exception as e:
-                import traceback as _tb
-                _tb.print_exc()
-                add_log_to_run(run_id, f"[Pipeline] AWS re-run failed: {e}", "error")
-                update_run_status(run_id, 'failed', error=str(e))
-
-        threading.Thread(target=_worker, daemon=True).start()
-        return jsonify({"run_id": run_id, "scope": scope, "status": "started"})
-
-    except Exception as e:
-        print(f"[AWS] Re-run error: {e}", flush=True)
-        return jsonify({"error": str(e)}), 500

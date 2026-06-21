@@ -27,7 +27,6 @@ from services.workflow_logger import add_log_to_run
 from routes.config_routes import _load_cloud_config
 from config import is_module_enabled
 from services.workflow_service import update_run_status, get_automation_run
-from services.agentic import chat as interactive_chat
 import threading
 
 azure_bp = Blueprint('azure', __name__)
@@ -244,7 +243,7 @@ def start_scan():
 
             # Build options with identity filters
             options = {
-                'enable_llm': data.get('enable_llm', False),
+                'enable_llm': False,  # collection-only; LLM lives at the case level
                 'llm_config': llm_config,
                 'time_filter': data.get('time_filter'),
                 'min_severity': data.get('min_severity', 'medium'),
@@ -537,7 +536,7 @@ def analyze_offline():
         # everything they uploaded. We hard-pin enable_llm here so a
         # stray `false` from the client doesn't produce a useless run.
         options = {
-            'enable_llm': True,
+            'enable_llm': False,  # collection-only; LLM at case level
             'llm_config': llm_config,
             'time_filter': data.get('time_filter'),
             'min_severity': data.get('min_severity', 'low'),
@@ -791,55 +790,6 @@ def list_runs():
         return jsonify({'error': str(e)}), 500
 
 
-@azure_bp.route('/api/azure/report/<run_id>/download', methods=['GET'])
-def download_azure_report(run_id):
-    """Download Azure security report as markdown file.
-
-    Query params:
-        type: 'executive', 'technical', or omit for combined
-    """
-    try:
-        from services.azure.reports import get_azure_report, get_azure_report_types
-
-        report_type = request.args.get('type')
-        content = get_azure_report(run_id, report_type)
-
-        if not content:
-            available = get_azure_report_types(run_id)
-            if available:
-                return jsonify({
-                    'error': f"Report type '{report_type}' not found. Available: {available}"
-                }), 404
-            return jsonify({'error': 'No report found for this run'}), 404
-
-        if report_type:
-            filename = f"azure_{report_type}_report_{run_id}.md"
-        else:
-            filename = f"azure_report_{run_id}.md"
-
-        return Response(
-            content,
-            mimetype='text/markdown',
-            headers={
-                'Content-Disposition': f'attachment; filename="{filename}"'
-            }
-        )
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@azure_bp.route('/api/azure/report/<run_id>/types', methods=['GET'])
-def get_azure_report_types_endpoint(run_id):
-    """Get available report types for an Azure scan."""
-    try:
-        from services.azure.reports import get_azure_report_types
-        types = get_azure_report_types(run_id)
-        return jsonify({'types': types})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
 @azure_bp.route('/api/azure/data/<run_id>/download', methods=['GET'])
 def download_azure_raw_data(run_id):
     """Download raw collected data, SIGMA findings, and LLM analysis as a ZIP file."""
@@ -937,154 +887,3 @@ def delete_run(run_id):
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-
-# ---------------------------------------------------------------------------
-# Interactive mode: same shape as agentic + aws — chat about the report,
-# synthesise a master prompt, re-run with operator corrections applied.
-# ---------------------------------------------------------------------------
-
-
-def _azure_load_llm_config():
-    from services.file_storage_service import load_frontend_config
-    return load_frontend_config() or {}
-
-
-@azure_bp.route('/api/azure/run/<run_id>/chat', methods=['GET'])
-def get_azure_chat(run_id):
-    """Snapshot of chat state + scope availability for the Azure run."""
-    try:
-        run = get_automation_run(run_id)
-        if not run:
-            return jsonify({"error": "Run not found"}), 404
-        return jsonify(interactive_chat.get_chat_state(run_id))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@azure_bp.route('/api/azure/run/<run_id>/chat', methods=['POST'])
-def post_azure_chat(run_id):
-    """Append an operator turn; get the assistant reply."""
-    if not is_module_enabled('o365rc'):
-        return jsonify({"error": "Azure module is not enabled."}), 400
-    try:
-        run = get_automation_run(run_id)
-        if not run:
-            return jsonify({"error": "Run not found"}), 404
-        data = request.get_json() or {}
-        try:
-            reply = interactive_chat.send_chat_message(run_id, data.get('message', ''), _azure_load_llm_config())
-        except ValueError as ve:
-            return jsonify({"error": str(ve)}), 400
-        except RuntimeError as re_:
-            return jsonify({"error": str(re_)}), 502
-        return jsonify({"assistant": reply})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@azure_bp.route('/api/azure/run/<run_id>/chat', methods=['DELETE'])
-def clear_azure_chat(run_id):
-    """Wipe chat transcript + synthesised master prompt."""
-    try:
-        run = get_automation_run(run_id)
-        if not run:
-            return jsonify({"error": "Run not found"}), 404
-        interactive_chat.clear_chat(run_id)
-        return jsonify({"ok": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@azure_bp.route('/api/azure/run/<run_id>/rerun', methods=['POST'])
-def rerun_azure(run_id):
-    """Re-run the Azure analysis with chat-synthesised master prompt.
-
-    Body: {scope: "reports_only" | "full"}
-      - reports_only: re-call report-synthesis LLM only. ~1 LLM call.
-      - full: re-call analyze_artifacts over cached findings, then
-        re-synthesise the report. One LLM call per rule fired.
-    """
-    if not is_module_enabled('o365rc'):
-        return jsonify({"error": "Azure module is not enabled."}), 400
-    try:
-        run = get_automation_run(run_id)
-        if not run:
-            return jsonify({"error": "Run not found"}), 404
-        if run.get('automation_type') != 'azure_scan':
-            return jsonify({"error": "Re-run is only supported for Azure scan runs"}), 400
-        if run.get('status') == 'running':
-            return jsonify({"error": "Run is already in progress"}), 409
-
-        data = request.get_json() or {}
-        scope = (data.get('scope') or 'reports_only').strip()
-        if scope not in ('reports_only', 'full'):
-            return jsonify({"error": "scope must be 'reports_only' or 'full'"}), 400
-
-        details = run.get('details') or {}
-        if not (details.get('chat_messages') or []):
-            return jsonify({
-                "error": "No chat history — send at least one message "
-                         "describing what to correct or investigate."
-            }), 400
-
-        data_path = f"/app/data/azure_runs/{run_id}.json"
-        if not os.path.exists(data_path):
-            return jsonify({
-                "error": "No persisted Azure run data on file — this run "
-                         "predates the interactive-mode plumbing or its "
-                         "data has been pruned."
-            }), 409
-
-        llm_config = _azure_load_llm_config()
-        add_log_to_run(run_id, f"[Pipeline] Interactive re-run (scope={scope}) starting", "info")
-
-        original_filters = {
-            'min_severity': details.get('min_severity'),
-            'time_filter': details.get('time_filter'),
-            'target_users': details.get('target_users') or [],
-            'target_ips': details.get('target_ips') or [],
-        }
-        if original_filters['min_severity']:
-            tf = original_filters['time_filter']
-            tf_desc = f", time_filter={tf}" if tf else ''
-            add_log_to_run(
-                run_id,
-                f"[RERUN] Re-applying original filters: min_severity={original_filters['min_severity']}{tf_desc}",
-                "info",
-            )
-        else:
-            add_log_to_run(
-                run_id,
-                "[RERUN] Original run has no persisted filters — running with full data. "
-                "Re-dispatch the scan to enable filtered reruns.",
-                "warning",
-            )
-            original_filters = None
-
-        update_run_status(run_id, 'running', progress=5)
-
-        def _worker():
-            try:
-                add_log_to_run(run_id, "[Interactive] Synthesising master prompt from chat…", "info")
-                mp = interactive_chat.synthesize_master_prompt(run_id, llm_config)
-                mp = (mp or '').strip()
-                if not mp:
-                    raise RuntimeError("synthesised master prompt was empty — add more detail to the chat")
-                _run_azure_reanalyze(run_id, mp, llm_config, scope=scope, original_filters=original_filters)
-                update_run_status(run_id, 'completed', progress=100, force=True)
-                add_log_to_run(run_id, f"[Pipeline] Azure re-run ({scope}) complete", "success")
-            except FileNotFoundError as fe:
-                add_log_to_run(run_id, f"[Pipeline] Azure re-run aborted: {fe}", "warning")
-                update_run_status(run_id, run.get('status') or 'completed', force=True)
-            except Exception as e:
-                traceback.print_exc()
-                add_log_to_run(run_id, f"[Pipeline] Azure re-run failed: {e}", "error")
-                update_run_status(run_id, 'failed', error=str(e))
-
-        threading.Thread(target=_worker, daemon=True).start()
-        return jsonify({"run_id": run_id, "scope": scope, "status": "started"})
-
-    except Exception as e:
-        print(f"[AZURE] Re-run error: {e}", flush=True)
-        return jsonify({"error": str(e)}), 500

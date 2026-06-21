@@ -31,7 +31,6 @@ from routes import (
     azure_bp,
     aws_bp,
     support_bundle_bp,
-    engagement_bp,
     cve_bp,
     memory_bp,
     case_bp,
@@ -67,7 +66,6 @@ app.register_blueprint(upload_bp)
 app.register_blueprint(azure_bp)
 app.register_blueprint(aws_bp)
 app.register_blueprint(support_bundle_bp)
-app.register_blueprint(engagement_bp)
 app.register_blueprint(cve_bp)
 app.register_blueprint(memory_bp)
 app.register_blueprint(case_bp)

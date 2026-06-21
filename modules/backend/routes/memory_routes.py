@@ -1,34 +1,14 @@
 """Memory-forensics module — Flask routes.
 
-End-to-end pipeline dispatch + workflow polling + report download +
-interactive chat + rerun. Mirrors :mod:`routes.agentic_routes` so the
-frontend's existing chat + workflow patterns drop in unchanged.
+Collection only: dispatch a Volatility/YARA extraction, poll it, stop it. No
+per-run LLM/report/chat — all reporting lives at the case level.
 
 Endpoint inventory (all under ``/api/memory/``):
-
-  Dispatch + lifecycle:
-    POST   /run                      → start pipeline, returns run_id
+    POST   /run                      → start extraction, returns run_id
+    POST   /upload                   → analyze an uploaded memory dump
     GET    /run/<run_id>/status      → poll status + progress + last logs
-    GET    /run/<run_id>/download    → raw markdown report
     POST   /run/<run_id>/stop        → cancel
-    POST   /run/<run_id>/rerun       → re-analyze with optional master prompt
-
-  Interactive validation (chat):
-    GET    /run/<run_id>/chat                → transcript + state
-    POST   /run/<run_id>/chat                → user turn
-    DELETE /run/<run_id>/chat                → clear
-    POST   /run/<run_id>/chat/synthesize     → compress → master prompt
-    PUT    /run/<run_id>/master-prompt       → operator override
-
-  Blueprints (memory blueprint type, same store as agentic/velo):
-    GET    /blueprints                       → list
-    POST   /blueprints                       → create
-    PUT    /blueprints/<id>                  → update
-    DELETE /blueprints/<id>                  → delete
-
-All chat endpoints delegate to ``services.agentic.chat`` — the chat
-infrastructure is LLM-agnostic and already operates on
-``workflow.details.chat_messages``. No memory-specific chat code.
+    GET/POST/PUT/DELETE /blueprints  → memory blueprint CRUD
 """
 
 from __future__ import annotations
@@ -37,9 +17,8 @@ import json
 import threading
 from typing import Any
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, jsonify, request
 
-from services.agentic import chat as agentic_chat
 from services.file_storage_service import get_workflow as file_get_workflow
 from services.memory import pipeline as memory_pipeline
 from services.memory.upload_extract import (
@@ -179,18 +158,9 @@ def start_memory_run():
     if mode not in _VALID_MODES:
         return jsonify({"error": f"invalid mode: {mode!r}"}), 400
 
-    # use_llm: operator-toggleable in the UI. When unset, default to whether an LLM
-    # is actually configured — so with NO key the run is extraction-only (Phase 5
-    # skipped) instead of failing. Explicit True/False from the UI still wins.
-    use_llm = data.get("use_llm")
-    if use_llm is None:
-        try:
-            from services.agentic.analyzers import is_llm_configured
-            from services.memory.pipeline import _llm_config_from_runtime
-            use_llm = is_llm_configured(_llm_config_from_runtime())
-        except Exception:
-            use_llm = False
-    use_llm = bool(use_llm)
+    # Memory is extraction-only — Volatility plugins + YARA. The LLM/reporting lives
+    # at the case level, so per-run analysis is never requested here.
+    use_llm = False
 
     # Optional per-run timeout overrides (seconds). Each is honored in
     # the pipeline if provided; otherwise blueprint.settings → defaults.
@@ -288,9 +258,7 @@ def upload_memory_dump():
 
     case_name = (request.form.get("case_name") or "").strip() or None
     client_name = (request.form.get("client_name") or "").strip() or None
-    # use_llm is sent as a string from FormData — coerce to bool.
-    use_llm_raw = (request.form.get("use_llm") or "true").strip().lower()
-    use_llm = use_llm_raw not in ("false", "0", "no", "off")
+    use_llm = False        # extraction-only; the case does the LLM/reporting
 
     # Stream-save the upload to disk. Flask's `werkzeug.FileStorage`
     # already chunks at 16 KB — we never load the dump into memory.
@@ -440,177 +408,12 @@ def get_memory_status(run_id):
     })
 
 
-@memory_bp.route("/api/memory/run/<run_id>/download", methods=["GET"])
-def download_memory_report(run_id):
-    """Serve the markdown report stored in workflow.details.report_md."""
-    run = _get_run(run_id)
-    if not run:
-        return jsonify({"error": "Run not found"}), 404
-    details = run.get("details") or {}
-    md = details.get("report_md") or ""
-    if not md:
-        return jsonify({"error": "Report not yet available"}), 404
-    fname = f"memory-{run_id}.md"
-    return Response(
-        md,
-        mimetype="text/markdown",
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
-    )
-
-
 @memory_bp.route("/api/memory/run/<run_id>/stop", methods=["POST"])
 def stop_memory_run(run_id):
     run = _get_run(run_id)
     if not run:
         return jsonify({"error": "Run not found"}), 404
     request_stop(run_id)
-    return jsonify({"ok": True})
-
-
-# ---------------------------------------------------------------------------
-# Rerun (with optional master_prompt)
-# ---------------------------------------------------------------------------
-
-
-@memory_bp.route("/api/memory/run/<run_id>/rerun", methods=["POST"])
-def rerun_memory(run_id):
-    """Re-analyze an existing run.
-
-    Skips the expensive phases (acquire/upload/extract) and feeds the
-    operator's master prompt rider through the LLM analyzer against
-    the already-uploaded evidence. Mirrors agentic's
-    "reports-only rerun" path so the operator pays one LLM call's
-    worth of tokens for an iteration after the chat-validation step.
-    """
-    if not _is_module_enabled():
-        return jsonify({"error": "Memory module is not enabled."}), 400
-    run = _get_run(run_id)
-    if not run:
-        return jsonify({"error": "Run not found"}), 404
-
-    details = run.get("details") or {}
-    evidence_id = details.get("evidence_id")
-    if not evidence_id:
-        return jsonify({"error": "Original run has no evidence_id to rerun against"}), 400
-
-    body = request.get_json(silent=True) or {}
-    # Caller can override the mode (e.g. cheap-rerun in yara-only) or
-    # inherit from the original.
-    mode = (body.get("mode") or details.get("mode") or "layered").lower()
-    if mode not in _VALID_MODES:
-        return jsonify({"error": f"invalid mode: {mode!r}"}), 400
-
-    # Pull the master_prompt from the chat module's state if present.
-    chat_state = agentic_chat.get_chat_state(run_id) or {}
-    master_prompt = chat_state.get("master_prompt") or details.get("master_prompt")
-
-    # Create a NEW workflow row for the rerun so the operator sees both
-    # the original AND the rerun in the workflows table.
-    base_name = (run.get("name") or f"Memory rerun of {run_id}").split(" [v")[0]
-    rerun_version = int(details.get("report_version") or 1) + 1
-    new_name = f"{base_name} [v{rerun_version}]"
-    new_details = {
-        "trigger": "rerun",
-        "mode": mode,
-        "client_id": details.get("client_id"),
-        "client_name": details.get("client_name"),
-        "case_name": details.get("case_name"),
-        "blueprint_id": details.get("blueprint_id"),
-        "rerun_from": run_id,
-        "rerun_from_evidence": evidence_id,
-        "report_version": rerun_version,
-        "master_prompt": master_prompt,
-    }
-    new_run_id = create_automation_run(
-        automation_type="memory", name=new_name, details=new_details,
-    )
-    add_log_to_run(
-        new_run_id,
-        f"memory: rerun from {run_id} evidence={evidence_id} mode={mode}",
-        "info",
-    )
-    update_run_status(new_run_id, "running", progress=1)
-
-    _spawn_pipeline(
-        new_run_id,
-        client_id=details.get("client_id") or "",
-        client_name=details.get("client_name"),
-        mode=mode,
-        case_name=details.get("case_name") or "Memory",
-        master_prompt=master_prompt,
-        rerun_from_evidence=int(evidence_id),
-    )
-
-    return jsonify({
-        "run_id": new_run_id,
-        "rerun_from": run_id,
-        "mode": mode,
-        "message": "Memory pipeline rerun started",
-    }), 202
-
-
-# ---------------------------------------------------------------------------
-# Interactive chat (delegate to services.agentic.chat)
-# ---------------------------------------------------------------------------
-
-
-@memory_bp.route("/api/memory/run/<run_id>/chat", methods=["GET"])
-def get_memory_chat(run_id):
-    run = _get_run(run_id)
-    if not run:
-        return jsonify({"error": "Run not found"}), 404
-    return jsonify(agentic_chat.get_chat_state(run_id))
-
-
-@memory_bp.route("/api/memory/run/<run_id>/chat", methods=["POST"])
-def post_memory_chat(run_id):
-    if not _is_module_enabled():
-        return jsonify({"error": "Memory module is not enabled."}), 400
-    run = _get_run(run_id)
-    if not run:
-        return jsonify({"error": "Run not found"}), 404
-    data = request.get_json(silent=True) or {}
-    try:
-        reply = agentic_chat.send_chat_message(run_id, data.get("message", ""), _llm_config())
-    except ValueError as ve:
-        return jsonify({"error": str(ve)}), 400
-    except RuntimeError as re_:
-        return jsonify({"error": str(re_)}), 502
-    return jsonify({"assistant": reply})
-
-
-@memory_bp.route("/api/memory/run/<run_id>/chat", methods=["DELETE"])
-def clear_memory_chat(run_id):
-    run = _get_run(run_id)
-    if not run:
-        return jsonify({"error": "Run not found"}), 404
-    agentic_chat.clear_chat(run_id)
-    return jsonify({"ok": True})
-
-
-@memory_bp.route("/api/memory/run/<run_id>/chat/synthesize", methods=["POST"])
-def synthesize_memory_chat(run_id):
-    if not _is_module_enabled():
-        return jsonify({"error": "Memory module is not enabled."}), 400
-    run = _get_run(run_id)
-    if not run:
-        return jsonify({"error": "Run not found"}), 404
-    try:
-        master = agentic_chat.synthesize_master_prompt(run_id, _llm_config())
-    except ValueError as ve:
-        return jsonify({"error": str(ve)}), 400
-    except RuntimeError as re_:
-        return jsonify({"error": str(re_)}), 502
-    return jsonify({"master_prompt": master})
-
-
-@memory_bp.route("/api/memory/run/<run_id>/master-prompt", methods=["PUT"])
-def update_memory_master_prompt(run_id):
-    run = _get_run(run_id)
-    if not run:
-        return jsonify({"error": "Run not found"}), 404
-    data = request.get_json(silent=True) or {}
-    agentic_chat.set_master_prompt(run_id, data.get("master_prompt"))
     return jsonify({"ok": True})
 
 
