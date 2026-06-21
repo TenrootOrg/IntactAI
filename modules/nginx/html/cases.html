@@ -36,6 +36,10 @@
   .tabs{display:flex;gap:4px;border-bottom:1px solid var(--bd);margin-bottom:14px}
   .tab{padding:8px 14px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent}
   .tab.on{color:var(--tx);border-color:var(--acc)}
+  .dlbtn{display:inline-flex;align-items:center;gap:6px;text-decoration:none;padding:7px 13px;
+         border:1px solid var(--bd);border-radius:6px;background:var(--panel2);color:var(--tx);
+         font-size:12px;font-weight:500;transition:border-color .15s,background .15s}
+  .dlbtn:hover{border-color:var(--acc);background:var(--panel)}
   .md h1{font-size:22px;border-bottom:1px solid var(--bd);padding-bottom:6px}
   .md h2{font-size:16px;color:var(--tx);text-transform:none;letter-spacing:0;margin-top:22px}
   .md h3{font-size:14px;color:var(--acc)}
@@ -235,17 +239,23 @@ function render(info,md,g){
       </div>
       <div style="margin:6px 0 14px">${statSpans(g)}${tokenBadge(info.token_ab)}</div>
       <div class="tabs">
-        <div class="tab ${tab==='config'?'on':''}" onclick="setTab('config')">⚙ Configuration</div>
-        <div class="tab ${tab==='report'?'on':''}" onclick="setTab('report')">Report</div>
-        <div class="tab ${tab==='checklist'?'on':''}" onclick="setTab('checklist')">Checklist</div>
-        <div class="tab ${tab==='timeline'?'on':''}" onclick="setTab('timeline')">Timeline</div>
-        <div class="tab ${tab==='chat'?'on':''}" onclick="setTab('chat')">Chat</div>
+        <div class="tab ${tab==='config'?'on':''}" data-tab="config" onclick="setTab('config')">⚙ Configuration</div>
+        <div class="tab ${tab==='report'?'on':''}" data-tab="report" onclick="setTab('report')">Report</div>
+        <div class="tab ${tab==='checklist'?'on':''}" data-tab="checklist" onclick="setTab('checklist')">Checklist</div>
+        <div class="tab ${tab==='timeline'?'on':''}" data-tab="timeline" onclick="setTab('timeline')">Timeline</div>
+        <div class="tab ${tab==='chat'?'on':''}" data-tab="chat" onclick="setTab('chat')">Chat</div>
       </div>
       <div id="tabc"></div>
     </div>`;
   drawTab(md);
 }
-function setTab(t){tab=t;drawTab(window._md||'');}
+function setTab(t){
+  tab=t;
+  // Move the active underline to the clicked tab (the tab bar isn't re-rendered,
+  // only the #tabc content is — so update the .on class here).
+  document.querySelectorAll('.tabs .tab').forEach(el=>el.classList.toggle('on', el.dataset.tab===t));
+  drawTab(window._md||'');
+}
 function drawTab(md){
   if(md)window._md=md;
   const info=curInfo;
@@ -271,7 +281,8 @@ function renderConfig(info){
       </div>
       <div class="cfgcol">
         <h4>Hosts (include)</h4>
-        <input id="cf-hostfilter" placeholder="filter by name…" oninput="renderHosts()"/>
+        <label>Filter by name</label>
+        <input id="cf-hostfilter" placeholder="type to filter…" oninput="renderHosts()"/>
         <div class="row" style="gap:6px;margin:5px 0">
           <button class="ghost" style="font-size:11px;padding:3px 8px" onclick="hostSelectAll(true)">Select all</button>
           <button class="ghost" style="font-size:11px;padding:3px 8px" onclick="hostSelectAll(false)">None</button>
@@ -307,7 +318,7 @@ function renderConfig(info){
 }
 function renderReport(info){
   const id=info.case_id;
-  const dl=(p,l)=>`<a class="ghost" style="text-decoration:none;padding:6px 11px;border:1px solid var(--bd);border-radius:6px" href="/api/cases/${id}${p}" target="_blank">${l}</a>`;
+  const dl=(p,l)=>`<a class="dlbtn" href="/api/cases/${id}${p}" target="_blank">${l}</a>`;
   const adv=info.analysis||{}; const ig=(adv.incident_groups||[]);
   let advHtml='';
   if(ig.length){advHtml=`<details style="margin:10px 0"><summary style="cursor:pointer;color:var(--med)">⚠ Advisory — ${ig.length} incident group(s) (analyst-verify, not a determination)</summary>`+
