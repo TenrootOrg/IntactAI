@@ -316,17 +316,26 @@ function renderReport(info){
 }
 function _fileToDataUrl(f){return new Promise(res=>{if(!f)return res(null);const r=new FileReader();r.onload=()=>res(r.result);r.readAsDataURL(f);});}
 let _members=[], _hostSel=new Set();
-function _hosts(){           // dedupe runs → one entry per host (a host may have many runs)
+const _CAT={velociraptor_hunt:'Velociraptor hunts', cve_scan:'CVE scans', engagement_report:'Engagement reports'};
+function _identity(m){       // collapse runs to one entry per IDENTITY
+  if(m.type==='aws_scan')   return {key:'aws',   label:'AWS',   grp:'aws'};   // one cloud identity
+  if(m.type==='azure_scan') return {key:'azure', label:'Azure', grp:'azure'};
+  if(m.host_scoped)         return {key:'host:'+m.host, label:m.host, grp:m.os||'unknown'};
+  // hunts/cve/engagement have no single host → collapse by category
+  return {key:'cat:'+m.type, label:_CAT[m.type]||(m.type||'other'), grp:'other sources'};
+}
+function _hosts(){
   const by={};
-  _members.forEach(m=>{const h=m.host||m.run_id;
-    if(!by[h]) by[h]={host:h, os:m.os||'unknown', run_ids:[], types:new Set(), included:false};
-    by[h].run_ids.push(m.run_id); by[h].types.add(m.type||''); if(m.included) by[h].included=true;});
+  _members.forEach(m=>{const id=_identity(m);
+    if(!by[id.key]) by[id.key]={key:id.key, host:id.label, grp:id.grp, run_ids:[], types:new Set(), included:false};
+    by[id.key].run_ids.push(m.run_id); by[id.key].types.add(m.type||''); if(m.included) by[id.key].included=true;});
   return Object.values(by);
 }
+const _GRP_ORDER=['windows','linux','darwin','macos','unknown','aws','azure','other sources'];
 function loadHosts(id){
   $('#cf-hosts').innerHTML='loading…';
   api('/api/cases/'+id+'/members').then(d=>{_members=d.members||[];
-    _hostSel=new Set(_hosts().filter(h=>h.included).map(h=>h.host));
+    _hostSel=new Set(_hosts().filter(h=>h.included).map(h=>h.key));
     renderHosts();
   });
 }
@@ -334,22 +343,23 @@ function renderHosts(){
   const q=(($('#cf-hostfilter')||{}).value||'').toLowerCase();
   const hs=_hosts().filter(h=>!q||h.host.toLowerCase().includes(q));
   if(!hs.length){$('#cf-hosts').innerHTML='<i style="color:var(--muted)">no hosts</i>';return;}
-  const groups={}; hs.forEach(h=>{(groups[h.os]=groups[h.os]||[]).push(h);});
+  const groups={}; hs.forEach(h=>{(groups[h.grp]=groups[h.grp]||[]).push(h);});
+  const order=Object.keys(groups).sort((a,b)=>{const ia=_GRP_ORDER.indexOf(a),ib=_GRP_ORDER.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib);});
   let out='';
-  Object.keys(groups).sort().forEach(os=>{
-    out+=`<div style="font-size:10px;text-transform:uppercase;color:var(--muted);margin:6px 0 2px">${esc(os)} (${groups[os].length})</div>`;
-    out+=groups[os].map(h=>`<label class="hostrow"><input type="checkbox" ${_hostSel.has(h.host)?'checked':''} style="width:auto" onchange="toggleHost('${esc(h.host).replace(/'/g,"\\'")}',this.checked)"/> <span class="t">${esc(h.host)}</span> <span style="color:var(--muted)">${esc([...h.types].join('/'))}${h.run_ids.length>1?' ×'+h.run_ids.length:''}</span></label>`).join('');
+  order.forEach(grp=>{
+    out+=`<div style="font-size:10px;text-transform:uppercase;color:var(--muted);margin:6px 0 2px">${esc(grp)} (${groups[grp].length})</div>`;
+    out+=groups[grp].map(h=>`<label class="hostrow"><input type="checkbox" ${_hostSel.has(h.key)?'checked':''} style="width:auto" onchange="toggleHost('${h.key.replace(/'/g,"\\'")}',this.checked)"/> <span class="t">${esc(h.host)}</span> <span style="color:var(--muted)">${esc([...h.types].join('/'))}${h.run_ids.length>1?' ×'+h.run_ids.length:''}</span></label>`).join('');
   });
   $('#cf-hosts').innerHTML=out;
 }
-function toggleHost(host,on){ on?_hostSel.add(host):_hostSel.delete(host); }
+function toggleHost(key,on){ on?_hostSel.add(key):_hostSel.delete(key); }
 function hostSelectAll(on){
   const q=(($('#cf-hostfilter')||{}).value||'').toLowerCase();
-  _hosts().filter(h=>!q||h.host.toLowerCase().includes(q)).forEach(h=>on?_hostSel.add(h.host):_hostSel.delete(h.host));
+  _hosts().filter(h=>!q||h.host.toLowerCase().includes(q)).forEach(h=>on?_hostSel.add(h.key):_hostSel.delete(h.key));
   renderHosts();
 }
-function _selectedRunIds(){   // expand selected hosts → their run_ids
-  const sel=[]; _hosts().forEach(h=>{ if(_hostSel.has(h.host)) sel.push(...h.run_ids); }); return sel;
+function _selectedRunIds(){   // expand selected entries → their run_ids
+  const sel=[]; _hosts().forEach(h=>{ if(_hostSel.has(h.key)) sel.push(...h.run_ids); }); return sel;
 }
 async function doRescan(id){
   const logo=await _fileToDataUrl($('#cf-logo').files[0]);

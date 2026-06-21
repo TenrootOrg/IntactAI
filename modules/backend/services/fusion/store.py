@@ -590,24 +590,30 @@ def case_members(case_id) -> list:
         r = ws.get_automation_run(rid) or {}
         det = r.get("details") or {}
         host = det.get("client_name") or det.get("account") or det.get("account_id") \
-            or det.get("tenant_id")
+            or det.get("tenant_id") or det.get("subscription_id")
         if not host:
             hn = det.get("hostnames")
             if isinstance(hn, dict):
                 host = ", ".join(str(v) for v in hn.values()) or None
             elif isinstance(hn, list):
                 host = ", ".join(str(v) for v in hn) or None
-        host = host or rid
-        # cloud scans are their own "OS" bucket; else resolve from the snapshot
+        # last resort: the run's human name (e.g. "AWS Scan: …") — never the raw run_id,
+        # which read as "run names not hosts". Cloud scans with no account land here.
+        # host-scoped = a single endpoint (agentic/memory/timesketch on a client). Hunts,
+        # CVE sweeps, engagement reports and cloud scans are NOT a single host.
+        host_scoped = bool(det.get("client_name") or det.get("hostnames"))
+        host = host or r.get("name") or rid
         atype = r.get("automation_type")
         if atype in ("aws_scan", "azure_scan"):
             os_name = "aws" if atype == "aws_scan" else "azure"
-        else:
+        elif host_scoped:
             cid = det.get("client_id")
             os_name = os_by.get(str(host).lower()) \
                 or (os_by.get(str(cid).lower()) if cid else None) or "unknown"
+        else:
+            os_name = "unknown"
         out.append({"run_id": rid, "type": atype, "host": host, "os": os_name,
-                    "status": r.get("status"),
+                    "host_scoped": host_scoped, "status": r.get("status"),
                     "included": (inc_set is None) or (rid in inc_set)})
     return out
 
