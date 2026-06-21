@@ -77,10 +77,10 @@ document.addEventListener('alpine:init', () => {
     });
 });
 
-// Initialize on DOM ready
-document.addEventListener('DOMContentLoaded', () => {
-    // Wait for Alpine to be ready
-    setTimeout(() => {
+// Initialize after Alpine has started (partial-loader starts Alpine only once all
+// partials are injected, so we hook 'alpine:initialized' rather than DOMContentLoaded).
+document.addEventListener('alpine:initialized', () => {
+    {
         // Initial load
         Alpine.store('services').checkAll();
         Alpine.store('services').loadClients();
@@ -126,5 +126,5 @@ document.addEventListener('DOMContentLoaded', () => {
                 populateTimeSketchClients();
             }
         }, 10000);
-    }, 100);
+    }
 });

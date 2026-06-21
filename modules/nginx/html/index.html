@@ -7,7 +7,8 @@
     <link rel="icon" type="image/png" href="img/tenroot-logo.png">
     <!-- Local scripts - no CDN dependencies -->
     <link rel="stylesheet" href="css/tailwind.css?v=10">
-    <script defer src="js/alpine.min.js"></script>
+    <!-- Alpine is started by js/bootstrap/partial-loader.js AFTER partials are
+         injected (not auto-started here), so it walks the fully-assembled DOM. -->
     <link rel="stylesheet" href="css/styles.css?v=12">
     <!-- Flatpickr date picker (local) -->
     <link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css">
@@ -833,228 +834,7 @@
             </div>
 
             <!-- Downloads Tab -->
-            <div x-show="$store.app.currentTab === 'downloads'" x-transition class="tab-panel">
-                <h2 class="text-3xl font-bold text-white mb-2">Client Downloads</h2>
-                <p class="text-gray-400 mb-6">Download Velociraptor client installers</p>
-
-                <!-- ========================================================
-                     STANDARD VERSIONS — modern pre-built binaries for
-                     the vast majority of endpoints.
-                     The section header uses inline colors because the
-                     tab-content surface here is light (glass background)
-                     and the global `.tab-content h3 { color:#fff }` rule
-                     would render the heading invisible. Cards below use
-                     the dark-card pattern (.bg-gray-800) so their inner
-                     h3 stays white as intended.
-                     ======================================================== -->
-                <div class="max-w-3xl mb-3">
-                    <h3 class="text-xl font-semibold text-white">Modern versions</h3>
-                    <p class="text-sm mt-1 text-gray-400">Modern Windows / Linux endpoints — use these by default.</p>
-                </div>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 max-w-3xl">
-                    <!-- Windows -->
-                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
-                        <div class="flex items-center gap-4 mb-4">
-                            <div class="bg-blue-600 p-3 rounded-lg">
-                                <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
-                                    <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/>
-                                </svg>
-                            </div>
-                            <div>
-                                <h3 class="text-xl font-semibold text-white">Windows</h3>
-                                <p class="text-sm" style="color:#9ca3af;">MSI Installer</p>
-                            </div>
-                        </div>
-                        <a href="/api/clients/download/windows-msi" class="block w-full bg-blue-600 hover:bg-blue-700 text-white text-center py-3 rounded-lg font-semibold">
-                            Download MSI
-                        </a>
-                    </div>
-
-                    <!-- Linux -->
-                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
-                        <div class="flex items-center gap-4 mb-4">
-                            <div class="bg-orange-600 p-3 rounded-lg">
-                                <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
-                                    <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.84-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.406-.046.615.27.563.863.436 1.417.289.563-.158 1.163-.406 1.755-.516.11-.021.227-.045.348-.064.17-.558.406-1.142.983-1.485.177-.105.413-.159.619-.074.063.025.117.03.186.047a.795.795 0 01-.017-.11c-.078-.558-.13-1.605.21-2.053.786-.953 1.642-1.953 1.932-3.047.21-.787.233-1.391.233-2.159 0-.42-.012-.84-.03-1.258-.021-.42-.042-.84-.042-1.258-.105-1.5-.242-3.105.21-4.605.484-1.605 1.86-2.813 3.555-3.285.074-.02.148-.042.222-.06a5.57 5.57 0 011.05-.12z"/>
-                                </svg>
-                            </div>
-                            <div>
-                                <h3 class="text-xl font-semibold text-white">Linux</h3>
-                                <p class="text-sm" style="color:#9ca3af;">Binary (modern glibc)</p>
-                            </div>
-                        </div>
-                        <a href="/api/clients/download/linux" class="block w-full bg-orange-600 hover:bg-orange-700 text-white text-center py-3 rounded-lg font-semibold">
-                            Download Linux
-                        </a>
-                    </div>
-                </div>
-
-                <!-- ========================================================
-                     SPECIAL / OLDER-SYSTEM VERSIONS — pick one of these
-                     only if the modern build crashes on load. Each card
-                     explains the specific case it covers.
-                     Same inline-color treatment as the Standard section
-                     header above — light glass background needs dark text.
-                     ======================================================== -->
-                <div class="max-w-3xl mb-3">
-                    <h3 class="text-xl font-semibold text-white">Other Downloads</h3>
-                    <p class="text-sm mt-1 text-gray-400">Use one of these when the modern build won't run — old OS or unusual libc. Buttons grey out when the bundled binary isn't present (re-run <code class="px-1 rounded" style="background-color:#374151; color:#e5e7eb;">install.sh</code> to fetch).</p>
-                </div>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 max-w-3xl">
-                    <!-- Windows Legacy (Server 2008 R2 / Win 7) -->
-                    <div class="bg-gray-800 rounded-lg p-6 border border-purple-700/50" id="dl-legacy-card">
-                        <div class="flex items-center gap-4 mb-4">
-                            <div class="bg-purple-600 p-3 rounded-lg">
-                                <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
-                                    <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/>
-                                </svg>
-                            </div>
-                            <div>
-                                <h3 class="text-xl font-semibold text-white">Windows Legacy</h3>
-                                <p class="text-sm" style="color:#9ca3af;">EXE for Server 2008 R2 / Win 7</p>
-                            </div>
-                        </div>
-                        <p class="text-xs mb-3" style="line-height:1.45; color:#cbd5e1;">
-                            Pinned older Velociraptor release that still supports the TLS / Win32 API surface available on Win 7 / Server 2008 R2 / 2012. The modern EXE loads but crashes on first phone-home on these hosts.
-                        </p>
-                        <a href="/api/clients/download/windows-legacy-exe"
-                           id="dl-legacy-btn"
-                           class="block w-full bg-purple-600 hover:bg-purple-700 text-white text-center py-3 rounded-lg font-semibold">
-                            Download Legacy EXE
-                        </a>
-                    </div>
-
-                    <!-- Linux Legacy (old glibc — CentOS 7, RHEL 7, Ubuntu 16.04) -->
-                    <div class="bg-gray-800 rounded-lg p-6 border border-purple-700/50" id="dl-legacy-linux-card">
-                        <div class="flex items-center gap-4 mb-4">
-                            <div class="bg-purple-600 p-3 rounded-lg">
-                                <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
-                                    <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.84-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.406-.046.615.27.563.863.436 1.417.289.563-.158 1.163-.406 1.755-.516.11-.021.227-.045.348-.064.17-.558.406-1.142.983-1.485.177-.105.413-.159.619-.074.063.025.117.03.186.047a.795.795 0 01-.017-.11c-.078-.558-.13-1.605.21-2.053.786-.953 1.642-1.953 1.932-3.047.21-.787.233-1.391.233-2.159 0-.42-.012-.84-.03-1.258-.021-.42-.042-.84-.074-1.258-.105-1.5-.242-3.105.21-4.605.484-1.605 1.86-2.813 3.555-3.285.074-.02.148-.042.222-.06a5.57 5.57 0 011.05-.12z"/>
-                                </svg>
-                            </div>
-                            <div>
-                                <h3 class="text-xl font-semibold text-white">Linux Legacy</h3>
-                                <p class="text-sm" style="color:#9ca3af;">For old-glibc distros</p>
-                            </div>
-                        </div>
-                        <p class="text-xs mb-3" style="line-height:1.45; color:#cbd5e1;">
-                            For hosts whose glibc is older than 2.28 — CentOS 7, RHEL 7, Ubuntu 16.04, Debian 9. The modern binary throws <code class="px-1 rounded" style="background-color:#0f172a; color:#fbbf24;">GLIBC_2.28 not found</code> on load there.
-                        </p>
-                        <a href="/api/clients/download/linux-legacy"
-                           id="dl-legacy-linux-btn"
-                           class="block w-full bg-purple-600 hover:bg-purple-700 text-white text-center py-3 rounded-lg font-semibold">
-                            Download Legacy Linux
-                        </a>
-                    </div>
-
-                    <!-- Linux (musl) — modern static build, runs on any Linux -->
-                    <div class="bg-gray-800 rounded-lg p-6 border border-teal-700/50" id="dl-musl-card">
-                        <div class="flex items-center gap-4 mb-4">
-                            <div class="bg-teal-600 p-3 rounded-lg">
-                                <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
-                                    <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.84-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.406-.046.615.27.563.863.436 1.417.289.563-.158 1.163-.406 1.755-.516.11-.021.227-.045.348-.064.17-.558.406-1.142.983-1.485.177-.105.413-.159.619-.074.063.025.117.03.186.047a.795.795 0 01-.017-.11c-.078-.558-.13-1.605.21-2.053.786-.953 1.642-1.953 1.932-3.047.21-.787.233-1.391.233-2.159 0-.42-.012-.84-.03-1.258-.021-.42-.042-.84-.074-1.258-.105-1.5-.242-3.105.21-4.605.484-1.605 1.86-2.813 3.555-3.285.074-.02.148-.042.222-.06a5.57 5.57 0 011.05-.12z"/>
-                                </svg>
-                            </div>
-                            <div>
-                                <h3 class="text-xl font-semibold text-white">Linux (musl)</h3>
-                                <p class="text-sm" style="color:#9ca3af;">Statically linked, no libc deps</p>
-                            </div>
-                        </div>
-                        <p class="text-xs mb-3" style="line-height:1.45; color:#cbd5e1;">
-                            Statically linked against musl libc — zero glibc dependency, runs on <em>any</em> Linux x86_64 including Alpine containers, Sophos UTM, BusyBox appliances and other minimal environments where neither the modern nor the legacy glibc build can load.
-                        </p>
-                        <a href="/api/clients/download/linux-musl"
-                           id="dl-musl-btn"
-                           class="block w-full bg-teal-600 hover:bg-teal-700 text-white text-center py-3 rounded-lg font-semibold">
-                            Download Linux (musl)
-                        </a>
-                    </div>
-                </div>
-
-                <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 max-w-3xl">
-                    <h3 class="text-xl font-semibold text-white mb-4">Installation</h3>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
-                        <div class="flex flex-col">
-                            <h4 class="text-lg font-semibold text-blue-400 mb-2">Windows</h4>
-                            <div class="bg-gray-900 p-4 rounded-lg space-y-3 flex-1">
-                                <!-- Two-action copy-button shape: Install (MSI) +
-                                     Uninstall. EXE-as-service flow was dropped per
-                                     UX request — MSI is the canonical Windows path
-                                     and avoids surfacing two competing install
-                                     methods to operators. Verified working on
-                                     Windows hosts; bodies in <template> below. -->
-                                <div class="flex items-center justify-between gap-3">
-                                    <div class="min-w-0">
-                                        <p class="text-blue-300 text-xs font-semibold">Install (MSI, recommended)</p>
-                                        <p class="text-gray-400 text-xs truncate font-mono">msiexec /i velociraptor_client.msi /qn</p>
-                                    </div>
-                                    <button onclick="copyWinCmd(this, 'win-cmd-install-msi')" class="shrink-0 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
-                                </div>
-                                <div class="flex items-center justify-between gap-3">
-                                    <div class="min-w-0">
-                                        <p class="text-blue-300 text-xs font-semibold">Uninstall</p>
-                                        <p class="text-gray-400 text-xs truncate font-mono">msiexec /x velociraptor_client.msi /qn</p>
-                                    </div>
-                                    <button onclick="copyWinCmd(this, 'win-cmd-uninstall')" class="shrink-0 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
-                                </div>
-                            </div>
-                            <!-- Hidden command bodies. Run from an *elevated* PowerShell
-                                 or cmd (right-click -> Run as administrator). -->
-                            <template id="win-cmd-install-msi">msiexec /i velociraptor_client.msi /qn</template>
-                            <template id="win-cmd-uninstall">msiexec /x velociraptor_client.msi /qn</template>
-                        </div>
-                        <div class="flex flex-col">
-                            <h4 class="text-lg font-semibold text-orange-400 mb-2">Linux</h4>
-                            <div class="bg-gray-900 p-4 rounded-lg space-y-3 flex-1">
-                                <!-- Each row: label + Copy button. Full command lives in
-                                     a hidden <template> so it doesn't clutter the panel. -->
-                                <div class="flex items-center justify-between gap-3">
-                                    <div class="min-w-0">
-                                        <p class="text-orange-300 text-xs font-semibold">Foreground test</p>
-                                        <p class="text-gray-400 text-xs truncate font-mono">chmod +x velociraptor &amp;&amp; sudo ./velociraptor client -v</p>
-                                    </div>
-                                    <button onclick="copyLinuxCmd(this, 'lx-cmd-test')" class="shrink-0 bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
-                                </div>
-                                <div class="flex items-center justify-between gap-3">
-                                    <div class="min-w-0">
-                                        <p class="text-orange-300 text-xs font-semibold">Permanent install (systemd)</p>
-                                        <p class="text-gray-400 text-xs truncate font-mono">install + write unit + enable --now</p>
-                                    </div>
-                                    <button onclick="copyLinuxCmd(this, 'lx-cmd-install')" class="shrink-0 bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
-                                </div>
-                                <div class="flex items-center justify-between gap-3">
-                                    <div class="min-w-0">
-                                        <p class="text-orange-300 text-xs font-semibold">Uninstall</p>
-                                        <p class="text-gray-400 text-xs truncate font-mono">disable + remove unit + remove binary</p>
-                                    </div>
-                                    <button onclick="copyLinuxCmd(this, 'lx-cmd-uninstall')" class="shrink-0 bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
-                                </div>
-                            </div>
-                            <!-- Hidden command bodies. Verified working on Ubuntu host
-                                 (install → Active: active (running) → clean uninstall). -->
-                            <template id="lx-cmd-test">chmod +x velociraptor && sudo ./velociraptor client -v</template>
-                            <template id="lx-cmd-install">sudo install -m 0755 ./velociraptor /usr/local/bin/velociraptor && sudo tee /etc/systemd/system/velociraptor_client.service >/dev/null <<'EOF'
-[Unit]
-Description=Velociraptor Client
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/velociraptor client
-Restart=on-failure
-RestartSec=30
-User=root
-
-[Install]
-WantedBy=multi-user.target
-EOF
-sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client</template>
-                            <template id="lx-cmd-uninstall">sudo systemctl disable --now velociraptor_client && sudo rm -f /etc/systemd/system/velociraptor_client.service /usr/local/bin/velociraptor /etc/velociraptor.writeback.yaml && sudo systemctl daemon-reload</template>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <div data-partial="downloads"></div>
 
             <!-- Velociraptor Tab -->
             <div x-show="$store.app.currentTab === 'modules-forensics'" x-transition class="tab-panel" x-data="{ forensicsTab: 'collections', forensicsMode: 'ai' }" x-init="$watch('$store.app.currentTab', val => val === 'modules-forensics' && initForensicsTab('ai'))">
@@ -4336,6 +4116,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
     <script src="js/components/downloads.js?v=1"></script>
     <script src="js/components/workspace-bar.js?v=1"></script>
     <script src="js/components/cloud-datepickers.js?v=1"></script>
+    <!-- MUST be last: injects partials/*.html then starts Alpine over the full DOM. -->
+    <script src="js/bootstrap/partial-loader.js?v=1"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).

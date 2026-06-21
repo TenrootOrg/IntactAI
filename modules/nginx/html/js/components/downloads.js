@@ -60,9 +60,7 @@ if (!window.copyLinuxCmd) {
             grey(document.getElementById('dl-musl-btn'), s.modern_musl?.available);
         }).catch(() => {});
     };
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', run);
-    } else {
-        run();
-    }
+    // The Downloads tab now lives in partials/downloads.html, so its buttons
+    // only exist after the partial-loader injects them — wait for that event.
+    document.addEventListener('partials:ready', run);
 })();
