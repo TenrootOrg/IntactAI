@@ -44,6 +44,24 @@ def test_system_run_types_route_to_system_workspace():
     delete_workflow(rid)
 
 
+def test_multi_run_case_merges_all_runs():
+    """A case fuses EVERY run tagged to it (guards the 'can't merge multiple' misconception)."""
+    cid = store.create_case("ws-multi", min_severity="informational")
+    cd1 = {"Windows.System.Pslist": [{"Hostname": "HOST-A", "Pid": 11, "Name": "a.exe"}]}
+    cd2 = {"Windows.System.Pslist": [{"Hostname": "HOST-B", "Pid": 22, "Name": "b.exe"}]}
+    ws.create_automation_run("agentic", "r1",
+                             details={"client_name": "HOST-A", "collected_data": cd1,
+                                      "hostnames": {}}, case_id=cid)
+    ws.create_automation_run("agentic", "r2",
+                             details={"client_name": "HOST-B", "collected_data": cd2,
+                                      "hostnames": {}}, case_id=cid)
+    g = store.fuse_case(cid)
+    labels = " ".join((e.label or "") for e in g.entities.values()).upper()
+    assert "HOST-A" in labels and "HOST-B" in labels, \
+        "both tagged runs must appear in the fused graph"
+    store.delete_case(cid)
+
+
 def test_members_are_tag_based():
     cid = store.create_case("ws-test-members")
     rid = ws.create_automation_run("agentic", "tagged run", details={"client_name": "H"},

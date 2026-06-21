@@ -187,13 +187,30 @@ def unregister_cancel(run_id):
 # Initialize file storage on module load
 print("[WORKFLOW] Using SQLite + Elasticsearch storage for workflows", flush=True)
 
+# run_id was `{type}_{ms}` — two runs created in the SAME millisecond collided on the
+# id and the second INSERT OR REPLACE silently overwrote the first (so a case could only
+# ever hold one of them). Hand out monotonically-increasing ids under a lock to guarantee
+# uniqueness. Format unchanged (`{type}_{int}`), so existing ids/paths stay valid.
+_run_id_lock = threading.Lock()
+_last_run_ms = [0]
+
+
+def _next_run_id(automation_type) -> str:
+    with _run_id_lock:
+        ms = int(time.time() * 1000)
+        if ms <= _last_run_ms[0]:
+            ms = _last_run_ms[0] + 1
+        _last_run_ms[0] = ms
+    return f"{automation_type}_{ms}"
+
+
 def create_automation_run(automation_type, name, details=None, case_id=None):
     """Create a new automation run entry with logging.
 
     `case_id` tags the run to a case (workspace). When not given explicitly and
     this is an analysis run type, it defaults to the browser's active case
     (X-Case-Id header on the current request). Infra/admin runs stay untagged."""
-    run_id = f"{automation_type}_{int(time.time() * 1000)}"
+    run_id = _next_run_id(automation_type)
 
     case_id = _resolve_case_id(automation_type, case_id)
 
