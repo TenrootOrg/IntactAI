@@ -98,6 +98,10 @@
 <script>(function(){var q=new URLSearchParams(location.search);
   if(q.get('embed')==='1')document.documentElement.classList.add('embed');
   var v=q.get('view'); if(v)document.documentElement.classList.add('v-'+v);})();</script>
+<!-- friendly date+time picker for the analysis window (pick date → hour pops inline) -->
+<link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css">
+<link rel="stylesheet" href="vendor/flatpickr/dark.css">
+<script src="vendor/flatpickr/flatpickr.min.js"></script>
 </head>
 <body>
 <header>
@@ -258,8 +262,8 @@ function renderConfig(info){
     <div class="cfgwrap">
       <div class="cfgcol">
         <h4>Scope</h4>
-        <label>Time window — start</label><input id="cf-start" value="${esc(tw.start||'')}" placeholder="2026-06-14"/>
-        <label>Time window — end</label><input id="cf-end" value="${esc(tw.end||'')}" placeholder="(open)"/>
+        <label>Time window — start</label><input id="cf-start" value="${esc(tw.start||'')}" placeholder="pick date + time…"/>
+        <label>Time window — end <span style="color:var(--muted)">(empty = up to now)</span></label><input id="cf-end" value="${esc(tw.end||'')}" placeholder="empty = now / open"/>
         <label>Min severity</label>
         <select id="cf-sev">${['informational','low','medium','high','critical'].map(s=>opt(s,s,info.min_severity||'informational')).join('')}</select>
         <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled?'checked':''} style="width:auto"/> Mask hosts / users / IPs</label>
@@ -290,6 +294,11 @@ function renderConfig(info){
       <button class="ghost" onclick="captureBaseline('${info.case_id}')">⚑ Capture baseline <span class="info" title="Snapshot this CLEAN case's normal noise (provisioning, scheduled tasks, known services). Future cases on the same host automatically subtract it, so real attacks stand out. Use after a host is confirmed clean.">i</span></button>
     </div>`;
   loadHosts(info.case_id);
+  // friendly single-field date+time picker — choosing a date pops the hour inline
+  if(window.flatpickr){
+    const fp={enableTime:true,time_24hr:true,dateFormat:'Y-m-d\\TH:i:S',minuteIncrement:5,allowInput:true};
+    flatpickr('#cf-start',fp); flatpickr('#cf-end',fp);
+  }
 }
 function renderReport(info){
   const id=info.case_id;
