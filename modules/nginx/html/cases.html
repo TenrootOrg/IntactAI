@@ -72,14 +72,17 @@
   html.v-manage .wrap{grid-template-columns:1fr}
   html.v-analysis .side{display:none}
   html.v-analysis .wrap{grid-template-columns:1fr}
-  /* Case Analysis console: left config rail + output */
-  .console{display:grid;grid-template-columns:300px 1fr;gap:0;height:100%}
-  .rail{border-right:1px solid var(--bd);background:var(--panel);overflow-y:auto;padding:14px}
-  .rail h3{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:16px 0 6px}
-  .rail h3:first-child{margin-top:0}
-  .rail .hostrow{display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0}
-  .output{overflow-y:auto;padding:16px 20px}
-  .runbtn{width:100%;margin-top:6px}
+  /* Case Analysis console: collapsible top config SECTION + full-width output */
+  .cfgpanel{border:1px solid var(--bd);border-radius:8px;background:var(--panel);margin-bottom:16px}
+  .cfgpanel>summary{cursor:pointer;padding:11px 14px;font-size:13px;font-weight:600;color:var(--tx);list-style:none;user-select:none}
+  .cfgpanel>summary::-webkit-details-marker{display:none}
+  .cfgpanel>summary:before{content:'▸';color:var(--muted);margin-right:8px}
+  .cfgpanel[open]>summary:before{content:'▾'}
+  .cfgwrap{display:flex;flex-wrap:wrap;gap:20px;padding:2px 14px 12px}
+  .cfgcol{flex:1;min-width:210px;display:flex;flex-direction:column}
+  .cfgcol h4{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:2px 0 6px}
+  .cfgactions{display:flex;gap:10px;padding:0 14px 14px;align-items:center;border-top:1px solid var(--bd);padding-top:12px}
+  .hostrow{display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0}
   .ck{border:1px solid var(--bd);border-radius:7px;padding:10px;margin:8px 0;background:var(--panel2)}
   .ck.accepted{border-color:var(--ok)} .ck.declined{opacity:.6}
   .ck .q{font-size:13px} .ck .acts{margin-top:8px;display:flex;gap:6px}
@@ -221,31 +224,44 @@ function render(info,md,g){
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
   const tw=info.time_window||{};
   $('#main').innerHTML=`
-   <div class="console">
-    <div class="rail">
-      <h3>Configure analysis</h3>
-      <label>Time window — start</label><input id="cf-start" value="${esc(tw.start||'')}" placeholder="2026-06-14"/>
-      <label>Time window — end</label><input id="cf-end" value="${esc(tw.end||'')}" placeholder="(open)"/>
-      <label>Min severity</label>
-      <select id="cf-sev">${['informational','low','medium','high','critical'].map(s=>opt(s,s,info.min_severity||'informational')).join('')}</select>
-      <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled?'checked':''} style="width:auto"/> Mask hosts / users / IPs (customer-facing)</label>
-      <textarea id="cf-maskpat" placeholder="extra patterns, one per line (optional)" style="min-height:38px">${esc((mk.patterns||[]).join('\n'))}</textarea>
-      <h3>Hosts (include)</h3>
-      <div id="cf-hosts" style="max-height:140px;overflow:auto;border:1px solid var(--bd);border-radius:6px;padding:6px">loading…</div>
-      <h3>Report</h3>
-      <label>Audience</label>
-      <select id="cf-aud">${opt('both','Both (exec + technical)',aud)}${opt('executive','Executive',aud)}${opt('technical','Technical',aud)}</select>
-      <label>Customer</label><input id="cf-cust" value="${esc(info.customer_name||'')}" placeholder="Acme Corp"/>
-      <label>TLP</label>
-      <select id="cf-tlp">${['CLEAR','GREEN','AMBER','AMBER+STRICT','RED'].map(t=>`<option ${info.tlp===t?'selected':''}>${t}</option>`).join('')}</select>
-      <label>Logo ${info.has_logo?'<span style="color:var(--ok)">✓ set</span>':''}</label><input id="cf-logo" type="file" accept="image/*" style="padding:3px"/>
-      <label>Steering / master-prompt <span class="info" title="Plain-language 'what to remove / what to focus on'. Applied to the report on Rescan. Use ⤵ to draft it from your Chat.">i</span></label>
-      <textarea id="cf-mp" placeholder="e.g. ignore the backup host noise; focus on lateral movement" style="min-height:44px">${esc(info.master_prompt||'')}</textarea>
-      <button class="ghost" style="width:100%;font-size:11px" onclick="synthFromChat('${info.case_id}')">⤵ Draft from chat</button>
-      <button class="runbtn" onclick="doRescan('${info.case_id}')">↻ Rescan</button>
-      <button class="ghost runbtn" onclick="captureBaseline('${info.case_id}')">⚑ Capture baseline <span class="info" title="Snapshot this CLEAN case's normal noise (provisioning, scheduled tasks, known services). Future cases on the same host automatically subtract it, so real attacks stand out. Use after a host is confirmed clean.">i</span></button>
-    </div>
-    <div class="output">
+    <details class="cfgpanel" open>
+      <summary>Configure analysis — time · severity · masking · hosts · report</summary>
+      <div class="cfgwrap">
+        <div class="cfgcol">
+          <h4>Scope</h4>
+          <label>Time window — start</label><input id="cf-start" value="${esc(tw.start||'')}" placeholder="2026-06-14"/>
+          <label>Time window — end</label><input id="cf-end" value="${esc(tw.end||'')}" placeholder="(open)"/>
+          <label>Min severity</label>
+          <select id="cf-sev">${['informational','low','medium','high','critical'].map(s=>opt(s,s,info.min_severity||'informational')).join('')}</select>
+          <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled?'checked':''} style="width:auto"/> Mask hosts / users / IPs</label>
+          <textarea id="cf-maskpat" placeholder="extra patterns, one per line (optional)" style="min-height:38px">${esc((mk.patterns||[]).join('\n'))}</textarea>
+        </div>
+        <div class="cfgcol">
+          <h4>Hosts (include)</h4>
+          <div id="cf-hosts" style="max-height:170px;overflow:auto;border:1px solid var(--bd);border-radius:6px;padding:6px">loading…</div>
+        </div>
+        <div class="cfgcol">
+          <h4>Report</h4>
+          <label>Audience</label>
+          <select id="cf-aud">${opt('both','Both (exec + technical)',aud)}${opt('executive','Executive',aud)}${opt('technical','Technical',aud)}</select>
+          <label>Customer</label><input id="cf-cust" value="${esc(info.customer_name||'')}" placeholder="Acme Corp"/>
+          <label>TLP</label>
+          <select id="cf-tlp">${['CLEAR','GREEN','AMBER','AMBER+STRICT','RED'].map(t=>`<option ${info.tlp===t?'selected':''}>${t}</option>`).join('')}</select>
+          <label>Logo ${info.has_logo?'<span style="color:var(--ok)">✓ set</span>':''}</label><input id="cf-logo" type="file" accept="image/*" style="padding:3px"/>
+        </div>
+        <div class="cfgcol">
+          <h4>Steering</h4>
+          <label>Master-prompt <span class="info" title="Plain-language 'what to remove / what to focus on'. Applied to the report on Rescan. Use ⤵ to draft it from your Chat.">i</span></label>
+          <textarea id="cf-mp" placeholder="e.g. ignore the backup host noise; focus on lateral movement" style="min-height:120px">${esc(info.master_prompt||'')}</textarea>
+          <button class="ghost" style="font-size:11px;align-self:flex-start" onclick="synthFromChat('${info.case_id}')">⤵ Draft from chat</button>
+        </div>
+      </div>
+      <div class="cfgactions">
+        <button onclick="doRescan('${info.case_id}')">↻ Rescan</button>
+        <button class="ghost" onclick="captureBaseline('${info.case_id}')">⚑ Capture baseline <span class="info" title="Snapshot this CLEAN case's normal noise (provisioning, scheduled tasks, known services). Future cases on the same host automatically subtract it, so real attacks stand out. Use after a host is confirmed clean.">i</span></button>
+      </div>
+    </details>
+    <div class="outwrap">
       <div class="row" style="justify-content:space-between">
         <div><h1 style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
           <div style="color:var(--muted);font-size:12px">${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
@@ -258,8 +274,7 @@ function render(info,md,g){
         <div class="tab ${tab==='chat'?'on':''}" onclick="setTab('chat')">Chat</div>
       </div>
       <div id="tabc"></div>
-    </div>
-   </div>`;
+    </div>`;
   loadHosts(info.case_id);
   drawTab(md);
 }
