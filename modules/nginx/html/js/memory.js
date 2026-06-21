@@ -247,6 +247,12 @@ document.addEventListener('alpine:init', () => {
 
             const xhr = new XMLHttpRequest();
             xhr.open('POST', '/api/memory/upload', true);
+            // Raw XHR bypasses the window.fetch X-Case-Id hook, so set the active
+            // workspace header explicitly — otherwise the run lands in Default.
+            try {
+                const _cid = window.ActiveCase && window.ActiveCase.get && window.ActiveCase.get();
+                if (_cid) xhr.setRequestHeader('X-Case-Id', _cid);
+            } catch (_) {}
             xhr.upload.addEventListener('progress', (e) => {
                 if (e.lengthComputable) {
                     this.uploadProgress = Math.round((e.loaded / e.total) * 100);
