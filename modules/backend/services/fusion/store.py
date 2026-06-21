@@ -367,22 +367,25 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
             mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
         except Exception:
             mask = None
+    # host-exclusion: cut excluded hosts' data from the report/LLM (token saving). The
+    # FULL graph `g` is still stored so the picker can list/re-include every host.
+    gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
     report = llm_sim.generate_report(
-        g, window=window, min_severity=min_sev,
+        gv, window=window, min_severity=min_sev,
         initial_access=d.get("initial_access_estimate"),
         case_name=d.get("name", "Case"), run_id=case_id,
         audience=d.get("audience", "both"), language=d.get("language", "en"),
         master_prompt=d.get("master_prompt"), mask=mask)
     # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored SEPARATELY
     # from the deterministic findings (never conflated); fed prior operator dispositions.
-    analysis = llm_sim.analyze(g, window=window, min_severity=min_sev, run_id=case_id,
+    analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
                                dispositions=d.get("dispositions") or None)
     # customer-confirmation checklist — generate once (preserve operator decisions on re-fuse)
     checklist = d.get("disposition_checklist")
     if not checklist:
         try:
             checklist = llm_sim.generate_disposition_checklist(
-                g, window=window, min_severity=min_sev, run_id=case_id)
+                gv, window=window, min_severity=min_sev, run_id=case_id)
         except Exception:
             checklist = []
 
@@ -432,6 +435,43 @@ def watch_and_fuse(case_id, run_id, *, poll=10, timeout=10800) -> None:
 def load_graph(case_id) -> FusionGraph:
     d = get_case(case_id)
     return FusionGraph.from_dict(d.get("fusion_graph") or {"case_id": case_id})
+
+
+def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
+    """Return a view of the graph with the named hosts excluded — their asset nodes,
+    the entities/findings that live ONLY on them, and now-dangling relationships are
+    dropped. Cuts excluded-host data from the report/LLM (token saving) while the stored
+    graph keeps every host for the picker. No-op when nothing is excluded."""
+    excluded = {keys.norm_host(h) for h in (excluded_labels or []) if h}
+    if not excluded:
+        return g
+    ex_assets = set()
+    for a in g.by_type("asset"):
+        if keys.norm_host(a.attrs.get("hostname") or "") in excluded \
+                or keys.norm_host(a.label or "") in excluded:
+            ex_assets.add(a.id)
+    if not ex_assets:
+        return g
+    gv = FusionGraph(case_id=g.case_id, run_ids=list(g.run_ids))
+    keep = set()
+    for e in g.entities.values():
+        if e.id in ex_assets:
+            continue
+        al = e.attrs.get("_assets")
+        if al and set(al) <= ex_assets:        # belongs only to excluded hosts
+            continue
+        gv.entities[e.id] = e
+        keep.add(e.id)
+    for f in g.findings:
+        aid = set(f.asset_ids or [])
+        if aid and aid <= ex_assets:           # finding only on excluded hosts
+            continue
+        gv.findings.append(f)
+    for r in g.relationships:
+        if r.src in keep and r.dst in keep:
+            gv.relationships.append(r)
+    gv.rebuild_indexes()
+    return gv
 
 
 def _merge_case_details(case_id, patch) -> None:
@@ -548,8 +588,10 @@ def set_analysis_config(case_id, cfg) -> dict:
         mk = cfg.get("masking") or {}
         patch["masking"] = {"enabled": bool(mk.get("enabled")),
                             "patterns": [p for p in (mk.get("patterns") or []) if p]}
-    if "included_run_ids" in cfg:          # None = all; list = subset
+    if "included_run_ids" in cfg:          # None = all; list = subset (legacy)
         patch["included_run_ids"] = cfg["included_run_ids"]
+    if "excluded_hosts" in cfg:            # host labels to drop from the report/LLM
+        patch["excluded_hosts"] = [h for h in (cfg.get("excluded_hosts") or []) if h]
     if patch:
         _merge_case_details(case_id, patch)
     return {k: ("<logo>" if k == "customer_logo_b64" else v) for k, v in patch.items()}
@@ -652,10 +694,47 @@ def validate_timeline(case_id, finding_id, status, notes="") -> dict:
     return {"finding_id": finding_id, "status": status}
 
 
-def get_timeline(case_id) -> list:
-    """Case timeline rows + each row's validation status (real/not_real/unknown)."""
+def case_hosts(case_id) -> list:
+    """The case's host IDENTITIES = the fused graph's asset nodes (endpoints, already
+    deduped by client_id/hostname across modules; + cloud accounts), with OS and the
+    current excluded state. This is what the 'Hosts (include)' picker lists."""
     d = get_case(case_id)
     g = load_graph(case_id)
+    excluded = {keys.norm_host(h) for h in (d.get("excluded_hosts") or [])}
+    os_by = {}
+    try:
+        from services.velociraptor_service import get_clients_from_snapshot
+        for c in (get_clients_from_snapshot(include_offline=True) or []):
+            o = (c.get("os") or "").lower() or "unknown"
+            if c.get("hostname"):
+                os_by[str(c["hostname"]).lower()] = o
+            if c.get("client_id"):
+                os_by[str(c["client_id"]).lower()] = o
+    except Exception:
+        pass
+    out = []
+    for a in g.by_type("asset"):
+        label = a.label or a.id
+        if a.id.startswith("asset:cloud_account:"):
+            parts = a.id.split(":")
+            out.append({"host": label, "os": parts[2] if len(parts) > 2 else "cloud",
+                        "kind": "cloud", "sources": list(a.sources or []),
+                        "excluded": keys.norm_host(label) in excluded})
+        else:
+            cid = a.id.split(":")[-1]
+            os_name = os_by.get(str(label).lower()) or os_by.get(str(cid).lower()) or "unknown"
+            out.append({"host": label, "os": os_name, "kind": "endpoint",
+                        "sources": list(a.sources or []),
+                        "excluded": keys.norm_host(label) in excluded})
+    out.sort(key=lambda h: (h["os"], h["host"].lower()))
+    return out
+
+
+def get_timeline(case_id) -> list:
+    """Case timeline rows + each row's validation status (real/not_real/unknown).
+    Honors host-exclusion so the timeline matches the report."""
+    d = get_case(case_id)
+    g = _filter_graph_by_hosts(load_graph(case_id), d.get("excluded_hosts"))
     vmap = {v.get("finding_id"): v.get("status")
             for v in (d.get("timeline_validations") or [])}
     rows = render.timeline(g, window=d.get("time_window") or None)

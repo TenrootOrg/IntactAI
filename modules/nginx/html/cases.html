@@ -315,66 +315,48 @@ function renderReport(info){
   $('#tabc').innerHTML=`<div class="row" style="gap:8px;margin-bottom:10px">${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}</div>${advHtml}<div class="md">${mdToHtml(window._md||'')}</div>`;
 }
 function _fileToDataUrl(f){return new Promise(res=>{if(!f)return res(null);const r=new FileReader();r.onload=()=>res(r.result);r.readAsDataURL(f);});}
-let _members=[], _hostSel=new Set();
-const _CAT={velociraptor_hunt:'Velociraptor hunts', cve_scan:'CVE scans', engagement_report:'Engagement reports'};
-function _identity(m){       // collapse runs to one entry per IDENTITY
-  if(m.type==='aws_scan')   return {key:'aws',   label:'AWS',   grp:'aws'};   // one cloud identity
-  if(m.type==='azure_scan') return {key:'azure', label:'Azure', grp:'azure'};
-  if(m.host_scoped)         return {key:'host:'+m.host, label:m.host, grp:m.os||'unknown'};
-  // hunts/cve/engagement have no single host → collapse by category
-  return {key:'cat:'+m.type, label:_CAT[m.type]||(m.type||'other'), grp:'other sources'};
-}
-function _hosts(){
-  const by={};
-  _members.forEach(m=>{const id=_identity(m);
-    if(!by[id.key]) by[id.key]={key:id.key, host:id.label, grp:id.grp, run_ids:[], types:new Set(), included:false};
-    by[id.key].run_ids.push(m.run_id); by[id.key].types.add(m.type||''); if(m.included) by[id.key].included=true;});
-  return Object.values(by);
-}
-const _GRP_ORDER=['windows','linux','darwin','macos','unknown','aws','azure','other sources'];
+// Host identities come from the fused graph (deduped endpoints + cloud accounts).
+// A checked box = INCLUDED; unchecking adds the host to the excluded set, which the
+// backend drops from the report/LLM (token saving) on Save.
+let _hostList=[], _hostExc=new Set();
+const _GRP_ORDER=['windows','linux','darwin','macos','unknown','aws','azure','cloud'];
 function loadHosts(id){
   $('#cf-hosts').innerHTML='loading…';
-  api('/api/cases/'+id+'/members').then(d=>{_members=d.members||[];
-    _hostSel=new Set(_hosts().filter(h=>h.included).map(h=>h.key));
+  api('/api/cases/'+id+'/hosts').then(d=>{_hostList=d.hosts||[];
+    _hostExc=new Set(_hostList.filter(h=>h.excluded).map(h=>h.host));
     renderHosts();
   });
 }
 function renderHosts(){
   const q=(($('#cf-hostfilter')||{}).value||'').toLowerCase();
-  const hs=_hosts().filter(h=>!q||h.host.toLowerCase().includes(q));
-  if(!hs.length){$('#cf-hosts').innerHTML='<i style="color:var(--muted)">no hosts</i>';return;}
-  const groups={}; hs.forEach(h=>{(groups[h.grp]=groups[h.grp]||[]).push(h);});
+  const hs=_hostList.filter(h=>!q||(h.host||'').toLowerCase().includes(q));
+  if(!hs.length){$('#cf-hosts').innerHTML='<i style="color:var(--muted)">no hosts in the fused data yet — Rescan after a collection lands</i>';return;}
+  const groups={}; hs.forEach(h=>{(groups[h.os]=groups[h.os]||[]).push(h);});
   const order=Object.keys(groups).sort((a,b)=>{const ia=_GRP_ORDER.indexOf(a),ib=_GRP_ORDER.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib);});
   let out='';
-  order.forEach(grp=>{
-    out+=`<div style="font-size:10px;text-transform:uppercase;color:var(--muted);margin:6px 0 2px">${esc(grp)} (${groups[grp].length})</div>`;
-    out+=groups[grp].map(h=>`<label class="hostrow"><input type="checkbox" ${_hostSel.has(h.key)?'checked':''} style="width:auto" onchange="toggleHost('${h.key.replace(/'/g,"\\'")}',this.checked)"/> <span class="t">${esc(h.host)}</span> <span style="color:var(--muted)">${esc([...h.types].join('/'))}${h.run_ids.length>1?' ×'+h.run_ids.length:''}</span></label>`).join('');
+  order.forEach(os=>{
+    out+=`<div style="font-size:10px;text-transform:uppercase;color:var(--muted);margin:6px 0 2px">${esc(os)} (${groups[os].length})</div>`;
+    out+=groups[os].map(h=>`<label class="hostrow"><input type="checkbox" ${_hostExc.has(h.host)?'':'checked'} style="width:auto" onchange="toggleHost('${esc(h.host).replace(/'/g,"\\'")}',this.checked)"/> <span class="t">${esc(h.host)}</span> <span style="color:var(--muted)">${esc((h.sources||[]).join('/'))}</span></label>`).join('');
   });
   $('#cf-hosts').innerHTML=out;
 }
-function toggleHost(key,on){ on?_hostSel.add(key):_hostSel.delete(key); }
-function hostSelectAll(on){
+function toggleHost(host,inc){ inc?_hostExc.delete(host):_hostExc.add(host); }   // checked=include
+function hostSelectAll(inc){
   const q=(($('#cf-hostfilter')||{}).value||'').toLowerCase();
-  _hosts().filter(h=>!q||h.host.toLowerCase().includes(q)).forEach(h=>on?_hostSel.add(h.key):_hostSel.delete(h.key));
+  _hostList.filter(h=>!q||(h.host||'').toLowerCase().includes(q)).forEach(h=>inc?_hostExc.delete(h.host):_hostExc.add(h.host));
   renderHosts();
-}
-function _selectedRunIds(){   // expand selected entries → their run_ids
-  const sel=[]; _hosts().forEach(h=>{ if(_hostSel.has(h.key)) sel.push(...h.run_ids); }); return sel;
 }
 async function doRescan(id){
   const logo=await _fileToDataUrl($('#cf-logo').files[0]);
-  const picked=_selectedRunIds();          // run_ids expanded from the selected hosts
-  const totalRuns=_members.length;
   const cfg={
     time_window:{start:$('#cf-start').value||null,end:$('#cf-end').value||null},
     min_severity:$('#cf-sev').value, audience:$('#cf-aud').value,
     customer_name:$('#cf-cust').value, tlp:$('#cf-tlp').value,
     master_prompt:$('#cf-mp').value,
+    excluded_hosts:[..._hostExc],            // hosts unchecked = dropped from report/LLM
     masking:{enabled:$('#cf-mask').checked, patterns:$('#cf-maskpat').value.split('\n').map(s=>s.trim()).filter(Boolean)}
   };
   if(logo) cfg.customer_logo_b64=logo;
-  // include/exclude only when the operator narrowed the set (else leave all)
-  if(picked.length && picked.length<totalRuns) cfg.included_run_ids=picked; else cfg.included_run_ids=null;
   toast('saving + rescanning…');
   await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
   toast('saved — report regenerated'); tab='report'; openCase(id);

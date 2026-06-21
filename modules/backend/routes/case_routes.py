@@ -228,10 +228,19 @@ def rescan(case_id):
 
 @case_bp.route("/api/cases/<case_id>/members", methods=["GET"])
 def members(case_id):
-    """Runs tagged to the case + host + included flag (the include/exclude picker)."""
+    """Runs tagged to the case + host + included flag (legacy run-level picker)."""
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     return jsonify({"case_id": case_id, "members": store.case_members(case_id)})
+
+
+@case_bp.route("/api/cases/<case_id>/hosts", methods=["GET"])
+def hosts(case_id):
+    """Host identities in the fused data (endpoints + cloud accounts), deduped, with OS
+    and excluded state — the source for the Hosts (include) picker."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    return jsonify({"case_id": case_id, "hosts": store.case_hosts(case_id)})
 
 
 @case_bp.route("/api/cases/<case_id>/checklist", methods=["GET"])
