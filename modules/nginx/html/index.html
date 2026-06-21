@@ -6,7 +6,7 @@
     <title>TenRoot Intact.AI</title>
     <link rel="icon" type="image/png" href="img/tenroot-logo.png">
     <!-- Local scripts - no CDN dependencies -->
-    <link rel="stylesheet" href="css/tailwind.css?v=8">
+    <link rel="stylesheet" href="css/tailwind.css?v=9">
     <script defer src="js/alpine.min.js"></script>
     <link rel="stylesheet" href="css/styles.css?v=12">
     <!-- Flatpickr date picker (local) -->
@@ -379,11 +379,11 @@
                 <div class="grid grid-cols-1 gap-6 mb-8"
                      :class="$store.services.installedCount > 0 ? 'md:grid-cols-3' : 'md:grid-cols-1'">
                     <div x-show="$store.services.installedCount > 0"
-                         class="stat-card rounded-lg p-6 text-white" style="border-color: var(--red);">
+                         class="stat-card rounded-lg p-6 text-white">
                         <div class="flex justify-between items-start">
                             <div>
                                 <p class="text-sm text-gray-400">Total Services</p>
-                                <p class="text-4xl font-bold mt-2 text-white" x-text="$store.services.installedCount"></p>
+                                <p class="text-4xl font-bold mt-2 text-white tabular-nums" x-text="$store.services.installedCount"></p>
                             </div>
                             <svg class="w-10 h-10 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path>
@@ -392,11 +392,11 @@
                     </div>
 
                     <div x-show="$store.services.installedCount > 0"
-                         class="stat-card rounded-lg p-6 text-white" style="border-color: var(--purple);">
+                         class="stat-card rounded-lg p-6 text-white">
                         <div class="flex justify-between items-start">
                             <div>
                                 <p class="text-sm text-gray-400">Online Services</p>
-                                <p class="text-4xl font-bold mt-2 text-white" x-text="$store.services.onlineCount"></p>
+                                <p class="text-4xl font-bold mt-2 text-white tabular-nums" x-text="$store.services.onlineCount"></p>
                             </div>
                             <svg class="w-10 h-10 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
@@ -409,12 +409,12 @@
                          bare VM (where it would just say "0 online / 0 total"
                          forever) and on a host that explicitly opted out. -->
                     <div x-show="['online', 'stopped'].includes($store.services.statuses['velociraptor'])"
-                         class="stat-card rounded-lg p-6 text-white" style="border-color: var(--blue);">
+                         class="stat-card rounded-lg p-6 text-white">
                         <div class="flex justify-between items-start">
                             <div>
                                 <p class="text-sm text-gray-400">Velociraptor Clients</p>
-                                <p class="text-4xl font-bold mt-2 text-white" x-text="$store.services.clientCount || '-'"></p>
-                                <p class="text-xs text-gray-500 mt-2" x-text="$store.services.onlineClientCount + ' online / ' + $store.services.clientCount + ' total'"></p>
+                                <p class="text-4xl font-bold mt-2 text-white tabular-nums" x-text="$store.services.clientCount || '-'"></p>
+                                <p class="text-xs text-gray-500 mt-2 tabular-nums" x-text="$store.services.onlineClientCount + ' online / ' + $store.services.clientCount + ' total'"></p>
                             </div>
                             <svg class="w-10 h-10 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
@@ -731,7 +731,7 @@
                                     <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">No workflows match the selected filter.</td></tr>
                                 </template>
                                 <template x-for="run in $store.workflows.runs" :key="run.id">
-                                    <tr class="hover:bg-gray-750 transition-colors">
+                                    <tr class="hover:bg-gray-700/40 transition-colors">
                                         <td class="px-6 py-4">
                                             <span :class="$store.workflows.getTypeColor(run.type) + ' px-3 py-1 rounded-full text-xs font-semibold uppercase'" x-text="run.type || 'system'"></span>
                                         </td>
