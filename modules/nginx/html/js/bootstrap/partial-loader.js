@@ -36,7 +36,17 @@
         }));
     }
 
+    function removeSplash() {
+        const sp = document.getElementById('app-splash');
+        if (sp) sp.remove();
+    }
+
     function start() {
+        // Drop the load splash once Alpine has rendered the app (or after a
+        // safety timeout, so a startup hiccup never leaves the splash stuck).
+        document.addEventListener('alpine:initialized', removeSplash);
+        setTimeout(removeSplash, 8000);
+
         injectAll().then(() => {
             document.dispatchEvent(new CustomEvent('partials:ready'));
             // Start Alpine now that every partial is in the DOM.

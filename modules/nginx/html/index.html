@@ -18,6 +18,17 @@
     <script src="js/active-case.js?v=1"></script>
 </head>
 <body class="bg-gray-900 text-white" x-data x-cloak>
+    <!-- Load splash — covers the brief window while partials inject + Alpine
+         starts (the rest of the body is x-cloak'd until then). Removed by the
+         partial-loader once Alpine is initialized. -->
+    <div id="app-splash"
+         style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:#0d1117">
+        <div style="text-align:center">
+            <img src="img/tenroot-logo.png" alt="TenRoot" style="width:160px;height:auto;opacity:.9">
+            <div class="spinner" style="margin:18px auto 0"></div>
+        </div>
+    </div>
+
     <!-- Toast Notifications -->
     <div x-data="{ toasts: [] }" x-on:show-toast.window="toasts.push($event.detail); setTimeout(() => toasts.shift(), 5000)" class="fixed top-4 right-4 z-[100] space-y-2">
         <template x-for="(toast, index) in toasts" :key="index">
@@ -606,7 +617,7 @@
     <script src="js/components/workspace-bar.js?v=1"></script>
     <script src="js/components/cloud-datepickers.js?v=1"></script>
     <!-- MUST be last: injects partials/*.html then starts Alpine over the full DOM. -->
-    <script src="js/bootstrap/partial-loader.js?v=1"></script>
+    <script src="js/bootstrap/partial-loader.js?v=2"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).
