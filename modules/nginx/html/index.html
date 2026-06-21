@@ -201,7 +201,7 @@
                                     <span>CVE Scan</span>
                                 </div>
                                 <!-- Memory Forensics — Velociraptor memory acquisition → VolWeb (Volatility 3
-                                     + yarascan) → LLM-synthesised findings report. Three modes:
+                                     + yarascan) → extracted findings (fed to the case). Three modes:
                                      layered (default) / yara-only / plugin-only. -->
                                 <div x-show="$store.services.statuses['volweb'] !== 'not_installed'"
                                      class="nav-item flex items-center gap-3 py-2 text-sm"
@@ -682,25 +682,8 @@
                          centred. Subtitle gets `flex-1 min-w-0` so it
                          truncates / wraps before pushing the controls off. -->
                     <div class="flex flex-wrap items-center justify-between gap-4 mt-2">
-                        <p class="text-gray-400 flex-1 min-w-0">View all workflow executions with status, dates, and logs · tick the checkboxes to bundle selected runs into an Engagement Report</p>
+                        <p class="text-gray-400 flex-1 min-w-0">View all workflow executions with status, dates, and logs. Reporting is done per case in Case Analysis.</p>
                         <div class="flex flex-wrap items-center gap-3 shrink-0">
-                            <!-- Engagement Report — always-visible action so the
-                                 button is discoverable before any boxes are
-                                 checked. Disabled state explains itself via tooltip.
-                                 Inline styles back up Tailwind so the colour is
-                                 guaranteed regardless of CDN/JIT timing issues. -->
-                            <button @click="$store.engagement.openComposeModal()"
-                                    :disabled="$store.engagement.selectedRunIds.length === 0"
-                                    :title="$store.engagement.selectedRunIds.length === 0 ? 'Tick the checkboxes next to one or more completed Agentic / AWS / Microsoft 365 runs to enable.' : 'Generate a combined engagement report from the ' + $store.engagement.selectedRunIds.length + ' selected workflow(s).'"
-                                    :style="$store.engagement.selectedRunIds.length === 0 ? 'background-color:#374151; cursor:not-allowed;' : 'background-color:#4f46e5;'"
-                                    class="h-10 px-4 rounded-lg text-sm font-medium text-white flex items-center gap-2 hover:brightness-110 transition">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#ffffff;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
-                                <span style="color:#ffffff;">Engagement Report</span>
-                                <span x-show="$store.engagement.selectedRunIds.length > 0"
-                                      class="text-xs px-2 py-0.5 rounded-full"
-                                      style="background-color:rgba(255,255,255,0.2); color:#ffffff;"
-                                      x-text="$store.engagement.selectedRunIds.length"></span>
-                            </button>
                             <div class="flex items-center gap-2">
                                 <label class="text-sm text-gray-400 whitespace-nowrap" for="workflows-type-filter">Filter:</label>
                                 <select id="workflows-type-filter"
@@ -708,7 +691,6 @@
                                         @change="$store.workflows.applyFilter()"
                                         class="h-10 bg-gray-800 border border-gray-600 rounded-lg px-3 text-sm text-white focus:border-blue-500 focus:outline-none">
                                     <option value="">All Types</option>
-                                    <option value="engagement_report">Engagement Report</option>
                                     <option value="aws_scan">AWS Scan</option>
                                     <option value="azure_scan">Microsoft 365 Scan</option>
                                     <option value="agentic">Agentic</option>
@@ -724,34 +706,12 @@
                     </div>
                 </div>
 
-                <!-- A subtle inline hint sits above the table whenever the
-                     operator has at least one workflow selected, so they
-                     remember to scroll back up to the header button.
-                     Plain text — no duplicate Generate button. -->
-                <p x-show="$store.engagement.selectedRunIds.length > 0"
-                   class="text-xs text-indigo-300 mb-2">
-                    <strong x-text="$store.engagement.selectedRunIds.length"></strong>
-                    workflow<span x-show="$store.engagement.selectedRunIds.length !== 1">s</span>
-                    selected for the next Engagement Report —
-                    <button @click="$store.engagement.openComposeModal()"
-                            class="underline text-indigo-200 hover:text-white">configure &amp; generate</button>
-                    or
-                    <button @click="$store.engagement.clearSelection()"
-                            class="underline text-indigo-200 hover:text-white">clear selection</button>.
-                </p>
-
                 <!-- Workflows Table -->
                 <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
                     <div class="overflow-x-auto">
                         <table class="w-full">
                             <thead class="bg-gray-900">
                                 <tr class="text-left text-gray-400 text-sm">
-                                    <th class="px-3 py-4 font-medium w-12 text-center"
-                                        title="Tick to include a completed Agentic / AWS / Microsoft 365 run in the next Engagement Report build">
-                                        <svg class="w-4 h-4 inline-block text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
-                                        </svg>
-                                    </th>
                                     <th class="px-6 py-4 font-medium">Type</th>
                                     <th class="px-6 py-4 font-medium">Name</th>
                                     <th class="px-6 py-4 font-medium">Status</th>
@@ -762,32 +722,16 @@
                             </thead>
                             <tbody class="divide-y divide-gray-700 text-sm">
                                 <template x-if="$store.workflows.loading">
-                                    <tr><td colspan="7" class="px-6 py-8 text-center text-gray-400">Loading workflows...</td></tr>
+                                    <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">Loading workflows...</td></tr>
                                 </template>
                                 <template x-if="!$store.workflows.loading && $store.workflows.runs.length === 0 && !$store.workflows.typeFilter">
-                                    <tr><td colspan="7" class="px-6 py-8 text-center text-gray-400">No workflow runs yet. Start a Timesketch import or hunt to see them here.</td></tr>
+                                    <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">No workflow runs yet. Start a Timesketch import or hunt to see them here.</td></tr>
                                 </template>
                                 <template x-if="!$store.workflows.loading && $store.workflows.runs.length === 0 && $store.workflows.typeFilter">
-                                    <tr><td colspan="7" class="px-6 py-8 text-center text-gray-400">No workflows match the selected filter.</td></tr>
+                                    <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">No workflows match the selected filter.</td></tr>
                                 </template>
                                 <template x-for="run in $store.workflows.runs" :key="run.id">
                                     <tr class="hover:bg-gray-750 transition-colors">
-                                        <!-- Engagement-Report checkbox: only renders for completed runs
-                                             with an LLM-written report (agentic / aws_scan / azure_scan).
-                                             Other rows show a faint em-dash placeholder so the column
-                                             reads as intentional rather than broken. -->
-                                        <td class="px-3 py-4 align-middle text-center">
-                                            <template x-if="$store.engagement.isEligible(run)">
-                                                <input type="checkbox"
-                                                       :checked="$store.engagement.isSelected(run.id)"
-                                                       @change="$store.engagement.toggle(run)"
-                                                       class="text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4"
-                                                       title="Include in next engagement report">
-                                            </template>
-                                            <template x-if="!$store.engagement.isEligible(run)">
-                                                <span class="text-gray-600 text-xs" title="No LLM report on this run — not eligible for an engagement bundle">—</span>
-                                            </template>
-                                        </td>
                                         <td class="px-6 py-4">
                                             <span :class="$store.workflows.getTypeColor(run.type) + ' px-3 py-1 rounded-full text-xs font-semibold uppercase'" x-text="run.type || 'system'"></span>
                                         </td>
@@ -817,64 +761,18 @@
                                         <td class="px-6 py-4 text-gray-300 text-xs" x-text="$store.workflows.formatTime(run.started_at)"></td>
                                         <td class="px-6 py-4 whitespace-nowrap">
                                             <div class="flex items-center gap-2">
-                                                <!-- Azure scan report -->
+                                                <!-- Azure scan: raw findings ZIP (analysis/report is done at the case level) -->
                                                 <template x-if="run.type === 'azure_scan' && run.status === 'completed'">
-                                                    <div class="flex items-center gap-1">
-                                                        <!-- Report button only when LLM actually ran. No-LLM runs are
-                                                             just a Data ZIP — same content, so we don't offer a duplicate
-                                                             "report" file and instead show a small badge explaining why. -->
-                                                        <template x-if="run.details?.has_report && run.details?.llm_enabled !== false">
-                                                            <a :href="'/api/azure/report/' + run.id + '/download?type=technical'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Azure Report">
-                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                                                                Report
-                                                            </a>
-                                                        </template>
-                                                        <template x-if="run.details?.llm_enabled === false">
-                                                            <span class="bg-yellow-900/40 border border-yellow-700/60 text-yellow-300 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="LLM analysis was not enabled for this run. The Data ZIP contains the raw findings; re-run with Enable LLM (or upload the Data ZIP to the offline analysis page) to get the full forensic report.">
-                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-                                                                LLM disabled
-                                                            </span>
-                                                        </template>
-                                                        <a :href="'/api/azure/data/' + run.id + '/download'" download style="color:#fff;background-color:#64748b;" class="px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Raw Data (ZIP)">
-                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                                                            Data
-                                                        </a>
-                                                    </div>
-                                                </template>
-                                                <!-- AWS Scan: mirror Azure layout — Report (LLM-synthesized .md) + Data
-                                                     (raw findings ZIP). Same `has_report` / `llm_enabled` gating. -->
-                                                <template x-if="run.type === 'aws_scan' && run.status === 'completed'">
-                                                    <div class="flex items-center gap-1">
-                                                        <template x-if="run.details?.has_report && run.details?.llm_enabled !== false">
-                                                            <a :href="'/api/aws/report/' + run.id + '/download'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download AWS Report (Markdown)">
-                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                                                                Report
-                                                            </a>
-                                                        </template>
-                                                        <template x-if="run.details?.llm_enabled === false">
-                                                            <span class="bg-yellow-900/40 border border-yellow-700/60 text-yellow-300 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="LLM analysis was not enabled for this run. The Data ZIP contains the raw findings; re-run with Enable LLM to get the full forensic report.">
-                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-                                                                LLM disabled
-                                                            </span>
-                                                        </template>
-                                                        <a :href="'/api/aws/data/' + run.id + '/download'" download style="color:#fff;background-color:#64748b;" class="px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Raw Data (ZIP)">
-                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                                                            Data
-                                                        </a>
-                                                    </div>
-                                                </template>
-                                                <!-- Single client: single report -->
-                                                <template x-if="run.type === 'agentic' && run.status === 'completed' && !run.details?.multi_client">
-                                                    <a :href="'/api/agentic/run/' + run.id + '/download?type=technical'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Report">
+                                                    <a :href="'/api/azure/data/' + run.id + '/download'" download style="color:#fff;background-color:#64748b;" class="px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Raw Data (ZIP)">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                                                        Report
+                                                        Data
                                                     </a>
                                                 </template>
-                                                <!-- Multi-client: ZIP with all reports -->
-                                                <template x-if="run.type === 'agentic' && run.status === 'completed' && run.details?.multi_client">
-                                                    <a :href="'/api/agentic/run/' + run.id + '/download/zip'" download style="color:#fff;background-color:#64748b;" class="px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" :title="'Download ' + (run.details?.client_count || 'all') + ' client reports (ZIP)'">
+                                                <!-- AWS scan: raw findings ZIP (analysis/report is done at the case level) -->
+                                                <template x-if="run.type === 'aws_scan' && run.status === 'completed'">
+                                                    <a :href="'/api/aws/data/' + run.id + '/download'" download style="color:#fff;background-color:#64748b;" class="px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Raw Data (ZIP)">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                                                        Reports (<span x-text="run.details?.client_count || '?'"></span>)
+                                                        Data
                                                     </a>
                                                 </template>
                                                 <!-- CVE Scan: download combined_cves.csv. Labelled "Download" (not
@@ -885,45 +783,6 @@
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                         Download
                                                     </a>
-                                                </template>
-                                                <!-- Engagement Report — customer-facing branded PDF only.
-                                                     A small `v<N>` pill sits next to the button when the
-                                                     report has been re-run via the Interactive chat (v2,
-                                                     v3, …) so the operator can see at a glance which
-                                                     revision they're downloading. -->
-                                                <template x-if="run.type === 'engagement_report' && run.status === 'completed' && (run.details?.report_version || 1) > 1">
-                                                    <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded bg-blue-900/40 border border-blue-700/60 text-blue-200"
-                                                          :title="'Revision v' + (run.details?.report_version || 1) + ' — bumped on every interactive chat re-run.'"
-                                                          x-text="'v' + (run.details?.report_version || 1)"></span>
-                                                </template>
-                                                <template x-if="run.type === 'engagement_report' && run.status === 'completed'">
-                                                    <a :href="'/api/engagement/' + run.id + '/download/pdf'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Engagement Report (branded PDF with cover page, TLP marking, page headers/footers)">
-                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                                                        Engagement Report
-                                                    </a>
-                                                </template>
-                                                <!-- Memory module: report download. Same shape + color
-                                                     as agentic/AWS/Azure Report buttons (bg-blue-600 is
-                                                     in the bundled Tailwind CSS; bg-emerald-600 isn't,
-                                                     which is why an earlier version rendered as a
-                                                     transparent pill). Sits BEFORE Interactive so the
-                                                     row's button order matches the other modules. -->
-                                                <template x-if="run.type === 'memory' && run.status === 'completed' && run.details?.report_md">
-                                                    <a :href="'/api/memory/run/' + run.id + '/download'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download the LLM-generated findings report">
-                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                                                        Report
-                                                    </a>
-                                                </template>
-                                                <!-- Interactive: chat about findings + re-run pipeline with operator corrections.
-                                                     Available for agentic, AWS scan, Azure scan, Engagement Report,
-                                                     and Memory runs. For AWS/Azure, hidden when LLM was disabled — no
-                                                     analyses to refine. Memory uses `details.use_llm` (its own flag);
-                                                     agentic/engagement_report don't gate on the LLM flag. -->
-                                                <template x-if="(run.type === 'agentic' || run.type === 'aws_scan' || run.type === 'azure_scan' || run.type === 'engagement_report' || run.type === 'memory') && run.status === 'completed' && (run.type === 'agentic' || run.type === 'engagement_report' || (run.type === 'memory' ? run.details?.use_llm !== false : run.details?.llm_enabled !== false))">
-                                                    <button @click="$store.agenticChat.open(run.id, run.type)" class="bg-teal-600 hover:bg-teal-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Open interactive chat: refine the report with operator notes, then re-run">
-                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
-                                                        Interactive
-                                                    </button>
                                                 </template>
                                                 <template x-if="(run.type === 'velociraptor_offline_collector' || run.type === 'offline_collector') && run.status === 'completed' && run.details?.file_id">
                                                     <a :href="'/api/velociraptor/offline/download/' + run.details.file_id" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Offline Collector">
@@ -1300,7 +1159,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                         <button id="forensics-mode-ai" @click="forensicsMode = 'ai'; setForensicsDefaultBlueprint('ai')"
                             :class="forensicsMode === 'ai' ? 'border-b-2 border-purple-500 text-purple-400' : 'text-gray-400 hover:text-gray-200'"
                             class="px-4 py-2 text-sm font-medium transition-colors">
-                            AI Analysis
+                            Collection
                         </button>
                         <button id="forensics-mode-raw" @click="forensicsMode = 'raw'; setForensicsDefaultBlueprint('raw')"
                             :class="forensicsMode === 'raw' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'"
@@ -1308,7 +1167,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                             Hunt
                         </button>
                     </div>
-                    <p class="text-gray-400 mb-6 text-sm" x-text="forensicsMode === 'raw' ? 'Run artifact hunts and collect raw data from clients' : 'Run artifact hunts with AI-powered analysis and report generation'"></p>
+                    <p class="text-gray-400 mb-6 text-sm" x-text="forensicsMode === 'raw' ? 'Run artifact hunts and collect raw data from clients' : 'Collect artifacts from clients (new or existing collection) — analysis happens at the case level'"></p>
                     <!-- Collection Section -->
                     <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4" x-data="{ collectionSource: 'new', existingId: '' }">
                         <!-- Collection Source Radio (AI mode only) -->
@@ -1416,7 +1275,10 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 </label>
                             </div>
 
-                            <!-- AI Analysis Options (only shown when mode is 'ai') -->
+                            <!-- Collection options (mode 'ai'): just the collection window.
+                                 All LLM-era filters (time/severity/anonymize/cross-client/IRIS/
+                                 external logs) were removed in P3 — analysis + masking + host/
+                                 time/severity scoping now live on the case console. -->
                             <template x-if="forensicsMode === 'ai'">
                                 <div class="space-y-4 border-t border-gray-700 pt-4">
                                     <!-- Collection Time (only for new collection) -->
@@ -1426,207 +1288,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                             <input type="number" id="forensics-collection-time" value="30" min="1" max="1440"
                                                 class="w-24 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none">
                                             <span class="text-sm text-gray-400">minutes</span>
-                                            <span class="text-xs text-gray-500 ml-2">(how long to let hunts run before analyzing)</span>
-                                        </div>
-                                    </div>
-
-                                    <!-- Time Filter (for both new and existing collections) -->
-                                    <div class="border-t border-gray-700 pt-4 mt-2">
-                                        <label class="flex items-center gap-2 cursor-pointer mb-3">
-                                            <input type="checkbox" id="forensics-time-filter-toggle" onchange="toggleForensicsTimeFilter()"
-                                                class="w-4 h-4 rounded border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
-                                            <span class="text-sm font-medium text-gray-300">Filter by Time Range</span>
-                                            <span class="ml-2 px-2 py-0.5 bg-purple-900/50 text-purple-300 text-xs rounded">Optional</span>
-                                        </label>
-                                        <div class="ml-6 mb-3 text-xs text-gray-500">
-                                            <p>Limit artifact results to events within a specific time window (reduces noise for LLM analysis)</p>
-                                            <p class="mt-1 text-yellow-500/80">Times are in UTC+0. Israel is UTC+2 (winter) / UTC+3 (summer DST).</p>
-                                        </div>
-
-                                        <div id="forensics-time-filter-details" class="hidden ml-6 space-y-4">
-                                            <!-- Mode Selection (Radio) -->
-                                            <div class="flex gap-4">
-                                                <label class="flex items-center gap-2 cursor-pointer">
-                                                    <input type="radio" name="time-filter-mode" value="relative" checked
-                                                        onchange="toggleTimeFilterMode()"
-                                                        class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600">
-                                                    <span class="text-sm text-gray-300">Relative Time</span>
-                                                </label>
-                                                <label class="flex items-center gap-2 cursor-pointer">
-                                                    <input type="radio" name="time-filter-mode" value="between"
-                                                        onchange="toggleTimeFilterMode()"
-                                                        class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600">
-                                                    <span class="text-sm text-gray-300">Between Dates</span>
-                                                </label>
-                                            </div>
-
-                                            <!-- Relative Time Options -->
-                                            <div id="time-filter-relative" class="space-y-2">
-                                                <label class="block text-xs text-gray-400 mb-1">Time Range</label>
-                                                <select id="forensics-time-relative-range"
-                                                    class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none">
-                                                    <option value="24h">Last 24 Hours</option>
-                                                    <option value="7d" selected>Last 7 Days</option>
-                                                    <option value="30d">Last 30 Days</option>
-                                                    <option value="90d">Last 90 Days</option>
-                                                </select>
-                                                <p class="text-xs text-gray-500">For scheduled jobs, this recalculates on each run.</p>
-                                            </div>
-
-                                            <!-- Between Dates Options -->
-                                            <div id="time-filter-between" class="hidden space-y-4">
-                                                <!-- From Date/Time -->
-                                                <div>
-                                                    <label class="block text-xs text-gray-400 mb-2">From (UTC)</label>
-                                                    <div class="flex items-center gap-2">
-                                                        <div class="flex-1 relative">
-                                                            <input type="text" id="forensics-date-start" placeholder="Select date..."
-                                                                class="flatpickr-date w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none" readonly>
-                                                            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-purple-400 pointer-events-none">
-                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                                            </span>
-                                                        </div>
-                                                        <select id="forensics-time-start-hour" onchange="updateCombinedStartDateTime()"
-                                                            class="w-20 bg-gray-900 border border-gray-700 rounded-lg px-2 py-2.5 text-sm text-white cursor-pointer focus:border-purple-500 focus:outline-none text-center">
-                                                            <option value="00">00:00</option><option value="01">01:00</option><option value="02">02:00</option><option value="03">03:00</option>
-                                                            <option value="04">04:00</option><option value="05">05:00</option><option value="06">06:00</option><option value="07">07:00</option>
-                                                            <option value="08">08:00</option><option value="09">09:00</option><option value="10">10:00</option><option value="11">11:00</option>
-                                                            <option value="12">12:00</option><option value="13">13:00</option><option value="14">14:00</option><option value="15">15:00</option>
-                                                            <option value="16">16:00</option><option value="17">17:00</option><option value="18">18:00</option><option value="19">19:00</option>
-                                                            <option value="20">20:00</option><option value="21">21:00</option><option value="22">22:00</option><option value="23">23:00</option>
-                                                        </select>
-                                                    </div>
-                                                </div>
-                                                <!-- Arrow -->
-                                                <div class="flex justify-center text-purple-400">
-                                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
-                                                </div>
-                                                <!-- To Date/Time -->
-                                                <div>
-                                                    <label class="block text-xs text-gray-400 mb-2">To (UTC) <span class="text-gray-500">- empty = now</span></label>
-                                                    <div class="flex items-center gap-2">
-                                                        <div class="flex-1 relative">
-                                                            <input type="text" id="forensics-date-end" placeholder="Select date..."
-                                                                class="flatpickr-date w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:outline-none" readonly>
-                                                            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-purple-400 pointer-events-none">
-                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                                            </span>
-                                                        </div>
-                                                        <select id="forensics-time-end-hour" onchange="updateCombinedEndDateTime()"
-                                                            class="w-20 bg-gray-900 border border-gray-700 rounded-lg px-2 py-2.5 text-sm text-white cursor-pointer focus:border-purple-500 focus:outline-none text-center">
-                                                            <option value="00">00:00</option><option value="01">01:00</option><option value="02">02:00</option><option value="03">03:00</option>
-                                                            <option value="04">04:00</option><option value="05">05:00</option><option value="06">06:00</option><option value="07">07:00</option>
-                                                            <option value="08">08:00</option><option value="09">09:00</option><option value="10">10:00</option><option value="11">11:00</option>
-                                                            <option value="12">12:00</option><option value="13">13:00</option><option value="14">14:00</option><option value="15">15:00</option>
-                                                            <option value="16">16:00</option><option value="17">17:00</option><option value="18">18:00</option><option value="19">19:00</option>
-                                                            <option value="20">20:00</option><option value="21">21:00</option><option value="22">22:00</option><option value="23">23:00</option>
-                                                        </select>
-                                                    </div>
-                                                </div>
-                                                <!-- Hidden combined fields for JS -->
-                                                <input type="hidden" id="forensics-time-start">
-                                                <input type="hidden" id="forensics-time-end">
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <!-- Severity Filter -->
-                                    <div class="border-t border-gray-700 pt-4 mt-2">
-                                        <label class="block text-sm font-medium text-gray-300 mb-2">Minimum Severity Level</label>
-                                        <div class="ml-0 mb-2 text-xs text-gray-500">
-                                            <p>Filter artifact results by severity before sending to LLM (selected level and above)</p>
-                                        </div>
-                                        <select id="forensics-min-severity"
-                                            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none">
-                                            <option value="informational">All (No Filter)</option>
-                                            <option value="low">Low</option>
-                                            <option value="medium">Medium</option>
-                                            <option value="high" selected>High</option>
-                                            <option value="critical">Critical</option>
-                                        </select>
-                                    </div>
-
-                                    <!-- Data Anonymization -->
-                                    <div class="border-t border-gray-700 pt-4 mt-2">
-                                        <label class="flex items-center gap-2 cursor-pointer mb-2">
-                                            <input type="checkbox" id="forensics-anonymize-toggle" onchange="toggleForensicsAnonymization()"
-                                                class="w-4 h-4 rounded border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
-                                            <span class="text-sm font-medium text-gray-300">Anonymize sensitive data</span>
-                                        </label>
-                                        <div class="ml-6 mb-3 text-xs text-gray-500 space-y-1">
-                                            <p><strong class="text-gray-400">How it works:</strong> Sensitive data is replaced with fake values before sending to LLM, then restored in the final report.</p>
-                                            <p class="mt-1"><strong class="text-gray-400">Auto-detected:</strong> IPs, emails, usernames, hostnames, domains, user paths (C:\Users\xxx), credentials/API keys</p>
-                                        </div>
-                                        <div id="forensics-anonymize-details" class="hidden ml-6">
-                                            <label class="block text-xs text-gray-400 mb-1">Custom patterns to mask (one per line)</label>
-                                            <textarea id="forensics-custom-patterns" rows="2" placeholder="acme-corp.com"
-                                                class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white font-mono focus:border-purple-500 focus:outline-none"></textarea>
-                                        </div>
-                                    </div>
-
-                                    <!-- Cross-client synthesis (multi-client only) -->
-                                    <div id="forensics-cross-client-wrapper" class="border-t border-gray-700 pt-4 mt-2 opacity-50 pointer-events-none" title="Select 2+ clients to enable">
-                                        <label class="flex items-center gap-2 cursor-pointer mb-2">
-                                            <input type="checkbox" id="forensics-cross-client-toggle" disabled
-                                                class="w-4 h-4 rounded border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500 disabled:cursor-not-allowed">
-                                            <span class="text-sm font-medium text-gray-300">Generate organization-wide synthesis</span>
-                                            <span class="ml-2 px-2 py-0.5 bg-purple-900 text-purple-300 text-xs rounded">Multi-client only</span>
-                                        </label>
-                                        <p class="ml-6 text-xs text-gray-500">
-                                            On a multi-client run, adds a cross-host
-                                            <code class="text-gray-400">00_ORGANIZATION_SUMMARY.md</code> to the report ZIP
-                                            (Critical Findings, attack-narrative timeline, cross-host indicators, MITRE mapping).
-                                            Costs one extra LLM call. Off by default — per-client reports are always generated.
-                                            Ignored on single-client runs.
-                                        </p>
-                                    </div>
-
-                                    <!-- IRIS Import -->
-                                    <div class="border-t border-gray-700 pt-4 mt-2">
-                                        <label class="flex items-center gap-2 cursor-pointer mb-2">
-                                            <input type="checkbox" id="forensics-iris-toggle" onchange="toggleForensicsIris()"
-                                                class="w-4 h-4 rounded border-gray-700 bg-gray-900 text-blue-600 focus:ring-blue-500">
-                                            <span class="text-sm font-medium text-gray-300">Import to IRIS</span>
-                                            <span class="ml-2 px-2 py-0.5 bg-blue-900 text-blue-300 text-xs rounded">Case Management</span>
-                                        </label>
-                                        <div id="forensics-iris-details" class="hidden ml-6">
-                                            <label class="block text-xs text-gray-400 mb-1">Case Name (optional)</label>
-                                            <input type="text" id="forensics-iris-case-name" placeholder="Auto-generated if empty"
-                                                class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
-                                        </div>
-                                    </div>
-
-                                    <!-- External Logs Upload -->
-                                    <div class="border-t border-gray-700 pt-4 mt-2">
-                                        <label class="flex items-center gap-2 cursor-pointer mb-2">
-                                            <input type="checkbox" id="forensics-external-toggle" onchange="toggleForensicsExternal()"
-                                                class="w-4 h-4 rounded border-gray-700 bg-gray-900 text-green-600 focus:ring-green-500">
-                                            <span class="text-sm font-medium text-gray-300">Include External Logs</span>
-                                            <span class="ml-2 px-2 py-0.5 bg-green-900 text-green-300 text-xs rounded">CSV/JSON/LOG/TXT</span>
-                                        </label>
-                                        <div class="ml-6 mb-2 text-xs text-gray-500">
-                                            <p>Upload logs from external systems (CrowdStrike, SIEM, Fortinet, etc.)</p>
-                                        </div>
-                                        <div id="forensics-external-details" class="hidden ml-6 space-y-3">
-                                            <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-3">
-                                                <p class="text-xs text-gray-400 mb-2">
-                                                    <strong class="text-green-400">Tip:</strong> Use descriptive filenames so AI knows the source
-                                                    <br><span class="text-gray-500">e.g., crowdstrike_detections.csv, fortinet_firewall.json</span>
-                                                    <br><strong class="text-yellow-400 mt-1 inline-block">Important:</strong> <span class="text-gray-500">Filter data before upload - keep only relevant events to improve analysis quality</span>
-                                                </p>
-                                                <!-- Uploaded files list -->
-                                                <div id="forensics-external-files" class="space-y-2 mb-3"></div>
-                                                <!-- Upload button -->
-                                                <input type="file" id="forensics-external-input" accept=".csv,.json,.jsonl,.log,.txt,.xml,.tsv,.syslog" multiple
-                                                    onchange="uploadExternalFiles(event)" class="hidden">
-                                                <button type="button" onclick="document.getElementById('forensics-external-input').click()"
-                                                    class="w-full px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-dashed border-gray-500 rounded-lg text-sm text-gray-300 flex items-center justify-center gap-2 transition-colors">
-                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
-                                                    </svg>
-                                                    Add Log File
-                                                </button>
-                                            </div>
+                                            <span class="text-xs text-gray-500 ml-2">(how long to let the hunt collect before it's finalized)</span>
                                         </div>
                                     </div>
                                 </div>
@@ -1641,7 +1303,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path>
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                             </svg>
-                            <span x-text="forensicsMode === 'raw' ? 'Run Collection' : (collectionSource === 'existing' ? 'Run AI Analysis' : 'Start Analysis')"></span>
+                            <span x-text="forensicsMode === 'raw' ? 'Run Hunt' : (collectionSource === 'existing' ? 'Ingest Existing Collection' : 'Start Collection')"></span>
                         </button>
                         <div id="forensics-status" class="mt-3 text-sm text-gray-400 hidden"></div>
                     </div>
@@ -2238,7 +1900,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                         + YARA scanning in
                         <a href="https://github.com/forensicxlab/VolWeb" target="_blank" rel="noreferrer"
                            class="text-indigo-300 hover:text-indigo-200 underline">VolWeb</a>,
-                        and ask an LLM to synthesise an engagement-ready findings report.
+                        and extract findings. The findings feed the case for analysis.
                     </p>
 
                     <!-- Card 1 — Blueprint + YARA toggle + Investigation name -->
@@ -2284,21 +1946,6 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                             <label class="block text-sm font-medium text-gray-300 mb-2">Investigation name</label>
                             <input type="text" x-model="$store.memory.caseName"
                                    class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
-                        </div>
-
-                        <!-- LLM toggle — operator-controlled. Default ON.
-                             When OFF the pipeline still runs acquire + upload
-                             + extract + yarascan, but skips the LLM-synthesis
-                             phase and emits an extraction-only report. -->
-                        <div class="mt-4 pt-4 border-t border-gray-700">
-                            <label class="flex items-center gap-3 cursor-pointer">
-                                <input type="checkbox" x-model="$store.memory.useLlm"
-                                       class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-purple-600 focus:ring-purple-500">
-                                <div>
-                                    <div class="text-sm font-medium text-gray-300">Run LLM analysis</div>
-                                    <div class="text-xs text-gray-500">Uncheck to skip the LLM call and get a plain extraction report (cheaper / works without an API key).</div>
-                                </div>
-                            </label>
                         </div>
 
                         <!-- Timeouts — always visible (moved out of a collapsed
@@ -2378,7 +2025,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                         <button @click="$store.memory.startRun()"
                                 :disabled="!$store.memory.selectedClient || $store.memory.dispatching"
                                 class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
-                            <span x-show="!$store.memory.dispatching">Acquire &amp; Analyze</span>
+                            <span x-show="!$store.memory.dispatching">Acquire &amp; Extract</span>
                             <span x-show="$store.memory.dispatching">Starting…</span>
                         </button>
                     </div>
@@ -2796,7 +2443,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                 <label class="block text-sm text-gray-400 mb-1">Blueprint Type</label>
                                 <select id="schedule-blueprint-type" onchange="onScheduleBlueprintTypeChange()" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
                                     <option value="velociraptor">Velociraptor</option>
-                                    <option value="agentic">Agentic (LLM Analysis)</option>
+                                    <option value="agentic">Agentic (Collection)</option>
                                     <option value="timesketch">Timesketch (Triage + Timeline)</option>
                                 </select>
                             </div>
@@ -2853,86 +2500,6 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                             </div>
                         </div>
 
-                        <!-- Agentic-specific options (shown when agentic is selected) -->
-                        <div id="schedule-agentic-options" class="hidden space-y-4 border-t border-gray-700 pt-4">
-                            <div class="text-sm text-gray-400">Agentic Analysis Options</div>
-                            <label class="flex items-center gap-2 cursor-pointer">
-                                <input type="checkbox" id="schedule-anonymize" class="rounded bg-gray-700 border-gray-600">
-                                <span class="text-sm text-gray-300">Anonymize data before LLM analysis</span>
-                            </label>
-
-                            <!-- Time Filter for Scheduled Jobs -->
-                            <div class="mt-4 pt-4 border-t border-gray-600">
-                                <label class="flex items-center gap-2 cursor-pointer mb-3">
-                                    <input type="checkbox" id="schedule-time-filter-toggle" onchange="toggleScheduleTimeFilter()"
-                                        class="rounded bg-gray-700 border-gray-600">
-                                    <span class="text-sm text-gray-300">Filter by Time Range</span>
-                                </label>
-
-                                <div id="schedule-time-filter-details" class="hidden space-y-3 ml-6">
-                                    <!-- Mode Selection -->
-                                    <div class="flex gap-4">
-                                        <label class="flex items-center gap-2 cursor-pointer">
-                                            <input type="radio" name="schedule-time-mode" value="relative" checked
-                                                onchange="toggleScheduleTimeMode()"
-                                                class="w-4 h-4 border-gray-600 bg-gray-700 text-blue-600">
-                                            <span class="text-sm text-gray-300">Relative Time</span>
-                                            <span class="text-xs text-green-400">(Recommended)</span>
-                                        </label>
-                                        <label class="flex items-center gap-2 cursor-pointer">
-                                            <input type="radio" name="schedule-time-mode" value="between"
-                                                onchange="toggleScheduleTimeMode()"
-                                                class="w-4 h-4 border-gray-600 bg-gray-700 text-blue-600">
-                                            <span class="text-sm text-gray-300">Fixed Dates</span>
-                                        </label>
-                                    </div>
-
-                                    <!-- Relative Range Dropdown -->
-                                    <div id="schedule-time-relative" class="space-y-2">
-                                        <label class="block text-xs text-gray-400">Time Range</label>
-                                        <select id="schedule-time-relative-range"
-                                            class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white">
-                                            <option value="24h">Last 24 Hours</option>
-                                            <option value="7d" selected>Last 7 Days (Weekly jobs)</option>
-                                            <option value="30d">Last 30 Days (Monthly jobs)</option>
-                                            <option value="90d">Last 90 Days</option>
-                                        </select>
-                                        <p class="text-xs text-gray-500">Recalculates at each scheduled run.</p>
-                                    </div>
-
-                                    <!-- Fixed Dates (hidden by default) -->
-                                    <div id="schedule-time-between" class="hidden space-y-3">
-                                        <div class="bg-yellow-900/30 border border-yellow-700/50 rounded-lg p-2 text-xs text-yellow-300">
-                                            Warning: Fixed dates are not recommended for recurring jobs.
-                                        </div>
-                                        <div class="flex items-center gap-2">
-                                            <div class="flex-1">
-                                                <div class="relative">
-                                                    <span class="absolute left-2 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none">
-                                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                                    </span>
-                                                    <input type="text" id="schedule-time-start" placeholder="Select..."
-                                                        class="schedule-flatpickr w-full bg-gray-700 border border-gray-600 rounded-lg pl-8 pr-2 py-1.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none" readonly>
-                                                </div>
-                                                <span class="text-xs text-gray-500">From</span>
-                                            </div>
-                                            <span class="text-blue-400">→</span>
-                                            <div class="flex-1">
-                                                <div class="relative">
-                                                    <span class="absolute left-2 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none">
-                                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                                    </span>
-                                                    <input type="text" id="schedule-time-end" placeholder="Select..."
-                                                        class="schedule-flatpickr w-full bg-gray-700 border border-gray-600 rounded-lg pl-8 pr-2 py-1.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none" readonly>
-                                                </div>
-                                                <span class="text-xs text-gray-500">To</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
                         <!-- Timesketch-specific options (shown when timesketch is selected) -->
                         <div id="schedule-timesketch-options" class="hidden space-y-4 border-t border-gray-700 pt-4">
                             <div class="text-sm text-gray-400">Timesketch Options</div>
@@ -2975,7 +2542,6 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                      awsRegions: 'us-east-1',
                      awsTimeFilter: '24h',
                      awsMinSeverity: 'medium',
-                     awsEnableLLM: false,
                      awsRunning: false,
                      awsRunId: null,
                      awsTargetPrincipals: '',
@@ -3059,7 +2625,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                      scope_mode: this.awsScopeMode,
                                      target_principals: principals,
                                      cloudtrail_mode: this.awsCloudTrailMode,
-                                     enable_llm: this.awsEnableLLM,
+                                     enable_llm: false,
                                      min_severity: this.awsMinSeverity,
                                      max_events_per_region: (!isNaN(mepr) && mepr > 0) ? mepr : null,
                                  }),
@@ -3092,7 +2658,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                              await fetch('/api/aws/analyze-offline', {
                                  method: 'POST',
                                  headers: { 'Content-Type': 'application/json' },
-                                 body: JSON.stringify({ run_id: upData.run_id, enable_llm: true, blueprint: this.awsBlueprint }),
+                                 body: JSON.stringify({ run_id: upData.run_id, enable_llm: false, blueprint: this.awsBlueprint }),
                              });
                          } catch(e) { console.error(e); alert('Upload failed: ' + e.message); }
                          this.awsRunning = false;
@@ -3103,7 +2669,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                  x-init="checkAwsStatus()">
 
                 <h2 class="text-3xl font-bold text-white mb-2">AWS Security Automation</h2>
-                <p class="text-gray-400 mb-6">Collect AWS state &amp; events (Prowler posture, IAM principals, CloudTrail, GuardDuty, AccessAnalyzer), run SIGMA detection, and synthesise an LLM forensic report.</p>
+                <p class="text-gray-400 mb-6">Collect AWS state &amp; events (Prowler posture, IAM principals, CloudTrail, GuardDuty, AccessAnalyzer) and run SIGMA detection. Findings feed the case for analysis.</p>
 
                 <!-- Status Banner -->
                 <div x-show="awsStatus" class="mb-6 p-3 rounded-lg"
@@ -3288,24 +2854,16 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                             <p class="text-xs text-gray-500 mt-1" x-text="awsScanTimeEstimate"></p>
                         </div>
 
-                        <!-- Min severity + LLM -->
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="block text-sm font-medium text-gray-300 mb-2">Minimum severity</label>
-                                <select x-model="awsMinSeverity" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
-                                    <option value="informational">Informational</option>
-                                    <option value="low">Low</option>
-                                    <option value="medium">Medium</option>
-                                    <option value="high">High</option>
-                                    <option value="critical">Critical</option>
-                                </select>
-                            </div>
-                            <div class="flex items-end">
-                                <label class="flex items-center gap-2 cursor-pointer pb-2">
-                                    <input type="checkbox" x-model="awsEnableLLM" class="text-blue-500">
-                                    <span class="text-white text-sm">Enable LLM analysis</span>
-                                </label>
-                            </div>
+                        <!-- Min severity (findings filter — analysis happens at the case level) -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Minimum severity</label>
+                            <select x-model="awsMinSeverity" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                <option value="informational">Informational</option>
+                                <option value="low">Low</option>
+                                <option value="medium">Medium</option>
+                                <option value="high">High</option>
+                                <option value="critical">Critical</option>
+                            </select>
                         </div>
 
                         <button @click="startAwsScan()" :disabled="awsRunning"
@@ -3342,7 +2900,6 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                      azureCustomStart: '',
                      azureCustomEnd: '',
                      azureMinSeverity: 'high',
-                     azureEnableLLM: false,
                      azureRunning: false,
                      azureRunId: null,
                      azureResults: null,
@@ -3402,7 +2959,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                                  body: JSON.stringify({
                                      blueprint: this.azureBlueprint,
                                      time_filter: timeFilter,
-                                     enable_llm: this.azureEnableLLM,
+                                     enable_llm: false,
                                      min_severity: this.azureMinSeverity,
                                      scope_mode: this.azureScopeMode,
                                      target_users: targetUsers,
@@ -3443,13 +3000,12 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                              }
                              const runId = upData.run_id;
 
-                             // Kick off the analysis (LLM is hard-pinned on
-                             // the backend for this endpoint, but we send
-                             // true here too for clarity).
+                             // Ingest only — collection feeds the case, which
+                             // owns all LLM analysis now.
                              await fetch('/api/azure/analyze-offline', {
                                  method: 'POST',
                                  headers: { 'Content-Type': 'application/json' },
-                                 body: JSON.stringify({ run_id: runId, enable_llm: true })
+                                 body: JSON.stringify({ run_id: runId, enable_llm: false })
                              });
                          } catch(e) {
                              console.error(e);
@@ -3480,7 +3036,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                  x-init="checkAzureStatus()">
 
                 <h2 class="text-3xl font-bold text-white mb-2">Microsoft 365 Security Automation</h2>
-                <p class="text-gray-400 mb-6">Collect Microsoft 365 logs and run SIGMA detection rules with LLM analysis</p>
+                <p class="text-gray-400 mb-6">Collect Microsoft 365 logs and run SIGMA detection rules. Findings feed the case for analysis.</p>
 
                 <!-- Status Banner -->
                 <div x-show="azureStatus" class="mb-6 p-3 rounded-lg"
@@ -3684,12 +3240,6 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                             </select>
                         </div>
 
-                        <!-- LLM Toggle -->
-                        <div class="flex items-center gap-3">
-                            <input type="checkbox" id="azure-llm" x-model="azureEnableLLM" class="rounded bg-gray-700 border-gray-600">
-                            <label for="azure-llm" class="text-gray-300">Enable LLM Analysis</label>
-                        </div>
-
                         <!-- Start Button -->
                         <button @click="startAzureScan()"
                                 :disabled="azureRunning || !azureStatus?.azure_credentials?.configured"
@@ -3706,13 +3256,11 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
 
                     <!-- Offline Mode -->
                     <div x-show="azureMode === 'offline'" class="space-y-4">
-                        <!-- Static notice: LLM is mandatory and analysis kicks
-                             off automatically — no toggles, no per-file UI. -->
+                        <!-- Static notice: upload ingests the logs into a run;
+                             analysis happens at the case level. -->
                         <div class="bg-blue-900/30 border border-blue-700/50 rounded-lg px-4 py-3 text-sm text-blue-200">
-                            <span class="font-semibold">Upload runs the full LLM-backed analysis automatically.</span>
-                            Make sure your LLM API key is configured in
-                            <span class="text-blue-100 font-medium">Settings</span>
-                            before uploading. Progress is shown in the
+                            <span class="font-semibold">Upload ingests the logs and runs SIGMA detection.</span>
+                            The resulting findings feed the case for analysis. Progress is shown in the
                             <span class="text-blue-100 font-medium">Workflows</span> tab.
                         </div>
 
@@ -4839,8 +4387,6 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
     <script src="js/utils/client-manager.js"></script>
     <script src="js/timesketch.js"></script>
     <script src="js/agentic.js"></script>
-    <script src="js/agentic-chat.js?v=8"></script>
-    <script src="js/engagement.js?v=14"></script>
     <script src="js/cve-scan.js?v=8"></script>
     <script src="js/memory.js?v=8"></script>
     <script src="js/scheduler.js"></script>
@@ -5057,305 +4603,5 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
         </div>
     </div>
 
-    <!-- ====================================================================
-         Interactive agentic chat modal — body-level for the same reason as
-         the workflow-logs modal above (avoid x-transition's transformed
-         containing block breaking `position: fixed`).
-         ==================================================================== -->
-    <div x-show="$store.agenticChat?.isOpen"
-         @keydown.escape.window="if ($store.agenticChat?.isOpen) $store.agenticChat.close()"
-         class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-6"
-         style="z-index: 99998;"
-         x-cloak>
-        <div class="bg-gray-800 rounded-lg border border-gray-700 flex flex-col relative"
-             style="width: 90vw; height: 90vh; max-width: 1400px;">
-            <!-- Floating close (top-right) — no header bar / no description / no clutter -->
-            <button @click="$store.agenticChat.close()"
-                    class="absolute top-3 right-3 text-gray-500 hover:text-white z-10"
-                    title="Close">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                </svg>
-            </button>
-
-            <!-- Chat transcript -->
-            <div id="agentic-chat-scroll" class="flex-1 overflow-y-auto p-5 pt-10 space-y-3">
-                <template x-if="(!$store.agenticChat?.messages || $store.agenticChat.messages.length === 0)">
-                    <p class="text-gray-500 text-sm italic">Type what came out of the conversation with the customer's IT team.</p>
-                </template>
-                <template x-for="(msg, i) in ($store.agenticChat?.messages || [])" :key="i">
-                    <div class="flex" :class="msg.role === 'user' ? 'justify-end' : 'justify-start'">
-                        <div class="max-w-[80%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap leading-relaxed"
-                             :class="msg.role === 'user' ? 'bg-teal-700 text-white' : 'bg-gray-700 text-gray-100'"
-                             x-text="$store.agenticChat.clean(msg.content)"></div>
-                    </div>
-                </template>
-                <template x-if="$store.agenticChat?.sending">
-                    <div class="flex justify-start">
-                        <div class="bg-gray-700 text-gray-300 rounded-lg px-3 py-2 text-sm italic">assistant is thinking…</div>
-                    </div>
-                </template>
-            </div>
-
-            <!-- Chat input -->
-            <div class="border-t border-gray-700 p-3 flex gap-2">
-                <textarea x-model="$store.agenticChat.draft"
-                          @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); $store.agenticChat.send(); }"
-                          rows="2"
-                          placeholder="Write here. Enter to send · Shift+Enter for newline · Esc to close."
-                          class="flex-1 bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm resize-none focus:outline-none focus:border-teal-500"></textarea>
-                <button @click="$store.agenticChat.send()"
-                        :disabled="$store.agenticChat?.sending || !$store.agenticChat?.draft?.trim()"
-                        class="bg-teal-600 hover:bg-teal-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm font-medium text-white self-end">
-                    Send
-                </button>
-            </div>
-
-            <!-- Status banner: colour-coded by severity, dismissable. Sits
-                 above the footer so long error messages have room to breathe
-                 instead of getting squished next to the rerun button. -->
-            <div x-show="$store.agenticChat?.status"
-                 class="px-4 py-2 border-t flex items-start gap-3"
-                 :class="{
-                    'bg-red-900/40 border-red-700/60 text-red-200': $store.agenticChat?.status?.level === 'error',
-                    'bg-teal-900/40 border-teal-700/60 text-teal-200': $store.agenticChat?.status?.level === 'success',
-                    'bg-gray-700/40 border-gray-600 text-gray-200': $store.agenticChat?.status?.level === 'info'
-                 }">
-                <span class="text-sm flex-1 whitespace-pre-wrap" x-text="$store.agenticChat?.status?.text"></span>
-                <button @click="$store.agenticChat.dismissStatus()" class="text-current opacity-60 hover:opacity-100" title="Dismiss">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                </button>
-            </div>
-
-            <!-- Footer: target client + scope toggle + rerun -->
-            <div class="p-3 border-t border-gray-700 flex items-center justify-between gap-3 flex-wrap">
-                <div class="flex items-center gap-4 flex-wrap">
-                    <!-- Target client (multi-client runs only): regenerate
-                         one host's report or all of them. Hidden on
-                         single-client runs since there's nothing to choose. -->
-                    <template x-if="$store.agenticChat?.isMultiClient">
-                        <label class="flex items-center gap-2">
-                            <span class="text-xs text-gray-400">For</span>
-                            <select x-model="$store.agenticChat.target"
-                                    class="bg-gray-900 text-gray-100 border border-gray-700 rounded text-xs px-2 py-1 focus:outline-none focus:border-teal-500">
-                                <option value="all">All clients</option>
-                                <template x-for="c in ($store.agenticChat?.clients || [])" :key="c.client_id">
-                                    <option :value="c.client_id" x-text="c.hostname || c.client_id"></option>
-                                </template>
-                            </select>
-                        </label>
-                    </template>
-                    <label class="flex items-center gap-2"
-                           :class="$store.agenticChat?.reportsOnlyAvailable ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'"
-                           :title="$store.agenticChat?.reportsOnlyAvailable ? '' : 'This run completed before the report-cache was added — only Full re-analysis is available.'">
-                        <input type="radio" x-model="$store.agenticChat.scope" value="reports_only"
-                               :disabled="!$store.agenticChat?.reportsOnlyAvailable"
-                               class="text-teal-600 focus:ring-teal-500 disabled:opacity-40">
-                        <span class="text-xs text-gray-300">Report only</span>
-                    </label>
-                    <label class="flex items-center gap-2"
-                           :class="$store.agenticChat?.fullAnalysisAvailable ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'"
-                           :title="$store.agenticChat?.fullAnalysisAvailable ? '' : 'This run\'s original Velociraptor flow IDs were not stored, so the per-artifact analysis cannot be re-run. Only Report-only is available.'">
-                        <input type="radio" x-model="$store.agenticChat.scope" value="full"
-                               :disabled="!$store.agenticChat?.fullAnalysisAvailable"
-                               class="text-teal-600 focus:ring-teal-500 disabled:opacity-40">
-                        <span class="text-xs text-gray-300">Full re-analysis</span>
-                    </label>
-                    <button @click="$store.agenticChat.clear()"
-                            x-show="$store.agenticChat?.messages?.length"
-                            class="text-xs text-gray-500 hover:text-gray-300 underline">
-                        Clear chat
-                    </button>
-                </div>
-                <button @click="$store.agenticChat.rerun()"
-                        :disabled="$store.agenticChat?.rerunning || !$store.agenticChat?.messages?.length"
-                        class="bg-teal-600 hover:bg-teal-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm font-medium text-white">
-                    <span x-show="!$store.agenticChat?.rerunning">Re-run</span>
-                    <span x-show="$store.agenticChat?.rerunning">Re-running…</span>
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- ====================================================================
-         Engagement Report compose modal — opens from the action bar on the
-         Workflows page when at least one row is checked. Body-level
-         placement so the modal isn't clipped by transformed containers.
-         ==================================================================== -->
-    <div x-show="$store.engagement.composeOpen"
-         @keydown.escape.window="if ($store.engagement.composeOpen) $store.engagement.closeComposeModal()"
-         class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-6"
-         style="z-index: 99998;"
-         x-cloak>
-        <div class="bg-gray-800 rounded-lg border border-gray-700 flex flex-col relative"
-             style="width: min(90vw, 56rem); max-height: 88vh;">
-            <button @click="$store.engagement.closeComposeModal()"
-                    class="absolute top-3 right-3 text-gray-500 hover:text-white z-10" title="Close">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-            </button>
-
-            <div class="p-6 border-b border-gray-700">
-                <h3 class="text-xl font-bold text-white mb-1">New Engagement Report</h3>
-                <p class="text-gray-400 text-xs">
-                    Bundle the <strong x-text="$store.engagement.selectedRunIds.length"></strong>
-                    selected workflow<span x-show="$store.engagement.selectedRunIds.length !== 1">s</span>
-                    into a single customer-facing IR deliverable. The LLM writes the executive
-                    layer (summary, scope, findings, timeline, recommendations);
-                    each selected workflow's report appears verbatim under its
-                    environment section.
-                </p>
-            </div>
-
-            <div class="flex-1 overflow-y-auto p-6 space-y-5">
-                <div>
-                    <label class="block text-sm font-medium text-gray-300 mb-2">Report name</label>
-                    <input type="text" x-model="$store.engagement.name"
-                           placeholder="e.g. OMCDOM IR Engagement — May 2026"
-                           class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
-                </div>
-
-                <div>
-                    <label class="block text-sm font-medium text-gray-300 mb-2">Selected workflows + section assignments</label>
-                    <div class="border border-gray-700 rounded max-h-72 overflow-y-auto">
-                        <template x-if="$store.engagement.selectedRunIds.length === 0">
-                            <p class="text-gray-500 text-sm italic p-3">No workflows selected.</p>
-                        </template>
-                        <template x-for="src in $store.engagement.selectedDetails" :key="src.run_id">
-                            <div class="flex items-center gap-3 px-3 py-2 border-b border-gray-700/60 text-sm">
-                                <span class="text-xs uppercase tracking-wide w-16"
-                                      :class="{
-                                          'text-purple-400': src.automation_type === 'agentic',
-                                          'text-blue-400':   src.automation_type === 'aws_scan',
-                                          'text-cyan-400':   src.automation_type === 'azure_scan'
-                                      }"
-                                      x-text="src.automation_type === 'aws_scan' ? 'AWS' : (src.automation_type === 'azure_scan' ? 'Microsoft 365' : 'Agentic')"></span>
-                                <div class="flex-1 min-w-0">
-                                    <div class="text-gray-200 truncate" x-text="src.name"></div>
-                                    <div class="text-gray-500 text-xs" x-text="src.run_id"></div>
-                                </div>
-                                <!-- Every workflow type maps to exactly one section,
-                                     decided by its data source. Agentic = Velociraptor
-                                     endpoint data (whether single host, multi-host, or
-                                     multi-host with a DC), so it always lands in
-                                     Endpoints — the LLM will surface AD-specific
-                                     findings inside that section automatically when
-                                     they're present in the source. -->
-                                <template x-if="src.automation_type === 'agentic'">
-                                    <span class="text-xs text-purple-300 px-2 py-1 rounded bg-purple-900/30 border border-purple-800/60">→ Endpoints section</span>
-                                </template>
-                                <template x-if="src.automation_type === 'aws_scan'">
-                                    <span class="text-xs text-blue-300 px-2 py-1 rounded bg-blue-900/30 border border-blue-800/60">→ AWS section</span>
-                                </template>
-                                <template x-if="src.automation_type === 'azure_scan'">
-                                    <span class="text-xs text-cyan-300 px-2 py-1 rounded bg-cyan-900/30 border border-cyan-800/60">→ Microsoft 365 section</span>
-                                </template>
-                                <button @click="$store.engagement.remove(src.run_id)"
-                                        class="text-gray-500 hover:text-red-300 text-xs" title="Remove from selection">
-                                    ✕
-                                </button>
-                            </div>
-                        </template>
-                    </div>
-                </div>
-
-                <!-- Customer + classification + audience + language —
-                     operator-controlled metadata that drives the cover page
-                     and tailors the LLM synthesis. Defaults match the
-                     pre-fix hardcoded behaviour (AMBER / mixed / English)
-                     so leaving everything blank reproduces the old build. -->
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-300 mb-2">
-                            Customer name <span class="text-gray-500">(optional)</span>
-                        </label>
-                        <input type="text" x-model="$store.engagement.customerName"
-                               placeholder="e.g. Acme Corp"
-                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-300 mb-2">TLP marking</label>
-                        <select x-model="$store.engagement.tlp"
-                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
-                            <option value="CLEAR">TLP:CLEAR — disclosure permitted</option>
-                            <option value="GREEN">TLP:GREEN — community-wide</option>
-                            <option value="AMBER">TLP:AMBER — limited (default)</option>
-                            <option value="AMBER+STRICT">TLP:AMBER+STRICT — recipient org only</option>
-                            <option value="RED">TLP:RED — named recipients only</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-300 mb-2">Audience</label>
-                        <select x-model="$store.engagement.audience"
-                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
-                            <option value="both">Mixed — exec + technical (default)</option>
-                            <option value="executive">Executive — exec summary only, no appendix</option>
-                            <option value="technical">Technical — DFIR / SOC detail-heavy</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-300 mb-2">Language</label>
-                        <select x-model="$store.engagement.language"
-                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
-                            <option value="en">English (default)</option>
-                            <option value="he">עברית — Hebrew</option>
-                        </select>
-                    </div>
-                </div>
-
-                <div>
-                    <label class="block text-sm font-medium text-gray-300 mb-2">
-                        Customer logo <span class="text-gray-500">(optional — PNG/JPG, ≤1.5 MB)</span>
-                    </label>
-                    <div class="flex items-center gap-3">
-                        <input type="file" accept="image/png,image/jpeg,image/svg+xml"
-                               @change="$store.engagement.onLogoSelected($event)"
-                               class="flex-1 text-sm text-gray-300 file:bg-gray-700 file:text-white file:rounded file:border-0 file:px-3 file:py-1 file:mr-3 file:cursor-pointer">
-                        <template x-if="$store.engagement.logoB64">
-                            <div class="flex items-center gap-2">
-                                <img :src="$store.engagement.logoB64" alt="logo preview"
-                                     class="h-10 w-10 object-contain bg-gray-900 border border-gray-700 rounded">
-                                <button type="button" @click="$store.engagement.clearLogo()"
-                                        class="text-xs text-gray-400 hover:text-red-300" title="Remove logo">Clear</button>
-                            </div>
-                        </template>
-                    </div>
-                    <p class="text-xs text-gray-500 mt-1">
-                        Replaces the Tenroot logo on the PDF cover. Leave blank for default branding.
-                    </p>
-                </div>
-
-                <div>
-                    <label class="block text-sm font-medium text-gray-300 mb-2">
-                        Engagement notes <span class="text-gray-500">(optional)</span>
-                    </label>
-                    <textarea x-model="$store.engagement.notes" rows="4"
-                              placeholder="Breach window, attribution hypothesis, environment context, anything the LLM should know up front…"
-                              class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm resize-none focus:outline-none focus:border-indigo-500"></textarea>
-                </div>
-            </div>
-
-            <div class="p-4 border-t border-gray-700 flex items-center justify-between gap-3">
-                <p x-show="$store.engagement.status" class="text-xs"
-                   :class="{
-                       'text-red-300':  $store.engagement.statusLevel === 'error',
-                       'text-teal-300': $store.engagement.statusLevel === 'success',
-                       'text-gray-400': $store.engagement.statusLevel === 'info'
-                   }"
-                   x-text="$store.engagement.status"></p>
-                <div class="flex items-center gap-2 ml-auto">
-                    <button @click="$store.engagement.closeComposeModal()"
-                            class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm text-white">
-                        Cancel
-                    </button>
-                    <button @click="$store.engagement.generate()"
-                            :disabled="$store.engagement.generating || $store.engagement.selectedRunIds.length === 0"
-                            class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm font-medium text-white">
-                        <span x-show="!$store.engagement.generating">Generate Engagement Report</span>
-                        <span x-show="$store.engagement.generating">Dispatching…</span>
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
 </body>
 </html>

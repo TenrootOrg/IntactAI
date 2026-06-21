@@ -1,21 +1,19 @@
 /* Memory Forensics — Alpine store
  *
+ * Memory is a collector now: it acquires + extracts (Volatility 3 + YARA)
+ * and persists findings for the case to analyze. No per-run LLM/report/chat.
+ *
  * Wires the Memory tab to:
- *   POST /api/memory/run                — dispatch (acquire + extract + analyze)
+ *   POST /api/memory/run                — dispatch (acquire + extract, use_llm=false)
  *   GET  /api/memory/run/<id>/status    — poll until terminal
- *   GET  /api/memory/run/<id>/download  — markdown report
  *   POST /api/memory/run/<id>/stop      — cancel
+ *   POST /api/memory/upload             — operator-supplied dump (ingest)
  *   GET  /api/memory/blueprints         — populate blueprint dropdown
  *   GET  /api/clients                   — populate client picker
  *
  * Reuses the existing $store.workflows.viewLogs() modal so we don't
  * duplicate the per-run log viewer + auto-scroll behaviour the
  * Workflows tab already gets right.
- *
- * Interactive validation: the "Validate (chat)" button reuses the
- * agentic chat modal — clicking it sets the chat modal's run_id
- * + module='memory' (so it POSTs /api/memory/run/<id>/chat instead
- * of /api/agentic/...). The chat modal itself is shared markup.
  */
 
 document.addEventListener('alpine:init', () => {
@@ -29,7 +27,6 @@ document.addEventListener('alpine:init', () => {
         // Blank = pipeline uses CURATED_PLUGINS fallback.
         blueprintId: 'memory_layered_default',
         includeYara: true,        // independent of blueprint — adds yarascan layer
-        useLlm: true,             // operator checkbox — uncheck to skip LLM synthesis
         // Default case name: "Memory YYYY-MM-DD" so operators get a
         // sensible group out of the box without having to type one.
         caseName: 'Memory ' + new Date().toISOString().split('T')[0],
@@ -161,7 +158,7 @@ document.addEventListener('alpine:init', () => {
                     client_name: c.hostname || null,
                     blueprint_id: this.blueprintId || undefined,
                     mode: this.derivedMode(),
-                    use_llm: !!this.useLlm,
+                    use_llm: false,
                     case_name: this.caseName || ('Memory ' + new Date().toISOString().split('T')[0]),
                 };
                 // Only send timeouts the operator actually overrode —
@@ -243,7 +240,7 @@ document.addEventListener('alpine:init', () => {
             fd.append('file', this.uploadFile);
             if (this.blueprintId) fd.append('blueprint_id', this.blueprintId);
             fd.append('mode', this.derivedMode());
-            fd.append('use_llm', this.useLlm ? 'true' : 'false');
+            fd.append('use_llm', 'false');
             fd.append('case_name', this.caseName || ('Memory ' + new Date().toISOString().split('T')[0]));
             // No client_name for now — the operator can rename the
             // workflow from the Workflows table if they care.
@@ -316,35 +313,5 @@ document.addEventListener('alpine:init', () => {
             } catch (_) { /* network blip — keep polling */ }
         },
 
-        // --------------------------------------------------------------
-        // Post-run actions
-        // --------------------------------------------------------------
-        downloadReport() {
-            if (!this.currentRunId) return;
-            window.location.href = `/api/memory/run/${this.currentRunId}/download`;
-        },
-
-        openChat() {
-            this.openChatForRun(this.currentRunId);
-        },
-
-        /** Open the shared agentic chat modal for a memory run.
-         *  Called from the Memory page's mini status pane (current
-         *  run only) AND from the Workflows table row actions (any
-         *  completed memory run, scoped to that run's id).
-         *
-         *  The agentic-chat store handles all the transport — we just
-         *  hand it a runId + automationType='memory' and it switches
-         *  its _urlBase() to /api/memory/run/<id>. */
-        openChatForRun(runId) {
-            if (!runId) return;
-            const chat = Alpine.store('agenticChat');
-            if (chat && typeof chat.open === 'function') {
-                chat.open(runId, 'memory');
-            } else if (Alpine.store('app')?.switchTab) {
-                // Fallback: chat store not loaded for some reason.
-                Alpine.store('app').switchTab('workflows');
-            }
-        },
     });
 });

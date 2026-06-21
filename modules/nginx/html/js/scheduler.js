@@ -144,15 +144,13 @@ async function onScheduleBlueprintTypeChange() {
     const type = document.getElementById('schedule-blueprint-type').value;
     const select = document.getElementById('schedule-blueprint-select');
     const blueprintSelectContainer = select.parentElement;
-    const agenticOptions = document.getElementById('schedule-agentic-options');
     const timesketchOptions = document.getElementById('schedule-timesketch-options');
 
     // Show/hide type-specific options
-    agenticOptions.classList.add('hidden');
     timesketchOptions.classList.add('hidden');
 
     if (type === 'agentic') {
-        agenticOptions.classList.remove('hidden');
+        // Agentic is collection-only now — no per-job LLM options.
         blueprintSelectContainer.classList.remove('hidden');
     } else if (type === 'timesketch') {
         timesketchOptions.classList.remove('hidden');
@@ -232,20 +230,6 @@ function showNewScheduleModal() {
 
     // Reset checkboxes
     document.querySelectorAll('.schedule-client-cb').forEach(cb => cb.checked = false);
-    document.getElementById('schedule-anonymize').checked = false;
-
-    // Reset time filter options
-    const timeFilterToggle = document.getElementById('schedule-time-filter-toggle');
-    if (timeFilterToggle) timeFilterToggle.checked = false;
-    const timeFilterDetails = document.getElementById('schedule-time-filter-details');
-    if (timeFilterDetails) timeFilterDetails.classList.add('hidden');
-    document.querySelector('input[name="schedule-time-mode"][value="relative"]')?.click();
-    const timeRelRange = document.getElementById('schedule-time-relative-range');
-    if (timeRelRange) timeRelRange.value = '7d';
-    const timeStart = document.getElementById('schedule-time-start');
-    if (timeStart) timeStart.value = '';
-    const timeEnd = document.getElementById('schedule-time-end');
-    if (timeEnd) timeEnd.value = '';
 
     // Reset Timesketch options
     document.getElementById('schedule-kape-target').value = 'KapeTriage';
@@ -258,61 +242,6 @@ function showNewScheduleModal() {
 function closeScheduleModal() {
     document.getElementById('schedule-modal').classList.add('hidden');
     stopUtcClock();
-}
-
-// Toggle scheduler time filter visibility
-function toggleScheduleTimeFilter() {
-    const toggle = document.getElementById('schedule-time-filter-toggle');
-    const details = document.getElementById('schedule-time-filter-details');
-    if (details) {
-        details.classList.toggle('hidden', !toggle?.checked);
-    }
-}
-
-// Store scheduler Flatpickr instances
-let scheduleFpStart = null;
-let scheduleFpEnd = null;
-
-// Initialize scheduler date pickers
-function initScheduleDatePickers() {
-    if (typeof flatpickr === 'undefined') return;
-
-    const startEl = document.getElementById('schedule-time-start');
-    const endEl = document.getElementById('schedule-time-end');
-
-    if (!startEl || !endEl) return;
-    if (startEl._flatpickr) return;
-
-    const config = {
-        enableTime: true,
-        time_24hr: true,
-        dateFormat: "Y-m-d H:i",
-        disableMobile: true,
-        allowInput: false,
-        clickOpens: true,
-        animate: true,
-        position: "below"
-    };
-
-    scheduleFpStart = flatpickr(startEl, config);
-    scheduleFpEnd = flatpickr(endEl, config);
-}
-
-// Toggle scheduler time filter mode (relative vs between)
-function toggleScheduleTimeMode() {
-    const mode = document.querySelector('input[name="schedule-time-mode"]:checked')?.value || 'relative';
-    const relativeDiv = document.getElementById('schedule-time-relative');
-    const betweenDiv = document.getElementById('schedule-time-between');
-
-    if (mode === 'relative') {
-        relativeDiv?.classList.remove('hidden');
-        betweenDiv?.classList.add('hidden');
-    } else {
-        relativeDiv?.classList.add('hidden');
-        betweenDiv?.classList.remove('hidden');
-        // Initialize Flatpickr for scheduler
-        initScheduleDatePickers();
-    }
 }
 
 // Edit existing schedule
@@ -351,36 +280,6 @@ async function editSchedule(jobId) {
                 cb.checked = clientIds.includes(cb.value);
             });
         } catch (e) {}
-
-        // Set agentic options
-        document.getElementById('schedule-anonymize').checked = job.anonymize_data == 1;
-
-        // Set time filter options (for agentic jobs)
-        const timeFilterToggle = document.getElementById('schedule-time-filter-toggle');
-        if (timeFilterToggle) {
-            timeFilterToggle.checked = job.time_filter_enabled == 1;
-            toggleScheduleTimeFilter();
-
-            if (job.time_filter_enabled == 1) {
-                const mode = job.time_filter_mode || 'relative';
-                document.querySelector(`input[name="schedule-time-mode"][value="${mode}"]`)?.click();
-
-                if (mode === 'relative') {
-                    const relRange = document.getElementById('schedule-time-relative-range');
-                    if (relRange) relRange.value = job.time_filter_relative_range || '7d';
-                } else {
-                    // Parse ISO dates back to datetime-local format
-                    const timeStart = document.getElementById('schedule-time-start');
-                    const timeEnd = document.getElementById('schedule-time-end');
-                    if (timeStart && job.time_filter_start) {
-                        timeStart.value = job.time_filter_start.slice(0, 16);  // YYYY-MM-DDTHH:MM
-                    }
-                    if (timeEnd && job.time_filter_end) {
-                        timeEnd.value = job.time_filter_end.slice(0, 16);
-                    }
-                }
-            }
-        }
 
         // Set timesketch options
         if (job.blueprint_type === 'timesketch') {
@@ -442,27 +341,9 @@ async function saveScheduleFromModal() {
         client_ids: clientIds
     };
 
-    // Agentic-specific options
+    // Agentic runs are collection-only — no LLM report at the module level.
     if (blueprintType === 'agentic') {
-        payload.report_types = ['technical'];
-        payload.anonymize_data = document.getElementById('schedule-anonymize').checked;
-
-        // Time filter options
-        const timeFilterEnabled = document.getElementById('schedule-time-filter-toggle')?.checked || false;
-        if (timeFilterEnabled) {
-            const mode = document.querySelector('input[name="schedule-time-mode"]:checked')?.value || 'relative';
-            payload.time_filter_enabled = true;
-            payload.time_filter_mode = mode;
-
-            if (mode === 'relative') {
-                payload.time_filter_relative_range = document.getElementById('schedule-time-relative-range')?.value || '7d';
-            } else {
-                const startVal = document.getElementById('schedule-time-start')?.value;
-                const endVal = document.getElementById('schedule-time-end')?.value;
-                payload.time_filter_start = startVal ? new Date(startVal).toISOString() : null;
-                payload.time_filter_end = endVal ? new Date(endVal).toISOString() : null;
-            }
-        }
+        payload.report_types = [];
     }
 
     try {

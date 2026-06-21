@@ -367,8 +367,6 @@ document.addEventListener('alpine:init', () => {
                 upgrade: 'bg-red-700',
                 support_bundle: 'bg-red-700',
                 maintenance: 'bg-red-700',
-                // Customer-facing reporting
-                engagement_report: 'bg-yellow-600',
             };
             return colors[type] || 'bg-slate-700';
         },
