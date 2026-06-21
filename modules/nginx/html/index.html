@@ -345,7 +345,7 @@
                  class="flex items-center gap-3 mb-5 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700"></div>
 
             <!-- Case Management Tab — create / switch / delete workspaces only. -->
-            <div x-show="$store.app.currentTab === 'cases'" x-transition class="tab-content">
+            <div x-show="$store.app.currentTab === 'cases'" x-transition class="tab-panel">
                 <div class="mb-4">
                     <h2 class="text-3xl font-bold text-white">Case Management</h2>
                     <p class="text-gray-400 mt-1 text-sm">Create, switch, and delete workspaces.</p>
@@ -355,7 +355,7 @@
             </div>
 
             <!-- Case Analysis Tab — the fused report/advisory/timeline/chat for the active workspace. -->
-            <div x-show="$store.app.currentTab === 'case-analysis'" x-transition class="tab-content">
+            <div x-show="$store.app.currentTab === 'case-analysis'" x-transition class="tab-panel">
                 <div class="mb-4">
                     <h2 class="text-3xl font-bold text-white">Case Analysis</h2>
                     <p class="text-gray-400 mt-1 text-sm">Fused report, advisory, timeline &amp; chat for the active workspace.</p>
@@ -365,7 +365,7 @@
             </div>
 
             <!-- Dashboard Tab -->
-            <div x-show="$store.app.currentTab === 'dashboard'" x-transition class="tab-content">
+            <div x-show="$store.app.currentTab === 'dashboard'" x-transition class="tab-panel">
                 <div class="mb-8">
                     <h2 class="text-3xl font-bold text-white">Dashboard</h2>
                     <p class="text-gray-400 mt-1 text-sm">Real-time system overview and security operations status</p>
@@ -675,7 +675,7 @@
             </div>
 
             <!-- Workflows Tab -->
-            <div x-show="$store.app.currentTab === 'workflows'" x-transition class="tab-content">
+            <div x-show="$store.app.currentTab === 'workflows'" x-transition class="tab-panel">
                 <div class="mb-6">
                     <h2 class="text-3xl font-bold text-white">Workflow Runs</h2>
                     <!-- Subtitle + controls share the same row, vertically
@@ -833,7 +833,7 @@
             </div>
 
             <!-- Downloads Tab -->
-            <div x-show="$store.app.currentTab === 'downloads'" x-transition class="tab-content">
+            <div x-show="$store.app.currentTab === 'downloads'" x-transition class="tab-panel">
                 <h2 class="text-3xl font-bold text-white mb-2">Client Downloads</h2>
                 <p class="text-gray-400 mb-6">Download Velociraptor client installers</p>
 
@@ -1117,7 +1117,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
             </div>
 
             <!-- Velociraptor Tab -->
-            <div x-show="$store.app.currentTab === 'modules-forensics'" x-transition class="tab-content" x-data="{ forensicsTab: 'collections', forensicsMode: 'ai' }" x-init="$watch('$store.app.currentTab', val => val === 'modules-forensics' && initForensicsTab('ai'))">
+            <div x-show="$store.app.currentTab === 'modules-forensics'" x-transition class="tab-panel" x-data="{ forensicsTab: 'collections', forensicsMode: 'ai' }" x-init="$watch('$store.app.currentTab', val => val === 'modules-forensics' && initForensicsTab('ai'))">
                 <div class="flex items-center justify-between mb-2">
                     <h2 class="text-3xl font-bold text-white">Velociraptor</h2>
                 </div>
@@ -1516,7 +1516,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
             </div>
 
             <!-- TimeSketch Tab -->
-            <div x-show="$store.app.currentTab === 'modules-timesketch'" x-transition class="tab-content">
+            <div x-show="$store.app.currentTab === 'modules-timesketch'" x-transition class="tab-panel">
                 <h2 class="text-3xl font-bold text-white mb-2">TimeSketch Automation</h2>
                 <p class="text-gray-400 mb-6">Collect forensic artifacts and create investigation timelines</p>
 
@@ -1685,7 +1685,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
             <!-- CVE Scan Tab — port of the nvd_check side project. Two modes:
                  manual CSV upload (drop the 4 Velociraptor exports), or pull
                  from a Velociraptor flow/hunt that ran the 4 required artifacts. -->
-            <div x-show="$store.app.currentTab === 'modules-cve-scan'" x-transition class="tab-content">
+            <div x-show="$store.app.currentTab === 'modules-cve-scan'" x-transition class="tab-panel">
                 <h2 class="text-3xl font-bold text-white mb-2">CVE Scan</h2>
 
                 <!-- Stopped-Velociraptor warning: CVE Scan's "from Velociraptor"
@@ -1845,7 +1845,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                  no advanced section: pick a mode, pick a client, set an
                  investigation name (auto-defaults to "Memory YYYY-MM-DD"),
                  hit Acquire & Analyze. -->
-            <div x-show="$store.app.currentTab === 'modules-memory'" x-transition class="tab-content">
+            <div x-show="$store.app.currentTab === 'modules-memory'" x-transition class="tab-panel">
                 <div class="flex items-center justify-between mb-2">
                     <h2 class="text-3xl font-bold text-white">Memory Forensics</h2>
                 </div>
@@ -2088,7 +2088,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
             </div>
 
             <!-- Blueprints Tab -->
-            <div x-show="$store.app.currentTab === 'blueprints'" x-transition class="tab-content">
+            <div x-show="$store.app.currentTab === 'blueprints'" x-transition class="tab-panel">
                 <div class="flex items-center justify-between mb-6">
                     <div>
                         <h2 class="text-3xl font-bold text-white mb-2">Blueprints</h2>
@@ -2379,7 +2379,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
                 </div>
             </div>
             <!-- Scheduler Tab -->
-            <div x-show="$store.app.currentTab === 'scheduler'" x-transition class="tab-content" x-init="$watch('$store.app.currentTab', val => val === 'scheduler' && initScheduler())">
+            <div x-show="$store.app.currentTab === 'scheduler'" x-transition class="tab-panel" x-init="$watch('$store.app.currentTab', val => val === 'scheduler' && initScheduler())">
                 <div class="flex items-center justify-between mb-2">
                     <div>
                         <h2 class="text-3xl font-bold text-white">Scheduler</h2>
@@ -2533,7 +2533,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
             </div>
 
             <!-- Cloud AWS Tab -->
-            <div x-show="$store.app.currentTab === 'cloud-aws'" x-transition class="tab-content"
+            <div x-show="$store.app.currentTab === 'cloud-aws'" x-transition class="tab-panel"
                  x-data="{
                      awsMode: 'online',
                      awsStatus: null,
@@ -2890,7 +2890,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
             </div>
 
             <!-- Cloud Azure Tab -->
-            <div x-show="$store.app.currentTab === 'cloud-azure'" x-transition class="tab-content"
+            <div x-show="$store.app.currentTab === 'cloud-azure'" x-transition class="tab-panel"
                  x-data="{
                      azureMode: 'online',
                      azureStatus: null,
@@ -3282,7 +3282,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
             </div>
 
             <!-- Settings Tab -->
-            <div x-show="$store.app.currentTab === 'settings'" x-transition class="tab-content">
+            <div x-show="$store.app.currentTab === 'settings'" x-transition class="tab-panel">
                 <div class="flex justify-between items-center mb-6">
                     <div>
                         <h2 class="text-3xl font-bold text-white mb-1">Settings</h2>
