@@ -63,6 +63,10 @@ class TusUploader {
             filename: file.name,
             filetype: file.type || 'application/zip',
             purpose: this.purpose,
+            // Tag the upload to the browser's active workspace. tus uses its own
+            // XHR (bypassing the window.fetch X-Case-Id hook), so the case must
+            // ride in the upload metadata for the tusd hook to tag the run.
+            case_id: (window.ActiveCase && window.ActiveCase.get && window.ActiveCase.get()) || '',
             ...this.metadata
         };
 

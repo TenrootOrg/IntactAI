@@ -140,6 +140,12 @@ def handle_tus_hook():
             workflow_type = f"{purpose}_upload"
             workflow_name = f"Upload: {filename}"
 
+            # tusd webhooks are server-to-server and don't carry the browser's
+            # X-Case-Id header, so the active workspace rides in the upload
+            # metadata (set by js/upload.js). Pass it through explicitly so the
+            # run is tagged to the workspace the operator uploaded from.
+            case_id = (metadata.get('case_id') or '').strip() or None
+
             run_id = create_automation_run(
                 workflow_type,
                 workflow_name,
@@ -151,7 +157,8 @@ def handle_tus_hook():
                     "size_mb": round(size_mb, 2),
                     "sketch_name": metadata.get('sketch_name', ''),
                     "plaso_parser": metadata.get('plaso_parser', ''),
-                }
+                },
+                case_id=case_id,
             )
 
             # Store mapping for post-finish
