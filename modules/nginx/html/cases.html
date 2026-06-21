@@ -169,7 +169,11 @@ async function refreshSelector(){
 function openCase(id){
   sel=id; loadCases();
   Promise.all([api('/api/cases/'+id),api('/api/cases/'+id+'/report'),api('/api/cases/'+id+'/graph')])
-   .then(([info,rep,gr])=>{render(info,rep.report_md||'',gr.fusion_graph||{});});
+   .then(([info,rep,gr])=>{
+     // fold the report meta (audience/branding/master-prompt) into info for the controls
+     info.audience=rep.audience||'both'; info.customer_name=rep.customer_name||'';
+     info.tlp=rep.tlp||'AMBER'; info.has_logo=!!rep.has_logo; info.master_prompt=rep.master_prompt||'';
+     render(info,rep.report_md||'',gr.fusion_graph||{});});
 }
 
 function statline(g){
@@ -222,11 +226,54 @@ function setTab(t){tab=t;drawTab(window._md||'');}
 function drawTab(md){
   if(md)window._md=md;
   const info=curInfo;
-  if(tab==='report') $('#tabc').innerHTML=`<div class="md">${mdToHtml(window._md||'')}</div>`;
+  if(tab==='report') renderReport(info);
   else if(tab==='advisory') renderAdvisory(info);
   else if(tab==='timeline') renderTimeline(info.case_id);
   else if(tab==='dispositions') renderDispositions(info);
   else renderChat(info.case_id);
+}
+function renderReport(info){
+  const id=info.case_id, aud=info.audience||'both';
+  const opt=(v,l)=>`<option value="${v}" ${aud===v?'selected':''}>${l}</option>`;
+  const ctrl=`<div class="row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:flex-end">
+    <div><label>Audience</label><select id="rep-aud" style="width:auto">
+      ${opt('both','Both (exec + technical)')}${opt('executive','Executive')}${opt('technical','Technical')}</select></div>
+    <div><label>Customer</label><input id="rep-cust" value="${esc(info.customer_name||'')}" placeholder="Acme Corp" style="width:160px"/></div>
+    <div><label>TLP</label><select id="rep-tlp" style="width:auto">
+      ${['CLEAR','GREEN','AMBER','AMBER+STRICT','RED'].map(t=>`<option ${info.tlp===t?'selected':''}>${t}</option>`).join('')}</select></div>
+    <div><label>Logo ${info.has_logo?'<span style="color:var(--ok)">✓</span>':''}</label>
+      <input id="rep-logo" type="file" accept="image/*" style="width:150px;padding:3px"/></div>
+    <button onclick="saveBrandingAndRegen('${id}')">↻ Generate</button>
+    <a class="ghost" style="text-decoration:none;padding:8px 12px;border:1px solid var(--bd);border-radius:6px" href="/api/cases/${id}/report/download" target="_blank">⬇ MD</a>
+    <a class="ghost" style="text-decoration:none;padding:8px 12px;border:1px solid var(--bd);border-radius:6px" href="/api/cases/${id}/report/download/pdf" target="_blank">⬇ PDF</a>
+  </div>
+  <div class="row" style="gap:8px;margin-bottom:12px;align-items:flex-end">
+    <div style="flex:1"><label>Steering / master-prompt <span style="color:var(--muted)">(what to remove / focus — applied on Generate)</span></label>
+      <textarea id="rep-mp" style="width:100%;min-height:46px">${esc(info.master_prompt||'')}</textarea></div>
+    <button class="ghost" onclick="saveMasterPrompt('${id}')">Save</button>
+    <button class="ghost" onclick="synthFromChat('${id}')" title="compress the Chat into a steering brief (needs a real LLM)">⤵ From chat</button>
+  </div>`;
+  $('#tabc').innerHTML=ctrl+`<div class="md">${mdToHtml(window._md||'')}</div>`;
+}
+function _fileToDataUrl(f){return new Promise(res=>{if(!f)return res(null);const r=new FileReader();r.onload=()=>res(r.result);r.readAsDataURL(f);});}
+async function saveBrandingAndRegen(id){
+  const logo=await _fileToDataUrl($('#rep-logo').files[0]);
+  const body={customer_name:$('#rep-cust').value,tlp:$('#rep-tlp').value,audience:$('#rep-aud').value};
+  if(logo) body.customer_logo_b64=logo;
+  await api('/api/cases/'+id+'/branding',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  toast('generating report…');
+  await api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({audience:$('#rep-aud').value})});
+  toast('report regenerated'); openCase(id);
+}
+function saveMasterPrompt(id){
+  api('/api/cases/'+id+'/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({master_prompt:$('#rep-mp').value})})
+   .then(_=>toast('steering saved — Generate to apply'));
+}
+function synthFromChat(id){toast('synthesizing from chat…');
+  fetch('/api/cases/'+id+'/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(async r=>{
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast(d.error||'synth failed (needs chat + real LLM)');return;}
+    $('#rep-mp').value=d.master_prompt||''; toast('steering drafted from chat');});
 }
 function renderAdvisory(info){
   const a=info.analysis||{}; const ig=a.incident_groups||[], hy=a.hypotheses||[];

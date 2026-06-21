@@ -8,7 +8,7 @@ services/fusion/store.py. Strictly additive; touches no existing pipeline.
 
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, Response
 
 from services.fusion import store, render
 from services.fusion.schema import FusionGraph
@@ -217,7 +217,79 @@ def report(case_id):
     d = store.get_case(case_id)
     if not d:
         return jsonify({"error": "case not found"}), 404
-    return jsonify({"case_id": case_id, "report_md": d.get("report_md") or ""})
+    return jsonify({"case_id": case_id, "report_md": d.get("report_md") or "",
+                    "audience": d.get("audience", "both"),
+                    "customer_name": d.get("customer_name", ""), "tlp": d.get("tlp", "AMBER"),
+                    "has_logo": bool(d.get("customer_logo_b64")),
+                    "master_prompt": d.get("master_prompt", "")})
+
+
+@case_bp.route("/api/cases/<case_id>/branding", methods=["POST"])
+def set_branding(case_id):
+    """Set report branding/options: customer_name, customer_logo_b64, tlp, audience, language."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    b = request.get_json(silent=True) or {}
+    saved = store.set_branding(
+        case_id, customer_name=b.get("customer_name"),
+        customer_logo_b64=b.get("customer_logo_b64"), tlp=b.get("tlp"),
+        audience=b.get("audience"), language=b.get("language"))
+    return jsonify({"case_id": case_id, "saved": saved})
+
+
+@case_bp.route("/api/cases/<case_id>/report", methods=["POST"])
+def regenerate_report(case_id):
+    """Re-narrate the report (+ advisory) at the chosen audience, applying the operator
+    master-prompt — cheap, from the stored graph (no re-collect)."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    b = request.get_json(silent=True) or {}
+    res = store.regenerate_report(case_id, audience=b.get("audience"))
+    return jsonify({"case_id": case_id, **res})
+
+
+@case_bp.route("/api/cases/<case_id>/synthesize", methods=["POST"])
+def synthesize(case_id):
+    """Compress the case chat into the master-prompt steering brief (needs a real LLM)."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    b = request.get_json(silent=True) or {}
+    if b.get("master_prompt") is not None:                 # hand-set (no LLM needed)
+        store.set_master_prompt(case_id, b["master_prompt"])
+        return jsonify({"case_id": case_id, "master_prompt": b["master_prompt"]})
+    try:
+        mp = store.synthesize_master_prompt(case_id)
+        return jsonify({"case_id": case_id, "master_prompt": mp})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:                                  # LLM unavailable, etc.
+        return jsonify({"error": f"synthesis failed: {e}"}), 503
+
+
+@case_bp.route("/api/cases/<case_id>/report/download", methods=["GET"])
+def report_download(case_id):
+    """Branded engagement-style markdown (cover + body)."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    md = store.engagement_markdown(case_id)
+    return Response(md, mimetype="text/markdown",
+                    headers={"Content-Disposition": f'attachment; filename="case_{case_id}.md"'})
+
+
+@case_bp.route("/api/cases/<case_id>/report/download/pdf", methods=["GET"])
+def report_download_pdf(case_id):
+    """Branded engagement-grade PDF (reuses the engagement WeasyPrint renderer)."""
+    d = store.get_case(case_id)
+    if not d:
+        return jsonify({"error": "case not found"}), 404
+    try:
+        from services.engagement.pdf import render_engagement_pdf
+        md = store.engagement_markdown(case_id)
+        pdf = render_engagement_pdf(md, case_id, logo_b64=d.get("customer_logo_b64") or "")
+    except Exception as e:
+        return jsonify({"error": f"pdf render failed: {e}"}), 503
+    return Response(pdf, mimetype="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="case_{case_id}.pdf"'})
 
 
 @case_bp.route("/api/cases/<case_id>/graph", methods=["GET"])

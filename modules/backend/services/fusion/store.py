@@ -357,7 +357,9 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     report = llm_sim.generate_report(
         g, window=window, min_severity=min_sev,
         initial_access=d.get("initial_access_estimate"),
-        case_name=d.get("name", "Case"), run_id=case_id)
+        case_name=d.get("name", "Case"), run_id=case_id,
+        audience=d.get("audience", "both"), language=d.get("language", "en"),
+        master_prompt=d.get("master_prompt"))
     # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored SEPARATELY
     # from the deterministic findings (never conflated); fed prior operator dispositions.
     analysis = llm_sim.analyze(g, window=window, min_severity=min_sev, run_id=case_id,
@@ -408,6 +410,103 @@ def watch_and_fuse(case_id, run_id, *, poll=10, timeout=10800) -> None:
 def load_graph(case_id) -> FusionGraph:
     d = get_case(case_id)
     return FusionGraph.from_dict(d.get("fusion_graph") or {"case_id": case_id})
+
+
+def _merge_case_details(case_id, patch) -> None:
+    """Merge a patch into the case details without disturbing its status."""
+    ws = _ws()
+    cur = (ws.get_automation_run(case_id) or {}).get("status") or "completed"
+    ws.update_run_status(case_id, cur, details=patch)
+
+
+# ---- engagement-grade reporting on the case (branding + audience + steering) ----
+
+_CASE_SYNTH_SYSTEM = (
+    "You are condensing a DFIR analyst's chat about an incident case into a short "
+    "briefing that the next report regeneration will read verbatim as ground truth. "
+    "Write flowing prose — a few short paragraphs, no bullets, no headings, no IDs. "
+    "Capture: which activity turned out to be legitimate/benign and why, what the "
+    "operator wants removed or de-emphasised, what to focus on, and environment "
+    "context that should colour the next pass (host ownership, what's normal here)."
+)
+
+
+def set_branding(case_id, *, customer_name=None, customer_logo_b64=None, tlp=None,
+                 audience=None, language=None) -> dict:
+    """Persist report branding/options on the case (logo, customer, TLP, audience)."""
+    patch = {}
+    for k, v in (("customer_name", customer_name), ("customer_logo_b64", customer_logo_b64),
+                 ("tlp", tlp), ("audience", audience), ("language", language)):
+        if v is not None:
+            patch[k] = v
+    if patch:
+        _merge_case_details(case_id, patch)
+    return {k: ("<logo>" if k == "customer_logo_b64" else v) for k, v in patch.items()}
+
+
+def set_master_prompt(case_id, text) -> None:
+    """Hand-set the operator steering brief (works without an LLM)."""
+    _merge_case_details(case_id, {"master_prompt": (text or "").strip()})
+
+
+def synthesize_master_prompt(case_id) -> str:
+    """Compress the case chat into a master-prompt brief (needs a real LLM). Stores +
+    returns it. Raises on no-chat / LLM failure (route surfaces the error)."""
+    d = get_case(case_id)
+    msgs = d.get("chat_messages") or []
+    if not msgs:
+        raise ValueError("no chat history to synthesise — chat about the case first")
+    from services.agentic.analyzers import call_llm
+    from services.memory.pipeline import _llm_config_from_runtime
+    transcript = json.dumps(msgs, indent=2, default=str)
+    user = (f"Chat transcript:\n```json\n{transcript[:80000]}\n```\n\n"
+            "Write the briefing as described — flowing prose, no bullets/headings.")
+    master = call_llm(user, _CASE_SYNTH_SYSTEM, _llm_config_from_runtime(), run_id=case_id)
+    master = (master or "").strip()
+    if not master:
+        raise RuntimeError("synthesis returned empty")
+    _merge_case_details(case_id, {"master_prompt": master})
+    return master
+
+
+def regenerate_report(case_id, *, audience=None) -> dict:
+    """Re-narrate report + advisory from the STORED graph (no re-collect/re-fuse),
+    applying the case's audience + master_prompt. Cheap interactive regeneration."""
+    if audience:
+        set_branding(case_id, audience=audience)
+    d = get_case(case_id)
+    g = load_graph(case_id)
+    window = d.get("time_window") or None
+    min_sev = d.get("min_severity", "informational")
+    report = llm_sim.generate_report(
+        g, window=window, min_severity=min_sev,
+        initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
+        run_id=case_id, audience=d.get("audience", "both"), language=d.get("language", "en"),
+        master_prompt=d.get("master_prompt"))
+    analysis = llm_sim.analyze(g, window=window, min_severity=min_sev, run_id=case_id,
+                               dispositions=d.get("dispositions") or None)
+    _merge_case_details(case_id, {"report_md": report, "analysis": analysis})
+    return {"report_md": report, "audience": d.get("audience", "both")}
+
+
+def engagement_markdown(case_id) -> str:
+    """Branded full report markdown (engagement-style cover + report body) for MD/PDF
+    download. Reuses the engagement cover_block so the shared PDF renderer parses it."""
+    from datetime import datetime, timezone
+    from services.engagement.templates import cover_block
+    d = get_case(case_id)
+    ws = _ws()
+    sources = []
+    for rid in _members_for_case(case_id, d):
+        r = ws.get_automation_run(rid) or {}
+        sources.append({"run_id": rid, "name": r.get("name") or rid, "section": "",
+                        "automation_type": r.get("automation_type")})
+    cover = cover_block(d.get("name", "Case"),
+                        datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                        sources, tlp=d.get("tlp", "AMBER"), version=1,
+                        customer_name=d.get("customer_name", ""))
+    body = d.get("report_md") or "_No report yet — fuse the case first._"
+    return f"{cover}\n\n{body}"
 
 
 def chat_case(case_id, question) -> str:

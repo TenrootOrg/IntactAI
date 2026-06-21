@@ -145,16 +145,30 @@ _SIM_TAG = ("\n\n---\n_Narrative by the in-graph narrator (simulated — determi
 
 
 def generate_report(graph, *, window=None, min_severity="informational",
-                    initial_access=None, case_name="Case", run_id=None) -> str:
+                    initial_access=None, case_name="Case", run_id=None,
+                    audience="both", language="en", master_prompt=None) -> str:
     """Case report. Real path = LLM narrative over distilled() + deterministic
-    fact tables appended verbatim. Falls back to the deterministic narrator on any
-    failure (or when mode='simulated')."""
+    fact tables appended verbatim. `audience` (exec/technical/both) + `language`
+    tailor the narrative (reusing the engagement directive); `master_prompt` is the
+    operator's "remove X / focus Y" steering, prepended as ground truth. Falls back to
+    the deterministic narrator on any failure (or when mode='simulated')."""
     if _use_real():
         try:
             payload = render.distilled(graph, window=window, min_severity=min_severity,
                                        max_entities=budget.REPORT_MAX_ENTITIES,
                                        budget_chars=budget.REPORT_BUDGET_CHARS)
-            narrative = _real_llm(REPORT_SYSTEM_PROMPT, json.dumps(payload), run_id=run_id)
+            system = REPORT_SYSTEM_PROMPT
+            if (audience and audience != "both") or (language and language != "en"):
+                try:                              # reuse engagement audience/language tailoring
+                    from services.engagement.templates import audience_language_directive
+                    system = system + "\n\n" + audience_language_directive(audience, language)
+                except Exception:
+                    pass
+            if master_prompt:
+                system = ("## OPERATOR CONTEXT (from interactive validation) — treat as "
+                          "ground truth; apply the removals/focus described:\n"
+                          f"{master_prompt.strip()}\n\n---\n\n") + system
+            narrative = _real_llm(system, json.dumps(payload), run_id=run_id)
             facts = render.facts_md(graph, window=window, min_severity=min_severity,
                                     initial_access=initial_access)
             return (f"# Incident Case Report — {case_name}\n\n{narrative}\n\n{facts}"
