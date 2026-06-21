@@ -971,32 +971,6 @@
                     </div>
                 </div>
 
-                <script>
-                    // Grey out + disable each button whose bundled binary
-                    // isn't on disk yet (re-run install.sh to fix).
-                    fetch('/api/clients/legacy/status').then(r => r.json()).then(s => {
-                        if (!s || s.error) return;
-                        const grey = (btn, ready) => {
-                            if (!btn) return;
-                            if (!ready) {
-                                btn.classList.add('opacity-50', 'cursor-not-allowed');
-                                btn.removeAttribute('href');
-                                btn.title = `Bundled binary not present — re-run install.sh.`;
-                            }
-                        };
-                        // Legacy slots
-                        grey(document.getElementById('dl-legacy-btn'),
-                             s.binaries?.['windows-amd64']?.available);
-                        grey(document.getElementById('dl-legacy-linux-btn'),
-                             s.binaries?.['linux-amd64']?.available);
-                        // Modern musl: keyed off s.modern_musl (separate slot
-                        // since it tracks the MODERN pin's musl variant, not
-                        // the legacy pin's).
-                        grey(document.getElementById('dl-musl-btn'),
-                             s.modern_musl?.available);
-                    }).catch(() => {});
-                </script>
-
                 <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 max-w-3xl">
                     <h3 class="text-xl font-semibold text-white mb-4">Installation</h3>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
@@ -1028,23 +1002,6 @@
                                  or cmd (right-click -> Run as administrator). -->
                             <template id="win-cmd-install-msi">msiexec /i velociraptor_client.msi /qn</template>
                             <template id="win-cmd-uninstall">msiexec /x velociraptor_client.msi /qn</template>
-                            <script>
-                                if (!window.copyWinCmd) {
-                                    window.copyWinCmd = function(btn, tplId) {
-                                        const tpl = document.getElementById(tplId);
-                                        if (!tpl) return;
-                                        const text = tpl.innerHTML
-                                            .replace(/&lt;/g, '<')
-                                            .replace(/&gt;/g, '>')
-                                            .replace(/&amp;/g, '&');
-                                        navigator.clipboard.writeText(text).then(() => {
-                                            const orig = btn.textContent;
-                                            btn.textContent = 'Copied!';
-                                            setTimeout(() => { btn.textContent = orig; }, 1200);
-                                        });
-                                    };
-                                }
-                            </script>
                         </div>
                         <div class="flex flex-col">
                             <h4 class="text-lg font-semibold text-orange-400 mb-2">Linux</h4>
@@ -1094,23 +1051,6 @@ WantedBy=multi-user.target
 EOF
 sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client</template>
                             <template id="lx-cmd-uninstall">sudo systemctl disable --now velociraptor_client && sudo rm -f /etc/systemd/system/velociraptor_client.service /usr/local/bin/velociraptor /etc/velociraptor.writeback.yaml && sudo systemctl daemon-reload</template>
-                            <script>
-                                if (!window.copyLinuxCmd) {
-                                    window.copyLinuxCmd = function(btn, tplId) {
-                                        const tpl = document.getElementById(tplId);
-                                        if (!tpl) return;
-                                        const text = tpl.innerHTML
-                                            .replace(/&lt;/g, '<')
-                                            .replace(/&gt;/g, '>')
-                                            .replace(/&amp;/g, '&');
-                                        navigator.clipboard.writeText(text).then(() => {
-                                            const orig = btn.textContent;
-                                            btn.textContent = 'Copied!';
-                                            setTimeout(() => { btn.textContent = orig; }, 1200);
-                                        });
-                                    };
-                                }
-                            </script>
                         </div>
                     </div>
                 </div>
@@ -4390,141 +4330,11 @@ sudo systemctl daemon-reload && sudo systemctl enable --now velociraptor_client<
     <script src="js/cve-scan.js?v=8"></script>
     <script src="js/memory.js?v=8"></script>
     <script src="js/scheduler.js"></script>
-    <!-- Render the active-workspace selector + keep run lists scoped to it -->
-    <script>
-    function escWs(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-    async function renderTopWorkspace(bar) {
-        const { id, cases } = await window.ActiveCase.ensureActiveCase();
-        const active = (cases || []).find(c => c.case_id === id);
-        const name = active ? (active.name || active.case_id) : '—';
-        // Top bar = just the active workspace name, as a link to the Case Management tab.
-        bar.innerHTML =
-            `<span style="font-size:12px;color:#8b949e">Workspace:</span>
-             <a href="#cases" id="ws-link" style="color:#58a6ff;font-weight:600">${escWs(name)}</a>
-             <span style="font-size:12px;color:#8b949e">· manage ▸</span>`;
-        bar.querySelector('#ws-link').addEventListener('click', function (e) {
-            e.preventDefault();
-            if (window.Alpine) Alpine.store('app').switchTab('cases');
-        });
-    }
-    document.addEventListener('DOMContentLoaded', async function () {
-        const bar = document.getElementById('workspace-bar');
-        if (bar && window.ActiveCase) {
-            await renderTopWorkspace(bar);
-            // Refresh the name when the Case Management tab (a separate window) changes
-            // the active workspace — localStorage fires 'storage' cross-frame.
-            window.addEventListener('storage', function (e) {
-                if (e.key === 'activeCaseId') renderTopWorkspace(bar);
-            });
-        }
-    });
-    </script>
-    <!-- Azure date pickers -->
-    <script>
-    let azureFpStart = null, azureFpEnd = null;
-
-    function initAzureDatePickers() {
-        if (typeof flatpickr === 'undefined') return;
-        const startEl = document.getElementById('azure-date-start');
-        const endEl = document.getElementById('azure-date-end');
-        if (!startEl || !endEl) return;
-
-        // Destroy existing
-        if (azureFpStart) { azureFpStart.destroy(); azureFpStart = null; }
-        if (azureFpEnd) { azureFpEnd.destroy(); azureFpEnd = null; }
-
-        const config = {
-            dateFormat: "Y-m-d",
-            disableMobile: true,
-            allowInput: false,
-            clickOpens: true,
-            appendTo: document.body
-        };
-
-        setTimeout(() => {
-            azureFpStart = flatpickr(startEl, {
-                ...config,
-                onChange: (dates, str) => {
-                    updateAzureStartDateTime();
-                    if (azureFpEnd && dates[0]) azureFpEnd.set('minDate', dates[0]);
-                }
-            });
-            azureFpEnd = flatpickr(endEl, {
-                ...config,
-                onChange: (dates, str) => {
-                    updateAzureEndDateTime();
-                    if (azureFpStart && dates[0]) azureFpStart.set('maxDate', dates[0]);
-                }
-            });
-        }, 50);
-    }
-
-    function updateAzureStartDateTime() {
-        const dateEl = document.getElementById('azure-date-start');
-        const hourEl = document.getElementById('azure-time-start-hour');
-        const hiddenEl = document.getElementById('azure-time-start');
-        if (dateEl?.value && hourEl && hiddenEl) {
-            hiddenEl.value = dateEl.value + 'T' + hourEl.value + ':00:00Z';
-        }
-    }
-
-    function updateAzureEndDateTime() {
-        const dateEl = document.getElementById('azure-date-end');
-        const hourEl = document.getElementById('azure-time-end-hour');
-        const hiddenEl = document.getElementById('azure-time-end');
-        if (dateEl?.value && hourEl && hiddenEl) {
-            hiddenEl.value = dateEl.value + 'T' + hourEl.value + ':00:00Z';
-        }
-    }
-
-    // ---- AWS date pickers (mirror of the Azure pair above) -----------------
-    let awsFpStart = null, awsFpEnd = null;
-    function initAwsDatePickers() {
-        const startEl = document.getElementById('aws-date-start');
-        const endEl   = document.getElementById('aws-date-end');
-        if (!startEl || !endEl || typeof flatpickr === 'undefined') return;
-        if (awsFpStart && awsFpEnd) return; // already initialised
-        const config = {
-            dateFormat: 'Y-m-d',
-            allowInput: false,
-            maxDate: 'today',
-            theme: 'dark',
-        };
-        setTimeout(() => {
-            awsFpStart = flatpickr(startEl, {
-                ...config,
-                onChange: (dates) => { updateAwsStartDateTime(); if (awsFpEnd && dates[0]) awsFpEnd.set('minDate', dates[0]); }
-            });
-            awsFpEnd = flatpickr(endEl, {
-                ...config,
-                onChange: (dates) => { updateAwsEndDateTime(); if (awsFpStart && dates[0]) awsFpStart.set('maxDate', dates[0]); }
-            });
-        }, 50);
-    }
-    function updateAwsStartDateTime() {
-        const dateEl = document.getElementById('aws-date-start');
-        const hourEl = document.getElementById('aws-time-start-hour');
-        const hiddenEl = document.getElementById('aws-time-start');
-        if (dateEl?.value && hourEl && hiddenEl) {
-            hiddenEl.value = dateEl.value + 'T' + hourEl.value + ':00:00Z';
-        }
-    }
-    function updateAwsEndDateTime() {
-        const dateEl = document.getElementById('aws-date-end');
-        const hourEl = document.getElementById('aws-time-end-hour');
-        const hiddenEl = document.getElementById('aws-time-end');
-        if (dateEl?.value && hourEl && hiddenEl) {
-            hiddenEl.value = dateEl.value + 'T' + hourEl.value + ':00:00Z';
-        }
-    }
-
-    function getAzureCustomDates() {
-        return {
-            start: document.getElementById('azure-time-start')?.value || '',
-            end: document.getElementById('azure-time-end')?.value || ''
-        };
-    }
-    </script>
+    <!-- Extracted inline helpers (Phase C): downloads copy/availability,
+         active-workspace bar, AWS/Azure flatpickr pickers. -->
+    <script src="js/components/downloads.js?v=1"></script>
+    <script src="js/components/workspace-bar.js?v=1"></script>
+    <script src="js/components/cloud-datepickers.js?v=1"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).
