@@ -1,0 +1,332 @@
+            <div x-show="$store.app.currentTab === 'modules-forensics'" x-transition class="tab-panel" x-data="{ forensicsTab: 'collections', forensicsMode: 'ai' }" x-init="$watch('$store.app.currentTab', val => val === 'modules-forensics' && initForensicsTab('ai'))">
+                <div class="flex items-center justify-between mb-2">
+                    <h2 class="text-3xl font-bold text-white">Velociraptor</h2>
+                </div>
+
+                <!-- Stopped-container warning: surfaces when the operator
+                     enters this page but the backing container exists in
+                     stopped state. Hidden when running (the normal case)
+                     and hidden when 'not_installed' (the page wouldn't be
+                     reachable from the sidebar in that case anyway). -->
+                <div x-show="$store.services.statuses['velociraptor'] === 'stopped'"
+                     class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 mb-6 flex items-start gap-3">
+                    <svg class="w-6 h-6 text-yellow-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-yellow-200">Velociraptor is installed but stopped</p>
+                        <p class="text-sm text-yellow-100/80 mt-1">The Velociraptor server container exists but isn't running. Hunts, collections and the AI Analysis pipeline will fail until it's started. Run <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">docker start intact_velociraptor</code> on the host, or use <span class="text-yellow-200">Settings → System Maintenance</span> to restart it.</p>
+                    </div>
+                </div>
+
+                <!-- Internal Tabs: Collections | Offline Collectors -->
+                <div class="flex gap-1 border-b border-gray-700 mb-6">
+                    <button @click="forensicsTab = 'collections'"
+                        :class="forensicsTab === 'collections' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-gray-300'"
+                        class="px-4 py-2 text-sm font-medium -mb-px">
+                        Collections
+                    </button>
+                    <button @click="forensicsTab = 'offline'; loadOfflineCollectorBlueprints()"
+                        :class="forensicsTab === 'offline' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-gray-300'"
+                        class="px-4 py-2 text-sm font-medium -mb-px">
+                        Offline Collectors
+                    </button>
+                </div>
+
+                <!-- ==================== COLLECTIONS TAB ==================== -->
+                <div x-show="forensicsTab === 'collections'" class="max-w-3xl">
+                    <!-- Mode Toggle Buttons -->
+                    <div class="flex border-b border-gray-700 mb-4">
+                        <button id="forensics-mode-ai" @click="forensicsMode = 'ai'; setForensicsDefaultBlueprint('ai')"
+                            :class="forensicsMode === 'ai' ? 'border-b-2 border-purple-500 text-purple-400' : 'text-gray-400 hover:text-gray-200'"
+                            class="px-4 py-2 text-sm font-medium transition-colors">
+                            Collection
+                        </button>
+                        <button id="forensics-mode-raw" @click="forensicsMode = 'raw'; setForensicsDefaultBlueprint('raw')"
+                            :class="forensicsMode === 'raw' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'"
+                            class="px-4 py-2 text-sm font-medium transition-colors">
+                            Hunt
+                        </button>
+                    </div>
+                    <p class="text-gray-400 mb-6 text-sm" x-text="forensicsMode === 'raw' ? 'Run artifact hunts and collect raw data from clients' : 'Collect artifacts from clients (new or existing collection) — analysis happens at the case level'"></p>
+                    <!-- Collection Section -->
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4" x-data="{ collectionSource: 'new', existingId: '' }">
+                        <!-- Collection Source Radio (AI mode only) -->
+                        <div x-show="forensicsMode === 'ai'" class="mb-4">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Collection Source</label>
+                            <div class="flex gap-4">
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" name="collection-source" value="new" x-model="collectionSource"
+                                        class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                    <span class="text-sm text-gray-300">New Collection</span>
+                                </label>
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" name="collection-source" value="existing" x-model="collectionSource"
+                                        class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                    <span class="text-sm text-gray-300">Existing Collection</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Raw mode title -->
+                        <h3 x-show="forensicsMode === 'raw'" class="text-lg font-semibold text-white mb-4">New Hunt</h3>
+
+                        <div class="space-y-4">
+                            <!-- Blueprint (only for new collection) -->
+                            <div x-show="collectionSource === 'new' || forensicsMode === 'raw'">
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Blueprint</label>
+                                <div class="flex items-center gap-3">
+                                    <select id="forensics-blueprint-select" onchange="onForensicsBlueprintChange(this.value)"
+                                        class="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        <option value="">-- Select Blueprint --</option>
+                                    </select>
+                                    <span id="forensics-artifact-count" class="text-xs text-gray-500 whitespace-nowrap">0 artifacts</span>
+                                </div>
+                                <div id="forensics-blueprint-info" class="mt-2 bg-gray-900 rounded-lg p-3 border border-gray-700 hidden">
+                                    <p class="text-xs text-gray-400" id="forensics-bp-description"></p>
+                                    <div class="grid grid-cols-3 gap-3 mt-2 text-xs text-gray-400">
+                                        <div>Expiry: <span class="text-white" id="forensics-bp-expiry"></span></div>
+                                        <div>Timeout: <span class="text-white" id="forensics-bp-timeout"></span></div>
+                                        <div>CPU: <span class="text-white" id="forensics-bp-cpu"></span></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Clients picker — shown for new collections AND for existing
+                                 hunt-derived flows (`F.<base>.H`), where the analyst must
+                                 scope the analysis to one or more clients in the hunt.
+                                 Tightened to require BOTH F. prefix AND .H suffix so a
+                                 stale `existingId` like `H.xxx.H` doesn't keep the picker
+                                 visible after the user clears their input. -->
+                            <div x-show="forensicsMode === 'ai' && (collectionSource === 'new' || (collectionSource === 'existing' && existingId.startsWith('F.') && existingId.endsWith('.H')))">
+                                <div class="flex items-center justify-between mb-2">
+                                    <label class="block text-sm font-medium text-gray-300">Clients</label>
+                                    <div class="flex gap-2">
+                                        <button onclick="selectAllForensicsClients(true)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Select All</button>
+                                        <button onclick="selectAllForensicsClients(false)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">None</button>
+                                    </div>
+                                </div>
+                                <input type="text" id="forensics-client-search" placeholder="Filter clients by name..."
+                                    oninput="filterForensicsClients(this.value)"
+                                    class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-blue-500 focus:outline-none">
+                                <div id="forensics-client-list" class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
+                                    <p class="text-sm text-gray-500">Loading clients...</p>
+                                </div>
+                                <p x-show="collectionSource === 'existing' && existingId.startsWith('F.') && existingId.endsWith('.H')" class="text-xs text-purple-400 mt-1">
+                                    Hunt-derived flow detected (F.xxx.H) — pick the clients you want analyzed from this hunt.
+                                </p>
+                            </div>
+
+                            <!-- Existing Flow ID (AI mode, existing flow only) -->
+                            <div x-show="forensicsMode === 'ai' && collectionSource === 'existing'">
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Flow or Hunt ID</label>
+                                <!-- @input clears any stale client selection so changing the
+                                     ID (e.g. from F.xxx.H → H.xxx) doesn't carry the previous
+                                     picker selection into the next run. -->
+                                <input type="text" id="forensics-existing-id" x-model="existingId"
+                                    @input="onExistingIdChange($event.target.value)"
+                                    placeholder="F.C1234567890, H.ABC123..., or F.xxx.H (hunt-derived flow)"
+                                    class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-purple-500 focus:outline-none">
+                                <p class="text-xs text-gray-500 mt-1">Flow ID (<code>F.xxx</code>), Hunt ID (<code>H.xxx</code>), or hunt-derived flow (<code>F.xxx.H</code>) from a previous collection.</p>
+                            </div>
+
+                            <!-- Hunt Info (Raw mode only) -->
+                            <div x-show="forensicsMode === 'raw'" class="bg-gray-900 border border-gray-700 rounded-lg p-4 space-y-3">
+                                <div class="flex items-center gap-2 text-gray-300">
+                                    <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    </svg>
+                                    <span class="text-sm">Hunt will run on <strong>all online clients</strong></span>
+                                </div>
+                                <!-- One hunt per artifact (raw-mode only). Default: false = one
+                                     bundled hunt with all N artifacts (existing behavior). When
+                                     on: N separate Velociraptor hunts + N workflow rows so the
+                                     operator can monitor / cancel / re-run each artifact's hunt
+                                     independently. Useful when a single noisy artifact would
+                                     stall the whole bundle. -->
+                                <label class="flex items-start gap-2 cursor-pointer text-sm text-gray-300">
+                                    <input type="checkbox" id="forensics-per-artifact-toggle"
+                                           class="mt-0.5 w-4 h-4 rounded border-gray-700 bg-gray-800 text-blue-600 focus:ring-blue-500">
+                                    <span>
+                                        <strong>Dispatch one hunt per artifact</strong>
+                                        <span class="block text-xs text-gray-500 mt-0.5">
+                                            Creates N separate Velociraptor hunts + N workflow rows (one per artifact in the blueprint) instead of one bundled hunt. Easier to cancel / re-run / monitor a single artifact.
+                                        </span>
+                                    </span>
+                                </label>
+                            </div>
+
+                            <!-- Collection options (mode 'ai'): just the collection window.
+                                 All LLM-era filters (time/severity/anonymize/cross-client/IRIS/
+                                 external logs) were removed in P3 — analysis + masking + host/
+                                 time/severity scoping now live on the case console. -->
+                            <template x-if="forensicsMode === 'ai'">
+                                <div class="space-y-4 border-t border-gray-700 pt-4">
+                                    <!-- Collection Time (only for new collection) -->
+                                    <div x-show="collectionSource === 'new'">
+                                        <label class="block text-sm font-medium text-gray-300 mb-1">Collection Time</label>
+                                        <div class="flex items-center gap-2">
+                                            <input type="number" id="forensics-collection-time" value="30" min="1" max="1440"
+                                                class="w-24 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none">
+                                            <span class="text-sm text-gray-400">minutes</span>
+                                            <span class="text-xs text-gray-500 ml-2">(how long to let the hunt collect before it's finalized)</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- Start Button -->
+                        <button id="forensics-start-btn" onclick="startForensicsCollection()"
+                            class="w-full mt-4 px-4 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors"
+                            :class="forensicsMode === 'raw' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-purple-600 hover:bg-purple-700'">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            <span x-text="forensicsMode === 'raw' ? 'Run Hunt' : (collectionSource === 'existing' ? 'Ingest Existing Collection' : 'Start Collection')"></span>
+                        </button>
+                        <div id="forensics-status" class="mt-3 text-sm text-gray-400 hidden"></div>
+                    </div>
+                </div>
+
+                <!-- ==================== OFFLINE COLLECTORS TAB ==================== -->
+                <div x-show="forensicsTab === 'offline'" class="max-w-3xl">
+                    <p class="text-gray-400 mb-6 text-sm">Generate standalone collectors for air-gapped or offline systems, then import results for analysis</p>
+
+                    <!-- Generate/Import Sub-tabs -->
+                    <div class="flex gap-1 mb-4">
+                        <button onclick="switchOfflineTab('generate')" id="offline-tab-btn-generate" class="px-4 py-2 text-sm font-medium text-blue-400 border-b-2 border-blue-400">
+                            Generate
+                        </button>
+                        <button onclick="switchOfflineTab('import')" id="offline-tab-btn-import" class="px-4 py-2 text-sm font-medium text-gray-400 hover:text-gray-300">
+                            Import Results
+                        </button>
+                    </div>
+
+                    <!-- Generate Tab -->
+                    <div id="offline-tab-generate" class="offline-tab-content">
+                        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                            <p class="text-sm text-gray-400 mb-4">Generate a standalone executable that collects forensic artifacts without requiring network connectivity.</p>
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-2">Select Blueprint</label>
+                                    <select id="offline-gen-config" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-blue-500 focus:outline-none">
+                                        <option value="">Loading blueprints...</option>
+                                    </select>
+                                </div>
+                                <!-- Target build: one flat radio group, grouped
+                                     visually by OS. Each option encodes both the
+                                     OS and the binary variant ("os:variant"),
+                                     so submission is a single value lookup —
+                                     no JS filtering, no impossible combos. -->
+                                <div class="bg-gray-900/60 border border-gray-700 rounded-lg p-3 space-y-3">
+                                    <label class="block text-sm font-medium text-gray-300">Target build</label>
+
+                                    <!-- Windows -->
+                                    <div>
+                                        <div class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Windows</div>
+                                        <div class="flex flex-col gap-1 text-sm pl-2">
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="offline-gen-target" value="windows:standard" checked
+                                                       class="text-blue-600 bg-gray-800 border-gray-600 focus:ring-blue-500">
+                                                <span class="text-gray-300">Modern</span>
+                                                <span class="text-xs text-gray-500">(modern Windows — Server 2012+, Win 10/11)</span>
+                                            </label>
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="offline-gen-target" value="windows:legacy"
+                                                       class="text-purple-600 bg-gray-800 border-gray-600 focus:ring-purple-500">
+                                                <span class="text-purple-300">Legacy v0.7.x</span>
+                                                <span class="text-xs text-gray-500">(Server 2008 R2 / Win 7)</span>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <!-- Linux -->
+                                    <div>
+                                        <div class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Linux</div>
+                                        <div class="flex flex-col gap-1 text-sm pl-2">
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="offline-gen-target" value="linux:standard"
+                                                       class="text-blue-600 bg-gray-800 border-gray-600 focus:ring-blue-500">
+                                                <span class="text-gray-300">Modern</span>
+                                                <span class="text-xs text-gray-500">(modern glibc — Ubuntu 20.04+, RHEL 8+)</span>
+                                            </label>
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="offline-gen-target" value="linux:musl"
+                                                       class="text-orange-600 bg-gray-800 border-gray-600 focus:ring-orange-500">
+                                                <span class="text-orange-300">Musl-static</span>
+                                                <span class="text-xs text-gray-500">(any glibc, any kernel ≥ 2.6.32 — CentOS 7, Sophos UTM)</span>
+                                            </label>
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="offline-gen-target" value="linux:legacy"
+                                                       class="text-purple-600 bg-gray-800 border-gray-600 focus:ring-purple-500">
+                                                <span class="text-purple-300">Legacy v0.7.x</span>
+                                                <span class="text-xs text-gray-500">(very old glibc / kernel)</span>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <!-- macOS -->
+                                    <div>
+                                        <div class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">macOS</div>
+                                        <div class="flex flex-col gap-1 text-sm pl-2">
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="offline-gen-target" value="darwin:standard"
+                                                       class="text-blue-600 bg-gray-800 border-gray-600 focus:ring-blue-500">
+                                                <span class="text-gray-300">Modern</span>
+                                                <span class="text-xs text-gray-500">(Intel x86_64 — Velociraptor doesn't ship a darwin-arm64 yet)</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+                                <button onclick="generateOfflineCollector()" class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-3 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                                    </svg>
+                                    Generate Collector
+                                </button>
+                                <div id="offline-gen-status" class="text-sm text-gray-400 hidden"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Import Tab -->
+                    <div id="offline-tab-import" class="offline-tab-content hidden">
+                        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                            <p class="text-sm text-gray-400 mb-4">Upload the ZIP file generated by the offline collector. Results will be imported into Velociraptor.</p>
+                            <div class="space-y-4">
+                                <div id="offline-dropzone" class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-blue-500 transition-colors cursor-pointer">
+                                    <input type="file" id="offline-import-file" accept=".zip" class="hidden" onchange="handleOfflineFileSelect(event)">
+                                    <div class="text-gray-400">
+                                        <svg class="mx-auto h-12 w-12 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                        </svg>
+                                        <p id="offline-dropzone-text" class="text-sm font-medium">Click to select ZIP file or drag & drop</p>
+                                        <p class="text-xs text-gray-500 mt-1">Any file size supported (resumable upload)</p>
+                                    </div>
+                                </div>
+                                <!-- Upload Progress -->
+                                <div id="offline-upload-progress" class="hidden">
+                                    <div class="flex justify-between text-xs text-gray-400 mb-1">
+                                        <span id="offline-upload-filename"></span>
+                                        <span id="offline-upload-percent">0%</span>
+                                    </div>
+                                    <div class="bg-gray-700 rounded-full h-2.5">
+                                        <div id="offline-upload-bar" class="bg-gradient-to-r from-blue-500 to-blue-600 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                                    </div>
+                                    <p id="offline-upload-speed" class="text-xs text-gray-400 mt-1"></p>
+                                </div>
+                                <button onclick="importOfflineResults()" id="offline-import-btn" class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-3 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2" disabled>
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                    </svg>
+                                    Import Results
+                                </button>
+                                <div id="offline-import-status" class="text-sm text-gray-400 hidden"></div>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </div>

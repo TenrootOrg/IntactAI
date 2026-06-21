@@ -1,0 +1,1089 @@
+            <div x-show="$store.app.currentTab === 'settings'" x-transition class="tab-panel">
+                <div class="flex justify-between items-center mb-6">
+                    <div>
+                        <h2 class="text-3xl font-bold text-white mb-1">Settings</h2>
+                        <p class="text-gray-400">Configure system settings</p>
+                    </div>
+                </div>
+
+                <!-- Status Message -->
+                <div x-show="$store.settings.message" x-transition class="text-sm mb-4 p-3 rounded"
+                     :class="$store.settings.messageType === 'success' ? 'bg-green-900 text-green-300' : $store.settings.messageType === 'error' ? 'bg-red-900 text-red-300' : 'bg-blue-900 text-blue-300'"
+                     x-text="$store.settings.message">
+                </div>
+
+                <!-- Settings Tabs -->
+                <div x-data="{ settingsTab: 'general' }" class="space-y-4">
+                    <!-- Tab Navigation -->
+                    <div class="flex border-b border-gray-700">
+                        <button @click="settingsTab = 'general'" :class="settingsTab === 'general' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
+                            General
+                        </button>
+                        <button @click="settingsTab = 'agentic'" :class="settingsTab === 'agentic' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
+                            Agentic
+                        </button>
+                        <button @click="settingsTab = 'timesketch'" :class="settingsTab === 'timesketch' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
+                            Timesketch
+                        </button>
+                        <button @click="settingsTab = 'cloud'" :class="settingsTab === 'cloud' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
+                            Cloud
+                        </button>
+                        <button @click="settingsTab = 'cve_scan'" :class="settingsTab === 'cve_scan' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
+                            CVE Scan
+                        </button>
+                    </div>
+
+                    <!-- General Tab -->
+                    <div x-show="settingsTab === 'general'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <h3 class="text-lg font-semibold text-white mb-4">General Settings</h3>
+
+                        <!-- System Operations -->
+                        <div class="space-y-4">
+                            <!-- Maintenance -->
+                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div>
+                                    <h4 class="text-white font-medium">System Maintenance</h4>
+                                    <p class="text-gray-400 text-sm">Re-import Velociraptor artifacts, refresh tool inventory, refresh DFIR skills, and run a health check.</p>
+                                </div>
+                                <button @click="$store.settings.runMaintenance()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                                    </svg>
+                                    <span x-text="$store.settings.saving ? 'Running...' : 'Maintenance'"></span>
+                                </button>
+                            </div>
+
+                            <!-- Generate Support Bundle -->
+                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div>
+                                    <h4 class="text-white font-medium">Generate Support Bundle</h4>
+                                    <p class="text-gray-400 text-sm">Collect docker logs, nginx access/error files, every workflow run, and compose configs into a single ZIP for support. Sensitive .env values are redacted.</p>
+                                </div>
+                                <button @click="$store.settings.generateSupportBundle()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                    </svg>
+                                    <span x-text="$store.settings.saving ? 'Starting...' : 'Generate Bundle'"></span>
+                                </button>
+                            </div>
+
+                            <!-- Online Upgrade (combined prepare + apply, no tar.gz round-trip) -->
+                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div>
+                                    <h4 class="text-white font-medium">Online Upgrade</h4>
+                                    <p class="text-gray-400 text-sm">Internet-connected: download modules &amp; apply in one workflow. Skips the intermediate package file.</p>
+                                </div>
+                                <button @click="$store.settings.openOnlineUpgradeModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                    </svg>
+                                    <span>Online Upgrade</span>
+                                </button>
+                            </div>
+
+                            <!-- Prepare Upgrade Package -->
+                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div>
+                                    <h4 class="text-white font-medium">Prepare Upgrade Package</h4>
+                                    <p class="text-gray-400 text-sm">Download and package modules for air-gapped transfer</p>
+                                </div>
+                                <button @click="$store.settings.openPreparePackageModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path>
+                                    </svg>
+                                    <span>Prepare Package</span>
+                                </button>
+                            </div>
+
+                            <!-- Import Upgrade Package — single-click flow.
+                                 Tus upload runs silently in the background;
+                                 when it finishes the review modal pops up
+                                 so the operator picks which modules from the
+                                 manifest to actually apply. No auto-apply. -->
+                            <div class="p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div class="flex items-center justify-between mb-3">
+                                    <div>
+                                        <h4 class="text-white font-medium">Import Upgrade Package</h4>
+                                        <p class="text-gray-400 text-sm">Upload a prepared tarball; after upload, pick which modules to apply.</p>
+                                    </div>
+                                    <input type="file" id="upgrade-package-input" accept=".tar.gz,.tgz" class="hidden" @change="$store.settings.importUpgradePackage($event)">
+                                    <button @click="document.getElementById('upgrade-package-input').click()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                        </svg>
+                                        <span>Import Package</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Apply Uploaded Package modal -->
+                            <div x-show="$store.settings.showApplyPackageModal"
+                                 x-transition:enter="transition ease-out duration-200"
+                                 x-transition:enter-start="opacity-0"
+                                 x-transition:enter-end="opacity-100"
+                                 class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+                                 @click.self="$store.settings.closeApplyPackageModal()"
+                                 @keydown.escape.window="$store.settings.showApplyPackageModal && $store.settings.closeApplyPackageModal()">
+                                <div class="bg-gray-800 rounded-lg p-6 w-full max-w-lg border border-gray-700 shadow-xl max-h-[90vh] flex flex-col" @click.stop>
+                                    <div class="flex items-center justify-between mb-4">
+                                        <h3 class="text-xl font-bold text-white">Apply Uploaded Package</h3>
+                                        <button @click="$store.settings.closeApplyPackageModal()" class="text-gray-400 hover:text-white">
+                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                        </button>
+                                    </div>
+                                    <div class="flex-1 overflow-y-auto -mx-2 px-2">
+                                        <div x-show="$store.settings.loadingApplyInfo" class="text-gray-400 text-sm py-4">Loading manifest…</div>
+                                        <div x-show="!$store.settings.loadingApplyInfo && $store.settings.applyManifest" class="space-y-4">
+                                            <div class="bg-gray-900 rounded border border-gray-700 p-3">
+                                                <div class="text-gray-400 text-xs uppercase tracking-wide mb-1">Package</div>
+                                                <div class="text-white text-sm font-mono break-all" x-text="$store.settings.applyPackage?.name"></div>
+                                                <div class="text-gray-500 text-xs mt-1"
+                                                     x-text="'Built: ' + ($store.settings.applyManifest?.created || 'unknown')"></div>
+                                            </div>
+                                            <div class="bg-gray-900 rounded border border-gray-700 p-3">
+                                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">Review &amp; confirm</label>
+
+                                                <!-- Forced rows: installed modules — upgrade / downgrade / no-change.
+                                                     Mirrors the online-upgrade modal's "Installed modules (will be
+                                                     upgraded automatically)" section: same border colors, same chip
+                                                     text, same no-checkbox layout. Downgrade is the only delta — the
+                                                     online flow can't produce one (resolver gates), the offline flow
+                                                     can if the operator imports an older package, so we flag it
+                                                     explicitly in orange. -->
+                                                <template x-if="Object.entries($store.settings.applyManifest?.versions || {}).some(([n, t]) => ['upgrade','downgrade','no-change','unknown'].includes($store.settings.applyModuleAction(n, t)))">
+                                                    <div class="mb-3">
+                                                        <div class="text-gray-400 text-xs mb-1">Installed modules (will be applied automatically):</div>
+                                                        <template x-for="(target, name) in ($store.settings.applyManifest?.versions || {})" :key="'forced-' + name">
+                                                            <template x-if="['upgrade','downgrade','no-change','unknown'].includes($store.settings.applyModuleAction(name, target))">
+                                                                <div class="flex items-center text-xs px-2 py-1.5 rounded border-l-2 mb-1"
+                                                                     :class="{
+                                                                       'border-gray-600 text-gray-500 bg-gray-800/30': $store.settings.applyModuleAction(name, target) === 'no-change',
+                                                                       'border-blue-500 text-gray-200 bg-gray-800':    $store.settings.applyModuleAction(name, target) === 'upgrade',
+                                                                       'border-orange-500 text-gray-200 bg-gray-800':  $store.settings.applyModuleAction(name, target) === 'downgrade',
+                                                                       'border-gray-700 text-gray-300 bg-gray-800':    $store.settings.applyModuleAction(name, target) === 'unknown',
+                                                                     }">
+                                                                    <span class="flex-1 font-mono" x-text="name"></span>
+                                                                    <span class="font-mono" x-text="$store.settings.applyCurrentVersions[name] || '?'"></span>
+                                                                    <span class="mx-2 text-gray-500">→</span>
+                                                                    <span class="font-mono" x-text="target"></span>
+                                                                    <span class="ml-3 text-xs uppercase"
+                                                                          :class="{
+                                                                            'text-gray-500':   $store.settings.applyModuleAction(name, target) === 'no-change',
+                                                                            'text-blue-400':   $store.settings.applyModuleAction(name, target) === 'upgrade',
+                                                                            'text-orange-400': $store.settings.applyModuleAction(name, target) === 'downgrade',
+                                                                            'text-gray-400':   $store.settings.applyModuleAction(name, target) === 'unknown',
+                                                                          }"
+                                                                          x-text="{
+                                                                            'no-change': '(no change)',
+                                                                            'upgrade':   'upgrade',
+                                                                            'downgrade': 'downgrade',
+                                                                            'unknown':   '?',
+                                                                          }[$store.settings.applyModuleAction(name, target)] || ''"></span>
+                                                                </div>
+                                                            </template>
+                                                        </template>
+                                                    </div>
+                                                </template>
+
+                                                <!-- Optional rows: modules not yet installed locally that the
+                                                     package can install on this host. Mirrors the online modal's
+                                                     "Optional new modules (tick to install on this host)" section. -->
+                                                <template x-if="Object.entries($store.settings.applyManifest?.versions || {}).some(([n, t]) => $store.settings.applyModuleAction(n, t) === 'install')">
+                                                    <div class="mb-3">
+                                                        <div class="text-gray-400 text-xs mb-1">Optional new modules (tick to install on this host):</div>
+                                                        <template x-for="(target, name) in ($store.settings.applyManifest?.versions || {})" :key="'install-' + name">
+                                                            <template x-if="$store.settings.applyModuleAction(name, target) === 'install'">
+                                                                <label class="flex items-center text-xs px-2 py-1.5 rounded border-l-2 border-yellow-600/60 bg-gray-800 cursor-pointer hover:bg-gray-700 mb-1">
+                                                                    <input type="checkbox"
+                                                                           :checked="$store.settings.applySelectedModules.includes(name)"
+                                                                           @change="$store.settings.toggleApplyModule(name)"
+                                                                           class="mr-3 w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500">
+                                                                    <span class="flex-1 font-mono" x-text="name"></span>
+                                                                    <span class="font-mono text-gray-500">not installed</span>
+                                                                    <span class="mx-2 text-gray-500">→</span>
+                                                                    <span class="font-mono" x-text="target"></span>
+                                                                    <span class="ml-3 text-xs uppercase text-yellow-400">install if ticked</span>
+                                                                </label>
+                                                            </template>
+                                                        </template>
+                                                    </div>
+                                                </template>
+
+                                                <!-- All-no-change empty state — every packaged module is already
+                                                     installed at the same version. Mirrors the online modal's
+                                                     "Nothing to do" string but adapted for the offline path. -->
+                                                <div x-show="!$store.settings.applySelectedModules.length && Object.entries($store.settings.applyManifest?.versions || {}).every(([n, t]) => $store.settings.applyModuleAction(n, t) === 'no-change')"
+                                                     class="text-gray-500 text-xs italic">Nothing to do — every module in this package is already at the installed version.</div>
+                                            </div>
+                                            <div class="bg-gray-900 rounded border border-red-700 p-3">
+                                                <p class="text-red-400 text-xs font-medium mb-1">⚠️ Fresh install — DELETES ALL DATA for the selected module</p>
+                                                <p class="text-gray-400 text-xs mb-2">Leave UNCHECKED for normal upgrades. Migrations preserve data. Only tick to wipe a module clean (every sketch / case / index gone).</p>
+                                                <div class="grid grid-cols-3 gap-3">
+                                                    <label class="flex items-center gap-2 p-2 rounded cursor-pointer hover:bg-gray-700">
+                                                        <input type="checkbox"
+                                                               :checked="$store.settings.applyDbOverwrite.timesketch === true"
+                                                               @change="$store.settings.applyDbOverwrite.timesketch = $event.target.checked"
+                                                               class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-red-500">
+                                                        <span class="text-gray-300 text-xs">Timesketch</span>
+                                                    </label>
+                                                    <label class="flex items-center gap-2 p-2 rounded cursor-pointer hover:bg-gray-700">
+                                                        <input type="checkbox"
+                                                               :checked="$store.settings.applyDbOverwrite.iris === true"
+                                                               @change="$store.settings.applyDbOverwrite.iris = $event.target.checked"
+                                                               class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-red-500">
+                                                        <span class="text-gray-300 text-xs">IRIS</span>
+                                                    </label>
+                                                    <label class="flex items-center gap-2 p-2 rounded cursor-pointer hover:bg-gray-700">
+                                                        <input type="checkbox"
+                                                               :checked="$store.settings.applyDbOverwrite.elk === true"
+                                                               @change="$store.settings.applyDbOverwrite.elk = $event.target.checked"
+                                                               class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-red-500">
+                                                        <span class="text-gray-300 text-xs">ELK</span>
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-700">
+                                        <button @click="$store.settings.closeApplyPackageModal()" class="px-4 py-2 text-gray-400 hover:text-white">Cancel</button>
+                                        <button @click="$store.settings.applyUploadedPackage()"
+                                                :disabled="$store.settings.applying || !$store.settings.applySelectedModules.length"
+                                                class="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 px-4 py-2 rounded text-sm font-medium">
+                                            <span x-show="!$store.settings.applying">Apply</span>
+                                            <span x-show="$store.settings.applying">Applying…</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- System Purge — section-aware. Operator clicks
+                                 the button, modal opens with per-section
+                                 sizes + checkboxes + a live total. Nothing
+                                 is purged until the operator submits a
+                                 non-empty selection. -->
+                            <div class="p-4 bg-gray-900 rounded-lg border border-red-900/50">
+                                <div class="flex items-center justify-between">
+                                    <div>
+                                        <h4 class="text-red-400 font-medium">System Purge</h4>
+                                        <p class="text-gray-400 text-sm">Reclaim disk by removing accumulated module data. Pick which sections to clear after seeing each one's size.</p>
+                                    </div>
+                                    <button @click="$store.settings.openPurgeModal()"
+                                            class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                        </svg>
+                                        <span>Purge…</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Purge modal — full-screen near-opaque overlay.
+                                 TELEPORTED to <body> via x-teleport so the
+                                 modal's stacking context isn't trapped inside
+                                 the <main> element (the sidebar uses
+                                 z-index: 9999 and was painting OVER the modal
+                                 because the modal's parent chain capped its
+                                 effective z-index). With teleport the modal
+                                 renders as a direct body child and the
+                                 inline z-index: 10000 actually wins. -->
+                            <template x-teleport="body">
+                            <div x-show="$store.settings.purgeModalOpen"
+                                 x-transition.opacity
+                                 style="z-index: 10000;"
+                                 class="fixed inset-0 bg-gray-950/95 flex items-center justify-center p-4"
+                                 @click.self="$store.settings.purgeModalOpen = false">
+                                <div style="max-width: 64rem;" class="bg-gray-900 border border-gray-700 rounded-lg shadow-2xl w-full max-h-[90vh] flex flex-col">
+                                    <div style="padding: 1rem 2.5rem;" class="border-b border-gray-700 flex items-center justify-between">
+                                        <div>
+                                            <h3 class="text-lg font-semibold text-red-400">System Purge — choose sections</h3>
+                                            <p class="text-xs text-gray-500">Tick the sections you want removed. Nothing is deleted until you click Purge.</p>
+                                        </div>
+                                        <button @click="$store.settings.purgeModalOpen = false"
+                                                class="text-gray-500 hover:text-gray-300 text-2xl leading-none">×</button>
+                                    </div>
+
+                                    <!-- Grand-total summary strip — shows live disk usage
+                                         across all modules so the operator sees the "if I tick
+                                         everything, what would I free?" number up-front. -->
+                                    <div style="padding: 0.75rem 2.5rem;" class="border-b border-gray-700 bg-gray-800/40 flex items-center justify-between">
+                                        <div class="text-sm text-gray-300">
+                                            <span class="text-gray-500">Total disk usage across all modules:</span>
+                                            <span class="font-mono text-base text-gray-100 ml-2"
+                                                  x-text="$store.settings.purgeGrandTotalLabel()"></span>
+                                        </div>
+                                        <div class="flex gap-2">
+                                            <button @click="$store.settings.purgeSelectAll(true)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">All</button>
+                                            <button @click="$store.settings.purgeSelectAll(false)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">None</button>
+                                            <button @click="$store.settings.refreshPurgeSizes()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Refresh</button>
+                                        </div>
+                                    </div>
+
+                                    <div style="padding: 0.5rem 2.5rem;" class="border-b border-gray-800 text-xs text-gray-500">
+                                        <span x-show="$store.settings.purgeScanning">Scanning module sizes…</span>
+                                        <span x-show="!$store.settings.purgeScanning && !$store.settings.purgeError">Click a row to toggle.</span>
+                                        <span x-show="$store.settings.purgeError" class="text-red-400" x-text="$store.settings.purgeError"></span>
+                                    </div>
+
+                                    <div style="padding: 1rem 2.5rem;" class="overflow-y-auto flex-1 space-y-2">
+                                        <template x-for="s in $store.settings.purgeSections" :key="s.id">
+                                            <label style="padding: 0.75rem 1.25rem;" class="flex items-center justify-between gap-4 bg-gray-800 rounded cursor-pointer hover:bg-gray-700/60">
+                                                <div class="flex items-center gap-3 min-w-0 flex-1">
+                                                    <input type="checkbox" :value="s.id" x-model="$store.settings.purgeSelected[s.id]"
+                                                           class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-red-500 focus:ring-red-500">
+                                                    <div class="min-w-0">
+                                                        <div class="text-sm text-gray-200" x-text="s.label"></div>
+                                                        <div class="text-xs text-gray-500 truncate" x-text="s.detail || '—'"></div>
+                                                    </div>
+                                                </div>
+                                                <div class="text-sm font-mono text-gray-300 whitespace-nowrap"
+                                                     :class="{'text-gray-600': s.size_bytes === 0}"
+                                                     x-text="s.size_label"></div>
+                                            </label>
+                                        </template>
+                                        <div x-show="!$store.settings.purgeScanning && !$store.settings.purgeSections.length"
+                                             class="text-sm text-gray-500 text-center py-6">No sections returned.</div>
+                                    </div>
+
+                                    <div style="padding: 1rem 2.5rem;" class="border-t border-gray-700 flex items-center justify-between">
+                                        <div class="text-sm text-gray-300">
+                                            <span x-text="$store.settings.purgeSelectedCount()"></span> section(s) selected —
+                                            <span class="font-medium text-emerald-400">~<span x-text="$store.settings.purgeSelectedTotalLabel()"></span></span>
+                                            will be freed
+                                        </div>
+                                        <div class="flex gap-2">
+                                            <button @click="$store.settings.purgeModalOpen = false"
+                                                    class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm">Cancel</button>
+                                            <button @click="$store.settings.runPurgeSelected()"
+                                                    :disabled="$store.settings.purgeRunning || $store.settings.purgeSelectedCount() === 0"
+                                                    class="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-900/50 disabled:cursor-not-allowed rounded text-sm font-medium flex items-center gap-2">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                                </svg>
+                                                <span x-text="$store.settings.purgeRunning ? 'Purging…' : 'Purge selected'"></span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Agentic Tab -->
+                    <div x-show="settingsTab === 'agentic'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <h3 class="text-lg font-semibold text-white mb-4">Agentic LLM Configuration</h3>
+
+                        <div class="mb-4">
+                            <label class="block text-sm text-gray-400 mb-1">Mode</label>
+                            <select x-model="$store.settings.config.agentic.llm_mode" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm">
+                                <option value="offline">Offline (Ollama)</option>
+                                <option value="online">Online (Cloud API)</option>
+                            </select>
+                        </div>
+
+                        <!-- Offline LLM -->
+                        <div x-show="$store.settings.config.agentic.llm_mode === 'offline'" x-transition>
+                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">Ollama Configuration</div>
+                            <div class="grid grid-cols-5 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                    <select x-model="$store.settings.config.agentic.offline_llm.model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                        <option value="llama3.3:70b">llama3.3:70b</option>
+                                        <option value="llama3.1:8b">llama3.1:8b</option>
+                                        <option value="deepseek-r1:14b">deepseek-r1:14b</option>
+                                        <option value="mistral:7b">mistral:7b</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Ollama URL</label>
+                                    <input type="text" x-model="$store.settings.config.agentic.offline_llm.url" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Context Size</label>
+                                    <input type="number" x-model.number="$store.settings.config.agentic.ollama_context_size" min="8192" max="131072" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Timeout (sec)</label>
+                                    <input type="number" x-model.number="$store.settings.config.agentic.ollama_timeout" min="60" max="1800" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Batch Size</label>
+                                    <input type="number" x-model.number="$store.settings.config.agentic.offline_llm.batch_size" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Online LLM -->
+                        <div x-show="$store.settings.config.agentic.llm_mode === 'online'" x-transition>
+                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">Cloud API Configuration</div>
+                            <div class="grid grid-cols-4 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Provider</label>
+                                    <select x-model="$store.settings.config.agentic.online_llm.provider" @change="$store.settings.onProviderChange()" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                        <option value="openrouter">OpenRouter</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                    <!-- Unified per-provider combobox.
+                                         Each provider has its own persisted
+                                         catalog at /app/data/<provider>_models.json
+                                         (OpenRouter is the metadata source for
+                                         the three direct providers — see
+                                         services/llm_catalogs/__init__.py). The
+                                         search endpoint is per-provider:
+                                           /api/config/<provider>/models?q=…&limit=10
+                                         Each keystroke fires a debounced fetch
+                                         and the operator sees the 10 closest
+                                         matches. Picking a model auto-fills
+                                         max_response_tokens from the entry's
+                                         max_output_tokens field; the operator
+                                         can still override the value below. -->
+                                    <div x-data="{
+                                             selectedModel: null,
+                                             results: [],
+                                             total: 0,
+                                             open: false,
+                                             loading: false,
+                                             fetchedAt: '',
+                                             unenriched: 0,
+                                             _debounce: null,
+                                             // The provider names used in the UI (`claude`, `openai`,
+                                             // `gemini`, `openrouter`) don't all match the catalog
+                                             // route names on the backend (anthropic, openai, gemini,
+                                             // openrouter — the vendor convention OpenRouter uses).
+                                             // Translate here so /api/config/<route>/models resolves.
+                                             routeFor(provider) {
+                                                 return provider === 'claude' ? 'anthropic' : provider;
+                                             },
+                                             async query() {
+                                                 const p = $store.settings.config.agentic.online_llm.provider;
+                                                 const q = $store.settings.config.agentic.online_llm.model || '';
+                                                 this.loading = true;
+                                                 try {
+                                                     const url = '/api/config/' + this.routeFor(p) + '/models?limit=10&q=' + encodeURIComponent(q);
+                                                     const resp = await fetch(url);
+                                                     const data = await resp.json();
+                                                     this.results = data.models || [];
+                                                     this.total = data.total || 0;
+                                                     this.fetchedAt = data.fetched_at || '';
+                                                     this.unenriched = data.unenriched_count || 0;
+                                                 } catch(e) { this.results = []; this.total = 0; }
+                                                 this.loading = false;
+                                             },
+                                             // Look up the currently-saved model so we can render its
+                                             // metadata (Context / Max output / Pricing) below the input.
+                                             async loadSelected() {
+                                                 const p = $store.settings.config.agentic.online_llm.provider;
+                                                 const id = $store.settings.config.agentic.online_llm.model;
+                                                 if (!id) { this.selectedModel = null; return; }
+                                                 try {
+                                                     const url = '/api/config/' + this.routeFor(p) + '/models?limit=10&q=' + encodeURIComponent(id);
+                                                     const resp = await fetch(url);
+                                                     const data = await resp.json();
+                                                     const list = data.models || [];
+                                                     this.selectedModel = list.find(m => m.id === id)
+                                                         || list.find(m => m.canonical_id === id)
+                                                         || null;
+                                                 } catch(e) { this.selectedModel = null; }
+                                             },
+                                             schedule() {
+                                                 clearTimeout(this._debounce);
+                                                 this._debounce = setTimeout(() => this.query(), 150);
+                                             },
+                                             select(model) {
+                                                 this.selectedModel = model;
+                                                 $store.settings.config.agentic.online_llm.model = model.id;
+                                                 if (model.max_output_tokens) {
+                                                     $store.settings.config.agentic.max_response_tokens = model.max_output_tokens;
+                                                 }
+                                                 this.open = false;
+                                             }
+                                         }"
+                                         x-init="loadSelected(); query();
+                                                 // Re-query when the provider switches so the dropdown
+                                                 // reflects the active provider's catalog.
+                                                 $watch('$store.settings.config.agentic.online_llm.provider', () => {
+                                                     selectedModel = null; results = []; total = 0;
+                                                     query(); loadSelected();
+                                                 });
+                                                 $watch('$store.settings.config.agentic.online_llm.model', () => {
+                                                     loadSelected();
+                                                 });
+                                                 // After Save, app.js fires a background catalog refresh
+                                                 // and dispatches this event — re-query so freshly-
+                                                 // fetched models appear without a page reload.
+                                                 window.addEventListener('llm-catalog-refreshed', (ev) => {
+                                                     if (ev.detail?.provider === $store.settings.config.agentic.online_llm.provider) {
+                                                         results = []; total = 0;
+                                                         query(); loadSelected();
+                                                     }
+                                                 });"
+                                         class="relative">
+                                        <input type="text"
+                                               x-model="$store.settings.config.agentic.online_llm.model"
+                                               @focus="query(); open = true"
+                                               @input="open = true; schedule()"
+                                               @click.away="open = false"
+                                               @keydown.escape="open = false"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
+                                               :placeholder="'Type to search ' + ($store.settings.config.agentic.online_llm.provider || '') + ' models'">
+                                        <div x-show="loading" class="absolute right-2 top-2 text-xs text-gray-500">
+                                            Loading models from <span x-text="$store.settings.config.agentic.online_llm.provider"></span>…
+                                        </div>
+                                        <!-- Dropdown results -->
+                                        <div x-show="open && results.length > 0"
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg max-h-64 overflow-y-auto">
+                                            <template x-for="m in results" :key="m.id">
+                                                <div @mousedown.prevent="select(m)"
+                                                     class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50">
+                                                    <div class="text-white" x-text="m.name"></div>
+                                                    <div class="flex justify-between text-xs text-gray-500">
+                                                        <span x-text="m.id"></span>
+                                                        <span x-show="m.max_output_tokens">
+                                                            max&nbsp;<span x-text="m.max_output_tokens.toLocaleString()"></span>
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                            <div x-show="total > results.length"
+                                                 class="px-3 py-1 text-[11px] text-gray-500 italic border-t border-gray-700/50">
+                                                Showing <span x-text="results.length"></span> of <span x-text="total"></span> matches — keep typing to narrow down.
+                                            </div>
+                                        </div>
+                                        <div x-show="open && results.length === 0 && !loading && ($store.settings.config.agentic.online_llm.model || '').length > 0"
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-xs text-gray-400">
+                                            No matching models in the catalog for
+                                            <span class="text-white" x-text="$store.settings.config.agentic.online_llm.provider"></span>.
+                                            Run <span class="text-blue-400">Maintenance → Refresh</span> to update, or check the provider's docs.
+                                        </div>
+                                        <!-- Currently-selected model info: context window + max output
+                                             tokens + price. Pulled from the catalog entry so it stays
+                                             accurate as models evolve; updates instantly when the
+                                             operator picks a new model from the dropdown. -->
+                                        <div x-show="selectedModel" class="mt-1 text-[11px] text-gray-500 flex flex-wrap gap-x-4">
+                                            <span x-show="selectedModel?.context_length">
+                                                Context: <span class="text-gray-300" x-text="(selectedModel?.context_length ?? 0).toLocaleString()"></span>
+                                            </span>
+                                            <span x-show="selectedModel?.max_output_tokens">
+                                                Max output: <span class="text-gray-300" x-text="(selectedModel?.max_output_tokens ?? 0).toLocaleString()"></span>
+                                            </span>
+                                            <span x-show="selectedModel?.pricing?.prompt">
+                                                $<span x-text="(parseFloat(selectedModel?.pricing?.prompt ?? 0) * 1000000).toFixed(2)"></span>/M&nbsp;in
+                                                ·
+                                                $<span x-text="(parseFloat(selectedModel?.pricing?.completion ?? 0) * 1000000).toFixed(2)"></span>/M&nbsp;out
+                                            </span>
+                                        </div>
+                                        <div x-show="unenriched > 0" class="mt-1 text-[10px] text-yellow-600">
+                                            <span x-text="unenriched"></span> entries un-enriched
+                                        </div>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">API Key</label>
+                                    <input type="password" x-model="$store.settings.config.agentic.online_llm.api_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="sk-...">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Batch Size</label>
+                                    <input type="number" x-model.number="$store.settings.config.agentic.online_llm.batch_size" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Advanced Settings -->
+                        <div class="mt-3 pt-3 border-t border-gray-700">
+                            <div class="text-xs text-gray-500 mb-2">Advanced Settings</div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Max Concurrent Requests</label>
+                                    <input type="number" x-model.number="$store.settings.config.agentic.max_concurrent_requests" min="1" max="20" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Max Response Tokens (auto-set from model — clear to revert)</label>
+                                    <input type="number" x-model.number="$store.settings.config.agentic.max_response_tokens" min="0" max="200000" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="auto">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Save Button -->
+                        <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
+                            <button @click="$store.settings.saveAgentic()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
+                                <span x-text="$store.settings.saving ? 'Saving...' : 'Save Agentic Settings'"></span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Timesketch Tab -->
+                    <div x-show="settingsTab === 'timesketch'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <h3 class="text-lg font-semibold text-white mb-4">Timesketch LLM Configuration</h3>
+                        <p class="text-gray-400 text-sm mb-4">Configure LLM provider for Timesketch AI features (NL2Q, Summarization, etc.)</p>
+
+                        <div class="mb-4">
+                            <label class="block text-sm text-gray-400 mb-1">LLM Provider</label>
+                            <select x-model="$store.settings.config.timesketch.llm_mode" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm">
+                                <option value="google">Google AI Studio</option>
+                                <option value="ollama">Ollama (Local)</option>
+                            </select>
+                        </div>
+
+                        <!-- Google AI Studio -->
+                        <div x-show="$store.settings.config.timesketch.llm_mode === 'google'" x-transition>
+                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">Google AI Studio Configuration</div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">API Key</label>
+                                    <input type="password" x-model="$store.settings.config.timesketch.google_ai_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="AIza...">
+                                </div>
+                                <div x-data="{ presets: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-pro'] }">
+                                    <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                    <select
+                                        :value="presets.includes($store.settings.config.timesketch.google_ai_model) ? $store.settings.config.timesketch.google_ai_model : '__custom'"
+                                        @change="$store.settings.config.timesketch.google_ai_model = $event.target.value === '__custom' ? '' : $event.target.value"
+                                        class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                        <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                                        <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                                        <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+                                        <option value="__custom">Custom…</option>
+                                    </select>
+                                    <input
+                                        x-show="!presets.includes($store.settings.config.timesketch.google_ai_model)"
+                                        type="text"
+                                        x-model="$store.settings.config.timesketch.google_ai_model"
+                                        placeholder="e.g. gemini-3.0-flash"
+                                        class="mt-2 w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Ollama (Local) -->
+                        <div x-show="$store.settings.config.timesketch.llm_mode === 'ollama'" x-transition>
+                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">Ollama Configuration</div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Server URL</label>
+                                    <input type="text" x-model="$store.settings.config.timesketch.ollama_url" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="http://localhost:11434">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                    <input type="text" x-model="$store.settings.config.timesketch.ollama_model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="llama3.1:8b">
+                                </div>
+                            </div>
+                        </div>
+
+                        <p class="text-xs text-gray-500 mt-4">Note: These settings require Timesketch container restart to take effect.</p>
+
+                        <!-- Save Button -->
+                        <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
+                            <button @click="$store.settings.saveTimesketch()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
+                                <span x-text="$store.settings.saving ? 'Saving...' : 'Save Timesketch Settings'"></span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Cloud Tab -->
+                    <div x-show="settingsTab === 'cloud'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <h3 class="text-lg font-semibold text-white mb-2">Cloud Provider Configuration</h3>
+                        <p class="text-gray-400 text-sm mb-4">Configure cloud provider credentials for threat hunting and incident response (Security Hub, Sentinel, Chronicle, etc.)</p>
+
+                        <!-- Provider Selection -->
+                        <div class="mb-4">
+                            <label class="block text-sm text-gray-400 mb-1">Cloud Provider</label>
+                            <select x-model="$store.settings.config.cloud.provider" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm">
+                                <option value="aws">Amazon Web Services (AWS)</option>
+                                <option value="azure">Microsoft Azure</option>
+                            </select>
+                        </div>
+
+                        <!-- AWS Configuration -->
+                        <div x-show="$store.settings.config.cloud.provider === 'aws'" x-transition class="bg-gray-900 rounded-lg p-4 border border-gray-700">
+                            <div class="flex items-center gap-2 mb-3">
+                                <svg class="w-5 h-5 text-orange-400" viewBox="0 0 24 24" fill="currentColor"><path d="M6.763 10.036c0 .296.032.535.088.71.064.176.144.368.256.576.04.063.056.127.056.183 0 .08-.048.16-.152.24l-.503.335a.383.383 0 0 1-.208.072c-.08 0-.16-.04-.239-.112a2.47 2.47 0 0 1-.287-.375 6.18 6.18 0 0 1-.248-.471c-.622.734-1.405 1.101-2.347 1.101-.67 0-1.205-.191-1.596-.574-.391-.384-.59-.894-.59-1.533 0-.678.239-1.23.726-1.644.487-.415 1.133-.623 1.955-.623.272 0 .551.024.846.064.296.04.6.104.918.176v-.583c0-.607-.127-1.03-.375-1.277-.255-.248-.686-.367-1.3-.367-.28 0-.568.031-.863.103-.295.072-.583.16-.862.272a2.287 2.287 0 0 1-.28.104.488.488 0 0 1-.127.023c-.112 0-.168-.08-.168-.247v-.391c0-.128.016-.224.056-.28a.597.597 0 0 1 .224-.167c.279-.144.614-.264 1.005-.36a4.84 4.84 0 0 1 1.246-.151c.95 0 1.644.216 2.091.647.439.43.662 1.085.662 1.963v2.586zm-3.24 1.214c.263 0 .534-.048.822-.144.287-.096.543-.271.758-.51.128-.152.224-.32.272-.512.047-.191.08-.423.08-.694v-.335a6.66 6.66 0 0 0-.735-.136 6.02 6.02 0 0 0-.75-.048c-.535 0-.926.104-1.19.32-.263.215-.39.518-.39.917 0 .375.095.655.295.846.191.2.47.296.838.296zm6.41.862c-.144 0-.24-.024-.304-.08-.064-.048-.12-.16-.168-.311L7.586 5.55a1.398 1.398 0 0 1-.072-.32c0-.128.064-.2.191-.2h.783c.151 0 .255.025.31.08.065.048.113.16.16.312l1.342 5.284 1.245-5.284c.04-.16.088-.264.151-.312a.549.549 0 0 1 .32-.08h.638c.152 0 .256.025.32.08.063.048.12.16.151.312l1.261 5.348 1.381-5.348c.048-.16.104-.264.16-.312a.52.52 0 0 1 .311-.08h.743c.127 0 .2.065.2.2 0 .04-.009.08-.017.128a1.137 1.137 0 0 1-.056.2l-1.923 6.17c-.048.16-.104.263-.168.311a.51.51 0 0 1-.303.08h-.687c-.151 0-.255-.024-.32-.08-.063-.056-.119-.16-.15-.32l-1.238-5.148-1.23 5.14c-.04.16-.087.264-.15.32-.065.056-.177.08-.32.08zm10.256.215c-.415 0-.83-.048-1.229-.143-.399-.096-.71-.2-.918-.32-.128-.071-.215-.151-.247-.223a.563.563 0 0 1-.048-.224v-.407c0-.167.064-.247.183-.247.048 0 .096.008.144.024.048.016.12.048.2.08.271.12.566.215.878.279.319.064.63.096.95.096.502 0 .894-.088 1.165-.264a.86.86 0 0 0 .415-.758.777.777 0 0 0-.215-.559c-.144-.151-.415-.287-.807-.414l-1.157-.36c-.583-.183-1.014-.454-1.277-.813a1.902 1.902 0 0 1-.4-1.158c0-.335.073-.63.216-.886.144-.255.335-.479.575-.654.24-.184.51-.32.83-.415.32-.096.655-.136 1.006-.136.175 0 .359.008.535.032.183.024.35.056.518.088.16.04.312.08.455.127.144.048.256.096.336.144a.69.69 0 0 1 .24.2.43.43 0 0 1 .071.263v.375c0 .168-.064.256-.184.256a.83.83 0 0 1-.303-.096 3.652 3.652 0 0 0-1.532-.311c-.455 0-.815.071-1.062.223-.248.152-.375.383-.375.71 0 .224.08.416.24.567.159.152.454.304.877.44l1.134.358c.574.184.99.44 1.237.767.247.327.367.702.367 1.117 0 .343-.072.655-.207.926-.144.272-.336.511-.583.703-.248.2-.543.343-.886.447-.36.111-.734.167-1.142.167z"/></svg>
+                                <h4 class="text-sm font-semibold text-white">AWS Configuration</h4>
+                            </div>
+                            <p class="text-xs text-gray-500 mb-3">For Security Hub, GuardDuty, CloudTrail, and CloudWatch Logs</p>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Access Key ID</label>
+                                    <input type="text" x-model="$store.settings.config.cloud.aws.access_key_id" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="AKIAIOSFODNN7EXAMPLE">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Secret Access Key</label>
+                                    <input type="password" x-model="$store.settings.config.cloud.aws.secret_access_key" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Region</label>
+                                    <select x-model="$store.settings.config.cloud.aws.region" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm">
+                                        <option value="us-east-1">us-east-1 — N. Virginia</option>
+                                        <option value="us-east-2">us-east-2 — Ohio</option>
+                                        <option value="us-west-1">us-west-1 — N. California</option>
+                                        <option value="us-west-2">us-west-2 — Oregon</option>
+                                        <option value="ca-central-1">ca-central-1 — Canada (Central)</option>
+                                        <option value="sa-east-1">sa-east-1 — São Paulo</option>
+                                        <option value="eu-north-1">eu-north-1 — Stockholm</option>
+                                        <option value="eu-west-1">eu-west-1 — Ireland</option>
+                                        <option value="eu-west-2">eu-west-2 — London</option>
+                                        <option value="eu-west-3">eu-west-3 — Paris</option>
+                                        <option value="eu-central-1">eu-central-1 — Frankfurt</option>
+                                        <option value="eu-central-2">eu-central-2 — Zurich</option>
+                                        <option value="eu-south-1">eu-south-1 — Milan</option>
+                                        <option value="eu-south-2">eu-south-2 — Spain</option>
+                                        <option value="ap-south-1">ap-south-1 — Mumbai</option>
+                                        <option value="ap-southeast-1">ap-southeast-1 — Singapore</option>
+                                        <option value="ap-southeast-2">ap-southeast-2 — Sydney</option>
+                                        <option value="ap-southeast-3">ap-southeast-3 — Jakarta</option>
+                                        <option value="ap-northeast-1">ap-northeast-1 — Tokyo</option>
+                                        <option value="ap-northeast-2">ap-northeast-2 — Seoul</option>
+                                        <option value="ap-northeast-3">ap-northeast-3 — Osaka</option>
+                                        <option value="ap-east-1">ap-east-1 — Hong Kong</option>
+                                        <option value="me-south-1">me-south-1 — Bahrain</option>
+                                        <option value="me-central-1">me-central-1 — UAE</option>
+                                        <option value="af-south-1">af-south-1 — Cape Town</option>
+                                        <option value="il-central-1">il-central-1 — Tel Aviv</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Session Token <span class="text-gray-600">(optional)</span></label>
+                                    <input type="password" x-model="$store.settings.config.cloud.aws.session_token" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="For temporary credentials">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Azure Configuration -->
+                        <div x-show="$store.settings.config.cloud.provider === 'azure'" x-transition class="bg-gray-900 rounded-lg p-4 border border-gray-700">
+                            <div class="flex items-center gap-2 mb-3">
+                                <svg class="w-5 h-5 text-blue-400" viewBox="0 0 24 24" fill="currentColor"><path d="M5.483 21.3H24L14.025 4.013l-3.038 8.347 5.836 6.938L5.483 21.3zM13.23 2.7L6.105 8.677 0 19.253h5.505v.014L13.23 2.7z"/></svg>
+                                <h4 class="text-sm font-semibold text-white">Azure Configuration</h4>
+                            </div>
+                            <p class="text-xs text-gray-500 mb-3">For Microsoft Sentinel, Defender for Cloud, and Log Analytics</p>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Tenant ID</label>
+                                    <input type="text" x-model="$store.settings.config.cloud.azure.tenant_id" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Client ID (App ID)</label>
+                                    <input type="text" x-model="$store.settings.config.cloud.azure.client_id" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Client Secret</label>
+                                    <input type="password" x-model="$store.settings.config.cloud.azure.client_secret" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="Your client secret">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Subscription ID</label>
+                                    <input type="text" x-model="$store.settings.config.cloud.azure.subscription_id" class="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1.5 text-sm font-mono" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                                </div>
+                            </div>
+
+                            <!-- DFIR-O365RC Certificate -->
+                            <div class="col-span-2 mt-3 p-3 bg-gray-800 rounded border border-gray-700"
+                                 x-data="{ certData: null, copied: false }"
+                                 x-init="fetch('/api/config/azure/certificate').then(r => r.json()).then(d => certData = d).catch(() => {})">
+                                <div class="flex items-center justify-between mb-2">
+                                    <div>
+                                        <span class="text-xs font-medium text-blue-400">DFIR-O365RC Certificate</span>
+                                        <span class="text-xs text-gray-500 ml-2">(for Unified Audit Log collection)</span>
+                                    </div>
+                                    <span x-show="certData?.available" class="text-xs text-green-400">Ready</span>
+                                    <span x-show="certData && !certData?.has_certificate" class="text-xs text-red-400">Not generated</span>
+                                    <span x-show="certData?.has_certificate && !certData?.available" class="text-xs text-yellow-400">Upload public key to Azure</span>
+                                </div>
+                                <template x-if="certData?.public_key">
+                                    <div>
+                                        <p class="text-xs text-gray-400 mb-2">Download the certificate and upload it to Azure Portal → App Registration → Certificates & secrets → Upload certificate</p>
+                                        <a href="/api/config/azure/certificate/download" download class="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded text-xs font-medium text-white">
+                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                            Download Certificate (.pem)
+                                        </a>
+                                    </div>
+                                </template>
+                                <template x-if="certData && !certData?.has_certificate">
+                                    <p class="text-xs text-gray-500">Run install.sh to generate the certificate, or pull the DFIR-O365RC image manually.</p>
+                                </template>
+                            </div>
+                        </div>
+
+                        <p class="text-xs text-gray-500 mt-4">
+                            <svg class="w-3.5 h-3.5 inline mr-1 text-yellow-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+                            Credentials are stored locally and used for cloud-based threat hunting integrations.
+                        </p>
+
+                        <!-- Save Button -->
+                        <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
+                            <button @click="$store.settings.saveCloud()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
+                                <span x-text="$store.settings.saving ? 'Saving...' : 'Save Cloud Settings'"></span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- CVE Scan Tab -->
+                    <div x-show="settingsTab === 'cve_scan'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <h3 class="text-lg font-semibold text-white mb-4">CVE Scan Configuration</h3>
+                        <p class="text-gray-400 text-sm mb-4">
+                            Optional NVD API key for the CVE Scan tab. With a key the scanner runs at
+                            50 requests / 30 seconds; without one it falls back to the anonymous rate
+                            (5 requests / 30 seconds, ~10× slower). Request a free key at
+                            <a href="https://nvd.nist.gov/developers/request-an-api-key" target="_blank" rel="noreferrer" class="text-blue-400 hover:text-blue-300 underline">nvd.nist.gov</a>.
+                        </p>
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-300 mb-1">NVD API Key</label>
+                            <input type="password" x-model="$store.settings.config.cve_scan.nvd_api_key"
+                                   placeholder="Paste your NVD API key (UUID format)"
+                                   class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+                        </div>
+                        <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
+                            <button @click="$store.settings.saveCveScan()" :disabled="$store.settings.saving"
+                                    class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
+                                <span x-text="$store.settings.saving ? 'Saving...' : 'Save CVE Scan Settings'"></span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Prepare Package Modal -->
+                <div x-show="$store.settings.showPreparePackageModal" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" @click.self="$store.settings.closePreparePackageModal()" @keydown.escape.window="$store.settings.showPreparePackageModal && $store.settings.closePreparePackageModal()">
+                    <!-- max-h-[90vh] + flex column + overflow-y-auto on body =
+                         modal stays inside the viewport on small monitors and
+                         the content area scrolls while the title row + action
+                         buttons remain visible. @keydown.escape.window above
+                         lets Escape close the modal from anywhere. -->
+                    <div class="bg-gray-800 rounded-lg p-6 w-full max-w-lg border border-gray-700 shadow-xl max-h-[90vh] flex flex-col" @click.stop>
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="text-xl font-bold text-white"
+                                x-text="$store.settings.prepareModalMode === 'online' ? 'Online Upgrade' : 'Prepare Upgrade Package'"></h3>
+                            <button @click="$store.settings.closePreparePackageModal()" class="text-gray-400 hover:text-white">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                                </svg>
+                            </button>
+                        </div>
+                        <p class="text-gray-400 text-sm mb-4"
+                           x-text="$store.settings.prepareModalMode === 'online'
+                                   ? 'Select modules to download and apply right now (no intermediate package file):'
+                                   : 'Select modules to include in the offline upgrade package:'"></p>
+
+                        <!-- Scroll wrapper — flex-1 + overflow-y-auto means
+                             when content overflows the modal's 90vh budget,
+                             only this middle area scrolls; the title (above)
+                             and the action buttons (below) stay pinned. -->
+                        <div class="flex-1 overflow-y-auto -mx-2 px-2">
+
+                        <!-- Loading state -->
+                        <div x-show="$store.settings.prepareLoading" class="flex items-center justify-center py-8">
+                            <svg class="animate-spin h-8 w-8 text-blue-500" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                        </div>
+
+                        <!-- ─── TRACK VIEW ────────────────────────────────────
+                             Pick one Intact release; backend derives the per-module
+                             work list. Auto-fetched on modal open — no "Fetch
+                             Releases" / "Compute Plan" / "Show Modules" buttons;
+                             selecting a different release re-runs the next step
+                             automatically. -->
+                        <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="space-y-4 max-h-96 overflow-y-auto">
+
+                            <!-- GitHub quota banner -->
+                            <div x-show="$store.settings.githubQuota && $store.settings.githubQuota.success"
+                                 class="text-xs px-3 py-2 rounded border"
+                                 :class="$store.settings.githubQuota && $store.settings.githubQuota.remaining <= 10
+                                     ? 'bg-red-950/40 border-red-700/60 text-red-300'
+                                     : 'bg-gray-900 border-gray-700 text-gray-400'">
+                                <span x-show="$store.settings.githubQuota && $store.settings.githubQuota.remaining > 10">
+                                    GitHub API: <span class="font-mono" x-text="($store.settings.githubQuota?.remaining || 0) + '/' + ($store.settings.githubQuota?.limit || 60)"></span> calls remaining
+                                    (resets <span class="font-mono" x-text="$store.settings.githubQuota?.reset_hm || ''"></span><span x-show="$store.settings.githubQuota && !$store.settings.githubQuota.authed"> — anonymous IP, 60/hr cap</span>).
+                                    Cold-cache fetches can take up to a minute.
+                                </span>
+                                <span x-show="$store.settings.githubQuota && $store.settings.githubQuota.remaining <= 10">
+                                    ⚠ GitHub quota low: <span class="font-mono" x-text="($store.settings.githubQuota?.remaining || 0) + '/' + ($store.settings.githubQuota?.limit || 60)"></span> calls left
+                                    (resets <span class="font-mono" x-text="$store.settings.githubQuota?.reset_hm || ''"></span>). The upgrade flow needs a couple more — wait for reset if you hit a 429.
+                                </span>
+                            </div>
+
+                            <!-- Step 1: release picker (auto-fetched on open) -->
+                            <div class="bg-gray-900 rounded border border-gray-700 p-3">
+                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">1. Pick an Intact release</label>
+                                <div class="flex gap-2 items-center">
+                                    <select x-model="$store.settings.selectedRef"
+                                            @change="$store.settings.onSelectedRefChange()"
+                                            :disabled="$store.settings.fetchingRefs || !$store.settings.upgradeRefs.length"
+                                            class="flex-1 bg-gray-700 text-white text-sm px-2 py-1.5 rounded border border-gray-600 focus:border-blue-500 disabled:opacity-50">
+                                        <option value="" disabled x-text="$store.settings.fetchingRefs ? 'Loading releases…' : 'Pick release version'"></option>
+                                        <template x-for="ref in $store.settings.filteredUpgradeRefs()" :key="ref.name">
+                                            <option :value="ref.name" x-text="ref.label"></option>
+                                        </template>
+                                    </select>
+                                    <button @click="$store.settings.fetchUpgradeRefs()"
+                                            :disabled="$store.settings.fetchingRefs"
+                                            title="Refresh release list from GitHub"
+                                            class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-2 py-1.5 rounded text-sm">
+                                        <svg class="w-4 h-4" :class="$store.settings.fetchingRefs ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                                        </svg>
+                                    </button>
+                                </div>
+                                <p class="text-gray-500 text-xs mt-2">
+                                    Releases auto-loaded when you opened this dialog. Backend caches for 30 minutes; the refresh button only spends a GitHub call if the cache is stale.
+                                    <span x-show="$store.settings.prepareModalMode === 'online' && $store.settings.currentIntactVersion">
+                                        Showing releases ≥ <span class="font-mono text-gray-400" x-text="$store.settings.currentIntactVersion"></span> — older releases and companion variants (e.g. <span class="font-mono">-old-modules</span>) are hidden to prevent accidental downgrade.
+                                    </span>
+                                </p>
+                            </div>
+
+                            <!-- Spinner while plan/modules auto-load -->
+                            <div x-show="$store.settings.selectedRef && ($store.settings.computingPlan || $store.settings.showingPrepareModules)"
+                                 class="flex items-center justify-center py-4 text-sm text-gray-400">
+                                <svg class="animate-spin h-4 w-4 mr-2 text-blue-500" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                <span x-show="$store.settings.prepareModalMode === 'online'">Computing plan from GitHub… (up to 60 s)</span>
+                                <span x-show="$store.settings.prepareModalMode === 'prepare'">Loading module list from GitHub… (up to 60 s)</span>
+                            </div>
+
+                            <!-- Step 3 (PREPARE mode): flat checkbox list, all pre-checked.
+                                 The `intact` module is special — it's the platform itself,
+                                 always upgrades first, and a package without it is useless
+                                 (you'd have a bunch of module images and no Intact to drive
+                                 them). Renders with a locked-checked indicator instead of a
+                                 toggleable checkbox. -->
+                            <div x-show="$store.settings.prepareModalMode === 'prepare' && $store.settings.prepareModules" class="bg-gray-900 rounded border border-gray-700 p-3">
+                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">3. Tick modules to include</label>
+                                <div class="text-gray-400 text-xs mb-2">All pre-checked. Untick anything you don't want in the tarball. <span class="text-blue-400">Intact platform is always included.</span></div>
+                                <template x-for="row in $store.settings.prepareModules" :key="row.module">
+                                    <label class="flex items-center text-xs px-2 py-1.5 rounded border-l-2 bg-gray-800 mb-1"
+                                           :class="row.module === 'intact'
+                                               ? 'border-blue-400 cursor-not-allowed opacity-90'
+                                               : 'border-blue-500 cursor-pointer hover:bg-gray-700'">
+                                        <input type="checkbox" checked disabled
+                                               x-show="row.module === 'intact'"
+                                               class="mr-3 w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500 opacity-60">
+                                        <input type="checkbox"
+                                               x-show="row.module !== 'intact'"
+                                               :checked="$store.settings.prepareSelected.includes(row.module)"
+                                               @change="$store.settings.togglePrepareModule(row.module)"
+                                               class="mr-3 w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500">
+                                        <span class="flex-1 font-mono" x-text="row.module"></span>
+                                        <span class="font-mono text-gray-300" x-text="row.target"></span>
+                                        <span x-show="row.module === 'intact'"
+                                              class="ml-3 text-xs uppercase text-blue-400">always</span>
+                                    </label>
+                                </template>
+                                <div class="text-gray-500 text-xs mt-2"
+                                     x-text="($store.settings.prepareSelected?.length || 0) + ' / ' + ($store.settings.prepareModules?.length || 0) + ' modules will be bundled'"></div>
+                            </div>
+
+                            <!-- Step 3 (ONLINE mode): plan preview -->
+                            <div x-show="$store.settings.prepareModalMode === 'online' && $store.settings.upgradePlan" class="bg-gray-900 rounded border border-gray-700 p-3">
+                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">3. Review &amp; confirm</label>
+
+                                <!-- Chain banner -->
+                                <div class="mb-3 text-xs text-gray-300 bg-blue-900/30 border border-blue-700/40 rounded p-2"
+                                     x-show="$store.settings.upgradePlan && $store.settings.upgradePlan.chain && $store.settings.upgradePlan.chain.length">
+                                    <span x-text="'You are on Intact ' + ($store.settings.upgradePlan?.current_intact_version || 'unknown') + '. Target: ' + ($store.settings.upgradePlan?.target || '')"></span>
+                                    <span x-show="$store.settings.upgradePlan?.chain?.length > 1"
+                                          x-text="' — will apply ' + ($store.settings.upgradePlan?.chain?.length || 0) + ' releases sequentially: ' + ($store.settings.upgradePlan?.chain?.join(' → ') || '')"></span>
+                                </div>
+
+                                <!-- Forced rows (no checkbox) -->
+                                <template x-if="$store.settings.upgradePlan && $store.settings.upgradePlan.forced.length">
+                                    <div class="mb-3">
+                                        <div class="text-gray-400 text-xs mb-1">Installed modules (will be upgraded automatically):</div>
+                                        <template x-for="row in $store.settings.upgradePlan.forced" :key="row.module">
+                                            <div class="flex items-center text-xs px-2 py-1.5 rounded border-l-2"
+                                                 :class="row.action === 'noop' ? 'border-gray-600 text-gray-500 bg-gray-800/30' : 'border-blue-500 text-gray-200 bg-gray-800'">
+                                                <span class="flex-1 font-mono" x-text="row.module"></span>
+                                                <span class="font-mono" x-text="row.current"></span>
+                                                <span class="mx-2 text-gray-500">→</span>
+                                                <span class="font-mono" x-text="row.target"></span>
+                                                <span class="ml-3 text-xs uppercase"
+                                                      :class="row.action === 'noop' ? 'text-gray-500' : 'text-blue-400'"
+                                                      x-text="row.action === 'noop' ? '(no change)' : 'upgrade'"></span>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </template>
+
+                                <!-- Optional rows (checkbox to opt-in) -->
+                                <template x-if="$store.settings.upgradePlan && $store.settings.upgradePlan.optional.length">
+                                    <div class="mb-3">
+                                        <div class="text-gray-400 text-xs mb-1">Optional new modules (tick to install on this host):</div>
+                                        <template x-for="row in $store.settings.upgradePlan.optional" :key="row.module">
+                                            <label class="flex items-center text-xs px-2 py-1.5 rounded border-l-2 border-yellow-600/60 bg-gray-800 cursor-pointer hover:bg-gray-700">
+                                                <input type="checkbox"
+                                                       :checked="$store.settings.optedInOptional.includes(row.module)"
+                                                       @change="$store.settings.toggleOptionalModule(row.module)"
+                                                       class="mr-3 w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500">
+                                                <span class="flex-1 font-mono" x-text="row.module"></span>
+                                                <span class="font-mono text-gray-500">not installed</span>
+                                                <span class="mx-2 text-gray-500">→</span>
+                                                <span class="font-mono" x-text="row.target"></span>
+                                                <span class="ml-3 text-xs uppercase text-yellow-400">install if ticked</span>
+                                            </label>
+                                        </template>
+                                    </div>
+                                </template>
+
+                                <div x-show="$store.settings.upgradePlan && !$store.settings.upgradePlan.forced.length && !$store.settings.upgradePlan.optional.length"
+                                     class="text-gray-500 text-xs italic">Nothing to do — local config.yaml matches the target's versions.</div>
+                            </div>
+
+                        </div>
+
+                        <!-- Package Ready -->
+                        <div x-show="$store.settings.preparePackageReady" class="text-center py-6">
+                            <svg class="w-16 h-16 text-green-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            <h4 class="text-white font-medium mb-2">Package Ready!</h4>
+                            <p class="text-gray-400 text-sm mb-2" x-text="'Size: ' + $store.settings.preparePackageSize"></p>
+                            <p class="text-gray-500 text-xs mb-4">Available for 24 hours</p>
+                            <button @click="$store.workflows.downloadPackage($store.settings.prepareRunId)"
+                               class="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded text-sm font-medium inline-flex items-center gap-2">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                                </svg>
+                                Download Package
+                            </button>
+                        </div>
+
+                        <!-- Warning -->
+                        <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="bg-yellow-900/30 border border-yellow-700/50 rounded p-3 mt-4">
+                            <p class="text-yellow-400 text-xs">
+                                <strong>Note:</strong> This will download Docker images and binaries for selected modules. This may take several minutes and require significant disk space.
+                            </p>
+                        </div>
+
+                        </div>
+                        <!-- /scroll wrapper — Actions below stay pinned on small monitors -->
+
+                        <!-- Actions -->
+                        <div x-show="!$store.settings.preparePackageReady" class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-700">
+                            <button @click="$store.settings.closePreparePackageModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
+                                Cancel
+                            </button>
+                            <button @click="$store.settings.startTrackUpgrade()"
+                                    :disabled="$store.settings.prepareLoading
+                                        || ($store.settings.prepareModalMode === 'online' && !$store.settings.upgradePlan)
+                                        || ($store.settings.prepareModalMode === 'prepare' && !$store.settings.prepareModules)"
+                                    class="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 px-4 py-2 rounded text-sm font-medium flex items-center gap-2">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                          :d="$store.settings.prepareModalMode === 'online'
+                                              ? 'M13 10V3L4 14h7v7l9-11h-7z'
+                                              : 'M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4'"></path>
+                                </svg>
+                                <span x-text="$store.settings.prepareModalMode === 'online' ? 'Start Online Upgrade' : 'Start Preparation'"></span>
+                            </button>
+                        </div>
+
+                        <!-- Close when done -->
+                        <div x-show="$store.settings.preparePackageReady" class="flex justify-end mt-6 pt-4 border-t border-gray-700">
+                            <button @click="$store.settings.closePreparePackageModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+            </div>

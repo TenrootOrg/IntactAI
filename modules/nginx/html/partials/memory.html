@@ -1,0 +1,240 @@
+            <div x-show="$store.app.currentTab === 'modules-memory'" x-transition class="tab-panel">
+                <div class="flex items-center justify-between mb-2">
+                    <h2 class="text-3xl font-bold text-white">Memory Forensics</h2>
+                </div>
+
+                <!-- Memory page needs BOTH VolWeb (Volatility 3 + YARA analysis
+                     engine) AND Velociraptor (Windows.Memory.Acquisition artifact
+                     dispatch). Show distinct banners so the operator knows which
+                     side is down. Operator-supplied dump upload still works
+                     without Velociraptor — Velo is only needed for endpoint
+                     acquisition. -->
+                <div x-show="$store.services.statuses['volweb'] === 'stopped'"
+                     class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 mb-4 flex items-start gap-3">
+                    <svg class="w-6 h-6 text-yellow-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-yellow-200">VolWeb is installed but stopped</p>
+                        <p class="text-sm text-yellow-100/80 mt-1">The VolWeb backend container isn't running — Volatility 3 plugin execution and YARA scanning will fail. Start it with <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">docker start intact_volweb_backend</code>.</p>
+                    </div>
+                </div>
+                <div x-show="$store.services.statuses['velociraptor'] === 'stopped'"
+                     class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 mb-6 flex items-start gap-3">
+                    <svg class="w-6 h-6 text-yellow-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-yellow-200">Velociraptor is installed but stopped</p>
+                        <p class="text-sm text-yellow-100/80 mt-1">Endpoint memory acquisition dispatches the <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">Windows.Memory.Acquisition</code> Velociraptor artifact. Without a running Velociraptor server, you can still analyse an operator-supplied dump via the upload path. Start it with <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">docker start intact_velociraptor</code>.</p>
+                    </div>
+                </div>
+                <!-- Velociraptor not installed at all: same upload-path
+                     fallback still works, but operator should know
+                     endpoint acquisition is blocked. Solid red background
+                     + white text so it stays readable on the dashboard's
+                     light tab-content surface (the faded "/30" alpha
+                     palette washes out against pale glass). -->
+                <div x-show="$store.services.statuses['velociraptor'] === 'not_installed'"
+                     class="bg-red-900/30 border border-red-700 rounded-lg p-4 mb-6 flex items-start gap-3">
+                    <svg class="w-6 h-6 flex-shrink-0 mt-0.5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-red-200">Velociraptor is not installed</p>
+                        <p class="text-sm mt-1 text-red-100/80">Endpoint memory acquisition uses the <code class="px-1.5 py-0.5 rounded bg-gray-800 text-red-200">Windows.Memory.Acquisition</code> Velociraptor artifact — that path is unavailable on this host. The upload path (operator-supplied memory dump) still works. To enable acquisition, install Velociraptor via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span>.</p>
+                    </div>
+                </div>
+
+                <div class="max-w-3xl">
+                    <p class="text-gray-400 mb-6 text-sm">
+                        Capture Windows physical memory via Velociraptor, run Volatility 3 plugins
+                        + YARA scanning in
+                        <a href="https://github.com/forensicxlab/VolWeb" target="_blank" rel="noreferrer"
+                           class="text-indigo-300 hover:text-indigo-200 underline">VolWeb</a>,
+                        and extract findings. The findings feed the case for analysis.
+                    </p>
+
+                    <!-- Card 1 — Blueprint + YARA toggle + Investigation name -->
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Blueprint</label>
+                        <select x-model="$store.memory.blueprintId"
+                                class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none">
+                            <template x-for="b in $store.memory.blueprints" :key="b.id">
+                                <option :value="b.id" x-text="b.name"></option>
+                            </template>
+                        </select>
+                        <p class="text-xs text-gray-500 mt-2"
+                           x-text="($store.memory.selectedBlueprint() || {}).description || ''"></p>
+                        <p class="text-xs text-gray-500 mt-1">
+                            Plugins:
+                            <span class="text-gray-400 font-mono"
+                                  x-text="(() => {
+                                      const bp = $store.memory.selectedBlueprint();
+                                      const ps = (bp && bp.settings && bp.settings.plugin_set) || [];
+                                      if (ps.length === 1 && ps[0] === '*') return 'all available (resolved at runtime)';
+                                      if (ps.length === 0) return 'none (yara-only)';
+                                      return ps.length + ' plugin(s)';
+                                  })()"></span>
+                        </p>
+
+                        <!-- YARA toggle — independent of blueprint. Adds the
+                             yarascan "layer" on top of plugin extraction. For
+                             a blueprint with an empty plugin_set (YARA-only
+                             triage), this toggle has no effect — YARA always
+                             runs because there's nothing else to run. -->
+                        <div class="mt-4 pt-4 border-t border-gray-700">
+                            <label class="flex items-center gap-3 cursor-pointer">
+                                <input type="checkbox" x-model="$store.memory.includeYara"
+                                       class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                <div>
+                                    <div class="text-sm font-medium text-gray-300">Include YARA</div>
+                                    <div class="text-xs text-gray-500">Run yarascan in parallel with plugin extraction. Adds signature-based detection on top of behavioural plugin output.</div>
+                                </div>
+                            </label>
+                        </div>
+
+                        <div class="mt-5 pt-4 border-t border-gray-700">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Investigation name</label>
+                            <input type="text" x-model="$store.memory.caseName"
+                                   class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                        </div>
+
+                        <!-- Timeouts — always visible (moved out of a collapsed
+                             "Advanced" panel 2026-06-17 so operators see them
+                             before dispatching). Leave blank to use the defaults
+                             below; YARA-scan auto-scales with dump size when left
+                             at default (~400 s/GB). Bump them for huge dumps
+                             (32 GB+) or slow extraction hardware. -->
+                        <div class="mt-4 pt-4 border-t border-gray-700">
+                            <div class="flex items-center justify-between mb-2">
+                                <span class="text-sm font-medium text-gray-300">Timeouts</span>
+                                <span class="text-[10px] text-gray-500">blank = use default (shown in each box)</span>
+                            </div>
+                            <div class="grid grid-cols-3 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Acquire timeout (sec)</label>
+                                    <input type="number" min="60" max="86400" step="60"
+                                           x-model.number="$store.memory.acquireTimeoutS"
+                                           :placeholder="'default 5400'"
+                                           class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <p class="text-[10px] text-gray-500 mt-0.5">Velociraptor flow + extract. Default 90 min.</p>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Plugin extract timeout (sec)</label>
+                                    <input type="number" min="60" max="86400" step="60"
+                                           x-model.number="$store.memory.pluginTimeoutS"
+                                           :placeholder="'default 1800'"
+                                           class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <p class="text-[10px] text-gray-500 mt-0.5">Vol3 selective-extraction cap. Default 30 min.</p>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">YARA scan timeout (sec)</label>
+                                    <input type="number" min="60" max="86400" step="60"
+                                           x-model.number="$store.memory.yarascanTimeoutS"
+                                           :placeholder="'default 3600'"
+                                           class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <p class="text-[10px] text-gray-500 mt-0.5">Auto-scales to dump size (~400 s/GB) when blank. Default 60 min.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card 2 — Target client picker (Timesketch-style markup) -->
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                        <div class="flex items-center justify-between mb-2">
+                            <label class="block text-sm font-medium text-gray-300">Select Client for Acquisition</label>
+                            <button @click="$store.memory.refreshClients()"
+                                    class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Refresh</button>
+                        </div>
+                        <input type="text" x-model="$store.memory.clientFilter"
+                               placeholder="Filter clients by name..."
+                               class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-purple-500 focus:outline-none">
+                        <div class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
+                            <template x-for="c in $store.memory.filteredClients()" :key="c.client_id">
+                                <label class="flex items-center justify-between gap-3 cursor-pointer hover:bg-gray-800 rounded px-2 py-1">
+                                    <div class="flex items-center gap-3">
+                                        <input type="radio" :value="c.client_id" x-model="$store.memory.selectedClient"
+                                               class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                        <div>
+                                            <div class="text-sm text-gray-200" x-text="c.hostname || '(unknown)'"></div>
+                                            <div class="text-xs text-gray-500 font-mono" x-text="c.client_id"></div>
+                                        </div>
+                                    </div>
+                                    <div class="text-xs" :class="{'text-green-400': $store.memory.isFresh(c), 'text-gray-500': !$store.memory.isFresh(c)}"
+                                         x-text="$store.memory.ageLabel(c)"></div>
+                                </label>
+                            </template>
+                            <p x-show="!$store.memory.filteredClients().length" class="text-sm text-gray-500">
+                                No clients match the filter.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Dispatch (live acquire) -->
+                    <div class="flex items-center justify-end gap-3 mb-6">
+                        <span x-show="$store.memory.lastStatus" class="text-xs text-gray-400" x-text="$store.memory.lastStatus"></span>
+                        <button @click="$store.memory.startRun()"
+                                :disabled="!$store.memory.selectedClient || $store.memory.dispatching"
+                                class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
+                            <span x-show="!$store.memory.dispatching">Acquire &amp; Extract</span>
+                            <span x-show="$store.memory.dispatching">Starting…</span>
+                        </button>
+                    </div>
+
+                    <!-- ──────────────────────────────────────────────────
+                         OR — Upload an already-acquired dump (offline path)
+                         ────────────────────────────────────────────────── -->
+                    <div class="flex items-center gap-3 my-2 text-xs text-gray-500">
+                        <div class="flex-1 h-px bg-gray-700"></div>
+                        <span>OR — upload an already-acquired dump</span>
+                        <div class="flex-1 h-px bg-gray-700"></div>
+                    </div>
+
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                        <label class="block text-sm font-medium text-gray-300 mb-1">Memory dump file</label>
+                        <p class="text-xs text-gray-500 mb-3">
+                            Accepts a raw memory image (<code class="text-indigo-300">.raw</code>,
+                            <code class="text-indigo-300">.bin</code>, <code class="text-indigo-300">.mem</code>,
+                            <code class="text-indigo-300">.dmp</code>) or a Velociraptor
+                            <em>Prepare Download</em> / offline-collector ZIP. We'll detect the
+                            <code class="text-indigo-300">PhysicalMemory</code> file inside the ZIP automatically.
+                        </p>
+                        <div class="flex items-center gap-3 bg-gray-900 border border-dashed border-gray-600 rounded px-4 py-4">
+                            <input type="file"
+                                   accept=".raw,.bin,.mem,.dmp,.zip"
+                                   @change="$store.memory.setUploadFile($event.target.files[0])"
+                                   class="flex-1 text-sm text-gray-300 file:mr-3 file:py-2 file:px-4 file:rounded file:border-0 file:bg-indigo-600 file:text-white file:hover:bg-indigo-700 file:cursor-pointer">
+                            <span x-show="$store.memory.uploadFile" class="text-xs text-teal-400 whitespace-nowrap"
+                                  x-text="$store.memory.uploadFile ? ($store.memory.uploadFile.name + ' — ' + $store.memory.uploadSizeLabel()) : ''"></span>
+                        </div>
+
+                        <!-- Upload progress (visible during XHR) -->
+                        <div x-show="$store.memory.uploadProgress > 0 && $store.memory.uploadProgress < 100" class="mt-4">
+                            <div class="flex justify-between text-xs text-gray-400 mb-1">
+                                <span>Uploading…</span>
+                                <span x-text="$store.memory.uploadProgress + '%'"></span>
+                            </div>
+                            <div class="bg-gray-700 rounded-full h-2 overflow-hidden">
+                                <div class="bg-indigo-500 h-full transition-all"
+                                     :style="`width: ${$store.memory.uploadProgress}%`"></div>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center justify-end gap-3 pt-4 mt-4 border-t border-gray-700">
+                            <span x-show="$store.memory.uploadStatus" class="text-xs text-gray-400"
+                                  x-text="$store.memory.uploadStatus"></span>
+                            <button @click="$store.memory.startUpload()"
+                                    :disabled="!$store.memory.uploadFile || $store.memory.uploading"
+                                    class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
+                                <span x-show="!$store.memory.uploading">Upload &amp; Analyze</span>
+                                <span x-show="$store.memory.uploading">Uploading…</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Run status is shown on the Workflows page (like every
+                         other module), not here. Dispatching auto-navigates
+                         there — see memory.js startRun()/uploadAndAnalyze(). -->
+                </div>
+            </div>

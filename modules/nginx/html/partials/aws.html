@@ -1,0 +1,355 @@
+            <div x-show="$store.app.currentTab === 'cloud-aws'" x-transition class="tab-panel"
+                 x-data="{
+                     awsMode: 'online',
+                     awsStatus: null,
+                     awsBlueprints: [],
+                     awsBlueprint: 'aws_quick_triage',
+                     awsRegions: 'us-east-1',
+                     awsTimeFilter: '24h',
+                     awsMinSeverity: 'medium',
+                     awsRunning: false,
+                     awsRunId: null,
+                     awsTargetPrincipals: '',
+                     awsScopeMode: 'account_wide',
+                     awsCloudTrailMode: 'light',
+                     awsMaxEventsPerRegion: '',
+                     awsMaxEventsUserEdited: false,
+                     async checkAwsStatus() {
+                         try {
+                             const r = await fetch('/api/aws/status');
+                             this.awsStatus = await r.json();
+                         } catch(e) { console.error(e); }
+                         try {
+                             const r = await fetch('/api/aws/blueprints');
+                             const d = await r.json();
+                             this.awsBlueprints = d.blueprints || [];
+                             // Seed the cap textbox with the current blueprint's default
+                             this.$nextTick(() => this.applyBlueprintDefaults());
+                         } catch(e) { console.error(e); }
+                     },
+                     get selectedAwsBlueprint() {
+                         return this.awsBlueprints.find(b => b.id === this.awsBlueprint) || null;
+                     },
+                     applyBlueprintDefaults() {
+                         // When the user picks a new blueprint, replace the cap
+                         // with that blueprint's default — unless the user has
+                         // already overridden it in this session.
+                         if (this.awsMaxEventsUserEdited) return;
+                         const bp = this.selectedAwsBlueprint;
+                         const def = bp?.settings?.max_events_per_region;
+                         this.awsMaxEventsPerRegion = (def != null) ? String(def) : '';
+                     },
+                     get awsEffectiveMaxEvents() {
+                         const v = parseInt(this.awsMaxEventsPerRegion, 10);
+                         if (!isNaN(v) && v > 0) return v;
+                         return this.selectedAwsBlueprint?.settings?.max_events_per_region || 500;
+                     },
+                     get awsScanTimeEstimate() {
+                         // LookupEvents = 50 events/page, ~2 pages/sec → events/100 = seconds.
+                         const events = this.awsEffectiveMaxEvents;
+                         const regions = this.awsRegions.split(',').map(r => r.trim()).filter(r => r).length || 1;
+                         const perRegionSec = Math.max(2, Math.round(events / 100));
+                         const totalSec = perRegionSec * regions;
+                         const fmt = s => s < 60 ? `${s} sec` : `${Math.round(s / 60)} min`;
+                         return regions > 1
+                             ? `≈ ${fmt(perRegionSec)} per region (~${fmt(totalSec)} across ${regions} regions)`
+                             : `≈ ${fmt(perRegionSec)} per region`;
+                     },
+                     async startAwsScan() {
+                         this.awsRunning = true;
+                         try {
+                             // Time filter — relative ('24h', '7d', ...) OR custom (start/end pickers).
+                             let timeFilter;
+                             if (this.awsTimeFilter === 'custom') {
+                                 const start = document.getElementById('aws-time-start')?.value || '';
+                                 const end   = document.getElementById('aws-time-end')?.value || '';
+                                 if (!start) {
+                                     alert('Please pick a start date for the custom time range.');
+                                     this.awsRunning = false;
+                                     return;
+                                 }
+                                 timeFilter = { type: 'between', start, end };
+                             } else {
+                                 timeFilter = { type: 'relative', value: this.awsTimeFilter };
+                             }
+                             const regions = this.awsRegions.split(',').map(r => r.trim()).filter(r => r);
+                             const principals = this.awsTargetPrincipals.split(',').map(p => p.trim()).filter(p => p);
+                             // Age-filter knobs — empty / non-numeric disables the filter.
+                             const parseDays = v => {
+                                 const n = parseFloat(v);
+                                 return (isNaN(n) || n < 0) ? null : n;
+                             };
+                             const mepr = parseInt(this.awsMaxEventsPerRegion, 10);
+                             const r = await fetch('/api/aws/scan', {
+                                 method: 'POST',
+                                 headers: { 'Content-Type': 'application/json' },
+                                 body: JSON.stringify({
+                                     blueprint: this.awsBlueprint,
+                                     regions: regions,
+                                     time_filter: timeFilter,
+                                     scope_mode: this.awsScopeMode,
+                                     target_principals: principals,
+                                     cloudtrail_mode: this.awsCloudTrailMode,
+                                     enable_llm: false,
+                                     min_severity: this.awsMinSeverity,
+                                     max_events_per_region: (!isNaN(mepr) && mepr > 0) ? mepr : null,
+                                 }),
+                             });
+                             const d = await r.json();
+                             if (d.run_id) {
+                                 this.awsRunId = d.run_id;
+                                 $store.app.switchTab('workflows');
+                             } else {
+                                 alert('Scan failed to start: ' + (d.error || 'unknown'));
+                             }
+                         } catch(e) { console.error(e); alert('Scan failed: ' + e.message); }
+                         this.awsRunning = false;
+                     },
+                     async uploadAwsLogs(event) {
+                         const files = event.target.files;
+                         if (!files.length) return;
+                         this.awsRunning = true;
+                         const formData = new FormData();
+                         for (const file of files) formData.append('files', file);
+                         try {
+                             const upRes = await fetch('/api/aws/upload', { method: 'POST', body: formData });
+                             const upData = await upRes.json();
+                             if (!upRes.ok || !upData.run_id) {
+                                 alert('Upload failed: ' + (upData.error || upRes.statusText));
+                                 this.awsRunning = false;
+                                 event.target.value = '';
+                                 return;
+                             }
+                             await fetch('/api/aws/analyze-offline', {
+                                 method: 'POST',
+                                 headers: { 'Content-Type': 'application/json' },
+                                 body: JSON.stringify({ run_id: upData.run_id, enable_llm: false, blueprint: this.awsBlueprint }),
+                             });
+                         } catch(e) { console.error(e); alert('Upload failed: ' + e.message); }
+                         this.awsRunning = false;
+                         event.target.value = '';
+                         this.$store.app.switchTab('workflows');
+                     }
+                 }"
+                 x-init="checkAwsStatus()">
+
+                <h2 class="text-3xl font-bold text-white mb-2">AWS Security Automation</h2>
+                <p class="text-gray-400 mb-6">Collect AWS state &amp; events (Prowler posture, IAM principals, CloudTrail, GuardDuty, AccessAnalyzer) and run SIGMA detection. Findings feed the case for analysis.</p>
+
+                <!-- Status Banner -->
+                <div x-show="awsStatus" class="mb-6 p-3 rounded-lg"
+                     :class="awsStatus?.status === 'ready' ? 'bg-green-900/30 border border-green-700' : 'bg-yellow-900/30 border border-yellow-700'">
+                    <div class="flex items-center gap-2 text-sm flex-wrap">
+                        <span :class="awsStatus?.status === 'ready' ? 'text-green-400' : 'text-yellow-400'"
+                              x-text="awsStatus?.status === 'ready' ? 'Ready' : 'Partial Setup'"></span>
+                        <span class="text-gray-400">|</span>
+                        <span class="text-gray-400">SIGMA rules:
+                            <span :class="awsStatus?.sigma_rules?.available ? 'text-green-400' : 'text-red-400'"
+                                  x-text="awsStatus?.sigma_rules?.available ? 'Available' : 'Not Found'"></span>
+                        </span>
+                        <span class="text-gray-400">|</span>
+                        <span class="text-gray-400">AWS credentials:
+                            <span :class="awsStatus?.aws_credentials?.configured ? 'text-green-400' : 'text-yellow-400'"
+                                  x-text="awsStatus?.aws_credentials?.configured ? 'Configured' : 'Not Set'"></span>
+                        </span>
+                        <span class="text-gray-400">|</span>
+                        <span class="text-gray-400">Default region:
+                            <span class="text-white font-mono" x-text="awsStatus?.aws_credentials?.region || '?'"></span>
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Main Card -->
+                <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
+                    <!-- Mode toggle -->
+                    <div class="flex gap-6 mb-6">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="aws-mode" value="online" x-model="awsMode" class="text-blue-500">
+                            <span class="text-white">Online Collection</span>
+                            <span class="text-xs text-gray-500">(Live API — stub)</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="aws-mode" value="offline" x-model="awsMode" class="text-blue-500">
+                            <span class="text-white">Offline Analysis</span>
+                            <span class="text-xs text-gray-500">(Upload CloudTrail / GuardDuty JSON)</span>
+                        </label>
+                    </div>
+
+                    <div class="max-w-2xl">
+
+                    <!-- Online mode -->
+                    <div x-show="awsMode === 'online'" class="space-y-4">
+                        <!-- Blueprint -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Blueprint</label>
+                            <select x-model="awsBlueprint"
+                                    @change="awsMaxEventsUserEdited = false; applyBlueprintDefaults()"
+                                    class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                <template x-for="bp in awsBlueprints" :key="bp.id">
+                                    <option :value="bp.id" x-text="bp.name"></option>
+                                </template>
+                            </select>
+                            <template x-if="selectedAwsBlueprint">
+                                <div class="mt-3 p-3 bg-gray-900/60 rounded-lg border border-orange-500/30 space-y-2 text-sm">
+                                    <div class="text-gray-200" x-text="selectedAwsBlueprint.description"></div>
+                                    <div class="text-xs text-gray-400">
+                                        Duration <span class="text-white" x-text="selectedAwsBlueprint.duration || '?'"></span> ·
+                                        Volume <span class="text-white" x-text="selectedAwsBlueprint.volume || '?'"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- Regions -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Regions <span class="text-xs text-gray-500">(comma-separated)</span></label>
+                            <input type="text" x-model="awsRegions" placeholder="us-east-1, eu-west-1"
+                                   class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white font-mono">
+                        </div>
+
+                        <!-- Time filter — relative dropdown OR custom date range (mirrors Azure) -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Time range <span class="text-xs text-gray-500">(only applies to event-based sources — CloudTrail)</span></label>
+                            <select x-model="awsTimeFilter" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                <option value="1h">Last hour</option>
+                                <option value="24h">Last 24 hours</option>
+                                <option value="7d">Last 7 days</option>
+                                <option value="30d">Last 30 days</option>
+                                <option value="custom">Custom range…</option>
+                            </select>
+                        </div>
+
+                        <!-- Custom date range (only shown when 'custom' is selected) -->
+                        <div x-show="awsTimeFilter === 'custom'" x-init="$watch('awsTimeFilter', v => v === 'custom' && initAwsDatePickers())" class="space-y-3 p-3 bg-gray-900/40 border border-blue-700/40 rounded-lg">
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-2">From (UTC)</label>
+                                <div class="flex items-center gap-2">
+                                    <div class="flex-1 relative">
+                                        <input type="text" id="aws-date-start" placeholder="Select date..."
+                                            class="aws-flatpickr w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none" readonly>
+                                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                        </span>
+                                    </div>
+                                    <select id="aws-time-start-hour" onchange="updateAwsStartDateTime()"
+                                        class="w-20 bg-gray-900 border border-gray-700 rounded-lg px-2 py-2.5 text-sm text-white text-center focus:border-blue-500 focus:outline-none">
+                                        <option value="00">00:00</option><option value="01">01:00</option><option value="02">02:00</option><option value="03">03:00</option>
+                                        <option value="04">04:00</option><option value="05">05:00</option><option value="06">06:00</option><option value="07">07:00</option>
+                                        <option value="08">08:00</option><option value="09">09:00</option><option value="10">10:00</option><option value="11">11:00</option>
+                                        <option value="12">12:00</option><option value="13">13:00</option><option value="14">14:00</option><option value="15">15:00</option>
+                                        <option value="16">16:00</option><option value="17">17:00</option><option value="18">18:00</option><option value="19">19:00</option>
+                                        <option value="20">20:00</option><option value="21">21:00</option><option value="22">22:00</option><option value="23">23:00</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="flex justify-center text-blue-400">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-2">To (UTC) <span class="text-gray-500">- empty = now</span></label>
+                                <div class="flex items-center gap-2">
+                                    <div class="flex-1 relative">
+                                        <input type="text" id="aws-date-end" placeholder="Select date..."
+                                            class="aws-flatpickr w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none" readonly>
+                                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                        </span>
+                                    </div>
+                                    <select id="aws-time-end-hour" onchange="updateAwsEndDateTime()"
+                                        class="w-20 bg-gray-900 border border-gray-700 rounded-lg px-2 py-2.5 text-sm text-white text-center focus:border-blue-500 focus:outline-none">
+                                        <option value="00">00:00</option><option value="01">01:00</option><option value="02">02:00</option><option value="03">03:00</option>
+                                        <option value="04">04:00</option><option value="05">05:00</option><option value="06">06:00</option><option value="07">07:00</option>
+                                        <option value="08">08:00</option><option value="09">09:00</option><option value="10">10:00</option><option value="11">11:00</option>
+                                        <option value="12">12:00</option><option value="13">13:00</option><option value="14">14:00</option><option value="15">15:00</option>
+                                        <option value="16">16:00</option><option value="17">17:00</option><option value="18">18:00</option><option value="19">19:00</option>
+                                        <option value="20">20:00</option><option value="21">21:00</option><option value="22">22:00</option><option value="23">23:00</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <input type="hidden" id="aws-time-start">
+                            <input type="hidden" id="aws-time-end">
+                        </div>
+
+                        <!-- Scope + CloudTrail mode -->
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">Scope</label>
+                                <select x-model="awsScopeMode" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                    <option value="account_wide">Account-wide (everyone)</option>
+                                    <option value="targeted">Specific IAM identity (ARN)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">CloudTrail mode</label>
+                                <select x-model="awsCloudTrailMode" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                    <option value="light">Light (console + IAM)</option>
+                                    <option value="full">Full (every event)</option>
+                                </select>
+                            </div>
+                        </div>
+                        <!-- Targeted-mode panel: IAM ARN input + explanatory help -->
+                        <div x-show="awsScopeMode === 'targeted'" class="p-3 bg-blue-900/20 border border-blue-700/40 rounded-lg space-y-2">
+                            <div class="text-xs text-blue-300/90 flex items-start gap-2">
+                                <svg class="w-4 h-4 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                <span>Identity-scoped scan: Prowler runs with <code class="text-blue-200">--resource-arn</code> against just the listed principals — ~7 KB / 30 s regardless of account size. Use this when you already know the compromised user (alert, leaked key).</span>
+                            </div>
+                            <label class="block text-sm font-medium text-gray-300">Target IAM principal ARNs <span class="text-xs text-gray-500">(comma-separated)</span></label>
+                            <input type="text" x-model="awsTargetPrincipals" placeholder="arn:aws:iam::137050702114:user/intactai-test-victim"
+                                   class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white font-mono text-xs">
+                        </div>
+
+                        <!-- DFIR age filters now run automatically with the
+                             backend defaults (30d fresh-admin, 7d fresh-key).
+                             The previous UI knobs were noise — see
+                             routes/aws_routes.py:245-246 + iam_runner.py for
+                             where the thresholds live and how fresh-admin
+                             gets bumped to critical. -->
+
+                        <!-- CloudTrail per-region cap (advanced) -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">
+                                Max CloudTrail events per region
+                                <span class="text-xs text-gray-500">(defaults from blueprint; raise for deeper coverage)</span>
+                            </label>
+                            <input type="number" min="50" step="50"
+                                   x-model="awsMaxEventsPerRegion"
+                                   @input="awsMaxEventsUserEdited = true"
+                                   :placeholder="selectedAwsBlueprint?.settings?.max_events_per_region || 500"
+                                   class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white font-mono">
+                            <p class="text-xs text-gray-500 mt-1" x-text="awsScanTimeEstimate"></p>
+                        </div>
+
+                        <!-- Min severity (findings filter — analysis happens at the case level) -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Minimum severity</label>
+                            <select x-model="awsMinSeverity" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                <option value="informational">Informational</option>
+                                <option value="low">Low</option>
+                                <option value="medium">Medium</option>
+                                <option value="high">High</option>
+                                <option value="critical">Critical</option>
+                            </select>
+                        </div>
+
+                        <button @click="startAwsScan()" :disabled="awsRunning"
+                                class="w-full bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-colors">
+                            <span x-show="!awsRunning">Start AWS scan</span>
+                            <span x-show="awsRunning">Starting…</span>
+                        </button>
+                    </div>
+
+                    <!-- Offline mode -->
+                    <div x-show="awsMode === 'offline'" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Upload AWS logs</label>
+                            <p class="text-xs text-gray-500 mb-2">CloudTrail JSON, GuardDuty exports, AccessAnalyzer findings, or a ZIP from a previous run.</p>
+                            <input type="file" @change="uploadAwsLogs($event)" multiple
+                                   accept=".json,.jsonl,.csv,.zip"
+                                   class="w-full text-sm text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-orange-600 file:text-white hover:file:bg-orange-700">
+                        </div>
+                        <p class="text-xs text-gray-500">After upload, analysis runs automatically and you'll be redirected to the Workflows tab.</p>
+                    </div>
+
+                    </div>
+                </div>
+            </div>

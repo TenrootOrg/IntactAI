@@ -14,8 +14,12 @@
  * Alpine stores listens for 'alpine:initialized'.
  */
 (function () {
-    // Tabs that live in partials/. Grows as more tabs are extracted from the shell.
-    const PARTIALS = ['downloads'];
+    // Tabs that live in partials/. One file per tab panel in <main>.
+    const PARTIALS = [
+        'cases', 'case-analysis', 'dashboard', 'workflows', 'downloads',
+        'velociraptor', 'timesketch', 'cve', 'memory', 'blueprints',
+        'scheduler', 'aws', 'azure', 'settings',
+    ];
 
     async function injectAll() {
         await Promise.all(PARTIALS.map(async (name) => {

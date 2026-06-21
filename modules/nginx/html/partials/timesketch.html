@@ -1,0 +1,164 @@
+            <div x-show="$store.app.currentTab === 'modules-timesketch'" x-transition class="tab-panel">
+                <h2 class="text-3xl font-bold text-white mb-2">TimeSketch Automation</h2>
+                <p class="text-gray-400 mb-6">Collect forensic artifacts and create investigation timelines</p>
+
+                <!-- Stopped-container warnings. TimeSketch needs BOTH its own
+                     server (for sketch / timeline ingest) AND Velociraptor (for
+                     the KAPE collection step). Show both banners independently
+                     so the operator sees exactly which side is down. -->
+                <div x-show="$store.services.statuses['timesketch'] === 'stopped'"
+                     class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 mb-4 flex items-start gap-3">
+                    <svg class="w-6 h-6 text-yellow-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-yellow-200">TimeSketch is installed but stopped</p>
+                        <p class="text-sm text-yellow-100/80 mt-1">The TimeSketch container is not running, so sketch creation and timeline ingest will fail. Start it with <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">docker start intact_timesketch_web</code>.</p>
+                    </div>
+                </div>
+                <div x-show="$store.services.statuses['velociraptor'] === 'stopped'"
+                     class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 mb-6 flex items-start gap-3">
+                    <svg class="w-6 h-6 text-yellow-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-yellow-200">Velociraptor is installed but stopped</p>
+                        <p class="text-sm text-yellow-100/80 mt-1">KAPE collection dispatches the <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">Windows.KapeFiles.Targets</code> Velociraptor artifact, so this page can't collect anything until the Velociraptor server is running. Start it with <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">docker start intact_velociraptor</code>.</p>
+                    </div>
+                </div>
+                <!-- Velociraptor entirely absent: TimeSketch nav-item stays
+                     visible (it's gated on the timesketch container), but
+                     the KAPE-collection workflow this page drives can't fire
+                     without Velociraptor. Solid red so it stays readable
+                     on the light tab-content surface. -->
+                <div x-show="$store.services.statuses['velociraptor'] === 'not_installed'"
+                     class="bg-red-900/30 border border-red-700 rounded-lg p-4 mb-6 flex items-start gap-3">
+                    <svg class="w-6 h-6 flex-shrink-0 mt-0.5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-red-200">Velociraptor is not installed</p>
+                        <p class="text-sm mt-1 text-red-100/80">KAPE collection dispatches the <code class="px-1.5 py-0.5 rounded bg-gray-800 text-red-200">Windows.KapeFiles.Targets</code> Velociraptor artifact — this workflow cannot run on a host without Velociraptor. Install it via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span> (or enable <code class="px-1.5 py-0.5 rounded bg-gray-800 text-red-200">modules.velociraptor.enabled: true</code> in config.yaml and re-run install.sh).</p>
+                    </div>
+                </div>
+
+                <!-- Mode Selection -->
+                <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
+                    <h3 class="text-2xl font-semibold text-white mb-4">Triage Collection & Timeline Import</h3>
+
+                    <!-- Mode Toggle -->
+                    <div class="mb-6">
+                        <label class="block text-sm font-medium text-gray-300 mb-3">Mode:</label>
+                        <div class="flex gap-6">
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" name="ts-mode" value="automation" checked onchange="toggleTimesketchMode()" class="w-4 h-4 text-purple-500 bg-gray-900 border-gray-600 focus:ring-purple-500">
+                                <span class="text-white">Full Automation</span>
+                                <span class="text-xs text-gray-500">(Live Velociraptor hunt)</span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" name="ts-mode" value="upload" onchange="toggleTimesketchMode()" class="w-4 h-4 text-purple-500 bg-gray-900 border-gray-600 focus:ring-purple-500">
+                                <span class="text-white">Upload Triage</span>
+                                <span class="text-xs text-gray-500">(External collection)</span>
+                            </label>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-2">Full Automation: Run triage hunt on connected clients | Upload: Process an existing triage/Velociraptor collection</p>
+                    </div>
+
+                    <!-- Blueprint Selection (shared) -->
+                    <div class="mb-6">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Processing Blueprint:</label>
+                        <select id="timesketch-blueprint-select" onchange="onTimesketchBlueprintChange()" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none">
+                            <option value="">Loading blueprints...</option>
+                        </select>
+                        <p class="text-xs text-gray-500 mt-1">Select a blueprint to configure triage target and Plaso processing settings</p>
+                        <div id="timesketch-blueprint-info" class="mt-2 text-xs text-gray-400 hidden">
+                            <span id="ts-blueprint-kape" class="inline-block bg-gray-700 px-2 py-1 rounded mr-2"></span>
+                            <span id="ts-blueprint-plaso" class="inline-block bg-gray-700 px-2 py-1 rounded"></span>
+                        </div>
+                    </div>
+
+                    <!-- ============ AUTOMATION MODE SECTION ============ -->
+                    <div id="ts-automation-section">
+                        <!-- Client Selection -->
+                        <div class="mb-6">
+                            <div class="flex items-center justify-between mb-2">
+                                <label class="block text-sm font-medium text-gray-300">Select Clients for Collection</label>
+                                <div class="flex gap-2">
+                                    <button onclick="selectAllTimeSketchClients()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Select All</button>
+                                    <button onclick="deselectAllTimeSketchClients()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">None</button>
+                                </div>
+                            </div>
+                            <input type="text" id="timesketch-client-search" placeholder="Filter clients by name..."
+                                oninput="filterTimesketchClients(this.value)"
+                                class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-purple-500 focus:outline-none">
+                            <div id="timesketch-client-list" class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
+                                <p class="text-sm text-gray-500">Loading clients...</p>
+                            </div>
+                        </div>
+
+                        <!-- Sketch Name -->
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Sketch Name:</label>
+                            <input type="text" id="sketch-name" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm"
+                                x-data x-init="$el.placeholder = 'Investigation-' + new Date().toISOString().split('T')[0]">
+                            <p class="text-xs text-gray-500 mt-1">If a sketch with this name exists, timelines will be added to it. Otherwise a new sketch is created.</p>
+                        </div>
+
+                        <!-- Action Button -->
+                        <button onclick="runTimeSketchWorkflow()" class="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 px-6 py-3 rounded-lg font-medium transition-colors">
+                            <span class="flex items-center justify-center gap-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                                </svg>
+                                Start Collection & Timeline Import
+                            </span>
+                        </button>
+                    </div>
+
+                    <!-- ============ UPLOAD MODE SECTION ============ -->
+                    <div id="ts-upload-section" class="hidden">
+                        <!-- File Upload with Drag & Drop -->
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Triage Collection File:</label>
+                            <div id="ts-upload-dropzone" class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center cursor-pointer hover:border-purple-500 transition-colors">
+                                <input type="file" id="ts-kape-file" accept=".zip" class="hidden">
+                                <svg class="w-12 h-12 mx-auto mb-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                </svg>
+                                <p id="ts-dropzone-text" class="text-gray-400">Drag & drop ZIP file or click to browse</p>
+                                <p class="text-xs text-gray-500 mt-2">Supports: Velociraptor offline collection, triage output (any size, resumable)</p>
+                            </div>
+
+                            <!-- Upload Progress -->
+                            <div id="ts-upload-progress" class="hidden mt-4">
+                                <div class="flex justify-between text-xs text-gray-400 mb-1">
+                                    <span id="ts-upload-filename"></span>
+                                    <span id="ts-upload-percent">0%</span>
+                                </div>
+                                <div class="bg-gray-700 rounded-full h-2.5">
+                                    <div id="ts-upload-bar" class="bg-gradient-to-r from-purple-500 to-blue-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                                </div>
+                                <p id="ts-upload-status" class="text-xs text-gray-400 mt-1"></p>
+                            </div>
+                        </div>
+
+                        <!-- Sketch Name (Upload mode) -->
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Sketch Name:</label>
+                            <input type="text" id="ts-upload-sketch" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm"
+                                x-data x-init="$el.placeholder = 'Investigation-' + new Date().toISOString().split('T')[0]">
+                            <p class="text-xs text-gray-500 mt-1">Timeline will be named from the hostname in the collection.</p>
+                        </div>
+
+                        <!-- Upload Button -->
+                        <button id="ts-upload-btn" onclick="uploadKapeToTimesketch()" class="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 px-6 py-3 rounded-lg font-medium transition-colors">
+                            <span class="flex items-center justify-center gap-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+                                </svg>
+                                Upload & Import to Timesketch
+                            </span>
+                        </button>
+                    </div>
+                </div>
+            </div>

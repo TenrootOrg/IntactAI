@@ -1,0 +1,31 @@
+            <div x-show="$store.app.currentTab === 'scheduler'" x-transition class="tab-panel" x-init="$watch('$store.app.currentTab', val => val === 'scheduler' && initScheduler())">
+                <div class="flex items-center justify-between mb-2">
+                    <div>
+                        <h2 class="text-3xl font-bold text-white">Scheduler</h2>
+                        <p class="text-gray-400 text-sm mt-1">Schedule automated artifact collections and recurring analysis jobs.</p>
+                    </div>
+                    <button onclick="showNewScheduleModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                        </svg>
+                        New Schedule
+                    </button>
+                </div>
+
+                <!-- Scheduled Jobs List -->
+                <div id="scheduler-jobs-list" class="mt-6 space-y-3">
+                    <div class="text-gray-500 text-sm">Loading scheduled jobs...</div>
+                </div>
+
+                <!-- Empty State -->
+                <div id="scheduler-empty-state" class="hidden bg-gray-800 rounded-xl p-12 border border-gray-700 text-center mt-6">
+                    <svg class="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                    </svg>
+                    <h3 class="text-xl font-semibold text-gray-400 mb-2">No Scheduled Jobs</h3>
+                    <p class="text-gray-500 text-sm mb-4">Create a schedule to automatically run blueprints at set intervals.</p>
+                    <button onclick="showNewScheduleModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium">
+                        Create First Schedule
+                    </button>
+                </div>
+            </div>

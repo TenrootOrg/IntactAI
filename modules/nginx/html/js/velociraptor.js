@@ -517,8 +517,8 @@ function resetOfflineImport() {
     if (fileInput) fileInput.value = '';
 }
 
-// Initialize dropzone when the offline import tab is shown
-document.addEventListener('DOMContentLoaded', () => {
-    // Initialize after a short delay to ensure DOM is ready
-    setTimeout(initOfflineImportDropzone, 500);
+// Initialize dropzone once the Velociraptor partial (which holds the offline
+// import UI) has been injected into the DOM.
+document.addEventListener('partials:ready', () => {
+    setTimeout(initOfflineImportDropzone, 100);
 });

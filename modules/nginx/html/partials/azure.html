@@ -1,0 +1,390 @@
+            <div x-show="$store.app.currentTab === 'cloud-azure'" x-transition class="tab-panel"
+                 x-data="{
+                     azureMode: 'online',
+                     azureStatus: null,
+                     azureBlueprints: [],
+                     azureBlueprint: 'azure_account_investigation',
+                     azureTimeFilter: '24h',
+                     azureCustomStart: '',
+                     azureCustomEnd: '',
+                     azureMinSeverity: 'high',
+                     azureRunning: false,
+                     azureRunId: null,
+                     azureResults: null,
+                     azureUploadedFiles: [],
+                     azureTargetUsers: '',
+                     azureTargetIPs: '',
+                     azurePivotMode: false,
+                     // 'targeted' (default) hunts a known user/IP set with
+                     // server-side filters; 'tenant_wide' pulls every event
+                     // in the time window. Tenant-wide is the slow path.
+                     azureScopeMode: 'targeted',
+                     // 'full' (default) pulls every UAL record type;
+                     // 'light' filters to a curated high-signal set
+                     // (auth, app, persistence) — recommended for big
+                     // tenants where 'full' takes 30+ minutes and most
+                     // events are PowerBI/Yammer/Sway noise. Ignored when
+                     // target_users / target_ips is set.
+                     azureUalMode: 'full',
+                     async checkAzureStatus() {
+                         try {
+                             const res = await fetch('/api/azure/status');
+                             this.azureStatus = await res.json();
+                         } catch(e) { console.error(e); }
+                         try {
+                             const res = await fetch('/api/azure/blueprints');
+                             const data = await res.json();
+                             this.azureBlueprints = data.blueprints || [];
+                         } catch(e) { console.error('Failed to load blueprints:', e); }
+                     },
+                     get selectedBlueprint() {
+                         return this.azureBlueprints.find(b => b.id === this.azureBlueprint) || null;
+                     },
+                     async startAzureScan() {
+                         this.azureRunning = true;
+                         this.azureResults = null;
+                         try {
+                             let timeFilter;
+                             if (this.azureTimeFilter === 'custom') {
+                                 const customDates = getAzureCustomDates();
+                                 timeFilter = { type: 'between', start: customDates.start, end: customDates.end };
+                             } else {
+                                 timeFilter = { type: 'relative', value: this.azureTimeFilter };
+                             }
+                             const targetUsers = this.azureTargetUsers.split(',').map(u => u.trim()).filter(u => u);
+                             const targetIps = this.azureTargetIPs.split(',').map(ip => ip.trim()).filter(ip => ip);
+                             // Targeted scope without picks is a no-op the
+                             // backend would reject; surface that here so the
+                             // operator doesn't burn a click + redirect.
+                             if (this.azureScopeMode === 'targeted' && targetUsers.length === 0 && targetIps.length === 0) {
+                                 alert('Targeted scope requires at least one user or IP.\n\nEither fill in Target Users / Target IPs, or switch to Tenant-wide hunt.');
+                                 this.azureRunning = false;
+                                 return;
+                             }
+                             const res = await fetch('/api/azure/scan', {
+                                 method: 'POST',
+                                 headers: { 'Content-Type': 'application/json' },
+                                 body: JSON.stringify({
+                                     blueprint: this.azureBlueprint,
+                                     time_filter: timeFilter,
+                                     enable_llm: false,
+                                     min_severity: this.azureMinSeverity,
+                                     scope_mode: this.azureScopeMode,
+                                     target_users: targetUsers,
+                                     target_ips: targetIps,
+                                     pivot_mode: this.azurePivotMode,
+                                     ual_mode: this.azureUalMode
+                                 })
+                             });
+                             const data = await res.json();
+                             if (data.run_id) {
+                                 this.azureRunId = data.run_id;
+                                 // Always redirect to workflows - all status/errors visible in log
+                                 $store.app.switchTab('workflows');
+                             }
+                         } catch(e) { console.error(e); }
+                         this.azureRunning = false;
+                     },
+                     async uploadAzureLogs(event) {
+                         // One-shot: upload → kick off analysis → bounce to
+                         // the Workflows tab so the user tracks progress on
+                         // the same workflow row as everything else
+                         // (mirrors the timesketch upload flow). The Cloud >
+                         // Azure tab itself stays clean — no inline file
+                         // list, no inline results cards.
+                         const files = event.target.files;
+                         if (!files.length) return;
+                         this.azureRunning = true;
+                         const formData = new FormData();
+                         for (const file of files) formData.append('files', file);
+                         try {
+                             const upRes = await fetch('/api/azure/upload', { method: 'POST', body: formData });
+                             const upData = await upRes.json();
+                             if (!upRes.ok || !upData.run_id) {
+                                 alert('Upload failed: ' + (upData.error || upRes.statusText));
+                                 this.azureRunning = false;
+                                 event.target.value = '';
+                                 return;
+                             }
+                             const runId = upData.run_id;
+
+                             // Ingest only — collection feeds the case, which
+                             // owns all LLM analysis now.
+                             await fetch('/api/azure/analyze-offline', {
+                                 method: 'POST',
+                                 headers: { 'Content-Type': 'application/json' },
+                                 body: JSON.stringify({ run_id: runId, enable_llm: false })
+                             });
+                         } catch(e) {
+                             console.error(e);
+                             alert('Upload failed');
+                             this.azureRunning = false;
+                             event.target.value = '';
+                             return;
+                         }
+                         this.azureRunning = false;
+                         event.target.value = '';
+                         // Same handoff timesketch uses — switch to the
+                         // workflows tab where the run is already visible.
+                         this.$store.app.switchTab('workflows');
+                     },
+                     async loadAzureResults(runId) {
+                         try {
+                             const [statusRes, findingsRes] = await Promise.all([
+                                 fetch('/api/azure/status/' + runId),
+                                 fetch('/api/azure/findings/' + runId)
+                             ]);
+                             this.azureResults = {
+                                 status: await statusRes.json(),
+                                 findings: await findingsRes.json()
+                             };
+                         } catch(e) { console.error(e); }
+                     }
+                 }"
+                 x-init="checkAzureStatus()">
+
+                <h2 class="text-3xl font-bold text-white mb-2">Microsoft 365 Security Automation</h2>
+                <p class="text-gray-400 mb-6">Collect Microsoft 365 logs and run SIGMA detection rules. Findings feed the case for analysis.</p>
+
+                <!-- Status Banner -->
+                <div x-show="azureStatus" class="mb-6 p-3 rounded-lg"
+                     :class="azureStatus?.status === 'ready' ? 'bg-green-900/30 border border-green-700' : 'bg-yellow-900/30 border border-yellow-700'">
+                    <div class="flex items-center gap-2 text-sm">
+                        <span :class="azureStatus?.status === 'ready' ? 'text-green-400' : 'text-yellow-400'"
+                              x-text="azureStatus?.status === 'ready' ? 'Ready' : 'Partial Setup'"></span>
+                        <span class="text-gray-400">|</span>
+                        <span class="text-gray-400">SIGMA Rules: <span :class="azureStatus?.sigma_rules?.available ? 'text-green-400' : 'text-red-400'" x-text="azureStatus?.sigma_rules?.available ? 'Available' : 'Not Found'"></span></span>
+                        <span class="text-gray-400">|</span>
+                        <span class="text-gray-400">Microsoft 365 Credentials: <span :class="azureStatus?.azure_credentials?.configured ? 'text-green-400' : 'text-yellow-400'" x-text="azureStatus?.azure_credentials?.configured ? 'Configured' : 'Not Set'"></span></span>
+                    </div>
+                </div>
+
+                <!-- Main Card -->
+                <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
+                    <!-- Mode Selection -->
+                    <div class="flex gap-6 mb-6">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="azure-mode" value="online" x-model="azureMode" class="text-blue-500">
+                            <span class="text-white">Online Collection</span>
+                            <span class="text-xs text-gray-500">(Live API)</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="azure-mode" value="offline" x-model="azureMode" class="text-blue-500">
+                            <span class="text-white">Offline Analysis</span>
+                            <span class="text-xs text-gray-500">(Upload logs)</span>
+                        </label>
+                    </div>
+
+                    <div class="max-w-2xl">
+                    <!-- Online Mode -->
+                    <div x-show="azureMode === 'online'" class="space-y-4">
+                        <!-- Blueprint Selection -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Blueprint</label>
+                            <select x-model="azureBlueprint" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                <template x-for="bp in azureBlueprints" :key="bp.id">
+                                    <option :value="bp.id" x-text="bp.name"></option>
+                                </template>
+                            </select>
+
+                            <!-- Blueprint Details Card -->
+                            <template x-if="selectedBlueprint">
+                                <div class="mt-3 p-3 bg-gray-900/60 rounded-lg border border-blue-500/30 space-y-2 text-sm">
+                                    <div class="text-gray-200" x-text="selectedBlueprint.description"></div>
+                                    <div class="flex flex-wrap gap-1.5">
+                                        <template x-for="src in Object.keys(selectedBlueprint.source_details || {})" :key="src">
+                                            <span class="px-2 py-0.5 bg-blue-900/40 border border-blue-700/40 rounded text-blue-300 font-mono text-xs" x-text="src"></span>
+                                        </template>
+                                    </div>
+                                    <template x-if="selectedBlueprint.requires_target_users">
+                                        <div class="text-xs text-yellow-400">⚠️ Requires Target Users</div>
+                                    </template>
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- Scope Mode (targeted vs tenant-wide) -->
+                        <div class="p-4 bg-gray-900/50 rounded-lg border border-gray-700 space-y-3">
+                            <label class="block text-sm font-medium text-blue-400">Scope</label>
+                            <div class="flex gap-6">
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" name="azure-scope" value="targeted" x-model="azureScopeMode" class="text-blue-500">
+                                    <span class="text-white text-sm">Targeted hunt</span>
+                                    <span class="text-xs text-gray-500">(specific users / IPs — fast)</span>
+                                </label>
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" name="azure-scope" value="tenant_wide" x-model="azureScopeMode" class="text-blue-500">
+                                    <span class="text-white text-sm">Tenant-wide hunt</span>
+                                    <span class="text-xs text-gray-500">(everyone in the window)</span>
+                                </label>
+                            </div>
+                            <template x-if="azureScopeMode === 'tenant_wide'">
+                                <div class="text-xs text-yellow-400 leading-relaxed">
+                                    ⚠️ Tenant-wide hunts on a busy tenant may take 15-30 min and produce 10x more events for the analyzer to process. Recommended only for periodic baselines or when an attacker's identity is unknown.
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- Identity Filters (hidden in tenant-wide mode) -->
+                        <div x-show="azureScopeMode === 'targeted'" class="p-4 bg-gray-900/50 rounded-lg border border-gray-700 space-y-3">
+                            <label class="block text-sm font-medium text-blue-400">Identity Filters</label>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Target Users <span class="text-gray-600">(comma-separated emails)</span></label>
+                                <input type="text" x-model="azureTargetUsers" placeholder="user1@domain.com, user2@domain.com"
+                                       class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600">
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Target IPs <span class="text-gray-600">(comma-separated)</span></label>
+                                <input type="text" x-model="azureTargetIPs" placeholder="1.2.3.4, 5.6.7.8"
+                                       class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600">
+                            </div>
+                            <div class="flex items-center gap-3">
+                                <input type="checkbox" id="azure-pivot" x-model="azurePivotMode" class="rounded bg-gray-700 border-gray-600">
+                                <label for="azure-pivot" class="text-gray-300 text-sm">Pivot Mode</label>
+                                <span class="text-xs text-gray-500">(find other accounts from same IPs)</span>
+                            </div>
+                        </div>
+
+                        <!-- UAL Collection Mode (full vs light) -->
+                        <!-- Only meaningful in tenant-wide mode; identity
+                             filters take precedence and Microsoft-side filter
+                             on UserIds/IPAddresses is already the lightest
+                             query possible. Hide the panel when targeted to
+                             keep the form short. -->
+                        <div x-show="azureScopeMode === 'tenant_wide'" class="p-4 bg-gray-900/50 rounded-lg border border-gray-700 space-y-3">
+                            <label class="block text-sm font-medium text-blue-400">UAL Collection Mode</label>
+                            <select x-model="azureUalMode" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm">
+                                <option value="full">Full — every UAL record type (slow on large tenants)</option>
+                                <option value="light">Light — high-signal record types only (recommended for &gt;1k users)</option>
+                            </select>
+                            <template x-if="azureUalMode === 'light'">
+                                <div class="text-xs text-gray-400 leading-relaxed">
+                                    Pulls only auth (AzureActiveDirectory*), persistence (ExchangeAdmin, ApplicationAudit), and threat-intel record types. Skips PowerBI / Yammer / Sway / Stream / MicrosoftFlow noise. Typically 5-10× smaller dataset and faster collection.
+                                </div>
+                            </template>
+                            <template x-if="azureUalMode === 'full'">
+                                <div class="text-xs text-yellow-400 leading-relaxed">
+                                    ⚠️ Full mode collects every record type. On a tenant with 1,000+ active users this can run 30-60+ minutes and produce a high volume of low-signal events for the analyzer to process.
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- Time Filter -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Time Filter</label>
+                            <select x-model="azureTimeFilter" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                <option value="24h">Last 24 hours</option>
+                                <option value="7d">Last 7 days</option>
+                                <option value="14d">Last 14 days</option>
+                                <option value="30d">Last 30 days</option>
+                                <option value="custom">Custom range</option>
+                            </select>
+                        </div>
+
+                        <!-- Custom Date Range -->
+                        <div x-show="azureTimeFilter === 'custom'" x-init="$watch('azureTimeFilter', val => val === 'custom' && initAzureDatePickers())" class="space-y-4">
+                            <!-- From Date/Time -->
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-2">From (UTC)</label>
+                                <div class="flex items-center gap-2">
+                                    <div class="flex-1 relative">
+                                        <input type="text" id="azure-date-start" placeholder="Select date..."
+                                            class="azure-flatpickr w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none" readonly>
+                                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                        </span>
+                                    </div>
+                                    <select id="azure-time-start-hour" onchange="updateAzureStartDateTime()"
+                                        class="w-20 bg-gray-900 border border-gray-700 rounded-lg px-2 py-2.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none text-center">
+                                        <option value="00">00:00</option><option value="01">01:00</option><option value="02">02:00</option><option value="03">03:00</option>
+                                        <option value="04">04:00</option><option value="05">05:00</option><option value="06">06:00</option><option value="07">07:00</option>
+                                        <option value="08">08:00</option><option value="09">09:00</option><option value="10">10:00</option><option value="11">11:00</option>
+                                        <option value="12">12:00</option><option value="13">13:00</option><option value="14">14:00</option><option value="15">15:00</option>
+                                        <option value="16">16:00</option><option value="17">17:00</option><option value="18">18:00</option><option value="19">19:00</option>
+                                        <option value="20">20:00</option><option value="21">21:00</option><option value="22">22:00</option><option value="23">23:00</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <!-- Arrow -->
+                            <div class="flex justify-center text-blue-400">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
+                            </div>
+                            <!-- To Date/Time -->
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-2">To (UTC) <span class="text-gray-500">- empty = now</span></label>
+                                <div class="flex items-center gap-2">
+                                    <div class="flex-1 relative">
+                                        <input type="text" id="azure-date-end" placeholder="Select date..."
+                                            class="azure-flatpickr w-full bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none" readonly>
+                                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                        </span>
+                                    </div>
+                                    <select id="azure-time-end-hour" onchange="updateAzureEndDateTime()"
+                                        class="w-20 bg-gray-900 border border-gray-700 rounded-lg px-2 py-2.5 text-sm text-white cursor-pointer focus:border-blue-500 focus:outline-none text-center">
+                                        <option value="00">00:00</option><option value="01">01:00</option><option value="02">02:00</option><option value="03">03:00</option>
+                                        <option value="04">04:00</option><option value="05">05:00</option><option value="06">06:00</option><option value="07">07:00</option>
+                                        <option value="08">08:00</option><option value="09">09:00</option><option value="10">10:00</option><option value="11">11:00</option>
+                                        <option value="12">12:00</option><option value="13">13:00</option><option value="14">14:00</option><option value="15">15:00</option>
+                                        <option value="16">16:00</option><option value="17">17:00</option><option value="18">18:00</option><option value="19">19:00</option>
+                                        <option value="20">20:00</option><option value="21">21:00</option><option value="22">22:00</option><option value="23">23:00</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <!-- Hidden combined fields -->
+                            <input type="hidden" id="azure-time-start">
+                            <input type="hidden" id="azure-time-end">
+                        </div>
+
+                        <!-- Minimum Severity -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Minimum Severity</label>
+                            <select x-model="azureMinSeverity" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                <option value="informational">Informational (all findings)</option>
+                                <option value="low">Low+</option>
+                                <option value="medium">Medium+</option>
+                                <option value="high">High+ (recommended)</option>
+                                <option value="critical">Critical only</option>
+                            </select>
+                        </div>
+
+                        <!-- Start Button -->
+                        <button @click="startAzureScan()"
+                                :disabled="azureRunning || !azureStatus?.azure_credentials?.configured"
+                                class="w-full py-3 rounded-lg font-medium transition-colors"
+                                :class="azureRunning || !azureStatus?.azure_credentials?.configured ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'">
+                            <span x-show="!azureRunning">Start Microsoft 365 Scan</span>
+                            <span x-show="azureRunning">Scanning...</span>
+                        </button>
+
+                        <p x-show="!azureStatus?.azure_credentials?.configured" class="text-yellow-400 text-sm">
+                            Configure Microsoft 365 credentials in Settings to use online mode.
+                        </p>
+                    </div>
+
+                    <!-- Offline Mode -->
+                    <div x-show="azureMode === 'offline'" class="space-y-4">
+                        <!-- Static notice: upload ingests the logs into a run;
+                             analysis happens at the case level. -->
+                        <div class="bg-blue-900/30 border border-blue-700/50 rounded-lg px-4 py-3 text-sm text-blue-200">
+                            <span class="font-semibold">Upload ingests the logs and runs SIGMA detection.</span>
+                            The resulting findings feed the case for analysis. Progress is shown in the
+                            <span class="text-blue-100 font-medium">Workflows</span> tab.
+                        </div>
+
+                        <!-- File Upload -->
+                        <div class="border-2 border-dashed border-gray-600 rounded-lg p-6 text-center hover:border-blue-500 transition-colors"
+                             :class="azureRunning ? 'opacity-60 pointer-events-none' : ''">
+                            <input type="file" id="azure-upload" @change="uploadAzureLogs($event)" multiple accept=".json,.jsonl,.csv,.zip" class="hidden" :disabled="azureRunning">
+                            <label for="azure-upload" class="cursor-pointer block">
+                                <svg class="w-12 h-12 mx-auto text-gray-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                </svg>
+                                <p class="text-gray-300" x-text="azureRunning ? 'Uploading…' : 'Click to upload Microsoft 365 logs'"></p>
+                                <p class="text-gray-500 text-sm mt-1">JSON / JSONL / CSV, or a ZIP from the Data button of an online run</p>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                </div>
+            </div>

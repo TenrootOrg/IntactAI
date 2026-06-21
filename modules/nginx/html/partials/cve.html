@@ -1,0 +1,154 @@
+            <div x-show="$store.app.currentTab === 'modules-cve-scan'" x-transition class="tab-panel">
+                <h2 class="text-3xl font-bold text-white mb-2">CVE Scan</h2>
+
+                <!-- Stopped-Velociraptor warning: CVE Scan's "from Velociraptor"
+                     mode dispatches a hunt with 4 inventory artifacts, so a down
+                     Velo blocks that path. Manual-CSV-upload still works. -->
+                <div x-show="$store.services.statuses['velociraptor'] === 'stopped'"
+                     class="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 mb-4 flex items-start gap-3">
+                    <svg class="w-6 h-6 text-yellow-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-yellow-200">Velociraptor is installed but stopped</p>
+                        <p class="text-sm text-yellow-100/80 mt-1">The "Run from Velociraptor" path dispatches a hunt for the 4 inventory artifacts (installed-software / startup / scheduled-tasks / services). Without a running Velociraptor server, only the manual CSV-upload path works. Start it with <code class="bg-gray-800 px-1.5 py-0.5 rounded text-yellow-200">docker start intact_velociraptor</code>.</p>
+                    </div>
+                </div>
+                <!-- Velociraptor entirely absent: CVE Scan stays reachable via
+                     the cve_scan config gate, but the "Run from Velociraptor"
+                     and "From existing flow" paths can't dispatch their inventory
+                     hunt. Solid red so it stays readable on the light tab-content
+                     surface. The manual CSV-upload path still works. -->
+                <div x-show="$store.services.statuses['velociraptor'] === 'not_installed'"
+                     class="bg-red-900/30 border border-red-700 rounded-lg p-4 mb-4 flex items-start gap-3">
+                    <svg class="w-6 h-6 flex-shrink-0 mt-0.5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="font-semibold text-red-200">Velociraptor is not installed</p>
+                        <p class="text-sm mt-1 text-red-100/80">The "Run from Velociraptor" and "From existing flow" paths dispatch the inventory artifacts (<code class="px-1.5 py-0.5 rounded bg-gray-800 text-red-200">Windows.Sys.Programs</code> + 3 others) — these need a running Velociraptor server. The manual CSV-upload path still works without Velociraptor. To enable hunt dispatch, install Velociraptor via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span>.</p>
+                    </div>
+                </div>
+                <p class="text-gray-400 mb-4 max-w-4xl">
+                    Match each host's installed software against
+                    <a href="https://nvd.nist.gov/" target="_blank" rel="noreferrer" class="text-indigo-300 hover:text-indigo-200 underline">NVD</a>
+                    and get a CSV of vulnerable products ranked by CVSS — a patch list for IT.
+                </p>
+
+                <!-- Shared "Report contents" selector — applies to
+                     whichever of the three input methods the operator
+                     submits. Sub-tabs were collapsed into a single
+                     stacked layout (sections are short enough that
+                     navigation between them isn't needed). -->
+                <div class="max-w-4xl mb-6 bg-gray-800 rounded-lg p-5 border border-gray-700">
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Report contents</label>
+                    <div class="flex flex-wrap gap-6 text-sm">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" x-model="$store.cveScan.scanMode" value="vulnerable_only" class="text-blue-600 focus:ring-blue-500">
+                            <span class="text-gray-200">Vulnerable only</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" x-model="$store.cveScan.scanMode" value="full" class="text-blue-600 focus:ring-blue-500">
+                            <span class="text-gray-200">Full inventory <span class="text-gray-500">(Vulnerable → Unknown → Patched)</span></span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- ========== RUN HUNT + AUTO-SCAN (preferred path, first) ==========
+                     Hunt-only was removed — operators who only want to
+                     dispatch a hunt can do so directly from Velociraptor.
+                     Inside Intact, the value-add is the chained scan. -->
+                <div class="max-w-4xl space-y-5 mb-8">
+                    <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <h3 class="text-sm font-semibold text-gray-200 mb-2">
+                            Dispatch a new hunt + auto-scan
+                            <span class="ml-2 px-2 py-0.5 bg-indigo-900 text-indigo-300 text-xs rounded">Recommended</span>
+                        </h3>
+                        <p class="text-xs text-gray-400 mb-4">
+                            Dispatch the <code class="text-indigo-300 text-xs">cve_management</code> hunt across all
+                            online clients, poll until it finishes, then automatically pull CSVs and run the NVD scan.
+                            One <code class="text-indigo-300 text-xs">cve_scan</code> workflow row tracks the full flow
+                            end-to-end and the <em>CVE CSV</em> download appears when done.
+                        </p>
+                        <div class="mb-4">
+                            <label class="block text-xs text-gray-400 mb-1">Max wait for the hunt</label>
+                            <div class="flex items-center gap-2">
+                                <input type="number" min="1" max="720" step="1"
+                                       x-model.number="$store.cveScan.maxWaitMinutes"
+                                       class="w-24 bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm focus:outline-none focus:border-blue-500">
+                                <span class="text-xs text-gray-400">minutes</span>
+                                <span class="text-xs text-gray-500 ml-1">(1 – 720)</span>
+                            </div>
+                        </div>
+                        <div class="flex items-center justify-end gap-3 pt-4 border-t border-gray-700">
+                            <button @click="$store.cveScan.runHunt(true)"
+                                    :disabled="$store.cveScan.submitting"
+                                    class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
+                                <span x-show="!$store.cveScan.submitting">Dispatch hunt + auto-scan</span>
+                                <span x-show="$store.cveScan.submitting">Dispatching…</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========== UPLOAD HUNT ZIP ========== -->
+                <div class="max-w-4xl space-y-5 mb-8">
+                    <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <h3 class="text-sm font-semibold text-gray-200 mb-2">Or upload a Velociraptor hunt ZIP</h3>
+                        <p class="text-xs text-gray-400 mb-4">
+                            In Velociraptor, open the hunt and use <em>Download Results → Full Download</em> (or
+                            <em>Summary (CSV Only)</em>) to get the artifact bundle. Drop that ZIP here — we'll unpack
+                            it, merge each artifact's per-client CSVs, and run the NVD scan. The run is auto-named
+                            with the current timestamp.
+                        </p>
+                        <div class="flex items-center gap-3 bg-gray-900 border border-dashed border-gray-600 rounded px-4 py-6 mb-4">
+                            <input type="file" accept=".zip"
+                                   @change="$store.cveScan.setZip($event.target.files[0])"
+                                   class="flex-1 text-sm text-gray-300 file:mr-3 file:py-2 file:px-4 file:rounded file:border-0 file:bg-indigo-600 file:text-white file:hover:bg-indigo-700 file:cursor-pointer">
+                            <span x-show="$store.cveScan.zipFile" class="text-xs text-teal-400 whitespace-nowrap" x-text="$store.cveScan.zipFile?.name"></span>
+                        </div>
+                        <div class="flex items-center justify-end gap-3 pt-4 border-t border-gray-700">
+                            <button @click="$store.cveScan.submitZip()"
+                                    :disabled="$store.cveScan.submitting || !$store.cveScan.zipFile"
+                                    class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
+                                <span x-show="!$store.cveScan.submitting">Run CVE Scan from ZIP</span>
+                                <span x-show="$store.cveScan.submitting">Dispatching…</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========== USE EXISTING HUNT / FLOW ========== -->
+                <div class="max-w-4xl space-y-5 mb-8">
+                    <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <h3 class="text-sm font-semibold text-gray-200 mb-2">Or scan an existing Velociraptor flow / hunt</h3>
+                        <input type="text" x-model="$store.cveScan.flowOrHuntId"
+                               placeholder="F.XXXX (single host) · H.XXXX or F.XXXX.H (hunt across hosts)"
+                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
+                        <p class="text-xs text-gray-500 mt-2 mb-4">
+                            The flow / hunt must have collected
+                            <code class="text-indigo-300">Windows.Sys.Programs</code>,
+                            <code class="text-indigo-300">DetectRaptor.Windows.Detection.Applications</code>,
+                            <code class="text-indigo-300">DetectRaptor.Windows.Detection.LolRMM</code>, and
+                            <code class="text-indigo-300">Generic.Client.Info</code>. Missing artifacts are skipped.
+                        </p>
+                        <div class="flex items-center justify-end gap-3 pt-4 border-t border-gray-700">
+                            <button @click="$store.cveScan.submitFromId()"
+                                    :disabled="$store.cveScan.submitting || !($store.cveScan.flowOrHuntId || '').trim()"
+                                    class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
+                                <span x-show="!$store.cveScan.submitting">Run CVE Scan from this ID</span>
+                                <span x-show="$store.cveScan.submitting">Dispatching…</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Shared status line (any dispatch sets it). Wrapped
+                     in a card so the text stays readable regardless of
+                     the surrounding page background. -->
+                <div x-show="$store.cveScan.status" class="max-w-4xl bg-gray-800 rounded-lg p-3 border border-gray-700">
+                    <p class="text-xs"
+                       :class="{'text-red-300':$store.cveScan.statusLevel==='error','text-teal-300':$store.cveScan.statusLevel==='success','text-gray-300':$store.cveScan.statusLevel==='info'}"
+                       x-text="$store.cveScan.status"></p>
+                </div>
+            </div>

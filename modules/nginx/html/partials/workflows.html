@@ -1,0 +1,156 @@
+            <div x-show="$store.app.currentTab === 'workflows'" x-transition class="tab-panel">
+                <div class="mb-6">
+                    <h2 class="text-3xl font-bold text-white">Workflow Runs</h2>
+                    <!-- Subtitle + controls share the same row, vertically
+                         centred. Subtitle gets `flex-1 min-w-0` so it
+                         truncates / wraps before pushing the controls off. -->
+                    <div class="flex flex-wrap items-center justify-between gap-4 mt-2">
+                        <p class="text-gray-400 flex-1 min-w-0">View all workflow executions with status, dates, and logs. Reporting is done per case in Case Analysis.</p>
+                        <div class="flex flex-wrap items-center gap-3 shrink-0">
+                            <div class="flex items-center gap-2">
+                                <label class="text-sm text-gray-400 whitespace-nowrap" for="workflows-type-filter">Filter:</label>
+                                <select id="workflows-type-filter"
+                                        x-model="$store.workflows.typeFilter"
+                                        @change="$store.workflows.applyFilter()"
+                                        class="h-10 bg-gray-800 border border-gray-600 rounded-lg px-3 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <option value="">All Types</option>
+                                    <option value="aws_scan">AWS Scan</option>
+                                    <option value="azure_scan">Microsoft 365 Scan</option>
+                                    <option value="agentic">Agentic</option>
+                                    <option value="cve_scan">CVE Scan</option>
+                                    <option value="timesketch">TimeSketch</option>
+                                    <option value="velociraptor_hunt">Velociraptor Hunt</option>
+                                    <option value="velociraptor_offline_collector">Offline Collector</option>
+                                    <option value="velociraptor_offline_import">Offline Import</option>
+                                    <option value="maintenance">Maintenance</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Workflows Table -->
+                <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead class="bg-gray-900">
+                                <tr class="text-left text-gray-400 text-sm">
+                                    <th class="px-6 py-4 font-medium">Type</th>
+                                    <th class="px-6 py-4 font-medium">Name</th>
+                                    <th class="px-6 py-4 font-medium">Status</th>
+                                    <th class="px-6 py-4 font-medium">Progress</th>
+                                    <th class="px-6 py-4 font-medium">Started</th>
+                                    <th class="px-6 py-4 font-medium">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-700 text-sm">
+                                <template x-if="$store.workflows.loading">
+                                    <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">Loading workflows...</td></tr>
+                                </template>
+                                <template x-if="!$store.workflows.loading && $store.workflows.runs.length === 0 && !$store.workflows.typeFilter">
+                                    <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">No workflow runs yet. Start a Timesketch import or hunt to see them here.</td></tr>
+                                </template>
+                                <template x-if="!$store.workflows.loading && $store.workflows.runs.length === 0 && $store.workflows.typeFilter">
+                                    <tr><td colspan="6" class="px-6 py-8 text-center text-gray-400">No workflows match the selected filter.</td></tr>
+                                </template>
+                                <template x-for="run in $store.workflows.runs" :key="run.id">
+                                    <tr class="hover:bg-gray-700/40 transition-colors">
+                                        <td class="px-6 py-4">
+                                            <span :class="$store.workflows.getTypeColor(run.type) + ' px-3 py-1 rounded-full text-xs font-semibold uppercase'" x-text="run.type || 'system'"></span>
+                                        </td>
+                                        <td class="px-6 py-4">
+                                            <div class="font-medium text-white" x-text="run.name || 'Unnamed'"></div>
+                                            <div class="text-xs text-gray-400 mt-1" x-text="'ID: ' + (run.id || 'N/A')"></div>
+                                            <div x-show="run.details?.blueprint || run.details?.blueprint_id" class="text-xs text-purple-400 mt-1" x-text="'Blueprint: ' + (run.details?.blueprint || run.details?.blueprint_id || '')"></div>
+                                        </td>
+                                        <td class="px-6 py-4">
+                                            <span :class="$store.workflows.getStatusColor(run.status) + ' px-3 py-1 rounded-full text-xs font-semibold uppercase'" x-text="run.status || 'unknown'"></span>
+                                            <!-- Error-count chip: only show on COMPLETED runs (where it's actual signal —
+                                                 "this finished green but had errors logged"). On FAILED runs the status pill
+                                                 already conveys errors; a separate chip is redundant noise. -->
+                                            <template x-if="(run.error_count || 0) > 0 && run.status === 'completed'">
+                                                <span class="ml-1.5 text-[10px] font-medium text-red-400" :title="run.error_count + ' error-level log entr' + (run.error_count === 1 ? 'y' : 'ies') + ' recorded during this run'"
+                                                      x-text="'(' + run.error_count + ' err)'"></span>
+                                            </template>
+                                        </td>
+                                        <td class="px-6 py-4">
+                                            <div class="flex items-center gap-3">
+                                                <div class="flex-1 bg-gray-700 rounded-full h-2 overflow-hidden">
+                                                    <div class="bg-blue-500 h-full transition-all" :style="'width: ' + (run.progress || 0) + '%'"></div>
+                                                </div>
+                                                <span class="text-xs text-gray-400 w-12 text-right" x-text="(run.progress || 0) + '%'"></span>
+                                            </div>
+                                        </td>
+                                        <td class="px-6 py-4 text-gray-300 text-xs" x-text="$store.workflows.formatTime(run.started_at)"></td>
+                                        <td class="px-6 py-4 whitespace-nowrap">
+                                            <div class="flex items-center gap-2">
+                                                <!-- Azure scan: raw findings ZIP (analysis/report is done at the case level) -->
+                                                <template x-if="run.type === 'azure_scan' && run.status === 'completed'">
+                                                    <a :href="'/api/azure/data/' + run.id + '/download'" download style="color:#fff;background-color:#64748b;" class="px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Raw Data (ZIP)">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                        Data
+                                                    </a>
+                                                </template>
+                                                <!-- AWS scan: raw findings ZIP (analysis/report is done at the case level) -->
+                                                <template x-if="run.type === 'aws_scan' && run.status === 'completed'">
+                                                    <a :href="'/api/aws/data/' + run.id + '/download'" download style="color:#fff;background-color:#64748b;" class="px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Raw Data (ZIP)">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                        Data
+                                                    </a>
+                                                </template>
+                                                <!-- CVE Scan: download combined_cves.csv. Labelled "Download" (not
+                                                     "CVE CSV") so it matches the convention of other download-style
+                                                     actions in this dashboard. -->
+                                                <template x-if="run.type === 'cve_scan' && run.status === 'completed'">
+                                                    <a :href="'/api/cve/run/' + run.id + '/download'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download combined_cves.csv (one row per host × product × CVE)">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                        Download
+                                                    </a>
+                                                </template>
+                                                <template x-if="(run.type === 'velociraptor_offline_collector' || run.type === 'offline_collector') && run.status === 'completed' && run.details?.file_id">
+                                                    <a :href="'/api/velociraptor/offline/download/' + run.details.file_id" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Offline Collector">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                        Download
+                                                    </a>
+                                                </template>
+                                                <template x-if="run.type === 'prepare_package' && run.status === 'completed'">
+                                                    <button @click="$store.workflows.downloadPackage(run.id)" class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Upgrade Package (expires after 24h)">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                        Package
+                                                    </button>
+                                                </template>
+                                                <template x-if="run.type === 'support_bundle' && run.status === 'completed' && run.details?.bundle_path">
+                                                    <a :href="'/api/support-bundle/' + run.id + '/download'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" :title="'Download support bundle (' + (run.details?.bundle_size_mb || '?') + ' MB)'">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                        Bundle (<span x-text="run.details?.bundle_size_mb || '?'"></span> MB)
+                                                    </a>
+                                                </template>
+                                                <template x-if="run.status === 'running' || run.status === 'pending'">
+                                                    <button @click="$store.workflows.stopWorkflow(run.id)" class="bg-red-600 hover:bg-red-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Stop this workflow">
+                                                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                                            <rect x="6" y="6" width="12" height="12" rx="1"></rect>
+                                                        </svg>
+                                                        Stop
+                                                    </button>
+                                                </template>
+                                                <button @click.stop="$store.workflows.viewLogs(run.id)" style="color:#fff;background-color:#475569;" class="hover:bg-slate-600 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1">
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                                                    </svg>
+                                                    View Logs
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Workflow Log Viewer Modal lives at body-level
+                     (just before </body>) to escape any tab-container
+                     transform/x-transition that would otherwise contain
+                     its position:fixed and render it off-screen. -->
+            </div>

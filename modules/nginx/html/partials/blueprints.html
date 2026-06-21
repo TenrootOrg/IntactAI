@@ -1,0 +1,289 @@
+            <div x-show="$store.app.currentTab === 'blueprints'" x-transition class="tab-panel">
+                <div class="flex items-center justify-between mb-6">
+                    <div>
+                        <h2 class="text-3xl font-bold text-white mb-2">Blueprints</h2>
+                        <p class="text-gray-400">Manage artifact collections used by Velociraptor and Timesketch</p>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <label class="text-sm text-gray-400">Filter:</label>
+                        <select id="blueprint-type-filter" onchange="filterBlueprints()" class="bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-red-500 focus:outline-none">
+                            <option value="all">All Types</option>
+                            <option value="velociraptor">Velociraptor</option>
+                            <option value="timesketch">Timesketch</option>
+                            <option value="memory">Memory</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div id="blueprints-list" class="space-y-4">
+                    <p class="text-gray-500">Loading blueprints...</p>
+                </div>
+
+                <div class="mt-6">
+                    <button onclick="showNewBlueprintModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                        + New Blueprint
+                    </button>
+                </div>
+
+                <!-- New/Edit Blueprint Modal -->
+                <div id="blueprint-modal" class="hidden fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50">
+                    <div class="rounded-lg p-6 border border-red-900/50 w-full max-w-2xl max-h-[90vh] overflow-y-auto" style="background: #0a0a0f;">
+                        <h3 class="text-xl font-bold text-white mb-4" id="blueprint-modal-title">New Blueprint</h3>
+
+                        <!-- Velociraptor-not-installed banner. Velociraptor /
+                             Agentic / CVE blueprints all dispatch hunts via the
+                             Velociraptor server — without it, editing or saving
+                             one is misleading (the operator could think it'll
+                             run). Banner appears at the top of the modal; the
+                             artifacts list below is hidden in the same condition
+                             so an empty checkbox list doesn't suggest the
+                             blueprint is usable. -->
+                        <div x-show="$store.services.statuses['velociraptor'] === 'not_installed'"
+                             class="bg-red-900/30 border border-red-700 rounded-lg p-4 mb-4 flex items-start gap-3">
+                            <svg class="w-6 h-6 flex-shrink-0 mt-0.5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                            </svg>
+                            <div>
+                                <p class="font-semibold text-red-200">Velociraptor is not installed</p>
+                                <p class="text-sm mt-1 text-red-100/80">Hunt-based blueprints (Velociraptor, Agentic, CVE) dispatch their artifacts via the Velociraptor server. With Velociraptor absent on this host the artifact list can't be populated and saving this blueprint won't make it runnable. Install Velociraptor via <span style="color:#ffffff; font-weight:600;">Settings → Online Upgrade</span>, then come back to edit. Timesketch / Memory blueprints are unaffected.</p>
+                            </div>
+                        </div>
+
+                        <div class="space-y-4">
+                            <!-- Type Selector (shown only for new blueprints) -->
+                            <div id="blueprint-type-selector">
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Type</label>
+                                <select id="blueprint-type" onchange="onBlueprintTypeChange()" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    <option value="velociraptor">Velociraptor (Hunts & AI Analysis)</option>
+                                    <option value="timesketch">Timesketch (Triage + Timeline)</option>
+                                    <option value="memory">Memory Forensics (VolWeb plugin set)</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Name</label>
+                                <input type="text" id="blueprint-name" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" placeholder="My Blueprint">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Description</label>
+                                <input type="text" id="blueprint-description" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none" placeholder="Optional description">
+                            </div>
+
+                            <!-- Hunt Settings (Velociraptor/Agentic) -->
+                            <div id="blueprint-hunt-settings">
+                                <div class="grid grid-cols-3 gap-3">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1">Hunt Expiry (min)</label>
+                                        <input type="number" id="blueprint-expiry" value="120" min="10" max="10080" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1">Timeout (sec)</label>
+                                        <input type="number" id="blueprint-timeout" value="3600" min="60" max="86400" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1">CPU Limit (%)</label>
+                                        <input type="number" id="blueprint-cpu" value="50" min="10" max="100" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                </div>
+                                <!-- Flow resource limits — bumped from Velociraptor's 1 GiB / 1 M-row defaults so KAPE-class collections don't get cancelled mid-upload. -->
+                                <div class="mt-3 border-t border-gray-700 pt-3">
+                                    <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">Flow resource limits</p>
+                                    <div class="grid grid-cols-3 gap-3">
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-300 mb-1" title="Hard cap on rows the hunt may collect across all clients">Max Rows</label>
+                                            <input type="number" id="blueprint-flow-max-rows" value="10000000" min="1000" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-300 mb-1" title="Hard cap on log lines (saved on blueprint; current Velociraptor hunt() VQL ignores it)">Max Logs</label>
+                                            <input type="number" id="blueprint-flow-max-logs" value="1000000" min="1000" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-300 mb-1" title="Hard cap on uploaded bytes per flow, in megabytes (50 GiB = 51200)">Max Upload (MB)</label>
+                                            <input type="number" id="blueprint-flow-max-upload-mb" value="51200" min="100" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Timesketch Settings -->
+                            <div id="blueprint-timesketch-settings" class="hidden grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Triage Target</label>
+                                    <select id="blueprint-ts-kape" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        <option value="_KapeTriage">Full Triage</option>
+                                        <option value="_SANS_Triage">_SANS_Triage (SANS triage)</option>
+                                        <option value="_BasicCollection">_BasicCollection (Basic artifacts)</option>
+                                        <option value="EventLogs">EventLogs (Event logs only)</option>
+                                        <option value="FileSystem">FileSystem (MFT, USN Journal)</option>
+                                        <option value="RegistryHives">RegistryHives (Registry hives)</option>
+                                        <option value="WebBrowsers">WebBrowsers (Browser data)</option>
+                                        <option value="CloudStorage_All">CloudStorage_All (Cloud sync data)</option>
+                                        <option value="Antivirus">Antivirus (AV logs)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Plaso Parser</label>
+                                    <select id="blueprint-ts-plaso" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        <option value="win7">win7 (Full Windows)</option>
+                                        <option value="win7_slow">win7_slow (Thorough parsing)</option>
+                                        <option value="winevtx">winevtx (Event logs only)</option>
+                                        <option value="webhist">webhist (Browser history)</option>
+                                        <option value="winreg">winreg (Registry only)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Plaso Workers</label>
+                                    <input type="number" id="blueprint-ts-workers" value="2" min="1" max="8" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Collection Timeout (sec)</label>
+                                    <input type="number" id="blueprint-ts-timeout" value="10000" min="60" max="86400" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">CPU Limit (%)</label>
+                                    <input type="number" id="blueprint-ts-cpu" value="80" min="10" max="100" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">File Hasher</label>
+                                    <select id="blueprint-ts-hasher" onchange="toggleHasherSize()" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                        <option value="none">None (Fastest)</option>
+                                        <option value="md5">MD5</option>
+                                        <option value="sha256">SHA256</option>
+                                    </select>
+                                </div>
+                                <div id="blueprint-ts-maxsize-container" class="hidden">
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Plaso Hasher Size (MB)</label>
+                                    <input type="number" id="blueprint-ts-maxsize" value="100" min="1" max="10000" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                </div>
+                            </div>
+
+                            <!-- Timesketch: flow-level resource limits (collect_client max_rows / max_bytes) -->
+                            <div id="blueprint-timesketch-flow-limits" class="hidden border-t border-gray-700 pt-3 mt-3">
+                                <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">Flow resource limits</p>
+                                <div class="grid grid-cols-3 gap-3">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Hard cap on rows the collection may emit">Max Rows</label>
+                                        <input type="number" id="blueprint-ts-flow-max-rows" value="10000000" min="1000" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Hard cap on log lines (kept for forward-compat; current Velociraptor collect_client ignores it)">Max Logs</label>
+                                        <input type="number" id="blueprint-ts-flow-max-logs" value="1000000" min="1000" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Hard cap on uploaded bytes per flow (50 GiB = 51200 MB)">Max Upload (MB)</label>
+                                        <input type="number" id="blueprint-ts-flow-max-upload-mb" value="51200" min="100" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Timesketch: KAPE artifact env (env=dict() in collect_client). Not present on Velociraptor blueprints. -->
+                            <div id="blueprint-timesketch-kape-env" class="hidden border-t border-gray-700 pt-3 mt-3">
+                                <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">KAPE artifact parameters</p>
+                                <div class="grid grid-cols-3 gap-3">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Per-file collection size cap, in BYTES. Default 10 GiB = 10737418240. Files over this are skipped entirely.">MaxFileSize (bytes)</label>
+                                        <input type="number" id="blueprint-ts-kape-max-file-size" value="10737418240" min="1048576" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Per-file hash size cap, in BYTES. 0 = endpoint-side hashing DISABLED (matches plaso_hasher: none for fast triage).">MaxHashSize (bytes)</label>
+                                        <input type="number" id="blueprint-ts-kape-max-hash-size" value="0" min="0" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Filter applied by the kape collection artifact. ExcludeSigned drops validly-signed binaries — typical 5–20× collection size reduction.">Collection Policy</label>
+                                        <select id="blueprint-ts-kape-collection-policy" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                            <option value="ExcludeSigned">ExcludeSigned (Recommended)</option>
+                                            <option value="ExcludeMicrosoft">ExcludeMicrosoft</option>
+                                            <option value="Default">Default (collect everything)</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Memory Forensics Settings (VolWeb plugin set) -->
+                            <div id="blueprint-memory-settings" class="hidden">
+                                <!-- Special "all available" toggle — when checked, the
+                                     blueprint stores plugin_set = ['*'] which the
+                                     pipeline resolves at run time via
+                                     volweb.list_plugins(evidence_id). Picking this
+                                     greys out the individual checkboxes since they
+                                     wouldn't be consulted. -->
+                                <div class="mb-3 p-3 bg-gray-900 rounded border border-purple-900/50">
+                                    <label class="flex items-center gap-3 cursor-pointer">
+                                        <input type="checkbox" id="blueprint-memory-all-plugins"
+                                               class="w-4 h-4 rounded border-gray-600 bg-gray-800 text-purple-600 focus:ring-purple-500"
+                                               onchange="onMemoryAllPluginsToggle()">
+                                        <div>
+                                            <div class="text-sm font-medium text-gray-300">Use every plugin VolWeb advertises (resolve at run time)</div>
+                                            <div class="text-xs text-gray-500">Same as the &quot;All plugins (deep dive)&quot; default. Picks include HollowProcesses (12+ min by itself) and bootkey-dependent plugins. The individual checkboxes below are ignored when this is on.</div>
+                                        </div>
+                                    </label>
+                                </div>
+
+                                <div class="flex items-center justify-between mb-2">
+                                    <label class="block text-sm font-medium text-gray-300">
+                                        Plugins (<span id="blueprint-memory-plugin-count">0</span> selected / <span id="blueprint-memory-plugin-total">0</span> total)
+                                    </label>
+                                    <div class="flex gap-2">
+                                        <button onclick="toggleAllMemoryPlugins(true)" class="text-xs bg-purple-700 hover:bg-purple-600 px-2 py-1 rounded">Check All</button>
+                                        <button onclick="toggleAllMemoryPlugins(false)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Uncheck All</button>
+                                    </div>
+                                </div>
+                                <input type="text" id="blueprint-memory-plugin-search"
+                                       oninput="filterMemoryPluginList()"
+                                       placeholder="Filter by name (e.g. registry, netscan, hollow)..."
+                                       class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none mb-2">
+                                <div id="blueprint-memory-plugin-list"
+                                     class="max-h-72 overflow-y-auto bg-gray-900 border border-gray-700 rounded p-2 space-y-2">
+                                    <p class="text-gray-500 text-sm">Loading plugins…</p>
+                                </div>
+                                <p class="text-xs text-gray-500 mt-1">
+                                    Selecting nothing = empty plugin set. Pair an empty blueprint with the &quot;Include YARA&quot; checkbox in the Memory page for YARA-only triage.
+                                </p>
+
+                                <div class="grid grid-cols-2 gap-3 mt-3">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="CPU usage cap on the target host during memory acquisition (Velociraptor side, percentage)">CPU Limit (%)</label>
+                                        <input type="number" id="blueprint-memory-cpu" value="80" min="10" max="100" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-1" title="Velociraptor max_bytes cap on the memory acquisition VQL. 64 GiB default — covers any realistic Windows server RAM size.">Max Bytes (acquisition cap)</label>
+                                        <input type="number" id="blueprint-memory-max-bytes" value="68719476736" min="1073741824" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Artifacts Section (hidden for Timesketch + Memory).
+                                 Also hidden when Velociraptor is not_installed —
+                                 the banner above explains why; showing an empty
+                                 checkbox list would imply the blueprint is
+                                 editable/runnable when it isn't. -->
+                            <div id="blueprint-artifacts-section"
+                                 x-show="$store.services.statuses['velociraptor'] !== 'not_installed'">
+                                <div class="flex items-center justify-between mb-2">
+                                    <label class="block text-sm font-medium text-gray-300">Artifacts (<span id="blueprint-artifact-count">0</span> selected / <span id="blueprint-artifact-total">0</span> total)</label>
+                                    <div class="flex gap-2">
+                                        <button onclick="toggleAllBlueprintArtifacts(true)" class="text-xs bg-blue-700 hover:bg-blue-600 px-2 py-1 rounded">Check All</button>
+                                        <button onclick="toggleAllBlueprintArtifacts(false)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Uncheck All</button>
+                                    </div>
+                                </div>
+                                <!-- Search box -->
+                                <div class="mb-2">
+                                    <input type="text" id="blueprint-artifact-search"
+                                        placeholder="Search artifacts... (e.g., Windows.EventLogs, DetectRaptor)"
+                                        oninput="filterBlueprintArtifacts()"
+                                        class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg text-sm text-white placeholder-gray-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
+                                </div>
+                                <div id="blueprint-artifacts-list" class="h-64 overflow-y-auto bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 space-y-1">
+                                </div>
+                            </div>
+                        </div>
+
+                        <input type="hidden" id="blueprint-edit-id" value="">
+
+                        <div class="flex gap-3 mt-6">
+                            <button onclick="saveBlueprintFromModal()" class="flex-1 bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium">Save Blueprint</button>
+                            <button onclick="closeBlueprintModal()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
