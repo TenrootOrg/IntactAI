@@ -16,8 +16,8 @@ docker run --rm \
     -v "${MODULE_DIR}:/work" \
     -w /work \
     node:20-alpine \
-    sh -c 'npm install --no-fund --no-audit --silent tailwindcss@3 && \
-           npx tailwindcss \
+    sh -c 'npm install --no-fund --no-audit --silent tailwindcss@3 daisyui@4 && \
+           node node_modules/tailwindcss/lib/cli.js \
                -c tailwind.config.js \
                -i tailwind.input.css \
                -o html/css/tailwind.css \
