@@ -54,6 +54,13 @@
   .c-medium{background:rgba(210,153,34,.18);color:var(--med)} .c-low{background:rgba(63,185,80,.16);color:var(--low)}
   .c-informational{background:rgba(88,166,255,.15);color:var(--info)}
   .chat{display:flex;flex-direction:column;height:calc(100vh - 200px)}
+  .chathead{display:flex;justify-content:flex-end;margin-bottom:4px}
+  .chatfs{font-size:11px;padding:3px 9px}
+  /* full-screen chat — native Fullscreen API (Esc exits) + CSS fallback */
+  #chatwrap:fullscreen{background:var(--bg);padding:16px;box-sizing:border-box}
+  #chatwrap:fullscreen .chat{height:calc(100vh - 32px)}
+  #chatwrap.chat-max{position:fixed;inset:0;z-index:9999;background:var(--bg);padding:16px;box-sizing:border-box}
+  #chatwrap.chat-max .chat{height:calc(100vh - 32px)}
   .msgs{flex:1;overflow-y:auto;padding:6px 2px} .msg{margin:8px 0;padding:9px 12px;border-radius:8px;max-width:88%}
   .msg.u{background:var(--acc);color:#fff;margin-left:auto} .msg.a{background:var(--panel2);border:1px solid var(--bd);white-space:pre-wrap}
   .chatbar{display:flex;gap:8px;margin-top:8px}
@@ -591,12 +598,33 @@ function captureBaseline(id){toast('capturing baseline…');
 
 let chatHist=[];
 function renderChat(id){
-  $('#tabc').innerHTML=`<div class="chat"><div class="msgs" id="msgs"></div>
-    <div class="chatbar"><input id="q" placeholder="how did they move laterally?  ·  what about 5.100.251.x?  ·  show the timeline"/>
-    <button onclick="ask('${id}')">Ask</button></div></div>`;
+  $('#tabc').innerHTML=`<div id="chatwrap">
+    <div class="chathead"><button class="ghost chatfs" id="chatfsbtn" onclick="toggleChatFull()" title="Full screen (Esc to exit)">⛶ Full screen</button></div>
+    <div class="chat"><div class="msgs" id="msgs"></div>
+    <div class="chatbar"><input id="q" placeholder="ask anything about this case — risk, attack path, a host/account/IP, what to do next…"/>
+    <button onclick="ask('${id}')">Ask</button></div></div></div>`;
   $('#q').addEventListener('keydown',e=>{if(e.key==='Enter')ask(id);});
   drawMsgs();
 }
+function toggleChatFull(){
+  const w=document.getElementById('chatwrap'); if(!w)return;
+  const inFs=document.fullscreenElement===w || w.classList.contains('chat-max');
+  if(inFs){ // exit
+    if(document.fullscreenElement){document.exitFullscreen&&document.exitFullscreen();}
+    else{w.classList.remove('chat-max');}
+    _chatFsLabel(false);
+  } else { // enter — prefer the real API (Esc exits natively), else CSS fallback
+    if(w.requestFullscreen){
+      w.requestFullscreen().then(()=>_chatFsLabel(true)).catch(()=>{w.classList.add('chat-max');_chatFsLabel(true);});
+    } else {w.classList.add('chat-max');_chatFsLabel(true);}
+  }
+}
+function _chatFsLabel(on){const b=document.getElementById('chatfsbtn');if(b)b.textContent=on?'⤧ Exit full screen':'⛶ Full screen';
+  const m=$('#msgs');if(m)m.scrollTop=m.scrollHeight;}
+// keep the button in sync when the user exits via Esc / the browser, and let Esc
+// close the CSS-fallback maximise too.
+document.addEventListener('fullscreenchange',()=>{const w=document.getElementById('chatwrap');_chatFsLabel(!!(w&&document.fullscreenElement===w));});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){const w=document.getElementById('chatwrap');if(w&&w.classList.contains('chat-max')){w.classList.remove('chat-max');_chatFsLabel(false);}}});
 function drawMsgs(){$('#msgs').innerHTML=chatHist.map(m=>`<div class="msg ${m.role==='user'?'u':'a'}">${m.role==='user'?escape(m.content):mdToHtml(m.content)}</div>`).join('');
   const m=$('#msgs'); if(m)m.scrollTop=m.scrollHeight;}
 function ask(id){const q=$('#q').value.trim(); if(!q)return; $('#q').value='';
