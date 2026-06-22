@@ -82,6 +82,11 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         from services.agentic.analyzers import (
             validate_llm_config, ping_llm, is_llm_configured)
         llm_enabled = is_llm_configured(llm_config)
+        # Collector mode (no report types) never calls the LLM — analysis happens
+        # at the Case level — so don't gate (or fail) the collection on LLM
+        # reachability/validity. A broken/missing key must not block collecting.
+        if not report_types:
+            llm_enabled = False
         if not llm_enabled:
             add_log_to_run(run_id,
                 "[Pipeline] No LLM configured — running COLLECT-ONLY (no per-artifact "
