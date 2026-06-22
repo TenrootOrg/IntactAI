@@ -331,7 +331,8 @@ def decide_checklist(case_id, item_id):
 
 @case_bp.route("/api/cases/<case_id>/timeline/validate", methods=["POST"])
 def timeline_validate(case_id):
-    """Mark a timeline entry real / not_real. not_real => suppressed on re-fuse."""
+    """Triage a timeline entry: real / not_real / known_it / pending. Reversible —
+    any transition is allowed; not_real/known_it suppress, real/pending un-suppress."""
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     b = request.get_json(silent=True) or {}
@@ -339,6 +340,26 @@ def timeline_validate(case_id):
     if not fid:
         return jsonify({"error": "finding_id required"}), 400
     res = store.validate_timeline(case_id, fid, b.get("status", "real"), b.get("notes", ""))
+    return jsonify({"case_id": case_id, **res})
+
+
+@case_bp.route("/api/cases/<case_id>/timeline/event", methods=["POST"])
+def timeline_add_event(case_id):
+    """Add a manual timeline event (IT-known activity, an out-of-band fact, etc.)."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    b = request.get_json(silent=True) or {}
+    if not (b.get("title") or "").strip():
+        return jsonify({"error": "title required"}), 400
+    res = store.add_manual_timeline_event(case_id, b)
+    return jsonify({"case_id": case_id, "event": res})
+
+
+@case_bp.route("/api/cases/<case_id>/timeline/event/<event_id>", methods=["DELETE"])
+def timeline_delete_event(case_id, event_id):
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    res = store.delete_manual_timeline_event(case_id, event_id)
     return jsonify({"case_id": case_id, **res})
 
 

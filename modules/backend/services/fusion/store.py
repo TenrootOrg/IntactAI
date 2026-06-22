@@ -75,6 +75,18 @@ def set_disposition(case_id, target, *, verdict="benign", attribution="it_admin"
     return disp
 
 
+def clear_disposition(case_id, target) -> dict:
+    """Reverse an operator triage on a target (un-suppress) and re-fuse so a
+    finding marked not-real / known-IT comes back to its real severity. The
+    counterpart to set_disposition — makes validation reversible."""
+    ws = _ws()
+    d = get_case(case_id)
+    remaining = [x for x in (d.get("dispositions") or []) if x.get("target") != target]
+    ws.update_run_status(case_id, "pending", details={"dispositions": remaining})
+    fuse_case(case_id)
+    return {"target": target, "cleared": True}
+
+
 def _promote_disposition_to_baseline(case_id, target) -> None:
     """Fold a dispositioned finding's SIGMA title into the environment baseline fingerprint
     so future cases on the same host subtract it (reuses the baseline mechanism)."""
@@ -580,6 +592,11 @@ def _merge_case_details(case_id, patch) -> None:
     ws.update_run_status(case_id, cur, details=patch)
 
 
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
 # ---- engagement-grade reporting on the case (branding + audience + steering) ----
 
 _CASE_SYNTH_SYSTEM = (
@@ -779,18 +796,87 @@ def decide_checklist_item(case_id, item_id, decision) -> dict:
     return {"item_id": item_id, "status": item["status"]}
 
 
+# Timeline validation states (fully reversible — every transition is allowed):
+#   real      -> confirmed malicious / keep      (clears any suppression)
+#   not_real  -> false positive                  (suppress: disposition benign / operator)
+#   known_it  -> IT confirms expected activity   (suppress: disposition benign / it_admin)
+#   pending   -> not yet triaged                 (clears any suppression + the record)
+_TL_STATES = ("real", "not_real", "known_it", "pending")
+
+
 def validate_timeline(case_id, finding_id, status, notes="") -> dict:
-    """Operator marks a timeline entry real / not_real. not_real => suppress (disposition
-    benign) + re-fuse; real => just recorded."""
+    """Operator triages a timeline entry. Reversible: changing the status removes
+    the previous record and re-applies/clears the matching suppression so a row
+    can move freely between real / not_real / known_it / pending.
+
+    Manual events (finding_id 'manual:…') carry their own status on the event
+    record — they have no graph finding to suppress."""
+    status = status if status in _TL_STATES else "pending"
+
+    if str(finding_id).startswith("manual:"):
+        return _set_manual_event_status(case_id, finding_id, status, notes)
+
     d = get_case(case_id)
     vals = [v for v in (d.get("timeline_validations") or []) if v.get("finding_id") != finding_id]
-    status = status if status in ("real", "not_real") else "unknown"
-    vals.append({"finding_id": finding_id, "status": status, "notes": notes})
+    if status != "pending":
+        vals.append({"finding_id": finding_id, "status": status, "notes": notes})
     _merge_case_details(case_id, {"timeline_validations": vals})
+
     if status == "not_real":
         set_disposition(case_id, finding_id, verdict="benign", attribution="operator",
-                        reason=f"timeline entry marked not real: {notes}", scope="case")
+                        reason=f"timeline: marked not real{(' — ' + notes) if notes else ''}",
+                        scope="case")
+    elif status == "known_it":
+        set_disposition(case_id, finding_id, verdict="benign", attribution="it_admin",
+                        reason=f"timeline: IT confirms expected{(' — ' + notes) if notes else ''}",
+                        scope="case")
+    else:
+        # real or pending — un-suppress (no-op if there was no disposition).
+        clear_disposition(case_id, finding_id)
     return {"finding_id": finding_id, "status": status}
+
+
+def add_manual_timeline_event(case_id, event) -> dict:
+    """Operator-entered timeline fact (e.g. 'IT pushed a GPO at 14:05'). Stored on
+    the case, merged into the timeline. Editable + deletable; never suppressed by
+    fuse since it isn't a graph finding."""
+    if not get_case(case_id):
+        return {"error": "case not found"}
+    eid = "manual:" + keys._h(f"{case_id}:{event.get('ts','')}:{event.get('title','')}"
+                              f":{_now_iso()}", 12)
+    row = {"finding_id": eid, "manual": True, "source": "manual",
+           "ts": (event.get("ts") or "").strip(),
+           "host": (event.get("host") or "").strip() or "-",
+           "title": (event.get("title") or "").strip() or "(manual event)",
+           "severity": (event.get("severity") or "informational").strip().lower(),
+           "artifacts": ["manual"], "phase": "Manual",
+           "status": (event.get("status") if event.get("status") in _TL_STATES else "real"),
+           "notes": (event.get("notes") or event.get("description") or "").strip(),
+           "created_at": _now_iso()}
+    d = get_case(case_id)
+    evs = list(d.get("manual_timeline_events") or []) + [row]
+    _merge_case_details(case_id, {"manual_timeline_events": evs})
+    return row
+
+
+def delete_manual_timeline_event(case_id, event_id) -> dict:
+    d = get_case(case_id)
+    evs = [e for e in (d.get("manual_timeline_events") or []) if e.get("finding_id") != event_id]
+    _merge_case_details(case_id, {"manual_timeline_events": evs})
+    return {"event_id": event_id, "deleted": True}
+
+
+def _set_manual_event_status(case_id, event_id, status, notes="") -> dict:
+    d = get_case(case_id)
+    evs = list(d.get("manual_timeline_events") or [])
+    hit = next((e for e in evs if e.get("finding_id") == event_id), None)
+    if not hit:
+        return {"error": "manual event not found"}
+    hit["status"] = status
+    if notes:
+        hit["notes"] = notes
+    _merge_case_details(case_id, {"manual_timeline_events": evs})
+    return {"finding_id": event_id, "status": status}
 
 
 def case_hosts(case_id) -> list:
@@ -830,15 +916,34 @@ def case_hosts(case_id) -> list:
 
 
 def get_timeline(case_id) -> list:
-    """Case timeline rows + each row's validation status (real/not_real/unknown).
-    Honors host-exclusion so the timeline matches the report."""
+    """Unified case timeline: every finding (with its source artifact + 4-state
+    validation) PLUS operator-added manual events, sorted by time. Honors
+    host-exclusion so it matches the report.
+
+    Each row: finding_id, ts, host, phase, title, severity, mitre, artifacts,
+    source ('fusion'|'manual'), validation ('real'|'not_real'|'known_it'|
+    'pending'), suggested_benign (analyst hinted it looks expected), manual."""
     d = get_case(case_id)
     g = _filter_graph_by_hosts(load_graph(case_id), d.get("excluded_hosts"))
     vmap = {v.get("finding_id"): v.get("status")
             for v in (d.get("timeline_validations") or [])}
+    # analyst "looks benign" suggestions (the old checklist) -> inline hint
+    suggested = {it.get("finding_id") for it in (d.get("disposition_checklist") or [])
+                 if it.get("suggestion") == "benign"}
     rows = render.timeline(g, window=d.get("time_window") or None)
     for r in rows:
-        r["validation"] = vmap.get(r.get("finding_id"), "unknown")
+        r["validation"] = vmap.get(r.get("finding_id"), "pending")
+        r["suggested_benign"] = r.get("finding_id") in suggested
+        r["manual"] = False
+    # manual events carry their own status on the record
+    for e in (d.get("manual_timeline_events") or []):
+        row = dict(e)
+        row["ts"] = render.fmt_ts(e.get("ts"))     # same display format as findings
+        row["validation"] = e.get("status", "real")
+        row.setdefault("mitre", [])
+        row.setdefault("suggested_benign", False)
+        rows.append(row)
+    rows.sort(key=lambda r: (r.get("ts") or "9999"))
     return rows
 
 

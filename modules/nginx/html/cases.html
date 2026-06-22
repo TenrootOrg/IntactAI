@@ -93,6 +93,25 @@
   .ck button{font-size:11px;padding:4px 10px}
   .tlrow{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--bd);font-size:12px}
   .tlrow .tlt{flex:1} .tlrow.notreal{opacity:.5;text-decoration:line-through}
+  .tlrow.suppressed{opacity:.55} .tlrow.manual{background:rgba(88,166,255,.05)}
+  /* unified timeline */
+  .tlbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 0 10px;border-bottom:1px solid var(--bd);margin-bottom:6px}
+  .tlbar select,.tlbar input{font-size:12px;padding:4px 6px;background:var(--panel2);color:var(--tx);border:1px solid var(--bd);border-radius:6px}
+  .tlbar .grow{flex:1}
+  .fchip{font-size:11px;padding:3px 9px;border:1px solid var(--bd);border-radius:999px;cursor:pointer;color:var(--muted);user-select:none}
+  .fchip.on{color:var(--tx);border-color:var(--focus);background:rgba(88,166,255,.12)}
+  .seg{display:inline-flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden}
+  .seg button{font-size:10px;padding:3px 7px;background:transparent;border:none;border-left:1px solid var(--bd);color:var(--muted);cursor:pointer}
+  .seg button:first-child{border-left:none}
+  .seg button.on.s-real{background:var(--ok);color:#0d1117} .seg button.on.s-not_real{background:var(--sev-high,#db6d28);color:#0d1117}
+  .seg button.on.s-known_it{background:var(--info);color:#0d1117} .seg button.on.s-pending{background:var(--panel2);color:var(--tx)}
+  .arti{font-size:10px;color:var(--info);background:rgba(88,166,255,.08);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-family:var(--mono,monospace)}
+  .tlmeta{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+  .tlmeta .l2{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .sg-hint{font-size:10px;color:var(--med,#d29922);border:1px dashed var(--bd);border-radius:4px;padding:0 5px}
+  .tladd{border:1px solid var(--bd);border-radius:7px;padding:10px;margin:8px 0;background:var(--panel2);display:none;gap:8px;flex-wrap:wrap;align-items:flex-end}
+  .tladd.open{display:flex} .tladd label{font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:3px}
+  .xdel{cursor:pointer;color:var(--muted);font-size:13px;padding:0 4px} .xdel:hover{color:var(--sev-high,#db6d28)}
   .info{cursor:help;color:var(--info);border:1px solid var(--bd);border-radius:50%;width:15px;height:15px;
         display:inline-flex;align-items:center;justify-content:center;font-size:10px}
 </style>
@@ -276,7 +295,6 @@ function render(info,md,g){
       <div class="tabs">
         <div class="tab ${tab==='config'?'on':''}" data-tab="config" onclick="setTab('config')">⚙ Configuration</div>
         <div class="tab ${tab==='report'?'on':''}" data-tab="report" onclick="setTab('report')">Report</div>
-        <div class="tab ${tab==='checklist'?'on':''}" data-tab="checklist" onclick="setTab('checklist')">Checklist</div>
         <div class="tab ${tab==='timeline'?'on':''}" data-tab="timeline" onclick="setTab('timeline')">Timeline</div>
         <div class="tab ${tab==='chat'?'on':''}" data-tab="chat" onclick="setTab('chat')">Chat</div>
       </div>
@@ -294,8 +312,7 @@ function setTab(t){
 function drawTab(md){
   if(md)window._md=md;
   const info=curInfo;
-  if(tab==='checklist') renderChecklist(info.case_id);
-  else if(tab==='timeline') renderTimeline(info.case_id);
+  if(tab==='timeline') renderTimeline(info.case_id);
   else if(tab==='chat') renderChat(info.case_id);
   else if(tab==='config') renderConfig(info);
   else renderReport(info);
@@ -413,24 +430,6 @@ function synthFromChat(id){toast('synthesizing from chat…');
     if(!r.ok){toast(d.error||'needs chat + real LLM');return;}
     const el=$('#cf-mp'); if(el)el.value=d.master_prompt||''; toast('steering drafted from chat');});
 }
-function renderChecklist(id){
-  $('#tabc').innerHTML='<i style="color:var(--muted)">loading checklist…</i>';
-  api('/api/cases/'+id+'/checklist').then(d=>{const items=d.checklist||[];
-    let h=`<p style="color:var(--muted)">The analyst proposes activity that looks <b>legitimate/expected</b>. Customer confirms: <b>Accept</b> = benign (suppressed from findings) · <b>Decline</b> = it's real (kept).</p>`;
-    h+= items.length? items.map(it=>`<div class="ck ${it.status==='accepted'?'accepted':it.status==='declined'?'declined':''}">
-        <div class="q">${esc(it.question||'')}</div>
-        <div class="acts">${it.status==='pending'
-          ?`<button onclick="decide('${id}','${it.id}','accept')">✓ Accept (benign)</button><button class="ghost" onclick="decide('${id}','${it.id}','decline')">✕ Decline (real)</button>`
-          :`<span class="defbadge">${it.status}</span> <button class="ghost" onclick="decide('${id}','${it.id}','${it.status==='accepted'?'decline':'accept'}')">change</button>`}</div></div>`).join('')
-      : '<i style="color:var(--muted)">no checklist items (no high findings, or simulated mode produced none)</i>';
-    $('#tabc').innerHTML=h;
-  });
-}
-function decide(id,item,decision){
-  api('/api/cases/'+id+'/checklist/'+item,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision})})
-   .then(_=>{toast(decision==='accept'?'accepted — suppressed + re-fused':'declined — kept');
-     if(decision==='accept'){openCase(id);} else {renderChecklist(id);}});
-}
 function renderAdvisory(info){
   const a=info.analysis||{}; const ig=a.incident_groups||[], hy=a.hypotheses||[];
   if(a.simulated && !ig.length){$('#tabc').innerHTML=`<p style="color:var(--muted)">No LLM advisory analysis (simulated mode). Set <code>fusion_llm_mode=real</code> with an API key for incident-grouping + grounded hypotheses. The deterministic Report is authoritative.</p>`;return;}
@@ -441,24 +440,97 @@ function renderAdvisory(info){
   h+= hy.length? hy.map(x=>`<div class="caseitem"><div class="nm">${escape(x.title||'')} <span class="chip c-${(x.confidence||'low')==='high'?'high':'low'}">${x.confidence||'low'}</span></div><div class="meta">${escape(x.reason||'')} · cites ${(x.entity_ids||[]).length} entities</div></div>`).join('') : '<i style="color:var(--muted)">none</i>';
   $('#tabc').innerHTML=h;
 }
+// ---- Unified timeline (findings + manual events; validate with the IT team) ----
+const TL_SEV_RANK={informational:0,info:0,low:1,medium:2,high:3,critical:4};
+const TL_STATES=[['pending','Pending'],['real','Real'],['not_real','Not real'],['known_it','Known']];
+window._tlf={status:{pending:1,real:1,not_real:1,known_it:1},artifact:'',host:'',sev:'informational'};
 function renderTimeline(id){
+  window._tlCase=id;
   $('#tabc').innerHTML='<i style="color:var(--muted)">loading timeline…</i>';
-  api('/api/cases/'+id+'/timeline').then(d=>{const t=d.timeline||[];
-    let h=`<p style="color:var(--muted)">Validate each entry. <b>Not real</b> marks it a false positive (suppressed + re-fused); <b>Real</b> just records confirmation.</p>`;
-    h+= t.length? t.map(r=>`<div class="tlrow ${r.validation==='not_real'?'notreal':''}">
-        <code>${esc(r.ts||'—')}</code><span class="tlt"><strong>${esc(r.host||'')}</strong> [${esc(r.phase||'')}] ${esc(r.title||'')}</span>
-        <span class="chip c-${r.severity}">${r.severity}</span>
-        ${r.validation==='real'?'<span class="defbadge" style="color:var(--ok)">real</span>'
-          :r.validation==='not_real'?'<span class="defbadge">not real</span>'
-          :`<button class="ghost" style="font-size:11px;padding:3px 7px" onclick="validateTl('${id}','${r.finding_id}','real')">real</button><button class="ghost" style="font-size:11px;padding:3px 7px" onclick="validateTl('${id}','${r.finding_id}','not_real')">not real</button>`}
-      </div>`).join('') : '<i style="color:var(--muted)">no time-anchored activity</i>';
-    $('#tabc').innerHTML=h;
+  api('/api/cases/'+id+'/timeline').then(d=>{window._tlData=d.timeline||[];tlBuild();});
+}
+function tlBuild(){
+  const rows=window._tlData||[], f=window._tlf;
+  const arts=[...new Set(rows.flatMap(r=>r.artifacts||[]))].sort();
+  const hosts=[...new Set(rows.flatMap(r=>(r.host||'').split(',').map(s=>s.trim()).filter(Boolean)))].sort();
+  const statusChips=TL_STATES.map(([k,lbl])=>`<span class="fchip ${f.status[k]?'on':''}" onclick="tlToggleStatus('${k}')">${lbl}</span>`).join('');
+  const artOpts=`<option value="">all artifacts</option>`+arts.map(a=>`<option ${f.artifact===a?'selected':''}>${esc(a)}</option>`).join('');
+  const hostOpts=`<option value="">all hosts</option>`+hosts.map(h=>`<option ${f.host===h?'selected':''}>${esc(h)}</option>`).join('');
+  const sevOpts=['informational','low','medium','high','critical'].map(s=>`<option value="${s}" ${f.sev===s?'selected':''}>${s}+</option>`).join('');
+  $('#tabc').innerHTML=`
+    <p style="color:var(--muted);margin:2px 0 6px">One timeline of everything observed. Set each entry <b>Real</b> (keep) · <b>Not real</b> (false positive) · <b>Known</b> (IT confirms expected) · <b>Pending</b>. Not-real & Known are suppressed from findings/risk but stay here, fully reversible. Use the source <span class="arti">artifact</span> + time to check with the IT team, then filter out what's validated.</p>
+    <div class="tlbar">
+      ${statusChips}
+      <span style="width:1px;height:18px;background:var(--bd)"></span>
+      <select onchange="tlSet('artifact',this.value)">${artOpts}</select>
+      <select onchange="tlSet('host',this.value)">${hostOpts}</select>
+      <select onchange="tlSet('sev',this.value)" title="minimum severity">${sevOpts}</select>
+      <span class="grow"></span>
+      <button class="ghost" onclick="tlAddToggle()">+ Add event</button>
+    </div>
+    <div id="tladd" class="tladd">
+      <label>Time<input id="tla-ts" type="text" placeholder="2026-06-20T14:05" size="18"></label>
+      <label>Host<input id="tla-host" type="text" placeholder="ALDC02" size="12"></label>
+      <label style="flex:1">Title<input id="tla-title" type="text" placeholder="IT pushed a GPO / patch window" style="width:100%"></label>
+      <label>Severity<select id="tla-sev"><option value="informational">info</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label>
+      <label style="flex:1">Notes<input id="tla-notes" type="text" placeholder="optional context" style="width:100%"></label>
+      <button onclick="tlAddSubmit()">Add</button>
+    </div>
+    <div id="tlrows"></div>`;
+  tlPaint();
+}
+function tlVisible(){
+  const f=window._tlf, floor=TL_SEV_RANK[f.sev]||0;
+  return (window._tlData||[]).filter(r=>{
+    if(!f.status[r.validation||'pending'])return false;
+    if((TL_SEV_RANK[r.severity]||0)<floor)return false;
+    if(f.artifact && !(r.artifacts||[]).includes(f.artifact))return false;
+    if(f.host && !(r.host||'').split(',').map(s=>s.trim()).includes(f.host))return false;
+    return true;
   });
 }
-function validateTl(id,fid,status){
-  api('/api/cases/'+id+'/timeline/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({finding_id:fid,status})})
-   .then(_=>{toast(status==='not_real'?'marked not real — suppressed':'confirmed real');
-     if(status==='not_real'){openCase(id);} else {renderTimeline(id);}});
+function tlPaint(){
+  const id=window._tlCase, rows=tlVisible();
+  const supp=v=>v==='not_real'||v==='known_it';
+  const html= rows.length? rows.map(r=>{
+    const v=r.validation||'pending';
+    const seg=TL_STATES.map(([k,lbl])=>`<button class="s-${k} ${v===k?'on':''}" onclick="tlValidate('${r.finding_id}','${k}')">${lbl}</button>`).join('');
+    const arts=(r.artifacts||[]).map(a=>`<span class="arti">${esc(a)}</span>`).join(' ');
+    return `<div class="tlrow ${supp(v)?'suppressed':''} ${r.manual?'manual':''}">
+      <code style="white-space:nowrap">${esc(r.ts||'—')}</code>
+      <div class="tlmeta">
+        <span><strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(r.title||'')}</span>
+        <span class="l2">${arts}${r.suggested_benign?'<span class="sg-hint">analyst: looks expected</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
+      </div>
+      <span class="chip c-${r.severity}">${esc(r.severity)}</span>
+      <span class="seg">${seg}</span>
+      ${r.manual?`<span class="xdel" title="delete event" onclick="tlDelete('${r.finding_id}')">✕</span>`:''}
+    </div>`;}).join('')
+    : '<i style="color:var(--muted)">nothing matches the current filters</i>';
+  $('#tlrows').innerHTML=`<div style="color:var(--muted);font-size:11px;margin:4px 0">${rows.length} of ${(window._tlData||[]).length} events</div>`+html;
+}
+function tlToggleStatus(k){window._tlf.status[k]=!window._tlf.status[k];tlBuild();}
+function tlSet(k,v){window._tlf[k]=v;tlPaint();}
+function tlAddToggle(){document.getElementById('tladd').classList.toggle('open');}
+function tlValidate(fid,status){
+  const r=(window._tlData||[]).find(x=>x.finding_id===fid); if(r)r.validation=status; // optimistic
+  tlPaint();
+  const lbl=(TL_STATES.find(s=>s[0]===status)||[,status])[1];
+  api('/api/cases/'+window._tlCase+'/timeline/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({finding_id:fid,status})})
+   .then(_=>{toast('set '+lbl);
+     // suppression changes severity/risk → refetch so the row + report stay in sync
+     if(!String(fid).startsWith('manual:')) renderTimeline(window._tlCase);});
+}
+function tlAddSubmit(){
+  const g=id=>(document.getElementById(id)||{}).value||'';
+  const body={ts:g('tla-ts'),host:g('tla-host'),title:g('tla-title'),severity:g('tla-sev'),notes:g('tla-notes')};
+  if(!body.title.trim()){toast('title required');return;}
+  api('/api/cases/'+window._tlCase+'/timeline/event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+   .then(_=>{toast('event added');renderTimeline(window._tlCase);});
+}
+function tlDelete(eid){
+  api('/api/cases/'+window._tlCase+'/timeline/event/'+encodeURIComponent(eid),{method:'DELETE'})
+   .then(_=>{toast('event deleted');renderTimeline(window._tlCase);});
 }
 function captureBaseline(id){toast('capturing baseline…');
   api('/api/cases/'+id+'/baseline',{method:'POST'}).then(d=>toast('baseline captured: '+((d.baseline||{}).sigma_titles||0)+' titles'));}

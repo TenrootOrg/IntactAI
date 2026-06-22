@@ -32,6 +32,7 @@ MODULES = [
     "services.fusion.tests.test_kb_enrichment",
     "services.fusion.tests.test_fuzz_mappers",
     "services.fusion.tests.test_event_dedup",
+    "services.fusion.tests.test_timeline",
 ]
 
 

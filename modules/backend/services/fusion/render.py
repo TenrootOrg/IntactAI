@@ -7,8 +7,16 @@ is templating, not analysis. The LLM (real or simulated) only narrates over
 
 from __future__ import annotations
 
-from . import severity as sev
+from . import severity as sev, keys
 from .correlate import in_window, _assets_of, _host_label
+
+
+def fmt_ts(v) -> str:
+    """One display format for every timestamp: 'YYYY-MM-DDTHH:MM:SSZ' (second
+    precision, trailing Z). Strips fractional/nanosecond tails so the timeline
+    reads uniformly regardless of which artifact produced the row."""
+    t = keys.norm_ts(v)            # -> 'YYYY-MM-DDTHH:MM:SS' (or None)
+    return (t + "Z") if t else ""
 
 
 def scope(graph, *, window=None, min_severity="informational"):
@@ -19,15 +27,43 @@ def scope(graph, *, window=None, min_severity="informational"):
     return assets, findings
 
 
+def _artifacts_of(graph, f) -> list:
+    """The collection artifact(s) that produced a finding — so the analyst can ask
+    the IT team 'do you recognise what <artifact> flagged at <time>?'. Derived from
+    the finding's (and its cited entities') evidence locators, which look like
+    'Windows.Hayabusa.Rules/row=5'. Falls back to the source module label."""
+    arts = []
+    seen = set()
+
+    def add_from(evlist):
+        for ev in (evlist or []):
+            loc = getattr(ev, "locator", "") or ""
+            name = loc.split("/row=")[0].split("/")[0].strip()
+            if name and name not in ("asset", "") and name not in seen:
+                seen.add(name)
+                arts.append(name)
+
+    add_from(getattr(f, "evidence", None))
+    if not arts:
+        for eid in (f.entity_ids or []):
+            e = graph.entities.get(eid)
+            if e:
+                add_from(getattr(e, "evidence", None))
+    if not arts and f.sources:
+        arts = list(dict.fromkeys(f.sources))
+    return arts
+
+
 def timeline(graph, *, window=None, initial_access=None):
     rows = []
     for f in graph.findings:
         if not in_window(f.ts, window):
             continue
         rows.append({"finding_id": f.id,            # stable key for real/not-real validation
-                     "ts": f.ts or "", "host": ", ".join(_host_label(graph, a) for a in f.asset_ids) or "-",
+                     "ts": fmt_ts(f.ts), "host": ", ".join(_host_label(graph, a) for a in f.asset_ids) or "-",
                      "phase": _phase(f), "title": f.title, "severity": f.severity,
-                     "mitre": f.mitre})
+                     "mitre": f.mitre, "artifacts": _artifacts_of(graph, f),
+                     "source": "fusion"})
     rows.sort(key=lambda r: (r["ts"] or "9999"))
     return rows
 

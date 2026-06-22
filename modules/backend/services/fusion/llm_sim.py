@@ -403,6 +403,46 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
         srcs = "/".join(f.sources) or "?"
         return f"- **[{f.severity}]** {f.title} — {f.summary}  _(source: {srcs})_"
 
+    def _n_from(qq, default=5):
+        m = re.search(r"\b(\d{1,3})\b", qq)
+        return max(1, min(int(m.group(1)), 25)) if m else default
+
+    _RANK_CUES = ("top", "worst", "most", "rank", "list", "biggest", "main", "key")
+    _has_rank = any(k in q for k in _RANK_CUES) or bool(re.search(r"\b\d+\b", q))
+
+    # 0a) top-N IDENTITIES / accounts (must precede the generic 'who' branch, which
+    #     otherwise answers with a host). Ranks accounts by cross-host spread first.
+    if any(k in q for k in ("identit", "account", "user ", "users", "credential", "logon")) \
+            and not any(k in q for k in ("host", "machine", "endpoint", "computer")):
+        accts = [e for e in graph.entities.values() if e.type == "account"]
+        if accts:
+            def _akey(e):
+                return (1 if "cross_host" in (e.flags or []) else 0,
+                        len(_assets_of(e)), sev.rank(e.severity), e.anomaly or 0)
+            accts.sort(key=_akey, reverse=True)
+            n = _n_from(q)
+            lines = []
+            for e in accts[:n]:
+                hl = [_host_label(graph, x) for x in _assets_of(e)]
+                xh = " (cross-host)" if "cross_host" in (e.flags or []) else ""
+                lines.append(f"- **{e.label}**{xh} — {e.severity}, on {len(hl)} host(s)"
+                             + (f": {', '.join(hl[:8])}" if hl else ""))
+            return (f"Top {min(n, len(accts))} identities by cross-host spread + severity:\n"
+                    + "\n".join(lines))
+
+    # 0b) top-N HOSTS / machines, ranked by risk (precedes the default findings dump).
+    if any(k in q for k in ("host", "machine", "endpoint", "computer", "asset")) and _has_rank:
+        hosts = list(graph.by_type("asset"))
+        if hosts:
+            def _hcount(a):
+                return len([f for f in findings if a.id in f.asset_ids])
+            hosts.sort(key=lambda a: (a.attrs.get("risk_score") or 0,
+                                      sev.rank(a.severity), _hcount(a)), reverse=True)
+            n = _n_from(q)
+            lines = [f"- **{a.label}** — {a.severity}, risk {a.attrs.get('risk_score', 0)}, "
+                     f"{_hcount(a)} finding(s)" for a in hosts[:n]]
+            return f"Top {min(n, len(hosts))} hosts by risk:\n" + "\n".join(lines)
+
     # 1) host-focused
     for a in graph.by_type("asset"):
         if a.label and a.label.lower() in q:
