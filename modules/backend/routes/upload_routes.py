@@ -48,14 +48,22 @@ def decode_tus_metadata(metadata_str):
 
 def _fuse_offline_import(import_result, upload_run_id):
     """After an offline-collector ZIP is imported into Velociraptor, fuse the
-    imported flow into the Case — as a final step of the SAME upload run (one
-    workflow row). There is NO agent and NO LLM here: this only reads the flow's
-    rows back from Velociraptor and persists them so the fusion graph can pick
-    them up (velociraptor_upload is a fusion member — see
+    imported data into the Case — as a final step of the SAME upload run (one
+    workflow row). There is NO agent and NO LLM here: this only reads the
+    imported rows back from Velociraptor and persists them so the fusion graph
+    can pick them up (velociraptor_upload is a fusion member — see
     workflow_service.AGENTIC_TYPES + the fusion-store dispatch). Any LLM analysis
-    is a separate, explicit Case-level action the operator chooses to run later."""
+    is a separate, explicit Case-level action the operator chooses to run later.
+
+    A collector ZIP may import as a HUNT (multi-host export — the real per-client
+    data lives under the hunt, not the server import flow) or as a single client
+    FLOW. Prefer the hunt; fall back to the flow."""
     if not (isinstance(import_result, dict) and import_result.get("success")
-            and import_result.get("flow_id") and upload_run_id):
+            and upload_run_id):
+        return
+    hunt_id = import_result.get("hunt_id")
+    flow_id = import_result.get("flow_id")
+    if not (hunt_id or flow_id):
         return
     try:
         from services.workflow_service import (
@@ -63,43 +71,68 @@ def _fuse_offline_import(import_result, upload_run_id):
         from services.file_storage_service import save_workflow
         from services.agentic.collectors import get_existing_collection_results
         from services.agentic.reports import persist_pipeline_artifacts
-        flow_id = import_result["flow_id"]
-        client_id = import_result.get("client_id")
-        hostname = import_result.get("hostname")
 
-        # Seed the run's hostnames map so the Case host card shows a friendly
-        # name (the mapper also falls back to each row's own hostname column).
-        run = get_automation_run(upload_run_id) or {}
-        det = run.get("details") or {}
-        if client_id and hostname:
-            hn = dict(det.get("hostnames") or {})
-            hn[str(client_id)] = hostname
-            det["hostnames"] = hn
-            det["offline_flow_id"] = flow_id
-            run["details"] = det
-            try:
-                save_workflow(run)
-            except Exception:
-                pass
+        add_log_to_run(upload_run_id, "[Fusion] Reading imported data into the case…")
+        if hunt_id:
+            # Hunt: enumerate every imported client's flow and pull their rows.
+            all_results, artifacts, client_info = get_existing_collection_results(
+                upload_run_id, flow_id=None, hunt_id=hunt_id, client_ids=None)
+        else:
+            client_id = import_result.get("client_id")
+            all_results, artifacts, client_info = get_existing_collection_results(
+                upload_run_id, flow_id=flow_id, hunt_id=None,
+                client_ids=[client_id] if client_id else None)
 
-        add_log_to_run(upload_run_id, "[Fusion] Reading imported flow into the case…")
-        all_results, artifacts, _client_info = get_existing_collection_results(
-            upload_run_id, flow_id=flow_id, hunt_id=None,
-            client_ids=[client_id] if client_id else None)
         total_rows = sum(len(rows) for rows in (all_results or {}).values())
         if total_rows == 0:
             add_log_to_run(upload_run_id,
                            "[Fusion] Import had no rows to fuse into the case.", "warning")
             return
+
+        # Seed the run's hostnames map (client_id -> hostname) so the Case host
+        # cards show friendly names. client_info comes back as cid -> {hostname,…};
+        # the mapper also falls back to each row's own hostname column.
+        run = get_automation_run(upload_run_id) or {}
+        det = run.get("details") or {}
+        hn = dict(det.get("hostnames") or {})
+        for cid, info in (client_info or {}).items():
+            name = (info or {}).get("hostname") if isinstance(info, dict) else None
+            if cid and name:
+                hn[str(cid)] = name
+        if hn:
+            det["hostnames"] = hn
+        det["offline_hunt_id" if hunt_id else "offline_flow_id"] = hunt_id or flow_id
+        run["details"] = det
+        try:
+            save_workflow(run)
+        except Exception:
+            pass
+
         # Persist rows where the fusion graph reads them (/data/downloads/<rid>).
         persist_pipeline_artifacts(upload_run_id, {}, all_results)
         add_log_to_run(
             upload_run_id,
             f"[Fusion] Added {total_rows} rows across {len(artifacts)} artifact(s) "
-            f"to the case.", "success")
+            f"from {len(client_info or {})} host(s) to the case.", "success")
         update_run_status(upload_run_id, "completed", progress=100)
+
+        # Build the case graph now so Case Analysis shows the data immediately
+        # (the page reads a cached graph; without this the case looks empty until
+        # something else triggers a fuse).
+        case_id = run.get("case_id")
+        if case_id:
+            try:
+                add_log_to_run(upload_run_id, "[Fusion] Building the case graph…")
+                from services.fusion import store as _fstore
+                _fstore.fuse_case(case_id)
+                add_log_to_run(upload_run_id, "[Fusion] Case graph ready.", "success")
+            except Exception as _fe:
+                add_log_to_run(
+                    upload_run_id,
+                    f"[Fusion] Graph build deferred (open Case Analysis to build it): {_fe}",
+                    "warning")
     except Exception as e:
-        print(f"[OFFLINE IMPORT] fuse of imported flow failed: {e}", flush=True)
+        print(f"[OFFLINE IMPORT] fuse of imported data failed: {e}", flush=True)
         import traceback
         traceback.print_exc()
 

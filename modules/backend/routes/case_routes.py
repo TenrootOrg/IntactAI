@@ -425,7 +425,17 @@ def report_download_pdf(case_id):
 @case_bp.route("/api/cases/<case_id>/graph", methods=["GET"])
 def graph(case_id):
     d = store.get_case(case_id)
-    return jsonify({"case_id": case_id, "fusion_graph": d.get("fusion_graph") or {}})
+    fg = d.get("fusion_graph") or {}
+    # Auto-populate: if the case has member runs but no graph has been built yet
+    # (e.g. right after an offline import), fuse once on first view so Case
+    # Analysis isn't blank. A non-empty cached graph is returned as-is (fast).
+    if not (fg.get("entities")) and store._members_for_case(case_id, d):
+        try:
+            g = store.fuse_case(case_id)
+            fg = g.to_dict()
+        except Exception as e:
+            print(f"[CASE] on-view fuse failed for {case_id}: {e}", flush=True)
+    return jsonify({"case_id": case_id, "fusion_graph": fg})
 
 
 @case_bp.route("/api/cases/<case_id>/timeline", methods=["GET"])

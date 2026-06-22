@@ -358,6 +358,24 @@ def _agentic_collected_data(rid, det):
     return {}
 
 
+def _relabel_source(ents, rels, frm, to):
+    """Rewrite a module/source label on a contribution in place. Used so an
+    offline-collector import (mapped by map_agentic for code reuse) is attributed
+    to "velociraptor", not "agentic" — no agent ran, it's imported artifacts."""
+    def fix(seq):
+        if seq:
+            for i, s in enumerate(seq):
+                if s == frm:
+                    seq[i] = to
+    for e in ents or []:
+        fix(getattr(e, "sources", None))
+        for ev in (getattr(e, "evidence", None) or []):
+            if getattr(ev, "module", None) == frm:
+                ev.module = to
+    for r in rels or []:
+        fix(getattr(r, "sources", None))
+
+
 def _contribution_for_run(run, log=None):
     atype, rid = run.get("automation_type"), run.get("run_id")
     det = run.get("details") or {}
@@ -365,12 +383,17 @@ def _contribution_for_run(run, log=None):
         if atype == "memory":
             return _memory_contribution(rid, det)
         # "agentic" = a live/collect agentic run; "velociraptor_upload" = an
-        # offline-collector import that auto-collected into this same run (one
-        # workflow row, not two). Both persist rows the same way and fuse via
-        # the same mapper.
+        # offline-collector import fused into its own upload row (one workflow
+        # row, not two). Both persist rows the same way and fuse via the same
+        # mapper — but the offline import ran NO agent, so relabel its source
+        # "agentic" -> "velociraptor" (the data is just imported Velociraptor
+        # artifacts) so the report doesn't read as if an agent had run.
         if atype in ("agentic", "velociraptor_upload"):
-            return map_agentic(_agentic_collected_data(rid, det), run_id=rid,
-                               hostnames=det.get("hostnames") or {})
+            ents, rels = map_agentic(_agentic_collected_data(rid, det), run_id=rid,
+                                     hostnames=det.get("hostnames") or {})
+            if atype == "velociraptor_upload":
+                _relabel_source(ents, rels, "agentic", "velociraptor")
+            return ents, rels
         if atype == "cve_scan":
             return _cve_contribution(rid, det)
         if atype == "timesketch":

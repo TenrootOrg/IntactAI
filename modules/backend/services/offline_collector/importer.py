@@ -211,6 +211,7 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None):
         # We need to query the flow RESULTS to get the imported client_id
         imported_client_id = None
         imported_flow_id = None
+        imported_hunt_id = None
 
         if flow_id:
             add_log_to_run(run_id, f"Server import flow: {flow_id}")
@@ -259,6 +260,14 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None):
                                 result_row.get("flow_id") or
                                 result_row.get("ImportedFlowId")
                             )
+                            # A collector ZIP that was originally a HUNT export
+                            # re-imports as a hunt: the real per-client data lives
+                            # under this hunt, NOT the server import flow. Capture
+                            # it so the caller fuses the hunt's flows.
+                            imported_hunt_id = (
+                                result_row.get("HuntId") or
+                                result_row.get("hunt_id")
+                            )
 
                             # Get count info from results
                             total_rows = (
@@ -277,7 +286,7 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None):
                                 []
                             )
 
-                            add_log_to_run(run_id, f"Import results: client={imported_client_id}, flow={imported_flow_id}, rows={total_rows}")
+                            add_log_to_run(run_id, f"Import results: client={imported_client_id}, flow={imported_flow_id}, hunt={imported_hunt_id}, rows={total_rows}")
 
                 # If we found the imported client, update our variables
                 if imported_client_id:
@@ -377,6 +386,7 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None):
                 "run_id": run_id,
                 "client_id": client_id,
                 "flow_id": flow_id,
+                "hunt_id": imported_hunt_id,
                 "hostname": hostname,
                 "total_rows": total_rows,
                 "artifacts": artifacts,
@@ -390,6 +400,7 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None):
             return {
                 "success": True,
                 "run_id": run_id,
+                "hunt_id": imported_hunt_id,
                 "hostname": hostname,
                 "message": "Import sent to Velociraptor. Check Velociraptor UI for results."
             }
