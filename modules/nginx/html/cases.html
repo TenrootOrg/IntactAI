@@ -56,11 +56,14 @@
   .chat{display:flex;flex-direction:column;height:calc(100vh - 200px)}
   .chathead{display:flex;justify-content:flex-end;margin-bottom:4px}
   .chatfs{font-size:11px;padding:3px 9px}
-  /* full-screen chat — native Fullscreen API (Esc exits) + CSS fallback */
-  #chatwrap:fullscreen{background:var(--bg);padding:16px;box-sizing:border-box}
-  #chatwrap:fullscreen .chat{height:calc(100vh - 32px)}
-  #chatwrap.chat-max{position:fixed;inset:0;z-index:9999;background:var(--bg);padding:16px;box-sizing:border-box}
-  #chatwrap.chat-max .chat{height:calc(100vh - 32px)}
+  /* full-screen chat — native Fullscreen API (Esc exits) + CSS fallback.
+     chatwrap becomes a flex column filling the screen: header takes its height,
+     .chat flexes to fill the rest, .msgs scrolls, .chatbar stays pinned. */
+  #chatwrap:fullscreen, #chatwrap.chat-max{
+    display:flex;flex-direction:column;height:100vh;width:100vw;
+    background:var(--bg);padding:14px 16px;box-sizing:border-box}
+  #chatwrap.chat-max{position:fixed;inset:0;z-index:9999}
+  #chatwrap:fullscreen .chat, #chatwrap.chat-max .chat{flex:1;height:auto;min-height:0}
   .msgs{flex:1;overflow-y:auto;padding:6px 2px} .msg{margin:8px 0;padding:9px 12px;border-radius:8px;max-width:88%}
   .msg.u{background:var(--acc);color:#fff;margin-left:auto} .msg.a{background:var(--panel2);border:1px solid var(--bd);white-space:pre-wrap}
   .chatbar{display:flex;gap:8px;margin-top:8px}
