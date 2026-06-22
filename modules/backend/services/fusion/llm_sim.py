@@ -98,6 +98,19 @@ def _use_real() -> bool:
     return bool((cfg.get("online_llm") or {}).get("api_key"))
 
 
+def _llm_available() -> bool:
+    """A usable LLM transport is configured (online API key OR offline Ollama URL),
+    INDEPENDENT of the fusion_llm_mode flag. The case CHAT uses this so that simply
+    configuring a model turns it into a real, generic conversation — no extra toggle.
+    (The per-fuse report/analyst narrative still respects _use_real for cost control.)"""
+    try:
+        from services.agentic.analyzers import is_llm_configured
+        from services.memory.pipeline import _llm_config_from_runtime
+        return bool(is_llm_configured(_llm_config_from_runtime() or {}))
+    except Exception:
+        return False
+
+
 def _real_llm(system_prompt: str, user_message: str, *, run_id=None) -> str:
     """Production path. The distilled graph is KB-sized, so this is cheap. Token
     counts land on the run's llm_metrics automatically via call_llm's recorder."""
@@ -115,9 +128,19 @@ REPORT_SYSTEM_PROMPT = (
     "not in the graph."
 )
 CHAT_SYSTEM_PROMPT = (
-    "You are a DFIR assistant answering questions about ONE correlated incident "
-    "graph (JSON). Answer only from the graph facts provided; cite the host + evidence "
-    "source for each claim; never speculate beyond the data."
+    "You are a senior DFIR / SOC analyst embedded in this investigation, talking with "
+    "another analyst about their environment. The attached correlated incident graph "
+    "(JSON: hosts, accounts, processes, IOCs, findings, cross-host links, timeline) is "
+    "your evidence about the whole infrastructure.\n"
+    "Answer ANY question they ask — overviews, risk ranking, the attack path, lateral "
+    "movement, a specific host/account/IP, what's suspicious vs expected, what to do "
+    "next. Be direct, conversational and genuinely helpful; synthesise across hosts and "
+    "modules to give insight, not just lookups.\n"
+    "Ground every CONCRETE claim (a host, account, hash, IP, finding) in the graph and "
+    "cite it. You may reason, correlate, prioritise and recommend — just keep OBSERVATION "
+    "(in the graph) distinct from INFERENCE (your analysis). Never invent hosts, accounts, "
+    "hashes or events that aren't present; if the graph can't answer, say so and suggest "
+    "what to collect next."
 )
 
 # The grounded analyst pass. Anti-hallucination discipline mirrors the agentic HARD
@@ -376,6 +399,23 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
          run_id=None, dispositions=None) -> str:
     """Grounded Q&A. Real path narrates the distilled graph; simulated = deterministic
     retrieval. Surfaces operator dispositions (what's been triaged as benign/IT)."""
+    # PRIMARY: whenever a model is configured, this is ONE generic, grounded
+    # conversation over the whole infrastructure graph — no prepared intents. Just
+    # configuring an LLM (online key or offline Ollama) turns it on; no extra flag.
+    if _use_real() or _llm_available():
+        try:
+            payload = render.chat_subgraph(graph, question, window=window,
+                                           min_severity=min_severity,
+                                           max_entities=budget.CHAT_MAX_ENTITIES)
+            if dispositions:
+                payload["operator_dispositions"] = dispositions   # so the LLM can answer triage Qs
+            turns = "".join(f"{m.get('role')}: {m.get('content')}\n" for m in (history or []))
+            return _real_llm(CHAT_SYSTEM_PROMPT,
+                             f"{json.dumps(payload)}\n\n{turns}Q: {question}", run_id=run_id)
+        except Exception:  # noqa: BLE001 — fall through to deterministic retrieval
+            pass
+
+    # FALLBACK (no LLM configured): deterministic keyword retrieval over the graph.
     q0 = (question or "").lower()
     # "what's been marked benign / explained / dispositioned"
     if dispositions and any(k in q0 for k in ("disposition", "marked benign", "what did i mark",
@@ -385,17 +425,6 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                  + (f", {x.get('reason')}" if x.get('reason') else "") + f") [{x.get('scope')}]"
                  for x in dispositions]
         return "Operator dispositions on this case:\n" + "\n".join(lines)
-    if _use_real():
-        try:
-            # question-scoped subgraph (not the whole graph) — keeps chat tokens flat
-            payload = render.chat_subgraph(graph, question, window=window,
-                                           min_severity=min_severity,
-                                           max_entities=budget.CHAT_MAX_ENTITIES)
-            turns = "".join(f"{m.get('role')}: {m.get('content')}\n" for m in (history or []))
-            return _real_llm(CHAT_SYSTEM_PROMPT,
-                             f"{json.dumps(payload)}\n\n{turns}Q: {question}", run_id=run_id)
-        except Exception:  # noqa: BLE001 — fall through to deterministic retrieval
-            pass
     q = (question or "").lower()
     _, findings = render.scope(graph, window=window, min_severity=min_severity)
 

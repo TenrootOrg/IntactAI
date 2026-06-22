@@ -9,8 +9,24 @@ import sys
 if "/app" not in sys.path:
     sys.path.insert(0, "/app")
 
+import contextlib  # noqa: E402
+
 from services.fusion import correlate, render, llm_sim, keys  # noqa: E402
 from services.fusion.mappers import map_memory, map_agentic   # noqa: E402
+
+
+@contextlib.contextmanager
+def force_sim():
+    """Force the deterministic (no-LLM) chat path so these assertions are
+    reproducible even when a live LLM happens to be configured in the env.
+    (Chat now talks to a real model whenever one is available.)"""
+    saved = (llm_sim._use_real, llm_sim._llm_available)
+    llm_sim._use_real = lambda: False
+    llm_sim._llm_available = lambda: False
+    try:
+        yield
+    finally:
+        llm_sim._use_real, llm_sim._llm_available = saved
 
 # ---- fixtures: a 3-host intrusion, initial access ~ 2026-05-19 ------------
 WS01, DC01, SRVVC = "C.aaa1", "C.bbb2", "C.ccc3"
@@ -139,9 +155,10 @@ def test_report_has_three_altitudes_and_cross_host():
 
 def test_chat_grounded():
     g = build()
-    a1 = llm_sim.chat(g, "how did they move laterally?", window=WINDOW, min_severity="low")
+    with force_sim():
+        a1 = llm_sim.chat(g, "how did they move laterally?", window=WINDOW, min_severity="low")
+        a2 = llm_sim.chat(g, "what about 5.100.251.10?", window=WINDOW, min_severity="low")
     assert "administrator" in a1.lower() or "lateral" in a1.lower()
-    a2 = llm_sim.chat(g, "what about 5.100.251.10?", window=WINDOW, min_severity="low")
     assert "cross-host" in a2.lower()
 
 
@@ -174,9 +191,12 @@ def test_cve_mapper_and_finding():
 
 def test_chat_more_intents():
     g = build()
-    assert "host" in llm_sim.chat(g, "give me a summary", window=WINDOW, min_severity="low").lower()
-    assert "WS01" in llm_sim.chat(g, "who is the most affected host?", window=WINDOW, min_severity="low")
-    ia = llm_sim.chat(g, "how did they get in?", window=WINDOW, min_severity="low")
+    with force_sim():
+        summ = llm_sim.chat(g, "give me a summary", window=WINDOW, min_severity="low")
+        who = llm_sim.chat(g, "who is the most affected host?", window=WINDOW, min_severity="low")
+        ia = llm_sim.chat(g, "how did they get in?", window=WINDOW, min_severity="low")
+    assert "host" in summ.lower()
+    assert "WS01" in who
     assert "initial-access" in ia.lower() or "earliest" in ia.lower()
 
 
@@ -266,7 +286,9 @@ def test_escalation_recommendation():
     assert a.attrs.get("modules") == ["agentic"]
     md = llm_sim.generate_report(g, min_severity="low", case_name="X")
     assert "Escalation" in md and "WS9" in md
-    assert "deep-dive" in llm_sim.chat(g, "what should I investigate next?", min_severity="low").lower()
+    with force_sim():
+        nxt = llm_sim.chat(g, "what should I investigate next?", min_severity="low")
+    assert "deep-dive" in nxt.lower()
 
 
 def test_ioc_classification_quality():

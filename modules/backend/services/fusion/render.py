@@ -172,12 +172,17 @@ def chat_subgraph(graph, question, *, window=None, min_severity="informational",
                 if pred(f):
                     picked[f.id] = f
 
-    # entity budget: question-relevant first, then high-anomaly fill
+    # entity budget: question-relevant first, then key identities (accounts seen on
+    # >1 host — central to infrastructure insight, often only informational severity),
+    # then high-anomaly fill.
+    key_accts = sorted((e for e in graph.entities.values()
+                        if e.type == "account" and len(_assets_of(e)) > 1),
+                       key=lambda e: -len(_assets_of(e)))
     fill = sorted((e for e in graph.entities.values()
                    if e.type != "asset" and sev.at_least(e.severity, "high")),
                   key=lambda e: -e.anomaly)
     ents, seen = [], set()
-    for e in rel_ents + fill:
+    for e in rel_ents + key_accts + fill:
         if e.id not in seen:
             seen.add(e.id); ents.append(e)
         if len(ents) >= max_entities:
