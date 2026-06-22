@@ -629,6 +629,20 @@ def log_case_event(case_id, action, status="ok", detail="", **meta) -> None:
         print(f"[CASE-LOG] failed to record '{action}' for {case_id}: {e}", flush=True)
 
 
+def graph_counts(case_id) -> dict:
+    """Lightweight stat-bar counts from the STORED (pruned) graph — no re-fuse and
+    no multi-MB payload to the browser. Lets Case Analysis show hosts/entities/
+    links/findings/cross-host without downloading the whole graph."""
+    fg = (get_case(case_id) or {}).get("fusion_graph") or {}
+    ents = fg.get("entities") or {}
+    findings = fg.get("findings") or []
+    return {"hosts": sum(1 for e in ents.values() if (e or {}).get("type") == "asset"),
+            "entities": len(ents),
+            "links": len(fg.get("relationships") or []),
+            "findings": len(findings),
+            "cross_host": sum(1 for f in findings if (f or {}).get("kind") == "cross_host")}
+
+
 def get_case_log(case_id) -> list:
     return list((get_case(case_id) or {}).get("activity_log") or [])
 

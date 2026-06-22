@@ -291,6 +291,7 @@ def get_case(case_id):
                     "analysis": d.get("analysis") or {},
                     "dispositions": d.get("dispositions") or [],
                     "token_ab": d.get("token_ab") or {},
+                    "counts": store.graph_counts(case_id),
                     "llm_enabled": _llm_enabled()})
 
 

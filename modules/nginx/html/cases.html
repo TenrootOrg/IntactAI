@@ -268,27 +268,24 @@ async function refreshSelector(){
 
 function openCase(id){
   sel=id; loadCases();
-  Promise.all([api('/api/cases/'+id),api('/api/cases/'+id+'/report'),api('/api/cases/'+id+'/graph')])
-   .then(([info,rep,gr])=>{
+  // NOTE: we deliberately do NOT fetch /graph here — it's multi-MB and the tabs
+  // only need counts (served on /api/cases/<id> as info.counts). Avoids a slow
+  // load on every open.
+  Promise.all([api('/api/cases/'+id),api('/api/cases/'+id+'/report')])
+   .then(([info,rep])=>{
      // fold the report meta (audience/branding/master-prompt) into info for the controls
      info.audience=rep.audience||'both'; info.customer_name=rep.customer_name||'';
      info.tlp=rep.tlp||'AMBER'; info.has_logo=!!rep.has_logo; info.master_prompt=rep.master_prompt||'';
-     render(info,rep.report_md||'',gr.fusion_graph||{});});
+     render(info,rep.report_md||'',info.counts||{});});
 }
 
-function statline(g){
-  const ents=Object.keys(g.entities||{}).length, fnd=(g.findings||[]).length,
-    xh=(g.findings||[]).filter(f=>f.kind==='cross_host').length,
-    rel=(g.relationships||[]).length, assets=(Object.values(g.entities||{})).filter(e=>e.type==='asset').length;
-  return `<div style="margin:6px 0 16px">${statSpans(g)}</div>`;
-}
-function statSpans(g){
-  const ents=Object.keys(g.entities||{}).length, fnd=(g.findings||[]).length,
-    xh=(g.findings||[]).filter(f=>f.kind==='cross_host').length,
-    rel=(g.relationships||[]).length, assets=(Object.values(g.entities||{})).filter(e=>e.type==='asset').length;
-  return `<span class="stat"><b>${assets}</b> hosts</span><span class="stat"><b>${ents}</b> entities</span>
-    <span class="stat"><b>${rel}</b> links</span><span class="stat"><b>${fnd}</b> findings</span>
-    <span class="stat"><b style="color:var(--acc)">${xh}</b> cross-host</span>`;
+// `c` is the lightweight counts object {hosts,entities,links,findings,cross_host}
+// served on /api/cases/<id>.counts — NOT the full graph (which is multi-MB).
+function statSpans(c){
+  c=c||{};
+  return `<span class="stat"><b>${c.hosts||0}</b> hosts</span><span class="stat"><b>${c.entities||0}</b> entities</span>
+    <span class="stat"><b>${c.links||0}</b> links</span><span class="stat"><b>${c.findings||0}</b> findings</span>
+    <span class="stat"><b style="color:var(--acc)">${c.cross_host||0}</b> cross-host</span>`;
 }
 
 let curInfo=null, curGraph=null;
