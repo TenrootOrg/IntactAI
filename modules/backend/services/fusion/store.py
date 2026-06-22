@@ -121,6 +121,11 @@ def _raw_payload_size(run) -> int:
     det = run.get("details") or {}
     blob = (det.get("collected_data") or det.get("plugins") or det.get("events")
             or det.get("timeline_events") or det.get("findings") or det.get("sigma_findings"))
+    if not blob and run.get("automation_type") in ("agentic", "velociraptor_upload"):
+        # Agentic / offline-import runs persist their rows to disk
+        # (/data/downloads/<rid>/raw_results.json), not into details — read them
+        # back so the raw-vs-fusion token A/B reflects the real input size.
+        blob = _agentic_collected_data(run.get("run_id"), det) or None
     return budget.approx_tokens(blob) if blob else 0
 
 
