@@ -611,19 +611,20 @@ def log_case_event(case_id, action, status="ok", detail="", **meta) -> None:
     action and its outcome (ok/error) so the Log tab can follow everything that
     happens inside Case Analysis."""
     try:
-        d = get_case(case_id)
-        if not d:
+        if not get_case(case_id):
             return                       # not a real case (e.g. 'quick', calibration ids)
         entry = {"ts": _now_iso() + "Z", "action": str(action)[:120],
                  "status": "error" if status == "error" else "ok",
                  "detail": str(detail)[:500]}
         for k, v in (meta or {}).items():
             entry[k] = v
-        log = list(d.get("activity_log") or [])
-        log.append(entry)
-        if len(log) > _CASE_LOG_CAP:
-            log = log[-_CASE_LOG_CAP:]
-        _merge_case_details(case_id, {"activity_log": log})
+
+        def _append(details):            # atomic read-append-write under the run lock
+            log = list(details.get("activity_log") or [])
+            log.append(entry)
+            details["activity_log"] = log[-_CASE_LOG_CAP:] if len(log) > _CASE_LOG_CAP else log
+
+        _ws().mutate_run_details(case_id, _append)
     except Exception as e:  # noqa: BLE001 — telemetry only
         print(f"[CASE-LOG] failed to record '{action}' for {case_id}: {e}", flush=True)
 
@@ -1005,9 +1006,12 @@ def chat_case(case_id, question) -> str:
                            window=d.get("time_window") or None,
                            min_severity=d.get("min_severity", "informational"),
                            run_id=case_id, dispositions=d.get("dispositions") or None)
-    msgs = (d.get("chat_messages") or []) + [
-        {"role": "user", "content": question}, {"role": "assistant", "content": ans}]
-    _ws().update_run_status(case_id, "completed", details={"chat_messages": msgs})
+    def _append_msgs(details):           # atomic, so concurrent turns don't clobber
+        msgs = list(details.get("chat_messages") or [])
+        msgs += [{"role": "user", "content": question},
+                 {"role": "assistant", "content": ans}]
+        details["chat_messages"] = msgs
+    _ws().mutate_run_details(case_id, _append_msgs)
     return ans
 
 

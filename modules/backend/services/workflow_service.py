@@ -332,8 +332,15 @@ def update_run_status(run_id, status, progress=None, error=None, details=None, f
     out of the auto-flip. Use sparingly — the default is the safer
     behaviour.
     """
-    workflow = file_get_workflow(run_id)
-    if workflow:
+    # Serialise the whole read-modify-write under the per-run lock. The backend
+    # is threaded and details writes can be slow + large (e.g. a case's fused
+    # graph blob); without this, concurrent updates read a stale snapshot and
+    # clobber each other's details — which silently dropped the case activity
+    # log / chat history when several actions (each re-fusing) overlapped.
+    with _get_run_log_lock(run_id):
+        workflow = file_get_workflow(run_id)
+        if not workflow:
+            return
         # Cancellation is terminal: once request_stop() flips a run to
         # 'cancelled', the background worker's killed-subprocess
         # exception will try to mark it 'failed' on the way out. Silently
@@ -379,6 +386,24 @@ def update_run_status(run_id, status, progress=None, error=None, details=None, f
             workflow["details"] = existing_details
         workflow["updated_at"] = datetime.now().isoformat()
 
+        save_workflow(workflow)
+
+
+def mutate_run_details(run_id, mutator):
+    """Atomically read-modify-write a run's `details` under the per-run lock.
+
+    `mutator(details: dict) -> None` mutates the dict in place. This is the
+    race-safe way to append to a list inside details (activity log, chat history)
+    — doing get + modify + save across separate calls lets concurrent writers
+    clobber each other. Only touches `details` + `updated_at`; never the status."""
+    with _get_run_log_lock(run_id):
+        workflow = file_get_workflow(run_id)
+        if not workflow:
+            return
+        details = workflow.get("details") or {}
+        mutator(details)
+        workflow["details"] = details
+        workflow["updated_at"] = datetime.now().isoformat()
         save_workflow(workflow)
 
 
