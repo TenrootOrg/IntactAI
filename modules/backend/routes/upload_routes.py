@@ -46,24 +46,23 @@ def decode_tus_metadata(metadata_str):
     return result
 
 
-def _auto_collect_offline(import_result, upload_run_id):
-    """After an offline collector ZIP is imported into Velociraptor, collect the
-    imported flow into the fused graph *under the SAME upload run* — ONE workflow
-    row, not two. The import alone only stages raw rows in Velociraptor; this step
-    maps + persists them so the data reaches the Case (velociraptor_upload is a
-    fusion member — see workflow_service.AGENTIC_TYPES + fusion store dispatch).
-
-    Fully offline: llm_config={} and report_types=[] force the runner's
-    collect-only path, so it NEVER calls the LLM (no key needed, no reachability
-    check). The Case-level LLM — only if the operator configures one and runs an
-    analysis — works on the combined, per-identity-deduped graph."""
+def _fuse_offline_import(import_result, upload_run_id):
+    """After an offline-collector ZIP is imported into Velociraptor, fuse the
+    imported flow into the Case — as a final step of the SAME upload run (one
+    workflow row). There is NO agent and NO LLM here: this only reads the flow's
+    rows back from Velociraptor and persists them so the fusion graph can pick
+    them up (velociraptor_upload is a fusion member — see
+    workflow_service.AGENTIC_TYPES + the fusion-store dispatch). Any LLM analysis
+    is a separate, explicit Case-level action the operator chooses to run later."""
     if not (isinstance(import_result, dict) and import_result.get("success")
             and import_result.get("flow_id") and upload_run_id):
         return
     try:
-        from services.workflow_service import get_automation_run, add_log_to_run
+        from services.workflow_service import (
+            get_automation_run, add_log_to_run, update_run_status)
         from services.file_storage_service import save_workflow
-        from services.agentic import run_agentic_on_existing
+        from services.agentic.collectors import get_existing_collection_results
+        from services.agentic.reports import persist_pipeline_artifacts
         flow_id = import_result["flow_id"]
         client_id = import_result.get("client_id")
         hostname = import_result.get("hostname")
@@ -83,16 +82,24 @@ def _auto_collect_offline(import_result, upload_run_id):
             except Exception:
                 pass
 
-        add_log_to_run(upload_run_id,
-                       f"Collecting imported flow {flow_id} into the case…")
-
-        # Collect-only, no LLM (report_types=[] forces it inside the runner).
-        run_agentic_on_existing(
-            upload_run_id, flow_id=flow_id, hunt_id=None, llm_config={},
-            report_types=[],
+        add_log_to_run(upload_run_id, "[Fusion] Reading imported flow into the case…")
+        all_results, artifacts, _client_info = get_existing_collection_results(
+            upload_run_id, flow_id=flow_id, hunt_id=None,
             client_ids=[client_id] if client_id else None)
+        total_rows = sum(len(rows) for rows in (all_results or {}).values())
+        if total_rows == 0:
+            add_log_to_run(upload_run_id,
+                           "[Fusion] Import had no rows to fuse into the case.", "warning")
+            return
+        # Persist rows where the fusion graph reads them (/data/downloads/<rid>).
+        persist_pipeline_artifacts(upload_run_id, {}, all_results)
+        add_log_to_run(
+            upload_run_id,
+            f"[Fusion] Added {total_rows} rows across {len(artifacts)} artifact(s) "
+            f"to the case.", "success")
+        update_run_status(upload_run_id, "completed", progress=100)
     except Exception as e:
-        print(f"[TUS HOOK] auto-collect of imported flow failed: {e}", flush=True)
+        print(f"[OFFLINE IMPORT] fuse of imported flow failed: {e}", flush=True)
         import traceback
         traceback.print_exc()
 
@@ -305,10 +312,10 @@ def handle_tus_hook():
                         from services.offline_collector.importer import import_results
                         result = import_results(file_path, original_filename, run_id=run_id)
                         print(f"[TUS HOOK] Velociraptor import result: {result}", flush=True)
-                        # Chain into a collect-only analysis of the imported flow so it
-                        # reaches the Case (the import alone only lands raw data in
-                        # Velociraptor — see _auto_collect_offline). No LLM involved.
-                        _auto_collect_offline(result, run_id)
+                        # Fuse the imported flow into the Case as a final step of THIS
+                        # upload run — read the rows back and persist them for the
+                        # fusion graph. No agent, no LLM (see _fuse_offline_import).
+                        _fuse_offline_import(result, run_id)
                     except Exception as e:
                         print(f"[TUS HOOK] Velociraptor import error: {e}", flush=True)
                         traceback.print_exc()

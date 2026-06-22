@@ -2,9 +2,8 @@
 Public import path unchanged: `from services.agentic.pipeline import X` works
 (incl. _collect_only_report imported by the fusion no-llm test).
   _helpers.py — watchdog, phase updates, collect-only report stub.
-  _runners.py — run_agentic_pipeline (new collection) + run_agentic_on_existing
-                (collect an already-collected flow/hunt — used by the offline import
-                auto-collect). Both run collect-only when report_types is empty.
+  _runners.py — run_agentic_pipeline (new collection). Runs collect-only when
+                report_types is empty.
 """
 from services.agentic.pipeline._helpers import *  # noqa: F401,F403
 from services.agentic.pipeline._runners import *  # noqa: F401,F403
