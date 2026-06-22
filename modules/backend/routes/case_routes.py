@@ -25,6 +25,90 @@ _import_lock = threading.Lock()
 _BOOTSTRAP_DONE = False
 
 
+# ---- Case Analysis audit log --------------------------------------------------
+# The Case has no per-action workflow row, so we record every state-changing
+# request (and every error) against the case itself. Generic: any /api/cases/<id>/
+# mutation or failure is captured without instrumenting each handler.
+def _audit_case_id():
+    p = (request.path or "").strip("/").split("/")
+    if len(p) >= 4 and p[0] == "api" and p[1] == "cases":
+        return p[2], "/".join(p[3:])
+    return None, None
+
+
+def _audit_detail(action, is_err, resp):
+    if is_err:
+        try:
+            return (resp.get_json(silent=True) or {}).get("error", "") or "request failed"
+        except Exception:
+            return "request failed"
+    # success: enrich a few high-value actions from the request body
+    b = request.get_json(silent=True) or {}
+    a = action.split("/")[0]
+    if a == "timeline" and "validate" in action and b.get("finding_id"):
+        return f"{b.get('finding_id')} → {b.get('status', 'real')}"
+    if a == "timeline" and "event" in action:
+        if request.method == "DELETE":
+            return f"deleted event {action.split('/')[-1]}"
+        return f"added: {b.get('title', '')}".strip()
+    if a == "disposition" and b.get("target"):
+        return f"{b.get('target')} → {b.get('verdict', 'benign')} ({b.get('attribution', 'operator')})"
+    if a == "chat" and (b.get("question") or b.get("message")):
+        return f"Q: {(b.get('question') or b.get('message'))[:140]}"
+    if a == "report" and request.method == "POST":
+        return "report regenerated"
+    if a in ("config", "hosts", "masking", "rescan", "fuse", "baseline", "export", "import"):
+        return action
+    return ""
+
+
+@case_bp.after_request
+def _audit_case_activity(resp):
+    try:
+        cid, action = _audit_case_id()
+        # skip the log's own reads/clears so polling doesn't self-fill the log
+        if cid and action and action.split("/")[0] != "log":
+            is_err = resp.status_code >= 400
+            if request.method in ("POST", "PUT", "DELETE", "PATCH") or is_err:
+                store.log_case_event(cid, f"{request.method} {action}",
+                                     "error" if is_err else "ok",
+                                     _audit_detail(action, is_err, resp),
+                                     code=resp.status_code)
+    except Exception:
+        pass
+    return resp
+
+
+@case_bp.errorhandler(Exception)
+def _audit_case_exception(e):
+    from werkzeug.exceptions import HTTPException
+    try:
+        cid, action = _audit_case_id()
+        if cid and action and action.split("/")[0] != "log":
+            store.log_case_event(cid, f"{request.method} {action}", "error",
+                                 str(e)[:300], code=getattr(e, "code", 500) or 500)
+    except Exception:
+        pass
+    if isinstance(e, HTTPException):
+        return e
+    print(f"[CASE] unhandled error on {request.path}: {e}", flush=True)
+    return jsonify({"error": str(e)}), 500
+
+
+@case_bp.route("/api/cases/<case_id>/log", methods=["GET"])
+def case_log(case_id):
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    return jsonify({"case_id": case_id, "log": store.get_case_log(case_id)})
+
+
+@case_bp.route("/api/cases/<case_id>/log", methods=["DELETE"])
+def case_log_clear(case_id):
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    return jsonify({"case_id": case_id, **store.clear_case_log(case_id)})
+
+
 @case_bp.before_app_request
 def _bind_active_case():
     """Workspace model (runs app-wide via before_app_request, so it does NOT depend

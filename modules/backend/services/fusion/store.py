@@ -522,6 +522,9 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
                          details={"fusion_graph": g.pruned().to_dict(), "report_md": report,
                                   "token_ab": token_ab, "analysis": analysis,
                                   "disposition_checklist": checklist})
+    log_case_event(case_id, "fuse", "ok",
+                   f"{len(g.entities)} entities, {len(g.relationships)} links, "
+                   f"{len(g.findings)} findings, {len(members)} member run(s)")
     return g
 
 
@@ -595,6 +598,42 @@ def _merge_case_details(case_id, patch) -> None:
 def _now_iso() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+# ---- Case Analysis activity log (audit trail — the case has no workflow row) ----
+_CASE_LOG_CAP = 500
+
+
+def log_case_event(case_id, action, status="ok", detail="", **meta) -> None:
+    """Append an entry to the case's activity log. Best-effort + bounded: logging
+    must NEVER raise into (or break) the action it records. Captures both the
+    action and its outcome (ok/error) so the Log tab can follow everything that
+    happens inside Case Analysis."""
+    try:
+        d = get_case(case_id)
+        if not d:
+            return                       # not a real case (e.g. 'quick', calibration ids)
+        entry = {"ts": _now_iso() + "Z", "action": str(action)[:120],
+                 "status": "error" if status == "error" else "ok",
+                 "detail": str(detail)[:500]}
+        for k, v in (meta or {}).items():
+            entry[k] = v
+        log = list(d.get("activity_log") or [])
+        log.append(entry)
+        if len(log) > _CASE_LOG_CAP:
+            log = log[-_CASE_LOG_CAP:]
+        _merge_case_details(case_id, {"activity_log": log})
+    except Exception as e:  # noqa: BLE001 — telemetry only
+        print(f"[CASE-LOG] failed to record '{action}' for {case_id}: {e}", flush=True)
+
+
+def get_case_log(case_id) -> list:
+    return list((get_case(case_id) or {}).get("activity_log") or [])
+
+
+def clear_case_log(case_id) -> dict:
+    _merge_case_details(case_id, {"activity_log": []})
+    return {"cleared": True}
 
 
 # ---- engagement-grade reporting on the case (branding + audience + steering) ----

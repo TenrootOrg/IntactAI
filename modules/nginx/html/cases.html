@@ -112,6 +112,15 @@
   .tladd{border:1px solid var(--bd);border-radius:7px;padding:10px;margin:8px 0;background:var(--panel2);display:none;gap:8px;flex-wrap:wrap;align-items:flex-end}
   .tladd.open{display:flex} .tladd label{font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:3px}
   .xdel{cursor:pointer;color:var(--muted);font-size:13px;padding:0 4px} .xdel:hover{color:var(--sev-high,#db6d28)}
+  /* log tab */
+  .logrow{display:flex;gap:8px;align-items:baseline;padding:4px 6px;border-bottom:1px solid var(--bd);font-size:12px}
+  .logrow.err{background:rgba(248,81,73,.07)}
+  .logrow code{font-size:11px}
+  .lbadge{font-size:10px;padding:1px 6px;border-radius:4px;text-transform:uppercase;letter-spacing:.03em}
+  .b-ok{color:var(--ok);border:1px solid var(--bd)} .b-err{color:#fff;background:#f85149}
+  .lact{font-family:var(--mono,monospace);color:var(--tx);white-space:nowrap}
+  .lcode{font-size:10px;color:var(--muted);border:1px solid var(--bd);border-radius:4px;padding:0 4px}
+  .ldetail{color:var(--muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
   .info{cursor:help;color:var(--info);border:1px solid var(--bd);border-radius:50%;width:15px;height:15px;
         display:inline-flex;align-items:center;justify-content:center;font-size:10px}
 </style>
@@ -297,6 +306,7 @@ function render(info,md,g){
         <div class="tab ${tab==='report'?'on':''}" data-tab="report" onclick="setTab('report')">Report</div>
         <div class="tab ${tab==='timeline'?'on':''}" data-tab="timeline" onclick="setTab('timeline')">Timeline</div>
         <div class="tab ${tab==='chat'?'on':''}" data-tab="chat" onclick="setTab('chat')">Chat</div>
+        <div class="tab ${tab==='log'?'on':''}" data-tab="log" onclick="setTab('log')">Log</div>
       </div>
       <div id="tabc"></div>
     </div>`;
@@ -312,8 +322,10 @@ function setTab(t){
 function drawTab(md){
   if(md)window._md=md;
   const info=curInfo;
+  if(window._logTimer && tab!=='log'){clearInterval(window._logTimer);window._logTimer=null;} // stop following when leaving Log
   if(tab==='timeline') renderTimeline(info.case_id);
   else if(tab==='chat') renderChat(info.case_id);
+  else if(tab==='log') renderLog(info.case_id);
   else if(tab==='config') renderConfig(info);
   else renderReport(info);
 }
@@ -531,6 +543,48 @@ function tlAddSubmit(){
 function tlDelete(eid){
   api('/api/cases/'+window._tlCase+'/timeline/event/'+encodeURIComponent(eid),{method:'DELETE'})
    .then(_=>{toast('event deleted');renderTimeline(window._tlCase);});
+}
+
+// ---- Log tab: follows every action + error inside Case Analysis ----
+function renderLog(id){
+  window._logCase=id;
+  $('#tabc').innerHTML=`
+    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:4px">
+      <p style="color:var(--muted);margin:0">Activity log — every action and error in this case (auto-refreshes). The case has no workflow row, so this is its audit trail.</p>
+      <div style="display:flex;gap:6px;align-items:center">
+        <label style="font-size:11px;color:var(--muted);display:flex;gap:4px;align-items:center"><input type="checkbox" id="log-follow" checked style="width:auto" onchange="logFollow(this.checked)"> follow</label>
+        <button class="ghost" onclick="logRefresh()">↻</button>
+        <button class="ghost" onclick="logClear()">Clear</button>
+      </div>
+    </div>
+    <div id="logrows"><i style="color:var(--muted)">loading…</i></div>`;
+  logRefresh();
+  logFollow(true);
+}
+function logFollow(on){
+  if(window._logTimer){clearInterval(window._logTimer);window._logTimer=null;}
+  if(on && tab==='log') window._logTimer=setInterval(logRefresh,4000);
+}
+function logRefresh(){
+  if(!window._logCase) return;
+  api('/api/cases/'+window._logCase+'/log').then(d=>{
+    const rows=(d.log||[]).slice().reverse(); // newest first
+    const box=$('#logrows'); if(!box)return;
+    box.innerHTML = rows.length? rows.map(e=>{
+      const err=e.status==='error';
+      return `<div class="logrow ${err?'err':''}">
+        <code style="white-space:nowrap;color:var(--muted)">${esc(e.ts||'')}</code>
+        <span class="lbadge ${err?'b-err':'b-ok'}">${err?'error':'ok'}</span>
+        <span class="lact">${esc(e.action||'')}</span>
+        ${e.code?`<span class="lcode">${esc(String(e.code))}</span>`:''}
+        <span class="ldetail">${esc(e.detail||'')}</span>
+      </div>`;}).join('')
+      : '<i style="color:var(--muted)">no activity recorded yet — actions in this case will appear here.</i>';
+  }).catch(_=>{const b=$('#logrows');if(b)b.innerHTML='<i style="color:var(--sev-high,#db6d28)">could not load the log</i>';});
+}
+function logClear(){
+  if(!confirm('Clear the activity log for this case?'))return;
+  api('/api/cases/'+window._logCase+'/log',{method:'DELETE'}).then(_=>{toast('log cleared');logRefresh();});
 }
 function captureBaseline(id){toast('capturing baseline…');
   api('/api/cases/'+id+'/baseline',{method:'POST'}).then(d=>toast('baseline captured: '+((d.baseline||{}).sigma_titles||0)+' titles'));}

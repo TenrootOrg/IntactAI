@@ -99,6 +99,34 @@ def test_runs_picker_contract():
         assert "run_id" in r and "type" in r
 
 
+def test_activity_log_records_actions_and_errors():
+    c = _client()
+    cid = _fake_case(c)
+    c.delete(f"/api/cases/{cid}/log")               # start clean
+    # a successful mutation is logged ok ...
+    c.post(f"/api/cases/{cid}/disposition",
+           json={"target": "f_x", "verdict": "benign", "attribution": "it_admin"})
+    # ... and a failed one is logged as error
+    c.post(f"/api/cases/{cid}/timeline/validate", json={})   # 400 (no finding_id)
+    log = _json(c.get(f"/api/cases/{cid}/log"))["log"]
+    acts = [(e["action"], e["status"]) for e in log]
+    assert any(a.startswith("POST disposition") and s == "ok" for a, s in acts), acts
+    assert any("timeline/validate" in a and s == "error" for a, s in acts), acts
+    assert any(e["action"] == "fuse" for e in log), "the disposition's re-fuse is logged"
+    # reads of the log itself are NOT logged (no self-fill on polling)
+    assert not any("log" in a for a, _ in acts)
+
+
+def test_activity_log_clear():
+    c = _client()
+    cid = _fake_case(c)
+    c.post(f"/api/cases/{cid}/disposition",
+           json={"target": "f_y", "verdict": "benign", "attribution": "operator"})
+    assert _json(c.get(f"/api/cases/{cid}/log"))["log"], "should have entries"
+    c.delete(f"/api/cases/{cid}/log")
+    assert _json(c.get(f"/api/cases/{cid}/log"))["log"] == [], "clear empties the log"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     p = f = 0
