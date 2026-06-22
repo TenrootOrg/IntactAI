@@ -21,7 +21,12 @@ from services.file_storage_service import (
 # never appear in a workspace's run list.
 AGENTIC_TYPES = {"agentic", "memory", "cve_scan", "timesketch",
                  "aws_scan", "azure_scan", "engagement_report",
-                 "velociraptor_hunt"}
+                 "velociraptor_hunt",
+                 # An offline-collector ZIP upload IS case work: it imports a
+                 # flow AND (in the same run) collects it into the fused graph.
+                 # Listing it here makes the single upload row a case member —
+                 # it shows in the workspace and is picked up by the fuse.
+                 "velociraptor_upload"}
 
 # Settings-page / system-operation run types. These always run under the built-in
 # "System" workspace (regardless of the browser's active case) so they have a home

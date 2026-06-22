@@ -47,40 +47,49 @@ def decode_tus_metadata(metadata_str):
 
 
 def _auto_collect_offline(import_result, upload_run_id):
-    """After an offline collector ZIP is imported into Velociraptor, run a
-    collect-only analysis of the imported flow so its data lands in the fused
-    graph (the import itself only stages raw data in Velociraptor). Tagged to
-    the same workspace as the upload. No LLM — collection only (report_types=[]);
-    the Case-level LLM analyses the combined, per-identity-deduped graph."""
+    """After an offline collector ZIP is imported into Velociraptor, collect the
+    imported flow into the fused graph *under the SAME upload run* — ONE workflow
+    row, not two. The import alone only stages raw rows in Velociraptor; this step
+    maps + persists them so the data reaches the Case (velociraptor_upload is a
+    fusion member — see workflow_service.AGENTIC_TYPES + fusion store dispatch).
+
+    Fully offline: llm_config={} and report_types=[] force the runner's
+    collect-only path, so it NEVER calls the LLM (no key needed, no reachability
+    check). The Case-level LLM — only if the operator configures one and runs an
+    analysis — works on the combined, per-identity-deduped graph."""
     if not (isinstance(import_result, dict) and import_result.get("success")
-            and import_result.get("flow_id")):
+            and import_result.get("flow_id") and upload_run_id):
         return
     try:
-        from services.workflow_service import (
-            create_automation_run, get_automation_run, add_log_to_run)
+        from services.workflow_service import get_automation_run, add_log_to_run
+        from services.file_storage_service import save_workflow
         from services.agentic import run_agentic_on_existing
         flow_id = import_result["flow_id"]
         client_id = import_result.get("client_id")
         hostname = import_result.get("hostname")
-        # Inherit the upload's workspace so the analysis lands in the same case.
-        case_id = (get_automation_run(upload_run_id) or {}).get("case_id")
-        ag_run = create_automation_run(
-            "agentic", f"Offline collection — {hostname or flow_id}",
-            details={"source": "offline_import", "flow_id": flow_id,
-                     "client_id": client_id, "hostname": hostname},
-            case_id=case_id)
-        if upload_run_id:
-            add_log_to_run(upload_run_id,
-                           f"Auto-collecting imported flow {flow_id} into the case "
-                           f"(run {ag_run})…")
-        try:
-            from routes.agentic_routes import _load_llm_config
-            llm_config = _load_llm_config()
-        except Exception:
-            llm_config = {}
+
+        # Seed the run's hostnames map so the Case host card shows a friendly
+        # name (the mapper also falls back to each row's own hostname column).
+        run = get_automation_run(upload_run_id) or {}
+        det = run.get("details") or {}
+        if client_id and hostname:
+            hn = dict(det.get("hostnames") or {})
+            hn[str(client_id)] = hostname
+            det["hostnames"] = hn
+            det["offline_flow_id"] = flow_id
+            run["details"] = det
+            try:
+                save_workflow(run)
+            except Exception:
+                pass
+
+        add_log_to_run(upload_run_id,
+                       f"Collecting imported flow {flow_id} into the case…")
+
+        # Collect-only, no LLM (report_types=[] forces it inside the runner).
         run_agentic_on_existing(
-            ag_run, flow_id=flow_id, hunt_id=None, llm_config=llm_config,
-            report_types=[],  # collect-only — no LLM; the Case fuses the result
+            upload_run_id, flow_id=flow_id, hunt_id=None, llm_config={},
+            report_types=[],
             client_ids=[client_id] if client_id else None)
     except Exception as e:
         print(f"[TUS HOOK] auto-collect of imported flow failed: {e}", flush=True)

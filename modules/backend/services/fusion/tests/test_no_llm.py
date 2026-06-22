@@ -49,6 +49,38 @@ def test_agentic_run_fuseable_from_raw_results_file():
     assert any(e.type == "process" for e in ents), "file-based agentic run must be fuseable"
 
 
+def test_offline_upload_run_is_a_fusion_member_type():
+    # The offline-collector upload auto-collects into its OWN row (one workflow,
+    # not two), so that row's type must be a case/fusion member.
+    from services import workflow_service as ws
+    assert "velociraptor_upload" in ws.AGENTIC_TYPES
+
+
+def test_offline_upload_run_fuses_like_an_agentic_run():
+    # An offline-collector upload run (atype velociraptor_upload) persists rows
+    # the same way and must contribute the same entities as an agentic run —
+    # via the same map_agentic dispatch in _contribution_for_run.
+    rid = "velo_upload_nolltest_1"
+    rows = {"Generic.System.Pstree": [
+        {"Pid": 11, "Ppid": 4, "Name": "evil.exe", "CreateTime": "2026-06-15T08:00:00Z",
+         "_client_id": "C.up", "_hostname": "ADATUM"}]}
+    for base in ("/data/downloads", "/app/data/downloads"):
+        try:
+            os.makedirs(f"{base}/{rid}", exist_ok=True)
+            with open(f"{base}/{rid}/raw_results.json", "w") as f:
+                json.dump(rows, f)
+            break
+        except Exception:
+            continue
+    run = {"run_id": rid, "automation_type": "velociraptor_upload",
+           "details": {"hostnames": {"C.up": "ADATUM"}}}
+    ents, _ = store._contribution_for_run(run)
+    assert any(e.type == "process" for e in ents), \
+        "velociraptor_upload run must fuse via the agentic mapper"
+    assert any(e.type == "asset" and "adatum" in str(e.label).lower() for e in ents), \
+        "host card must show the seeded hostname"
+
+
 def test_agentic_details_collected_data_takes_precedence():
     det = {"collected_data": {"X": [{"_client_id": "C.z", "_hostname": "H"}]}}
     assert store._agentic_collected_data("nope_rid", det) == det["collected_data"]

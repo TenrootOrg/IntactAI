@@ -364,7 +364,11 @@ def _contribution_for_run(run, log=None):
     try:
         if atype == "memory":
             return _memory_contribution(rid, det)
-        if atype == "agentic":
+        # "agentic" = a live/collect agentic run; "velociraptor_upload" = an
+        # offline-collector import that auto-collected into this same run (one
+        # workflow row, not two). Both persist rows the same way and fuse via
+        # the same mapper.
+        if atype in ("agentic", "velociraptor_upload"):
             return map_agentic(_agentic_collected_data(rid, det), run_id=rid,
                                hostnames=det.get("hostnames") or {})
         if atype == "cve_scan":
