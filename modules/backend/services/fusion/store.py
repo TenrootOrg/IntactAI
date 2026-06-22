@@ -522,9 +522,10 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
                          details={"fusion_graph": g.pruned().to_dict(), "report_md": report,
                                   "token_ab": token_ab, "analysis": analysis,
                                   "disposition_checklist": checklist})
-    log_case_event(case_id, "fuse", "ok",
-                   f"{len(g.entities)} entities, {len(g.relationships)} links, "
-                   f"{len(g.findings)} findings, {len(members)} member run(s)")
+    log_case_event(case_id, "Fuse", "ok",
+                   f"rebuilt case graph — {len(g.entities):,} entities, "
+                   f"{len(g.relationships):,} links, {len(g.findings):,} findings "
+                   f"across {len(members)} run(s)")
     return g
 
 
@@ -1008,3 +1009,13 @@ def chat_case(case_id, question) -> str:
         {"role": "user", "content": question}, {"role": "assistant", "content": ans}]
     _ws().update_run_status(case_id, "completed", details={"chat_messages": msgs})
     return ans
+
+
+def get_chat(case_id) -> list:
+    """The persisted conversation for a case (survives page refreshes)."""
+    return list((get_case(case_id) or {}).get("chat_messages") or [])
+
+
+def clear_chat(case_id) -> dict:
+    _merge_case_details(case_id, {"chat_messages": []})
+    return {"cleared": True}

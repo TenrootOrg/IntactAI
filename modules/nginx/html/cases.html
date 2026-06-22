@@ -54,7 +54,7 @@
   .c-medium{background:rgba(210,153,34,.18);color:var(--med)} .c-low{background:rgba(63,185,80,.16);color:var(--low)}
   .c-informational{background:rgba(88,166,255,.15);color:var(--info)}
   .chat{display:flex;flex-direction:column;height:calc(100vh - 200px)}
-  .chathead{display:flex;justify-content:flex-end;margin-bottom:4px}
+  .chathead{display:flex;justify-content:flex-end;gap:6px;margin-bottom:4px}
   .chatfs{font-size:11px;padding:3px 9px}
   /* full-screen chat — native Fullscreen API (Esc exits) + CSS fallback.
      chatwrap becomes a flex column filling the screen: header takes its height,
@@ -602,12 +602,20 @@ function captureBaseline(id){toast('capturing baseline…');
 let chatHist=[];
 function renderChat(id){
   $('#tabc').innerHTML=`<div id="chatwrap">
-    <div class="chathead"><button class="ghost chatfs" id="chatfsbtn" onclick="toggleChatFull()" title="Full screen (Esc to exit)">⛶ Full screen</button></div>
+    <div class="chathead"><button class="ghost chatfs" onclick="clearChat('${id}')" title="Clear the conversation">Clear</button><button class="ghost chatfs" id="chatfsbtn" onclick="toggleChatFull()" title="Full screen (Esc to exit)">⛶ Full screen</button></div>
     <div class="chat"><div class="msgs" id="msgs"></div>
     <div class="chatbar"><input id="q" placeholder="ask anything about this case — risk, attack path, a host/account/IP, what to do next…"/>
     <button onclick="ask('${id}')">Ask</button></div></div></div>`;
   $('#q').addEventListener('keydown',e=>{if(e.key==='Enter')ask(id);});
-  drawMsgs();
+  // load the persisted conversation so it survives a page refresh
+  $('#msgs').innerHTML='<i style="color:var(--muted)">loading…</i>';
+  api('/api/cases/'+id+'/chat').then(d=>{
+    chatHist=(d.messages||[]).map(m=>({role:m.role,content:m.content}));drawMsgs();
+  }).catch(_=>{chatHist=[];drawMsgs();});
+}
+function clearChat(id){
+  if(!confirm('Clear this conversation?'))return;
+  api('/api/cases/'+id+'/chat',{method:'DELETE'}).then(_=>{chatHist=[];drawMsgs();toast('chat cleared');});
 }
 function toggleChatFull(){
   const w=document.getElementById('chatwrap'); if(!w)return;

@@ -43,56 +43,77 @@ _STATE_LABEL = {"real": "Real", "not_real": "Not real", "known_it": "Known", "pe
 def _audit_label(action):
     a = action.split("/")[0]
     if a == "timeline" and "validate" in action:
-        return "timeline status"
+        return "Timeline status"
     if a == "timeline" and "event" in action:
-        return "delete timeline event" if request.method == "DELETE" else "add timeline event"
+        return "Delete timeline event" if request.method == "DELETE" else "Add timeline event"
     if a == "disposition":
-        return "disposition"
+        return "Disposition"
     if a == "chat":
-        return "chat"
+        return "Clear chat" if request.method == "DELETE" else "Chat"
     if a == "report":
-        return "regenerate report"
+        return "Regenerate report"
     if a == "baseline":
-        return "capture baseline"
-    if a in ("export", "import", "rescan", "fuse"):
-        return a
+        return "Capture baseline"
+    if a == "export":
+        return "Export case"
+    if a == "import":
+        return "Import case"
+    if a == "rescan":
+        return "Rescan / re-fuse"
     if a in ("config", "hosts", "masking") or request.method in ("PUT", "PATCH"):
-        return "update config"
+        return "Update configuration"
+    if a == "fuse":
+        return "Fuse"
     return f"{request.method} {action}"
 
 
+def _safe_json(resp):
+    try:
+        return resp.get_json(silent=True) or {}
+    except Exception:
+        return {}
+
+
 def _audit_detail(action, is_err, resp):
-    if is_err:
-        try:
-            return (resp.get_json(silent=True) or {}).get("error", "") or "request failed"
-        except Exception:
-            return "request failed"
-    # success: enrich a few high-value actions from the request body / response
-    b = request.get_json(silent=True) or {}
-    a = action.split("/")[0]
-    if a == "timeline" and "validate" in action and b.get("finding_id"):
-        what = b.get("title") or b.get("finding_id")
-        return f"{what} → {_STATE_LABEL.get(b.get('status'), b.get('status', 'real'))}"
-    if a == "timeline" and "event" in action:
-        if request.method == "DELETE":
-            return f"deleted event {action.split('/')[-1]}"
-        return f"added: {b.get('title', '')}".strip()
-    if a == "disposition" and b.get("target"):
-        return f"{b.get('target')} → {b.get('verdict', 'benign')} ({b.get('attribution', 'operator')})"
-    if a == "chat" and (b.get("question") or b.get("message")):
-        q = (b.get("question") or b.get("message"))[:120]
-        ans = ""
-        try:
-            ans = (resp.get_json(silent=True) or {}).get("answer", "") or ""
-        except Exception:
-            ans = ""
-        ans = " ".join(ans.split())          # flatten newlines for a one-line summary
-        return f"Q: {q}" + (f"  →  A: {ans[:200]}" if ans else "")
-    if a == "report" and request.method == "POST":
-        return "report regenerated"
-    if a in ("config", "hosts", "masking", "rescan", "fuse", "baseline", "export", "import"):
-        return action
-    return ""
+    """An explicit, human-readable description of what happened. Hardened: any
+    failure to build the detail degrades to a short generic string, never raises."""
+    try:
+        a = action.split("/")[0]
+        if is_err:
+            # surface the real reason the action failed
+            err = (_safe_json(resp).get("error") or "").strip()
+            verb = _audit_label(action).lower()
+            return f"{verb} failed — {err}" if err else f"{verb} failed ({resp.status_code})"
+
+        b = request.get_json(silent=True) or {}
+        if a == "timeline" and "validate" in action and b.get("finding_id"):
+            what = b.get("title") or b.get("finding_id")
+            state = _STATE_LABEL.get(b.get("status"), b.get("status", "real"))
+            return f'marked "{what}" as {state}'
+        if a == "timeline" and "event" in action:
+            if request.method == "DELETE":
+                return "removed a manual timeline event"
+            return f'added manual event "{b.get("title", "")}"'.strip()
+        if a == "disposition" and b.get("target"):
+            return (f'{b.get("target")} → {b.get("verdict", "benign")} '
+                    f'({b.get("attribution", "operator")})')
+        if a == "chat" and request.method == "DELETE":
+            return "conversation cleared"
+        if a == "chat" and (b.get("question") or b.get("message")):
+            # the answer itself is NOT stored here — just confirm it was answered
+            q = (b.get("question") or b.get("message")).strip()
+            ans = (_safe_json(resp).get("answer") or "").strip()
+            outcome = "answered" if ans else "no answer produced"
+            return f'{outcome} — "{q[:140]}"'
+        if a == "report" and request.method == "POST":
+            return "report regenerated"
+        if a in ("rescan", "config", "hosts", "masking"):
+            return "configuration updated, case re-fused"
+        if a in ("baseline", "export", "import"):
+            return action
+        return ""
+    except Exception:
+        return ""
 
 
 @case_bp.after_request
@@ -119,7 +140,8 @@ def _audit_case_exception(e):
         cid, action = _audit_case_id()
         if cid and action and action.split("/")[0] != "log":
             store.log_case_event(cid, _audit_label(action), "error",
-                                 str(e)[:300], code=getattr(e, "code", 500) or 500)
+                                 f"{_audit_label(action).lower()} crashed — {str(e)[:280]}",
+                                 code=getattr(e, "code", 500) or 500)
     except Exception:
         pass
     if isinstance(e, HTTPException):
@@ -592,6 +614,21 @@ def chat(case_id):
         return jsonify({"error": "question required"}), 400
     ans = store.chat_case(case_id, q)
     return jsonify({"case_id": case_id, "answer": ans})
+
+
+@case_bp.route("/api/cases/<case_id>/chat", methods=["GET"])
+def chat_history(case_id):
+    """The persisted conversation, so the chat survives a refresh."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    return jsonify({"case_id": case_id, "messages": store.get_chat(case_id)})
+
+
+@case_bp.route("/api/cases/<case_id>/chat", methods=["DELETE"])
+def chat_clear(case_id):
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    return jsonify({"case_id": case_id, **store.clear_chat(case_id)})
 
 
 @case_bp.route("/api/cases/<case_id>/analysis", methods=["GET"])
