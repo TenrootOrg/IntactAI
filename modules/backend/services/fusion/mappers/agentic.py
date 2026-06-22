@@ -213,7 +213,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 if not pipe:
                     continue
                 pid = F.get(r, "ProcPid", *F.PID)
-                eid = keys.event_id(run_id, f"{asset}:{pid}", f"pipe:{pipe}")
+                eid = keys.event_id(asset, f"{asset}:{pid}", f"pipe:{pipe}")
                 ents.append(_ent(eid, "event", f"named pipe: {str(pipe)[:60]}", asset, run_id,
                                  loc, anomaly=score_row(r) or 10, first=ts, artifact=artifact,
                                  pipe=str(pipe), proc_name=F.get(r, "ProcName", default=None)))
@@ -290,7 +290,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 tt = F.get(r, "TicketType", default="ticket")
                 client = F.get(r, "Client", default="?")
                 server = F.get(r, "Server", default="?")
-                kid = keys.event_id(run_id, f"{asset}:{client}", f"krb:{tt}:{server}")
+                kid = keys.event_id(asset, f"{asset}:{client}", f"krb:{tt}:{server}")
                 truthy = str(susp).strip().lower() in ("true", "1", "yes") or susp is True
                 ents.append(_ent(kid, "event", f"Kerberos {tt}: {client} -> {server}", asset,
                                  run_id, loc, anomaly=60 if truthy else 1, first=ts,
@@ -317,7 +317,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 if not line or str(line).lstrip().startswith("#"):
                     continue                       # skip comments / blanks
                 an_ps = _ps_anomaly(line)
-                eid = keys.event_id(run_id, f"{asset}:{F.get(r, 'OSPath', default='')}",
+                eid = keys.event_id(asset, f"{asset}:{F.get(r, 'OSPath', default='')}",
                                     f"ps:{line}")
                 ents.append(_ent(eid, "event", f"powershell: {str(line)[:80]}", asset, run_id,
                                  loc, anomaly=an_ps, first=ts, artifact=artifact,
@@ -389,7 +389,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 title = F.get(r, "Title", "RuleTitle", "Rule", "Message", default=artifact)
                 level = F.get(r, "Level", "Severity", default="informational")
                 anom = _level_anomaly(level)
-                eid = keys.event_id(run_id, f"{F.get(r, 'EID', 'EventID', default='')}",
+                eid = keys.event_id(asset, f"{F.get(r, 'EID', 'EventID', default='')}",
                                     f"sigma:{title}:{F.get(r, 'RecordID', default=ts)}")
                 ev = _ent(eid, "event", f"SIGMA: {str(title)[:80]}", asset, run_id, loc,
                           anomaly=anom, first=ts, artifact=artifact,
@@ -413,7 +413,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 dname = (det.get("Name") if isinstance(det, dict) else det) or artifact
                 crit = (det.get("Criticality") if isinstance(det, dict) else None) or "low"
                 path = F.get(r, "OSPath", *F.PATH, default="")
-                ev = _ent(keys.event_id(run_id, f"{asset}:{path}", f"mft:{dname}"),
+                ev = _ent(keys.event_id(asset, f"{asset}:{path}", f"mft:{dname}"),
                           "event", f"MFT: {str(dname)[:70]}", asset, run_id, loc,
                           anomaly=_level_anomaly(crit), first=ts, artifact=artifact,
                           flags=["mft_detection"], detection=str(dname),
@@ -426,7 +426,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 cat = F.get(r, "Category", default="") or ""
                 name = F.get(r, "DisplayName", "Name", default=artifact)
                 rmm = any(k in str(cat).lower() for k in ("rmm", "remote", "lolrmm"))
-                ents.append(_ent(keys.event_id(run_id, f"{asset}:{name}", f"app:{cat}:{name}"),
+                ents.append(_ent(keys.event_id(asset, f"{asset}:{name}", f"app:{cat}:{name}"),
                                  "event", f"app: {str(name)[:50]} [{str(cat)[:30]}]", asset,
                                  run_id, loc, anomaly=30 if rmm else 1, first=ts, artifact=artifact,
                                  flags=(["rmm_tool"] if rmm else None), category=str(cat),
@@ -436,7 +436,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             elif any(k in an for k in ("amcache", "prefetch", "userassist", "shimcache",
                                        "appcompat", "srum", "bam")):
                 path = F.get(r, *F.PATH) or F.get(r, "Name", default=artifact)
-                eid = keys.event_id(run_id, ts, f"exec:{path}")
+                eid = keys.event_id(asset, ts, f"exec:{path}")
                 ents.append(_ent(eid, "event", f"executed: {str(path)[:60]}", asset, run_id, loc,
                                  anomaly=score_row(r), first=ts, artifact=artifact))
 
@@ -459,7 +459,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 dll = (info.get("DllName") if isinstance(info, dict) else None) \
                     or F.get(r, "DllName", "OSPath", "Name", *F.PATH, default=artifact)
                 historical = "mft" in an
-                eid = keys.event_id(run_id, f"{asset}:{dll}", f"hijacklib:{dll}")
+                eid = keys.event_id(asset, f"{asset}:{dll}", f"hijacklib:{dll}")
                 ents.append(_ent(eid, "event", f"DLL sideload: {str(dll)[:50]}", asset, run_id,
                                  loc, anomaly=15 if historical else 40, first=ts, artifact=artifact,
                                  flags=["dll_hijack"], dll=str(dll),
@@ -472,7 +472,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 name = F.get(r, "Name", "OSPath", *F.PATH, default=artifact)
                 bad = bool(F.get(r, "Revoked", "Malicious", "Vulnerable", "Detection",
                                  default=None))
-                eid = keys.event_id(run_id, f"{asset}:{name}", f"boot:{name}")
+                eid = keys.event_id(asset, f"{asset}:{name}", f"boot:{name}")
                 ents.append(_ent(eid, "event", f"bootloader: {str(name)[:50]}", asset, run_id,
                                  loc, anomaly=50 if bad else 1, first=ts, artifact=artifact,
                                  flags=(["firmware", "firmware_bad"] if bad else ["firmware"]),
@@ -482,7 +482,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             elif any(k in an for k in ("evtx", "eventlog", "binaryrename",
                                        "untrusted", "lnk", "detection")):
                 msg = F.get(r, "Message", "Description", "Name", *F.PATH, default=artifact)
-                eid = keys.event_id(run_id, ts, f"{an}:{msg}")
+                eid = keys.event_id(asset, ts, f"{an}:{msg}")
                 ents.append(_ent(eid, "event", f"{artifact}: {str(msg)[:80]}", asset, run_id,
                                  loc, anomaly=score_row(r), first=ts, artifact=artifact))
 

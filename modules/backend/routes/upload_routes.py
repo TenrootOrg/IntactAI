@@ -46,6 +46,48 @@ def decode_tus_metadata(metadata_str):
     return result
 
 
+def _auto_collect_offline(import_result, upload_run_id):
+    """After an offline collector ZIP is imported into Velociraptor, run a
+    collect-only analysis of the imported flow so its data lands in the fused
+    graph (the import itself only stages raw data in Velociraptor). Tagged to
+    the same workspace as the upload. No LLM — collection only (report_types=[]);
+    the Case-level LLM analyses the combined, per-identity-deduped graph."""
+    if not (isinstance(import_result, dict) and import_result.get("success")
+            and import_result.get("flow_id")):
+        return
+    try:
+        from services.workflow_service import (
+            create_automation_run, get_automation_run, add_log_to_run)
+        from services.agentic import run_agentic_on_existing
+        flow_id = import_result["flow_id"]
+        client_id = import_result.get("client_id")
+        hostname = import_result.get("hostname")
+        # Inherit the upload's workspace so the analysis lands in the same case.
+        case_id = (get_automation_run(upload_run_id) or {}).get("case_id")
+        ag_run = create_automation_run(
+            "agentic", f"Offline collection — {hostname or flow_id}",
+            details={"source": "offline_import", "flow_id": flow_id,
+                     "client_id": client_id, "hostname": hostname},
+            case_id=case_id)
+        if upload_run_id:
+            add_log_to_run(upload_run_id,
+                           f"Auto-collecting imported flow {flow_id} into the case "
+                           f"(run {ag_run})…")
+        try:
+            from routes.agentic_routes import _load_llm_config
+            llm_config = _load_llm_config()
+        except Exception:
+            llm_config = {}
+        run_agentic_on_existing(
+            ag_run, flow_id=flow_id, hunt_id=None, llm_config=llm_config,
+            report_types=[],  # collect-only — no LLM; the Case fuses the result
+            client_ids=[client_id] if client_id else None)
+    except Exception as e:
+        print(f"[TUS HOOK] auto-collect of imported flow failed: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+
+
 @upload_bp.route('/api/uploads/hook', methods=['POST'])
 def handle_tus_hook():
     """Handle tusd webhook events (pre-create, post-finish)
@@ -254,6 +296,10 @@ def handle_tus_hook():
                         from services.offline_collector.importer import import_results
                         result = import_results(file_path, original_filename, run_id=run_id)
                         print(f"[TUS HOOK] Velociraptor import result: {result}", flush=True)
+                        # Chain into a collect-only analysis of the imported flow so it
+                        # reaches the Case (the import alone only lands raw data in
+                        # Velociraptor — see _auto_collect_offline). No LLM involved.
+                        _auto_collect_offline(result, run_id)
                     except Exception as e:
                         print(f"[TUS HOOK] Velociraptor import error: {e}", flush=True)
                         traceback.print_exc()

@@ -46,7 +46,7 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None) -> tuple[l
         msg = str(F.get(e, "message", "Message", "description", default="") or "")
         anom = score_row(e)
         loc = f"event/row={i}"
-        eid = keys.event_id(run_id, ts, msg)
+        eid = keys.event_id(asset, ts, msg)
         ents.append(_ent(eid, "event", (msg[:80] or F.get(e, "parser", default="event")),
                          asset, run_id, loc, anomaly=anom, first=ts,
                          parser=F.get(e, "parser", "source_name", default=None)))

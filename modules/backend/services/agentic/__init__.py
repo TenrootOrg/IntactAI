@@ -20,7 +20,7 @@ except Exception as _skill_load_err:  # noqa: BLE001
     )
 
 # Main pipeline functions
-from services.agentic.pipeline import run_agentic_pipeline
+from services.agentic.pipeline import run_agentic_pipeline, run_agentic_on_existing
 
 # For backward compatibility - legacy function name aliases
 _extract_timeline_events = None  # Lazy import to avoid circular imports
@@ -38,4 +38,5 @@ def get_extract_timeline_events():
 # Export all public symbols
 __all__ = [
     'run_agentic_pipeline',
+    'run_agentic_on_existing',
 ]

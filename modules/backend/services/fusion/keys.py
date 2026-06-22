@@ -162,5 +162,12 @@ def vuln_id(cve) -> str:
     return f"vuln:{str(cve).strip().upper()}"
 
 
-def event_id(run_id: str, ts, msg) -> str:
-    return f"event:{run_id}:{norm_ts(ts) or '?'}:{_h(str(msg), 8)}"
+def event_id(asset: str, ts, msg) -> str:
+    """Identity for an observed event — like every other key here it anchors on
+    the ASSET (identity) plus the event's own (normalised) timestamp and a hash
+    of its discriminating content. It deliberately EXCLUDES the collection run /
+    collection time, so re-collecting the same event on a host collapses to one
+    node (only the artifact's run time changed), while the same event on a
+    DIFFERENT asset stays a separate node. Generic — every mapper uses this one
+    function for every artifact/module."""
+    return f"event:{asset}:{norm_ts(ts) or '?'}:{_h(str(msg), 10)}"

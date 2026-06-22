@@ -82,7 +82,7 @@ def map_cloud(findings, *, run_id: str, provider: str = "cloud", account=None) -
         if isinstance(mitre, str):
             mitre = [mitre]
         loc = f"{provider}/finding={i}"
-        eid = keys.event_id(run_id, ts, f"{provider}:{rule}")
+        eid = keys.event_id(casset, ts, f"{provider}:{rule}")
         ents.append(Entity(id=eid, type="event", label=f"{provider}: {rule}",
                            attrs={"_assets": [casset], "provider": provider, "rule": rule,
                                   "mitre": list(mitre), "cloud_finding": rank(severity) >= rank("medium")},
