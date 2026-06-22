@@ -493,8 +493,35 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
         return ("Persistence:\n" + "\n".join(cite(f) for f in pf)) if pf \
             else "No persistence findings above threshold in this case."
 
+    # 1b) attack path / kill chain — the cross-host story, chronological + phased
+    if any(k in q for k in ("attack path", "path the attack", "path did", "path took",
+                            "which path", "kill chain", "kill-chain", "attack took",
+                            "how the attack", "attack chain", "the chain", "story",
+                            "narrative", "trace the", "across hosts", "across clients",
+                            "across the", "multiple clients", "multiple hosts",
+                            "from multiple", "full picture", "whole attack", "end to end",
+                            "end-to-end", "progression", "sequence of")):
+        tl = render.timeline(graph, window=window)
+        xh = [f for f in findings if f.kind == "cross_host"]
+        if tl:
+            lines, last = [], None
+            for r in tl[:30]:
+                ph = r.get("phase") or ""
+                head = f"**{ph}** — " if ph and ph != last else ""
+                last = ph or last
+                lines.append(f"- `{r['ts'] or '—'}` · {r['host']} · {head}{r['title']}")
+            out = ("Attack path (chronological, across the affected hosts):\n"
+                   + "\n".join(lines))
+            if xh:
+                out += ("\n\nCross-host pivots (same account/indicator on >1 host — the "
+                        "lateral-movement spine):\n" + "\n".join(cite(f) for f in xh[:8]))
+            return out
+        if xh:
+            return "Cross-host pivots:\n" + "\n".join(cite(f) for f in xh)
+
     # 2) lateral movement / how did they move / pivot
-    if any(k in q for k in ("lateral", "move", "moved", "pivot", "spread", "how did")):
+    if any(k in q for k in ("lateral", "move", "moved", "pivot", "spread", "how did",
+                            "traverse", "propagat")):
         xh = [f for f in findings if f.kind == "cross_host"]
         if xh:
             return "Cross-host / lateral movement evidence:\n" + "\n".join(cite(f) for f in xh)
@@ -515,8 +542,16 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
             return (f"**{e.label}** ({e.type}){tag} seen on: {hosts}. "
                     f"Severity {e.severity}, sources {'/'.join(e.sources)}.")
 
-    # 5) default: top findings
+    # 5) default: a brief case framing + top findings (no exact intent matched).
     top = sorted(findings, key=lambda f: -sev.rank(f.severity))[:8]
     if not top:
         return "No findings above the current severity threshold in this window."
-    return "Top findings for this case:\n" + "\n".join(cite(f) for f in top)
+    hosts = sorted(graph.by_type("asset"), key=lambda a: -sev.rank(a.severity))
+    xh = sum(1 for f in findings if f.kind == "cross_host")
+    head = (f"I don't have an exact answer for that (deterministic no-LLM mode — "
+            f"configure an LLM for free-form Q&A). For context: {len(hosts)} host(s), "
+            f"worst " + ", ".join(f"{a.label} ({a.severity})" for a in hosts[:3])
+            + (f", {xh} cross-host finding(s)" if xh else "") + ".\n"
+            "Try: \"attack path\", \"top 3 hosts\", \"top identities\", \"lateral movement\", "
+            "\"timeline\", or a host/account/IP name.\n\nTop findings:")
+    return head + "\n" + "\n".join(cite(f) for f in top)

@@ -36,17 +36,43 @@ def _audit_case_id():
     return None, None
 
 
+# friendly labels for the common case actions (the raw path is the fallback)
+_STATE_LABEL = {"real": "Real", "not_real": "Not real", "known_it": "Known", "pending": "Pending"}
+
+
+def _audit_label(action):
+    a = action.split("/")[0]
+    if a == "timeline" and "validate" in action:
+        return "timeline status"
+    if a == "timeline" and "event" in action:
+        return "delete timeline event" if request.method == "DELETE" else "add timeline event"
+    if a == "disposition":
+        return "disposition"
+    if a == "chat":
+        return "chat"
+    if a == "report":
+        return "regenerate report"
+    if a == "baseline":
+        return "capture baseline"
+    if a in ("export", "import", "rescan", "fuse"):
+        return a
+    if a in ("config", "hosts", "masking") or request.method in ("PUT", "PATCH"):
+        return "update config"
+    return f"{request.method} {action}"
+
+
 def _audit_detail(action, is_err, resp):
     if is_err:
         try:
             return (resp.get_json(silent=True) or {}).get("error", "") or "request failed"
         except Exception:
             return "request failed"
-    # success: enrich a few high-value actions from the request body
+    # success: enrich a few high-value actions from the request body / response
     b = request.get_json(silent=True) or {}
     a = action.split("/")[0]
     if a == "timeline" and "validate" in action and b.get("finding_id"):
-        return f"{b.get('finding_id')} → {b.get('status', 'real')}"
+        what = b.get("title") or b.get("finding_id")
+        return f"{what} → {_STATE_LABEL.get(b.get('status'), b.get('status', 'real'))}"
     if a == "timeline" and "event" in action:
         if request.method == "DELETE":
             return f"deleted event {action.split('/')[-1]}"
@@ -54,7 +80,14 @@ def _audit_detail(action, is_err, resp):
     if a == "disposition" and b.get("target"):
         return f"{b.get('target')} → {b.get('verdict', 'benign')} ({b.get('attribution', 'operator')})"
     if a == "chat" and (b.get("question") or b.get("message")):
-        return f"Q: {(b.get('question') or b.get('message'))[:140]}"
+        q = (b.get("question") or b.get("message"))[:120]
+        ans = ""
+        try:
+            ans = (resp.get_json(silent=True) or {}).get("answer", "") or ""
+        except Exception:
+            ans = ""
+        ans = " ".join(ans.split())          # flatten newlines for a one-line summary
+        return f"Q: {q}" + (f"  →  A: {ans[:200]}" if ans else "")
     if a == "report" and request.method == "POST":
         return "report regenerated"
     if a in ("config", "hosts", "masking", "rescan", "fuse", "baseline", "export", "import"):
@@ -70,7 +103,7 @@ def _audit_case_activity(resp):
         if cid and action and action.split("/")[0] != "log":
             is_err = resp.status_code >= 400
             if request.method in ("POST", "PUT", "DELETE", "PATCH") or is_err:
-                store.log_case_event(cid, f"{request.method} {action}",
+                store.log_case_event(cid, _audit_label(action),
                                      "error" if is_err else "ok",
                                      _audit_detail(action, is_err, resp),
                                      code=resp.status_code)
@@ -85,7 +118,7 @@ def _audit_case_exception(e):
     try:
         cid, action = _audit_case_id()
         if cid and action and action.split("/")[0] != "log":
-            store.log_case_event(cid, f"{request.method} {action}", "error",
+            store.log_case_event(cid, _audit_label(action), "error",
                                  str(e)[:300], code=getattr(e, "code", 500) or 500)
     except Exception:
         pass

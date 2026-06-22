@@ -528,7 +528,7 @@ function tlValidate(fid,status){
   const r=(window._tlData||[]).find(x=>x.finding_id===fid); if(r)r.validation=status; // optimistic
   tlPaint();
   const lbl=(TL_STATES.find(s=>s[0]===status)||[,status])[1];
-  api('/api/cases/'+window._tlCase+'/timeline/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({finding_id:fid,status})})
+  api('/api/cases/'+window._tlCase+'/timeline/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({finding_id:fid,status,title:(r&&r.title)||''})})
    .then(_=>{toast('set '+lbl);
      // suppression changes severity/risk → refetch so the row + report stay in sync
      if(!String(fid).startsWith('manual:')) renderTimeline(window._tlCase);});

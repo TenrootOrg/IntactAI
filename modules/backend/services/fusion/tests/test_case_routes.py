@@ -110,8 +110,8 @@ def test_activity_log_records_actions_and_errors():
     c.post(f"/api/cases/{cid}/timeline/validate", json={})   # 400 (no finding_id)
     log = _json(c.get(f"/api/cases/{cid}/log"))["log"]
     acts = [(e["action"], e["status"]) for e in log]
-    assert any(a.startswith("POST disposition") and s == "ok" for a, s in acts), acts
-    assert any("timeline/validate" in a and s == "error" for a, s in acts), acts
+    assert any(a == "disposition" and s == "ok" for a, s in acts), acts
+    assert any(a == "timeline status" and s == "error" for a, s in acts), acts
     assert any(e["action"] == "fuse" for e in log), "the disposition's re-fuse is logged"
     # reads of the log itself are NOT logged (no self-fill on polling)
     assert not any("log" in a for a, _ in acts)
