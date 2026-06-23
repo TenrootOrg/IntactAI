@@ -295,18 +295,6 @@ def resolve_model_alias(model_name: str, provider: str) -> str:
     return model_name
 
 
-def get_available_models() -> list:
-    """Return list of available model aliases for frontend dropdown."""
-    return list(MODEL_ALIASES.keys())
-
-
-
-def file_get_workflow_for_metrics(run_id):
-    """Lazy import to avoid a circular import at module load time."""
-    from services.file_storage_service import get_workflow as _get
-    return _get(run_id)
-
-
 def is_llm_configured(config) -> bool:
     """True iff an LLM transport is usable (online has an api_key, or offline has a URL).
     The single gate the pipeline consults to decide LLM vs COLLECT-ONLY. Mirrors the

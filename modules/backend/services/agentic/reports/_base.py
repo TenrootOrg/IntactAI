@@ -17,24 +17,6 @@ from datetime import datetime
 from services.file_storage_service import save_report
 
 
-def filter_results_by_client(all_results, client_id):
-    """Filter artifact results to only include rows from a specific client.
-
-    Args:
-        all_results: Dict of artifact_name -> list of rows (each row has _client_id)
-        client_id: The client ID to filter for
-
-    Returns:
-        Dict of artifact_name -> filtered list of rows for this client only
-    """
-    filtered = {}
-    for artifact_name, rows in all_results.items():
-        client_rows = [row for row in rows if row.get('_client_id') == client_id]
-        if client_rows:
-            filtered[artifact_name] = client_rows
-    return filtered
-
-
 def generate_empty_report(blueprint, client_ids, collection_minutes):
     """Generate report when no data was collected"""
     return f"""# Agentic Forensics Report
