@@ -71,42 +71,15 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         update_run_status(run_id, "running", progress=2)
         add_log_to_run(run_id, "[Pipeline] Starting Agentic Forensics pipeline", "info")
 
-        # LLM is OPTIONAL. With a key/URL we validate + ping; without one we run
-        # COLLECT-ONLY (collect artifacts, skip per-artifact analysis + synthesis) so
-        # the product works with no LLM agreement. The run still completes + is fuseable.
-        from services.agentic.analyzers import (
-            validate_llm_config, ping_llm, is_llm_configured)
-        llm_enabled = is_llm_configured(llm_config)
-        # Collector mode (no report types) never calls the LLM — analysis happens
-        # at the Case level — so don't gate (or fail) the collection on LLM
-        # reachability/validity. A broken/missing key must not block collecting.
-        if not report_types:
-            llm_enabled = False
-        if not llm_enabled:
-            add_log_to_run(run_id,
-                "[Pipeline] No LLM configured — running COLLECT-ONLY (no per-artifact "
-                "analysis / synthesis). The run completes and is fuseable in a Case.", "info")
-        else:
-            try:
-                validate_llm_config(llm_config)
-            except ValueError as e:
-                add_log_to_run(run_id, f"[Pipeline] Configuration error: {str(e)}", "error")
-                update_run_status(run_id, "failed", progress=0, error=str(e))
-                return
-            # Pre-flight LLM reachability — fail fast (within ~30s) if the endpoint is
-            # unreachable, instead of discovering it mid-collection.
-            add_log_to_run(run_id, "[Pipeline] Pre-flight LLM reachability check...", "info")
-            try:
-                ping_llm(llm_config, timeout_seconds=30)
-                add_log_to_run(run_id, "[Pipeline] ✓ LLM is reachable", "success")
-            except Exception as e:
-                err = f"LLM unreachable before pipeline start: {str(e)[:200]}"
-                add_log_to_run(run_id, f"[Pipeline] ✗ {err}", "error")
-                add_log_to_run(run_id,
-                    "Check Settings > Agentic that your API key / Ollama URL is correct "
-                    "and the endpoint is reachable from this host.", "error")
-                update_run_status(run_id, "failed", progress=0, error=err)
-                return
+        # The agentic pipeline is COLLECT-ONLY. The per-artifact LLM analysis +
+        # synthesis were REMOVED — investigation analysis happens at the Case
+        # level (fusion). Collection runs the same regardless of any LLM config;
+        # there is no LLM call, preflight or key requirement here anymore.
+        llm_enabled = False
+        add_log_to_run(run_id,
+            "[Pipeline] Running COLLECT-ONLY (agentic LLM analysis removed; analysis "
+            "happens at the Case level). The run completes and is fuseable in a Case.",
+            "info")
 
         # Store report_types in workflow details for UI
         workflow = get_workflow(run_id)
