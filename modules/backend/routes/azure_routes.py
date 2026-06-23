@@ -19,7 +19,6 @@ from services.azure.pipeline import (
     run_azure_on_existing,
     get_azure_blueprints,
     get_available_sources,
-    _run_azure_reanalyze,
 )
 from services.azure.collectors import parse_uploaded_logs
 from services.azure.sigma_runner import validate_rules_directory, get_available_rules_count
@@ -243,7 +242,6 @@ def start_scan():
 
             # Build options with identity filters
             options = {
-                'enable_llm': False,  # collection-only; LLM lives at the case level
                 'llm_config': llm_config,
                 'time_filter': data.get('time_filter'),
                 'min_severity': data.get('min_severity', 'medium'),
@@ -298,7 +296,7 @@ def start_scan():
                 update_run_status(run_id, "failed", error=result.get('error', 'Unknown error'))
             else:
                 if not is_cancelled(run_id):
-                    update_run_status(run_id, "completed", progress=100, details={'has_report': bool(result.get('has_report'))})
+                    update_run_status(run_id, "completed", progress=100)
 
         except Exception as e:
             if is_cancelled(run_id):
@@ -536,7 +534,6 @@ def analyze_offline():
         # everything they uploaded. We hard-pin enable_llm here so a
         # stray `false` from the client doesn't produce a useless run.
         options = {
-            'enable_llm': False,  # collection-only; LLM at case level
             'llm_config': llm_config,
             'time_filter': data.get('time_filter'),
             'min_severity': data.get('min_severity', 'low'),
@@ -582,7 +579,7 @@ def analyze_offline():
                 if result.get('status') in ('failed', 'error'):
                     update_run_status(run_id, "failed", error=result.get('error', 'Unknown error'))
                 else:
-                    update_run_status(run_id, "completed", progress=100, details={'has_report': bool(result.get('has_report'))})
+                    update_run_status(run_id, "completed", progress=100)
             except Exception as e:
                 if not is_cancelled(run_id):
                     add_log_to_run(run_id, f"[AZURE] Offline analysis failed: {e}", "error")

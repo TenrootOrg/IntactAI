@@ -250,7 +250,6 @@ def start_scan():
                 mepr = None
 
             options = {
-                'enable_llm': False,  # collection-only; LLM lives at the case level
                 'llm_config': llm_config,
                 'time_filter': data.get('time_filter'),
                 'min_severity': data.get('min_severity', 'medium'),
@@ -301,7 +300,7 @@ def start_scan():
                 update_run_status(run_id, 'failed', error=result.get('error', 'Unknown error'))
             else:
                 if not is_cancelled(run_id):
-                    update_run_status(run_id, 'completed', progress=100, details={'has_report': bool(result.get('has_report'))})
+                    update_run_status(run_id, 'completed', progress=100)
         except Exception as e:
             if is_cancelled(run_id):
                 return
@@ -443,7 +442,6 @@ def analyze_offline():
         blueprint = next((b for b in blueprints if b['id'] == blueprint_id), blueprints[0])
 
         options = {
-            'enable_llm': False,  # collection-only; LLM lives at the case level
             'llm_config': llm_config,
             'time_filter': data.get('time_filter'),
             'min_severity': data.get('min_severity', 'medium'),
@@ -468,8 +466,7 @@ def analyze_offline():
                 if result.get('status') == 'error':
                     update_run_status(run_id, 'failed', error=result.get('error', 'Unknown'))
                 else:
-                    update_run_status(run_id, 'completed', progress=100,
-                                      details={'has_report': bool(result.get('has_report'))})
+                    update_run_status(run_id, 'completed', progress=100)
             except Exception as e:
                 add_log_to_run(run_id, f"[AWS] Offline analysis failed: {e}", "error")
                 update_run_status(run_id, 'failed', error=str(e))

@@ -376,8 +376,6 @@ def run_memory_pipeline(
     case_name: str = "Memory",
     dumps_dir: str = "/data/memory_dumps",
     blueprint: dict | None = None,
-    master_prompt: str | None = None,
-    rerun_from_evidence: int | None = None,
     from_upload_path: str | None = None,
     timeouts: dict | None = None,
 ) -> None:
@@ -422,13 +420,6 @@ def run_memory_pipeline(
       blueprint: optional blueprint dict with overrides
         (``plugin_set``, ``yara_rulesets``, ``compression``,
         ``max_bytes``, etc.).
-      master_prompt: optional operator-supplied prompt rider for the
-        rerun-with-corrections path; appended to the LLM system
-        prompt at analyze time.
-      rerun_from_evidence: when set, skip phases 1-4 and run only the
-        analyzer + cleanup against an existing evidence_id. The
-        rerun-after-chat path uses this to apply a master_prompt
-        without paying for another acquisition.
     """
     cancel_event = register_cancel_event(run_id)
     cancel = cancel_event.is_set  # for compactness in cancel checks
@@ -482,15 +473,7 @@ def run_memory_pipeline(
         # ----------------------------------------------------------------
         # Phase 1 — Preflight
         # ----------------------------------------------------------------
-        if rerun_from_evidence:
-            log("pipeline: rerun-only — skipping preflight + acquire + upload + extract", "info")
-            evidence_id = int(rerun_from_evidence)
-            ev = client.get_evidence(evidence_id)
-            evidence_filename = ev.get("name") or ev.get("filename")
-            log(f"pipeline: rerun against evidence_id={evidence_id} name={evidence_filename!r}", "info")
-            cumulative = sum(_PHASE_WEIGHTS[p] for p in ("preflight", "acquire", "upload", "extract", "yarascan"))
-            _bump(run_id, cumulative, "rerun: jumping straight to analyze")
-        elif from_upload_path:
+        if from_upload_path:
             # Offline-upload path: the operator already has a dump
             # (Velociraptor "Prepare Download" export, an offline
             # collector's PhysicalMemory.raw, or any raw memory image).
