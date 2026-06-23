@@ -481,16 +481,28 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     # host-exclusion: cut excluded hosts' data from the report/LLM (token saving). The
     # FULL graph `g` is still stored so the picker can list/re-include every host.
     gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
-    report = llm_sim.generate_report(
-        gv, window=window, min_severity=min_sev,
-        initial_access=d.get("initial_access_estimate"),
-        case_name=d.get("name", "Case"), run_id=case_id,
-        audience=d.get("audience", "both"), language=d.get("language", "en"),
-        master_prompt=d.get("master_prompt"), mask=mask)
-    # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored SEPARATELY
-    # from the deterministic findings (never conflated); fed prior operator dispositions.
-    analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
-                               dispositions=d.get("dispositions") or None)
+    # The report + advisory are the heavy narrative. Generate them ONLY on the FIRST
+    # fuse (no report yet); afterwards they stay FROZEN until the operator clicks
+    # Rescan (store.regenerate_report). This keeps the per-action re-fuses (timeline
+    # validations, dispositions) fast + token-free, and matches the product rule
+    # "first scan generates it; afterwards only on rescan".
+    if d.get("report_md"):
+        report = d.get("report_md")
+        analysis = d.get("analysis") or {}
+    else:
+        report = llm_sim.generate_report(
+            gv, window=window, min_severity=min_sev,
+            initial_access=d.get("initial_access_estimate"),
+            case_name=d.get("name", "Case"), run_id=case_id,
+            audience=d.get("audience", "both"), language=d.get("language", "en"),
+            master_prompt=d.get("master_prompt"), mask=mask,
+            dispositions=d.get("dispositions") or None,
+            validations=d.get("timeline_validations") or None,
+            prefer_llm=False)   # first scan = fast, free, deterministic; LLM on Rescan
+        # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
+        # SEPARATELY from the deterministic findings; fed prior operator dispositions.
+        analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
+                                   dispositions=d.get("dispositions") or None)
     # customer-confirmation checklist — generate once (preserve operator decisions on re-fuse)
     checklist = d.get("disposition_checklist")
     if not checklist:
@@ -702,23 +714,30 @@ def synthesize_master_prompt(case_id) -> str:
     return master
 
 
-def regenerate_report(case_id, *, audience=None) -> dict:
+def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     """Re-narrate report + advisory from the STORED graph (no re-collect/re-fuse),
-    applying the case's audience + master_prompt. Cheap interactive regeneration."""
+    applying the case's audience + master_prompt + Timeline triage. Deterministic by
+    default (free); pass use_llm=True (the 'Regenerate report' button) for the premium
+    LLM narrative — the only place report generation spends tokens."""
     if audience:
         set_branding(case_id, audience=audience)
     d = get_case(case_id)
     g = load_graph(case_id)
     window = d.get("time_window") or None
     min_sev = d.get("min_severity", "informational")
+    gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
     report = llm_sim.generate_report(
-        g, window=window, min_severity=min_sev,
+        gv, window=window, min_severity=min_sev,
         initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
         run_id=case_id, audience=d.get("audience", "both"), language=d.get("language", "en"),
-        master_prompt=d.get("master_prompt"))
-    analysis = llm_sim.analyze(g, window=window, min_severity=min_sev, run_id=case_id,
+        master_prompt=d.get("master_prompt"),
+        dispositions=d.get("dispositions") or None,
+        validations=d.get("timeline_validations") or None,
+        prefer_llm=use_llm)
+    analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
                                dispositions=d.get("dispositions") or None)
     _merge_case_details(case_id, {"report_md": report, "analysis": analysis})
+    log_case_event(case_id, "Regenerate report", "ok", "report rebuilt from current case state")
     return {"report_md": report, "audience": d.get("audience", "both")}
 
 
@@ -770,9 +789,12 @@ def set_analysis_config(case_id, cfg) -> dict:
 
 def rescan(case_id, cfg=None) -> dict:
     """THE config-driven action: persist the rail's variables then re-correlate +
-    regenerate. Replaces the bare re-fuse for the UI."""
+    regenerate. Replaces the bare re-fuse for the UI. Rescan is an explicit rebuild,
+    so it DOES refresh the report (deterministically — reflecting the new masking /
+    host-exclusion / severity); the premium LLM narrative is the Regenerate button."""
     if cfg:
         set_analysis_config(case_id, cfg)
+    _merge_case_details(case_id, {"report_md": ""})   # force fuse to rebuild the report
     g = fuse_case(case_id)
     return {"entities": len(g.entities), "relationships": len(g.relationships),
             "findings": len(g.findings),
@@ -1019,7 +1041,8 @@ def chat_case(case_id, question) -> str:
         ans = llm_sim.chat(g, question, history=d.get("chat_messages") or [],
                            window=d.get("time_window") or None,
                            min_severity=d.get("min_severity", "informational"),
-                           run_id=case_id, dispositions=d.get("dispositions") or None)
+                           run_id=case_id, dispositions=d.get("dispositions") or None,
+                           validations=d.get("timeline_validations") or None)
     def _append_msgs(details):           # atomic, so concurrent turns don't clobber
         msgs = list(details.get("chat_messages") or [])
         msgs += [{"role": "user", "content": question},

@@ -394,7 +394,18 @@ function renderReport(info){
   let advHtml='';
   if(ig.length){advHtml=`<details style="margin:10px 0"><summary style="cursor:pointer;color:var(--med)">⚠ Advisory — ${ig.length} incident group(s) (analyst-verify, not a determination)</summary>`+
     ig.map(x=>`<div class="caseitem"><div class="nm">${escape(x.name||'group')}</div><div class="meta">${(x.finding_ids||[]).length} findings — ${escape(x.rationale||'')}</div></div>`).join('')+`</details>`;}
-  $('#tabc').innerHTML=`<div class="row" style="gap:8px;margin-bottom:10px">${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}</div>${advHtml}<div class="md">${mdToHtml(window._md||'')}</div>`;
+  $('#tabc').innerHTML=`<div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
+    <button class="dlbtn" onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here.">↻ Regenerate report</button>
+    ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
+    <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
+  </div>${advHtml}<div class="md">${mdToHtml(window._md||'')}</div>`;
+}
+function regenReport(id){
+  toast('regenerating report (LLM)…');
+  // use_llm:true -> premium LLM narrative (the only report path that spends tokens)
+  api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})})
+   .then(_=>{openCase(id);toast('report updated');})
+   .catch(_=>toast('could not regenerate the report'));
 }
 function _fileToDataUrl(f){return new Promise(res=>{if(!f)return res(null);const r=new FileReader();r.onload=()=>res(r.result);r.readAsDataURL(f);});}
 // Host identities come from the fused graph (deduped endpoints + cloud accounts).

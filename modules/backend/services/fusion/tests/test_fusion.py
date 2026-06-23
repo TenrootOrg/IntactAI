@@ -145,9 +145,10 @@ def test_time_window_scope():
 
 def test_report_has_three_altitudes_and_cross_host():
     g = build()
-    md = llm_sim.generate_report(g, window=WINDOW, min_severity="low",
-                                 initial_access="2026-05-19T08:14:20", case_name="INTRUSION-MAY")
-    for section in ("Executive / Risk Overview", "Infrastructural Attack Timeline", "Per-Host Detail"):
+    with force_sim():
+        md = llm_sim.generate_report(g, window=WINDOW, min_severity="low",
+                                     initial_access="2026-05-19T08:14:20", case_name="INTRUSION-MAY")
+    for section in ("Risk Overview", "Timeline of Key Events", "Affected Hosts — Detail"):
         assert section in md, f"missing section: {section}"
     assert "Lateral Movement" in md
     assert "5.100.251.10" in md
@@ -164,8 +165,9 @@ def test_chat_grounded():
 
 def test_ioc_and_mitre_sections():
     g = build()
-    md = llm_sim.generate_report(g, window=WINDOW, min_severity="low", case_name="X")
-    assert "Key Indicators" in md and "5.100.251.10" in md
+    with force_sim():
+        md = llm_sim.generate_report(g, window=WINDOW, min_severity="low", case_name="X")
+    assert "Indicators of Compromise" in md and "5.100.251.10" in md
     assert "MITRE ATT&CK" in md and "T1071" in md and "T1021" in md
 
 
@@ -243,7 +245,8 @@ def test_four_module_integration():
     for e in g.entities.values():
         srcs.update(e.sources)
     assert {"memory", "agentic", "cve", "timesketch"} <= srcs, f"all 4 modules merge, got {srcs}"
-    md = llm_sim.generate_report(g, window=WINDOW, min_severity="medium", case_name="FULL")
+    with force_sim():
+        md = llm_sim.generate_report(g, window=WINDOW, min_severity="medium", case_name="FULL")
     assert "Vulnerability" in md or "CVE-2024-0001" in md
     assert "Lateral Movement" in md
 
@@ -284,7 +287,8 @@ def test_escalation_recommendation():
     a = g.entities[keys.asset_id("C.zz")]
     assert a.attrs.get("escalate") is True, f"sev={a.severity} deep={a.attrs.get('deep')}"
     assert a.attrs.get("modules") == ["agentic"]
-    md = llm_sim.generate_report(g, min_severity="low", case_name="X")
+    with force_sim():
+        md = llm_sim.generate_report(g, min_severity="low", case_name="X")
     assert "Escalation" in md and "WS9" in md
     with force_sim():
         nxt = llm_sim.chat(g, "what should I investigate next?", min_severity="low")
@@ -312,8 +316,9 @@ def test_spawn_chain_finding():
 
 def test_attack_story_in_report():
     g = build()
-    md = llm_sim.generate_report(g, window=WINDOW, min_severity="low", case_name="X",
-                                 initial_access="2026-05-19")
+    with force_sim():
+        md = llm_sim.generate_report(g, window=WINDOW, min_severity="low", case_name="X",
+                                     initial_access="2026-05-19")
     assert "most affected" in md and "Cross-host" in md
 
 

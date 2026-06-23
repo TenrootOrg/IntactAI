@@ -41,10 +41,10 @@ def test_fact_tables_absent_from_llm_payload():
     g = T.build()
     narr = render.narrative_md(g, window=T.WINDOW, min_severity="low")
     payload = narr + "\n" + json.dumps(render.distilled(g, window=T.WINDOW, min_severity="low"))
-    for marker in ("## 4. Key Indicators", "## 5. MITRE", "| Indicator | Type |"):
+    for marker in ("Indicators of Compromise", "MITRE ATT&CK Mapping", "| Indicator | Type |"):
         assert marker not in payload, f"fact-table marker leaked into LLM payload: {marker}"
     facts = render.facts_md(g, window=T.WINDOW, min_severity="low")
-    assert "Key Indicators" in facts and "MITRE" in facts, "facts_md must hold the tables"
+    assert "Indicators of Compromise" in facts and "MITRE" in facts, "facts_md must hold the tables"
 
 
 def test_budget_stepdown_is_bounded():

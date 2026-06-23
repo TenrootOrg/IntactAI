@@ -229,27 +229,156 @@ def _sev_tally(findings):
     return t
 
 
+def _exec_summary(graph, assets, findings) -> str:
+    """A plain-language executive summary (what / how big / how bad / bottom line)."""
+    hosts = sorted(assets, key=lambda a: -sev.rank(a.severity))
+    crit = [f for f in findings if sev.at_least(f.severity, "critical")]
+    high = [f for f in findings if f.severity == "high"]
+    xh = [f for f in findings if f.kind == "cross_host"]
+    bits = [f"This investigation correlated activity across **{len(assets)} host(s)** and "
+            f"identified **{len(findings)} finding(s)**"
+            + (f" — {len(crit)} critical, {len(high)} high" if (crit or high) else "") + "."]
+    if hosts:
+        w = hosts[0]
+        nf = sum(1 for f in findings if w.id in f.asset_ids)
+        bits.append(f"The most affected system is **{w.label}** ({w.severity}, {nf} finding(s)), "
+                    f"the likely focal point of the activity.")
+    if xh:
+        bits.append(f"**{len(xh)} finding(s)** span multiple hosts, indicating lateral "
+                    f"movement or shared adversary infrastructure.")
+    word = "critical" if crit else ("high" if high else "moderate")
+    bits.append(f"Overall severity is assessed **{word}**"
+                + (" and immediate containment is recommended." if (crit or high) else "."))
+    return " ".join(bits)
+
+
+def _attack_narrative(graph, window, initial_access) -> str:
+    """The kill chain as ordered prose, grouped by phase (deterministic)."""
+    tl = timeline(graph, window=window)
+    if not tl:
+        return ""
+    phases: dict[str, list] = {}
+    order: list[str] = []
+    for r in tl:
+        ph = r.get("phase") or "Activity"
+        if ph not in phases:
+            phases[ph] = []
+            order.append(ph)
+        phases[ph].append(r)
+    steps = []
+    for ph in order:
+        rows = phases[ph]
+        hosts = sorted({h.strip() for r in rows for h in (r["host"] or "").split(",") if h.strip()})
+        titles = list(dict.fromkeys(r["title"] for r in rows))
+        extra = f" (and {len(rows) - len(titles[:3])} more)" if len(rows) > 3 else ""
+        steps.append(f"**{ph}** — from `{rows[0]['ts'] or '—'}` on "
+                     f"{', '.join(hosts[:6])}: " + "; ".join(titles[:3]) + extra + ".")
+    return "\n".join(f"{i + 1}. {s}" for i, s in enumerate(steps))
+
+
 def narrative_md(graph, *, window=None, min_severity="informational",
                  initial_access=None, case_name="Case") -> str:
-    """The LLM-REPLACEABLE prose: title, scope, attack story. When the real LLM is
-    wired it regenerates exactly this from ``distilled()`` — the deterministic fact
-    tables in ``facts_md`` are never sent to it (so IOCs/CVEs can't be hallucinated)."""
+    """The LLM-REPLACEABLE prose: exec summary, incident overview, attack narrative.
+    When the real LLM is wired it regenerates this from ``distilled()`` — the
+    deterministic fact tables in ``facts_md`` are never sent to it."""
     assets, findings = scope(graph, window=window, min_severity=min_severity)
-    out: list[str] = []
-    out.append(f"# Incident Case Report — {case_name}\n")
     win = f"{(window or {}).get('start','?')} → {(window or {}).get('end','?')}" if window else "all"
-    out.append(f"_Scope: {len(assets)} host(s), window {win}, initial access ≈ "
-               f"{initial_access or 'unknown'}; severity ≥ {min_severity}. "
-               f"{len(findings)} findings._\n")
+    out: list[str] = [f"# Incident Case Report — {case_name}\n"]
+    out.append(f"_Scope: {len(assets)} host(s) · window {win} · initial access ≈ "
+               f"{initial_access or 'unknown'} · severity ≥ {min_severity} · "
+               f"{len(findings)} findings_\n")
+    out.append("## Executive Summary\n")
+    out.append(_exec_summary(graph, assets, findings) + "\n")
+    out.append("## Incident Overview\n")
     story = _attack_story(graph, findings, assets, initial_access)
-    if story:
-        out.append("> " + story + "\n")
+    out.append((story or "_No activity above the configured severity threshold._") + "\n")
+    narr = _attack_narrative(graph, window, initial_access)
+    if narr:
+        out.append("## Attack Narrative\n")
+        out.append(narr + "\n")
     return "\n".join(out)
 
 
-def facts_md(graph, *, window=None, min_severity="informational", initial_access=None) -> str:
-    """DETERMINISTIC fact tables — escalation, risk ranking, timeline, per-host,
-    IOC table, MITRE. Appended verbatim to every report; NEVER sent to the LLM."""
+_STATE_LABEL = {"real": "Confirmed real", "not_real": "False positive",
+                "known_it": "Known / expected (IT-confirmed)", "pending": "Pending"}
+
+
+def _analyst_validations_md(graph, dispositions, validations) -> str:
+    """What the analyst decided in the Timeline — so the report reflects the triage
+    (confirmed real, dismissed as FP, or IT-acknowledged). Integration point with
+    the Timeline tab."""
+    title_of = {f.id: f.title for f in graph.findings}
+    buckets = {"real": [], "not_real": [], "known_it": []}
+    seen = set()
+    for v in (validations or []):
+        fid, st = v.get("finding_id"), v.get("status")
+        if st in buckets and fid not in seen:
+            seen.add(fid)
+            buckets[st].append(title_of.get(fid, str(fid)))
+    for d in (dispositions or []):                 # chat-driven triage not in the timeline
+        tgt = d.get("target")
+        if tgt in seen:
+            continue
+        seen.add(tgt)
+        buckets["known_it" if d.get("attribution") == "it_admin" else "not_real"].append(
+            title_of.get(tgt, str(tgt)))
+    if not any(buckets.values()):
+        return ""
+    out = ["## Analyst Validations\n",
+           "_Operator triage from the Timeline. False-positive and known/expected "
+           "items are suppressed from risk scoring._\n"]
+    for st in ("real", "not_real", "known_it"):
+        items = buckets[st]
+        if items:
+            out.append(f"**{_STATE_LABEL[st]} ({len(items)}):**")
+            out += [f"- {t}" for t in items[:20]]
+            out.append("")
+    return "\n".join(out)
+
+
+def _recommendations_md(graph, findings, assets) -> str:
+    """Actionable, deterministic next steps derived from the findings (containment →
+    eradication → credentials → network → patching → deeper collection → evidence)."""
+    recs: list[tuple] = []
+    hot = sorted((a for a in assets if sev.at_least(a.severity, "high")),
+                 key=lambda a: -sev.rank(a.severity))
+    if hot:
+        recs.append(("Containment", "Isolate the most-affected host(s) from the network "
+                     "pending eradication: " + ", ".join(a.label for a in hot[:6]) + "."))
+    pers = list(dict.fromkeys(f.title for f in findings
+                if any(k in f.title.lower() for k in ("service", "persist", "task", "autorun"))))
+    if pers:
+        recs.append(("Eradication", "Remove the malicious persistence and confirm it does "
+                     "not re-create: " + "; ".join(pers[:4]) + "."))
+    xacct = [e for e in graph.by_type("account") if "cross_host" in (e.flags or [])]
+    if xacct:
+        recs.append(("Credentials", "Reset and review the accounts used across multiple "
+                     "hosts (" + ", ".join(e.label for e in xacct[:6]) + "); rotate tier-0 "
+                     "credentials if a privileged/domain account is involved."))
+    iocs = graph.by_type("ioc")
+    if iocs:
+        recs.append(("Network", "Block these indicators at the perimeter / EDR and hunt for "
+                     "further callbacks: " + ", ".join(f"`{e.label}`" for e in iocs[:8]) + "."))
+    if [f for f in findings if f.title.lower().startswith("vulnerab")]:
+        recs.append(("Patching", "Patch the exposed vulnerabilities on the affected hosts."))
+    esc = [a for a in assets if a.attrs.get("escalate")]
+    if esc:
+        recs.append(("Deeper collection", "Collect memory + a full timeline (Timesketch) on "
+                     + ", ".join(a.label for a in esc[:6]) + " — malicious under broad "
+                     "collection but lacking deep forensics."))
+    recs.append(("Evidence preservation", "Capture disk + memory images and relevant logs for "
+                 "the confirmed-compromised hosts before remediation."))
+    out = ["## Recommendations\n"]
+    out += [f"{i + 1}. **{title}** — {body}" for i, (title, body) in enumerate(recs)]
+    out.append("")
+    return "\n".join(out)
+
+
+def facts_md(graph, *, window=None, min_severity="informational", initial_access=None,
+             dispositions=None, validations=None) -> str:
+    """DETERMINISTIC report body — escalation, risk ranking, analyst validations,
+    timeline, per-host detail, IOC table, MITRE, recommendations. Appended verbatim
+    to every report; NEVER sent to the LLM."""
     assets, findings = scope(graph, window=window, min_severity=min_severity)
     out: list[str] = []
 
@@ -265,8 +394,13 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
                        f"· seen by [{', '.join(a.attrs.get('modules') or [])}]")
         out.append("")
 
-    # ---- 1. Macro / risk ----------------------------------------------
-    out.append("## 1. Executive / Risk Overview\n")
+    # ---- analyst validations (Timeline triage) ------------------------
+    av = _analyst_validations_md(graph, dispositions, validations)
+    if av:
+        out.append(av)
+
+    # ---- Risk overview ------------------------------------------------
+    out.append("## Risk Overview\n")
     tally = _sev_tally(findings)
     out.append("**Findings by severity:** " + ", ".join(
         f"{tally[lv]} {lv}" for lv in reversed(sev.LEVELS) if tally[lv]) + "\n")
@@ -286,8 +420,8 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
             out.append(f"- {f.title}")
     out.append("")
 
-    # ---- 2. Infrastructural attack timeline ---------------------------
-    out.append("## 2. Infrastructural Attack Timeline\n")
+    # ---- Timeline -----------------------------------------------------
+    out.append("## Timeline of Key Events\n")
     tl = timeline(graph, window=window, initial_access=initial_access)
     if not tl:
         out.append("_No time-anchored activity in window._\n")
@@ -302,8 +436,8 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
                        f"{row['title']} ({row['severity']}){mitre}")
     out.append("")
 
-    # ---- 3. Per-asset drill-down --------------------------------------
-    out.append("## 3. Per-Host Detail\n")
+    # ---- Affected hosts detail ----------------------------------------
+    out.append("## Affected Hosts — Detail\n")
     for a in ranked_assets:
         out.append(f"### {a.label}  ({a.severity})")
         afind = [f for f in findings if a.id in f.asset_ids]
@@ -330,7 +464,7 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
     # ---- 4. Key Indicators (IOCs) -------------------------------------
     iocs = graph.by_type("ioc")
     if iocs:
-        out.append("## 4. Key Indicators\n")
+        out.append("## Indicators of Compromise (IOCs)\n")
         out.append("| Indicator | Type | Hosts | Cross-host |")
         out.append("|---|---|---|---|")
         for i in sorted(iocs, key=lambda e: (-len(_assets_of(e)), e.label)):
@@ -345,23 +479,27 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
         for t in f.mitre:
             techs.setdefault(t, []).append(f.title)
     if techs:
-        out.append("## 5. MITRE ATT&CK\n")
+        out.append("## MITRE ATT&CK Mapping\n")
         for t in sorted(techs):
             extra = f" (+{len(techs[t]) - 1} more)" if len(techs[t]) > 1 else ""
             out.append(f"- **{t} — {_MITRE_NAMES.get(t, '')}** · {techs[t][0]}{extra}")
         out.append("")
 
+    # ---- Recommendations (actionable next steps) ----------------------
+    out.append(_recommendations_md(graph, findings, assets))
+
     return "\n".join(out)
 
 
 def report(graph, *, window=None, min_severity="informational", initial_access=None,
-           case_name="Case") -> str:
+           case_name="Case", dispositions=None, validations=None) -> str:
     """Full deterministic report = narrative prose + deterministic fact tables.
     The real-LLM path (llm_sim) swaps ONLY ``narrative_md`` for an LLM call over
     ``distilled()`` and re-appends ``facts_md`` verbatim."""
     return (narrative_md(graph, window=window, min_severity=min_severity,
                          initial_access=initial_access, case_name=case_name)
             + "\n" + facts_md(graph, window=window, min_severity=min_severity,
+                              dispositions=dispositions, validations=validations,
                               initial_access=initial_access))
 
 

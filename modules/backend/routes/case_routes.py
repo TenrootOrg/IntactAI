@@ -535,7 +535,8 @@ def regenerate_report(case_id):
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     b = request.get_json(silent=True) or {}
-    res = store.regenerate_report(case_id, audience=b.get("audience"))
+    res = store.regenerate_report(case_id, audience=b.get("audience"),
+                                  use_llm=bool(b.get("use_llm")))
     return jsonify({"case_id": case_id, **res})
 
 

@@ -42,10 +42,10 @@ def test_report_real_path_sends_distilled_and_threads_run_id():
         out = llm_sim.generate_report(g, window=T.WINDOW, min_severity="low",
                                       case_name="X", run_id="case_42")
     assert "findings" in seen["prompt"] and "case_id" in seen["prompt"], "distilled payload sent"
-    assert "Key Indicators" not in seen["prompt"], "fact tables must NOT be in the LLM payload"
+    assert "Indicators of Compromise" not in seen["prompt"], "fact tables must NOT be in the LLM payload"
     assert seen["system"] == llm_sim.REPORT_SYSTEM_PROMPT
     assert seen["run_id"] == "case_42", "run_id threaded for token accounting"
-    assert "EXEC NARRATIVE PROSE" in out and "Key Indicators" in out, "narrative + deterministic facts"
+    assert "EXEC NARRATIVE PROSE" in out and "Indicators of Compromise" in out, "narrative + deterministic facts"
 
 
 def test_report_falls_back_on_llm_error():
@@ -87,13 +87,11 @@ def test_chat_falls_back_to_deterministic_on_error():
 
 
 def test_default_is_simulated():
+    # "simulated" now means: no real-mode flag AND no LLM transport available.
+    from services.fusion.tests.test_fusion import force_sim
     g = T.build()
-    saved = llm_sim._agentic_cfg
-    llm_sim._agentic_cfg = lambda: {}  # no fusion_llm_mode -> simulated
-    try:
+    with force_sim():
         out = llm_sim.generate_report(g, window=T.WINDOW, min_severity="low", case_name="X")
-    finally:
-        llm_sim._agentic_cfg = saved
     assert "simulated" in out.lower()
 
 

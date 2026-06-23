@@ -120,12 +120,25 @@ def _real_llm(system_prompt: str, user_message: str, *, run_id=None) -> str:
 
 
 REPORT_SYSTEM_PROMPT = (
-    "You are a senior DFIR consultant. From the provided correlated incident graph "
-    "(JSON), write ONLY a concise executive narrative and an attack-story paragraph: "
-    "what happened, the most affected hosts, the kill-chain progression, and the lead "
-    "finding. Structured fact tables (IOCs, MITRE, per-host detail) are appended "
-    "separately, so do NOT re-list them. Cite hosts/accounts verbatim. Invent nothing "
-    "not in the graph."
+    "You are a senior DFIR consultant writing the narrative section of an incident "
+    "report for a customer, from the provided correlated incident graph (JSON: hosts, "
+    "accounts, processes, IOCs, findings, cross-host links, timeline, and the analyst's "
+    "dispositions/validations).\n"
+    "Write these sections as clean markdown, in this order:\n"
+    "## Executive Summary — 3-5 sentences in plain business language: what happened, "
+    "how many hosts, the severity/confidence, and the bottom line for a non-technical "
+    "reader.\n"
+    "## Incident Overview — scope, the most-affected host(s) and the likely entry "
+    "point/initial access, and what the adversary appears to have been after.\n"
+    "## Attack Narrative — the kill chain as prose, in order (initial access → "
+    "execution → persistence → C2 → lateral movement → impact), naming the hosts, "
+    "accounts and times involved at each step.\n"
+    "Reflect the analyst's validations: treat findings confirmed real as fact, and do "
+    "NOT dwell on ones dispositioned benign / known-to-IT (mention they were cleared).\n"
+    "Structured fact tables (timeline, hosts, IOCs, MITRE, recommendations) are appended "
+    "by the system AFTER your text — do NOT reproduce them. Be specific and grounded: "
+    "cite hosts/accounts/hashes verbatim from the graph; never invent anything not "
+    "present. No preamble, start at '## Executive Summary'."
 )
 CHAT_SYSTEM_PROMPT = (
     "You are a senior DFIR / SOC analyst embedded in this investigation, talking with "
@@ -203,7 +216,8 @@ def _apply_mask(text, mask):
 
 def generate_report(graph, *, window=None, min_severity="informational",
                     initial_access=None, case_name="Case", run_id=None,
-                    audience="both", language="en", master_prompt=None, mask=None) -> str:
+                    audience="both", language="en", master_prompt=None, mask=None,
+                    dispositions=None, validations=None, prefer_llm=True) -> str:
     """Case report. Real path = LLM narrative over distilled() + deterministic
     fact tables appended verbatim. `audience` (exec/technical/both) + `language`
     tailor the narrative (reusing the engagement directive); `master_prompt` is the
@@ -211,11 +225,20 @@ def generate_report(graph, *, window=None, min_severity="informational",
     optional DataAnonymizer — when set, the distilled LLM payload AND the rendered
     markdown are anonymized (customer-facing). Falls back to the deterministic narrator
     on any failure (or when mode='simulated')."""
-    if _use_real():
+    # Use a real model only when asked (prefer_llm) AND one is configured. The FIRST
+    # scan generates a fast, free, deterministic report (prefer_llm=False); the
+    # premium LLM narrative is produced ONLY on an explicit Rescan/Regenerate
+    # (regenerate_report passes prefer_llm=True). Keeps tokens fully on-demand.
+    if prefer_llm and (_use_real() or _llm_available()):
         try:
             payload = render.distilled(graph, window=window, min_severity=min_severity,
                                        max_entities=budget.REPORT_MAX_ENTITIES,
                                        budget_chars=budget.REPORT_BUDGET_CHARS)
+            # give the model the analyst's triage so the narrative reflects it
+            if dispositions:
+                payload["operator_dispositions"] = dispositions
+            if validations:
+                payload["analyst_validations"] = validations
             payload_str = json.dumps(payload)
             if mask:                                  # anonymize the LLM input too
                 _build_mask_mapping(graph, mask)
@@ -233,17 +256,20 @@ def generate_report(graph, *, window=None, min_severity="informational",
                           f"{master_prompt.strip()}\n\n---\n\n") + system
             narrative = _real_llm(system, payload_str, run_id=run_id)
             facts = render.facts_md(graph, window=window, min_severity=min_severity,
-                                    initial_access=initial_access)
+                                    initial_access=initial_access,
+                                    dispositions=dispositions, validations=validations)
             md = (f"# Incident Case Report — {case_name}\n\n{narrative}\n\n{facts}"
                   "\n\n---\n_Narrative by live LLM; fact tables deterministic._\n")
             return _apply_mask(md, mask)
         except Exception as e:  # noqa: BLE001 — never let LLM failure break a case
             md = render.report(graph, window=window, min_severity=min_severity,
-                               initial_access=initial_access, case_name=case_name)
+                               initial_access=initial_access, case_name=case_name,
+                               dispositions=dispositions, validations=validations)
             return _apply_mask(md, mask) + (f"\n\n---\n_Live LLM unavailable "
                                             f"({type(e).__name__}); deterministic fallback._\n")
     md = render.report(graph, window=window, min_severity=min_severity,
-                       initial_access=initial_access, case_name=case_name) + _SIM_TAG
+                       initial_access=initial_access, case_name=case_name,
+                       dispositions=dispositions, validations=validations) + _SIM_TAG
     if mask:                                          # populate the mapping, then mask the md
         _build_mask_mapping(graph, mask)
         md = _apply_mask(md, mask)
@@ -396,7 +422,7 @@ def generate_disposition_checklist(graph, *, window=None, min_severity="high",
 
 
 def chat(graph, question: str, history=None, *, window=None, min_severity="informational",
-         run_id=None, dispositions=None) -> str:
+         run_id=None, dispositions=None, validations=None) -> str:
     """Grounded Q&A. Real path narrates the distilled graph; simulated = deterministic
     retrieval. Surfaces operator dispositions (what's been triaged as benign/IT)."""
     # PRIMARY: whenever a model is configured, this is ONE generic, grounded
@@ -409,6 +435,8 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                                            max_entities=budget.CHAT_MAX_ENTITIES)
             if dispositions:
                 payload["operator_dispositions"] = dispositions   # so the LLM can answer triage Qs
+            if validations:
+                payload["analyst_validations"] = validations      # Timeline real/not-real/known
             turns = "".join(f"{m.get('role')}: {m.get('content')}\n" for m in (history or []))
             return _real_llm(CHAT_SYSTEM_PROMPT,
                              f"{json.dumps(payload)}\n\n{turns}Q: {question}", run_id=run_id)
