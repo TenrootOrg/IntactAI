@@ -132,6 +132,17 @@ versions:
   # To bump any sidecar: edit the value here, then re-run the module's
   # install/upgrade flow. Both online + offline (air-gap) paths read
   # the SAME entries via the bundled manifest.
+  # ⚠ Timesketch ↔ OpenSearch coupling — bump together, OpenSearch FIRST.
+  # (ref: https://github.com/google/timesketch/releases)
+  #   Timesketch 20260611+ requires OpenSearch >= 2.19.5 (native wildcard field
+  #   mapping). 20260617 adds: hosts already on OpenSearch 3.x must be >= 3.7.0.
+  #   This 2.19.5 pin satisfies 20260617 on the 2.x line.
+  # OpenSearch is always upgraded + made healthy BEFORE the Timesketch web/worker
+  # containers — `modules/timesketch/docker-compose.yaml` declares
+  # `timesketch-web depends_on timesketch-opensearch: service_healthy` — so the
+  # ordering holds automatically on online upgrade, offline upgrade, AND offline
+  # install (all run the same `docker compose up`). A 2.x -> 3.x jump is a MAJOR
+  # OpenSearch upgrade (reindex / rolling) — don't just swap the tag.
   timesketch_opensearch: '2.19.5'
   timesketch_postgres:   '13.0-alpine'
   timesketch_redis:      '7.2.11-alpine'
