@@ -12,7 +12,7 @@ parameters:
   - name: LabelGroup
     default: Slack
   - name: SlackToken
-    default: Slackhttps://hooks.slack.com/services/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
+    default: ''
     description: The token URL obtained from Slack. Leave blank to use server metadata. e.g. https://hooks.slack.com/services/XXXX/YYYY/ZZZZ
 
 sources:

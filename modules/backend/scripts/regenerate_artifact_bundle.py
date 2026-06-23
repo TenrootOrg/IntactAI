@@ -34,6 +34,7 @@ GitHub). Then commit the updated folder:
 """
 
 import os
+import re
 import sys
 import time
 import json
@@ -53,6 +54,27 @@ TENROOT_ZIP_URL = (
 
 def log(msg):
     print(f"[REGEN] {msg}", flush=True)
+
+
+# Some upstream/TenRoot artifacts hardcode live credentials as default
+# parameter values (e.g. Custom.Server.Slack.Clients.Online shipped a real
+# Slack incoming-webhook URL). Those would (a) trip the gitleaks secret scan
+# and (b) commit a working secret to the repo. Scrub the known shapes to a
+# harmless placeholder on export — the operator sets the real value at runtime.
+_SECRET_SCRUBS = [
+    # Slack incoming webhook (with or without a concatenated "Slack" prefix).
+    (re.compile(r'(?:Slack)?https://hooks\.slack\.com/services/\S+'),
+     'https://hooks.slack.com/services/XXXX/YYYY/ZZZZ'),
+]
+
+
+def scrub_secrets(raw, name):
+    cleaned = raw
+    for pat, repl in _SECRET_SCRUBS:
+        cleaned, n = pat.subn(repl, cleaned)
+        if n:
+            log(f"  ! scrubbed {n} hardcoded secret(s) from {name}")
+    return cleaned
 
 
 def _bundle_dir():
@@ -147,6 +169,7 @@ def export_bundle():
         name, raw = d.get("name"), d.get("raw")
         if not name or not raw:
             continue
+        raw = scrub_secrets(raw, name)
         fname = name.replace(".", "__").replace("/", "__") + ".yaml"
         with open(os.path.join(out, fname), "w") as g:
             g.write(raw)

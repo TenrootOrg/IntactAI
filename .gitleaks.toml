@@ -114,6 +114,14 @@ paths = [
   # The whole `velociraptor/velociraptor/` dir is gitignored now but
   # exists in older history commits.
   '''^modules/velociraptor/velociraptor/''',
+  # The baked artifact bundle is the SAME vendor-by-import content (third-
+  # party YARA rules whose `$keyN = "..."` strings trip generic-api-key, e.g.
+  # YaraProcessWin). It's committed + baked into the velociraptor image. Real
+  # hardcoded secrets (e.g. the Slack webhook that shipped in
+  # Custom.Server.Slack.Clients.Online) are scrubbed on export by
+  # scripts/regenerate_artifact_bundle.py, so what remains is detection
+  # signatures, not credentials.
+  '''^modules/velociraptor/bundled_artifacts/''',
 
   # ── In-tree files that legitimately contain secret-shaped strings ──
   # Sigma rules ship with their own UUID identifiers; not secrets.
