@@ -70,6 +70,18 @@ app.register_blueprint(cve_bp)
 app.register_blueprint(memory_bp)
 app.register_blueprint(case_bp)
 
+
+# Workspace guard: investigation features targeting the System workspace raise
+# WorkspaceError from create_automation_run(). Surface it as a clean 409 JSON
+# (instead of a 500 traceback) so the UI can toast the message.
+from services.workflow_service import WorkspaceError
+
+
+@app.errorhandler(WorkspaceError)
+def _handle_workspace_error(e):
+    from flask import jsonify
+    return jsonify({"error": str(e)}), 409
+
 # Global flag to track initialization status
 initialization_status = {
     "elasticsearch": False,

@@ -931,3 +931,149 @@ def cancel_flow(client_id: str, flow_id: str, logger=None) -> bool:
             channel.close()
         except Exception:
             pass
+
+
+def purge_velociraptor_data(logger=None, delete_flows=True,
+                            delete_monitoring=True, delete_hunts=True):
+    """Safely remove COLLECTED DATA from the Velociraptor server while keeping
+    every client enrolled.
+
+    Uses the server's own VQL deletion primitives over the gRPC API — the same
+    logic as the Server.Utils.DeleteManyFlows / Server.Utils.DeleteMonitoringData
+    / Server.Hunts.CancelAndDelete server artifacts — so the datastore index
+    stays consistent. We deliberately do NOT `rm -rf` the datastore folders:
+    that leaves dangling flow/hunt index entries and can corrupt the store.
+
+    - flows:      flow_delete() for every flow of every client. This is the
+                  bulk of the datastore (clients/<id>/artifacts/).
+    - monitoring: file_store_delete() over clients/<id>/monitoring[_logs]/**.
+    - hunts:      hunt_delete(really_do_it=true) for every hunt.
+
+    Client identity (client_info/) and registration are untouched, so clients
+    stay enrolled and visible — only their collected data is removed. The
+    standalone `velociraptor query` CLI can't see the live client index, which
+    is why the old docker-exec purge silently freed nothing; the gRPC API runs
+    in the proper server context. Best-effort, never raises. Returns counts.
+    """
+    def log(msg, level="info"):
+        if logger:
+            try:
+                logger(msg, level)
+            except Exception:
+                pass
+        else:
+            print(f"[VELO-PURGE] [{level}] {msg}", flush=True)
+
+    out = {"hunts": 0, "flows": 0, "data_files": 0, "monitoring": 0, "errors": []}
+    channel = setup_velociraptor_connection()
+    if not channel:
+        log("Could not connect to Velociraptor — skipping data purge", "warning")
+        out["errors"].append("no connection")
+        return out
+
+    def _run(vql, timeout):
+        stub = api_pb2_grpc.APIStub(channel)
+        req = api_pb2.VQLCollectorArgs(
+            max_wait=10, max_row=2000000,
+            Query=[api_pb2.VQLRequest(VQL=vql)],
+        )
+        rows = []
+        for resp in stub.Query(req, timeout=timeout):
+            if resp.Response:
+                try:
+                    r = json.loads(resp.Response)
+                    if isinstance(r, list):
+                        rows.extend(r)
+                except json.JSONDecodeError:
+                    pass
+        return rows
+
+    try:
+        # 1. Live hunts — hunt_delete also removes their per-client collected
+        #    files (when the hunt metadata still exists).
+        if delete_hunts:
+            try:
+                log("Deleting hunts…")
+                rows = _run(
+                    "SELECT hunt_id, "
+                    "hunt_delete(hunt_id=hunt_id, really_do_it=true) AS deleted "
+                    "FROM hunts()",
+                    timeout=600,
+                )
+                out["hunts"] = len(rows)
+                log(f"Deleted {out['hunts']} hunt(s)", "success")
+            except Exception as e:
+                log(f"Hunt deletion error: {e}", "warning")
+                out["errors"].append(f"hunts: {e}")
+
+        # 2. Live flows — flow_delete removes the collection metadata + files.
+        if delete_flows:
+            try:
+                log("Deleting tracked flows…")
+                rows = _run(
+                    "SELECT client_id, session_id, "
+                    "flow_delete(client_id=client_id, flow_id=session_id, really_do_it=true) AS deleted "
+                    "FROM foreach("
+                    "row={ SELECT client_id FROM clients() WHERE client_id != 'server' }, "
+                    "query={ SELECT client_id, session_id FROM flows(client_id=client_id) }, "
+                    "workers=10)",
+                    timeout=1800,
+                )
+                out["flows"] = len(rows)
+                log(f"Deleted {out['flows']} tracked flow(s)", "success")
+            except Exception as e:
+                log(f"Flow deletion error: {e}", "warning")
+                out["errors"].append(f"flows: {e}")
+
+            # 3. Residual collected-result files. Hunt/flow deletion above
+            #    leaves ORPHANED result files when the originating hunt/flow
+            #    metadata is already gone (flows()/hunts() return nothing but
+            #    clients/<id>/artifacts/ still holds gigabytes — e.g. repeated
+            #    Windows.Hayabusa.Rules result sets). file_store_delete() is
+            #    Velociraptor's own filestore API (same primitive the
+            #    DeleteMonitoringData artifact uses), so this stays index-safe —
+            #    NOT an rm -rf. Client identity is untouched.
+            try:
+                log("Sweeping residual collected-result files…")
+                rows = _run(
+                    "SELECT OSPath, file_store_delete(path=OSPath) AS deleted "
+                    "FROM foreach("
+                    "row={ SELECT client_id FROM clients() WHERE client_id != 'server' }, "
+                    "query={ SELECT OSPath FROM glob("
+                    "globs=['/artifacts/**', '/collections/**', '/uploads/**', '/tmp/**'], "
+                    "accessor='fs', root='/clients/' + client_id) WHERE NOT IsDir }, "
+                    "workers=10)",
+                    timeout=1800,
+                )
+                out["data_files"] = len(rows)
+                log(f"Removed {out['data_files']} residual result file(s)", "success")
+            except Exception as e:
+                log(f"Residual sweep error: {e}", "warning")
+                out["errors"].append(f"residual: {e}")
+
+        # 4. Client monitoring (event) data.
+        if delete_monitoring:
+            try:
+                log("Deleting client monitoring data…")
+                rows = _run(
+                    "SELECT OSPath, file_store_delete(path=OSPath) AS deleted "
+                    "FROM foreach("
+                    "row={ SELECT client_id FROM clients() WHERE client_id != 'server' }, "
+                    "query={ SELECT OSPath FROM glob("
+                    "globs=['/monitoring/**', '/monitoring_logs/**'], "
+                    "accessor='fs', root='/clients/' + client_id) WHERE NOT IsDir }, "
+                    "workers=10)",
+                    timeout=1800,
+                )
+                out["monitoring"] = len(rows)
+                log(f"Deleted {out['monitoring']} monitoring file(s)", "success")
+            except Exception as e:
+                log(f"Monitoring deletion error: {e}", "warning")
+                out["errors"].append(f"monitoring: {e}")
+    finally:
+        try:
+            channel.close()
+        except Exception:
+            pass
+
+    return out

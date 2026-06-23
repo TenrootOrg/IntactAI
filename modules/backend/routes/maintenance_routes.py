@@ -620,6 +620,63 @@ def get_velociraptor_tools_inventory():
         return jsonify({"error": str(e)}), 500
 
 
+def _delete_runs_preserve_cases(c, run_id, include_system=False):
+    """Delete investigation run rows, preserving:
+
+      (a) the purge run itself,
+      (b) every case workspace — a case is an organizational container, not
+          accumulated data; a *data* purge empties the workspaces, it does not
+          destroy the workspace structure. The builtin Default/System
+          workspaces in particular must always survive (they're undeletable
+          through the normal case-delete path too). Without this guard the raw
+          `DELETE FROM workflows` wiped every case, the active workspace the UI
+          was scoped to vanished mid-run, and the purge log appeared to "stop
+          in the middle."
+      (c) system/admin run history (SYSTEM_TYPES: upgrade/maintenance/purge/
+          support-bundle/settings/…) UNLESS ``include_system=True``. This is an
+          audit trail, not investigation data — a normal purge keeps it; only
+          the explicit "System Operation History" section removes it.
+
+    Surviving cases now reference deleted member runs, so their cached fusion
+    graph is stale — strip it so the UI doesn't render a graph built from
+    purged evidence. Returns (runs_deleted, cases_kept).
+    """
+    import json as _json
+    from services.workflow_service import SYSTEM_TYPES
+    keep = {"case"} | (set() if include_system else set(SYSTEM_TYPES))
+    placeholders = ",".join("?" * len(keep))
+    before = c.execute("SELECT COUNT(*) FROM workflows").fetchone()[0]
+    cases = c.execute(
+        "SELECT COUNT(*) FROM workflows WHERE automation_type = 'case'"
+    ).fetchone()[0]
+    c.execute(
+        f"DELETE FROM workflows WHERE run_id != ? "
+        f"AND automation_type NOT IN ({placeholders})",
+        (run_id, *sorted(keep)),
+    )
+    after = c.execute("SELECT COUNT(*) FROM workflows").fetchone()[0]
+    rows = c.execute(
+        "SELECT run_id, details FROM workflows WHERE automation_type = 'case'"
+    ).fetchall()
+    for cid, det in rows:
+        try:
+            d = _json.loads(det) if det else {}
+        except (TypeError, ValueError):
+            d = {}
+        if not isinstance(d, dict):
+            continue
+        changed = False
+        for k in ("fusion_graph", "fused_run_ids", "report_md", "report_html",
+                  "stale_run_ids"):
+            if k in d:
+                d.pop(k, None)
+                changed = True
+        if changed:
+            c.execute("UPDATE workflows SET details = ? WHERE run_id = ?",
+                      (_json.dumps(d), cid))
+    return max(0, before - after), cases
+
+
 @maintenance_bp.route('/api/maintenance/purge', methods=['POST'])
 def run_system_purge():
     """Purge all accumulated data: workflows, reports, uploads, temp files, Velociraptor hunt data."""
@@ -700,11 +757,9 @@ def run_system_purge():
                 db_size_before = os.path.getsize(db_path) if os.path.exists(db_path) else 0
                 conn = sqlite3.connect(db_path)
                 c = conn.cursor()
-                c.execute("SELECT COUNT(*) FROM workflows")
-                wf_count = c.fetchone()[0]
                 c.execute("SELECT COUNT(*) FROM reports")
                 rpt_count = c.fetchone()[0]
-                c.execute("DELETE FROM workflows WHERE run_id != ?", (run_id,))
+                runs_deleted, cases_kept = _delete_runs_preserve_cases(c, run_id)
                 c.execute("DELETE FROM reports")
                 conn.commit()
                 c.execute("VACUUM")
@@ -713,7 +768,7 @@ def run_system_purge():
                 db_size_after = os.path.getsize(db_path) if os.path.exists(db_path) else 0
                 freed = max(0, db_size_before - db_size_after)
                 total_freed += freed
-                add_log_to_run(run_id, f"  Deleted {wf_count - 1} workflows, {rpt_count} reports", "info")
+                add_log_to_run(run_id, f"  Deleted {runs_deleted} investigation runs, {rpt_count} reports (kept {cases_kept} case workspaces + system operation history)", "info")
                 add_log_to_run(run_id, f"  Freed: {fmt(freed)}", "success")
             except Exception as e:
                 add_log_to_run(run_id, f"  Error: {e}", "error")
@@ -793,55 +848,34 @@ def run_system_purge():
                 skipped_sections.append("velociraptor")
             else:
                 try:
+                    from services.velociraptor_service import purge_velociraptor_data
                     from services.upgrade.base import run_command
-                    import json as json_mod
 
-                    # Velociraptor datastore is at /var./ (configured in server.config.yaml)
-                    # Measure before (exclude /var./public/ which contains forensic tools)
+                    # Measure before (exclude /var./public/ which holds forensic tools)
                     du_before = run_command("docker exec intact_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'", logger=None)
                     size_before = int(du_before.get('stdout', '0').split()[0]) if du_before.get('success') else 0
                     add_log_to_run(run_id, f"  Datastore size: {fmt(size_before)}", "info")
 
-                    # Delete all hunts via VQL
-                    add_log_to_run(run_id, "  Deleting hunts...", "info")
-                    list_result = run_command(
-                        'docker exec intact_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
-                        '"SELECT hunt_id, state FROM hunts()"',
-                        logger=None
+                    # Delete hunts/flows/monitoring + sweep orphaned result files
+                    # via the gRPC API (proper server context + index-safe
+                    # file_store_delete — keeps every client enrolled). The old
+                    # `docker exec … query` CLI saw 0 hunts/clients and only
+                    # rm -rf'd collections/+uploads/, orphaning the bulk of the
+                    # data under clients/*/artifacts/ — which is why purges here
+                    # historically freed almost nothing.
+                    def _vlog(msg, level="info"):
+                        add_log_to_run(run_id, f"  {msg}", level)
+
+                    res = purge_velociraptor_data(logger=_vlog)
+                    add_log_to_run(
+                        run_id,
+                        f"  Deleted {res.get('hunts', 0)} hunts, {res.get('flows', 0)} flows, "
+                        f"{res.get('data_files', 0)} result files, "
+                        f"{res.get('monitoring', 0)} monitoring files",
+                        "info",
                     )
-                    hunt_count = 0
-                    if list_result.get('success') and list_result.get('stdout', '').strip():
-                        try:
-                            hunts = json_mod.loads(list_result['stdout'])
-                            for hunt in (hunts if isinstance(hunts, list) else []):
-                                hunt_id = hunt.get('hunt_id', '')
-                                if hunt_id:
-                                    run_command(
-                                        f'docker exec intact_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
-                                        f'"SELECT * FROM hunt_delete(hunt_id=\'{hunt_id}\', really_do_it=true)"',
-                                        logger=None
-                                    )
-                                    hunt_count += 1
-                        except (json_mod.JSONDecodeError, ValueError):
-                            pass
-                    add_log_to_run(run_id, f"  Deleted {hunt_count} hunts", "info")
 
-                    # Clean client collection data (flows/uploads)
-                    add_log_to_run(run_id, "  Cleaning client collections & uploads...", "info")
-                    run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./clients/*/collections/ /var./clients/*/uploads/ 2>/dev/null; true'", logger=None)
-
-                    # Clean downloads
-                    add_log_to_run(run_id, "  Cleaning downloads...", "info")
-                    run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./downloads/* 2>/dev/null; true'", logger=None)
-
-                    # Clean notebooks
-                    add_log_to_run(run_id, "  Cleaning notebooks...", "info")
-                    run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./notebooks/* 2>/dev/null; true'", logger=None)
-
-                    # Clean server artifact logs and server artifacts
-                    run_command("docker exec intact_velociraptor sh -c 'rm -rf /var./server_artifact_logs/* /var./server_artifacts/* 2>/dev/null; true'", logger=None)
-
-                    # Measure after (exclude /var./public/ which contains forensic tools)
+                    # Measure after (exclude /var./public/ which holds forensic tools)
                     du_after = run_command("docker exec intact_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'", logger=None)
                     size_after = int(du_after.get('stdout', '0').split()[0]) if du_after.get('success') else 0
                     freed = max(0, size_before - size_after)
@@ -1035,12 +1069,21 @@ def _purge_dir(path: str) -> tuple[int, int]:
 
 def _scan_workflows():
     import os, sqlite3
+    from services.workflow_service import SYSTEM_TYPES
     p = "/app/data/intact.db"
     db_size = os.path.getsize(p) if os.path.exists(p) else 0
     wf_count = rp_count = 0
+    # Count INVESTIGATION runs only — case workspaces and system/admin history
+    # are preserved by this section's purge, so don't advertise them as
+    # reclaimable here.
+    exclude = ["case", *sorted(SYSTEM_TYPES)]
+    ph = ",".join("?" * len(exclude))
     try:
         conn = sqlite3.connect(p)
-        wf_count = conn.execute("SELECT COUNT(*) FROM workflows").fetchone()[0]
+        wf_count = conn.execute(
+            f"SELECT COUNT(*) FROM workflows WHERE automation_type NOT IN ({ph})",
+            tuple(exclude),
+        ).fetchone()[0]
         try:
             rp_count = conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0]
         except sqlite3.OperationalError:
@@ -1052,7 +1095,25 @@ def _scan_workflows():
     # cleanly attribute size to the wf+report rows alone, but a workflow
     # row averages ~5-50 KB (logs as JSON). Estimate: 25 KB × wf_count.
     estimated = wf_count * 25 * 1024 + rp_count * 50 * 1024
-    return min(estimated, db_size), f"{wf_count} workflows, {rp_count} reports"
+    return min(estimated, db_size), f"{wf_count} investigation runs, {rp_count} reports"
+
+
+def _scan_system_workflows():
+    import os, sqlite3
+    from services.workflow_service import SYSTEM_TYPES
+    p = "/app/data/intact.db"
+    cnt = 0
+    ph = ",".join("?" * len(SYSTEM_TYPES))
+    try:
+        conn = sqlite3.connect(p)
+        cnt = conn.execute(
+            f"SELECT COUNT(*) FROM workflows WHERE automation_type IN ({ph})",
+            tuple(sorted(SYSTEM_TYPES)),
+        ).fetchone()[0]
+        conn.close()
+    except Exception:
+        pass
+    return cnt * 25 * 1024, f"{cnt} system operation run(s)"
 
 
 def _scan_azure_runs():
@@ -1285,12 +1346,13 @@ def _scan_docker_deep():
     """
     rows = _docker_system_df()
     bytes_ = 0
-    for type_key in ("Images", "Local Volumes", "Build Cache"):
+    for type_key in ("Images", "Build Cache"):
         row = rows.get(type_key) or {}
         bytes_ += _parse_size_string(row.get("Reclaimable", "0B"))
     detail = (
-        "All unused images + orphan volumes + build cache + stopped-container "
-        "layers. Active services keep running; their images re-pull on next "
+        "All unused images + build cache + stopped-container layers. Does NOT "
+        "touch volumes (data is preserved — use the Docker Volumes section for "
+        "that). Active services keep running; images re-pull on next "
         "`docker compose up`. Often frees more than the individual rows report."
     )
     return bytes_, detail
@@ -1330,13 +1392,12 @@ def _purge_workflows(run_id):
     before = os.path.getsize(db_path) if os.path.exists(db_path) else 0
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
-    wf = c.execute("SELECT COUNT(*) FROM workflows").fetchone()[0]
     rp = 0
     try:
         rp = c.execute("SELECT COUNT(*) FROM reports").fetchone()[0]
     except sqlite3.OperationalError:
         pass
-    c.execute("DELETE FROM workflows WHERE run_id != ?", (run_id,))
+    runs_deleted, cases_kept = _delete_runs_preserve_cases(c, run_id)
     try:
         c.execute("DELETE FROM reports")
     except sqlite3.OperationalError:
@@ -1346,7 +1407,41 @@ def _purge_workflows(run_id):
     conn.commit()
     conn.close()
     after = os.path.getsize(db_path) if os.path.exists(db_path) else 0
-    return max(0, before - after), f"{wf - 1} workflows, {rp} reports"
+    return max(0, before - after), f"{runs_deleted} investigation runs, {rp} reports (kept {cases_kept} workspaces + system history)"
+
+
+def _purge_system_workflows(run_id):
+    """Delete system/admin run history (upgrades, prepares, online upgrades,
+    maintenance, purges, support bundles, settings ops, case import/export).
+
+    Deliberately kept OUT of the default "Workflows & Reports" section — this
+    is an audit trail, not investigation data, and is only removed when the
+    operator explicitly marks this section. Never touches cases or
+    investigation runs. The currently-running purge row is preserved so its
+    own log survives."""
+    import os, sqlite3
+    from services.workflow_service import SYSTEM_TYPES
+    db_path = "/app/data/intact.db"
+    before = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    ph = ",".join("?" * len(SYSTEM_TYPES))
+    params = (*sorted(SYSTEM_TYPES), run_id)
+    cnt = c.execute(
+        f"SELECT COUNT(*) FROM workflows "
+        f"WHERE automation_type IN ({ph}) AND run_id != ?",
+        params,
+    ).fetchone()[0]
+    c.execute(
+        f"DELETE FROM workflows WHERE automation_type IN ({ph}) AND run_id != ?",
+        params,
+    )
+    conn.commit()
+    c.execute("VACUUM")
+    conn.commit()
+    conn.close()
+    after = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+    return max(0, before - after), f"{cnt} system operation run(s)"
 
 
 def _purge_azure_runs(_):
@@ -1391,43 +1486,32 @@ def _purge_report_downloads(_):
     return f, f"{c} items"
 
 
-def _purge_velociraptor(_):
-    import json
-    from services.upgrade.base import run_command
-    before = _scan_velociraptor()[0]
-    # Hunts via VQL
-    hr = run_command(
-        'docker exec intact_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
-        '"SELECT hunt_id FROM hunts()"',
-        logger=None,
-    )
-    hunts_deleted = 0
-    if hr.get("success") and (hr.get("stdout") or "").strip():
+def _purge_velociraptor(run_id):
+    """Remove collected hunt/flow/monitoring DATA while keeping every client
+    enrolled. Delegates to the gRPC-API purge in velociraptor_service — that
+    runs in the proper server context (the old `docker exec … query` CLI saw 0
+    hunts and 0 clients, so it silently freed nothing) and uses Velociraptor's
+    own flow_delete/hunt_delete/file_store_delete primitives instead of an
+    index-corrupting `rm -rf`."""
+    from services.velociraptor_service import purge_velociraptor_data
+
+    def _log(msg, level="info"):
         try:
-            hunts = json.loads(hr["stdout"])
-            for h in hunts if isinstance(hunts, list) else []:
-                hid = h.get("hunt_id", "")
-                if hid:
-                    run_command(
-                        f'docker exec intact_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml query '
-                        f'"SELECT * FROM hunt_delete(hunt_id=\'{hid}\', really_do_it=true)"',
-                        logger=None,
-                    )
-                    hunts_deleted += 1
-        except (json.JSONDecodeError, ValueError):
+            add_log_to_run(run_id, f"  {msg}", level)
+        except Exception:
             pass
-    # Collections + uploads + downloads + notebooks + server artifact logs
-    for path in (
-        "/var./clients/*/collections/", "/var./clients/*/uploads/",
-        "/var./downloads/*", "/var./notebooks/*",
-        "/var./server_artifact_logs/*", "/var./server_artifacts/*",
-    ):
-        run_command(
-            f"docker exec intact_velociraptor sh -c 'rm -rf {path} 2>/dev/null; true'",
-            logger=None,
-        )
+
+    before = _scan_velociraptor()[0]
+    res = purge_velociraptor_data(logger=_log)
     after = _scan_velociraptor()[0]
-    return max(0, before - after), f"{hunts_deleted} hunts"
+    detail = (
+        f"{res.get('hunts', 0)} hunts, {res.get('flows', 0)} flows, "
+        f"{res.get('data_files', 0)} result files, "
+        f"{res.get('monitoring', 0)} monitoring files"
+    )
+    if res.get("errors"):
+        detail += f" (errors: {'; '.join(res['errors'])})"
+    return max(0, before - after), detail
 
 
 def _purge_elk_artifacts(_):
@@ -1566,11 +1650,50 @@ def _purge_docker_images(_):
 
 
 def _purge_docker_volumes(_):
+    """Reclaim unused docker volumes WITHOUT destroying service data.
+
+    Modern Docker's `volume prune` (no -a) only removes anonymous volumes, so
+    named leftovers never get reclaimed — e.g. a 647 MB stale `*_timesketch_venv`
+    persists forever (the 'doesn't free anything' bug). But a blanket
+    `volume prune -af` would also delete a STOPPED service's data volume
+    (e.g. `iris_iris_db_data`) — destroying real data. So:
+      1. `volume prune -f` — anonymous unused volumes (always safe).
+      2. remove unused NAMED volumes ONLY when the name is clearly rebuildable
+         throwaway state (venv / cache / tmp / build). Anything that looks like
+         a database / evidence / media / data store is left untouched.
+    """
     from services.upgrade.base import run_command
+    import re
     before, _ = _scan_docker_volumes()
+
+    # 1. Anonymous unused volumes — Docker's own safe default.
     run_command("docker volume prune -f", logger=None)
+
+    # 2. Named unused volumes that are safe to rebuild. Allow-list (not a
+    #    data-volume deny-list) so an unrecognised name is KEPT, never deleted.
+    #    Match on whole underscore/dash/dot-delimited SEGMENTS, not substrings —
+    #    otherwise "temp" would wrongly match "iris_iris_templates" (real data).
+    SAFE_TOKENS = {"venv", "cache", "tmp", "temp", "build", "buildcache",
+                   "node_modules", "pip", "wheels"}
+
+    def _is_rebuildable(vol_name):
+        segs = re.split(r"[_\-.]", vol_name.lower())
+        return any(seg in SAFE_TOKENS for seg in segs)
+
+    listing = run_command(
+        "docker volume ls --filter dangling=true --format '{{.Name}}'",
+        logger=None,
+    )
+    removed = []
+    for name in [x.strip() for x in (listing.get("stdout") or "").splitlines() if x.strip()]:
+        if _is_rebuildable(name):
+            if run_command(f"docker volume rm {name}", logger=None).get("success"):
+                removed.append(name)
+
     after, _ = _scan_docker_volumes()
-    return max(0, before - after), ""
+    detail = (f"{len(removed)} rebuildable named volume(s) + anonymous"
+              if removed else "anonymous only (named data volumes preserved)")
+    return max(0, before - after), detail
 
 
 def _purge_docker_build_cache(_):
@@ -1605,7 +1728,11 @@ def _purge_docker_deep(_):
         return n
 
     before = _docker_total_bytes()
-    run_command("docker system prune -a --volumes -f", logger=None)
+    # NOTE: intentionally NO `--volumes`. `docker system prune --volumes` would
+    # delete every unused NAMED volume too — including a stopped service's data
+    # store (e.g. iris_iris_db_data) — which destroys real data. Volume cleanup
+    # is handled safely (allow-listed) by the dedicated docker_volumes section.
+    run_command("docker system prune -a -f", logger=None)
     after = _docker_total_bytes()
     return max(0, before - after), ""
 
@@ -1627,8 +1754,15 @@ def _purge_system_journal(_):
 
 # ---- registry -----------------------------------------------------------
 
+# Sections deliberately EXCLUDED from the "Select all" button — the operator
+# must tick them individually. System operation history is an audit trail, so a
+# blanket "purge everything" must never sweep it away by accident.
+_EXCLUDE_FROM_ALL = {"system_workflows"}
+
 _PURGE_SECTIONS = (
-    ("workflows",          "Workflows & Reports",                 _scan_workflows,         _purge_workflows),
+    # System operation history first — but excluded from "Select all" (above).
+    ("system_workflows",   "System Operation History (upgrades, purges, …)", _scan_system_workflows, _purge_system_workflows),
+    ("workflows",          "Investigation Runs & Reports",        _scan_workflows,         _purge_workflows),
     ("azure_runs",         "Azure Scan Data",                     _scan_azure_runs,        _purge_azure_runs),
     ("uploads",            "Upload Data (KAPE, packages, logs)",  _scan_uploads,           _purge_uploads),
     ("upgrade_packages",   "Upgrade Packages",                    _scan_upgrade_packages,  _purge_upgrade_packages),
@@ -1674,6 +1808,7 @@ def list_purge_sections():
             "size_bytes": int(size or 0),
             "size_label": _fmt_size(int(size or 0)),
             "detail": detail,
+            "exclude_from_all": sid in _EXCLUDE_FROM_ALL,
         })
         total += int(size or 0)
     return jsonify({

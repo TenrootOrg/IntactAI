@@ -331,7 +331,12 @@
                                                     <input type="checkbox" :value="s.id" x-model="$store.settings.purgeSelected[s.id]"
                                                            class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-red-500 focus:ring-red-500">
                                                     <div class="min-w-0">
-                                                        <div class="text-sm text-gray-200" x-text="s.label"></div>
+                                                        <div class="text-sm text-gray-200 flex items-center gap-2">
+                                                            <span x-text="s.label"></span>
+                                                            <span x-show="s.exclude_from_all"
+                                                                  class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-700/40"
+                                                                  title="Not included in 'Select all' — tick it deliberately">manual only</span>
+                                                        </div>
                                                         <div class="text-xs text-gray-500 truncate" x-text="s.detail || '—'"></div>
                                                     </div>
                                                 </div>

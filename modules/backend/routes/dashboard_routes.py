@@ -44,9 +44,14 @@ def _transform_run(run):
 
 @dashboard_bp.route('/api/dashboard/automations')
 def get_all_automations():
-    """Get automation runs for the dashboard, STRICTLY scoped to the active workspace
-    (the X-Case-Id header). Each case shows only its own investigation runs; system/admin
-    runs (upgrade/maintenance/etc.) are not case work and don't appear here."""
+    """Get automation runs for the dashboard, STRICTLY scoped to the active
+    workspace (the X-Case-Id header).
+
+    Each workspace shows only its own runs. System/admin runs
+    (upgrade/maintenance/purge/support-bundle/settings/…) always run as the
+    built-in System workspace, so they appear only there — switch to the
+    System workspace then Workflows to see them. They must NOT leak into an
+    investigation workspace like Default."""
     from flask import g
     automation_runs = get_all_automation_runs()
     case_id = getattr(g, "case_id", None)

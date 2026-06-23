@@ -40,6 +40,25 @@ _DEFAULT_CASE_CACHE = {"id": None}
 _SYSTEM_CASE_CACHE = {"id": None}
 
 
+class WorkspaceError(Exception):
+    """An operation isn't allowed in the resolved workspace — e.g. an
+    investigation feature targeting the built-in System workspace. The
+    app-level errorhandler turns this into an HTTP 409 with this message."""
+    pass
+
+
+def _system_case_id():
+    """Id of the built-in System workspace (cached). None if it can't be
+    resolved (e.g. store unavailable)."""
+    if not _SYSTEM_CASE_CACHE["id"]:
+        try:
+            from services.fusion import store
+            _SYSTEM_CASE_CACHE["id"] = store.ensure_system_case()
+        except Exception:
+            pass
+    return _SYSTEM_CASE_CACHE["id"]
+
+
 def _active_case_from_request():
     """The browser's active case (X-Case-Id header), read off the Flask request
     context. Returns None outside a request (e.g. a background re-fuse)."""
@@ -60,17 +79,20 @@ def _resolve_case_id(automation_type, case_id):
       active case; else (scheduler/background) the Default workspace.
     - Anything else stays untagged."""
     if automation_type in SYSTEM_TYPES:
-        if not _SYSTEM_CASE_CACHE["id"]:
-            try:
-                from services.fusion import store
-                _SYSTEM_CASE_CACHE["id"] = store.ensure_system_case()
-            except Exception:
-                pass
-        return _SYSTEM_CASE_CACHE["id"] or case_id
-    if case_id or automation_type not in AGENTIC_TYPES:
+        return _system_case_id() or case_id
+    if automation_type not in AGENTIC_TYPES:
         return case_id
-    cid = _active_case_from_request()
+    # Investigation run. An explicitly-passed case_id wins, then the browser's
+    # active case, then (scheduler/background, no request) the Default
+    # workspace. Either way the System workspace is off-limits to investigation
+    # features — it's the home for system/admin operations, not case work.
+    cid = case_id or _active_case_from_request()
     if cid:
+        if cid == _system_case_id():
+            raise WorkspaceError(
+                "Investigation features can't run in the System workspace. "
+                "Switch to or create an investigation workspace first."
+            )
         return cid
     if not _DEFAULT_CASE_CACHE["id"]:
         try:

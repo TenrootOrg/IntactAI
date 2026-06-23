@@ -328,7 +328,13 @@ document.addEventListener('alpine:init', () => {
         },
 
         purgeSelectAll(value) {
-            for (const s of this.purgeSections) this.purgeSelected[s.id] = !!value;
+            // "Select all" never ticks sections the backend flags as
+            // exclude_from_all (e.g. System Operation History — an audit trail
+            // that must be removed deliberately, one tick at a time). "None"
+            // (value=false) still clears everything.
+            for (const s of this.purgeSections) {
+                this.purgeSelected[s.id] = (value && s.exclude_from_all) ? false : !!value;
+            }
         },
 
         async runPurgeSelected() {
