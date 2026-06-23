@@ -332,9 +332,6 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                 return
 
         report_content = {}
-        multi_reports = None
-        zip_path = None
-
         # No LLM -> emit a collect-only report (the rows are persisted below for
         # fusion). Skips the LLM report generators entirely.
         if not llm_enabled:

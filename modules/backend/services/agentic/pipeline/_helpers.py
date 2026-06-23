@@ -29,13 +29,8 @@ from services.agentic.collectors import (
     cancel_collections
 )
 from services.agentic.reports import (
-    generate_final_report,
     generate_empty_report,
     save_report_content,
-    generate_multi_client_reports,
-    create_report_package,
-    persist_per_client_reports,
-    get_client_hostname,
     persist_pipeline_artifacts,
 )
 from services.agentic.utils import extract_timeline_events, filter_malicious_events
