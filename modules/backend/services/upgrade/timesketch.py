@@ -2,6 +2,7 @@
 """Timesketch upgrade functions."""
 
 import os
+import re
 import time
 import shlex
 import requests
@@ -152,6 +153,113 @@ def _restore_timesketch_db(dump_path: str, logger: Callable = None) -> bool:
             return False
 
     log("DB restore OK", "success")
+    return True
+
+
+# ── Postgres major-version migration ────────────────────────────────────────
+# Postgres refuses to open a data directory written by a DIFFERENT major
+# version ("FATAL: database files are incompatible … initialized by PostgreSQL
+# version N"). So a host whose timesketch_postgres_data was initialised under
+# one major (e.g. PG15, the old-modules default) cannot just run a different
+# major (PG13, what Timesketch upstream now pins) against it — the container
+# crash-loops and the whole Timesketch stack fails its health-gated start.
+# This is the exact failure that broke the air-gap upgrade.
+#
+# In-place major changes (either direction) aren't possible against the same
+# data dir, so we migrate LOGICALLY: the upgrade already pg_dumps the live DB
+# against the OLD running postgres (any major); when the pinned major differs
+# we wipe the data volume, initialise the NEW major fresh, and restore the
+# dump into it. Runs only when the majors differ AND a verified dump exists.
+
+def _read_pg_data_major(logger: Callable = None) -> Optional[str]:
+    """Major version that wrote the EXISTING postgres data dir (its PG_VERSION
+    file), or None. Must be read while the old container is still running."""
+    r = run_command(
+        f"docker exec {_PG_CONTAINER} cat /var/lib/postgresql/data/PG_VERSION",
+        logger=None)
+    if not r.get('success'):
+        return None
+    v = (r.get('stdout') or '').strip().split('.')[0]
+    return v if v.isdigit() else None
+
+
+def _read_pinned_pg_major(env_file: str) -> Optional[str]:
+    """Major pinned in modules/timesketch/.env POSTGRES_VERSION
+    (e.g. '13.0-alpine' -> '13'), or None."""
+    try:
+        env = read_env_file(env_file)
+    except Exception:
+        return None
+    m = re.match(r'(\d+)', (env.get('POSTGRES_VERSION') or '').strip())
+    return m.group(1) if m else None
+
+
+def _read_pg_volume_name(logger: Callable = None) -> Optional[str]:
+    """Docker volume backing the postgres data dir, captured while the
+    container still exists so it can be wiped after `compose down`."""
+    r = run_command(
+        "docker inspect " + _PG_CONTAINER + " --format "
+        "'{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql/data\"}}{{.Name}}{{end}}{{end}}'",
+        logger=None)
+    name = (r.get('stdout') or '').strip() if r.get('success') else ''
+    return name or None
+
+
+def _wait_postgres_ready(logger: Callable = None, attempts: int = 40, delay: int = 3) -> bool:
+    """Block until `pg_isready` reports the postgres container accepts
+    connections (a fresh init is fast, but give it room on busy hosts)."""
+    log = logger or (lambda m, l="info": None)
+    for i in range(attempts):
+        r = run_command(f"docker exec {_PG_CONTAINER} pg_isready -U {_PG_USER}", logger=None)
+        if r.get('success') and 'accepting connections' in (r.get('stdout') or ''):
+            return True
+        log(f"  waiting for postgres to accept connections... ({i*delay}s)", "info")
+        time.sleep(delay)
+    return False
+
+
+def _detect_pg_major_change(env_file: str, logger: Callable = None):
+    """Return (needs_migration, data_major, pinned_major, volume_name).
+
+    Reads the existing data dir's major + the pinned major + the data volume
+    name (all while the old container is up). needs_migration is True only when
+    both majors are known and differ."""
+    data_major = _read_pg_data_major(logger=logger)
+    pinned_major = _read_pinned_pg_major(env_file)
+    vol_name = _read_pg_volume_name(logger=logger)
+    needs = bool(data_major and pinned_major and data_major != pinned_major)
+    return needs, data_major, pinned_major, vol_name
+
+
+def _migrate_pg_major(work_dir: str, db_backup_path: Optional[str], vol_name: Optional[str],
+                      logger: Callable = None) -> bool:
+    """Wipe the old-major data volume, init the new major fresh (postgres only),
+    and restore the logical dump into it. Caller must have already `compose
+    down`-ed and hold a verified `db_backup_path`."""
+    log = logger or (lambda m, l="info": print(f"[{l}] {m}"))
+    if not db_backup_path or not os.path.exists(db_backup_path):
+        log("Refusing postgres major migration without a DB dump", "error")
+        return False
+    if vol_name:
+        log(f"Removing old-major postgres volume {vol_name} so the new major "
+            f"initialises a fresh cluster...", "info")
+        run_command(f"docker volume rm {shlex.quote(vol_name)}", timeout=120, logger=log)
+    # Bring up ONLY postgres so it initialises an empty cluster under the new
+    # major BEFORE web/worker try to use it. Images are already local
+    # (pulled/loaded by the caller), so --pull never is safe online + offline.
+    log("Starting fresh postgres under the new major for restore...", "info")
+    r = run_command("docker compose up -d --pull never timesketch-postgres",
+                    cwd=work_dir, logger=log)
+    if not r.get('success'):
+        log(f"Failed to start fresh postgres: {r.get('error','?')[:200]}", "error")
+        return False
+    if not _wait_postgres_ready(logger=log):
+        log("Fresh postgres did not become ready in time", "error")
+        return False
+    # Restore the dump (drops+recreates the timesketch DB, then psql streams in).
+    if not _restore_timesketch_db(db_backup_path, logger=log):
+        return False
+    log("Postgres major migration complete — data restored under the new major.", "success")
     return True
 
 
@@ -574,6 +682,19 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
     if not db_backup_path:
         log("Proceeding without DB backup — rollback will be config-only if upgrade fails", "warning")
 
+    # Detect a Postgres MAJOR-version change (old-modules PG15 -> upstream PG13,
+    # etc.) while the old container is still up. If the data dir's major differs
+    # from the pinned major, an in-place start is impossible and we'll migrate
+    # via dump/wipe/restore below. Refuse to proceed without a dump in that case.
+    pg_migrate, pg_data_major, pg_pinned_major, pg_vol_name = _detect_pg_major_change(env_file, logger=log)
+    if pg_migrate:
+        log(f"Postgres major change: existing data is PG{pg_data_major}, target pins "
+            f"PG{pg_pinned_major}. A dump->wipe->restore migration will run "
+            f"(in-place major changes aren't possible).", "warning")
+        if not db_backup_path:
+            raise Exception("Postgres major change needs a DB dump, but pg_dump failed — "
+                            "refusing to wipe data without a backup")
+
     # Snapshot row counts of every persistent table BEFORE the upgrade so we
     # can verify nothing disappeared. The postgres + opensearch volumes are
     # preserved by `docker compose down/up`, so persistent data should survive
@@ -621,6 +742,13 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
             log(f"Updating Plaso version to {plaso_version}...", "info")
             update_env_file(backend_env, 'PLASO_VERSION', plaso_version, logger=log)
 
+        # Postgres major migration (if detected): wipe the old-major volume,
+        # init the new major fresh, and restore the dump — BEFORE the full
+        # stack starts so web/worker never see an incompatible data dir.
+        if pg_migrate:
+            if not _migrate_pg_major(work_dir, db_backup_path, pg_vol_name, logger=log):
+                raise Exception("Postgres major migration failed — aborting upgrade")
+
         # Start containers
         log("Starting Timesketch containers...", "info")
         result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
@@ -661,6 +789,12 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
         # This is the step that was missing before — without it the new
         # container code can hit columns/tables the old schema doesn't have,
         # which is what bit the 2024 → 2026 upgrade.
+        if pg_migrate:
+            # The restored dump predates this run's pre-stop alembic bootstrap
+            # (which ran against the now-wiped old DB), so the fresh DB has no
+            # alembic_version — re-bootstrap before the schema upgrade applies
+            # the deltas. Idempotent: a no-op if tracking is already present.
+            _bootstrap_alembic_if_needed(current_version, logger=log)
         if not _run_db_schema_upgrade(version, logger=log):
             raise Exception("tsctl db upgrade failed — DB schema is not in sync with new code")
 
@@ -765,6 +899,19 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
     if not db_backup_path:
         log("Proceeding without DB backup — rollback will be config-only if upgrade fails", "warning")
 
+    # Detect a Postgres MAJOR-version change (old-modules PG15 -> upstream PG13,
+    # etc.) while the old container is still up. If the data dir's major differs
+    # from the pinned major, an in-place start is impossible and we'll migrate
+    # via dump/wipe/restore below. Refuse to proceed without a dump in that case.
+    pg_migrate, pg_data_major, pg_pinned_major, pg_vol_name = _detect_pg_major_change(env_file, logger=log)
+    if pg_migrate:
+        log(f"Postgres major change: existing data is PG{pg_data_major}, target pins "
+            f"PG{pg_pinned_major}. A dump->wipe->restore migration will run "
+            f"(in-place major changes aren't possible).", "warning")
+        if not db_backup_path:
+            raise Exception("Postgres major change needs a DB dump, but pg_dump failed — "
+                            "refusing to wipe data without a backup")
+
     # Snapshot row counts of every persistent table BEFORE the upgrade so we
     # can prove nothing got dropped. The postgres + opensearch volumes are
     # preserved by `docker compose down/up`, so persistent data should survive
@@ -830,6 +977,13 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
         log(f"Updating Timesketch version to {version}...", "info")
         update_env_file(env_file, 'TIMESKETCH_VERSION', version, logger=log)
 
+        # Postgres major migration (if detected): wipe the old-major volume,
+        # init the new major fresh, and restore the dump — BEFORE the full
+        # stack starts so web/worker never see an incompatible data dir.
+        if pg_migrate:
+            if not _migrate_pg_major(work_dir, db_backup_path, pg_vol_name, logger=log):
+                raise Exception("Postgres major migration failed — aborting upgrade")
+
         # Start containers
         log("Starting Timesketch containers...", "info")
         result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log, run_id=run_id)
@@ -871,6 +1025,11 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
         # function refuse to fall back to GitHub if the bundle is missing,
         # which is the right behavior for an air-gapped target.
         bundled_mig = os.path.join(package_dir, 'migrations', 'timesketch')
+        if pg_migrate:
+            # Restored dump has no alembic_version (taken before this run's
+            # pre-stop bootstrap, which ran against the now-wiped old DB) —
+            # re-bootstrap before applying the deltas. Idempotent.
+            _bootstrap_alembic_if_needed(current_version, logger=log)
         if not _run_db_schema_upgrade(version, logger=log,
                                        local_migrations_dir=bundled_mig,
                                        offline=True):
