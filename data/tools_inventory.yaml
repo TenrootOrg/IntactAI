@@ -33,7 +33,7 @@ velociraptor_core: []
 # ============================================================================
 event_log_tools:
   - name: "Hayabusa"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "Yamato-Security/hayabusa"
     pattern: "hayabusa-.*-win-x64\\.zip$"
@@ -41,14 +41,14 @@ event_log_tools:
     description: "SIGMA-based Windows event log analyzer"
 
   - name: "Hayabusa Live Response"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "Yamato-Security/hayabusa"
     pattern: "hayabusa-.*-win-x64-live-response\\.zip$"
     category: detection
 
   - name: "EVTXHussar"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "yarox24/EvtxHussar"
     pattern: ".*windows_amd64\\.zip$"
@@ -62,7 +62,7 @@ event_log_tools:
   # ~45 MB of pre-positioning that nobody used at install time.
 
   - name: "Takajo"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "Yamato-Security/takajo"
     pattern: "takajo.*-win-x64\\.zip$"
@@ -78,7 +78,7 @@ event_log_tools:
 # ============================================================================
 persistence_tools:
   - name: "PersistenceSniper"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "last-byte/PersistenceSniper"
     pattern: "PersistenceSniper\\.zip$"
@@ -86,7 +86,7 @@ persistence_tools:
     description: "PowerShell persistence scanner"
 
   - name: "PersistenceSniper False Positives"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://raw.githubusercontent.com/ablescia/Windows.PersistenceSniper/main/false_positives.csv"
     category: detection
@@ -104,54 +104,54 @@ persistence_tools:
 # ============================================================================
 yara_tools:
   - name: "Yara Win64"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "VirusTotal/yara"
     pattern: "yara.*-win64\\.zip$"
     category: detection
 
   - name: "Yara Win32"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "VirusTotal/yara"
     pattern: "yara.*-win32\\.zip$"
     category: detection
 
   - name: "YaraForge Core"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "YARAHQ/yara-forge"
     pattern: ".*core\\.zip$"
     category: rules
 
   - name: "YaraForge Extended"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "YARAHQ/yara-forge"
     pattern: ".*extended\\.zip$"
     category: rules
 
   - name: "YaraForge Full"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "YARAHQ/yara-forge"
     pattern: ".*full\\.zip$"
     category: rules
 
   - name: "DetectRaptor YARA Windows"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://github.com/mgreen27/DetectRaptor/raw/master/yara/full_windows_file.yar.gz"
     category: rules
 
   - name: "DetectRaptor YARA Linux"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://github.com/mgreen27/DetectRaptor/raw/master/yara/full_linux_file.yar.gz"
     category: rules
 
   - name: "DetectRaptor YARA Full"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://github.com/mgreen27/DetectRaptor/raw/master/yara/yara-rules-full.yar"
     category: rules
@@ -165,56 +165,56 @@ yara_tools:
 # ============================================================================
 velociraptor_artifacts:
   - name: "DetectRaptor VQL"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "mgreen27/DetectRaptor"
     pattern: "DetectRaptorVQL\\.zip$"
     category: artifacts
 
   - name: "Artifact Exchange"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://github.com/Velocidex/velociraptor-docs/raw/gh-pages/exchange/artifact_exchange_v2.zip"
     category: artifacts
 
   - name: "Velociraptor Sigma Artifacts"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://sigma.velocidex.com/Velociraptor.Sigma.Artifacts.zip"
     category: artifacts
 
   - name: "Sigma Profiles"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://sigma.velocidex.com/profiles.json"
     category: artifacts
 
   - name: "Rapid7Labs VQL"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://github.com/rapid7/Rapid7-Labs/raw/main/Vql/release/Rapid7LabsVQL.zip"
     category: artifacts
 
   - name: "Registry Hunter"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://registry-hunter.velocidex.com/Windows.Registry.Hunter.zip"
     category: artifacts
 
   - name: "SQLiteHunter"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://sqlitehunter.velocidex.com/SQLiteHunter.zip"
     category: artifacts
 
   - name: "Triage Artifacts"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://triage.velocidex.com/artifacts/Velociraptor_Triage_v0.1.zip"
     category: artifacts
 
   - name: "10Root Artifacts"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://github.com/TenRootOrg/Velociraptor-Artifacts/archive/refs/heads/main.zip"
     filename: "Velociraptor-Artifacts-main.zip"
@@ -252,7 +252,7 @@ nirsoft_tools:
     category: forensics
 
   - name: "BrowsingHistoryView"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://www.nirsoft.net/utils/browsinghistoryview-x64.zip"
     category: forensics
@@ -262,110 +262,110 @@ nirsoft_tools:
 # ============================================================================
 zimmerman_tools:
   - name: "AmcacheParser"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/AmcacheParser.zip"
     category: forensics
 
   - name: "AppCompatCacheParser"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/AppCompatCacheParser.zip"
     category: forensics
 
   - name: "bstrings"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/bstrings.zip"
     category: forensics
 
   - name: "EvtxECmd"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/EvtxECmd.zip"
     category: forensics
 
   - name: "hasher"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/hasher.zip"
     category: forensics
 
   - name: "JLECmd"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/JLECmd.zip"
     category: forensics
     description: "Jump List parser"
 
   - name: "LECmd"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/LECmd.zip"
     category: forensics
     description: "LNK file parser"
 
   - name: "MFTECmd"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/MFTECmd.zip"
     category: forensics
     description: "MFT parser"
 
   - name: "PECmd"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/PECmd.zip"
     category: forensics
     description: "Prefetch parser"
 
   - name: "RBCmd"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/RBCmd.zip"
     category: forensics
     description: "Recycle Bin parser"
 
   - name: "RecentFileCacheParser"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/RecentFileCacheParser.zip"
     category: forensics
 
   - name: "RECmd"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/RECmd.zip"
     category: forensics
     description: "Registry explorer CLI"
 
   - name: "rla"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/rla.zip"
     category: forensics
 
   - name: "SBECmd"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/SBECmd.zip"
     category: forensics
     description: "ShellBags explorer CLI"
 
   - name: "SrumECmd"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/SrumECmd.zip"
     category: forensics
 
   - name: "SumECmd"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/SumECmd.zip"
     category: forensics
 
   - name: "iisGeolocate"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://download.ericzimmermanstools.com/iisGeolocate.zip"
     category: forensics
@@ -387,37 +387,37 @@ sysinternals_tools:
     category: sysinternals
 
   - name: "Disk2VHD"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://live.sysinternals.com/tools/disk2vhd64.exe"
     category: sysinternals
 
   - name: "Process Explorer"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://live.sysinternals.com/tools/procexp64.exe"
     category: sysinternals
 
   - name: "Sigcheck"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://live.sysinternals.com/tools/sigcheck64.exe"
     category: sysinternals
 
   - name: "Strings"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://live.sysinternals.com/tools/strings64.exe"
     category: sysinternals
 
   - name: "Sysmon"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://live.sysinternals.com/tools/Sysmon64.exe"
     category: sysinternals
 
   - name: "Sysmon Config"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml"
     filename: "sysmonconfig-export.xml"
@@ -429,7 +429,7 @@ sysinternals_tools:
 # ============================================================================
 imaging_tools:
   - name: "FTK Imager CLI"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://www.dropbox.com/scl/fi/juz70umd0clt2np4hf0d6/FTKImager-commandline.zip?rlkey=0320go01k20eyh3qutwb0pwg0&dl=1"
     filename: "FTKImager-commandline.zip"
@@ -440,7 +440,7 @@ imaging_tools:
 # ============================================================================
 audit_tools:
   - name: "PingCastle"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://github.com/netwrix/pingcastle/releases/download/3.3.0.1/PingCastle_3.3.0.1.zip"
     filename: "PingCastle_3.3.0.1.zip"
@@ -448,7 +448,7 @@ audit_tools:
     description: "Active Directory security audit"
 
   - name: "HardeningKitty"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://github.com/0x6d69636b/windows_hardening/archive/refs/heads/master.zip"
     filename: "windows_hardening-master.zip"
@@ -472,7 +472,7 @@ threat_intel:
 # ============================================================================
 osquery_tools:
   - name: "OSQuery Windows"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "osquery/osquery"
     pattern: "osquery-.*\\.windows\\.x86_64\\.msi$"
@@ -480,7 +480,7 @@ osquery_tools:
     description: "OS instrumentation framework for Windows"
 
   - name: "OSQuery Linux"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "osquery/osquery"
     # Real osquery .deb release names look like
@@ -495,7 +495,7 @@ osquery_tools:
     description: "OS instrumentation framework for Linux"
 
   - name: "OSQuery macOS"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "osquery/osquery"
     pattern: "osquery-.*\\.pkg$"
@@ -507,7 +507,7 @@ osquery_tools:
 # ============================================================================
 network_tools:
   - name: "etl2pcapng"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "microsoft/etl2pcapng"
     pattern: "etl2pcapng\\.exe$"
@@ -519,7 +519,7 @@ network_tools:
 # ============================================================================
 linux_tools:
   - name: "Linforce"
-    enabled: true
+    enabled: false
     type: direct_url
     url: "https://raw.githubusercontent.com/RCarras/linforce/main/linforce.sh"
     category: linux
