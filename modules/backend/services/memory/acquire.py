@@ -155,6 +155,59 @@ def _client_hostname(client_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", str(host))
 
 
+def _client_total_ram(client_id: str) -> int | None:
+    """Best-effort total physical RAM of the client (bytes), read from its CACHED
+    interrogation (no new collection). None if unavailable (e.g. non-Windows or no
+    interrogation yet) — the preflight then proceeds without the space check."""
+    try:
+        rows = _velo_query(
+            f"SELECT last_interrogate_flow_id AS f FROM clients(client_id='{client_id}')")
+        fid = rows[0].get("f") if rows else None
+        if not fid:
+            return None
+        wi = _velo_query(
+            f"SELECT * FROM source(client_id='{client_id}', flow_id='{fid}', "
+            f"artifact='Generic.Client.Info/WindowsInfo') LIMIT 1")
+        ci = (wi[0].get("Computer Info") if wi else None) or {}
+        ram = ci.get("TotalPhysicalMemory")
+        return int(ram) if ram else None
+    except Exception:
+        return None
+
+
+def _preflight_capacity(client_id: str, dumps_dir: str, cfg: dict, log) -> None:
+    """Preflight a memory acquisition: read the client's RAM, then verify the
+    server has room for the resulting raw image. Raises AcquisitionError BEFORE
+    dispatching so we never half-fill the disk with a multi-GB upload. Best-effort
+    — if the client RAM can't be determined, it warns and proceeds."""
+    import shutil
+    g = 1024 ** 3
+    ram = _client_total_ram(client_id)
+    try:
+        free = shutil.disk_usage(dumps_dir).free
+    except Exception:
+        free = None
+
+    if not ram:
+        log("acquire: preflight — could not read client RAM (no interrogation data); "
+            "proceeding without the server-space check", "warning")
+        return
+
+    # The raw image can EXCEED physical RAM (it spans the full physical address
+    # space incl. MMIO gaps) — observed ~1.3x — and is capped at max_bytes.
+    est_dump = min(int(ram * 1.3), cfg.get("max_bytes") or int(ram * 1.3))
+    free_txt = f"{free / g:.1f} GiB" if free is not None else "unknown"
+    log(f"acquire: preflight — client RAM ~{ram / g:.1f} GiB, est. image ~{est_dump / g:.1f} "
+        f"GiB, server free {free_txt} in {dumps_dir}", "info")
+
+    if free is not None and free < est_dump:
+        raise AcquisitionError(
+            f"insufficient server disk for memory acquisition: the raw image is "
+            f"~{est_dump / g:.1f} GiB (client RAM ~{ram / g:.1f} GiB) but only "
+            f"{free / g:.1f} GiB is free in {dumps_dir}. Free up space or enable "
+            f"compression, then retry.")
+
+
 def _dispatch_acquisition(
     client_id: str,
     *,
@@ -352,6 +405,12 @@ def acquire_memory_dump(
 
     hostname = _client_hostname(client_id)
     log(f"acquire: client hostname={hostname}", "info")
+
+    if cancel_check and cancel_check():
+        raise AcquisitionError("cancelled before dispatch")
+
+    # Preflight: client RAM -> enough room on the server before we acquire.
+    _preflight_capacity(client_id, dumps_dir, cfg, log)
 
     if cancel_check and cancel_check():
         raise AcquisitionError("cancelled before dispatch")
