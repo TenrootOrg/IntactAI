@@ -295,50 +295,6 @@ def resolve_model_alias(model_name: str, provider: str) -> str:
     return model_name
 
 
-def explain_llm_error(error_str: str, model: str, provider: str) -> str:
-    """Wrap a raw LLM API error with operator-friendly guidance when the
-    underlying cause is a model-ID problem.
-
-    The bare error from OpenRouter / Anthropic / OpenAI looks like
-    `Error code: 400 - {'error': {'message': 'X is not a valid model ID', ...}}`
-    which is uninformative when the dashboard logs it on a fresh install.
-    Detect the common 'invalid model' pattern and prepend a hint with
-    the configured model + provider + how to fix it. Pass-through for
-    every other error shape (rate limits, auth, server errors, etc.) so
-    we don't accidentally hide useful detail.
-    """
-    err_lower = (error_str or "").lower()
-    invalid_model = (
-        "is not a valid model id" in err_lower
-        or "model_not_found" in err_lower
-        or "no such model" in err_lower
-    )
-    if not invalid_model:
-        return error_str
-
-    hint_lines = [
-        f"Model '{model}' was rejected by {provider}.",
-    ]
-    if provider == "openrouter":
-        hint_lines.append(
-            f"  Verify the ID at https://openrouter.ai/{model.lstrip('~')} — "
-            "if that page 404s, the model doesn't exist or the alias hasn't been published."
-        )
-        hint_lines.append(
-            "  Common cause: a per-version `-latest` (e.g. `openai/gpt-5.5-latest`) — "
-            "OpenRouter only mints `-latest` aliases at the family level "
-            "(e.g. `~openai/gpt-latest`). Use a pinned version (`openai/gpt-5.5`) "
-            "or a family alias (`~openai/gpt-latest`, `~anthropic/claude-sonnet-latest`)."
-        )
-    else:
-        hint_lines.append(
-            f"  Set a valid model ID in Settings → Agentic → Online LLM. "
-            f"Provider '{provider}' published model lists are at the vendor's API docs."
-        )
-    hint_lines.append(f"  Raw error: {error_str}")
-    return "\n".join(hint_lines)
-
-
 def get_available_models() -> list:
     """Return list of available model aliases for frontend dropdown."""
     return list(MODEL_ALIASES.keys())
@@ -351,25 +307,6 @@ def file_get_workflow_for_metrics(run_id):
     return _get(run_id)
 
 
-def _log_llm_totals(run_id, log):
-    """Emit one `[LLM] Totals: ...` line summarising the run's LLM spend.
-
-    Centralised so timeline-pass and fan-out paths can both call it without
-    risk of double-printing. Quiet if no LLM calls happened.
-    """
-    try:
-        wf = file_get_workflow_for_metrics(run_id)
-        m = (wf or {}).get("llm_metrics") or {}
-        if m.get("calls"):
-            log(
-                f"[LLM] Totals: {m['calls']} calls, "
-                f"{m.get('input_tokens', 0):,} in / {m.get('output_tokens', 0):,} out, "
-                f"~${m.get('cost_usd', 0.0):.4f} ({m.get('model', '?')})"
-            )
-    except Exception as ex:
-        print(f"[ANALYZER] llm totals log failed: {ex}", flush=True)
-
-
 def is_llm_configured(config) -> bool:
     """True iff an LLM transport is usable (online has an api_key, or offline has a URL).
     The single gate the pipeline consults to decide LLM vs COLLECT-ONLY. Mirrors the
@@ -379,76 +316,6 @@ def is_llm_configured(config) -> bool:
     if mode == 'online':
         return bool((agentic_config.get('online_llm') or {}).get('api_key'))
     return bool((agentic_config.get('offline_llm') or {}).get('url'))
-
-
-def validate_llm_config(config):
-    """Validate LLM configuration before starting analysis.
-
-    Raises ValueError if configuration is invalid.
-    """
-    agentic_config = config.get('agentic', {})
-    mode = agentic_config.get('llm_mode', 'online')
-
-    if mode == 'online':
-        online_config = agentic_config.get('online_llm', {})
-        api_key = online_config.get('api_key', '')
-        if not api_key:
-            raise ValueError(
-                "LLM mode is set to 'online' but no API key is configured. "
-                "Please go to Settings > Agentic and either:\n"
-                "1. Enter your Claude/OpenAI API key, or\n"
-                "2. Switch to 'offline' mode and configure Ollama"
-            )
-    else:
-        offline_config = agentic_config.get('offline_llm', {})
-        url = offline_config.get('url', '')
-        if not url:
-            raise ValueError(
-                "LLM mode is set to 'offline' but no Ollama URL is configured. "
-                "Please go to Settings > Agentic and configure the Ollama server URL."
-            )
-
-
-def ping_llm(config, timeout_seconds=30):
-    """Reachability check for the configured LLM. Sends a trivial 1-token
-    completion ('ping') and raises on connection error, auth failure, or
-    timeout. Used as a pre-flight at the top of the pipeline so the run
-    fails immediately when the LLM endpoint is unreachable, instead of
-    spending 30 minutes' worth of Velociraptor collection before
-    discovering the problem.
-
-    A thread-with-join wrapper enforces the timeout — call_llm itself
-    bakes in ONLINE_LLM_TIMEOUT_SECONDS (600s) which is way too long
-    for a pre-flight. The inner call uses an intentionally short prompt
-    so we get a real connection attempt with minimal token spend.
-    """
-    import threading
-
-    err_holder: list = [None]
-
-    def _do_ping():
-        try:
-            # 'ping' is two tokens of prompt and we ask for a single
-            # token back — total LLM cost is negligible per pipeline
-            # run, and a real round-trip is what proves the endpoint
-            # is alive.
-            call_llm("ping", "Reply with a single word.", config)
-        except Exception as e:  # noqa: BLE001 — we want everything
-            err_holder[0] = e
-
-    t = threading.Thread(target=_do_ping, daemon=True)
-    t.start()
-    t.join(timeout=timeout_seconds)
-    if t.is_alive():
-        # The thread is still running; the LLM SDK isn't honouring our
-        # timeout (or 30s wasn't enough). Surface as a timeout so the
-        # caller can fail-fast even though the daemon thread keeps
-        # spinning in the background until the SDK gives up.
-        raise TimeoutError(
-            f"LLM ping did not return within {timeout_seconds}s — endpoint is unreachable"
-        )
-    if err_holder[0] is not None:
-        raise err_holder[0]
 
 
 def call_llm(prompt, system_prompt, config, run_id=None, model_override=None):

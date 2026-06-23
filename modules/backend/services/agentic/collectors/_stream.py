@@ -27,7 +27,6 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
 
     STREAMING OPTIMIZATION: LLM analysis starts immediately when an artifact's flow completes,
     rather than waiting for all collections to finish."""
-    from services.agentic.analyzers import analyze_single_artifact  # noqa: F401 (dead LLM branch kept for diff clarity)
     from services.agentic.utils import filter_row_by_time
 
     # Agentic per-artifact LLM analysis was REMOVED — the pipeline is always
@@ -103,48 +102,12 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
         add_log_to_run(run_id, msg, level)
 
     def submit_for_analysis(artifact_name, rows):
-        """Submit artifact for LLM analysis if not already submitted."""
+        """Mark an artifact as processed. Collect-only — the agentic LLM
+        analysis was removed, so rows are simply persisted (they already live
+        in all_results) for Case-level fusion; no LLM call is made."""
         if artifact_name in analyzed_artifacts:
             return
         analyzed_artifacts.add(artifact_name)
-        if not _llm_on:
-            # collect-only: mark analyzed (keeps completion accounting correct) but
-            # never call the LLM; rows already live in all_results for fusion.
-            return
-        # In multi-client mode, rows from all clients for a given artifact
-        # are merged into a single pan-client list (analyzers don't know or
-        # care which client a row came from — that's by design). The
-        # suffix below makes that explicit so the operator doesn't think
-        # the per-client analyses are queued up serially.
-        if multi_client:
-            distinct_clients = {r.get('_client_id') for r in rows if isinstance(r, dict) and r.get('_client_id')}
-            suffix = f" — {len(rows)} rows from {len(distinct_clients) or len(active_flows)} clients"
-        else:
-            suffix = f" ({len(rows)} rows)"
-        add_log_to_run(run_id, f"[LLM] Starting analysis: {artifact_name}{suffix}", "info")
-
-        # Mirror the existing-flow path: lift SIGMA-rule / MITRE metadata off
-        # the first row so the analyzer gets `finding_meta` (drives skill
-        # selection via mitre_attack and surfaces the rule context in the
-        # prompt). Without this, the streaming path's skills fall back to
-        # artifact-name fuzzy match alone.
-        finding_meta = None
-        if rows and isinstance(rows[0], dict):
-            first = rows[0]
-            finding_meta = {
-                'rule_title': first.get('rule_title') or artifact_name,
-                'rule_id': first.get('rule_id', ''),
-                'rule_description': first.get('rule_description') or first.get('_description', ''),
-                'severity': first.get('severity') or first.get('_severity', 'unknown'),
-                'falsepositives': first.get('falsepositives', []),
-                'mitre_attack': first.get('mitre_attack', []),
-            }
-
-        future = executor.submit(
-            analyze_single_artifact, artifact_name, rows, llm_config,
-            anonymizer, finding_meta, _wf_log, run_id, master_prompt,
-        )
-        llm_futures[future] = artifact_name
 
     # Circuit-breaker state. Track consecutive LLM failures across the
     # whole streaming loop. If we hit `_circuit_threshold` failures in a
@@ -169,9 +132,7 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                     result_artifact, summary, error = future.result(timeout=1)
                     summaries[result_artifact] = summary
                     if error:
-                        from services.agentic.analyzers import explain_llm_error
-                        _ol = (llm_config.get('agentic') or {}).get('online_llm', {}) if isinstance(llm_config, dict) else {}
-                        add_log_to_run(run_id, f"[LLM] Error for {result_artifact}: {explain_llm_error(str(error), _ol.get('model', '?'), _ol.get('provider', '?'))}", "warning")
+                        add_log_to_run(run_id, f"[LLM] Error for {result_artifact}: {error}", "warning")
                         _circuit_state['consecutive_failures'] += 1
                         _circuit_state['failed_analyses'] += 1
                     else:
@@ -530,9 +491,7 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                         update_phase_func(run_id, "analyzing", progress)
 
                     if error:
-                        from services.agentic.analyzers import explain_llm_error
-                        _ol = (llm_config.get('agentic') or {}).get('online_llm', {}) if isinstance(llm_config, dict) else {}
-                        add_log_to_run(run_id, f"[LLM] Error for {result_artifact}: {explain_llm_error(str(error), _ol.get('model', '?'), _ol.get('provider', '?'))}", "warning")
+                        add_log_to_run(run_id, f"[LLM] Error for {result_artifact}: {error}", "warning")
                     else:
                         add_log_to_run(run_id, f"[LLM] Analysis complete: {result_artifact}", "success")
                 except Exception as e:
