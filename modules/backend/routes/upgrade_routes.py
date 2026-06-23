@@ -150,9 +150,14 @@ def _modules_from_track(target: str, opted_in_optional: list):
                 continue
             modules[name] = row['target']
             # Splice in modules.<name> if local config.yaml is missing
-            # it. No-op if the block already exists (operator's wins).
+            # it, forcing enabled:true — the operator explicitly opted to
+            # add this module, so it must be visible/active rather than
+            # inheriting whatever (possibly disabled) default the upstream
+            # release ships. No-op if the block already exists (operator's
+            # wins). Upstream creds (id/password/...) are preserved.
             block = upstream_modules.get(name)
             if block:
+                block = {**block, 'enabled': True}
                 wrote = set_module_block_in_config(name, block)
                 if wrote:
                     # The upstream block IS the public release default

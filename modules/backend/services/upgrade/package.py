@@ -1903,6 +1903,32 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             "the air-gap target. Operator can run "
                             "Maintenance → Refresh YARA Rulesets later if "
                             "the target gets internet.", "warning")
+            elif module == 'cve_scan':
+                # CVE Scan ships no docker image — what we bundle is the
+                # prebuilt SQLite CVE database (cves.db) so an air-gapped
+                # target gets CVE matching immediately, without reaching the
+                # upstream NVD feeds. Bundled ONLY when the operator ticks
+                # cve_scan (it's ~300 MB), keeping default packages lean.
+                src_db = "/app/data/cve_cache/cves.db"
+                if os.path.exists(src_db):
+                    cve_dir = f"{package_dir}/cve"
+                    os.makedirs(cve_dir, exist_ok=True)
+                    dest_db = f"{cve_dir}/cves.db"
+                    shutil.copy2(src_db, dest_db)
+                    size_mb = os.path.getsize(dest_db) / (1024 * 1024)
+                    manifest["contents"]["cve_db"] = {
+                        "file": "cve/cves.db",
+                        "size_mb": round(size_mb, 1),
+                    }
+                    log(f"  Bundled CVE database: cves.db ({size_mb:.0f} MB)",
+                        "success")
+                else:
+                    log(f"  WARNING: no local CVE database at {src_db} — "
+                        "cve_scan was selected but this build host has no CVE "
+                        "data to bundle. Run a CVE scan (or Maintenance → "
+                        "refresh the CVE DB) on the build host first, otherwise "
+                        "the air-gap target starts with an empty CVE corpus.",
+                        "warning")
             else:
                 log(f"  Unknown module: {module}", "warning")
 
@@ -1911,7 +1937,8 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         # Check if any modules were actually packaged
         has_content = (manifest["contents"]["images"] or
                       manifest["contents"]["binaries"] or
-                      manifest["contents"].get("include_source", False))
+                      manifest["contents"].get("include_source", False) or
+                      manifest["contents"].get("cve_db"))
         if not has_content:
             raise Exception("No modules were packaged successfully. Check your internet connection and try again.")
 

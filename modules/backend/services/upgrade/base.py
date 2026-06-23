@@ -472,6 +472,43 @@ def set_module_enabled_in_config(module_name: str, logger=None) -> bool:
         return False
 
 
+def ensure_module_enabled_in_config(module_name: str, default_block: dict = None,
+                                    logger=None) -> bool:
+    """Guarantee ``modules.<module_name>`` exists AND is enabled.
+
+    This is the "if a module was added, also enable it" rule for upgrades:
+    when an upgrade introduces a module the operator's local config.yaml
+    doesn't have yet, we must both *create* the block and mark it
+    ``enabled: true`` — otherwise the image/data ships but the sidebar +
+    runtime ``is_module_enabled()`` gate keep it hidden.
+
+    Two cases, in order:
+
+    1. **Block missing** → splice a fresh block via
+       :func:`set_module_block_in_config`, forcing ``enabled: true``
+       (operator chose to add the module, so it should be visible). When
+       ``default_block`` carries upstream credentials they're preserved,
+       but ``enabled`` is always overridden to ``true``.
+    2. **Block present** → leave the operator's block untouched except
+       flip ``enabled: false → true`` via
+       :func:`set_module_enabled_in_config`. An already-enabled block is
+       a no-op.
+
+    Returns ``True`` if config.yaml was written (block created or enabled
+    flipped), ``False`` if nothing changed (already present + enabled, or
+    the file is missing/unwritable).
+    """
+    log = logger or (lambda msg, level="info": None)
+    block = dict(default_block or {})
+    block['enabled'] = True  # added module is always enabled
+    # set_module_block_in_config is idempotent — returns False (no write)
+    # when the block already exists, so we then fall through to the
+    # enable flip for the existing-but-disabled case.
+    if set_module_block_in_config(module_name, block, logger=log):
+        return True
+    return set_module_enabled_in_config(module_name, logger=log)
+
+
 def set_module_version_in_config(module_key: str, new_version: str,
                                    logger=None) -> bool:
     """Rewrite ``versions.<module_key>`` in config.yaml.

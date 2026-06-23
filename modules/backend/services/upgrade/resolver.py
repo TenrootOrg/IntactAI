@@ -460,6 +460,13 @@ def list_upstream_modules(target_ref: str,
             # bundleable.
             continue
         out.append({'module': module_id, 'target': str(v)})
+
+    # CVE Scan is versionless (no image / no pin) but IS bundleable: ticking
+    # it in Prepare Package ships the prebuilt CVE database (cves.db) so an
+    # air-gapped target gets CVE matching without reaching the upstream
+    # feeds. Surfaced with target 'latest' since the corpus is always the
+    # newest feeds at build time.
+    out.append({'module': 'cve_scan', 'target': 'latest'})
     return out
 
 
@@ -567,6 +574,24 @@ def compute_plan(target_ref: str,
             'target': upstream_ver,
             'action': action,
         })
+
+    # CVE Scan is versionless (no docker image, no version pin) — the corpus
+    # is always the latest upstream NVD feeds, so it can't go through the
+    # version-diff loop above. Surface it as a standalone OPTIONAL row:
+    # ticking it ensures modules.cve_scan is enabled and (re)downloads +
+    # reindexes the local CVE database. Default unchecked so a routine
+    # online upgrade never silently kicks off a large feed re-download.
+    try:
+        from config import is_module_enabled as _mod_enabled
+        cve_on = bool(_mod_enabled('cve_scan'))
+    except Exception:
+        cve_on = False
+    optional.append({
+        'module': 'cve_scan',
+        'current': 'Installed' if cve_on else 'Not installed',
+        'target': 'latest',
+        'action': 'upgrade' if cve_on else 'install',
+    })
 
     return {
         'current_intact_version': intact_current,

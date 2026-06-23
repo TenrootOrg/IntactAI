@@ -27,10 +27,12 @@ from .base import (
     load_docker_image,
     verify_upgrade_package,
     get_package_info,
+    ensure_module_enabled_in_config,
 )
 
 # Module-specific upgrade functions
 from .elk import upgrade_elk, upgrade_elk_offline
+from .cve import upgrade_cve, upgrade_cve_offline
 from .timesketch import upgrade_timesketch, upgrade_timesketch_offline
 from .iris import upgrade_iris, upgrade_iris_offline
 from .velociraptor import upgrade_velociraptor, upgrade_velociraptor_offline
@@ -241,7 +243,7 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
     db_overwrite = db_overwrite or {}
 
     # Intact.AI must be first so backend code is updated before modules
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb', 'cve_scan']
     upgrade_functions = {
         'elk': upgrade_elk,
         'timesketch': upgrade_timesketch,
@@ -252,6 +254,7 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
         'o365rc': upgrade_azure,
         'volweb': upgrade_volweb,
         'intact': upgrade_intact,
+        'cve_scan': upgrade_cve,
     }
 
     results = {}
@@ -548,7 +551,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     # in the list, never got dispatched, never appeared in the summary.
     # All three copies of upgrade_order must include the same modules;
     # this one drifted. Keep them in sync.
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb', 'cve_scan']
 
     # Use online or offline functions based on mode
     if mode == 'offline':
@@ -562,6 +565,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'o365rc': lambda v, **kw: upgrade_azure_offline(package_dir, v, **kw),
             'volweb': lambda v, **kw: upgrade_volweb_offline(package_dir, v, **kw),
             'intact': lambda **kw: upgrade_intact_offline(package_dir, **kw),
+            'cve_scan': lambda v, **kw: upgrade_cve_offline(package_dir, v, **kw),
         }
         # Install-vs-upgrade dispatch (Phase-2 needs the same auto-detect
         # the main loop has — otherwise a fresh install hits Phase 1
@@ -586,6 +590,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'iris': upgrade_iris,
             'velociraptor': upgrade_velociraptor,
             'intact': upgrade_intact,
+            'cve_scan': upgrade_cve,
         }
         # Online mode doesn't currently expose install_* — operator
         # is expected to have run install.sh first. Keep as-is.
@@ -714,7 +719,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                     # volweb install. Same three-copies-drift class as the
                     # upgrade_order bug. Keep in sync with the main loop.
                     try:
-                        from .base import set_module_version_in_config, set_module_enabled_in_config
+                        from .base import set_module_version_in_config, ensure_module_enabled_in_config
                         yaml_key = 'backend' if module_name == 'intact' else module_name
                         if target_version and target_version != 'from_package':
                             try:
@@ -723,9 +728,13 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                                 log(f"  config.yaml version-writeback failed for {module_name}: {_ve}", "warning")
                         if action_word == 'INSTALLING' and module_name != 'intact':
                             try:
-                                set_module_enabled_in_config(module_name, logger=log)
+                                # ensure_* both CREATES a missing block AND
+                                # enables it — a brand-new module the target's
+                                # config.yaml never had now lands enabled:true
+                                # rather than silently no-op'ing (flip-only).
+                                ensure_module_enabled_in_config(module_name, logger=log)
                             except Exception as _ee:
-                                log(f"  config.yaml enable-flip failed for {module_name}: {_ee}", "warning")
+                                log(f"  config.yaml enable failed for {module_name}: {_ee}", "warning")
                     except Exception as _ce:
                         log(f"  config.yaml writeback raised for {module_name}: {_ce}", "warning")
 
@@ -952,6 +961,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         'o365rc': upgrade_azure_offline,
         'intact': upgrade_intact_offline,
         'volweb': upgrade_volweb_offline,
+        'cve_scan': upgrade_cve_offline,
     }
 
     # Fresh-install functions — picked by the dispatcher when the module's
@@ -983,7 +993,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     # Intact.AI must be first so backend code is updated before modules.
     # VolWeb is at the end so its install (a multi-container compose) runs
     # last when the operator is adding VolWeb to an existing install.
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb', 'cve_scan']
 
     results = {}
     total = 0
@@ -1011,6 +1021,15 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         has_frontend = os.path.exists(frontend_source) and os.listdir(frontend_source)
         if has_backend or has_frontend:
             modules_dict['intact'] = 'from_package'
+
+    # CVE Scan is versionless, so it's never in the package's `versions:`
+    # block — but if the package bundled the prebuilt CVE database, surface
+    # it as an applicable module so the dispatch enables cve_scan + installs
+    # cves.db on the target. Keyed 'latest' (no version pin). Skipped here
+    # when the package carries no CVE data (nothing to install).
+    if 'cve_scan' not in modules_dict and os.path.exists(
+            os.path.join(package_dir, 'cve', 'cves.db')):
+        modules_dict['cve_scan'] = 'latest'
 
     # Apply Uploaded Package can pass an operator-chosen subset. When
     # set, modules in the manifest NOT in this set are skipped and the
@@ -1181,7 +1200,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                     # covers both the new track-flow opt-in checkbox
                     # AND the legacy flow where an operator typed in
                     # a module they don't currently have.
-                    from .base import set_module_version_in_config, set_module_enabled_in_config
+                    from .base import set_module_version_in_config, ensure_module_enabled_in_config
                     yaml_key = 'backend' if module_name == 'intact' else module_name
                     if version and version != 'from_package':
                         try:
@@ -1190,9 +1209,12 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                             log(f"  config.yaml version-writeback failed for {module_name}: {e}", "warning")
                     if action_word == 'INSTALLING' and module_name not in ('intact',):
                         try:
-                            set_module_enabled_in_config(module_name, logger=log)
+                            # CREATE-then-enable: a module the target never
+                            # had in config.yaml is both spliced in and set
+                            # enabled:true (flip-only used to no-op on it).
+                            ensure_module_enabled_in_config(module_name, logger=log)
                         except Exception as e:
-                            log(f"  config.yaml enable-flip failed for {module_name}: {e}", "warning")
+                            log(f"  config.yaml enable failed for {module_name}: {e}", "warning")
 
                     # Recreate Timesketch user after fresh install
                     if module_name == 'timesketch' and db_overwrite.get('timesketch', False):
