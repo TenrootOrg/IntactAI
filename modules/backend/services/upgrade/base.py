@@ -543,45 +543,48 @@ def set_module_version_in_config(module_key: str, new_version: str,
         log(f"Could not read config.yaml: {e}", "warning")
         return False
 
-    # Match `  <key>: <ver>` ONLY inside the top-level `versions:` block.
-    # The trick: lookbehind for `^versions:` (or a less-indented top-
-    # level key) is awkward in Python's re without `regex` package, so
-    # we instead bound the match by snapping to the versions block
-    # explicitly. The pattern:
+    # Replace the value of `  <module_key>: ...` INSIDE the top-level
+    # `versions:` block, with a LINEAR line scan.
     #
-    #   (^versions:\s*\n(?:[ \t]+.*\n)*?)   ← header + zero or more
-    #                                        deeper-indented lines
-    #   ([ \t]+<key>:\s*['"]?)               ← the key line, prefix
-    #   [^\n'"#]+                            ← old value
-    #   (['"]?\s*(?:#.*)?$)                  ← optional quote + comment + EOL
+    # The previous implementation used a single multi-line regex with a
+    # `(?:[ \t]+.*\n)*?` segment that CATASTROPHICALLY BACKTRACKED — 100% CPU,
+    # forever — whenever <module_key> was ABSENT from the block. That is exactly
+    # what happens for intact (module_key='backend') now that the `backend`
+    # pin was dropped from config.yaml: the intact online-upgrade step called
+    # this with a key the regex could never find, the regex backtracked
+    # exponentially, pegged the GIL, and wedged the whole backend mid-upgrade.
     #
-    # The first group is reflowed verbatim; group 2 carries the
-    # original indent + quote style; group 3 preserves trailing
-    # comments. Only the value between them gets replaced.
-    pattern = re.compile(
-        rf"(^versions:\s*\n(?:[ \t]+.*\n)*?)([ \t]+{re.escape(module_key)}:\s*(['\"]?))[^\n'\"#]+((['\"]?)\s*(?:#.*)?$)",
-        re.MULTILINE,
+    # A line scan can't backtrack and fails fast on a missing key. Comments /
+    # ordering / operator-local edits stay byte-identical; only the one value
+    # gets rewritten.
+    key_line_re = re.compile(
+        rf"^(\s+{re.escape(module_key)}:\s*)(['\"]?)([^'\"#\n]*?)(['\"]?)(\s*(?:#.*)?)$"
     )
-    match = pattern.search(content)
-    if not match:
+    out_lines = []
+    in_versions = False
+    changed = False
+    for line in content.splitlines(keepends=True):
+        body = line.rstrip("\n")
+        if not changed:
+            if re.match(r"^versions:\s*(#.*)?$", body):
+                in_versions = True
+            elif in_versions and body and not body[0].isspace():
+                in_versions = False  # next top-level key — left the versions block
+            elif in_versions:
+                m = key_line_re.match(body)
+                if m:
+                    if m.group(3).strip() == new_version:
+                        return False  # already that version — keep mtime stable
+                    nl = "\n" if line.endswith("\n") else ""
+                    line = f"{m.group(1)}{m.group(2)}{new_version}{m.group(4)}{m.group(5)}{nl}"
+                    changed = True
+        out_lines.append(line)
+
+    if not changed:
         log(f"versions.{module_key} not found in config.yaml; skipping bump", "info")
         return False
 
-    # If the line already carries this exact version, do nothing — keeps
-    # the file mtime stable on no-op upgrades.
-    current_line = match.group(0)
-    current_value_match = re.search(
-        rf"{re.escape(module_key)}:\s*(['\"]?)([^'\"#\n]+)(['\"]?)",
-        current_line,
-    )
-    if current_value_match and current_value_match.group(2).strip() == new_version:
-        return False
-
-    # Group 3 / 5 are the opening / closing quote pair. Use group 3's
-    # value (the one that exists) as the quote style for the new value.
-    open_q = match.group(3) or ''
-    new_line = match.group(2) + new_version + match.group(4)
-    new_content = content[:match.start()] + match.group(1) + new_line + content[match.end():]
+    new_content = "".join(out_lines)
 
     try:
         with open(config_path, 'w') as f:
