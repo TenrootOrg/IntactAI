@@ -20,7 +20,6 @@ from typing import Any, Dict, List, Optional
 from .collectors import LOG_SOURCES, collect_aws_logs, parse_uploaded_logs
 from .sigma_runner import load_aws_rules, run_sigma_rules, validate_rules_directory
 
-from services.agentic.analyzers import analyze_artifacts, validate_llm_config
 from services.agentic.utils import (
     create_time_filter_func,
     extract_timeline_events,
@@ -36,7 +35,6 @@ from services.workflow_service import (
     update_run_status as _update_run_status,
 )
 
-from .reports import generate_aws_report, save_aws_report
 
 
 # Severity ladder shared with Azure for filtering / state-snapshot wrapping.
@@ -105,27 +103,13 @@ def _run_post_collection_phases(
     *,
     blueprint: Dict,
     aws_config: Dict,
-    enable_llm: bool,
-    llm_config: Dict,
     bp_settings: Dict,
     phase_start,
     phase_end,
     result: Dict,
 ) -> Dict:
-    """Phases 3–7. Same shape as `services.azure.pipeline._run_post_collection_phases`."""
-
-    # Pick up an operator-supplied master prompt from workflow.details
-    # if interactive validation populated one. Threaded through both
-    # the per-rule LLM analyse step and the report-synthesis step so
-    # the operator's "Bob from IT was patching, ignore those" notes
-    # take effect on this run.
-    master_prompt = None
-    try:
-        from services.file_storage_service import get_workflow as _get_wf
-        _wf = _get_wf(run_id) or {}
-        master_prompt = ((_wf.get('details') or {}).get('master_prompt') or '').strip() or None
-    except Exception:
-        master_prompt = None
+    """Phases 3–7 (collect-only): normalize, detect, IRIS import. LLM analysis +
+    reporting happen at Case Analysis (fusion)."""
 
     # Phase 3 — normalize + time filter
     try:
@@ -318,7 +302,6 @@ def run_aws_pipeline(
         # Phase 1 — validation
         phase_start("validation")
         bp_settings = blueprint.get('settings', {})
-        enable_llm = options.get('enable_llm', False)
         time_filter = options.get('time_filter', {})
 
         add_log_to_run(run_id, "=" * 50, "info")
@@ -332,7 +315,6 @@ def run_aws_pipeline(
         add_log_to_run(run_id, f"Regions: {', '.join(options.get('regions') or [aws_config.get('region', 'us-east-1')])}", "info")
         if options.get('target_principals'):
             add_log_to_run(run_id, f"Target principals: {', '.join(options['target_principals'])}", "info")
-        add_log_to_run(run_id, f"LLM Analysis: {'ON' if enable_llm else 'OFF'}", "info")
         add_log_to_run(run_id, f"Min Severity: {options.get('min_severity', 'medium')}", "info")
         # Tell the run-log which collectors are live tools vs still on
         # fixtures. Updated as each tool integration lands.
@@ -374,14 +356,6 @@ def run_aws_pipeline(
         if not rules_valid:
             add_log_to_run(run_id, f"[AWS] Warning: {rules_msg}", "warning")
 
-        llm_config = options.get('llm_config', {})
-        if enable_llm:
-            try:
-                validate_llm_config(llm_config)
-            except ValueError as e:
-                add_log_to_run(run_id, f"[AWS] LLM disabled: {e}", "warning")
-                enable_llm = False
-
         result['phases']['validation'] = {'status': 'complete'}
         _set_progress(run_id, 10)
         phase_end("validation")
@@ -419,13 +393,9 @@ def run_aws_pipeline(
         }
         if not collected_data:
             add_log_to_run(run_id, "[AWS] No data collected — pipeline stopping.", "warning")
-            # Tag the workflow row so the dashboard renders the right
-            # state (LLM-disabled badge when the operator opted out,
-            # plain "no report" otherwise). Without this the row sits
-            # at llm_enabled=None and the Interactive button keeps
-            # showing for a run that has no analyses to refine.
+            # Tag the workflow row so the dashboard renders "no report".
             result['has_report'] = False
-            result['llm_enabled'] = bool(enable_llm)
+            result['llm_enabled'] = False
             from services.workflow_service import update_run_status as _upd
             _upd(run_id, "running", details={
                 'has_report': False,
@@ -444,8 +414,6 @@ def run_aws_pipeline(
             options=options,
             blueprint=blueprint,
             aws_config=aws_config,
-            enable_llm=enable_llm,
-            llm_config=llm_config,
             bp_settings=bp_settings,
             phase_start=phase_start,
             phase_end=phase_end,
@@ -483,24 +451,14 @@ def run_aws_on_existing(
     try:
         blueprint = options.get('blueprint', {})
         bp_settings = blueprint.get('settings', {})
-        enable_llm = options.get('enable_llm', False)
-        llm_config = options.get('llm_config', {})
         aws_config = options.get('aws_config', {})
-        if enable_llm:
-            try:
-                validate_llm_config(llm_config)
-            except ValueError as e:
-                add_log_to_run(run_id, f"[AWS] LLM disabled: {e}", "warning")
-                enable_llm = False
-        add_log_to_run(run_id, f"[AWS] Offline mode — analyzing {sum(len(v) for v in uploaded_data.values())} uploaded records", "info")
+        add_log_to_run(run_id, f"[AWS] Offline mode — {sum(len(v) for v in uploaded_data.values())} uploaded records", "info")
         _run_post_collection_phases(
             run_id=run_id,
             collected_data=uploaded_data,
             options=options,
             blueprint=blueprint,
             aws_config=aws_config,
-            enable_llm=enable_llm,
-            llm_config=llm_config,
             bp_settings=bp_settings,
             phase_start=phase_start,
             phase_end=phase_end,
@@ -621,112 +579,6 @@ def _filter_aws_findings_by_severity(findings: Dict, analysis_results: Dict, min
     if dropped:
         _log(run_id, f"[RERUN] Dropped {dropped} sub-threshold record(s) below {min_severity}", "info")
     return out_findings, out_analysis
-
-
-def _run_aws_reanalyze(run_id: str, master_prompt: str, llm_config: Dict, scope: str = 'reports_only', original_filters: Dict = None) -> Dict:
-    """Re-run AWS analysis on the run's persisted collected_data, with
-    the operator's master prompt threaded through every LLM prompt.
-
-    scope='reports_only': skips the per-rule LLM analyse step and just
-    rebuilds the report from the cached `analysis_results` (or from the
-    sidecar artifact_summaries.json if present). One LLM call total.
-
-    scope='full': re-runs `analyze_artifacts` over the cached `findings`
-    first, then rebuilds the report. Multiple LLM calls (one per rule
-    that fired).
-
-    original_filters: filters captured at dispatch (min_severity,
-    time_filter, target_principals). Applied to cached findings before
-    re-analysis so the rerun reflects the same scope the operator chose.
-    None on legacy runs that predate the persistence — falls through to
-    the old un-filtered behaviour with a warning logged at the caller.
-
-    Called by the /api/aws/run/<id>/rerun route in a background thread.
-    No public endpoint — Interactive mode is the only caller."""
-    import json as _json
-    from .reports import generate_aws_report, save_aws_report
-    from services.workflow_service import update_run_status as _upd, add_log_to_run as _log
-
-    data_path = f"/app/data/aws_runs/{run_id}.json"
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(
-            f"No persisted AWS run data at {data_path} — cannot re-analyse."
-        )
-    with open(data_path, 'r') as f:
-        run_data = _json.load(f)
-
-    collected_data = run_data.get('collected_data') or {}
-    findings = run_data.get('findings') or {}
-    analysis_results = run_data.get('analysis') or {}
-    blueprint = run_data.get('blueprint') or {'name': run_data.get('blueprint_name') or 'AWS Re-run'}
-    scan_metadata = run_data.get('scan_metadata') or {}
-
-    if original_filters and original_filters.get('min_severity'):
-        tf = original_filters.get('time_filter')
-        tf_desc = f", time_filter={tf}" if tf else ''
-        _log(run_id, f"[RERUN] Re-applying original filters: min_severity={original_filters['min_severity']}{tf_desc}", "info")
-        findings, analysis_results = _filter_aws_findings_by_severity(
-            findings, analysis_results, original_filters['min_severity'], run_id
-        )
-
-    if scope == 'full':
-        if not findings:
-            raise RuntimeError("No findings on file to re-analyse.")
-        _log(run_id, f"[AWS] Re-running LLM analysis on {len(findings)} rule(s) with master prompt", "info")
-        _upd(run_id, 'running', progress=30)
-        analysis_results = analyze_artifacts(
-            run_id=run_id,
-            all_results=findings,
-            llm_config=llm_config,
-            pipeline_kind="aws",
-            master_prompt=master_prompt,
-        )
-        # Refresh the sidecars so subsequent reports-only re-runs see
-        # the new analyses.
-        try:
-            from services.agentic.reports import persist_pipeline_artifacts as _persist
-            _persist(run_id, analysis_results, findings)
-        except Exception as _pe:
-            print(f"[AWS] reanalyse: failed to refresh sidecars: {_pe}", flush=True)
-    else:
-        # reports_only: prefer the on-disk sidecar (matches what a
-        # fresh pipeline finish would have written), fall back to
-        # whatever's in the persisted run dict.
-        sidecar = f"/data/downloads/{run_id}/artifact_summaries.json"
-        if os.path.exists(sidecar):
-            try:
-                with open(sidecar) as f:
-                    analysis_results = _json.load(f) or analysis_results
-            except Exception:
-                pass
-        _log(run_id, "[AWS] Reports-only re-run — replaying cached analyses with master prompt", "info")
-
-    _upd(run_id, 'running', progress=80)
-    _log(run_id, "[AWS] Re-generating report with master prompt applied…", "info")
-    reports = generate_aws_report(
-        run_id=run_id,
-        blueprint=blueprint,
-        collected_data=collected_data,
-        findings=findings,
-        analysis_results=analysis_results,
-        llm_config=llm_config,
-        scan_metadata=scan_metadata,
-        master_prompt=master_prompt,
-    )
-    save_aws_report(run_id, reports)
-
-    # Update the persisted run blob so future re-runs see the new
-    # analyses + reports as the new baseline.
-    try:
-        run_data['analysis'] = analysis_results
-        run_data['reports'] = reports
-        with open(data_path, 'w') as f:
-            _json.dump(run_data, f, default=str)
-    except Exception as _e:
-        print(f"[AWS] reanalyse: failed to update persisted run data: {_e}", flush=True)
-
-    _upd(run_id, 'running', progress=95)
-    return reports
 
 
 def get_available_sources() -> List[Dict]:

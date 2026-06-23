@@ -28,7 +28,6 @@ from services.aws.pipeline import (
     get_aws_blueprints,
     run_aws_on_existing,
     run_aws_pipeline,
-    _run_aws_reanalyze,
 )
 from services.aws.collectors import parse_uploaded_logs
 from services.aws.sigma_runner import validate_rules_directory
