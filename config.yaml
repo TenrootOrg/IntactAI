@@ -2,9 +2,20 @@ domain: 192.168.120.10
 
 # Installation options
 options:
-  # Download forensic tools (Hayabusa, Eric Zimmerman tools, Sysinternals, etc.)
-  # Set to false for faster installation, tools can be downloaded later via Maintenance button
-  download_forensic_tools: true
+  # Download OPTIONAL forensic tools beyond the default set.
+  #
+  # The "default" tools — every tool marked `enabled: true` in
+  # data/tools_inventory.yaml — are what the shipped default blueprints
+  # (Velociraptor hunts, CVE, agentic, Timesketch/KAPE, memory) need, and
+  # they ALWAYS download (at install and via System Maintenance) and are the
+  # only tools bundled into Prepare-Package / Online-Upgrade.
+  #
+  # This flag gates the EXTRA optional tools (the ones marked
+  # `enabled: false` in tools_inventory.yaml, e.g. Trawler, TimelineExplorer,
+  # the large toolkits). Leave false to keep installs/maintenance lean and
+  # only fetch what the default blueprints require; set true to also pull the
+  # optional tools during install and System Maintenance.
+  download_tools: false
 
   # Before installing, poll each pinned module's upstream GitHub repo
   # (Velociraptor, Timesketch, IRIS, Plaso, Portainer, ELK) for a newer

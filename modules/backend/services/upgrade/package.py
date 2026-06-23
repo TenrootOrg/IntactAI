@@ -1637,7 +1637,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # apply side can place them in /data/tools/ + register
                 # them serve_locally. Reuses the same downloader the
                 # install.sh / Maintenance→Refresh-Tools path uses.
-                log("Bundling Velociraptor tools (lolrmm, Hayabusa, YARA, "
+                log("Bundling DEFAULT Velociraptor tools (lolrmm, Hayabusa, YARA, "
                     "EZ tools, etc.) for air-gap collector generation...", "info")
                 try:
                     from services.tools_download_service import (
@@ -1647,8 +1647,15 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     if tcfg:
                         pkg_tools_dir = os.path.join(package_dir, 'tools')
                         os.makedirs(pkg_tools_dir, exist_ok=True)
+                        # Bundle ONLY the default tool tier (enabled:true) — the
+                        # set the shipped default blueprints need. Optional tools
+                        # (enabled:false, gated by options.download_tools) are
+                        # never packaged; air-gap targets that want them flip the
+                        # flag + run Maintenance with internet. include_optional
+                        # is pinned False here regardless of the build host's flag.
                         tdl = download_tools_from_config(
                             pkg_tools_dir, tcfg, logger=log, run_id=run_id,
+                            include_optional=False,
                         )
                         if tdl.get('cancelled'):
                             return {"success": False, "error": "cancelled", "cancelled": True}

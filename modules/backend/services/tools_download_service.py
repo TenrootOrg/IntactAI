@@ -364,8 +364,20 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
 
 def download_tools_from_config(tools_dir: str, config: Dict,
                                 logger: Callable = None,
-                                run_id: Optional[str] = None) -> Dict:
-    """Download all enabled tools from configuration.
+                                run_id: Optional[str] = None,
+                                include_optional: bool = False) -> Dict:
+    """Download tools from configuration.
+
+    Tool tiers (see config.yaml `options.download_tools`):
+      * DEFAULT tools — `enabled: true` in tools_inventory.yaml — are what
+        the shipped default blueprints need. Always downloaded.
+      * OPTIONAL tools — `enabled: false` — are extras. Downloaded only when
+        ``include_optional`` is True (the operator set download_tools: true).
+
+    So the default (``include_optional=False``) behaviour is exactly the old
+    "download every enabled tool" — the optional tier is purely additive.
+    Prepare-Package / Online-Upgrade always call with the default
+    (defaults-only) so air-gap packages carry just the default-blueprint set.
 
     Threads run_id into per-file `download_file` calls so a Stop click
     interrupts the in-flight download immediately. Also checks the
@@ -375,6 +387,11 @@ def download_tools_from_config(tools_dir: str, config: Dict,
         if logger:
             logger(msg, level)
         print(f"[TOOLS-DL] {msg}", flush=True)
+
+    def _wanted(t):
+        # Default tool (enabled:true) → always. Optional tool (enabled:false)
+        # → only when the download_tools flag pulled in the optional tier.
+        return bool(t.get('enabled', True)) or include_optional
 
     results = {
         "downloaded": [],
@@ -399,10 +416,10 @@ def download_tools_from_config(tools_dir: str, config: Dict,
     for section in download_sections:
         tools = config.get(section, [])
         if tools:
-            enabled_count = sum(1 for t in tools if t.get('enabled', True))
-            total_tools += enabled_count
+            total_tools += sum(1 for t in tools if _wanted(t))
 
-    log(f"Found {total_tools} enabled tools to download")
+    log(f"Found {total_tools} tools to download "
+        f"(optional tier: {'included' if include_optional else 'skipped'})")
 
     # Build set of existing files ONCE to avoid repeated GitHub API calls
     existing_files = set()
@@ -414,7 +431,7 @@ def download_tools_from_config(tools_dir: str, config: Dict,
         if not tools:
             continue
 
-        enabled_tools = [t for t in tools if t.get('enabled', True)]
+        enabled_tools = [t for t in tools if _wanted(t)]
         if not enabled_tools:
             continue
 
@@ -549,8 +566,14 @@ def setup_velociraptor_connection():
         return None
 
 
-def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None) -> Dict:
-    """Configure Velociraptor inventory using inventory_add for downloaded tools."""
+def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None,
+                        include_optional: bool = False) -> Dict:
+    """Configure Velociraptor inventory using inventory_add for downloaded tools.
+
+    Mirrors the download tier split: inventory entries marked `enabled: false`
+    are optional and only registered when ``include_optional`` is set, so we
+    don't try to serve a tool we didn't download.
+    """
     def log(msg, level="info"):
         if logger:
             logger(msg, level)
@@ -571,9 +594,12 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None) -
 
     stub = api_pb2_grpc.APIStub(channel)
 
-    # Get inventory mapping from config
+    # Get inventory mapping from config. Default entries (enabled:true) always;
+    # optional entries (enabled:false) only when the download_tools flag pulled
+    # in the optional tier (so we don't register a tool we didn't download).
     inventory_tools = config.get('velociraptor_inventory', [])
-    enabled_tools = [t for t in inventory_tools if t.get('enabled', True)]
+    enabled_tools = [t for t in inventory_tools
+                     if t.get('enabled', True) or include_optional]
 
     log(f"Configuring {len(enabled_tools)} tools in Velociraptor inventory")
 
@@ -828,19 +854,37 @@ def ensure_offline_collector_binaries(downloads_dir: str, logger: Callable = Non
     return results
 
 
-def download_and_configure_tools(logger: Callable = None, run_id: Optional[str] = None) -> Dict:
+def download_and_configure_tools(logger: Callable = None, run_id: Optional[str] = None,
+                                 include_optional: Optional[bool] = None) -> Dict:
     """Main function: Download tools and configure Velociraptor inventory.
 
-    This is the function called from maintenance workflow.
+    This is the function called from the install + maintenance workflows.
     `run_id` propagates the workflow's cancel event into the per-file
     HTTP streams + the per-tool loop so Stop is honoured immediately.
+
+    `include_optional` decides whether the optional tool tier (the
+    `enabled: false` tools) is fetched in addition to the always-on default
+    tier. When None (the install + maintenance default) it's read from
+    config.yaml `options.download_tools` — so flipping that flag controls
+    every runtime download path without each caller re-reading it. The
+    default tier always downloads regardless.
     """
     def log(msg, level="info"):
         if logger:
             logger(msg, level)
         print(f"[TOOLS] {msg}", flush=True)
 
+    if include_optional is None:
+        try:
+            from config import get_installation_options
+            include_optional = bool(get_installation_options().get('download_tools', False))
+        except Exception as _e:
+            include_optional = False
+            log(f"Could not read options.download_tools ({_e}); optional tools skipped", "warning")
+
     log("Starting tool download and configuration...")
+    log(f"Optional tool tier (download_tools): "
+        f"{'INCLUDED' if include_optional else 'skipped — default tools only'}")
 
     # Ensure Offline Collector binaries are present (any version — pin
     # comes from config.yaml's `versions.velociraptor` and is enforced by
@@ -880,7 +924,8 @@ def download_and_configure_tools(logger: Callable = None, run_id: Optional[str] 
     log("PHASE 1: Downloading tools from GitHub/URLs")
     log("=" * 50)
 
-    download_results = download_tools_from_config(host_tools_dir, config, log, run_id=run_id)
+    download_results = download_tools_from_config(host_tools_dir, config, log, run_id=run_id,
+                                                  include_optional=include_optional)
     if download_results.get("cancelled"):
         return {"success": False, "cancelled": True, "download_results": download_results,
                 "summary": "Cancelled by user"}
@@ -896,7 +941,8 @@ def download_and_configure_tools(logger: Callable = None, run_id: Optional[str] 
     log("PHASE 2: Configuring Velociraptor inventory")
     log("=" * 50)
 
-    inventory_results = configure_inventory(container_tools_dir, config, log)
+    inventory_results = configure_inventory(container_tools_dir, config, log,
+                                            include_optional=include_optional)
 
     return {
         "success": True,
