@@ -119,6 +119,13 @@ data/tmp/
 modules/volweb/.env
 !modules/volweb/.env.template
 
+# Root VERSION file — release-generated, not source. The
+# `.github/workflows/stamp-version-on-release.yml` action writes the released
+# tag into it on publish, and the upgrade flow stamps it on the target. So it's
+# operator/release state, not something to track (readers fall back to
+# "unknown" when it's absent — see routes/system_routes.py).
+/VERSION
+
 # Rendered configs — the .template files stay tracked, the rendered
 # output (which holds the live API key) does not.
 modules/timesketch/config/timesketch.conf

@@ -114,7 +114,10 @@ versions:
   # release in lockstep so a SINGLE pin drives both (same pattern as
   # IRIS, where `iris: v2.4.27` drives 4 containers).
   volweb: '3.16.0'
-  backend: '1.0.0'
+  # (No `backend:` pin — the intact/backend version IS the released git tag,
+  # surfaced via the VERSION file that the release action stamps, not a config
+  # constant. The upgrade reads it with a graceful fallback when the key is
+  # absent, and re-stamps it at runtime if needed.)
 
   # ── External sidecar pins (postgres / opensearch / redis / nginx / rabbitmq) ──
   # 2026-06-14 refactor: these used to be scraped live from each
