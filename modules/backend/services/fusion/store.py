@@ -393,6 +393,48 @@ def _relabel_source(ents, rels, frm, to):
         fix(getattr(r, "sources", None))
 
 
+def _velo_hunt_contribution(rid, det, log=None):
+    """A live Velociraptor HUNT (velociraptor_hunt run). The run stores its hunt_id;
+    pull the hunt's rows across every reporting client, persist them once (so the
+    token A/B + later views are stable + fast), map via the shared mapper, and label
+    the source 'velociraptor' (no agent ran). Empty if the hunt has no rows yet —
+    rescan after clients report."""
+    hunt_id = det.get("hunt_id")
+    if not hunt_id:
+        if log:
+            log(f"hunt run {rid} has no hunt_id — cannot fuse", "warning")
+        return [], []
+    # ALWAYS pull live so an in-flight hunt shows its current partial data and each
+    # rescan picks up whatever has arrived since — no need to wait for the hunt to
+    # finish. A snapshot is persisted only as a fallback for when Velociraptor is
+    # unreachable.
+    cd = {}
+    try:
+        from services.agentic.collectors import get_existing_collection_results
+        from services.agentic.reports import persist_pipeline_artifacts
+        cd, _arts, client_info = get_existing_collection_results(
+            rid, flow_id=None, hunt_id=hunt_id, client_ids=None)
+        if cd:
+            try:
+                persist_pipeline_artifacts(rid, {}, cd)      # fallback snapshot
+            except Exception:
+                pass
+            hostnames = {str(c): (i or {}).get("hostname")
+                         for c, i in (client_info or {}).items() if c and (i or {}).get("hostname")}
+            if hostnames:
+                det["hostnames"] = hostnames
+    except Exception as e:
+        if log:
+            log(f"hunt {hunt_id}: live pull failed ({e}); using last snapshot", "warning")
+    if not cd:                                            # Velociraptor down -> last snapshot
+        cd = _agentic_collected_data(rid, det)
+    if not cd:
+        return [], []
+    ents, rels = map_agentic(cd, run_id=rid, hostnames=det.get("hostnames") or {})
+    _relabel_source(ents, rels, "agentic", "velociraptor")
+    return ents, rels
+
+
 def _contribution_for_run(run, log=None):
     atype, rid = run.get("automation_type"), run.get("run_id")
     det = run.get("details") or {}
@@ -411,6 +453,8 @@ def _contribution_for_run(run, log=None):
             if atype == "velociraptor_upload":
                 _relabel_source(ents, rels, "agentic", "velociraptor")
             return ents, rels
+        if atype == "velociraptor_hunt":
+            return _velo_hunt_contribution(rid, det, log=log)
         if atype == "cve_scan":
             return _cve_contribution(rid, det)
         if atype == "timesketch":

@@ -369,7 +369,8 @@ def run_bestpractice_hunts():
                     )
                     if hunt_id:
                         add_log_to_run(rid, f"Hunt created: {hunt_id}")
-                        update_run_status(rid, "completed", progress=100)
+                        update_run_status(rid, "completed", progress=100,
+                                          details={"hunt_id": hunt_id, "artifacts": [a]})
                         results.append({"artifact": a, "run_id": rid, "hunt_id": hunt_id, "status": "success"})
                     else:
                         # Don't log error if this row got cancelled mid-create
@@ -472,7 +473,9 @@ SELECT HuntId FROM collection
         if hunt_id:
             print(f"[HUNT] Bulk hunt created: {hunt_id} ({len(artifacts)} artifacts)", flush=True)
             add_log_to_run(run_id, f"Bulk hunt created: {hunt_id} with {len(artifacts)} artifacts")
-            update_run_status(run_id, "completed", progress=100)
+            # persist the hunt_id so Case Analysis can pull + fuse the hunt's rows
+            update_run_status(run_id, "completed", progress=100,
+                              details={"hunt_id": hunt_id, "artifacts": artifacts})
             results = [{"artifact": "all", "hunt_id": hunt_id, "status": "success"}]
         else:
             failure_reasons = []
