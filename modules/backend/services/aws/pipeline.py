@@ -246,100 +246,20 @@ def _run_post_collection_phases(
     if is_cancelled(run_id):
         return result
 
-    # Phase 5 — LLM analysis
-    analysis_results: Dict[str, str] = {}
-    if enable_llm and findings:
-        add_log_to_run(run_id, "[AWS] Phase 5: Running LLM analysis...", "info")
-        _set_progress(run_id, 75)
-        phase_start("analysis")
-        try:
-            analysis_results = analyze_artifacts(
-                run_id=run_id,
-                all_results=findings,
-                llm_config=llm_config,
-                anonymizer=options.get('anonymizer'),
-                pipeline_kind="aws",
-                master_prompt=master_prompt,
-            )
-            result['phases']['analysis'] = {
-                'status': 'complete',
-                'artifacts_analyzed': len(analysis_results),
-            }
-            add_log_to_run(run_id, f"[AWS] LLM analysis complete: {len(analysis_results)} summaries", "info")
-
-            # Persist analyse-step outputs to disk so the Interactive
-            # "Report only" re-run can replay them cheaply (one LLM
-            # call to rebuild the report, no per-rule re-analysis).
-            try:
-                from services.agentic.reports import persist_pipeline_artifacts as _persist
-                _persist(run_id, analysis_results, findings)
-            except Exception as _pe:
-                # Best-effort — chat will still work; reports-only
-                # will gate itself off if these are missing.
-                print(f"[AWS] Failed to persist pipeline artifacts: {_pe}", flush=True)
-        except Exception as e:
-            add_log_to_run(run_id, f"[AWS] LLM analysis failed: {e}", "error")
-            result['phases']['analysis'] = {'status': 'error', 'error': str(e)}
-        phase_end("analysis")
-    else:
-        skip_reason = "LLM disabled" if not enable_llm else "no findings"
-        result['phases']['analysis'] = {'status': 'skipped', 'reason': skip_reason}
-        add_log_to_run(run_id, f"[AWS] LLM analysis skipped: {skip_reason}", "warning")
-    result['analysis'] = analysis_results
+    # Phases 5-6 — per-run LLM analysis + report: REMOVED. AWS is collect-only;
+    # the LLM analysis + reporting happen at Case Analysis (fusion). The SIGMA
+    # findings feed the fused case via the cloud mapper.
+    result['analysis'] = {}
+    result['phases']['analysis'] = {'status': 'skipped', 'reason': 'collect-only (analysis at case level)'}
+    result['phases']['reporting'] = {'status': 'skipped', 'reason': 'collect-only'}
+    result['has_report'] = False
+    result['llm_enabled'] = False
+    result['report_kind'] = None
+    _update_run_status(run_id, "running", details={
+        'has_report': False, 'llm_enabled': False, 'report_kind': None})
     _set_progress(run_id, 90)
     if is_cancelled(run_id):
         return result
-
-    # Phase 6 — Report
-    llm_skipped = not (enable_llm and analysis_results)
-    if findings and not llm_skipped:
-        add_log_to_run(run_id, "[AWS] Phase 6: Generating reports...", "info")
-        _set_progress(run_id, 95)
-        phase_start("reporting")
-        try:
-            reports = generate_aws_report(
-                run_id=run_id,
-                blueprint=blueprint,
-                collected_data=collected_data,
-                findings=findings,
-                analysis_results=analysis_results,
-                llm_config=llm_config,
-                scan_metadata={
-                    'account_id': aws_config.get('account_id', ''),
-                    'region': aws_config.get('region', ''),
-                    'time_filter': options.get('time_filter', {}),
-                    'sources': list(collected_data.keys()),
-                },
-                master_prompt=master_prompt,
-            )
-            result['reports'] = reports
-            result['phases']['reporting'] = {'status': 'complete'}
-            result['has_report'] = True
-            result['llm_enabled'] = True
-            result['report_kind'] = 'full'
-            save_aws_report(run_id, reports)
-            _update_run_status(run_id, "running", details={
-                'has_report': True,
-                'llm_enabled': True,
-                'report_kind': 'full',
-            })
-            add_log_to_run(run_id, "[AWS] Reports generated successfully", "info")
-        except Exception as e:
-            add_log_to_run(run_id, f"[AWS] Report generation failed: {e}", "error")
-            result['phases']['reporting'] = {'status': 'error', 'error': str(e)}
-        phase_end("reporting")
-    else:
-        skip_reason = "no findings" if not findings else "LLM disabled — raw data is available via the Data button"
-        result['phases']['reporting'] = {'status': 'skipped', 'reason': skip_reason}
-        result['has_report'] = False
-        result['llm_enabled'] = bool(enable_llm and analysis_results)
-        result['report_kind'] = None
-        _update_run_status(run_id, "running", details={
-            'has_report': False,
-            'llm_enabled': result['llm_enabled'],
-            'report_kind': None,
-        })
-        add_log_to_run(run_id, f"[AWS] Report generation skipped: {skip_reason}", "warning")
 
     # Phase 7 — IRIS import (optional)
     iris_config = options.get('iris_config')
