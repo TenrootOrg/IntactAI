@@ -90,8 +90,8 @@ versions:
   iris: v2.4.27
   plaso: '20260512'
   portainer: 2.39.1
-  timesketch: '20260611'
-  velociraptor: '0.76.6'
+  timesketch: '20260617'
+  velociraptor: '0.77.1'
   # AWS posture scans run the Prowler image (toniblyx/prowler). Pinned to a
   # real release tag for reproducible installs + upgrades.
   prowler: '5.28.1'
