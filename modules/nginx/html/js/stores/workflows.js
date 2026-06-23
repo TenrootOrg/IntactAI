@@ -112,8 +112,9 @@ document.addEventListener('alpine:init', () => {
             const run = this.selectedRun;
             if (!run?.logs?.length) return;
 
-            const content = run.logs.map(log =>
-                `[${new Date(log.timestamp).toISOString()}] [${log.level.toUpperCase()}] ${log.message}`
+            const header = `# ${run.name || run.id} — workflow log\n# All times in UTC+00:00\n\n`;
+            const content = header + run.logs.map(log =>
+                `[${this.utcIso(log.timestamp)}] [${log.level.toUpperCase()}] ${log.message}`
             ).join('\n');
 
             const blob = new Blob([content], { type: 'text/plain' });
@@ -215,6 +216,23 @@ document.addEventListener('alpine:init', () => {
 
         formatTime(timestamp) {
             return timestamp ? new Date(timestamp).toLocaleString() : 'Unknown';
+        },
+
+        // Workflow log timestamps are stored NAIVE but in UTC (the backend runs
+        // in UTC). new Date() would treat a naive string as LOCAL and shift it,
+        // so we declare it UTC by appending 'Z' when it carries no timezone.
+        // Forces every log time to render in UTC+00:00.
+        _asUtc(ts) {
+            if (!ts) return new Date(NaN);
+            return new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(ts) ? ts : ts + 'Z');
+        },
+        utcTime(ts) {           // 'HH:MM:SSZ' for the UI log column
+            const d = this._asUtc(ts);
+            return isNaN(d) ? '' : d.toISOString().substr(11, 8) + 'Z';
+        },
+        utcIso(ts) {            // full ISO (…Z) for the downloaded log
+            const d = this._asUtc(ts);
+            return isNaN(d) ? String(ts || '') : d.toISOString();
         },
 
         downloadPackage(runId) {

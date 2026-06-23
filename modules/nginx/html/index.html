@@ -677,12 +677,13 @@
             <!-- Modal Body -->
             <div id="workflow-logs-container" class="flex-1 overflow-y-auto p-6">
                 <div class="font-mono text-sm space-y-2">
+                    <p class="text-gray-500 text-xs mb-1">All times in UTC+00:00</p>
                     <template x-if="!$store.workflows.selectedRun?.logs || $store.workflows.selectedRun?.logs.length === 0">
                         <p class="text-gray-400">No logs available yet.</p>
                     </template>
                     <template x-for="log in ($store.workflows.selectedRun?.logs || [])" :key="log.timestamp">
                         <div class="flex gap-4 py-1">
-                            <span class="text-gray-500 text-xs w-24 flex-shrink-0" x-text="new Date(log.timestamp).toLocaleTimeString()"></span>
+                            <span class="text-gray-500 text-xs w-24 flex-shrink-0" x-text="$store.workflows.utcTime(log.timestamp)"></span>
                             <span :class="$store.workflows.getLogColor(log.level) + ' flex-1'" x-html="$store.workflows.formatLogMessage(log.message)"></span>
                         </div>
                     </template>
