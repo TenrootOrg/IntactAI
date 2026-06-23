@@ -577,12 +577,36 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     ws.update_run_status(case_id, "completed",
                          details={"fusion_graph": g.pruned().to_dict(), "report_md": report,
                                   "token_ab": token_ab, "analysis": analysis,
+                                  # Record exactly which member runs this graph was
+                                  # built from, so the UI can detect when new runs
+                                  # have landed since (stale_member_runs) and show a
+                                  # "rescan suggested" hint without re-fusing on load.
+                                  "fused_run_ids": list(members),
                                   "disposition_checklist": checklist})
     log_case_event(case_id, "Fuse", "ok",
                    f"rebuilt case graph — {len(g.entities):,} entities, "
                    f"{len(g.relationships):,} links, {len(g.findings):,} findings "
                    f"across {len(members)} run(s)")
     return g
+
+
+def stale_member_runs(case_id, d=None) -> list:
+    """Completed member runs NOT reflected in the persisted graph — i.e. data
+    added since the last fuse. Returns their run_ids (empty when the graph is
+    current, or when it predates `fused_run_ids` tracking, so we never cry
+    'stale' on a legacy graph). Cheap: no graph build, just a member scan."""
+    d = d or get_case(case_id) or {}
+    fused = d.get("fused_run_ids")
+    if fused is None:
+        return []
+    fused = set(fused)
+    out = []
+    for r in ws.get_automation_runs_by_case(case_id):
+        if (r.get("automation_type") in ws.AGENTIC_TYPES
+                and r.get("status") in ("completed", "success")
+                and r.get("run_id") not in fused):
+            out.append(r.get("run_id"))
+    return out
 
 
 def watch_and_fuse(case_id, run_id, *, poll=10, timeout=10800) -> None:

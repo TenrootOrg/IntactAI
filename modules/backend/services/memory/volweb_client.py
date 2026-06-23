@@ -1170,6 +1170,11 @@ class VolWebClient:
         # row appears within `no_rules_grace_s` of the first poll, the
         # scan probably ran-but-didn't-write. Fall back to 0-hits.
         first_seen_at = time.time()
+        # Heartbeat cadence so a long scan doesn't leave the workflow log
+        # silent — an operator saw a ~4-minute gap on a 5 GB dump and thought
+        # the run had stalled. Emit one "still scanning" line per heartbeat_s.
+        heartbeat_s = 60
+        last_beat = first_seen_at
         while True:
             if cancel_check and cancel_check():
                 raise VolWebError("yarascan cancelled by operator")
@@ -1178,16 +1183,27 @@ class VolWebClient:
                 count = int(hist[0].get("count", 0))
                 self._log(f"yarascan completed: {count} hits")
                 return count, True
-            elapsed = time.time() - first_seen_at
+            now = time.time()
+            elapsed = now - first_seen_at
             if elapsed > no_rules_grace_s and elapsed < no_rules_grace_s + poll_s:
-                # Log the soft-fail intent once; keep polling until
-                # the hard timeout in case the worker is just slow.
+                # No results row yet after the grace window. The scan is most
+                # likely still running — large dumps write the row LATE (this
+                # very path produced 33 hits at ~294s), so do NOT predict
+                # "0 hits"; just note it and keep polling with heartbeats.
                 self._log(
-                    f"yarascan: no history row after {int(elapsed)}s — "
-                    f"will wait up to {timeout_s}s total but expect 0 hits",
+                    f"yarascan: no results row yet after {int(elapsed)}s — scan "
+                    f"still running, will keep waiting (up to {timeout_s}s).",
                     "info",
                 )
-            if time.time() > deadline:
+                last_beat = now
+            elif now - last_beat >= heartbeat_s:
+                self._log(
+                    f"yarascan: still scanning evidence={evidence_id}… "
+                    f"({int(elapsed)}s elapsed, budget {timeout_s}s)",
+                    "info",
+                )
+                last_beat = now
+            if now > deadline:
                 self._log(
                     f"yarascan wait hit the {timeout_s}s budget — the scan may STILL "
                     f"be running in the worker. Reporting hits=0 for now, but the "

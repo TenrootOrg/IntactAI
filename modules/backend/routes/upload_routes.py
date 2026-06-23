@@ -402,20 +402,24 @@ def handle_tus_hook():
                     update_run_status(run_id, "completed", progress=100)
 
             elif purpose == 'upgrade_package':
-                # Upload only — DOES NOT auto-apply. The operator
-                # triggers run_offline_upgrade_workflow themselves once
-                # they're ready; until then the package just sits at
-                # file_path. The "where to go next" hint that used to
-                # live here was removed 2026-06-14 — it pointed at a
-                # specific UI card name that turned out to be noise in
-                # the workflow log (operator already knows where the
-                # apply control is; the path + completed status is
-                # what matters).
+                # Upload only — DOES NOT auto-apply. The operator reviews the
+                # manifest, picks modules, then applies. To keep that apply in
+                # THE SAME workflow/log as this upload (one row, not two), we
+                # persist THIS run_id in a sidecar next to the package;
+                # /api/upgrade/offline reads it and CONTINUES this run instead
+                # of opening a second workflow. (Prepare-built packages have no
+                # sidecar, so they still get their own run.)
                 print(f"[TUS HOOK] Upgrade package uploaded (deferred apply): "
                       f"{original_filename}", flush=True)
                 if run_id:
+                    try:
+                        with open(f"{file_path}.run", "w") as _rf:
+                            _rf.write(run_id)
+                    except Exception as _e:
+                        print(f"[TUS HOOK] could not write upload run sidecar: {_e}", flush=True)
                     add_log_to_run(run_id, f"Upload complete: {original_filename}", "success")
                     add_log_to_run(run_id, f"Package path: {file_path}", "info")
+                    add_log_to_run(run_id, "Ready to apply — applying this package continues the same workflow.", "info")
                     update_run_status(run_id, "completed", progress=100)
 
             return jsonify({"ok": True})

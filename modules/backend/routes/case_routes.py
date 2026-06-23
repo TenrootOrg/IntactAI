@@ -275,6 +275,7 @@ def get_case(case_id):
     d = store.get_case(case_id)
     if not d:
         return jsonify({"error": "case not found"}), 404
+    stale = store.stale_member_runs(case_id, d)
     return jsonify({"case_id": case_id, "name": d.get("name"),
                     "time_window": d.get("time_window"),
                     "initial_access_estimate": d.get("initial_access_estimate"),
@@ -292,6 +293,11 @@ def get_case(case_id):
                     "dispositions": d.get("dispositions") or [],
                     "token_ab": d.get("token_ab") or {},
                     "counts": store.graph_counts(case_id),
+                    # New member runs that finished since the graph was last
+                    # fused — the UI shows the cached graph + a "rescan
+                    # suggested" banner instead of silently re-fusing on load.
+                    "stale_run_ids": stale,
+                    "is_stale": bool(stale),
                     "llm_enabled": _llm_enabled()})
 
 

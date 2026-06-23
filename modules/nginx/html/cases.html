@@ -307,6 +307,10 @@ function render(info,md,g){
         <div><h1 style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
           <div style="color:var(--muted);font-size:12px">${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
       </div>
+      ${info.is_stale ? `<div style="margin:8px 0;padding:8px 12px;border:1px solid #d29922;border-radius:6px;background:#2b2400;color:#e3b341;font-size:13px;display:flex;align-items:center;gap:10px;justify-content:space-between">
+        <span>⚠ New data added — ${(info.stale_run_ids||[]).length} run(s) finished since the last scan. The graph below is from the previous scan; rescan to include them.</span>
+        <button onclick="doRescan('${info.case_id}')" style="white-space:nowrap;cursor:pointer">💾 Save &amp; rescan</button>
+      </div>` : ''}
       <div style="margin:6px 0 14px">${statSpans(g)}${tokenBadge(info.token_ab)}</div>
       <div class="tabs">
         <div class="tab ${tab==='config'?'on':''}" data-tab="config" onclick="setTab('config')">⚙ Configuration</div>
