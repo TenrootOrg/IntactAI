@@ -159,8 +159,7 @@ def start_memory_run():
         return jsonify({"error": f"invalid mode: {mode!r}"}), 400
 
     # Memory is extraction-only — Volatility plugins + YARA. The LLM/reporting lives
-    # at the case level, so per-run analysis is never requested here.
-    use_llm = False
+    # at the case level (fusion), so per-run analysis is never requested here.
 
     # Optional per-run timeout overrides (seconds). Each is honored in
     # the pipeline if provided; otherwise blueprint.settings → defaults.
@@ -185,14 +184,13 @@ def start_memory_run():
         "case_name": case_name,
         "blueprint_id": bp_id or None,
         "blueprint": (blueprint or {}).get("name") if blueprint else None,
-        "use_llm": use_llm,
         "timeouts": timeouts or None,
     }
 
     run_id = create_automation_run(automation_type="memory", name=name, details=details)
     add_log_to_run(
         run_id,
-        f"memory: queued client={client_id} mode={mode} use_llm={use_llm}"
+        f"memory: queued client={client_id} mode={mode}"
         + (f" timeouts={timeouts}" if timeouts else ""),
         "info",
     )
@@ -205,7 +203,6 @@ def start_memory_run():
         mode=mode,
         case_name=case_name,
         blueprint=blueprint,
-        use_llm=use_llm,
         timeouts=timeouts or None,
     )
 
@@ -258,7 +255,6 @@ def upload_memory_dump():
 
     case_name = (request.form.get("case_name") or "").strip() or None
     client_name = (request.form.get("client_name") or "").strip() or None
-    use_llm = False        # extraction-only; the case does the LLM/reporting
 
     # Stream-save the upload to disk. Flask's `werkzeug.FileStorage`
     # already chunks at 16 KB — we never load the dump into memory.
@@ -323,7 +319,6 @@ def upload_memory_dump():
         "upload_filename": safe_name,
         "upload_bytes": bytes_written,
         "case_name": case_name,
-        "use_llm": use_llm,
     }
     run_id = create_automation_run(automation_type="memory", name=name, details=details)
     add_log_to_run(
@@ -358,7 +353,6 @@ def upload_memory_dump():
                 mode=mode,
                 case_name=case_name,
                 from_upload_path=raw_path,
-                use_llm=use_llm,
             )
         except UploadExtractError as ue:
             add_log_to_run(run_id, f"upload: extract failed — {ue}", "error")

@@ -41,8 +41,6 @@ from services.workflow_service import (
     unregister_cancel,
     update_run_status,
 )
-
-from . import analyzers
 from .acquire import acquire_memory_dump, AcquisitionError
 from .cleanup import cleanup_after_run
 from .defaults import (
@@ -295,9 +293,10 @@ def _build_extraction_only_report(
     case_name: str,
     client_name: str | None,
 ) -> str:
-    """Synthesise a minimal markdown report when ``use_llm=False``.
+    """Synthesise the minimal extraction-only markdown report for a memory run.
 
-    Stitches together the same primitives the LLM would have seen:
+    Memory is collect-only — the LLM analysis/reporting happens at Case Analysis
+    (fusion). Stitches together the raw extraction primitives:
       * plugin row counts per plugin (so the operator sees what
         landed in VolWeb)
       * yarascan match count
@@ -380,7 +379,6 @@ def run_memory_pipeline(
     master_prompt: str | None = None,
     rerun_from_evidence: int | None = None,
     from_upload_path: str | None = None,
-    use_llm: bool = True,
     timeouts: dict | None = None,
 ) -> None:
     # Resolved timeouts in seconds. Operator override (UI textbox)
@@ -727,49 +725,20 @@ def run_memory_pipeline(
                 raise RuntimeError("cancelled after yarascan")
 
         # ----------------------------------------------------------------
-        # Phase 5 — Analyze (one of three modes)
-        #
-        # ``use_llm=False`` skips the LLM call entirely and emits a
-        # minimal extraction-only report. Use cases:
-        #   * cost control (LLM call dominates the run cost)
-        #   * air-gap installs with no API key configured
-        #   * operator only wants the raw Vol3 + yarascan tables
+        # Phase 5 — Report (extraction-only). Memory is a COLLECTOR: the LLM
+        # analysis + reporting now happen at Case Analysis (fusion). We emit a
+        # minimal extraction-only report for the workflow's own download; the
+        # fused case is the reporting surface.
         # ----------------------------------------------------------------
-        if not use_llm:
-            log("pipeline: analyze — SKIPPED (use_llm=false). Emitting extraction-only report.", "info")
-            report_md = _build_extraction_only_report(
-                evidence_id=evidence_id,
-                client=client,
-                mode=mode,
-                case_name=case_name,
-                client_name=client_name,
-            )
-            cumulative += _PHASE_WEIGHTS["analyze"]
-            _bump(run_id, cumulative, f"analyze: skipped (extraction-only report, {len(report_md):,} chars)")
-        else:
-            log(f"pipeline: analyze — mode={mode}", "info")
-            llm_config = _llm_config_from_runtime()
-
-            # Append the operator's master_prompt rider to the system prompt
-            # if present — this is the rerun-with-corrections hook the
-            # interactive chat ultimately feeds into.
-            result = analyzers.run(
-                mode,
-                evidence_id=evidence_id,
-                client=client,
-                llm_config=llm_config,
-                run_id=run_id,
-                logger=log,
-            )
-            if master_prompt:
-                # Tag in the prompt suffix on top of what the LLM already saw —
-                # the simplest contract that still lands the operator's
-                # corrections without restructuring call_llm.
-                log("pipeline: analyze — operator master_prompt rider was provided", "info")
-
-            report_md = result["report_md"]
-            cumulative += _PHASE_WEIGHTS["analyze"]
-            _bump(run_id, cumulative, f"analyze: complete  ({len(report_md):,} chars)")
+        report_md = _build_extraction_only_report(
+            evidence_id=evidence_id,
+            client=client,
+            mode=mode,
+            case_name=case_name,
+            client_name=client_name,
+        )
+        cumulative += _PHASE_WEIGHTS["analyze"]
+        _bump(run_id, cumulative, f"report: extraction-only ({len(report_md):,} chars)")
 
         # ----------------------------------------------------------------
         # Persist report into the workflow row's details so the route
@@ -780,7 +749,7 @@ def run_memory_pipeline(
             progress=cumulative,
             details={
                 "report_md": report_md,
-                "report_warnings": result.get("warnings", []),
+                "report_warnings": [],
                 "mode": mode,
                 "evidence_id": evidence_id,
                 "evidence_filename": evidence_filename,

@@ -4,7 +4,7 @@
  * and persists findings for the case to analyze. No per-run LLM/report/chat.
  *
  * Wires the Memory tab to:
- *   POST /api/memory/run                — dispatch (acquire + extract, use_llm=false)
+ *   POST /api/memory/run                — dispatch (acquire + extract; collect-only)
  *   GET  /api/memory/run/<id>/status    — poll until terminal
  *   POST /api/memory/run/<id>/stop      — cancel
  *   POST /api/memory/upload             — operator-supplied dump (ingest)
@@ -158,7 +158,6 @@ document.addEventListener('alpine:init', () => {
                     client_name: c.hostname || null,
                     blueprint_id: this.blueprintId || undefined,
                     mode: this.derivedMode(),
-                    use_llm: false,
                     case_name: this.caseName || ('Memory ' + new Date().toISOString().split('T')[0]),
                 };
                 // Only send timeouts the operator actually overrode —
@@ -240,7 +239,6 @@ document.addEventListener('alpine:init', () => {
             fd.append('file', this.uploadFile);
             if (this.blueprintId) fd.append('blueprint_id', this.blueprintId);
             fd.append('mode', this.derivedMode());
-            fd.append('use_llm', 'false');
             fd.append('case_name', this.caseName || ('Memory ' + new Date().toISOString().split('T')[0]));
             // No client_name for now — the operator can rename the
             // workflow from the Workflows table if they care.
