@@ -29,13 +29,8 @@ from services.agentic.collectors import (
     cancel_collections
 )
 from services.agentic.reports import (
-    generate_final_report,
     generate_empty_report,
     save_report_content,
-    generate_multi_client_reports,
-    create_report_package,
-    persist_per_client_reports,
-    get_client_hostname,
     persist_pipeline_artifacts,
 )
 from services.agentic.utils import extract_timeline_events, filter_malicious_events
@@ -351,104 +346,10 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
             save_report_content(run_id, report_content)
             report_types = []   # skip the LLM report block below
 
-        if report_types:
-            _update_phase(run_id, "generating_report", 85)
-
-            # Multi-client: generate per-client reports + macro summary
-            if len(client_ids) > 1:
-                add_log_to_run(run_id, f"[Report] Multi-client mode: {len(client_ids)} clients", "info")
-                try:
-                    multi_reports = generate_multi_client_reports(
-                        run_id, blueprint, client_ids, collection_minutes,
-                        artifact_summaries, all_results, llm_config, anonymizer,
-                        hostnames=hostnames,
-                        generate_macro=cross_client_synthesis,
-                        master_prompt=master_prompt,
-                    )
-
-                    # Create ZIP package
-                    zip_path = create_report_package(run_id, multi_reports)
-                    add_log_to_run(run_id, f"[Report] Created ZIP package: {zip_path}", "info")
-
-                    # Also drop per-client reports on disk so the chat
-                    # assistant can read them without unpacking the ZIP.
-                    persist_per_client_reports(
-                        run_id,
-                        multi_reports.get('per_client') or {},
-                        multi_reports.get('hostnames') or {},
-                    )
-
-                    # Save macro report as the main report (for backwards
-                    # compatibility with the single-report download endpoint).
-                    # When the operator didn't opt in to cross-client synthesis,
-                    # multi_reports['macro'] is None — use a friendly pointer
-                    # to the ZIP's per-client files instead, so /api/agentic/
-                    # run/<run_id>/download?type=technical never returns empty.
-                    macro_md = multi_reports.get('macro')
-                    if not macro_md:
-                        hn_list = list((multi_reports.get('hostnames') or {}).values())
-                        macro_md = (
-                            "# Multi-client run — per-client reports only\n\n"
-                            "The organization-wide synthesis was not enabled for this run "
-                            "(checkbox 'Generate organization-wide synthesis' was off).\n\n"
-                            f"Per-host reports for the {len(multi_reports.get('per_client', {}))} "
-                            f"client(s) are inside the ZIP — download it from the workflow row.\n\n"
-                            f"Hosts: {', '.join(hn_list) if hn_list else '(unknown)'}.\n"
-                        )
-                    report_content = {'technical': macro_md}
-                    save_report_content(run_id, report_content)
-
-                    # Store multi-client info in workflow
-                    workflow = get_workflow(run_id)
-                    if workflow:
-                        if 'details' not in workflow:
-                            workflow['details'] = {}
-                        workflow['details']['multi_client'] = True
-                        workflow['details']['report_zip'] = zip_path
-                        workflow['details']['client_count'] = len(client_ids)
-                        workflow['details']['hostnames'] = multi_reports.get('hostnames', {})
-                        save_workflow(workflow)
-                except Exception as report_error:
-                    add_log_to_run(run_id, f"[Report] Error generating multi-client report: {str(report_error)}", "warning")
-                    print(f"[AGENTIC] Multi-client report error: {report_error}", flush=True)
-                    traceback.print_exc()
-                    # Create fallback report
-                    fallback_content = "# Multi-Client Analysis (Partial)\n\n"
-                    fallback_content += "**Note:** Report generation encountered an error. Raw summaries below.\n\n"
-                    for artifact, summary in artifact_summaries.items():
-                        fallback_content += f"## {artifact}\n{summary}\n\n"
-                    report_content = {'technical': fallback_content}
-                    save_report_content(run_id, report_content)
-
-            # Single client: existing behavior
-            else:
-                report_type_str = " + ".join(report_types) if len(report_types) > 1 else report_types[0]
-                add_log_to_run(run_id, f"[Report] Generating {report_type_str} report(s)...", "info")
-                try:
-                    report_content = generate_final_report(
-                        run_id, blueprint, client_ids, collection_minutes,
-                        artifact_summaries, all_results, llm_config, report_types, anonymizer,
-                        hostnames=hostnames,
-                        master_prompt=master_prompt,
-                    )
-                    # 8. Save report
-                    save_report_content(run_id, report_content)
-                except Exception as report_error:
-                    # Log error but don't fail entire pipeline - save raw data summary instead
-                    add_log_to_run(run_id, f"[Report] Error generating report: {str(report_error)}", "warning")
-                    print(f"[AGENTIC] Report generation error: {report_error}", flush=True)
-                    traceback.print_exc()
-                    # Create minimal fallback report with raw summaries
-                    fallback_content = "# Analysis Report (Partial)\n\n"
-                    fallback_content += "**Note:** Full report generation encountered an error. Raw analysis summaries below.\n\n"
-                    for artifact, summary in artifact_summaries.items():
-                        fallback_content += f"## {artifact}\n{summary}\n\n"
-                    report_content = {'technical': fallback_content}
-                    save_report_content(run_id, report_content)
-                    add_log_to_run(run_id, "[Report] Saved fallback report with raw summaries", "info")
-        else:
-            add_log_to_run(run_id, "[Report] No report types selected - skipping report generation", "info")
-            _update_phase(run_id, "skipping_report", 85)
+        # LLM report generation REMOVED — agentic is collect-only; analysis +
+        # reporting happen at Case Analysis (fusion). The collect-only report
+        # above is the only per-run output; rows are persisted below for fusion.
+        _update_phase(run_id, "report_ready", 85)
 
         # 9. Import to IRIS (if enabled)
         if cancel_event and cancel_event.is_set():
