@@ -8,6 +8,15 @@ import threading
 import time
 import os
 import sys
+import faulthandler
+import signal
+# Diagnostics: `docker exec intact_backend kill -USR1 1` dumps EVERY thread's
+# Python stack to stderr (→ docker logs) — even when the web server is wedged
+# by a GIL-holding busy loop. Lets us pinpoint a spin without py-spy/ptrace.
+try:
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
+except Exception:
+    pass
 from flask import Flask, jsonify
 from flask_cors import CORS
 
