@@ -26,7 +26,15 @@ services:
       - VELOX_PUBLIC_IP=${VELOX_PUBLIC_IP:-localhost}
       - VELOX_SERVER_URL=${VELOX_SERVER_URL:-https://localhost:8001/}
     volumes:
-      - velociraptor_data:/velociraptor:rw
+      # Host-mounted working dir (was the velociraptor_data named volume). Holds
+      # server/client/api .config.yaml — server.config.yaml carries the CA, so
+      # this MUST survive container/volume deletion or every enrolled client
+      # breaks. Host-mounting makes it durable, editable and backuppable. The
+      # binary + clients/ are repacked into here by entrypoint.sh on every boot,
+      # so only the configs are "real" state. Path is gitignored (CA key).
+      # Existing deployments are migrated from the old named volume by
+      # services/upgrade/velociraptor.migrate_velociraptor_config_to_host().
+      - ${VELO_DATA_PATH:-../../data/velociraptor}:/velociraptor:rw
       - velociraptor_datastore:/var.:rw
       - velociraptor_tmp:/tmp:rw
       - ${TOOLS_PATH:-../../data/tools}:/tools:ro  # Persistent tools directory
@@ -45,7 +53,7 @@ services:
       - intact_network
 
 volumes:
-  velociraptor_data:
+  # velociraptor_data removed — /velociraptor is now a host bind-mount (see above).
   velociraptor_datastore:
   velociraptor_tmp:
   # Shared with modules/backend + modules/volweb. The volume is

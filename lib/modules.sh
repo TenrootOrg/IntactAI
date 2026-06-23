@@ -939,6 +939,14 @@ deploy_timesketch() {
 # ============================================================================
 # Velociraptor Module
 # ============================================================================
+#
+# NOTE: /velociraptor is host-mounted at data/velociraptor/ (see the module's
+# docker-compose.yaml). A FRESH install has no legacy named volume to migrate —
+# the bind-mount starts empty and entrypoint.sh generates server.config.yaml
+# into it. The named-volume → host-mount MIGRATION (which preserves the CA for
+# older-release deployments) lives ONLY in the upgrade path
+# (services/upgrade/velociraptor.migrate_velociraptor_config_to_host), since
+# that's the only place a legacy volume exists.
 
 deploy_velociraptor() {
     local velo_enabled=$(read_config "['modules']['velociraptor']['enabled']")

@@ -18,6 +18,13 @@ data/scheduler_jobs.db
 # 100+ MB; expensive to rebuild but pure cache, not source.
 data/cve_cache/
 
+# Velociraptor working dir, host-mounted (was a named volume) so the configs
+# survive container deletion + are editable/backuppable. server.config.yaml
+# holds the CA private key — never commit. Keep the dir (.gitkeep) so the
+# bind-mount target exists in a fresh checkout.
+data/velociraptor/*
+!data/velociraptor/.gitkeep
+
 # Python cache
 __pycache__/
 *.pyc

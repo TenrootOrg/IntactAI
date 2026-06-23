@@ -15,6 +15,155 @@ from .base import (
     remove_old_module_image,
 )
 
+# ─── Velociraptor config persistence: named volume → host bind-mount ───────────
+# server/client/api .config.yaml used to live ONLY in the velociraptor_*_data
+# named volume — lost on `down -v`/prune/reinstall, and a regenerated
+# server.config.yaml means a NEW CA → every enrolled client breaks. They now
+# live host-mounted at data/velociraptor/. These helpers migrate an existing
+# (older-release) deployment's configs from the legacy volume into that host
+# dir, PRESERVING the CA, before the new bind-mount compose comes up.
+
+_VELO_CONFIGS = ("server.config.yaml", "client.config.yaml", "api.config.yaml")
+
+
+def _velo_host_dirs():
+    """(backend_readable_path, host_path_for_docker_-v) for data/velociraptor."""
+    return (os.path.join(WORKDIR, "data", "velociraptor"),
+            os.path.join(HOST_PATH, "data", "velociraptor"))
+
+
+def _valid_velo_server_config(path) -> bool:
+    """True iff `path` is a real server.config.yaml carrying a CA private key —
+    so we never enshrine an empty/corrupt file as 'migrated'."""
+    try:
+        if not (os.path.exists(path) and os.path.getsize(path) > 200):
+            return False
+        import yaml
+        d = yaml.safe_load(open(path)) or {}
+        return bool(isinstance(d, dict)
+                    and (d.get("CA") or {}).get("private_key")
+                    and d.get("Frontend"))
+    except Exception:
+        return False
+
+
+def _velo_host_ca_fingerprint():
+    """Short SHA-256 of the CA identity in the host server.config.yaml (or
+    None). Velociraptor keeps the CA PRIVATE KEY under `CA.private_key` and the
+    trusted CA cert under `Client.ca_certificate` — either uniquely identifies
+    the CA, so a changed fingerprint means a regenerated CA (clients break)."""
+    import hashlib
+    backend_dir, _ = _velo_host_dirs()
+    try:
+        import yaml
+        d = yaml.safe_load(open(os.path.join(backend_dir, "server.config.yaml"))) or {}
+        ca = ((d.get("CA") or {}).get("private_key")
+              or (d.get("Client") or {}).get("ca_certificate") or "")
+        return hashlib.sha256(ca.encode()).hexdigest()[:16] if ca else None
+    except Exception:
+        return None
+
+
+def _legacy_velo_config_volume():
+    """Name of the legacy named volume backing /velociraptor (or matching the
+    *_velociraptor_data pattern once the container is gone). None if absent."""
+    r = run_command(
+        "docker inspect intact_velociraptor "
+        "--format '{{range .Mounts}}{{.Name}}::{{.Destination}}{{println}}{{end}}'",
+        logger=None)
+    if r.get("success"):
+        for line in (r.get("stdout") or "").splitlines():
+            if line.strip().endswith("::/velociraptor"):
+                name = line.split("::")[0].strip()
+                if name:
+                    return name
+    r2 = run_command("docker volume ls --format '{{.Name}}'", logger=None)
+    for v in (r2.get("stdout") or "").splitlines():
+        v = v.strip()
+        if v.endswith("velociraptor_data") and "datastore" not in v and "tmp" not in v:
+            return v
+    return None
+
+
+def migrate_velociraptor_config_to_host(logger: Callable = None) -> Dict:
+    """One-time migration of the Velociraptor configs from the legacy named
+    volume into the host-mounted data/velociraptor/, PRESERVING the CA.
+
+    - Idempotent: no-op once a valid host server.config.yaml exists.
+    - Fresh install: no-op (no legacy volume) — entrypoint generates the config.
+    - Must run BEFORE the new bind-mount compose comes up (the legacy volume
+      survives `compose down --remove-orphans`, so we copy from it directly).
+    - On any doubt (copy fails / source invalid) it ABORTS and leaves the old
+      named volume intact as a fallback — never half-migrates.
+    """
+    log = logger or (lambda m, l="info": None)
+    backend_dir, host_dir = _velo_host_dirs()
+    os.makedirs(backend_dir, exist_ok=True)
+    dst = os.path.join(backend_dir, "server.config.yaml")
+
+    if _valid_velo_server_config(dst):
+        log("  Velociraptor config already host-mounted (CA present) — migration skipped", "info")
+        return {"migrated": False, "reason": "already-present"}
+
+    vol = _legacy_velo_config_volume()
+    if not vol:
+        log("  No legacy Velociraptor config volume — fresh install; config will be generated", "info")
+        return {"migrated": False, "reason": "fresh"}
+
+    log(f"  Migrating Velociraptor config from legacy volume '{vol}' (preserving CA)...", "info")
+    staging = os.path.join(backend_dir, ".migrating")
+    shutil.rmtree(staging, ignore_errors=True)
+    os.makedirs(staging, exist_ok=True)
+
+    files = " ".join(_VELO_CONFIGS)
+    cp = run_command(
+        f"docker run --rm -v {vol}:/src:ro -v {host_dir}:/dst alpine sh -c "
+        f"'mkdir -p /dst/.migrating; for f in {files}; do "
+        f"[ -f /src/$f ] && cp /src/$f /dst/.migrating/$f || true; done'",
+        logger=None)
+    if not cp.get("success"):
+        log(f"  Migration copy failed: {cp.get('error')}; legacy volume left untouched", "warning")
+        shutil.rmtree(staging, ignore_errors=True)
+        return {"migrated": False, "reason": "copy-failed"}
+
+    if not _valid_velo_server_config(os.path.join(staging, "server.config.yaml")):
+        log("  Migration aborted: server.config.yaml missing/invalid in the legacy "
+            "volume — NOT migrating (old named volume kept as a fallback).", "error")
+        shutil.rmtree(staging, ignore_errors=True)
+        return {"migrated": False, "reason": "invalid-source"}
+
+    moved = []
+    for f in _VELO_CONFIGS:
+        s = os.path.join(staging, f)
+        if os.path.exists(s):
+            os.replace(s, os.path.join(backend_dir, f))
+            moved.append(f)
+    try:
+        os.chmod(dst, 0o600)
+    except Exception:
+        pass
+    shutil.rmtree(staging, ignore_errors=True)
+    log(f"  Migrated {len(moved)} Velociraptor config(s) to host (CA preserved): "
+        f"{', '.join(moved)}", "success")
+    return {"migrated": True, "files": moved, "volume": vol}
+
+
+def _verify_velo_ca_unchanged(before_fp, logger: Callable = None) -> None:
+    """After compose-up, confirm the running server still uses the migrated CA
+    (the entrypoint must NOT have regenerated server.config.yaml). A changed
+    fingerprint means enrolled clients would need re-enrollment."""
+    log = logger or (lambda m, l="info": None)
+    if not before_fp:
+        return  # fresh install — no prior CA to preserve
+    time.sleep(3)  # let the entrypoint (re)write derived configs
+    after_fp = _velo_host_ca_fingerprint()
+    if after_fp and after_fp == before_fp:
+        log(f"  ✓ Velociraptor CA preserved across upgrade (fp {before_fp})", "success")
+    else:
+        log(f"  ⚠ Velociraptor CA CHANGED ({before_fp} → {after_fp})! Enrolled clients "
+            f"may need re-enrollment. The legacy named volume still holds the "
+            f"original config as a fallback.", "error")
+
 
 def _reimport_artifacts_post_upgrade(velo_data: str, logger: Callable = None,
                                        skip_exchange_imports: bool = False) -> None:
@@ -1272,11 +1421,21 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
             os.makedirs(artifact_dir, exist_ok=True)
             run_command(f"cp -a {backup_dir}/artifact_definitions/* {artifact_dir}/", logger=log)
 
+        # Migrate the configs from the legacy named volume to the host
+        # bind-mount BEFORE compose comes up — preserves the CA so enrolled
+        # clients keep working. Idempotent; no-op on fresh installs.
+        try:
+            migrate_velociraptor_config_to_host(logger=log)
+        except Exception as _e:
+            log(f"  Velociraptor config migration error (continuing): {_e}", "warning")
+        _ca_before = _velo_host_ca_fingerprint()
+
         # Start container
         log("Starting Velociraptor container...", "info")
         result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to start Velociraptor: {result['error']}")
+        _verify_velo_ca_unchanged(_ca_before, logger=log)
 
         # Health check
         log("Waiting for Velociraptor container to be up...", "info")
@@ -1566,11 +1725,21 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
             os.makedirs(artifact_dir, exist_ok=True)
             run_command(f"cp -a {backup_dir}/artifact_definitions/* {artifact_dir}/", logger=log)
 
+        # Migrate the configs from the legacy named volume to the host
+        # bind-mount BEFORE compose comes up — preserves the CA so enrolled
+        # clients keep working. Idempotent; no-op on fresh installs.
+        try:
+            migrate_velociraptor_config_to_host(logger=log)
+        except Exception as _e:
+            log(f"  Velociraptor config migration error (continuing): {_e}", "warning")
+        _ca_before = _velo_host_ca_fingerprint()
+
         # Start container
         log("Starting Velociraptor container...", "info")
         result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
             raise Exception(f"Failed to start Velociraptor: {result['error']}")
+        _verify_velo_ca_unchanged(_ca_before, logger=log)
 
         # Health check
         log("Waiting for Velociraptor container to be up...", "info")
