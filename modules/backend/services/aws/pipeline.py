@@ -230,17 +230,9 @@ def _run_post_collection_phases(
     if is_cancelled(run_id):
         return result
 
-    # Phases 5-6 — per-run LLM analysis + report: REMOVED. AWS is collect-only;
-    # the LLM analysis + reporting happen at Case Analysis (fusion). The SIGMA
-    # findings feed the fused case via the cloud mapper.
-    result['analysis'] = {}
-    result['phases']['analysis'] = {'status': 'skipped', 'reason': 'collect-only (analysis at case level)'}
-    result['phases']['reporting'] = {'status': 'skipped', 'reason': 'collect-only'}
-    result['has_report'] = False
-    result['llm_enabled'] = False
-    result['report_kind'] = None
-    _update_run_status(run_id, "running", details={
-        'has_report': False, 'llm_enabled': False, 'report_kind': None})
+    # Phases 5-6 (per-run LLM analysis + report) REMOVED. AWS is collect-only;
+    # analysis + reporting happen at Case Analysis (fusion). No per-run report/LLM
+    # state — the SIGMA findings feed the fused case via the cloud mapper.
     _set_progress(run_id, 90)
     if is_cancelled(run_id):
         return result
@@ -393,15 +385,6 @@ def run_aws_pipeline(
         }
         if not collected_data:
             add_log_to_run(run_id, "[AWS] No data collected — pipeline stopping.", "warning")
-            # Tag the workflow row so the dashboard renders "no report".
-            result['has_report'] = False
-            result['llm_enabled'] = False
-            from services.workflow_service import update_run_status as _upd
-            _upd(run_id, "running", details={
-                'has_report': False,
-                'llm_enabled': result['llm_enabled'],
-                'report_kind': None,
-            })
             result['status'] = 'completed'
             result['message'] = 'No data collected'
             phase_end("collection")

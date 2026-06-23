@@ -19,8 +19,6 @@ from .collectors import collect_azure_logs, parse_uploaded_logs, LOG_SOURCES
 from .sigma_runner import run_sigma_rules, load_azure_rules, validate_rules_directory
 
 # Reuse existing agentic components
-from services.agentic.analyzers import analyze_artifacts, validate_llm_config
-from services.azure.reports import generate_azure_report, save_azure_report
 from services.agentic.utils import (
     extract_timeline_events,
     filter_results_by_time,
@@ -77,8 +75,6 @@ def _run_post_collection_phases(
     *,
     blueprint: Dict,
     azure_config: Dict,
-    enable_llm: bool,
-    llm_config: Dict,
     bp_settings: Dict,
     phase_start,
     phase_end,
@@ -106,17 +102,6 @@ def _run_post_collection_phases(
     chain.
     """
     from services.workflow_service import is_cancelled, record_sigma_rule_tally, update_run_status
-
-    # Pick up operator-supplied master prompt from workflow.details
-    # if interactive mode populated one. Threaded into both the
-    # per-rule LLM analyse step and the report-synthesis step.
-    master_prompt = None
-    try:
-        from services.file_storage_service import get_workflow as _get_wf
-        _wf = _get_wf(run_id) or {}
-        master_prompt = ((_wf.get('details') or {}).get('master_prompt') or '').strip() or None
-    except Exception:
-        master_prompt = None
 
     # Apply timestamp normalisation right at the entry — every downstream
     # phase (SIGMA matching, LLM prompt, report writer) sees one canonical
@@ -266,114 +251,12 @@ def _run_post_collection_phases(
     if is_cancelled(run_id):
         return result
 
-    # ---- Phase 5: LLM analysis ----
-    analysis_results = {}
-    if enable_llm and findings:
-        add_log_to_run(run_id, "[AZURE] Phase 5: Running LLM analysis...", "info")
-        _set_progress(run_id, 75)
-        phase_start("analysis")
-        try:
-            analysis_results = analyze_artifacts(
-                run_id=run_id,
-                all_results=findings,
-                llm_config=llm_config,
-                anonymizer=options.get('anonymizer'),
-                pipeline_kind="azure",
-                master_prompt=master_prompt,
-            )
-            result['phases']['analysis'] = {
-                'status': 'complete',
-                'artifacts_analyzed': len(analysis_results),
-            }
-            add_log_to_run(
-                run_id,
-                f"[AZURE] LLM analysis complete: {len(analysis_results)} summaries",
-                "info",
-            )
-            # Persist analyse outputs to disk so Interactive Reports-only
-            # rerun can replay them cheaply without re-running per-rule
-            # LLM calls. Same shape as agentic/aws.
-            try:
-                from services.agentic.reports import persist_pipeline_artifacts as _persist
-                _persist(run_id, analysis_results, findings)
-            except Exception as _pe:
-                print(f"[AZURE] Failed to persist pipeline artifacts: {_pe}", flush=True)
-        except Exception as e:
-            add_log_to_run(run_id, f"[AZURE] LLM analysis failed: {e}", "error")
-            result['phases']['analysis'] = {'status': 'error', 'error': str(e)}
-        phase_end("analysis")
-    else:
-        skip_reason = "LLM disabled" if not enable_llm else "no findings"
-        result['phases']['analysis'] = {'status': 'skipped', 'reason': skip_reason}
-        add_log_to_run(run_id, f"[AZURE] LLM analysis skipped: {skip_reason}", "warning")
-
-    result['analysis'] = analysis_results
+    # ---- Phases 5-6 (per-run LLM analysis + report) REMOVED ----
+    # Azure is collect-only; analysis + reporting happen at Case Analysis (fusion).
+    # No per-run report/LLM state — the SIGMA findings feed the fused case.
     _set_progress(run_id, 90)
-
     if is_cancelled(run_id):
         return result
-
-    # ---- Phase 6: Report generation ----
-    # We only generate a "report" when LLM ran. Without an LLM pass,
-    # the only thing we could produce is a markdown rendering of the
-    # findings — which is just a worse view of the raw Data ZIP, so we
-    # skip it entirely and let the user pull the Data button. The
-    # workflow row records `llm_enabled=False` so the dashboard
-    # surfaces this state instead of offering a misleading button.
-    llm_skipped = not (enable_llm and analysis_results)
-    if findings and not llm_skipped:
-        add_log_to_run(run_id, "[AZURE] Phase 6: Generating reports...", "info")
-        _set_progress(run_id, 95)
-        phase_start("reporting")
-        try:
-            reports = generate_azure_report(
-                run_id=run_id,
-                blueprint=blueprint,
-                collected_data=collected_data,
-                findings=findings,
-                analysis_results=analysis_results,
-                llm_config=llm_config,
-                scan_metadata={
-                    'tenant_id': azure_config.get('tenant_id', ''),
-                    'time_filter': options.get('time_filter', {}),
-                    'sources': list(collected_data.keys()),
-                },
-                master_prompt=master_prompt,
-            )
-            result['reports'] = reports
-            result['phases']['reporting'] = {'status': 'complete'}
-            result['has_report'] = True
-            result['llm_enabled'] = True
-            result['report_kind'] = 'full'
-            save_azure_report(run_id, reports)
-            update_run_status(run_id, "running", details={
-                'has_report': True,
-                'llm_enabled': True,
-                'report_kind': 'full',
-            })
-            add_log_to_run(run_id, "[AZURE] Reports generated successfully", "info")
-        except Exception as e:
-            add_log_to_run(run_id, f"[AZURE] Report generation failed: {e}", "error")
-            result['phases']['reporting'] = {'status': 'error', 'error': str(e)}
-        phase_end("reporting")
-    else:
-        # No report file. Two distinct skip reasons — log the right one
-        # and tag the workflow row so the dashboard knows whether to
-        # show the "no LLM" indicator vs. just no Report button at all.
-        if not findings:
-            skip_reason = "no findings"
-        else:
-            skip_reason = "LLM disabled — raw data is available via the Data button, no synthesis to render"
-        result['phases']['reporting'] = {'status': 'skipped', 'reason': skip_reason}
-        result['has_report'] = False
-        result['llm_enabled'] = bool(enable_llm and analysis_results)
-        result['report_kind'] = None
-        update_run_status(run_id, "running", details={
-            'has_report': False,
-            'llm_enabled': result['llm_enabled'],
-            'report_kind': None,
-        })
-        add_log_to_run(run_id, f"[AZURE] Report generation skipped: {skip_reason}", "warning")
 
     # ---- Phase 7: IRIS import ----
     iris_config = options.get('iris_config')
@@ -462,7 +345,6 @@ def run_azure_pipeline(
         target_ips = options.get('target_ips', [])
         pivot_mode = options.get('pivot_mode', False)
         time_filter = options.get('time_filter', {})
-        enable_llm = options.get('enable_llm', False)
 
         add_log_to_run(run_id, "=" * 50, "info")
         add_log_to_run(run_id, f"Blueprint: {blueprint.get('name', 'Custom')}", "info")
@@ -478,7 +360,6 @@ def run_azure_pipeline(
             add_log_to_run(run_id, f"Target IPs: {', '.join(target_ips)}", "info")
         if pivot_mode:
             add_log_to_run(run_id, "Pivot Mode: ON (will discover other accounts from same IPs)", "info")
-        add_log_to_run(run_id, f"LLM Analysis: {'ON' if enable_llm else 'OFF'}", "info")
         add_log_to_run(run_id, f"Min Severity: {options.get('min_severity', 'medium')}", "info")
         add_log_to_run(run_id, "=" * 50, "info")
 
@@ -486,15 +367,6 @@ def run_azure_pipeline(
         rules_valid, rules_msg = validate_rules_directory()
         if not rules_valid:
             add_log_to_run(run_id, f"[AZURE] Warning: {rules_msg}", "warning")
-
-        # Validate LLM config if enabled
-        llm_config = options.get('llm_config', {})
-        if enable_llm:
-            try:
-                validate_llm_config(llm_config)
-            except ValueError as e:
-                add_log_to_run(run_id, f"[AZURE] LLM disabled: {e}", "warning")
-                enable_llm = False
 
         result['phases']['validation'] = {'status': 'complete'}
         _set_progress(run_id, 10)
@@ -608,18 +480,6 @@ def run_azure_pipeline(
                 add_log_to_run(run_id, "[AZURE] No data collected. Some sources were skipped - check license tier and API permissions.", "warning")
             else:
                 add_log_to_run(run_id, "[AZURE] No events found in the selected time range.", "warning")
-            # Tag the workflow row so the dashboard renders the right
-            # state (LLM-disabled badge when the operator opted out,
-            # plain "no report" otherwise). Without this the row sits
-            # at llm_enabled=None and the Interactive button keeps
-            # showing for a run that has no analyses to refine.
-            result['has_report'] = False
-            result['llm_enabled'] = bool(enable_llm)
-            _update_run_status(run_id, "running", details={
-                'has_report': False,
-                'llm_enabled': result['llm_enabled'],
-                'report_kind': None,
-            })
             result['status'] = 'completed'
             result['message'] = 'No data collected'
             phase_end("collection")
@@ -635,8 +495,6 @@ def run_azure_pipeline(
             options=options,
             blueprint=blueprint,
             azure_config=azure_config,
-            enable_llm=enable_llm,
-            llm_config=llm_config,
             bp_settings=bp_settings,
             phase_start=phase_start,
             phase_end=phase_end,
@@ -725,8 +583,6 @@ def run_azure_on_existing(
         }
         bp_settings: Dict[str, Any] = {}
         azure_config: Dict[str, Any] = {}
-        enable_llm = bool(options.get('enable_llm', False))
-        llm_config = options.get('llm_config') or {}
 
         _run_post_collection_phases(
             run_id=run_id,
@@ -734,8 +590,6 @@ def run_azure_on_existing(
             options=options,
             blueprint=blueprint,
             azure_config=azure_config,
-            enable_llm=enable_llm,
-            llm_config=llm_config,
             bp_settings=bp_settings,
             phase_start=phase_start,
             phase_end=phase_end,
@@ -908,104 +762,6 @@ def _filter_azure_findings_by_severity(findings: Dict, analysis_results: Dict, m
     if dropped:
         _log(run_id, f"[RERUN] Dropped {dropped} sub-threshold record(s) below {min_severity}", "info")
     return out_findings, out_analysis
-
-
-def _run_azure_reanalyze(run_id: str, master_prompt: str, llm_config: Dict, scope: str = 'reports_only', original_filters: Dict = None) -> Dict:
-    """Re-run Azure analysis on the run's persisted JSON, with the
-    operator's master prompt threaded through every LLM prompt.
-
-    scope='reports_only': rebuild only the report markdown from the
-    cached `analysis` dict + master prompt. One LLM call.
-
-    scope='full': re-run `analyze_artifacts` over cached findings
-    first, then rebuild the report. One LLM call per rule that fired.
-
-    original_filters: filters captured at dispatch (min_severity,
-    time_filter, target_users, target_ips). Applied to cached findings
-    before re-analysis so the rerun reflects the operator's scope.
-
-    Called by /api/azure/run/<id>/rerun in a background thread."""
-    import json as _json
-    import os as _os
-    from .reports import generate_azure_report, save_azure_report
-    from services.workflow_service import update_run_status as _upd, add_log_to_run as _log
-
-    data_path = f"/app/data/azure_runs/{run_id}.json"
-    if not _os.path.exists(data_path):
-        raise FileNotFoundError(
-            f"No persisted Azure run data at {data_path} — cannot re-analyse."
-        )
-    with open(data_path, 'r') as f:
-        run_data = _json.load(f)
-
-    collected_data = run_data.get('collected_data') or {}
-    findings = run_data.get('findings') or {}
-    analysis_results = run_data.get('analysis') or {}
-    blueprint = run_data.get('blueprint') or {'name': run_data.get('blueprint_name') or 'Azure Re-run'}
-    scan_metadata = run_data.get('scan_metadata') or {}
-
-    if original_filters and original_filters.get('min_severity'):
-        tf = original_filters.get('time_filter')
-        tf_desc = f", time_filter={tf}" if tf else ''
-        _log(run_id, f"[RERUN] Re-applying original filters: min_severity={original_filters['min_severity']}{tf_desc}", "info")
-        findings, analysis_results = _filter_azure_findings_by_severity(
-            findings, analysis_results, original_filters['min_severity'], run_id
-        )
-
-    if scope == 'full':
-        if not findings:
-            raise RuntimeError("No findings on file to re-analyse.")
-        _log(run_id, f"[AZURE] Re-running LLM analysis on {len(findings)} rule(s) with master prompt", "info")
-        _upd(run_id, 'running', progress=30)
-        analysis_results = analyze_artifacts(
-            run_id=run_id,
-            all_results=findings,
-            llm_config=llm_config,
-            pipeline_kind="azure",
-            master_prompt=master_prompt,
-        )
-        try:
-            from services.agentic.reports import persist_pipeline_artifacts as _persist
-            _persist(run_id, analysis_results, findings)
-        except Exception as _pe:
-            print(f"[AZURE] reanalyse: failed to refresh sidecars: {_pe}", flush=True)
-    else:
-        # reports_only: prefer the on-disk sidecar (if a fresh pipeline
-        # has written it), otherwise lean on whatever's in the persisted
-        # run dict.
-        sidecar = f"/data/downloads/{run_id}/artifact_summaries.json"
-        if _os.path.exists(sidecar):
-            try:
-                with open(sidecar) as f:
-                    analysis_results = _json.load(f) or analysis_results
-            except Exception:
-                pass
-        _log(run_id, "[AZURE] Reports-only re-run — replaying cached analyses with master prompt", "info")
-
-    _upd(run_id, 'running', progress=80)
-    _log(run_id, "[AZURE] Re-generating report with master prompt applied…", "info")
-    reports = generate_azure_report(
-        run_id=run_id,
-        blueprint=blueprint,
-        collected_data=collected_data,
-        findings=findings,
-        analysis_results=analysis_results,
-        llm_config=llm_config,
-        scan_metadata=scan_metadata,
-        master_prompt=master_prompt,
-    )
-    save_azure_report(run_id, reports)
-
-    try:
-        run_data['analysis'] = analysis_results
-        run_data['reports'] = reports
-        with open(data_path, 'w') as f:
-            _json.dump(run_data, f, default=str)
-    except Exception as _e:
-        print(f"[AZURE] reanalyse: failed to update persisted run data: {_e}", flush=True)
-
-    _upd(run_id, 'running', progress=95)
-    return reports
 
 
 def get_available_sources() -> List[Dict]:
