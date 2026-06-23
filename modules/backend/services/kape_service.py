@@ -242,10 +242,17 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
                 channel.close()
                 return "CANCELLED"
 
-            # Query flow state
-            vql_query = f"LET collection <= get_flow(client_id='{client_id}', flow_id='{flow_id}') SELECT * FROM collection"
+            # Query flow state — use the LIGHT flows() projection, NOT
+            # get_flow(...) SELECT *. The full flow object bloats during a
+            # multi-GB upload (e.g. a memory image) and the streaming Query can
+            # hang past its deadline, FREEZING the monitor so the run sticks at
+            # "running" forever even though the acquisition finished. A small
+            # projection returns instantly.
+            vql_query = (f"SELECT state, total_collected_rows, status "
+                         f"FROM flows(client_id='{client_id}', flow_id='{flow_id}')")
 
             request = api_pb2.VQLCollectorArgs(
+                max_wait=10, max_row=10,
                 Query=[api_pb2.VQLRequest(VQL=vql_query)]
             )
 
@@ -254,7 +261,7 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
             error_msg = None
 
             try:
-                for response in stub.Query(request, timeout=10):
+                for response in stub.Query(request, timeout=15):
                     if response.Response:
                         rows = json.loads(response.Response)
                         if rows and len(rows) > 0:
@@ -264,7 +271,18 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
                             break
 
             except grpc.RpcError as e:
-                log(f"⚠ Query error: {e.code()} - {e.details() if hasattr(e, 'details') else ''}", "warning")
+                # A broken/stuck channel must not freeze the monitor — rebuild it
+                # so the next poll can succeed instead of blocking indefinitely.
+                log(f"⚠ Query error: {e.code()} - "
+                    f"{e.details() if hasattr(e, 'details') else ''}; rebuilding gRPC channel",
+                    "warning")
+                try:
+                    channel.close()
+                except Exception:
+                    pass
+                channel = setup_velociraptor_connection()
+                if channel:
+                    stub = api_pb2_grpc.APIStub(channel)
 
             # Log progress every 5 checks or when rows change significantly
             if check_count % 5 == 1 or total_rows != last_rows:
