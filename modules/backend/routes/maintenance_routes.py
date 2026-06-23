@@ -238,65 +238,71 @@ def run_system_maintenance():
                 add_log_to_run(run_id, "TASK 3.5/4: Refresh CVE Scan databases (CPE dict + local CVE mirror)", "info")
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
 
-                # CVE Scan is a core capability — its CPE dictionary +
-                # local CVE mirror always refresh during maintenance,
-                # regardless of any config flag. cve_scan has no
-                # enabled toggle in config.yaml (always installed,
-                # always available).
-
-                # --- 3.5a: CPE dictionary ---
-                try:
-                    from services.cve_scan.cpe_dict import refresh_dictionary_from_upstream
-                    cpe_dict_result = refresh_dictionary_from_upstream(
-                        logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
-                    )
-                    if cpe_dict_result.get("ok"):
-                        add_log_to_run(
-                            run_id,
-                            f"CPE dictionary refresh: {cpe_dict_result.get('message')}",
-                            "success",
-                        )
-                    else:
-                        add_log_to_run(
-                            run_id,
-                            f"CPE dictionary refresh had issues: {cpe_dict_result.get('message')}",
-                            "warning",
-                        )
-                except Exception as e:
-                    add_log_to_run(run_id, f"CPE dictionary refresh error: {str(e)}", "warning")
-                    import traceback
-                    traceback.print_exc()
-
-                # --- 3.5b: local CVE mirror ---
-                try:
-                    from services.cve_scan import local_db as _local_db
+                # Gate on modules.cve_scan.enabled — a DISABLED CVE module must not
+                # download/refresh the CVE feed during maintenance (same rule as
+                # every other module: disabled => no data, no pages).
+                from config import is_module_enabled as _is_mod_enabled
+                if not _is_mod_enabled('cve_scan'):
                     add_log_to_run(
                         run_id,
-                        "[LOCAL_DB] Refreshing local CVE mirror "
-                        "(initial run ~10-30 min, incremental ~minutes)…",
+                        "CVE Scan disabled (modules.cve_scan.enabled=false) — "
+                        "skipping CVE database refresh/download.",
                         "info",
                     )
-                    bulk_result = _local_db.bulk_load(
-                        logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
-                    )
-                    if bulk_result.get("ok"):
+                else:
+                    # --- 3.5a: CPE dictionary ---
+                    try:
+                        from services.cve_scan.cpe_dict import refresh_dictionary_from_upstream
+                        cpe_dict_result = refresh_dictionary_from_upstream(
+                            logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
+                        )
+                        if cpe_dict_result.get("ok"):
+                            add_log_to_run(
+                                run_id,
+                                f"CPE dictionary refresh: {cpe_dict_result.get('message')}",
+                                "success",
+                            )
+                        else:
+                            add_log_to_run(
+                                run_id,
+                                f"CPE dictionary refresh had issues: {cpe_dict_result.get('message')}",
+                                "warning",
+                            )
+                    except Exception as e:
+                        add_log_to_run(run_id, f"CPE dictionary refresh error: {str(e)}", "warning")
+                        import traceback
+                        traceback.print_exc()
+
+                    # --- 3.5b: local CVE mirror ---
+                    try:
+                        from services.cve_scan import local_db as _local_db
                         add_log_to_run(
                             run_id,
-                            f"Local CVE mirror: {bulk_result.get('cve_count')} CVEs indexed, "
-                            f"{bulk_result.get('db_size_mb', 0):.0f} MB on disk, "
-                            f"{bulk_result.get('elapsed_seconds', 0):.0f}s elapsed",
-                            "success",
+                            "[LOCAL_DB] Refreshing local CVE mirror "
+                            "(initial run ~10-30 min, incremental ~minutes)…",
+                            "info",
                         )
-                    else:
-                        add_log_to_run(
-                            run_id,
-                            "Local CVE mirror refresh had issues — scans will fall back to REST",
-                            "warning",
+                        bulk_result = _local_db.bulk_load(
+                            logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
                         )
-                except Exception as e:
-                    add_log_to_run(run_id, f"Local CVE mirror refresh error: {str(e)}", "warning")
-                    import traceback
-                    traceback.print_exc()
+                        if bulk_result.get("ok"):
+                            add_log_to_run(
+                                run_id,
+                                f"Local CVE mirror: {bulk_result.get('cve_count')} CVEs indexed, "
+                                f"{bulk_result.get('db_size_mb', 0):.0f} MB on disk, "
+                                f"{bulk_result.get('elapsed_seconds', 0):.0f}s elapsed",
+                                "success",
+                            )
+                        else:
+                            add_log_to_run(
+                                run_id,
+                                "Local CVE mirror refresh had issues — scans will fall back to REST",
+                                "warning",
+                            )
+                    except Exception as e:
+                        add_log_to_run(run_id, f"Local CVE mirror refresh error: {str(e)}", "warning")
+                        import traceback
+                        traceback.print_exc()
 
                 update_run_status(run_id, "running", progress=70)
 

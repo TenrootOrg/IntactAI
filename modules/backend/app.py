@@ -224,38 +224,46 @@ def run_startup_initialization():
     # to know about it. Subsequent restarts skip the download (DB is
     # already populated; operator uses the Maintenance button for
     # incremental refresh).
-    try:
-        print("[STARTUP] Bootstrapping CVE Scan local DB...", flush=True)
-        from services.cve_scan import local_db as _cve_local_db
-        _cve_local_db.init_db()
-        if _cve_local_db.is_populated():
-            stats = _cve_local_db.db_stats()
-            print(
-                f"[STARTUP] ✓ CVE Scan local DB already populated "
-                f"({stats['cve_count']} CVEs, {stats['db_size_mb']:.0f} MB)",
-                flush=True,
-            )
-            initialization_status["cve_local_db"] = True
-        else:
-            print(
-                "[STARTUP] CVE Scan local DB empty — kicking off bulk_load "
-                "in background (~10-30 min). Scans before it completes "
-                "will fall back to NVD REST.",
-                flush=True,
-            )
+    # Gate on modules.cve_scan.enabled — a disabled CVE module must NOT download
+    # the CVE feed (same as every other module: disabled => no data, no pages).
+    from config import is_module_enabled as _is_mod_enabled
+    if not _is_mod_enabled('cve_scan'):
+        print("[STARTUP] CVE Scan disabled (modules.cve_scan.enabled=false) — "
+              "skipping CVE DB bootstrap/download.", flush=True)
+        initialization_status["cve_local_db"] = "disabled"
+    else:
+        try:
+            print("[STARTUP] Bootstrapping CVE Scan local DB...", flush=True)
+            from services.cve_scan import local_db as _cve_local_db
+            _cve_local_db.init_db()
+            if _cve_local_db.is_populated():
+                stats = _cve_local_db.db_stats()
+                print(
+                    f"[STARTUP] ✓ CVE Scan local DB already populated "
+                    f"({stats['cve_count']} CVEs, {stats['db_size_mb']:.0f} MB)",
+                    flush=True,
+                )
+                initialization_status["cve_local_db"] = True
+            else:
+                print(
+                    "[STARTUP] CVE Scan local DB empty — kicking off bulk_load "
+                    "in background (~10-30 min). Scans before it completes "
+                    "will fall back to NVD REST.",
+                    flush=True,
+                )
 
-            def _bg_bulk_load():
-                try:
-                    res = _cve_local_db.bulk_load(logger=lambda m, lvl="info": print(f"[CVE-DB] {m}", flush=True))
-                    print(f"[CVE-DB] Bootstrap complete: {res.get('cve_count')} CVEs indexed in {res.get('elapsed_seconds', 0):.0f}s", flush=True)
-                except Exception as e:
-                    print(f"[CVE-DB] Bootstrap failed (REST fallback still works): {e}", flush=True)
+                def _bg_bulk_load():
+                    try:
+                        res = _cve_local_db.bulk_load(logger=lambda m, lvl="info": print(f"[CVE-DB] {m}", flush=True))
+                        print(f"[CVE-DB] Bootstrap complete: {res.get('cve_count')} CVEs indexed in {res.get('elapsed_seconds', 0):.0f}s", flush=True)
+                    except Exception as e:
+                        print(f"[CVE-DB] Bootstrap failed (REST fallback still works): {e}", flush=True)
 
-            threading.Thread(target=_bg_bulk_load, daemon=True, name="cve-local-db-bootstrap").start()
-            initialization_status["cve_local_db"] = "loading"
-    except Exception as e:
-        print(f"[STARTUP] CVE Scan local DB bootstrap error: {e}", flush=True)
-        initialization_status["cve_local_db"] = False
+                threading.Thread(target=_bg_bulk_load, daemon=True, name="cve-local-db-bootstrap").start()
+                initialization_status["cve_local_db"] = "loading"
+        except Exception as e:
+            print(f"[STARTUP] CVE Scan local DB bootstrap error: {e}", flush=True)
+            initialization_status["cve_local_db"] = False
 
     initialization_status["in_progress"] = False
     print("[STARTUP] Background initialization complete", flush=True)
