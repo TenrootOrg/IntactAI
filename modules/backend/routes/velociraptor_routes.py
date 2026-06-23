@@ -121,6 +121,12 @@ def run_timesketch_collection():
         add_log_to_run(run_id, f"Starting TimeSketch automation for {client_name}", "info")
         add_log_to_run(run_id, f"KAPE Target: {kape_target}", "info")
         add_log_to_run(run_id, f"Collection timeout: {timeout_seconds}s, CPU limit: {cpu_limit}%", "info")
+        # Air-gap preflight: KAPE triage needs the KAPE tool served locally.
+        try:
+            from services.velociraptor_service import hunt_tool_preflight
+            hunt_tool_preflight(lambda m, lvl="info": add_log_to_run(run_id, m, lvl))
+        except Exception:
+            pass
         update_run_status(run_id, "running", progress=5)
 
         # Register cancel event so Stop can cancel the velociraptor
@@ -398,6 +404,14 @@ def run_bestpractice_hunts():
         )
         add_log_to_run(run_id, f"Starting hunt with {len(artifacts)} artifacts")
         add_log_to_run(run_id, f"Settings: Expire={expire_minutes}m, Timeout={timeout_seconds}s, CPU={cpu_limit}%")
+        # Air-gap preflight: warn clearly if endpoint tools aren't served
+        # locally and there's no internet (those artifacts would otherwise fail
+        # on the endpoint with a cryptic DNS error).
+        try:
+            from services.velociraptor_service import hunt_tool_preflight
+            hunt_tool_preflight(lambda m, lvl="info": add_log_to_run(run_id, m, lvl))
+        except Exception:
+            pass
 
         channel = setup_velociraptor_connection()
         if not channel:

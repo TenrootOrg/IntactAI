@@ -207,6 +207,10 @@ def start_scan():
     import threading
     def run_scan():
         try:
+            from services.connectivity import require_internet
+            if not require_internet(run_id, "Azure scan"):
+                return
+
             # Validate module
             if not is_module_enabled('o365rc'):
                 add_log_to_run(run_id, "Azure module is not enabled. Enable it in config.yaml and rebuild.", "error")

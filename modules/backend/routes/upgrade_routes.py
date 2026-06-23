@@ -870,6 +870,9 @@ def prepare_upgrade_package():
         def run_prepare():
             try:
                 from services.upgrade.package import prepare_upgrade_package as do_prepare
+                from services.connectivity import require_internet
+                if not require_internet(run_id, "Prepare upgrade package"):
+                    return
 
                 def logger(msg, level="info"):
                     add_log_to_run(run_id, msg, level)
@@ -1036,6 +1039,9 @@ def start_online_upgrade():
         def run_online():
             try:
                 from services.upgrade import run_online_upgrade_workflow
+                from services.connectivity import require_internet
+                if not require_internet(run_id, "Online upgrade"):
+                    return
 
                 def logger(msg, level="info"):
                     add_log_to_run(run_id, msg, level)

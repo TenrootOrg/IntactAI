@@ -275,6 +275,19 @@ def set_rate_limit(have_key: bool):
     _RATE_LIMIT = 50 if have_key else 5
 
 
+# When True, every NVD REST call short-circuits to "no result" so the scan
+# relies purely on the bundled local CVE database (cves.db). The pipeline sets
+# this when there's no internet — degrade to the offline dictionary instead of
+# stalling 90s/page on an unreachable NVD.
+_LOCAL_ONLY = False
+
+
+def set_local_only(flag: bool):
+    """Force local-CVE-database-only mode (skip all NVD REST calls)."""
+    global _LOCAL_ONLY
+    _LOCAL_ONLY = bool(flag)
+
+
 def _acquire_rate_slot():
     while True:
         with _rate_lock:
@@ -322,6 +335,10 @@ def _nvd_headers():
 
 
 def nvd_query_page(keyword, start_index=0, use_cpe=False, log: Optional[Callable] = None):
+    # Offline / local-only: don't even attempt the network — the local CVE DB
+    # is the source of truth in this mode.
+    if _LOCAL_ONLY:
+        return None
     if use_cpe:
         params = {
             "virtualMatchString": keyword,

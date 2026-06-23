@@ -142,9 +142,38 @@ def run_cve_scan(run_id: str, input_csv_paths: List[Path], name: Optional[str] =
         # or not (5/30s).
         have_key = bool(_nvd._api_key())
         _nvd.set_rate_limit(have_key)
-        if not have_key:
-            log("[CVE] No NVD API key configured — running at the anonymous 5 req / 30s rate. "
-                "Add a key in Settings to speed this up to 50 req / 30s.", "warning")
+
+        # NVD needs internet (and ideally a key). When either is missing we do
+        # NOT error — we fall back to the bundled local CVE database (cves.db)
+        # and say so. Offline => skip NVD REST entirely (no 90s/page stalls).
+        from services.connectivity import has_internet
+        from . import local_db as _local_db
+        online = has_internet()
+        try:
+            local_ready = _local_db.is_populated()
+        except Exception:
+            local_ready = False
+
+        _nvd.set_local_only(False)
+        if not online:
+            if local_ready:
+                _nvd.set_local_only(True)
+                log("[CVE] No internet connection — using the bundled local CVE "
+                    "database (cves.db). No error; results come from the offline "
+                    "dictionary.", "info")
+            else:
+                log("[CVE] No internet connection and the local CVE database "
+                    "(cves.db) is not populated — CVE matching will be limited. "
+                    "Seed cves.db via an install/upgrade that bundles it.", "warning")
+        elif not have_key:
+            if local_ready:
+                log("[CVE] No NVD API key — using the local CVE database (cves.db) "
+                    "as the primary source; anonymous NVD (5 req/30s) fills gaps.",
+                    "info")
+            else:
+                log("[CVE] No NVD API key configured — running at the anonymous "
+                    "5 req / 30s rate. Add a key in Settings to speed this up to "
+                    "50 req / 30s.", "warning")
 
         # Filter to only paths that actually exist (side project tolerates missing).
         existing = [Path(p) for p in input_csv_paths if Path(p).exists()]

@@ -403,6 +403,52 @@ def _seed_yara_from_bundle(package_dir: str, logger: Callable, run_id: str | Non
     return {"success": True, "imported": total, "rulesets": result.get('rulesets', [])}
 
 
+# Curated YARA rulesets seeded into VolWeb. Online upgrade imports them
+# straight from GitHub (it has internet); the offline paths seed the same rules
+# from bundled zips via _seed_yara_from_bundle. Kept in lockstep with
+# routes/maintenance_routes._YARA_RULESETS.
+_GITHUB_YARA_RULESETS = [
+    {"name": "Neo23x0 signature-base",
+     "github_url": "https://github.com/Neo23x0/signature-base",
+     "description": "Florian Roth's curated YARA rules"},
+    {"name": "Elastic protections",
+     "github_url": "https://github.com/elastic/protections-artifacts",
+     "description": "Elastic security YARA detection rules"},
+]
+
+
+def _seed_yara_from_github(logger: Callable, run_id: str | None = None) -> Dict:
+    """Import the curated YARA rulesets into VolWeb directly from GitHub.
+
+    Online counterpart of _seed_yara_from_bundle (which seeds from package
+    zips). Best-effort: a YARA import failure must never fail the upgrade — the
+    operator can always re-run Settings → Maintenance → Refresh YARA Rulesets.
+    """
+    def log(m, level="info"):
+        if logger:
+            try:
+                logger(m, level)
+            except Exception:
+                pass
+
+    try:
+        from services.memory.volweb_client import VolWebClient
+        client = VolWebClient(logger=lambda m, lvl="info": log(m, lvl))
+    except Exception as e:
+        log(f"YARA seed skipped: VolWeb client unavailable ({e})", "warning")
+        return {"success": False, "error": str(e)}
+
+    imported = 0
+    for rs in _GITHUB_YARA_RULESETS:
+        try:
+            client._post_json("/api/yararulesets/import/github/", rs, timeout=600)
+            log(f"YARA seed: imported {rs['name']} from GitHub", "info")
+            imported += 1
+        except Exception as e:
+            log(f"YARA seed: {rs['name']} failed: {e}", "warning")
+    return {"success": imported > 0, "imported": imported}
+
+
 def upgrade_volweb(version: str, logger: Callable = None, run_id: str | None = None) -> Dict:
     """Online upgrade — pull the new backend + frontend images, bump
     both pins, recreate containers.
@@ -446,6 +492,14 @@ def upgrade_volweb(version: str, logger: Callable = None, run_id: str | None = N
     up = _compose_up(log, run_id=run_id)
     if not up.get("success"):
         return {"success": False, "error": f"compose up failed: {up.get('error')}"}
+
+    # Seed YARA rulesets from GitHub — online parity with the offline bundle
+    # seeding, so rules are present after an upgrade without the operator
+    # having to run Maintenance → Refresh YARA. Best-effort.
+    try:
+        _seed_yara_from_github(logger=log, run_id=run_id)
+    except Exception as e:
+        log(f"YARA ruleset seeding skipped: {e}", "warning")
 
     log(f"VolWeb upgrade completed: {cur} → {version}", "success")
     remove_old_module_image('volweb', cur, version, logger=log)

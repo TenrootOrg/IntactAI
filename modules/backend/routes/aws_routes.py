@@ -202,6 +202,10 @@ def start_scan():
 
     def run_scan():
         try:
+            from services.connectivity import require_internet
+            if not require_internet(run_id, "AWS scan"):
+                return
+
             if not is_module_enabled('prowler'):
                 # AWS module isn't gated by a config.yaml flag the way Azure
                 # is; treat it as always-on for the scaffold. Keep the check

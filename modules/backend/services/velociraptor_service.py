@@ -933,6 +933,71 @@ def cancel_flow(client_id: str, flow_id: str, logger=None) -> bool:
             pass
 
 
+def tools_not_served_locally():
+    """Return names of Velociraptor tools that have an upstream download URL but
+    are NOT served locally.
+
+    When a hunt runs an artifact needing one of these, Velociraptor has the
+    ENDPOINT fetch the tool from that URL at collection time — which fails on an
+    air-gapped network with a confusing DNS/timeout error. Best-effort; returns
+    [] on any error.
+    """
+    channel = setup_velociraptor_connection()
+    if not channel:
+        return []
+    try:
+        stub = api_pb2_grpc.APIStub(channel)
+        vql = ("SELECT name, url, serve_locally FROM inventory() "
+               "WHERE NOT serve_locally AND url =~ 'https?://'")
+        req = api_pb2.VQLCollectorArgs(
+            max_wait=20, max_row=500,
+            Query=[api_pb2.VQLRequest(VQL=vql)],
+        )
+        names = []
+        for resp in stub.Query(req, timeout=30):
+            if resp.Response:
+                try:
+                    for row in json.loads(resp.Response):
+                        n = row.get("name")
+                        if n:
+                            names.append(n)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+        return names
+    except Exception:
+        return []
+    finally:
+        try:
+            channel.close()
+        except Exception:
+            pass
+
+
+def hunt_tool_preflight(logger):
+    """Clear pre-hunt error handling for the air-gap tool case.
+
+    If endpoint tools aren't served locally AND there's no internet, warn —
+    naming the at-risk tools — so a failed collection reads as "tool X not
+    served locally / needs internet" instead of a cryptic endpoint DNS error.
+    It's a warning, not a hard stop: the hunt may not use any of those tools.
+    """
+    try:
+        from services.connectivity import has_internet
+        missing = tools_not_served_locally()
+        if not missing or has_internet():
+            return
+        shown = ", ".join(missing[:8]) + ("…" if len(missing) > 8 else "")
+        logger(
+            f"⚠ {len(missing)} tool(s) are not served locally and there is no "
+            f"internet ({shown}). Any artifact that needs one of these will fail "
+            f"on the endpoint. Fix: run Settings → Maintenance → Refresh Tool "
+            f"Inventory while online, then re-run.",
+            "warning",
+        )
+    except Exception:
+        pass
+
+
 def purge_velociraptor_data(logger=None, delete_flows=True,
                             delete_monitoring=True, delete_hunts=True):
     """Safely remove COLLECTED DATA from the Velociraptor server while keeping
