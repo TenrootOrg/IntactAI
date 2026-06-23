@@ -58,36 +58,19 @@ def run_system_maintenance():
         def run_maintenance():
             try:
                 # =========================================================
-                # Task 1: Import Velociraptor artifacts (20%)
+                # Velociraptor artifacts: NO import step in maintenance.
+                # The curated artifact bundle (ArtifactExchange / DetectRaptor
+                # / Sigma / Rapid7 / TenRoot, ~400 definitions) is baked into
+                # the velociraptor image and loaded on boot via --definitions
+                # (see modules/velociraptor/{Dockerfile,entrypoint.sh,
+                # bundled_artifacts/}). Event monitoring + operator custom
+                # artifacts are (re)ensured on backend startup. So there is
+                # nothing to import here — this used to be the slow step.
                 # =========================================================
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                add_log_to_run(run_id, "TASK 1/3: Velociraptor Artifact Import", "info")
+                add_log_to_run(run_id, "Velociraptor artifacts: loaded from the image on boot "
+                                       "(--definitions) — no maintenance import needed.", "info")
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                update_run_status(run_id, "running", progress=10)
-
-                if not container_running('intact_velociraptor'):
-                    add_log_to_run(run_id, "Artifact import skipped: intact_velociraptor is not running", "info")
-                else:
-                    add_log_to_run(run_id, "Importing artifacts (Exchange, DetectRaptor, TenRoot custom)...", "info")
-                    import_results = initialize_velociraptor_artifacts()
-
-                    if import_results:
-                        success_count = len(import_results.get('success', []))
-                        failed_count = len(import_results.get('failed', []))
-
-                        for artifact in import_results.get('success', []):
-                            add_log_to_run(run_id, f"  ✓ {artifact}", "success")
-
-                        for artifact in import_results.get('failed', []):
-                            add_log_to_run(run_id, f"  ✗ {artifact}", "warning")
-
-                        if success_count > 0:
-                            add_log_to_run(run_id, f"Artifact import complete: {success_count} succeeded, {failed_count} failed", "success")
-                        else:
-                            add_log_to_run(run_id, "No new artifacts to import (already up to date)", "info")
-                    else:
-                        add_log_to_run(run_id, "Artifact import returned no results", "warning")
-
                 update_run_status(run_id, "running", progress=25)
 
                 # =========================================================

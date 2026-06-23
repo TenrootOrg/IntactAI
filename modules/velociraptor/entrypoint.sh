@@ -165,6 +165,16 @@ fi
 echo "Client repacking completed"
 find "$CLIENT_DIR" -type f -exec chmod 755 {} \;
 
-# Start Velociraptor
+# Start Velociraptor.
+#
+# --definitions /opt/velociraptor_artifacts loads the curated artifact
+# bundle (ArtifactExchange / DetectRaptor / Sigma / Rapid7 / TenRoot —
+# baked into the image, see Dockerfile) directly from disk at startup. This
+# replaces the old per-artifact API import (artifact_set over gRPC, one
+# round-trip + full repository recompile each, ~O(N^2)) which took ~37 min
+# on a fresh air-gap install with a large artifact set. The directory load
+# is a single pass (~0.5s for 400 artifacts). Definitions loaded this way
+# are read-only/built-in and refresh automatically when the image is
+# rebuilt with an updated bundle.
 echo "Starting Velociraptor frontend..."
-exec ./velociraptor --config server.config.yaml frontend -v
+exec ./velociraptor --config server.config.yaml --definitions /opt/velociraptor_artifacts frontend -v

@@ -24,8 +24,15 @@ CUSTOM_ARTIFACTS_DIR = "/app/data/custom_artifacts"
 # Server artifacts to run on startup (import artifacts)
 # Step 1: Import ArtifactExchange - makes the DetectRaptor import artifact available
 # Step 2: Import DetectRaptor hunting artifacts (requires ArtifactExchange first)
+# The upstream import artifacts. Velociraptor 0.77 renamed
+# Server.Import.ArtifactExchange -> Server.Import.ArtifactBundle (old name
+# kept as an alias). These are no longer RUN at runtime — the artifacts they
+# import are baked into the image and loaded via --definitions — this list is
+# now only the "skipped (baked)" record. scripts/regenerate_artifact_bundle.py
+# is what actually runs them (and picks ArtifactBundle vs ArtifactExchange by
+# what the running server defines) when refreshing the committed bundle.
 STARTUP_SERVER_ARTIFACTS = [
-    "Server.Import.ArtifactExchange",
+    "Server.Import.ArtifactBundle",  # was Server.Import.ArtifactExchange (<0.77)
     "Server.Import.DetectRaptor",
     "Server.Import.Extras",
 ]
@@ -185,28 +192,30 @@ def start_server_event_artifact(artifact_name, logger_func=None):
 
 
 def initialize_velociraptor_artifacts(logger_func=None, skip_exchange_imports=False):
-    """Initialize Velociraptor by running server artifacts in sequence
+    """Set up the runtime-only Velociraptor artifact state.
 
-    This function is called on backend startup to ensure all required
-    artifacts are available in Velociraptor:
-    1. Server.Import.ArtifactExchange - imports exchange artifacts
-    2. Server.Import.DetectRaptor - imports DetectRaptor artifacts
-    3. Start server event artifacts (Custom.Elastic.Flows.Upload)
+    The curated artifact bundle (ArtifactExchange / DetectRaptor / Sigma /
+    Rapid7 / TenRoot — ~400 definitions) is BAKED into the velociraptor image
+    and loaded on boot via --definitions, so it is no longer imported over
+    the API here. What this function still does — the parts NOT covered by a
+    static definition load — is:
+
+      1. Import operator custom artifacts from data/custom_artifacts/
+         (runtime additions that aren't part of the baked bundle).
+      2. (Re)start the server EVENT artifacts (Custom.Elastic.Flows.Upload):
+         --definitions loads the definition, but the continuous monitoring
+         flow must be started via add_server_monitoring on every boot.
+
+    Called on backend startup (app.py) and after a Velociraptor upgrade.
 
     Args:
         logger_func: Optional logging function
-        skip_exchange_imports: When True, skip the three internet-dependent
-            Server.Import.* artifacts (ArtifactExchange, DetectRaptor,
-            Extras). Set this for offline-install paths where
-            _import_bundled_external_artifacts has already imported the
-            same content from bundled zips at prepare time — running the
-            Server.Import.* artifacts then would just fail silently when
-            internet is unavailable, surfacing as "Some artifacts failed
-            to add" warnings the operator can't resolve. TenRoot zip
-            extraction + local custom artifact import still run.
+        skip_exchange_imports: Retained for call-site compatibility; now a
+            no-op (the Server.Import.* artifacts are never API-imported here
+            anymore — they load from the baked image).
 
     Returns:
-        dict with status of each import
+        dict with status of each step
     """
     def log(message, level="info"):
         print(f"[VELO-INIT] {message}", flush=True)
@@ -241,51 +250,26 @@ def initialize_velociraptor_artifacts(logger_func=None, skip_exchange_imports=Fa
         log("Velociraptor not available, skipping artifact initialization", "warning")
         return results
 
-    # Run server artifacts (Server.Import.ArtifactExchange imports all exchange artifacts).
-    # Skipped when the caller has already covered the same content from
-    # bundled-package external zips (see _import_bundled_external_artifacts
-    # in services/upgrade/velociraptor.py — runs the same imports without
-    # needing internet at apply time).
-    if skip_exchange_imports:
-        log(f"Skipping {len(STARTUP_SERVER_ARTIFACTS)} Server.Import.* artifacts "
-            "(already imported from bundled package zips — avoids 'failed' "
-            "warnings on air-gapped targets where these would hit github at "
-            "runtime).")
-        # Record them as 'skipped' so the caller sees consistent counts.
-        for artifact in STARTUP_SERVER_ARTIFACTS:
-            results["skipped"].append(artifact)
-        # Fall through to the TenRoot + local imports below.
-    else:
-        log(f"Running {len(STARTUP_SERVER_ARTIFACTS)} server artifacts...")
+    # The curated artifact bundle — Server.Import.* (ArtifactExchange /
+    # DetectRaptor / Extras) AND the TenRoot custom pack — is now BAKED into
+    # the velociraptor image and loaded on boot via --definitions (see
+    # modules/velociraptor/{Dockerfile,entrypoint.sh,bundled_artifacts/}).
+    # We no longer import them over the API here: that was the ~37-min step
+    # on a fresh air-gap install, and it tied artifact versioning to a
+    # runtime GitHub fetch instead of the repo. The ~400 definitions are
+    # present the moment Velociraptor starts, the same way on a fresh
+    # install, an online upgrade, and an offline package apply.
+    # `skip_exchange_imports` is retained for call-site compatibility but is
+    # now irrelevant — these are never API-imported here anymore.
+    log(f"Curated bundle ({len(STARTUP_SERVER_ARTIFACTS)} Server.Import.* + "
+        "TenRoot pack) loads from the image on boot (--definitions) — no API "
+        "import needed.")
+    for artifact in STARTUP_SERVER_ARTIFACTS:
+        results["skipped"].append(artifact)
 
-        for idx, artifact in enumerate(STARTUP_SERVER_ARTIFACTS):
-            try:
-                flow_id = run_server_artifact(artifact, logger_func=logger_func)
-                if flow_id:
-                    results["success"].append(artifact)
-                    log(f"Successfully started {artifact} with flow_id: {flow_id}")
-                else:
-                    results["failed"].append(artifact)
-                    log(f"Failed to start {artifact}", "warning")
-
-            except Exception as e:
-                log(f"Failed to run {artifact}: {e}", "error")
-                results["failed"].append(artifact)
-
-            # Delay between artifacts (except after the last one)
-            if idx < len(STARTUP_SERVER_ARTIFACTS) - 1:
-                log("Waiting 10s before next artifact...")
-                time.sleep(10)
-
-    # Import TenRoot custom artifacts (if zip exists)
-    log("")
-    log("Importing TenRoot custom artifacts...")
-    tenroot_results = import_tenroot_artifacts(logger_func)
-    results["success"].extend(tenroot_results.get("success", []))
-    results["failed"].extend(tenroot_results.get("failed", []))
-    results["skipped"].extend(tenroot_results.get("skipped", []))
-
-    # Import local custom artifacts (ELK integration, etc.)
+    # Import local (operator) custom artifacts from data/custom_artifacts/.
+    # These are runtime operator additions that are NOT part of the baked
+    # bundle, so they still need the API import.
     log("")
     log("Importing local custom artifacts...")
     local_results = import_local_custom_artifacts(logger_func)
@@ -403,6 +387,7 @@ def import_custom_artifact(yaml_content, logger_func=None):
         )
 
         artifact_name = None
+        already_builtin = None
         for response in stub.Query(request, timeout=30):
             if response.Response:
                 try:
@@ -413,9 +398,19 @@ def import_custom_artifact(yaml_content, logger_func=None):
                             artifact_name = result.get("name")
                 except (json.JSONDecodeError, KeyError) as e:
                     pass
+            # An artifact already loaded from the baked --definitions bundle is
+            # read-only ("built in"), so artifact_set refuses to overwrite it.
+            # That's NOT a failure — the definition is already present — so we
+            # surface the name as a (no-op) success instead of a hard error.
+            srv_log = getattr(response, 'log', '') or ''
+            if 'Unable to override built in artifact' in srv_log:
+                import re as _re
+                m = _re.search(r'built in artifact\s+(\S+)', srv_log)
+                if m:
+                    already_builtin = m.group(1)
 
         channel.close()
-        return artifact_name
+        return artifact_name or already_builtin
 
     except Exception as e:
         log(f"Error importing artifact: {e}", "error")

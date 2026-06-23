@@ -1495,132 +1495,18 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 except Exception as e:
                     log(f"  Registry snapshot raised: {e}", "warning")
 
-                # Direct downloads — pull artifact source zips straight
-                # from their public GitHub URLs. Runs UNCONDITIONALLY
-                # (works whether velociraptor is up or down) so the
-                # package always contains the standard artifact set even
-                # when the SQL snapshot above couldn't run.
-                #
-                # The three URLs are what Velociraptor 0.76.x itself
-                # uses for Server.Import.ArtifactExchange /
-                # Server.Import.DetectRaptor / Server.Import.Extras (verified
-                # by querying the live Velociraptor's Server.Import.*
-                # artifact YAMLs on 2026-06-10). They may need to be
-                # updated when bumping to a future Velociraptor major
-                # version that points elsewhere. The SQL snapshot above,
-                # when velociraptor IS running, captures whatever URLs
-                # the running version actually expects — so the two
-                # paths complement each other.
-                external_dir = os.path.join(velo_artifacts_dir, 'external')
-                os.makedirs(external_dir, exist_ok=True)
-                # Full list — every URL Server.Import.ArtifactExchange /
-                # DetectRaptor / Extras would download at runtime. The
-                # Extras artifact in particular downloads from SIX URLs
-                # (not the two the original list had); missing the
-                # Triage zip means Windows.Triage.Targets is absent on
-                # the apply target, which kape_service.py:76 hard-fails
-                # on with "Parameter refers to an unknown artifact". The
-                # 2026-06-11 fresh-install operator hit exactly this.
-                # See `Server.Import.Extras` artifact YAML for the
-                # authoritative list (parameters.Details.default).
-                external_sources = [
-                    (
-                        "Artifact Exchange (Velocidex)",
-                        "artifact_exchange_v2.zip",
-                        "https://github.com/Velocidex/velociraptor-docs/raw/gh-pages/exchange/artifact_exchange_v2.zip",
-                    ),
-                    (
-                        "DetectRaptor (mgreen27)",
-                        "detectraptor_latest.zip",
-                        # GitHub /latest/download/<asset> redirects to
-                        # whatever asset name the latest release uses.
-                        # Verified 2026-06-10: latest tag = DetectRaptor,
-                        # asset name DetectRaptorVQL.zip (~750 KB).
-                        # Works without an API token at the anonymous
-                        # rate-limit (60/h is plenty for prepare).
-                        "https://github.com/mgreen27/DetectRaptor/releases/latest/download/DetectRaptorVQL.zip",
-                    ),
-                    (
-                        "Rapid7 Labs VQL",
-                        "rapid7labs_vql.zip",
-                        "https://github.com/rapid7/Rapid7-Labs/raw/main/Vql/release/Rapid7LabsVQL.zip",
-                    ),
-                    (
-                        "Velociraptor Sigma",
-                        "velociraptor_sigma.zip",
-                        "https://sigma.velocidex.com/Velociraptor.Sigma.Artifacts.zip",
-                    ),
-                    (
-                        "Registry Hunter (Velocidex)",
-                        "windows_registry_hunter.zip",
-                        "https://registry-hunter.velocidex.com/Windows.Registry.Hunter.zip",
-                    ),
-                    (
-                        "SQLite Hunter (Velocidex)",
-                        "sqlite_hunter.zip",
-                        "https://sqlitehunter.velocidex.com/SQLiteHunter.zip",
-                    ),
-                    (
-                        "Triage Artifacts (Velocidex) — Windows.Triage.Targets, Windows.KapeFiles.Targets",
-                        "velociraptor_triage.zip",
-                        "https://triage.velocidex.com/artifacts/Velociraptor_Triage_v0.1.zip",
-                    ),
-                ]
-                log("Downloading external artifact sources (public GitHub URLs)...",
-                    "info")
-                dl_count = 0
-                for label, fname, url in external_sources:
-                    dst = os.path.join(external_dir, fname)
-                    try:
-                        cp = run_command(
-                            f"curl -fL --retry 3 --retry-delay 5 "
-                            f"--max-time 600 --connect-timeout 30 "
-                            f"-o {dst} {url}",
-                            logger=None, timeout=900, run_id=run_id,
-                        )
-                        if not (cp.get('success') and os.path.isfile(dst)):
-                            log(f"  ✗ {label}: curl failed "
-                                f"({(cp.get('error') or '')[:100]})", "warning")
-                            continue
-                        # Verify it's a real zip by reading the magic
-                        # bytes: every ZIP starts with PK\x03\x04. This
-                        # cleanly rejects GitHub's HTML error pages while
-                        # accepting legitimate small zips like Rapid7's
-                        # ~12 KB Rapid7LabsVQL.zip — which a size-based
-                        # threshold ("> 50 KB") would false-positive on.
-                        try:
-                            with open(dst, 'rb') as f:
-                                head = f.read(4)
-                        except Exception as e:
-                            log(f"  ✗ {label}: could not read downloaded "
-                                f"file: {e}", "warning")
-                            try: os.remove(dst)
-                            except Exception: pass
-                            continue
-                        if not head.startswith(b'PK\x03\x04'):
-                            sz_kb = os.path.getsize(dst) / 1024
-                            log(f"  ✗ {label}: download isn't a real zip "
-                                f"(magic={head!r}, {sz_kb:.0f} KB) — most "
-                                f"likely an HTML error page, dropping",
-                                "warning")
-                            try: os.remove(dst)
-                            except Exception: pass
-                            continue
-                        sz_mb = os.path.getsize(dst) / (1024 * 1024)
-                        log(f"  ✓ {label} → {fname} ({sz_mb:.2f} MB)",
-                            "success")
-                        dl_count += 1
-                    except Exception as e:
-                        log(f"  ✗ {label}: {e}", "warning")
-                if dl_count > 0:
-                    manifest["contents"].setdefault("velociraptor_artifacts", {})[
-                        "external_zips"] = dl_count
-                if dl_count == 0:
-                    log("  No external artifact sources downloaded — package "
-                        "will rely on registry_snapshot + custom_artifacts + "
-                        "TenRoot zip alone. Verify the upstream URLs haven't "
-                        "moved if this is an internet-connected prepare host.",
-                        "warning")
+                # External artifact zips are no longer bundled here. The
+                # curated artifact set (Artifact Exchange / DetectRaptor /
+                # Sigma / Rapid7 / Triage / Registry+SQLite Hunter / TenRoot)
+                # is now baked into the velociraptor image as plain YAMLs
+                # (modules/velociraptor/bundled_artifacts/, loaded on boot via
+                # --definitions — see modules/velociraptor/{Dockerfile,
+                # entrypoint.sh}). It therefore ships INSIDE the velociraptor
+                # image tar this package already carries, and the target loads
+                # it in one pass at startup instead of importing each artifact
+                # over the API (the old ~37-min step). Nothing to download or
+                # bundle separately. Refresh that folder with
+                # scripts/regenerate_artifact_bundle.py when upstream changes.
 
                 # ── Bundle Velociraptor TOOLS for air-gap ──────────────
                 # Artifacts reference external tools (lolrmm.csv,

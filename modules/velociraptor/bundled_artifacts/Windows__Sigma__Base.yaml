@@ -1,0 +1,412 @@
+name: Windows.Sigma.Base
+description: |
+  This artifact builds the basic set of log sources and field
+  mappings used for Sigma on Windows.
+
+  NOTE: This artifact does not include any rules. You can launch it
+  with rules provided to the SigmaRules parameter or call it from
+  another artifact with a set of rules passed to the SigmaRules
+  parameter.
+
+  This artifact was built on 2026-05-18T16:47:06Z
+
+type: CLIENT
+
+parameters:
+  - name: ROOT
+    description: The Event Log Directory we use to read all logs
+    default: C:/Windows/System32/WinEvt/Logs/
+
+  - name: Debug
+    type: bool
+    description: Enable full debug trace
+
+  - name: RuleLevel
+    type: choices
+    default: All
+    choices:
+      - "Critical"
+      - "Critical and High"
+      - "Critical, High, and Medium"
+      - "Critical, High, Medium, and Low"
+      - "All"
+
+  - name: RuleStatus
+    type: choices
+    default: All Rules
+    choices:
+      - Stable
+      - Stable and Experimental
+      - Stable and Test
+      - All Rules
+
+  - name: RuleTitleFilter
+    type: regex
+    default: .
+    description: Use this to filter only some rules to match
+
+  - name: RuleExclusions
+    type: csv
+    description: |
+      This table are rules that will be excluded by Title Regex
+    default: |
+      RuleTitleRegex,Reason
+      noisy,All rules marked noisy should be disabled by default.
+
+  - name: DateAfter
+    description: "search for events after this date. YYYY-MM-DDTmm:hh:ss Z"
+    type: timestamp
+
+  - name: DateBefore
+    description: "search for events before this date. YYYY-MM-DDTmm:hh:ss Z"
+    type: timestamp
+
+  - name: SigmaRules
+    description: If provided we use these rules instead of the built in set.
+
+  - name: NTFS_CACHE_TIME
+    type: int
+    description: How often to flush the NTFS cache. (Default is never).
+    default: "1000000"
+export: |
+  LET X = scope()
+
+  LET DateAfterTime <= X.DateAfter || timestamp(epoch="1600-01-01")
+  LET DateBeforeTime <= X.DateBefore || timestamp(epoch="2200-01-01")
+
+  LET ExcludeRegex <= if(condition=X.RuleExclusions,
+       then=join(array=RuleExclusions.RuleTitleRegex, sep="|"),
+       else="XXXXXXX")
+
+  LET RuleStatusRegex <= get(item=dict(
+       `Stable`="stable",
+       `Stable and Experimental`="stable|experimental",
+       `Stable and Test`="stable|test",
+       `All Rules`="."), member=X.RuleStatus || "All Rules")
+
+  LET RuleLevelRegex <= get(item=dict(
+       `Critical`="critical",
+       `Critical and High`="critical|high",
+       `Critical, High, and Medium`="critical|high|medium|default",
+       `Critical, High, Medium, and Low`="critical|high|medium|low|default",
+       `All`="."), member=X.RuleLevel || "All")
+
+  LET MandatoryLabelLookup <= dict(
+      `S-1-16-0`= 'UNTRUSTED',
+      `S-1-16-4096`= 'LOW_INTEGRITY',
+      `S-1-16-8192`= 'MEDIUM_INTEGRITY',
+      `S-1-16-8448`= 'MEDIUM_HIGH_INTEGRITY',
+      `S-1-16-12288`= 'HIGH_INTEGRITY',
+      `S-1-16-16384`= 'SYSTEM_INTEGRITY',
+      `S-1-16-20480`= 'PROTECTED_PROCESS')
+
+  LET TokenElevationTypeLookup <= dict(
+      `%%1936`= 'FULL_TOKEN',
+      `%%1937`= 'ELEVATED_TOKEN',
+      `%%1938`= 'LIMITED_TOKEN')
+
+  // Helpers for VQL rules
+  LET FetchKeyValues(OSPath) = to_dict(item={
+      SELECT Name AS _key, Data.value AS _value
+      FROM glob(globs="*", accessor="registry", root=OSPath)
+  })
+
+  LET GetValue(OSPath) = stat(filename=OSPath, accessor="registry").Data.value
+  LET Hostname <= dict(H={ SELECT Hostname FROM info()}).H[0].Hostname
+
+  
+  LET LogSources <= sigma_log_sources(
+  
+    `*/windows/application`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Application.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/applocker`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=[
+       ROOT + "/Microsoft-Windows-AppLocker%4MSI and Script.evtx",
+       ROOT + "/Microsoft-Windows-AppLocker%4EXE and DLL.evtx",
+       ROOT + "/Microsoft-Windows-AppLocker%4Packaged app-Deployment.evtx",
+       ROOT + "/Microsoft-Windows-AppLocker%4Packaged app-Execution.evtx",
+     ])
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/appmodel-runtime`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-AppModel-Runtime%4Admin.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/appxdeployment-server`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-AppxPackaging%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/appxpackaging-om`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-AppxPackaging%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/bits-client`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-Bits-Client%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/capi2`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-CAPI2/Operational")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/certificateservicesclient-lifecycle-system`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-CertificateServicesClient-Lifecycle-System/Operational")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/codeintegrity-operational`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-CodeIntegrity%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/diagnosis-scripted`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-Diagnosis-Scripted%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/dns-client`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-DNS Client Events%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/dns-server`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/DNS Server.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/dns-server-analytic`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-DNS-Server%4Analytical.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/driver-framework`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-DriverFrameworks-UserMode%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/firewall-as`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-Windows Firewall With Advanced Security%4Firewall.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/ldap_debug`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-LDAP-Client%4Debug.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/lsa-server`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-LSA%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/microsoft-servicebus-client`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-ServiceBus-Client.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/msexchange-management`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/MSExchange Management.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/ntlm`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-NTLM%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/openssh`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/OpenSSH%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/powershell`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=[
+        ROOT + "/Microsoft-Windows-PowerShell%4Operational.evtx",
+        ROOT + "/PowerShellCore%4Operational.evtx",
+     ])
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/powershell-classic`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *, EventData + dict(
+        Data=EventData.Data[2],
+        HostApplication=parse_string_with_regex(
+          regex="HostApplication=([^\\r\\n]+)",
+          string=EventData.Data[2]).g1) AS EventData
+     FROM parse_evtx(filename=ROOT + "/Windows PowerShell.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/security`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Security.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/security-mitigations`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-Security-Mitigations.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/shell-core`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-Shell-Core%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/smbclient-security`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-SmbClient%4Security.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/sysmon`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-Sysmon%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/system`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/System.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/taskscheduler`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-TaskScheduler%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/terminalservices-localsessionmanager`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-TerminalServices-LocalSessionManager%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/vhdmp`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-VHDMP%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/windefend`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-Windows Defender%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `*/windows/wmi`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-WMI-Activity%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },
+    `process_creation/windows/*`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=[
+        ROOT + "/Microsoft-Windows-Sysmon%4Operational.evtx",
+        ROOT + "/Security.evtx"
+     ])
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+       AND System.EventID.Value = 1 OR System.EventID.Value = 4688
+    },
+    `ps_classic_provider_start/windows/*`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Windows PowerShell.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime AND System.EventID.Value = 600
+    },
+    `ps_classic_start/windows/*`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Windows PowerShell.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime AND System.EventID.Value = 400
+    },
+    `ps_module/windows/*`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=[
+        ROOT + "/Microsoft-Windows-PowerShell%4Operational.evtx",
+        ROOT + "/PowerShellCore%4Operational.evtx"
+     ])
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime AND System.EventID.Value = 4103
+    },
+    `ps_script/windows/*`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=[
+        ROOT + "/Microsoft-Windows-PowerShell%4Operational.evtx",
+        ROOT + "/PowerShellCore%4Operational.evtx"
+     ])
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime AND System.EventID.Value = 4104
+    },
+    `registry_add/windows/*`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=[
+        ROOT + "/Microsoft-Windows-Sysmon%4Operational.evtx",
+        ROOT + "/Security.evtx"
+     ])
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime AND System.EventID.Value = 12 OR System.EventID.Value = 4657
+    },
+    `registry_event/windows/*`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=[
+        ROOT + "/Microsoft-Windows-Sysmon%4Operational.evtx",
+        ROOT + "/Security.evtx"
+     ])
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+       AND System.EventID.Value IN (12, 13, 14) OR System.EventID.Value = 4657
+    },
+    `registry_set/windows/*`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=[
+        ROOT + "/Microsoft-Windows-Sysmon%4Operational.evtx",
+        ROOT + "/Security.evtx"
+     ])
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+       AND System.EventID.Value = 13 OR System.EventID.Value = 4657
+    },
+    `antivirus/windows/windefend`={
+     SELECT timestamp(epoch=System.TimeCreated.SystemTime) AS Timestamp, *
+     FROM parse_evtx(filename=ROOT + "/Microsoft-Windows-Windows Defender%4Operational.evtx")
+     WHERE Timestamp >= DateAfterTime AND Timestamp <= DateBeforeTime
+    },`velociraptor/info/*`={ SELECT * FROM info() })
+  
+
+  LET FieldMapping <= parse_json(data=gunzip(string=base64decode(string="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")))
+
+  LET DefaultDetails <= parse_json(data=gunzip(string=base64decode(string="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")))
+
+  LET DefaultDetailsLambda = '''x=>get(item=DefaultDetails,
+       member=format(format="%v/%v",
+          args=[x.System.Provider.Name, x.System.EventID.Value])
+      ) || x.Message || x.UserData || x.EventData'''
+  LET RuleFilterLambda = '''x=>x.Level =~ RuleLevelRegex AND x.Status =~ RuleStatusRegex AND x.Title =~ RuleTitleFilter AND NOT x.Title =~ ExcludeRegex'''
+
+  -- The Keywords field is actually not very useful but it trips
+  -- Elastic so we remove it.
+  -- https://github.com/Velocidex/velociraptor/issues/3856
+  LET SystemMask <= dict(Keywords=TRUE)
+sources:
+- query: |
+   LET Result = SELECT Timestamp,
+         System.Computer AS Computer,
+         System.Channel AS Channel,
+         System.EventID.Value AS EID,
+         _Rule.Level AS Level,
+         _Rule.Title AS Title,
+         System.EventRecordID AS RecordID,
+         Details,
+         dict(System=System - SystemMask,
+              EventData=X.EventData || X.UserData,
+              Message=X.Message) AS _Event,
+         X._Match || X._Correlations AS _Match, *
+   FROM sigma(
+     rules=split(string=SigmaRules, sep="\n---+\r?\n"),
+     log_sources= LogSources, debug=Debug,
+     default_details=DefaultDetailsLambda,
+     rule_filter=RuleFilterLambda,
+     field_mapping= FieldMapping)
+
+   SELECT * FROM if(condition=Debug, then={
+     SELECT * FROM Result
+   }, else={
+     SELECT Timestamp, Computer, Channel , EID,
+            Level, Title, RecordID, Details, _Event,
+            X.Enrichment AS Enrichment
+     FROM Result
+   })

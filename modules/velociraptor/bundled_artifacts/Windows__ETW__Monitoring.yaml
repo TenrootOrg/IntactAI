@@ -1,0 +1,68 @@
+name: Windows.ETW.Monitoring
+description: |
+  This artifact contains
+
+  This artifact was built on 2026-05-18T16:47:14Z
+
+type: CLIENT_EVENT
+
+parameters:
+  - name: RuleLevel
+    type: choices
+    default: All
+    choices:
+      - "Critical"
+      - "Critical and High"
+      - "Critical, High, and Medium"
+      - "All"
+
+  - name: RuleStatus
+    type: choices
+    default: All Rules
+    choices:
+      - Stable
+      - Stable and Experimental
+      - Stable and Test
+      - All Rules
+
+  - name: RuleTitleFilter
+    type: regex
+    default: .
+    description: Use this to filter only some rules to match
+
+  - name: RuleExclusions
+    type: csv
+    description: |
+      Some rules in the Hayabusa set are extremely noisy, so they
+      are disabled by default.
+    default: |
+      RuleTitleRegex,Reason
+      Proc Exec,Fires on every Process Execution EID 1
+      File Created,Fires on every Sysmon EID 11
+      Reg Key Value Set,Fires on every Sysmon EID 13
+      DNS Query,Fires on every Sysmon EID 22
+      Proc Terminated$,Fires on every Sysmon EID 5
+      Proc Injection$,Fires on every Sysmon EID 8
+      Reg Key Create/Delete,Fires on every Sysmon EID 12
+      WMI Provider Started,Fires on every Microsoft-Windows-WMI-Activity/Operational EID 5857
+      noisy,All rules marked noisy should be disabled by default.
+
+  - name: DateAfter
+    description: "search for events after this date. YYYY-MM-DDTmm:hh:ss Z"
+    type: timestamp
+
+  - name: DateBefore
+    description: "search for events before this date. YYYY-MM-DDTmm:hh:ss Z"
+    type: timestamp
+
+imports:
+  - Windows.Sigma.ETWBase
+export: |
+     LET SigmaRules <= gunzip(string=base64decode(string="H4sIAAAAAAAA/9STX2vbMBTF3/0p7sMMG0NZYruO67eSpaN0aUtdVgZmRdG9SUVlKUhy/sA+/PCfZslWRl/6sJcQXd2rc3R+spdeUQ4TS0jaS64ccCHIOVhYU8Gci6d65WAtOdzWGpWKo0CZpTO1FZQHAIJ7Whq7y4H8JgBYWYO18DlspEazcQGAI7uWgnJ4IqtJBUiehJdGt/NGo2wX8J785mFlTSvPNUL//0HzitqCMFXFNSqp6UM7u182RwFMusJXqemn7WsADC5vi0ezuaTdbGn3xSfaVUs7QKUCgAPpbmy6Ju3vdivK4aarF55b391w76rr7RuueNXKgu2TGtCWAok5LBZJnJ1EgiVZ2vyMh4zHo4wJOh2nGEXxiJ8EitakckBa8Fr5JiUuldvLQ3ggE4LitRaPhBAeXDoMAsZY8BdUQOmEWZPdtSS/NQKTClt//x/NT0o6Lyyhy+87W4fv98U2mv/R8i/eE0vcU5/2q4AfBdoAjwSlwzHG7ISPEpakUcbmlHEWRXOBdDpGPn8D4OdS0fPn6w0UZzNA7vmcuzfE7Eh1Gy1TbTzQVqjaSaMbqvvFUXLT7THSH4O8LG+sWVpetddwZXm82ZMuy2LnPFVxVJbKcefayBu76rc9aI/Y0xl8vL+4+nx9X5Rl8b24m86a4cn11fnFl7IszmbvXn4AzRktTIqRC4qGLDlNI5bE2YhlWUIsGaJApDRNo/TVMKdbCntGhLBoiIXPbsPgVwAAAP//Q8PFJY8FAAA="))
+sources:
+- query: |
+    SELECT *
+    FROM Artifact.Windows.Sigma.ETWBase(
+       RuleLevel=RuleLevel, RuleStatus=RuleStatus,
+       RuleTitleFilter=RuleTitleFilter, RuleExclusions=RuleExclusions,
+       SigmaRules=SigmaRules)

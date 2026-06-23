@@ -70,8 +70,9 @@ def _reimport_artifacts_post_upgrade(velo_data: str, logger: Callable = None,
     # skip_exchange_imports plumbs through from offline-upgrade callers
     # (where Server.Import.ArtifactExchange / DetectRaptor / Extras need
     # internet at runtime and silently fail on air-gap targets — and
-    # _import_bundled_external_artifacts above already imported the
-    # same content from the prepare-time bundled zips). Online upgrades
+    # the curated bundle is baked into the velociraptor image and loaded
+    # on boot via --definitions, so the definitions are already present).
+    # Online upgrades
     # pass False (the default) so they still get the live upstream
     # additions Velociraptor's Server.Import.* artifacts would fetch.
     try:
@@ -342,7 +343,7 @@ def _backfill_missing_artifacts(package_dir: str, missing_names: list,
                                  logger: Callable = None) -> Dict:
     """Re-import specific artifacts that the bulk import missed.
 
-    The bulk _import_bundled_external_artifacts does one gRPC call per
+    The old bulk external-zip import did one gRPC call per
     artifact (320+ for the exchange) with a short timeout; under that
     load a handful time out and fail transiently — 2026-06-16 a fresh
     air-gap install came up with Windows.Detection.Malfind missing
@@ -403,78 +404,6 @@ def _backfill_missing_artifacts(package_dir: str, missing_names: list,
         log(f"  ⚠ {len(still)} artifact(s) still missing after backfill "
             f"(not in any bundled zip): {still}", "warning")
     return {"recovered": sorted(recovered), "still_missing": still}
-
-
-def _import_bundled_external_artifacts(package_dir: str,
-                                        logger: Callable = None) -> int:
-    """Import the artifact zips that prepare downloaded directly from
-    public GitHub URLs (ArtifactExchange, DetectRaptor, Rapid7 Labs).
-
-    Path written by prepare_upgrade_package's velociraptor branch:
-        <package>/artifacts/velociraptor/external/*.zip
-
-    Each zip contains many .yaml artifact definitions at various depths
-    (the upstream zip layouts aren't uniform — Velocidex's
-    artifact_exchange_v2.zip nests under exchange/, DetectRaptor's
-    flattens under DetectRaptor/, Rapid7's puts them under Vql/). Walk
-    each extracted tree and import every .yaml. Per-artifact failures
-    are swallowed for the same reason as registry_snapshot — version
-    skew between the prepare-host's Velociraptor and the target's.
-
-    Returns the count of successfully-imported artifacts across all zips.
-    """
-    import tempfile
-    import zipfile
-
-    log = logger or (lambda msg, level="info": None)
-    ext_dir = os.path.join(package_dir, 'artifacts', 'velociraptor', 'external')
-    if not os.path.isdir(ext_dir):
-        return 0
-
-    zips = sorted(
-        os.path.join(ext_dir, f) for f in os.listdir(ext_dir)
-        if f.endswith('.zip')
-    )
-    if not zips:
-        return 0
-
-    try:
-        from services.velociraptor_init_service import import_custom_artifact
-    except Exception as e:
-        log(f"  Could not import import_custom_artifact: {e}", "warning")
-        return 0
-
-    log(f"  Importing artifacts from {len(zips)} external zip(s)...", "info")
-    total_ok = 0
-    for zpath in zips:
-        zname = os.path.basename(zpath)
-        try:
-            with tempfile.TemporaryDirectory(prefix='extbundle_') as tmp:
-                with zipfile.ZipFile(zpath) as zf:
-                    zf.extractall(tmp)
-                ok = 0
-                count = 0
-                for root, _, files in os.walk(tmp):
-                    for fn in files:
-                        if not fn.endswith(('.yaml', '.yml')):
-                            continue
-                        count += 1
-                        try:
-                            with open(os.path.join(root, fn), 'r') as f:
-                                yaml_content = f.read()
-                            if import_custom_artifact(yaml_content, logger_func=None):
-                                ok += 1
-                        except Exception:
-                            continue
-                log(f"    {zname}: {ok}/{count} imported", "info" if ok else "warning")
-                total_ok += ok
-        except zipfile.BadZipFile:
-            log(f"    {zname}: not a valid zip — skipping", "warning")
-        except Exception as e:
-            log(f"    {zname}: {e}", "warning")
-    log(f"  External artifact zips: {total_ok} total artifacts imported",
-        "success" if total_ok else "warning")
-    return total_ok
 
 
 # All four binaries the Dockerfile needs to COPY at build time. The
@@ -1702,18 +1631,23 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         # standard artifact set on the target. Imports are idempotent
         # (import_custom_artifact overwrites by name), so the overlap
         # with the registry snapshot is harmless.
-        try:
-            _import_bundled_external_artifacts(package_dir, logger=log)
-        except Exception as e:
-            log(f"  External artifact import raised: {e}", "warning")
+        # Superseded: the curated artifact bundle (ArtifactExchange /
+        # DetectRaptor / Sigma / Rapid7 / TenRoot) is now baked into the
+        # velociraptor image and loaded on boot via --definitions (see
+        # modules/velociraptor/{Dockerfile,entrypoint.sh}). The new image is
+        # already running by this point, so the artifacts are present. This
+        # replaces the per-artifact gRPC artifact_set() loop that took
+        # ~37 min on a fresh air-gap install with a large artifact set.
+        log("  Curated artifacts load from the image on boot (--definitions) "
+            "— skipping the per-artifact API import.", "info")
 
         # Same artifact re-import as the online path. See its docstring
         # for the "why" — a Velociraptor binary upgrade leaves the
         # new container's registry empty of non-built-in artifacts,
         # breaking the Quick Wins blueprint hunt + KapeTriage flow
         # for Timesketch. skip_exchange_imports=True because we're in
-        # the OFFLINE upgrade path — _import_bundled_external_artifacts
-        # above already imported the 7 prepare-time bundled zips, and
+        # the OFFLINE upgrade path — the curated bundle is baked into the
+        # velociraptor image (loaded via --definitions), and
         # the Server.Import.* artifacts would silently 404 on an
         # air-gap target while logging confusing "Some artifacts
         # failed" warnings. The online upgrade path keeps the default
@@ -1907,10 +1841,13 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
         _import_bundled_registry_snapshot(package_dir, logger=log)
     except Exception as e:
         log(f"  Registry-snapshot import raised: {e}", "warning")
-    try:
-        _import_bundled_external_artifacts(package_dir, logger=log)
-    except Exception as e:
-        log(f"  External artifact import raised: {e}", "warning")
+    # Superseded: the curated artifact bundle is baked into the velociraptor
+    # image and loaded on boot via --definitions (see modules/velociraptor/
+    # {Dockerfile,entrypoint.sh}). On a fresh air-gap install this is what
+    # makes Hayabusa / DetectRaptor / KAPE / Sigma artifacts present — and it
+    # replaces the per-artifact API import that took ~37 min.
+    log("  Curated artifacts load from the image on boot (--definitions) "
+        "— skipping the per-artifact API import.", "info")
 
     # Run the TenRoot artifact importer. Critical for fresh installs:
     # the previous steps register YAMLs that are already standalone
@@ -1935,8 +1872,8 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
         # (ArtifactExchange / DetectRaptor / Extras) need internet to
         # download from github at runtime. On air-gapped targets those
         # silently fail and the operator sees "Some artifacts failed".
-        # _import_bundled_external_artifacts above already imported the
-        # same content from the prepare-time bundled zips, so running
+        # the curated bundle is baked into the velociraptor image and
+        # loaded via --definitions, so running
         # the Server.Import.* artifacts is pure noise — skip them and
         # only run the TenRoot zip extraction + local custom artifact
         # imports (both fully air-gap safe).

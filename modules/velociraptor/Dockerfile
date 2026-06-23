@@ -43,6 +43,15 @@ RUN chmod +x /opt/velociraptor/linux/velociraptor \
              /opt/velociraptor/mac/velociraptor_client \
              /opt/velociraptor/windows/velociraptor_client.exe
 
+# Curated artifact-definition bundle (ArtifactExchange / DetectRaptor /
+# Sigma / Rapid7 / TenRoot, pre-exported as plain YAMLs). Baked into the
+# image so the server loads them on boot via `--definitions` (see
+# entrypoint.sh) — one pass at startup instead of importing each artifact
+# over the API one-by-one (which is O(N^2) and took ~37 min on a fresh
+# air-gap install). Works identically for fresh install, online upgrade,
+# and offline package apply because the artifacts ride inside this image.
+COPY bundled_artifacts /opt/velociraptor_artifacts
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

@@ -47,37 +47,31 @@ def main():
     elk_available = container_running('intact_kibana')
 
     # =========================================================================
-    # Task 1: Import Velociraptor artifacts
+    # Task 1: Ensure runtime artifact state — event monitoring + operator
+    # custom artifacts. The curated bundle (ArtifactExchange / DetectRaptor /
+    # Sigma / Rapid7 / TenRoot, ~400 defs) is baked into the velociraptor
+    # image and loaded on boot via --definitions; it is NOT imported here
+    # anymore (that was the slow step). This step only (re)starts the Elastic
+    # event-upload monitoring and imports any operator custom_artifacts/.
     # =========================================================================
-    log("Task 1/4: Importing Velociraptor artifacts...")
+    log("Task 1/4: Ensuring Velociraptor event monitoring + operator custom artifacts...")
     if not velociraptor_available:
-        log("Artifacts: skipped (Velociraptor module not installed/running)", "info")
+        log("Velociraptor not running — curated artifacts still load from the "
+            "image on boot; skipping the runtime ensure step.", "info")
     else:
         try:
             from services.velociraptor_init_service import initialize_velociraptor_artifacts
             results = initialize_velociraptor_artifacts()
             if results:
-                success_list = results.get('success', [])
-                failed_list = results.get('failed', [])
-                success = len(success_list)
-                failed = len(failed_list)
-
-                # Show imported artifacts
-                for artifact in success_list[:5]:  # Show first 5
-                    log(f"  + {artifact}", "success")
-                if success > 5:
-                    log(f"  ... and {success - 5} more", "info")
-
-                if failed > 0:
-                    for artifact in failed_list[:3]:
-                        log(f"  - {artifact}", "warning")
-
-                log(f"Artifacts: {success} imported, {failed} failed",
-                    "success" if success > 0 else "info")
+                ok = len(results.get('success', []))
+                failed = len(results.get('failed', []))
+                log(f"Event monitoring + custom artifacts: {ok} ensured, {failed} failed "
+                    "(curated bundle loads from the image via --definitions)",
+                    "success" if failed == 0 else "warning")
             else:
-                log("No new artifacts to import (already up to date)", "info")
+                log("Nothing to ensure (curated bundle loads from the image)", "info")
         except Exception as e:
-            log(f"Artifact import error: {e}", "warning")
+            log(f"Artifact ensure error: {e}", "warning")
 
     print("", flush=True)
 

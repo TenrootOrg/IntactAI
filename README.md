@@ -208,6 +208,46 @@ Available options:
 
 ---
 
+### Updating the Velociraptor artifact bundle
+
+The curated Velociraptor artifacts (Artifact Exchange / DetectRaptor / Sigma /
+Rapid7 / Triage / TenRoot — ~400 definitions) are committed in
+`modules/velociraptor/bundled_artifacts/` and **baked into the velociraptor
+image**, then loaded on boot via Velociraptor's `--definitions` flag. This
+replaces the old per-artifact API import (which took ~37 min on a fresh
+air-gapped install) — the definitions are present the instant Velociraptor
+starts, identically for a fresh install, an online upgrade, and an offline
+package apply.
+
+Because the bundle is a static, version-controlled snapshot, refresh it
+whenever you want to pick up upstream artifact changes (e.g. a new
+Velociraptor release that updated the Artifact Exchange, or new TenRoot
+artifacts) — typically once per release:
+
+```bash
+# On a box with a RUNNING Velociraptor + internet (the dev/build host):
+docker exec intact_backend python \
+    /app/workdir/modules/backend/scripts/regenerate_artifact_bundle.py
+
+# Review the diff, then commit the refreshed bundle:
+git add modules/velociraptor/bundled_artifacts
+git commit -m "Refresh Velociraptor artifact bundle"
+```
+
+The script downloads the latest TenRoot pack, runs the upstream import
+artifacts (`Server.Import.ArtifactBundle` — the pre-0.77 name
+`Server.Import.ArtifactExchange` is used automatically on older servers — plus
+DetectRaptor + Extras), waits for them to settle, and re-exports every
+non-built-in artifact into the folder. The new bundle takes effect the next
+time the velociraptor image is rebuilt (install / online upgrade /
+prepare-package).
+
+> Forensic **tools** (Hayabusa, KAPE/EZ tools, YARA, etc.) are delivered
+> separately via the tool-inventory download path — see the `download_tools`
+> option in `config.yaml`. This bundle ships artifact *definitions* only.
+
+---
+
 ## VM Image Distribution
 
 For distributing Intact.AI as a pre-configured VM image (OVA) to clients, including air-gapped environments.
