@@ -4,8 +4,9 @@ Public import path unchanged: `from services.agentic.analyzers import X` works
   _llm.py      — LLM transport + config: cost/model tables, alias/limit/error
                  helpers, validate/ping, call_llm + online/offline backends,
                  usage metrics.
-  _analysis.py — artifact + timeline analysis that drives the LLM (analyze_single
-                 _artifact, synthesize_findings, _analyze_timeline, analyze_artifacts).
+  _analysis.py — per-artifact LLM analysis (analyze_single_artifact + sampling
+                 helpers). The batch/synthesis/timeline drivers were removed
+                 when reporting moved to the fusion / Case Analysis layer.
 """
 from services.agentic.analyzers._llm import *       # noqa: F401,F403
 from services.agentic.analyzers._analysis import *  # noqa: F401,F403
