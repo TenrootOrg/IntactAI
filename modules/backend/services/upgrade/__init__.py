@@ -553,39 +553,54 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     # this one drifted. Keep them in sync.
     upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb', 'cve_scan']
 
-    # Phase-2 resume is ALWAYS package-based, so it uses ONE set of functions
-    # for both modes. run_offline_upgrade_workflow saves the state as
-    # mode='offline' for the offline flow AND the online flow (online =
-    # prepare + offline-apply, see run_online_upgrade_workflow → it calls
-    # run_offline_upgrade_workflow), so a resumed online upgrade arrives here as
-    # 'offline' with a persistent package_dir. Using the offline, package_dir-
-    # based functions for both means online + offline share the exact same
-    # install-vs-upgrade auto-detection — no duplicate online path to maintain.
-    # (The legacy mode='online' resume — run_upgrade_workflow — has no callers.)
-    upgrade_functions = {
-        'elk': lambda v, **kw: upgrade_elk_offline(package_dir, v, **kw),
-        'timesketch': lambda v, **kw: upgrade_timesketch_offline(package_dir, v, **kw),
-        'plaso': lambda v, **kw: upgrade_plaso_offline(package_dir, v, **kw),
-        'iris': lambda v, **kw: upgrade_iris_offline(package_dir, v, **kw),
-        'velociraptor': lambda v, **kw: upgrade_velociraptor_offline(package_dir, v, **kw),
-        'prowler': lambda v, **kw: upgrade_aws_offline(package_dir, v, **kw),
-        'o365rc': lambda v, **kw: upgrade_azure_offline(package_dir, v, **kw),
-        'volweb': lambda v, **kw: upgrade_volweb_offline(package_dir, v, **kw),
-        'intact': lambda **kw: upgrade_intact_offline(package_dir, **kw),
-        'cve_scan': lambda v, **kw: upgrade_cve_offline(package_dir, v, **kw),
-    }
-    # Install-vs-upgrade dispatch: when a module's container doesn't exist yet
-    # (fresh install via the upgrade flow) Phase-2 must run the INSTALL fn, not
-    # the upgrade fn — otherwise it docker-execs into a missing container and
-    # crashes / reports false success (the 2026-06-08 fresh-install iris/
-    # timesketch incident).
-    install_functions = {
-        'elk':          lambda v, **kw: install_elk_offline(package_dir, v, **kw),
-        'timesketch':   lambda v, **kw: install_timesketch_offline(package_dir, v, **kw),
-        'iris':         lambda v, **kw: install_iris_offline(package_dir, v, **kw),
-        'velociraptor': lambda v, **kw: install_velociraptor_offline(package_dir, v, **kw),
-        'volweb':       lambda v, **kw: install_volweb_offline(package_dir, v, **kw),
-    }
+    # Pick functions by the mode SAVED IN THE STATE — which matters for
+    # BACKWARD COMPATIBILITY: when upgrading FROM an older release, Phase 1 runs
+    # on the OLD code and saves this resume state in the OLD release's format/
+    # mode, then the backend restarts into the NEW code and THIS function reads
+    # that old state. A modern upgrade (online OR offline) saves mode='offline'
+    # with a persistent package_dir — both take the offline branch (online =
+    # prepare + offline-apply, so no duplicate path in practice). But an OLDER
+    # release whose online upgrade saved mode='online' (no package_dir) MUST
+    # still resume via the online image-pull functions — hence the branch stays.
+    if mode == 'offline':
+        upgrade_functions = {
+            'elk': lambda v, **kw: upgrade_elk_offline(package_dir, v, **kw),
+            'timesketch': lambda v, **kw: upgrade_timesketch_offline(package_dir, v, **kw),
+            'plaso': lambda v, **kw: upgrade_plaso_offline(package_dir, v, **kw),
+            'iris': lambda v, **kw: upgrade_iris_offline(package_dir, v, **kw),
+            'velociraptor': lambda v, **kw: upgrade_velociraptor_offline(package_dir, v, **kw),
+            'prowler': lambda v, **kw: upgrade_aws_offline(package_dir, v, **kw),
+            'o365rc': lambda v, **kw: upgrade_azure_offline(package_dir, v, **kw),
+            'volweb': lambda v, **kw: upgrade_volweb_offline(package_dir, v, **kw),
+            'intact': lambda **kw: upgrade_intact_offline(package_dir, **kw),
+            'cve_scan': lambda v, **kw: upgrade_cve_offline(package_dir, v, **kw),
+        }
+        # Install-vs-upgrade dispatch: when a module's container doesn't exist
+        # yet (fresh install via the upgrade flow) Phase-2 must run the INSTALL
+        # fn, not the upgrade fn — otherwise it docker-execs into a missing
+        # container and crashes / reports false success (the 2026-06-08
+        # fresh-install iris/timesketch incident).
+        install_functions = {
+            'elk':          lambda v, **kw: install_elk_offline(package_dir, v, **kw),
+            'timesketch':   lambda v, **kw: install_timesketch_offline(package_dir, v, **kw),
+            'iris':         lambda v, **kw: install_iris_offline(package_dir, v, **kw),
+            'velociraptor': lambda v, **kw: install_velociraptor_offline(package_dir, v, **kw),
+            'volweb':       lambda v, **kw: install_volweb_offline(package_dir, v, **kw),
+        }
+    else:
+        # Backward-compat path for older-release states saved as mode='online'
+        # (those upgrades pulled images directly, no package_dir). Modern
+        # online upgrades never reach here — they save 'offline' above.
+        upgrade_functions = {
+            'elk': upgrade_elk,
+            'timesketch': upgrade_timesketch,
+            'plaso': upgrade_plaso,
+            'iris': upgrade_iris,
+            'velociraptor': upgrade_velociraptor,
+            'intact': upgrade_intact,
+            'cve_scan': upgrade_cve,
+        }
+        install_functions = {}  # old online flow had no upgrade-as-install
 
     # Reuse the container-existence detector — same source of truth
     # the main run_offline_upgrade_workflow uses.
