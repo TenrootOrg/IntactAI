@@ -825,7 +825,9 @@ def run_system_purge():
             add_log_to_run(run_id, "PURGE: Report Downloads", "info")
             add_log_to_run(run_id, "=" * 50, "info")
             update_run_status(run_id, "running", progress=60)
-            freed, count = purge_dir("/app/downloads")
+            # /data/downloads = report exports. NOT /app/downloads (install
+            # artifacts: client installers + collector + tools).
+            freed, count = purge_dir("/data/downloads")
             total_freed += freed
             add_log_to_run(run_id, f"  Removed {count} items | Freed: {fmt(freed)}", "success")
 
@@ -1146,7 +1148,11 @@ def _scan_temp_files():
 
 
 def _scan_report_downloads():
-    return _scan_dir("/app/downloads"), ""
+    # Report EXPORTS live in /data/downloads/<run_id>/. NOT /app/downloads —
+    # that's the nginx-mounted install-artifact dir (Velociraptor legacy/musl
+    # client installers + offline collector + tools, fetched by install.sh).
+    # Purging it deletes the client downloads and greys out the Downloads page.
+    return _scan_dir("/data/downloads"), ""
 
 
 def _scan_velociraptor():
@@ -1482,7 +1488,10 @@ def _purge_temp_files(_):
 
 
 def _purge_report_downloads(_):
-    f, c = _purge_dir("/app/downloads")
+    # /data/downloads = generated report exports (per run_id). NOT /app/downloads
+    # — that's the install-artifact dir (client installers + collector); purging
+    # it broke the Downloads page.
+    f, c = _purge_dir("/data/downloads")
     return f, f"{c} items"
 
 

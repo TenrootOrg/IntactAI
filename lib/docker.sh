@@ -539,13 +539,23 @@ download_offline_collector_binaries() {
         log_error "Offline-Collector: versions.velociraptor is not set in config.yaml — cannot determine which binaries to download"
         return 0
     fi
-    # GitHub tag is the major.minor (e.g. "v0.76"); patch versions live as
-    # release assets within that tag.
-    local velo_tag
-    velo_tag=$(echo "$velo_version" | sed 's/^\([0-9]*\.[0-9]*\).*/\1/')
-
+    # GitHub tag resolution. Velocidex's tagging changed at v0.76.6: newer
+    # patches get their OWN full-version tag (e.g. v0.77.1), while older 0.76.x
+    # patches still live under the minor tag (v0.76). The naive major.minor
+    # truncation 404s on v0.77+ — so probe the full-version tag first and only
+    # fall back to the minor tag. (Matches resolve_velociraptor_release_tag in
+    # the backend upgrade path.)
     local downloads_dir="${SCRIPT_DIR}/modules/nginx/html/downloads"
-    local base_url="https://github.com/Velocidex/velociraptor/releases/download/v${velo_tag}"
+    local full_tag="v${velo_version}"
+    local minor_tag="v$(echo "$velo_version" | sed 's/^\([0-9]*\.[0-9]*\).*/\1/')"
+    local velo_tag="$minor_tag"
+    local _probe="velociraptor-v${velo_version}-windows-amd64.exe"
+    if [[ "$(curl -s -o /dev/null -w '%{http_code}' -IL \
+            "https://github.com/Velocidex/velociraptor/releases/download/${full_tag}/${_probe}" 2>/dev/null)" == "200" ]]; then
+        velo_tag="$full_tag"
+    fi
+    log_info "  Resolved Velociraptor release tag: ${velo_tag} (for v${velo_version})"
+    local base_url="https://github.com/Velocidex/velociraptor/releases/download/${velo_tag}"
 
     log_info "Checking Velociraptor v${velo_version} binaries for Offline Collector..."
 
@@ -566,21 +576,28 @@ download_offline_collector_binaries() {
         "velociraptor-v${velo_version}-darwin-amd64"
     )
 
-    # Clean up any prior-version binaries so the downloads dir reflects
-    # the current pin. Pattern matches `velociraptor-v<X>-<platform>`
-    # for any version <X> — the loop below deletes only files whose
-    # version segment differs from the configured one.
+    # Clean up any prior-version MODERN binaries so the downloads dir reflects
+    # the current pin. The glob `velociraptor-v*-` also matches the LEGACY
+    # binaries (e.g. v0.7.1) the legacy downloader manages separately — those
+    # MUST be preserved, so skip the legacy pin explicitly. (Previously this
+    # wiped the legacy Windows/Linux installers on every install/upgrade.)
+    local legacy_version
+    legacy_version=$(read_config "['versions']['velociraptor_legacy']")
     local stale=0
     for old in "$downloads_dir"/velociraptor-v*-windows-amd64.exe \
                "$downloads_dir"/velociraptor-v*-linux-amd64 \
                "$downloads_dir"/velociraptor-v*-linux-amd64-musl \
                "$downloads_dir"/velociraptor-v*-darwin-amd64; do
         [[ -f "$old" ]] || continue
-        if [[ "$old" != *"-v${velo_version}-"* ]]; then
-            log_info "  Removing stale binary: $(basename "$old")"
-            rm -f "$old"
-            ((stale++))
+        # Keep the configured modern version.
+        [[ "$old" == *"-v${velo_version}-"* ]] && continue
+        # Keep the legacy pin (managed by download_legacy_velociraptor_binaries).
+        if [[ -n "$legacy_version" && "$legacy_version" != "None" && "$old" == *"-v${legacy_version}-"* ]]; then
+            continue
         fi
+        log_info "  Removing stale binary: $(basename "$old")"
+        rm -f "$old"
+        ((stale++))
     done
     if (( stale > 0 )); then
         log_info "  Cleaned up $stale stale offline-collector binar(y/ies) from prior version pin"
