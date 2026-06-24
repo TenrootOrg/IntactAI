@@ -3,9 +3,93 @@
 
 import os
 import re
+import shutil
 from typing import Dict, Callable, Optional
 
 from .base import WORKDIR, run_command
+
+
+def _mirror_tree(src: str, dst: str, protect=(), logger=None) -> Dict:
+    """Mirror src -> dst so dst becomes an EXACT copy of the new release's tree:
+    overwrite every file from src AND delete files dst still has that src no
+    longer ships. The delete half is the whole point — a plain ``cp -a src/*``
+    only ever adds/overwrites, so a module retired upstream (e.g. the old
+    services/agentic/chat.py, the pre-package analyzers.py/reports.py monoliths,
+    engagement_routes.py, downloaded skill packs) would linger forever and could
+    shadow its replacement. Mirroring removes them.
+
+    Operator + runtime data is spared: top-level relpaths in ``protect`` (e.g.
+    '.env', 'downloads') are never copied, never deleted, never descended into,
+    and any __pycache__ is ignored (regenerated on import). Pure-Python so it
+    works in the backend container without an rsync dependency.
+
+    Returns {"copied": int, "deleted": [relpath, ...]}.
+    """
+    log = logger or (lambda m, l="info": None)
+    protect = set(protect)
+
+    def _spared(rel: str) -> bool:
+        parts = rel.split('/')
+        if '__pycache__' in parts:
+            return True
+        for p in protect:
+            if rel == p or rel.startswith(p + '/'):
+                return True
+        return False
+
+    def _rel(root_rel: str, name: str) -> str:
+        return name if not root_rel else f"{root_rel}/{name}"
+
+    # 1) DELETE: bottom-up so a stale dir empties out before we rmdir it.
+    deleted = []
+    for root, dirs, files in os.walk(dst, topdown=False):
+        rr = os.path.relpath(root, dst)
+        rr = '' if rr == '.' else rr
+        for name in files:
+            rel = _rel(rr, name)
+            if _spared(rel):
+                continue
+            if not os.path.exists(os.path.join(src, rel)):
+                try:
+                    os.remove(os.path.join(root, name))
+                    deleted.append(rel)
+                except OSError:
+                    pass
+        for name in dirs:
+            rel = _rel(rr, name)
+            if _spared(rel):
+                continue
+            d = os.path.join(root, name)
+            if not os.path.exists(os.path.join(src, rel)) and not os.listdir(d):
+                try:
+                    os.rmdir(d)
+                    deleted.append(rel + '/')
+                except OSError:
+                    pass
+
+    # 2) COPY: overwrite dst with everything src ships (minus spared paths).
+    copied = 0
+    for root, dirs, files in os.walk(src, topdown=True):
+        rr = os.path.relpath(root, src)
+        rr = '' if rr == '.' else rr
+        dirs[:] = [d for d in dirs if not _spared(_rel(rr, d))]
+        dst_root = dst if not rr else os.path.join(dst, rr)
+        os.makedirs(dst_root, exist_ok=True)
+        for name in files:
+            rel = _rel(rr, name)
+            if _spared(rel):
+                continue
+            shutil.copy2(os.path.join(root, name), os.path.join(dst_root, name))
+            copied += 1
+
+    log(f"  mirror {os.path.basename(dst.rstrip('/'))}: {copied} file(s) copied, "
+        f"{len(deleted)} stale entr{'y' if len(deleted) == 1 else 'ies'} removed",
+        "info")
+    if deleted:
+        preview = ", ".join(deleted[:12])
+        more = f" (+{len(deleted) - 12} more)" if len(deleted) > 12 else ""
+        log(f"    removed: {preview}{more}", "info")
+    return {"copied": copied, "deleted": deleted}
 
 
 def merge_versions_from_new_config(
@@ -765,15 +849,36 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
                 f"({type(e).__name__}: {e}); proceeding with existing "
                 f"config.yaml — pins may be stale", "warning")
 
-    # Copy backend source files
+    # Mirror backend + frontend so the install becomes an EXACT copy of the new
+    # release (overwrite everything AND delete files the release retired) — a
+    # plain `cp -a src/*` only ever adds, leaving stale modules to shadow their
+    # replacements. Operator/runtime data under these trees is spared:
+    #   backend  -> .env (operator-rotated secrets; also backed up/restored)
+    #   frontend -> downloads/ (Velociraptor client binaries, large; regenerated)
+    # __pycache__ is always ignored. config.yaml lives at WORKDIR root (outside
+    # both trees) and is version-merged separately, so it is never touched here.
+    # Safety: the mirror DELETES install files the source lacks, so a partial or
+    # corrupt package could wipe a healthy install. Only mirror when the source
+    # carries a sentinel proving it's a real release tree; otherwise fall back to
+    # the old additive `cp -a` (never deletes) and warn.
     if has_backend:
-        log("Copying backend source files...", "info")
-        run_command(f"cp -a {backend_source}/* {backend_dir}/", logger=log, run_id=run_id)
+        if os.path.exists(os.path.join(backend_source, 'app.py')):
+            log("Mirroring backend source files (overwrite + prune retired)...", "info")
+            _mirror_tree(backend_source, backend_dir, protect=('.env',), logger=log)
+        else:
+            log("  backend source missing app.py — incomplete package; using "
+                "additive copy (no prune) to avoid wiping the install", "warning")
+            run_command(f"cp -a {backend_source}/* {backend_dir}/", logger=log, run_id=run_id)
 
     # Copy frontend files
     if has_frontend:
-        log("Copying frontend files...", "info")
-        run_command(f"cp -a {frontend_source}/* {nginx_html}/", logger=log, run_id=run_id)
+        if os.path.exists(os.path.join(frontend_source, 'index.html')):
+            log("Mirroring frontend files (overwrite + prune retired)...", "info")
+            _mirror_tree(frontend_source, nginx_html, protect=('downloads',), logger=log)
+        else:
+            log("  frontend source missing index.html — incomplete package; using "
+                "additive copy (no prune) to avoid wiping the install", "warning")
+            run_command(f"cp -a {frontend_source}/* {nginx_html}/", logger=log, run_id=run_id)
 
     # Stamp WORKDIR/VERSION so the sidebar + Settings reflect the new release.
     # Shared with the Phase-2 resume finalizer (services/upgrade.__init__) so
