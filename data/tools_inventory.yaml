@@ -2,6 +2,21 @@
 # This file controls which tools are downloaded during installation and maintenance
 # Set enabled: false to disable a tool (keeps it in config but skips download)
 #
+# TWO TIERS (apply to both the download sections and `velociraptor_inventory`):
+#   * enabled: true  = DEFAULT tier. The ONLY tools the shipped default
+#     blueprints actually use (verified against config/default_blueprints.yaml
+#     via the live artifact `tools` deps): the forensic tools
+#     lolrmm.csv / Autoruns / LastActivityView, plus (inventory only) the
+#     Velociraptor agent + collector binaries needed to enrol clients and build
+#     offline collectors. These ALWAYS download/configure — at install, in
+#     System Maintenance, and bundled into Prepare-Package / Online-Upgrade.
+#   * enabled: false = OPTIONAL tier (Hayabusa, YARA, the Eric Zimmerman EZ
+#     tools, Sysmon, OSQuery, WinPmem, etc.). NOT used by any default blueprint
+#     (DetectRaptor/Forensics artifacts parse those formats in pure VQL;
+#     Hayabusa/YARA artifacts use Velociraptor's built-in plugins). These
+#     download/configure ONLY when the operator sets options.download_tools:
+#     true. Don't flip one to true without confirming a default blueprint needs it.
+#
 # Tool types:
 #   github_release: Download from GitHub releases API
 #   direct_url: Direct download URL
@@ -231,7 +246,7 @@ velociraptor_artifacts:
 # ============================================================================
 memory_tools:
   - name: "WinPmem"
-    enabled: true
+    enabled: false
     type: github_release
     repo: "Velocidex/WinPmem"
     pattern: "winpmem_mini_x64.*\\.exe$"
@@ -554,11 +569,11 @@ velociraptor_inventory:
   # Persistence Detection
   - tool_name: "PSniper"
     file_pattern: "(?i)^PersistenceSniper.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "DiffCSVUrl"
     file_pattern: "(?i)^false_positives.csv$"
-    enabled: true
+    enabled: false
 
   - tool_name: "Autorun_amd64"
     file_pattern: "(?i)^autorunsc64.exe$"
@@ -567,22 +582,22 @@ velociraptor_inventory:
   # Event Log Analysis
   - tool_name: "Hayabusa-2.14.0"
     file_pattern: "(?i)^hayabusa-.*-win-x64.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "Hayabusa-3.8.0"
     file_pattern: "(?i)^hayabusa-.*-win-x64-live-response.zip$"
-    enabled: true
+    enabled: false
 
   # Chainsaw removed from server inventory — see top-level
   # event_log_tools comment.
 
   - tool_name: "EvtxHussar17"
     file_pattern: "(?i)^EvtxHussar.*windows_amd64.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "Takajo-2.5.0"
     file_pattern: "(?i)^takajo-.*-win-x64.zip$"
-    enabled: true
+    enabled: false
 
   # Zircolite removed from server inventory — see top-level
   # event_log_tools comment.
@@ -590,31 +605,31 @@ velociraptor_inventory:
   # YARA & Detection
   - tool_name: "FileYaraLinux"
     file_pattern: "(?i)^full_linux_file.yar.gz$"
-    enabled: true
+    enabled: false
 
   - tool_name: "FileYaraWindows"
     file_pattern: "(?i)^full_windows_file.yar.gz$"
-    enabled: true
+    enabled: false
 
   - tool_name: "YaraRulesFull"
     file_pattern: "(?i)^yara-rules-full.yar$"
-    enabled: true
+    enabled: false
 
   - tool_name: "yaraexecutable"
     file_pattern: "(?i)^yara-.*-win64.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "YaraForgeCore"
     file_pattern: "(?i)^yara-forge-rules-core.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "YaraForgeExtended"
     file_pattern: "(?i)^yara-forge-rules-extended.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "YaraForgeFull"
     file_pattern: "(?i)^yara-forge-rules-full.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "DetectRaptorLolRMM"
     file_pattern: "(?i)^lolrmm.csv$"
@@ -623,71 +638,71 @@ velociraptor_inventory:
   # Forensic Tools - Eric Zimmerman
   - tool_name: "JLECmd"
     file_pattern: "(?i)^JLECmd.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "LECmd"
     file_pattern: "(?i)^LECmd.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "SBECmd"
     file_pattern: "(?i)^SBECmd.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "AmcacheParser"
     file_pattern: "(?i)^AmcacheParser.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "AppCompatCacheParser"
     file_pattern: "(?i)^AppCompatCacheParser.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "EvtxECmd"
     file_pattern: "(?i)^EvtxECmd.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "MFTECmd"
     file_pattern: "(?i)^MFTECmd.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "PECmd"
     file_pattern: "(?i)^PECmd.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "RBCmd"
     file_pattern: "(?i)^RBCmd.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "RECmd"
     file_pattern: "(?i)^RECmd.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "SrumECmd"
     file_pattern: "(?i)^SrumECmd.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "SumECmd"
     file_pattern: "(?i)^SumECmd.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "RecentFileCacheParser"
     file_pattern: "(?i)^RecentFileCacheParser.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "BStrings"
     file_pattern: "(?i)^bstrings.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "Hasher"
     file_pattern: "(?i)^hasher.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "IISGeolocate"
     file_pattern: "(?i)^iisGeolocate.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "RLA"
     file_pattern: "(?i)^rla.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "TimelineExplorer"
     file_pattern: "(?i)^TimelineExplorer.zip$"
@@ -700,55 +715,55 @@ velociraptor_inventory:
 
   - tool_name: "NirsoftBrowsingHistoryView64"
     file_pattern: "(?i)^browsinghistoryview-x64.zip$"
-    enabled: true
+    enabled: false
 
   # Sysinternals
   - tool_name: "SysmonBinary"
     file_pattern: "(?i)^Sysmon64.exe$"
-    enabled: true
+    enabled: false
 
   - tool_name: "SysmonConfig"
     file_pattern: "(?i)^sysmonconfig.*\\.xml$"
-    enabled: true
+    enabled: false
 
   - tool_name: "disk2vhd"
     file_pattern: "(?i)^disk2vhd64.exe$"
-    enabled: true
+    enabled: false
 
   - tool_name: "sigcheck_amd64"
     file_pattern: "(?i)^sigcheck64.exe$"
-    enabled: true
+    enabled: false
 
   - tool_name: "Strings"
     file_pattern: "(?i)^strings64.exe$"
-    enabled: true
+    enabled: false
 
   - tool_name: "ProcessExplorer"
     file_pattern: "(?i)^procexp64.exe$"
-    enabled: true
+    enabled: false
 
   # Other Tools
   - tool_name: "SigmaProfiles"
     file_pattern: "(?i)^profiles.json$"
-    enabled: true
+    enabled: false
 
   - tool_name: "HardeningKitty"
     file_pattern: "(?i)^windows_hardening.*\\.zip$"
-    enabled: true
+    enabled: false
 
   # Thor / Microsoft MRT removed — see top-level threat_intel comment.
 
   - tool_name: "FTKImager"
     file_pattern: "(?i)^FTKImager-commandline.zip$"
-    enabled: true
+    enabled: false
 
   - tool_name: "linforce"
     file_pattern: "(?i)^linforce.sh$"
-    enabled: true
+    enabled: false
 
   - tool_name: "WinPmem"
     file_pattern: "(?i)^winpmem.*\\.exe$"
-    enabled: true
+    enabled: false
 
   # Volatility removed from server inventory — see top-level
   # memory_tools comment. Memory analysis goes through VolWeb now.
@@ -789,17 +804,17 @@ velociraptor_inventory:
   # OSQuery
   - tool_name: "OSQueryWindows"
     file_pattern: "(?i)^osquery-.*\\.windows\\.x86_64\\.msi$"
-    enabled: true
+    enabled: false
 
   - tool_name: "OSQueryLinux"
     file_pattern: "(?i)^osquery_.*\\.linux_amd64\\.deb$"
-    enabled: true
+    enabled: false
 
   - tool_name: "OSQueryDarwin"
     file_pattern: "(?i)^osquery-.*\\.pkg$"
-    enabled: true
+    enabled: false
 
   # Network tools
   - tool_name: "etl2pcapng"
     file_pattern: "(?i)^etl2pcapng\\.exe$"
-    enabled: true
+    enabled: false

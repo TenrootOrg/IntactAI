@@ -1860,10 +1860,11 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         except Exception as e:
             log(f"velociraptor-collector staging raised: {e}", "warning")
 
-        # Place + register the bundled Velociraptor tools (lolrmm,
-        # Hayabusa, YARA, EZ tools) serve_locally so air-gap collector
-        # generation for tool-backed artifacts (cve_management, etc.)
-        # doesn't reach the internet. See _restore_and_configure_tools.
+        # Place + register the bundled DEFAULT Velociraptor tools
+        # (lolrmm, Autoruns, LastActivityView — the only tools the
+        # shipped default blueprints use) serve_locally so air-gap
+        # collector generation for tool-backed artifacts (cve_management,
+        # etc.) doesn't reach the internet. See _restore_and_configure_tools.
         try:
             _restore_and_configure_tools(package_dir, logger=log)
         except Exception as e:

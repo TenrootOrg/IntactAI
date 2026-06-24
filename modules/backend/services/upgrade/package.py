@@ -1509,8 +1509,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # scripts/regenerate_artifact_bundle.py when upstream changes.
 
                 # ── Bundle Velociraptor TOOLS for air-gap ──────────────
-                # Artifacts reference external tools (lolrmm.csv,
-                # Hayabusa, YARA, Eric Zimmerman tools, etc.) that
+                # Some artifacts reference external tools that
                 # velociraptor's client_repack fetches from the
                 # internet at COLLECTOR-GENERATION time. On an air-gap
                 # target that fetch fails — 2026-06-16 incident:
@@ -1518,13 +1517,18 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # `client_repack: Get ".../lolrmm.csv": lookup
                 # github.com ... connection refused`. The artifacts
                 # themselves were present (bundled zips); the TOOL the
-                # artifact embeds was not. Download every tool from
-                # data/tools_inventory.yaml into the package so the
-                # apply side can place them in /data/tools/ + register
-                # them serve_locally. Reuses the same downloader the
+                # artifact embeds was not. Bundle the DEFAULT tool tier
+                # (enabled:true in data/tools_inventory.yaml — the only
+                # tools the shipped default blueprints actually use:
+                # lolrmm.csv, Autoruns, LastActivityView) into the package
+                # so the apply side can place them in /data/tools/ +
+                # register them serve_locally. Optional tools (Hayabusa,
+                # YARA, EZ tools, etc.) are NOT used by any default
+                # blueprint and are only bundled when an operator flips
+                # options.download_tools. Reuses the same downloader the
                 # install.sh / Maintenance→Refresh-Tools path uses.
-                log("Bundling DEFAULT Velociraptor tools (lolrmm, Hayabusa, YARA, "
-                    "EZ tools, etc.) for air-gap collector generation...", "info")
+                log("Bundling DEFAULT Velociraptor tools (lolrmm, Autoruns, "
+                    "LastActivityView) for air-gap collector generation...", "info")
                 try:
                     from services.tools_download_service import (
                         load_tools_config, download_tools_from_config,
