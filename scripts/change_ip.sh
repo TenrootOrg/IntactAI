@@ -3,10 +3,11 @@
 #
 # config.yaml's `domain:` is the single source of truth for the platform
 # IP. install.sh propagates it into modules/velociraptor/.env, the TLS
-# certs (CN), and the Velociraptor client installers; every other module
-# talks over Docker DNS and holds no literal IP. This script repoints all
-# of that to a new IP in one shot and restarts the affected containers so
-# the platform is reachable on the new address.
+# certs (CN), the Velociraptor client installers, and VolWeb's Django CSRF
+# trusted origins (modules/volweb/.env); every other module talks over
+# Docker DNS and holds no literal IP. This script repoints all of that to a
+# new IP in one shot and restarts the affected containers so the platform is
+# reachable on the new address.
 #
 # Usage: sudo ./scripts/change_ip.sh <NEW_IP> [-y|--yes]
 #
@@ -140,8 +141,12 @@ update_env_files
 # ---------------------------------------------------------------------------
 # 3. Safety-net sweep for any stray literal old-IP occurrences.
 #    config.yaml + velociraptor/.env are already updated above, so this only
-#    catches hand-edits elsewhere. -I skips binaries; we also exclude certs
-#    and MSI/binary installers (regenerated separately, never text-edited).
+#    catches hand-edits elsewhere (e.g. volweb/.env's CSRF origins). -I skips
+#    binaries; we exclude certs + MSI/binary installers (regenerated
+#    separately, never text-edited). We MUST also skip test dirs/fixtures:
+#    the fusion test fixtures embed forensic data (e.g. browser-history URLs)
+#    that legitimately contains the platform IP as DATA — rewriting it would
+#    silently corrupt the fixtures and break the fusion tests.
 # ---------------------------------------------------------------------------
 log_info "Sweeping for stray occurrences of $OLD_IP …"
 old_esc="${OLD_IP//./\\.}"
@@ -150,6 +155,7 @@ while IFS= read -r f; do
     [[ -n "$f" ]] && sweep_hits+=("$f")
 done < <(grep -rIl -F \
     --exclude-dir=.git --exclude-dir=node_modules \
+    --exclude-dir=tests --exclude-dir=fixtures \
     --exclude='*.msi' --exclude='*.crt' --exclude='*.pem' --exclude='*.key' \
     -- "$OLD_IP" \
     "${SCRIPT_DIR}/modules" "${SCRIPT_DIR}/scripts" "$CONFIG_FILE" 2>/dev/null)
@@ -183,9 +189,10 @@ if ! docker info >/dev/null 2>&1; then
     log_warn "Docker does not appear to be running — skipping container restarts."
     log_warn "Start the stacks yourself, then re-run: bash scripts/generate_clients.sh"
 else
-    # Velociraptor: its server.config.yaml lives in a persistent volume and
-    # the entrypoint only generates it when ABSENT — so a plain recreate keeps
-    # the OLD IP, and client.config.yaml (regenerated every start) inherits it.
+    # Velociraptor: its server.config.yaml lives in the host bind-mount
+    # data/velociraptor/ (was a named volume pre-2026-06-23) and the entrypoint
+    # only generates it when ABSENT — so a plain recreate keeps the OLD IP, and
+    # client.config.yaml (regenerated every start) inherits it.
     # Patch the persisted server config in place (only the server_urls /
     # public_url / hostname lines hold the IP; the CA/cert blocks don't, and
     # clients pin the CA not the hostname), then restart so the entrypoint
@@ -233,6 +240,18 @@ else
         docker restart intact_backend >/dev/null 2>&1 \
             && log_success "  Backend restarted" \
             || log_warn "  Backend restart failed — check 'docker logs intact_backend'"
+    fi
+
+    # VolWeb (memory-forensics): Django's CSRF trusted origins are derived from
+    # the platform IP (VOLWEB_CSRF_TRUSTED_ORIGINS in modules/volweb/.env, which
+    # the sweep above repointed to $NEW_IP). The backend reads it at startup, so
+    # a recreate is required — without it, browser POSTs through the proxy fail
+    # CSRF on the new IP. `up -d --force-recreate` re-reads the updated .env.
+    if docker ps -a --format '{{.Names}}' | grep -q '^intact_volweb_backend$'; then
+        log_info "Recreating VolWeb so its CSRF origins pick up $NEW_IP…"
+        ( cd "${SCRIPT_DIR}/modules/volweb" && docker compose up -d --force-recreate ) >/dev/null 2>&1 \
+            && log_success "  VolWeb recreated" \
+            || log_warn "  VolWeb recreate failed — re-run: (cd modules/volweb && docker compose up -d --force-recreate)"
     fi
 
     # nginx: clears stale upstream DNS cache AND makes them serve the new cert.
