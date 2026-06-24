@@ -351,6 +351,56 @@ def find_sketch_by_name(sketch_name, timesketch_config, logger=None):
         return None
 
 
+def fetch_sketch_events(sketch_id, timesketch_config, *, limit=2000, logger=None):
+    """Pull the analyst-relevant events from a sketch — those an analyzer TAGGED
+    (SIGMA / threat-intel hits) or an analyst STARRED/commented — so the fusion
+    layer can ingest TimeSketch findings.
+
+    TimeSketch keeps the timeline on its own server (inside the sketch), not in the
+    workflow run row, so fusion has nothing to map from the run alone. This fetches
+    the distilled subset on demand. NEVER the whole (potentially millions-row)
+    timeline — only tagged/starred events. Returns a list of event dicts (each
+    hit's `_source`: datetime / message / tag / parser / ...). Best-effort: returns
+    [] on any failure (TS unreachable, bad creds, empty sketch) so the fuse never
+    breaks because TimeSketch is down."""
+    def log(message, level="info"):
+        print(f"[TIMESKETCH] {message}", flush=True)
+        if logger:
+            try:
+                logger(f"[TIMESKETCH] {message}", level)
+            except Exception:
+                pass
+    try:
+        sid = int(sketch_id)
+    except (TypeError, ValueError):
+        return []
+    api = None
+    try:
+        api = _connect_timesketch_api(timesketch_config, logger)
+        if not api:
+            return []
+        sketch = api.get_sketch(sid)
+        query = "_exists_:tag OR label:__ts_star OR label:__ts_comment"
+        res = sketch.explore(query_string=query, as_pandas=False, max_entries=limit)
+        objs = res.get("objects") if isinstance(res, dict) else (res or [])
+        events = []
+        for o in (objs or []):
+            src = o.get("_source") if isinstance(o, dict) else None
+            if isinstance(src, dict):
+                events.append(src)
+        log(f"fusion: pulled {len(events)} analyst-relevant event(s) from sketch {sid}")
+        return events
+    except Exception as e:
+        log(f"fusion: could not fetch events from sketch {sid}: {e}", "warning")
+        return []
+    finally:
+        if api is not None:
+            try:
+                api.session.close()
+            except Exception:
+                pass
+
+
 def import_to_timesketch(plaso_file, sketch_name, timeline_name, timesketch_config, logger=None, sketch_id=None, wait_timeout=10000, run_id=None):
     """Import Plaso file to Timesketch using direct Python API.
 

@@ -306,8 +306,13 @@ function render(info,md,g){
           <div style="color:var(--muted);font-size:12px">${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
       </div>
       ${info.is_stale ? `<div style="margin:8px 0;padding:8px 12px;border:1px solid #d29922;border-radius:6px;background:#2b2400;color:#e3b341;font-size:13px;display:flex;align-items:center;gap:10px;justify-content:space-between">
-        <span>ℹ ${(info.stale_run_ids||[]).length} new run(s) loaded — the data below (hosts, entities, links, findings, risk &amp; timeline) is up to date. The report &amp; chat still reflect the earlier scan; Save &amp; rescan to refresh them.</span>
-        <button onclick="doRescan('${info.case_id}')" style="white-space:nowrap;cursor:pointer">💾 Save &amp; rescan</button>
+        <span>${info.data_stale
+          ? `ℹ ${info.data_stale} new run(s) available — click <b>Refusion</b> to fold them into the data (fast, no LLM), or <b>Rescan (LLM)</b> to also refresh the report &amp; chat.`
+          : `ℹ The data is current. The report &amp; chat reflect an earlier scan — <b>Rescan (LLM)</b> to refresh them.`}</span>
+        <span style="display:flex;gap:8px;white-space:nowrap">
+          ${info.data_stale ? `<button onclick="doRefusion('${info.case_id}')" style="cursor:pointer;background:var(--info);border-color:var(--info);color:#0d1117">🔄 Refusion</button>` : ''}
+          <button onclick="doRescanLLM('${info.case_id}')" style="cursor:pointer;background:var(--acc);border-color:var(--acc)">✨ Rescan (LLM)</button>
+        </span>
       </div>` : ''}
       <div style="margin:6px 0 14px">${statSpans(g)}${tokenBadge(info.token_ab)}</div>
       <div class="tabs">
@@ -381,6 +386,13 @@ function renderConfig(info){
         <label>Time window — end <span style="color:var(--muted)">(empty = up to now)</span></label><input id="cf-end" value="${esc(tw.end||'')}" placeholder="empty = now / open"/>
         <label>Min severity</label>
         <select id="cf-sev">${['informational','low','medium','high','critical'].map(s=>opt(s,s,info.min_severity||'informational')).join('')}</select>
+        <label style="margin-top:8px">Entity limit <span style="color:var(--muted)">(graph cap)</span></label>
+        <input id="cf-maxent" type="number" min="100" max="20000" step="100" value="${info.max_entities||2500}" placeholder="2500" title="Max entities kept in the fused graph. Findings + hosts/IOCs/accounts/vulns are always kept; the rest fills by anomaly. Default 2500."/>
+        <label style="margin-top:8px">Modules <span style="color:var(--muted)" title="Which module runs fuse into the graph. Disabled modules stay tagged to the case but don't contribute yet.">(what fuses)</span></label>
+        <div id="cf-modules" style="border:1px solid var(--bd);border-radius:6px;padding:6px;display:flex;flex-direction:column;gap:3px">
+          ${(info.modules_catalog||[]).map(m=>{const on=(info.fusion_modules||[]).includes(m.name),dis=!m.available;
+            return `<label class="hostrow" style="${dis?'opacity:.45;cursor:not-allowed':''}"><input type="checkbox" data-mod="${m.name}" ${on?'checked':''} ${dis?'disabled':''} style="width:auto"/> <span class="t">${esc(m.label)}</span>${dis?' <span style="color:var(--muted);font-size:10px">— disabled</span>':(m.default?' <span style="color:var(--muted);font-size:10px">— default</span>':'')}</label>`;}).join('')}
+        </div>
         <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled?'checked':''} style="width:auto"/> Mask hosts / users / IPs</label>
         <textarea id="cf-maskpat" placeholder="extra patterns, one per line (optional)" style="min-height:38px">${esc((mk.patterns||[]).join('\n'))}</textarea>
       </div>
@@ -411,8 +423,9 @@ function renderConfig(info){
       </div>
     </div>
     <div class="cfgactions">
-      <button onclick="doRescan('${info.case_id}')">💾 Save &amp; rescan</button>
-      <button class="ghost" onclick="captureBaseline('${info.case_id}')">⚑ Capture baseline <span class="info" title="Snapshot this CLEAN case's normal noise (provisioning, scheduled tasks, known services). Future cases on the same host automatically subtract it, so real attacks stand out. Use after a host is confirmed clean.">i</span></button>
+      <button class="ghost" onclick="doSave('${info.case_id}')" title="Save these settings only — no re-fuse, no LLM. Takes effect on the next Refusion or Rescan (LLM).">💾 Save</button>
+      <button onclick="doRefusion('${info.case_id}')" style="background:var(--info);border-color:var(--info);color:#0d1117" title="Re-fuse the deterministic graph from the current runs + these settings — updates hosts, entities, links, findings, risk &amp; timeline. Fast, no LLM, no tokens.">🔄 Refusion</button>
+      <button onclick="doRescanLLM('${info.case_id}')" style="background:var(--acc);border-color:var(--acc)" title="Re-fuse, then regenerate the report &amp; chat narrative with the LLM. Spends tokens — use when you want the written analysis to reflect the latest data.">✨ Rescan (LLM)</button>
     </div>`;
   loadHosts(info.case_id);
   // friendly single-field date+time picker — choosing a date pops the hour inline
@@ -473,20 +486,40 @@ function hostSelectAll(inc){
   _hostList.filter(h=>!q||(h.host||'').toLowerCase().includes(q)).forEach(h=>inc?_hostExc.delete(h.host):_hostExc.add(h.host));
   renderHosts();
 }
-async function doRescan(id){
+// Read the config rail into a cfg object (logo is read async).
+async function _railCfg(){
   const logo=await _fileToDataUrl($('#cf-logo').files[0]);
   const cfg={
     time_window:{start:$('#cf-start').value||null,end:$('#cf-end').value||null},
     min_severity:$('#cf-sev').value, audience:$('#cf-aud').value,
     customer_name:$('#cf-cust').value, tlp:$('#cf-tlp').value,
     master_prompt:$('#cf-mp').value,
+    max_entities:parseInt($('#cf-maxent')?.value)||2500,
+    fusion_modules:[...document.querySelectorAll('#cf-modules input[data-mod]:checked')].map(c=>c.dataset.mod),
     excluded_hosts:[..._hostExc],            // hosts unchecked = dropped from report/LLM
     masking:{enabled:$('#cf-mask').checked, patterns:$('#cf-maskpat').value.split('\n').map(s=>s.trim()).filter(Boolean)}
   };
   if(logo) cfg.customer_logo_b64=logo;
-  toast('saving + rescanning…');
-  await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
-  toast('saved — report regenerated'); tab='report'; openCase(id);
+  return cfg;
+}
+// Save = persist the settings only. No re-fuse, no LLM — takes effect next Refusion.
+async function doSave(id){
+  toast('saving settings…');
+  await api('/api/cases/'+id+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(await _railCfg())});
+  toast('settings saved — apply with Refusion or Rescan (LLM)');
+}
+// Refusion = save + re-fuse the DATA (deterministic graph). Fast, no LLM/tokens.
+async function doRefusion(id){
+  toast('refusion — updating the data…');
+  await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(await _railCfg())});
+  toast('data updated'); openCase(id);
+}
+// Rescan (LLM) = save + re-fuse THEN regenerate report + chat narrative with the LLM.
+async function doRescanLLM(id){
+  toast('rescan (LLM) — refusing + regenerating report…');
+  await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(await _railCfg())});
+  await api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})});
+  toast('report + chat regenerated (LLM)'); tab='report'; openCase(id);
 }
 function synthFromChat(id){toast('synthesizing from chat…');
   fetch('/api/cases/'+id+'/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(async r=>{
@@ -638,8 +671,6 @@ function logClear(){
   if(!confirm('Clear the activity log for this case?'))return;
   api('/api/cases/'+window._logCase+'/log',{method:'DELETE'}).then(_=>{toast('log cleared');logRefresh();});
 }
-function captureBaseline(id){toast('capturing baseline…');
-  api('/api/cases/'+id+'/baseline',{method:'POST'}).then(d=>toast('baseline captured: '+((d.baseline||{}).sigma_titles||0)+' titles'));}
 
 let chatHist=[];
 function renderChat(id){

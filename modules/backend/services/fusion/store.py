@@ -20,6 +20,49 @@ BASELINE_TYPE = "fusion_baseline"
 DEFAULT_CASE_NAME = "Default"
 SYSTEM_CASE_NAME = "System"
 
+# Per-case storage cap on the fused graph (operator-tunable via the config rail).
+DEFAULT_MAX_ENTITIES = 2500
+
+# Fusion modules: which run types each selectable module groups, plus which are
+# offered in the config picker right now. `available` modules can be toggled;
+# `disabled` ones are shown greyed-out (their runs stay tagged but never fuse).
+# Default for new + existing cases is velociraptor only.
+FUSION_MODULE_TYPES = {
+    "velociraptor": {"velociraptor_collection", "velociraptor_hunt", "velociraptor_upload"},
+    "memory": {"memory"},
+    "timesketch": {"timesketch"},
+    "cve": {"cve_scan"},
+    "aws": {"aws_scan"},
+    "azure": {"azure_scan"},
+}
+FUSION_MODULES_AVAILABLE = ("velociraptor", "memory")
+FUSION_MODULES_DEFAULT = ["velociraptor"]
+_FUSION_MODULE_LABELS = {
+    "velociraptor": "Velociraptor", "memory": "Memory (VolWeb)",
+    "timesketch": "TimeSketch", "cve": "CVE", "aws": "AWS", "azure": "Azure",
+}
+
+
+def fusion_modules_catalog():
+    """The module picker model for the UI: every known fusion module with its
+    label, whether it's selectable right now, and whether it's on by default."""
+    return [{"name": m, "label": _FUSION_MODULE_LABELS.get(m, m),
+             "available": m in FUSION_MODULES_AVAILABLE,
+             "default": m in FUSION_MODULES_DEFAULT}
+            for m in FUSION_MODULE_TYPES]
+
+
+def _enabled_run_types(d):
+    """Run types fusable for this case = the union of its enabled modules' types.
+    Unknown/None modules fall back to the velociraptor-only default."""
+    mods = d.get("fusion_modules")
+    if mods is None:
+        mods = FUSION_MODULES_DEFAULT
+    allowed = set()
+    for m in mods:
+        allowed |= FUSION_MODULE_TYPES.get(m, set())
+    return allowed
+
 
 def _env_key_from_members(members) -> str | None:
     """Stable environment identity = normalised primary hostname across member runs.
@@ -39,23 +82,6 @@ def _env_key_from_members(members) -> str | None:
         if host:
             return keys.norm_host(str(host))
     return None
-
-
-def capture_baseline(case_id, *, env_key=None) -> dict:
-    """Snapshot a known-CLEAN case's fingerprint as the environment baseline. Stored
-    as its own workflow row (automation_type='fusion_baseline') — no new table."""
-    ws = _ws()
-    d = get_case(case_id)
-    members = _members_for_case(case_id, d)
-    env_key = env_key or _env_key_from_members(members) or case_id
-    g = fuse_case(case_id, _record=False)
-    fp = correlate.baseline_fingerprint(g)
-    rid = ws.create_automation_run(
-        automation_type=BASELINE_TYPE, name=f"Baseline — {env_key}",
-        details={"env_key": env_key, "source_case": case_id, "fingerprint": fp})
-    ws.update_run_status(rid, "completed", details={"env_key": env_key,
-                         "source_case": case_id, "fingerprint": fp})
-    return fp
 
 
 def set_disposition(case_id, target, *, verdict="benign", attribution="it_admin",
@@ -435,6 +461,36 @@ def _velo_hunt_contribution(rid, det, log=None):
     return ents, rels
 
 
+def _distill_ts_events(events, *, per_tag=5):
+    """Collapse a large tagged-event pull into a small, representative set: keep up
+    to `per_tag` highest-anomaly events per distinct tag (one tag = one analyzer /
+    SIGMA detection class). A KAPE timeline routinely has thousands of 'logon-event'
+    rows that would flood the 2500-entity graph and bury the real signal; this keeps
+    every distinct detection (e.g. 'rare-domain') while capping the noisy classes."""
+    from .anomaly import score_row
+    buckets = {}
+    for e in events or []:
+        if not isinstance(e, dict):
+            continue
+        tags = e.get("tag") or ["_untagged"]
+        if not isinstance(tags, list):
+            tags = [tags]
+        try:
+            sc = score_row(e)
+        except Exception:
+            sc = 0
+        for t in tags:
+            buckets.setdefault(str(t), []).append((sc, e))
+    out, seen = [], set()
+    for rows in buckets.values():
+        rows.sort(key=lambda x: x[0], reverse=True)
+        for _sc, e in rows[:per_tag]:
+            if id(e) not in seen:
+                seen.add(id(e))
+                out.append(e)
+    return out
+
+
 def _contribution_for_run(run, log=None):
     atype, rid = run.get("automation_type"), run.get("run_id")
     det = run.get("details") or {}
@@ -459,10 +515,58 @@ def _contribution_for_run(run, log=None):
             return _cve_contribution(rid, det)
         if atype == "timesketch":
             evs = det.get("events") or det.get("timeline_events")
+            fetched = False
+            if not evs and (det.get("sketch_id") or det.get("sketch_name")):
+                # TimeSketch keeps the timeline on its server (the sketch), not in
+                # the run row — pull the analyst-relevant subset (tagged SIGMA /
+                # analyzer hits + starred) so it actually contributes to the case.
+                # The run often stores only sketch_name (sketch_id is None), so
+                # resolve the id by name. Best-effort: [] if TS is unreachable, so
+                # the fuse never blocks on TimeSketch.
+                try:
+                    from services.timesketch_service import (
+                        fetch_sketch_events, find_sketch_by_name)
+                    from config import TIMESKETCH_CONFIG
+                    sid = det.get("sketch_id")
+                    if not sid and det.get("sketch_name"):
+                        sid = find_sketch_by_name(det["sketch_name"], TIMESKETCH_CONFIG, logger=log)
+                    if sid:
+                        evs = fetch_sketch_events(sid, TIMESKETCH_CONFIG, logger=log)
+                        fetched = True
+                except Exception as _e:
+                    if log:
+                        log(f"fuse: timesketch fetch for {rid} skipped: {_e}", "warning")
+                    evs = None
             if evs:
-                asset = keys.asset_id(det.get("client_id") or rid)
-                return map_timesketch(evs, run_id=rid, asset=asset,
-                                      hostname=det.get("client_name"))
+                evs = _distill_ts_events(evs, per_tag=5)
+                if fetched:
+                    # Cache the distilled set on the run so later fuses (dispositions,
+                    # timeline validations) don't re-hit TimeSketch every time. A
+                    # fresh Refusion after new analyzer tags re-imports the timeline.
+                    try:
+                        _ws().update_run_status(rid, run.get("status") or "completed",
+                                                details={"timeline_events": evs})
+                    except Exception:
+                        pass
+                # Resolve the REAL host so timesketch merges with its velociraptor/
+                # memory node instead of spawning a synthetic run-keyed host. The
+                # run stores the client under details.clients[]/hostnames, not the
+                # top-level client_name/client_id. (Multi-client runs attach to the
+                # first host — per-host splitting is a later refinement.)
+                client_id = det.get("client_id")
+                hostname = det.get("client_name")
+                cl = det.get("clients")
+                if isinstance(cl, list) and cl and isinstance(cl[0], dict):
+                    client_id = client_id or cl[0].get("client_id")
+                    hostname = hostname or cl[0].get("client_name")
+                if not hostname:
+                    hns = det.get("hostnames")
+                    if isinstance(hns, list) and hns:
+                        hostname = hns[0]
+                    elif isinstance(hns, dict) and hns:
+                        hostname = next(iter(hns.values()), None)
+                asset = keys.asset_id(client_id or hostname or rid)
+                return map_timesketch(evs, run_id=rid, asset=asset, hostname=hostname)
         if atype in ("aws_scan", "azure_scan"):
             prov = "aws" if atype == "aws_scan" else "azure"
             finds = det.get("findings") or det.get("sigma_findings")
@@ -491,11 +595,21 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     if contributions_override is not None:
         contributions = contributions_override
     else:
-        contributions = []
+        # Module gating: only fuse runs whose module is enabled for this case
+        # (default = velociraptor only). Disabled modules' runs stay tagged
+        # members but contribute nothing to the graph. Drop the filtered runs
+        # from `members` too so run_ids/baseline reflect what was actually fused.
+        allowed = _enabled_run_types(d)
+        contributions, kept = [], []
         for rid in members:
             run = ws.get_automation_run(rid)
-            if run:
-                contributions.append(_contribution_for_run(run, log=log))
+            if not run:
+                continue
+            if run.get("automation_type") not in allowed:
+                continue
+            kept.append(rid)
+            contributions.append(_contribution_for_run(run, log=log))
+        members = kept
     window = d.get("time_window") or None
     min_sev = d.get("min_severity", "informational")
     # subtract the environment baseline (if one was captured) so provisioning /
@@ -584,7 +698,10 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         token_ab = {}
 
     ws.update_run_status(case_id, "completed",
-                         details={"fusion_graph": g.pruned().to_dict(), "report_md": report,
+                         details={"fusion_graph": g.pruned(
+                                      max_entities=int(d.get("max_entities")
+                                                       or DEFAULT_MAX_ENTITIES)).to_dict(),
+                                  "report_md": report,
                                   "token_ab": token_ab, "analysis": analysis,
                                   # Record exactly which member runs this graph was
                                   # built from, so the UI can detect when new runs
@@ -645,25 +762,6 @@ def report_stale_runs(case_id, d=None) -> list:
                 and r.get("run_id") not in rep):
             out.append(r.get("run_id"))
     return out
-
-
-def refresh_graph_if_stale(case_id, d=None) -> bool:
-    """Auto-include newly-completed member runs in the deterministic graph so the
-    data the operator sees on load is always current — WITHOUT touching the LLM
-    report/chat (fuse_case reuses the cached report when one exists, so this is
-    fast + token-free). Returns True if a re-fuse happened. Cheap no-op when the
-    graph already covers every member (stale_member_runs is a member scan, no
-    graph build)."""
-    d = d or get_case(case_id)
-    if not d or not d.get("fused_run_ids"):
-        return False          # never fused yet → nothing to refresh (first scan)
-    if not stale_member_runs(case_id, d):
-        return False
-    try:
-        fuse_case(case_id)
-        return True
-    except Exception:
-        return False
 
 
 def watch_and_fuse(case_id, run_id, *, poll=10, timeout=10800) -> None:
@@ -907,6 +1005,15 @@ def set_analysis_config(case_id, cfg) -> dict:
         patch["included_run_ids"] = cfg["included_run_ids"]
     if "excluded_hosts" in cfg:            # host labels to drop from the report/LLM
         patch["excluded_hosts"] = [h for h in (cfg.get("excluded_hosts") or []) if h]
+    if "max_entities" in cfg:              # operator cap on the stored graph
+        try:
+            patch["max_entities"] = max(100, min(int(cfg["max_entities"]), 20000))
+        except (TypeError, ValueError):
+            pass
+    if "fusion_modules" in cfg:            # which modules fuse (only available ones honored)
+        mods = cfg.get("fusion_modules") or []
+        patch["fusion_modules"] = [m for m in mods
+                                   if m in FUSION_MODULES_AVAILABLE] or list(FUSION_MODULES_DEFAULT)
     if patch:
         _merge_case_details(case_id, patch)
     return {k: ("<logo>" if k == "customer_logo_b64" else v) for k, v in patch.items()}

@@ -52,8 +52,6 @@ def _audit_label(action):
         return "Clear chat" if request.method == "DELETE" else "Chat"
     if a == "report":
         return "Regenerate report"
-    if a == "baseline":
-        return "Capture baseline"
     if a == "export":
         return "Export case"
     if a == "import":
@@ -109,7 +107,7 @@ def _audit_detail(action, is_err, resp):
             return "report regenerated"
         if a in ("rescan", "config", "hosts", "masking"):
             return "configuration updated, case re-fused"
-        if a in ("baseline", "export", "import"):
+        if a in ("export", "import"):
             return action
         return ""
     except Exception:
@@ -275,15 +273,13 @@ def get_case(case_id):
     d = store.get_case(case_id)
     if not d:
         return jsonify({"error": "case not found"}), 404
-    # Opening a case auto-includes any newly-completed member runs in the
-    # deterministic graph, so the data (counts/risk/timeline) is always current
-    # with no manual step. Token-free — reuses the cached LLM report. Re-read the
-    # case after, since the re-fuse rewrote it.
-    if store.refresh_graph_if_stale(case_id, d):
-        d = store.get_case(case_id) or d
-    # Data is now current; only the LLM report/chat narrative can lag it. This is
-    # what the "Save & rescan to refresh the report" hint keys off.
-    stale = store.report_stale_runs(case_id, d)
+    # Loading is FAST: show the cached graph as-is, no auto re-fuse (re-fusing a
+    # large case on every open is slow). Surface two independent staleness signals
+    # so the UI can offer the right action:
+    #   data_stale   -> new runs not yet in the graph  -> Refusion (data, no LLM)
+    #   report_stale -> new runs not in the report/chat -> Rescan (LLM)
+    data_stale = store.stale_member_runs(case_id, d)
+    report_stale = store.report_stale_runs(case_id, d)
     return jsonify({"case_id": case_id, "name": d.get("name"),
                     "time_window": d.get("time_window"),
                     "initial_access_estimate": d.get("initial_access_estimate"),
@@ -301,11 +297,18 @@ def get_case(case_id):
                     "dispositions": d.get("dispositions") or [],
                     "token_ab": d.get("token_ab") or {},
                     "counts": store.graph_counts(case_id),
-                    # New member runs that finished since the graph was last
-                    # fused — the UI shows the cached graph + a "rescan
-                    # suggested" banner instead of silently re-fusing on load.
-                    "stale_run_ids": stale,
-                    "is_stale": bool(stale),
+                    # entity-cap textbox + module picker (velociraptor default;
+                    # memory optional; timesketch/cve/cloud disabled for now)
+                    "max_entities": d.get("max_entities") or store.DEFAULT_MAX_ENTITIES,
+                    "fusion_modules": d.get("fusion_modules") or list(store.FUSION_MODULES_DEFAULT),
+                    "modules_catalog": store.fusion_modules_catalog(),
+                    # Staleness split: data (new runs not in the graph) drives the
+                    # Refusion hint; report (new runs not in the narrative) drives
+                    # the Rescan (LLM) hint. Neither auto-runs on load.
+                    "data_stale": len(data_stale),
+                    "report_stale": len(report_stale),
+                    "stale_run_ids": data_stale or report_stale,
+                    "is_stale": bool(data_stale or report_stale),
                     "llm_enabled": _llm_enabled()})
 
 
@@ -318,14 +321,11 @@ def get_case_risk(case_id):
     d = store.get_case(case_id)
     if not d:
         return jsonify({"error": "case not found"}), 404
-    # Auto-include new runs so the risk table reflects current data (no manual rescan).
-    if store.refresh_graph_if_stale(case_id, d):
-        d = store.get_case(case_id) or d
     g = store.load_graph(case_id)
     rows = render.risk_table(g, window=d.get("time_window") or None,
                              min_severity=d.get("min_severity") or "informational")
     return jsonify({"case_id": case_id, "rows": rows, "total": len(rows),
-                    "is_stale": bool(store.report_stale_runs(case_id, d))})
+                    "is_stale": bool(store.stale_member_runs(case_id, d))})
 
 
 @case_bp.route("/api/cases/<case_id>", methods=["DELETE"])
@@ -465,6 +465,17 @@ def rescan(case_id):
     cfg = request.get_json(silent=True) or {}
     res = store.rescan(case_id, cfg)
     return jsonify({"case_id": case_id, "status": "rescanned", **res})
+
+
+@case_bp.route("/api/cases/<case_id>/config", methods=["POST"])
+def save_config(case_id):
+    """Persist the config-rail settings WITHOUT re-fusing — the plain Save button.
+    The settings take effect on the next Refusion / Rescan (LLM)."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    cfg = request.get_json(silent=True) or {}
+    saved = store.set_analysis_config(case_id, cfg)
+    return jsonify({"case_id": case_id, "status": "saved", "saved": list(saved.keys())})
 
 
 @case_bp.route("/api/cases/<case_id>/members", methods=["GET"])
@@ -637,8 +648,6 @@ def graph(case_id):
 def timeline(case_id):
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
-    # Auto-include new runs so the timeline reflects current data (no manual rescan).
-    store.refresh_graph_if_stale(case_id)
     # each row carries finding_id + validation status (real/not_real/unknown)
     return jsonify({"case_id": case_id, "timeline": store.get_timeline(case_id)})
 
@@ -712,13 +721,3 @@ def disposition(case_id):
     return jsonify({"case_id": case_id, "disposition": disp})
 
 
-@case_bp.route("/api/cases/<case_id>/baseline", methods=["POST"])
-def baseline(case_id):
-    """Snapshot this (clean) case as the environment baseline so its noise subtracts from
-    future cases on the same host(s)."""
-    if not store.get_case(case_id):
-        return jsonify({"error": "case not found"}), 404
-    fp = store.capture_baseline(case_id)
-    return jsonify({"case_id": case_id, "baseline": {
-        "sigma_titles": len(fp.get("sigma_titles") or []),
-        "host_role": fp.get("host_role")}})

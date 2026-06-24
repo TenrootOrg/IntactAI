@@ -24,7 +24,7 @@ pipeline is modified, no new database.
 | `budget.py` | tokenizer-free `chars/4` budget guard + per-altitude caps (report/chat); `distilled()` step-down |
 | `calibrate.py` | finding-level precision/recall/F1 scorer + `build_baseline` + threshold `sweep` over the labeled fixtures |
 | `kb.py` | cross-case knowledge base on the running ES — index case entities, enrich new cases with prior sightings (**enrichment-only**, degrades silently without ES) |
-| `store.py` | Case CRUD + `fuse_case` (map → assemble w/ baseline+window → narrate → token A/B → KB) + `capture_baseline`/`load_baseline` + `watch_and_fuse` |
+| `store.py` | Case CRUD + `fuse_case` (map → assemble w/ baseline+window → narrate → token A/B → KB) + `load_baseline` + `watch_and_fuse` |
 
 ## API (`routes/case_routes.py`)
 ```
@@ -88,9 +88,9 @@ silently for ≥critical). `scope=environment` folds it into the baseline → su
 future cases. One correction → durable fleet-wide noise reduction.
 
 ## Accuracy: baseline-subtraction (the FP fix)
-Provisioning/automation produces attack-like SIGMA bursts. Capture a known-clean
-snapshot as a baseline (`store.capture_baseline`, an `automation_type='fusion_baseline'`
-row keyed by host); `fuse_case` then **subtracts** baseline SIGMA titles before emitting
+Provisioning/automation produces attack-like SIGMA bursts. A known-clean baseline
+(an `automation_type='fusion_baseline'` row keyed by host, grown from operator
+dispositions scoped to the environment); `fuse_case` then **subtracts** baseline SIGMA titles before emitting
 findings (never suppresses ≥critical), and the window-scoped **coordinated-activity**
 finding counts only *non-baseline* detections. On the committed purple-team fixtures this
 takes macro-F1 from 0.143 → **1.0** (clean silent, simulated attack fully recognized).

@@ -51,8 +51,7 @@ def test_new_endpoints_404_on_missing_case():
     c = _client()
     for path, method in [("/api/cases/nope/analysis", "get"),
                          ("/api/cases/nope/dispositions", "get"),
-                         ("/api/cases/nope/metrics", "get"),
-                         ("/api/cases/nope/baseline", "post")]:
+                         ("/api/cases/nope/metrics", "get")]:
         r = getattr(c, method)(path)
         assert r.status_code == 404, f"{path} should 404, got {r.status_code}"
 
@@ -82,13 +81,6 @@ def test_disposition_endpoint_requires_target_then_applies():
     # the disposition is now persisted + surfaced
     ds = _json(c.get(f"/api/cases/{cid}/dispositions"))["dispositions"]
     assert any(x.get("target") == "f_anything" for x in ds)
-
-
-def test_baseline_endpoint_returns_fingerprint_summary():
-    c = _client()
-    cid = _fake_case(c)
-    d = _json(c.post(f"/api/cases/{cid}/baseline"))
-    assert "baseline" in d and "sigma_titles" in d["baseline"]
 
 
 def test_runs_picker_contract():
