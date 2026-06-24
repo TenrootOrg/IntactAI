@@ -163,6 +163,32 @@ def run_startup_initialization():
     except Exception as e:
         print(f"[STARTUP] Could not check for pending upgrades: {e}", flush=True)
 
+    # Reap orphaned runs: anything left RUNNING/PENDING by the previous process was
+    # being driven by an in-backend worker thread that died with the restart and
+    # cannot resume — so it would otherwise hang at its last progress % forever.
+    # Mark them failed with a clear, actionable message. EXCLUDES online_upgrade
+    # (which intentionally survives the two-phase restart and resumes above) and
+    # server-side velociraptor_hunt (runs on the Velociraptor server, not here).
+    try:
+        from services.workflow_service import load_workflows, update_run_status
+        _REAP_TYPES = {"velociraptor_upload", "timesketch", "velociraptor_collection",
+                       "agentic", "cve_scan", "aws_scan", "azure_scan", "memory"}
+        _reaped = 0
+        for _w in (load_workflows() or []):
+            if (_w.get("automation_type") in _REAP_TYPES
+                    and _w.get("status") in ("running", "pending")):
+                try:
+                    update_run_status(_w["run_id"], "failed", error=(
+                        "Interrupted by a backend restart — the task's worker did "
+                        "not survive. Please re-run/re-upload."))
+                    _reaped += 1
+                except Exception:
+                    pass
+        if _reaped:
+            print(f"[STARTUP] Reaped {_reaped} run(s) orphaned by the restart", flush=True)
+    except Exception as e:
+        print(f"[STARTUP] Orphan-run reaper skipped: {e}", flush=True)
+
     # Initialize Elasticsearch
     try:
         print("[STARTUP] Initializing Elasticsearch...", flush=True)

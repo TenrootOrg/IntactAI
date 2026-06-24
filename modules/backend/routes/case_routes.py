@@ -300,7 +300,7 @@ def get_case(case_id):
                     # entity-cap textbox + module picker (velociraptor default;
                     # memory optional; timesketch/cve/cloud disabled for now)
                     "max_entities": d.get("max_entities") or store.DEFAULT_MAX_ENTITIES,
-                    "fusion_modules": d.get("fusion_modules") or list(store.FUSION_MODULES_DEFAULT),
+                    "fusion_modules": store.normalize_modules(d.get("fusion_modules")),
                     "modules_catalog": store.fusion_modules_catalog(),
                     # Staleness split: data (new runs not in the graph) drives the
                     # Refusion hint; report (new runs not in the narrative) drives

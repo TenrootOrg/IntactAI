@@ -23,43 +23,63 @@ SYSTEM_CASE_NAME = "System"
 # Per-case storage cap on the fused graph (operator-tunable via the config rail).
 DEFAULT_MAX_ENTITIES = 2500
 
-# Fusion modules: which run types each selectable module groups, plus which are
-# offered in the config picker right now. `available` modules can be toggled;
-# `disabled` ones are shown greyed-out (their runs stay tagged but never fuse).
-# Default for new + existing cases is velociraptor only.
+# Fusion modules: which run types each selectable module groups.
+#   velociraptor_agentic = runs from Velociraptor *Agentic* blueprints (the
+#       curated, bounded forensic collections + offline-collector imports).
+#   velociraptor_all     = ALL Velociraptor blueprints, incl. hunts — some hunt
+#       artifacts produce huge output, so this is the costly option (disabled).
+# `available` modules can be toggled in the UI; `disabled` ones are shown greyed
+# (their runs stay tagged but never fuse). Default = velociraptor_agentic only.
 FUSION_MODULE_TYPES = {
-    "velociraptor": {"velociraptor_collection", "velociraptor_hunt", "velociraptor_upload"},
+    "velociraptor_agentic": {"velociraptor_collection", "velociraptor_upload"},
+    "velociraptor_all": {"velociraptor_collection", "velociraptor_upload",
+                         "velociraptor_hunt"},
     "memory": {"memory"},
     "timesketch": {"timesketch"},
     "cve": {"cve_scan"},
     "aws": {"aws_scan"},
     "azure": {"azure_scan"},
+    # legacy alias for cases saved before the agentic/all split (maps to agentic)
+    "velociraptor": {"velociraptor_collection", "velociraptor_upload"},
 }
-FUSION_MODULES_AVAILABLE = ("velociraptor", "memory")
-FUSION_MODULES_DEFAULT = ["velociraptor"]
+# Order + membership of the UI picker (legacy 'velociraptor' alias is not shown).
+FUSION_MODULES_UI = ["velociraptor_agentic", "velociraptor_all", "memory",
+                     "timesketch", "cve", "aws", "azure"]
+# Selectable now: Velociraptor (Agentic) [default-on], Velociraptor (All) + Memory
+# [selectable, off]. The rest (TimeSketch/CVE/AWS/Azure) are shown greyed/disabled.
+FUSION_MODULES_AVAILABLE = ("velociraptor_agentic", "velociraptor_all", "memory")
+FUSION_MODULES_DEFAULT = ["velociraptor_agentic"]
 _FUSION_MODULE_LABELS = {
-    "velociraptor": "Velociraptor", "memory": "Memory (VolWeb)",
+    "velociraptor_agentic": "Velociraptor (Agentic)",
+    "velociraptor_all": "Velociraptor (All)",
+    "memory": "Memory (VolWeb)",
     "timesketch": "TimeSketch", "cve": "CVE", "aws": "AWS", "azure": "Azure",
 }
 
 
+def normalize_modules(mods):
+    """Map legacy module names to current ones + apply the default. Keeps cases
+    saved before the agentic/all rename working without a data migration."""
+    if not mods:
+        return list(FUSION_MODULES_DEFAULT)
+    out = ["velociraptor_agentic" if m == "velociraptor" else m for m in mods]
+    return out or list(FUSION_MODULES_DEFAULT)
+
+
 def fusion_modules_catalog():
-    """The module picker model for the UI: every known fusion module with its
-    label, whether it's selectable right now, and whether it's on by default."""
+    """The module picker model for the UI: every selectable fusion module with
+    its label, whether it's available right now, and whether it's on by default."""
     return [{"name": m, "label": _FUSION_MODULE_LABELS.get(m, m),
              "available": m in FUSION_MODULES_AVAILABLE,
              "default": m in FUSION_MODULES_DEFAULT}
-            for m in FUSION_MODULE_TYPES]
+            for m in FUSION_MODULES_UI]
 
 
 def _enabled_run_types(d):
     """Run types fusable for this case = the union of its enabled modules' types.
-    Unknown/None modules fall back to the velociraptor-only default."""
-    mods = d.get("fusion_modules")
-    if mods is None:
-        mods = FUSION_MODULES_DEFAULT
+    None/legacy modules fall back to the velociraptor-agentic default."""
     allowed = set()
-    for m in mods:
+    for m in normalize_modules(d.get("fusion_modules")):
         allowed |= FUSION_MODULE_TYPES.get(m, set())
     return allowed
 
@@ -731,10 +751,14 @@ def stale_member_runs(case_id, d=None) -> list:
     if fused is None:
         return []
     fused = set(fused)
+    # Only runs whose MODULE is enabled count as "new data to fold in" — a disabled
+    # module's runs can never enter the graph via Refusion, so flagging them as
+    # stale is misleading (the banner would prompt a Refusion that does nothing).
+    allowed = _enabled_run_types(d)
     ws = _ws()
     out = []
     for r in ws.get_automation_runs_by_case(case_id):
-        if (r.get("automation_type") in ws.AGENTIC_TYPES
+        if (r.get("automation_type") in allowed
                 and r.get("status") in ("completed", "success")
                 and r.get("run_id") not in fused):
             out.append(r.get("run_id"))
@@ -754,10 +778,11 @@ def report_stale_runs(case_id, d=None) -> list:
     if rep is None:
         return []
     rep = set(rep)
+    allowed = _enabled_run_types(d)   # only enabled-module runs can reach the report
     ws = _ws()
     out = []
     for r in ws.get_automation_runs_by_case(case_id):
-        if (r.get("automation_type") in ws.AGENTIC_TYPES
+        if (r.get("automation_type") in allowed
                 and r.get("status") in ("completed", "success")
                 and r.get("run_id") not in rep):
             out.append(r.get("run_id"))
@@ -1011,7 +1036,7 @@ def set_analysis_config(case_id, cfg) -> dict:
         except (TypeError, ValueError):
             pass
     if "fusion_modules" in cfg:            # which modules fuse (only available ones honored)
-        mods = cfg.get("fusion_modules") or []
+        mods = normalize_modules(cfg.get("fusion_modules"))
         patch["fusion_modules"] = [m for m in mods
                                    if m in FUSION_MODULES_AVAILABLE] or list(FUSION_MODULES_DEFAULT)
     if patch:

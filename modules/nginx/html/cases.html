@@ -96,6 +96,16 @@
   .cfgcol{flex:1;min-width:210px;display:flex;flex-direction:column}
   .cfgcol h4{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:2px 0 6px}
   .cfgactions{display:flex;gap:10px;padding:0 14px 14px;align-items:center;border-top:1px solid var(--bd);padding-top:12px}
+  .modwarn{font-size:11px;color:var(--med);line-height:1.35;margin:0 0 6px;padding:6px 8px;border:1px solid rgba(210,153,34,.35);background:rgba(210,153,34,.08);border-radius:6px}
+  #cf-modules{display:flex;flex-direction:column;gap:5px}
+  .modrow{display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid var(--bd);border-radius:7px;background:var(--panel2);cursor:pointer;font-size:13px;transition:border-color .12s,background .12s}
+  .modrow input{width:auto;margin:0;flex:none}
+  .modrow .t{flex:1}
+  .modrow:hover:not(.dis){border-color:var(--info)}
+  .modrow.on{border-color:var(--info);background:rgba(88,166,255,.08)}
+  .modrow.dis{opacity:.5;cursor:not-allowed;background:transparent}
+  .modbadge{font-size:9px;text-transform:uppercase;letter-spacing:.04em;padding:1px 7px;border-radius:9px;border:1px solid var(--bd);color:var(--muted);white-space:nowrap}
+  .modbadge.def{color:var(--info);border-color:rgba(88,166,255,.5)}
   .hostrow{display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0}
   .ck{border:1px solid var(--bd);border-radius:7px;padding:10px;margin:8px 0;background:var(--panel2)}
   .ck.accepted{border-color:var(--ok)} .ck.declined{opacity:.6}
@@ -388,10 +398,12 @@ function renderConfig(info){
         <select id="cf-sev">${['informational','low','medium','high','critical'].map(s=>opt(s,s,info.min_severity||'informational')).join('')}</select>
         <label style="margin-top:8px">Entity limit <span style="color:var(--muted)">(graph cap)</span></label>
         <input id="cf-maxent" type="number" min="100" max="20000" step="100" value="${info.max_entities||2500}" placeholder="2500" title="Max entities kept in the fused graph. Findings + hosts/IOCs/accounts/vulns are always kept; the rest fills by anomaly. Default 2500."/>
-        <label style="margin-top:8px">Modules <span style="color:var(--muted)" title="Which module runs fuse into the graph. Disabled modules stay tagged to the case but don't contribute yet.">(what fuses)</span></label>
-        <div id="cf-modules" style="border:1px solid var(--bd);border-radius:6px;padding:6px;display:flex;flex-direction:column;gap:3px">
+        <label style="margin-top:8px">Modules <span style="color:var(--muted)">— what fuses</span></label>
+        <div class="modwarn">⚠ Enabling more modules can raise cost sharply — some artifacts (e.g. full hunts) produce huge output.</div>
+        <div id="cf-modules">
           ${(info.modules_catalog||[]).map(m=>{const on=(info.fusion_modules||[]).includes(m.name),dis=!m.available;
-            return `<label class="hostrow" style="${dis?'opacity:.45;cursor:not-allowed':''}"><input type="checkbox" data-mod="${m.name}" ${on?'checked':''} ${dis?'disabled':''} style="width:auto"/> <span class="t">${esc(m.label)}</span>${dis?' <span style="color:var(--muted);font-size:10px">— disabled</span>':(m.default?' <span style="color:var(--muted);font-size:10px">— default</span>':'')}</label>`;}).join('')}
+            const badge=dis?'<span class="modbadge dis">disabled</span>':(m.default?'<span class="modbadge def">default</span>':'');
+            return `<label class="modrow${dis?' dis':''}${on?' on':''}"><input type="checkbox" data-mod="${m.name}" ${on?'checked':''} ${dis?'disabled':''}/> <span class="t">${esc(m.label)}</span>${badge}</label>`;}).join('')}
         </div>
         <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled?'checked':''} style="width:auto"/> Mask hosts / users / IPs</label>
         <textarea id="cf-maskpat" placeholder="extra patterns, one per line (optional)" style="min-height:38px">${esc((mk.patterns||[]).join('\n'))}</textarea>
