@@ -4,6 +4,23 @@
     docker exec -w /app intact_backend python3 -m services.fusion.tests.run_all
 """
 
+# Test isolation: these tests import services.* (which boots SQLite storage at
+# import time) and create real workspaces/runs. By the time this module's body
+# runs the `services` package is already imported, so we cannot redirect storage
+# in-process — instead re-exec ONCE into a throwaway storage dir. The fresh
+# process imports storage against the temp DB, so the suite never touches the
+# live /app/data/intact.db. MUST be the first thing that runs.
+import os as _os
+import sys as _sys
+if not _os.environ.get("FUSION_TEST_ISOLATED"):
+    import tempfile as _tempfile
+    _tmp = _tempfile.mkdtemp(prefix="fusion-test-store-")
+    _os.environ["FUSION_TEST_ISOLATED"] = "1"
+    _os.environ["INTACT_STORAGE_BASE"] = _tmp
+    print(f"[run_all] isolating storage -> {_tmp} (re-exec)", flush=True)
+    _os.execv(_sys.executable,
+              [_sys.executable, "-m", "services.fusion.tests.run_all"] + _sys.argv[1:])
+
 import sys
 import importlib
 

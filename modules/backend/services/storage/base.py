@@ -11,8 +11,11 @@ import glob as glob_module
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
-# Storage paths
-STORAGE_BASE = "/app/data"
+# Storage paths. STORAGE_BASE defaults to the production data dir but can be
+# redirected via INTACT_STORAGE_BASE so test harnesses run against a throwaway
+# SQLite DB instead of polluting the live database (fusion unit tests boot real
+# storage at import time — see services/fusion/tests/run_all.py).
+STORAGE_BASE = os.environ.get("INTACT_STORAGE_BASE", "/app/data")
 DB_PATH = os.path.join(STORAGE_BASE, "intact.db")
 REPORTS_DIR = os.path.join(STORAGE_BASE, "reports")
 
