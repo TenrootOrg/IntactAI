@@ -418,8 +418,9 @@ def download_tools_from_config(tools_dir: str, config: Dict,
         if tools:
             total_tools += sum(1 for t in tools if _wanted(t))
 
-    log(f"Found {total_tools} tools to download "
-        f"(optional tier: {'included' if include_optional else 'skipped'})")
+    _tier = "default-blueprint + optional" if include_optional else "default-blueprint"
+    log(f"Found {total_tools} {_tier} tool(s) to download "
+        f"(optional tier: {'included' if include_optional else 'skipped — defaults only'})")
 
     # Build set of existing files ONCE to avoid repeated GitHub API calls
     existing_files = set()
@@ -616,15 +617,15 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None,
             if response.Response:
                 data = json.loads(response.Response)
                 for item in data:
-                    # Only consider "served" if no external URL (file is actually local)
-                    # Tools with external URLs need to be reconfigured with local files
+                    # Only consider "served" if no external URL (file is actually
+                    # local). Tools with an external URL aren't served locally yet —
+                    # they get (re)configured below. We don't log each one (noise);
+                    # the final list shows what ends up served locally.
                     tool_name = item.get('name', '')
                     url = item.get('url', '')
                     if not url or not url.startswith('http'):
                         served_tools.add(tool_name)
-                    else:
-                        log(f"  {tool_name} has external URL, will reconfigure")
-        log(f"Currently {len(served_tools)} tools served locally")
+        log(f"Already served locally: {len(served_tools)}")
     except Exception as e:
         log(f"Could not query inventory: {str(e)[:50]}", "warning")
 
@@ -765,24 +766,20 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None,
 
     channel.close()
 
-    # Log inventory table
+    # Log ONLY the tools that are served locally (the ones endpoints can fetch
+    # from the server). The not-served entries are external-URL artifacts we
+    # don't bundle by default — listing them just adds noise.
     if inventory_table:
+        served = sorted(
+            (it.get('name', 'Unknown') for it in inventory_table if it.get('serve_locally')),
+        )
         log("=" * 60)
-        log("VELOCIRAPTOR TOOL INVENTORY")
+        log("TOOLS SERVED LOCALLY")
         log("=" * 60)
-        log(f"{'Tool Name':<35} {'Served Locally':<15}")
+        for name in served:
+            log(f"  ✓ {name}")
         log("-" * 60)
-
-        served_count = 0
-        for item in sorted(inventory_table, key=lambda x: x.get('name', '')):
-            name = item.get('name', 'Unknown')[:34]
-            served = "✓ Yes" if item.get('serve_locally') else "✗ No"
-            if item.get('serve_locally'):
-                served_count += 1
-            log(f"{name:<35} {served:<15}")
-
-        log("-" * 60)
-        log(f"Total: {len(inventory_table)} tools, {served_count} served locally")
+        log(f"{len(served)} tool(s) served locally")
         log("=" * 60)
 
     return {
@@ -883,8 +880,11 @@ def download_and_configure_tools(logger: Callable = None, run_id: Optional[str] 
             log(f"Could not read options.download_tools ({_e}); optional tools skipped", "warning")
 
     log("Starting tool download and configuration...")
-    log(f"Optional tool tier (download_tools): "
-        f"{'INCLUDED' if include_optional else 'skipped — default tools only'}")
+    if include_optional:
+        log("download_tools flag = true → downloading DEFAULT + optional tools")
+    else:
+        log("download_tools flag = false → downloading ONLY the default "
+            "(default-blueprint) tools; optional tier skipped")
 
     # Ensure Offline Collector binaries are present (any version — pin
     # comes from config.yaml's `versions.velociraptor` and is enforced by
@@ -921,7 +921,10 @@ def download_and_configure_tools(logger: Callable = None, run_id: Optional[str] 
 
     # Phase 1: Download tools to host directory
     log("=" * 50)
-    log("PHASE 1: Downloading tools from GitHub/URLs")
+    log("PHASE 1: Download default-blueprint tools"
+        + (" + optional tier (download_tools=true)" if include_optional else ""))
+    log("  (the tools the shipped default blueprints actually use:"
+        " lolrmm.csv, Autoruns, LastActivityView)")
     log("=" * 50)
 
     download_results = download_tools_from_config(host_tools_dir, config, log, run_id=run_id,
@@ -938,7 +941,9 @@ def download_and_configure_tools(logger: Callable = None, run_id: Optional[str] 
 
     # Phase 2: Configure Velociraptor inventory
     log("=" * 50)
-    log("PHASE 2: Configuring Velociraptor inventory")
+    log("PHASE 2: Register tools to serve locally")
+    log("  (point Velociraptor at the local tool files so endpoints fetch"
+        " them from the server instead of the internet)")
     log("=" * 50)
 
     inventory_results = configure_inventory(container_tools_dir, config, log,

@@ -48,7 +48,7 @@ def run_system_maintenance():
             details={"trigger": "manual", "tasks": ["artifact_import", "tool_download", "health_check"]}
         )
         add_log_to_run(run_id, "Starting system maintenance", "info")
-        add_log_to_run(run_id, "Tasks: Artifact Import (Exchange + DetectRaptor + TenRoot) → Tool Download → Health Check", "info")
+        add_log_to_run(run_id, "Tasks: Tool Download → Model Catalogs → CVE Databases → Health Check", "info")
         update_run_status(run_id, "running", progress=5)
 
         from services.workflow_service import register_cancel_event, unregister_cancel
@@ -74,10 +74,10 @@ def run_system_maintenance():
                 update_run_status(run_id, "running", progress=25)
 
                 # =========================================================
-                # Task 2: Download tools and configure inventory (60%)
+                # Task 1: Download tools and configure inventory (60%)
                 # =========================================================
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                add_log_to_run(run_id, "TASK 2/3: Download & Configure Tools", "info")
+                add_log_to_run(run_id, "TASK 1/4: Download & Configure Tools", "info")
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
                 update_run_status(run_id, "running", progress=30)
 
@@ -116,7 +116,7 @@ def run_system_maintenance():
                         traceback.print_exc()
 
                 # =========================================================
-                # Task 2.5: Refresh LLM model catalogs (5%)
+                # Task 2: Refresh LLM model catalogs (5%)
                 # =========================================================
                 # Persisted catalogs at /app/data/{openrouter,anthropic,
                 # openai,gemini}_models.json drive the dashboard's model
@@ -126,7 +126,7 @@ def run_system_maintenance():
                 # or its API key isn't configured, the existing on-disk
                 # file keeps serving the UI and the others still run.
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                add_log_to_run(run_id, "TASK 2.5: Refresh LLM Model Catalogs", "info")
+                add_log_to_run(run_id, "TASK 2/4: Refresh LLM Model Catalogs", "info")
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
 
                 from services.llm_catalogs import openrouter as _or_cat

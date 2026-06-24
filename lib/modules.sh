@@ -554,16 +554,16 @@ show_container_status() {
 deploy_elk() {
     local elk_enabled=$(read_config "['modules']['elk']['enabled']")
     if ! is_enabled "$elk_enabled"; then
-        log_info "[1/7] ELK Stack: SKIPPED (disabled in config)"
+        log_info "[1/8] ELK Stack: SKIPPED (disabled in config)"
         return
     fi
 
     if is_module_installed intact_elasticsearch; then
-        log_info "[1/7] ELK Stack: already installed + running (skipping)"
+        log_info "[1/8] ELK Stack: already installed + running (skipping)"
         return 0
     fi
 
-    log_info "[1/7] Starting ELK Stack..."
+    log_info "[1/8] Starting ELK Stack..."
     log_info "  Directory: ${SCRIPT_DIR}/modules/elk"
     cd "${SCRIPT_DIR}/modules/elk"
 
@@ -672,7 +672,7 @@ _stamp_transitive_env_from_config() {
 deploy_timesketch() {
     local ts_enabled=$(read_config "['modules']['timesketch']['enabled']")
     if ! is_enabled "$ts_enabled"; then
-        log_info "[2/7] TimeSketch: SKIPPED (disabled in config)"
+        log_info "[2/8] TimeSketch: SKIPPED (disabled in config)"
         return
     fi
 
@@ -683,11 +683,11 @@ deploy_timesketch() {
     # comes up LAST among timesketch's containers; if it's running, the
     # whole stack is healthy.
     if is_module_installed intact_timesketch_web; then
-        log_info "[2/7] TimeSketch: already installed + running (skipping)"
+        log_info "[2/8] TimeSketch: already installed + running (skipping)"
         return 0
     fi
 
-    log_info "[2/7] Starting TimeSketch..."
+    log_info "[2/8] Starting TimeSketch..."
     log_info "  Directory: ${SCRIPT_DIR}/modules/timesketch"
     cd "${SCRIPT_DIR}/modules/timesketch"
 
@@ -951,16 +951,16 @@ deploy_timesketch() {
 deploy_velociraptor() {
     local velo_enabled=$(read_config "['modules']['velociraptor']['enabled']")
     if ! is_enabled "$velo_enabled"; then
-        log_info "[3/7] Velociraptor: SKIPPED (disabled in config)"
+        log_info "[3/8] Velociraptor: SKIPPED (disabled in config)"
         return
     fi
 
     if is_module_installed intact_velociraptor; then
-        log_info "[3/7] Velociraptor: already installed + running (skipping)"
+        log_info "[3/8] Velociraptor: already installed + running (skipping)"
         return 0
     fi
 
-    log_info "[3/7] Starting Velociraptor..."
+    log_info "[3/8] Starting Velociraptor..."
     log_info "  Directory: ${SCRIPT_DIR}/modules/velociraptor"
     cd "${SCRIPT_DIR}/modules/velociraptor"
 
@@ -1038,16 +1038,16 @@ deploy_velociraptor() {
 deploy_iris() {
     local iris_enabled=$(read_config "['modules']['iris']['enabled']")
     if ! is_enabled "$iris_enabled"; then
-        log_info "[4/7] IRIS: SKIPPED (disabled in config)"
+        log_info "[4/8] IRIS: SKIPPED (disabled in config)"
         return
     fi
 
     if is_module_installed intact_iris_app; then
-        log_info "[4/7] IRIS: already installed + running (skipping)"
+        log_info "[4/8] IRIS: already installed + running (skipping)"
         return 0
     fi
 
-    log_info "[4/7] Starting IRIS (Incident Response Platform)..."
+    log_info "[4/8] Starting IRIS (Incident Response Platform)..."
     log_info "  Directory: ${SCRIPT_DIR}/modules/iris"
     cd "${SCRIPT_DIR}/modules/iris"
 
@@ -1301,11 +1301,11 @@ sys.stdout.write(v if v else '')
 deploy_portainer() {
     local portainer_enabled=$(read_config "['modules']['portainer']['enabled']")
     if ! is_enabled "$portainer_enabled"; then
-        log_info "[5/7] Portainer: SKIPPED (disabled in config)"
+        log_info "[5/8] Portainer: SKIPPED (disabled in config)"
         return
     fi
 
-    log_info "[5/7] Starting Portainer (Container Management)..."
+    log_info "[5/8] Starting Portainer (Container Management)..."
     log_info "  Directory: ${SCRIPT_DIR}/modules/portainer"
     cd "${SCRIPT_DIR}/modules/portainer"
 
@@ -1374,16 +1374,16 @@ deploy_volweb() {
     local volweb_enabled
     volweb_enabled=$(read_config "['modules']['volweb']['enabled']")
     if ! is_enabled "$volweb_enabled"; then
-        log_info "[5b/7] VolWeb: SKIPPED (volweb disabled in config)"
+        log_info "[6/8] VolWeb: SKIPPED (volweb disabled in config)"
         return
     fi
 
     if is_module_installed intact_volweb_backend; then
-        log_info "[5b/7] VolWeb: already installed + running (skipping)"
+        log_info "[6/8] VolWeb: already installed + running (skipping)"
         return 0
     fi
 
-    log_info "[5b/7] Starting VolWeb (memory-forensics)..."
+    log_info "[6/8] Starting VolWeb (memory-forensics)..."
     log_info "  Directory: ${SCRIPT_DIR}/modules/volweb"
     cd "${SCRIPT_DIR}/modules/volweb"
 
@@ -1582,7 +1582,7 @@ seed_yara_rulesets() {
 # ============================================================================
 
 deploy_backend() {
-    log_info "[6/7] Starting Backend API..."
+    log_info "[7/8] Starting Backend API..."
     log_info "  Directory: ${SCRIPT_DIR}/modules/backend"
     cd "${SCRIPT_DIR}/modules/backend"
 
@@ -1684,7 +1684,7 @@ except Exception:
 # ============================================================================
 
 deploy_nginx() {
-    log_info "[7/7] Starting Nginx (Web Server & Reverse Proxy)..."
+    log_info "[8/8] Starting Nginx (Web Server & Reverse Proxy)..."
     log_info "  Directory: ${SCRIPT_DIR}/modules/nginx"
     cd "${SCRIPT_DIR}/modules/nginx"
 
@@ -1735,7 +1735,8 @@ start_services() {
     ensure_shared_volumes
     echo ""
 
-    # Deploy modules in order (7 modules now, not 8)
+    # Deploy in order — 8 numbered steps [1/8]..[8/8]:
+    # ELK, TimeSketch, Velociraptor, IRIS, Portainer, VolWeb, Backend, Nginx.
     deploy_elk
     echo ""
     deploy_timesketch
