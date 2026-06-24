@@ -600,6 +600,7 @@ def stale_member_runs(case_id, d=None) -> list:
     if fused is None:
         return []
     fused = set(fused)
+    ws = _ws()
     out = []
     for r in ws.get_automation_runs_by_case(case_id):
         if (r.get("automation_type") in ws.AGENTIC_TYPES

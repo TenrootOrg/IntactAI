@@ -374,13 +374,97 @@ def _recommendations_md(graph, findings, assets) -> str:
     return "\n".join(out)
 
 
+def risk_table(graph, *, window=None, min_severity="informational") -> list:
+    """Per-endpoint ('identity') risk rows for the 'who to focus on first + why'
+    table. One row per asset, sorted by risk_score desc. Each row carries the
+    score, the severity rollup, module coverage, escalate/deep flags, a
+    per-severity finding tally, and the CONCRETE top reasons (highest-severity
+    findings) driving the score — so the table answers both 'which client' and
+    'why', deterministically (no LLM). Drives the report section + /risk API."""
+    assets, findings = scope(graph, window=window, min_severity=min_severity)
+    rows = []
+    for a in assets:
+        afind = [f for f in findings if a.id in f.asset_ids]
+        tally = {lv: 0 for lv in sev.LEVELS}
+        for f in afind:
+            if f.severity in tally:
+                tally[f.severity] += 1
+        # Top reasons = highest-severity findings first, deduped by title, capped.
+        seen, reasons = set(), []
+        for f in sorted(afind, key=lambda f: (-sev.rank(f.severity), f.title or "")):
+            t = (f.title or "").strip()
+            if not t or t.lower() in seen:
+                continue
+            seen.add(t.lower())
+            reasons.append(t + (" (cross-host)" if f.kind == "cross_host" else ""))
+            if len(reasons) >= 4:
+                break
+        modules = a.attrs.get("modules") or []
+        escalate, deep = bool(a.attrs.get("escalate")), bool(a.attrs.get("deep"))
+        if escalate:
+            action = "Deep-dive now — run memory + Timesketch"
+        elif deep:
+            action = "Deep coverage done — review findings"
+        elif sev.at_least(a.severity, "medium"):
+            action = "Triage / monitor"
+        else:
+            action = "Low priority"
+        rows.append({
+            "client_id": a.id,
+            "host": a.label,
+            "hostname": a.attrs.get("hostname") or a.label,
+            "risk_score": int(a.attrs.get("risk_score") or 0),
+            "severity": a.severity,
+            "escalate": escalate,
+            "deep": deep,
+            "modules": list(modules),
+            "finding_count": len(afind),
+            "by_severity": tally,
+            "cross_host": any(f.kind == "cross_host" for f in afind),
+            "reasons": reasons,
+            "why": "; ".join(reasons[:3]) or "no findings in window",
+            "next_action": action,
+        })
+    rows.sort(key=lambda r: (-r["risk_score"], -sev.rank(r["severity"]), r["host"]))
+    return rows
+
+
+def risk_table_md(graph, *, window=None, min_severity="informational") -> str:
+    """Markdown rendering of risk_table() — the 'Identity Risk / focus order'
+    section. Deterministic; appended verbatim, never sent to the LLM."""
+    rows = risk_table(graph, window=window, min_severity=min_severity)
+    if not rows:
+        return ""
+    out = ["## 🎯 Identity Risk — who to focus on first\n",
+           "Endpoints ranked by risk (Σ finding severity; cross-host findings count "
+           "double). _Why_ = the top findings driving the score; _Next_ = the "
+           "recommended action.\n",
+           "| # | Host | Risk | Severity | Findings (C/H/M) | Why | Coverage | Next |",
+           "|---|------|-----:|----------|------------------|-----|----------|------|"]
+    for i, r in enumerate(rows, 1):
+        cov = ", ".join(r["modules"]) or "—"
+        cov += " 🔺" if r["escalate"] else (" ✓deep" if r["deep"] else "")
+        t = r["by_severity"]
+        chm = f"{t.get('critical',0)}/{t.get('high',0)}/{t.get('medium',0)}"
+        why = (r["why"] or "").replace("|", "／")[:140]
+        out.append(f"| {i} | **{r['host']}** | {r['risk_score']} | {r['severity']} | "
+                   f"{chm} | {why} | {cov} | {r['next_action']} |")
+    out.append("")
+    return "\n".join(out)
+
+
 def facts_md(graph, *, window=None, min_severity="informational", initial_access=None,
              dispositions=None, validations=None) -> str:
-    """DETERMINISTIC report body — escalation, risk ranking, analyst validations,
-    timeline, per-host detail, IOC table, MITRE, recommendations. Appended verbatim
-    to every report; NEVER sent to the LLM."""
+    """DETERMINISTIC report body — identity-risk table, escalation, risk ranking,
+    analyst validations, timeline, per-host detail, IOC table, MITRE,
+    recommendations. Appended verbatim to every report; NEVER sent to the LLM."""
     assets, findings = scope(graph, window=window, min_severity=min_severity)
     out: list[str] = []
+
+    # ---- Identity Risk table (who to focus on first + why) ------------
+    rt = risk_table_md(graph, window=window, min_severity=min_severity)
+    if rt:
+        out.append(rt)
 
     # ---- Escalation (the Phase-1 triage hero) -------------------------
     esc = sorted((a for a in assets if a.attrs.get("escalate")),

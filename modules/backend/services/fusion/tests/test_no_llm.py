@@ -89,7 +89,7 @@ def test_agentic_details_collected_data_takes_precedence():
 def test_collect_only_report_is_informative():
     from services.agentic.pipeline import _collect_only_report
     md = _collect_only_report(120, {"Windows.Hayabusa.Rules": [], "Generic.System.Pstree": []}, 3)
-    assert "no llm" in md.lower() and "Case" in md and "120 rows" in md
+    assert "collection-only" in md.lower() and "Case" in md and "120 rows" in md
     assert "Hayabusa" in md  # lists the artifacts collected
 
 

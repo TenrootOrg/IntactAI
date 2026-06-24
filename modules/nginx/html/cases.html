@@ -313,6 +313,7 @@ function render(info,md,g){
       <div class="tabs">
         <div class="tab ${tab==='config'?'on':''}" data-tab="config" onclick="setTab('config')">⚙ Configuration</div>
         <div class="tab ${tab==='report'?'on':''}" data-tab="report" onclick="setTab('report')">Report</div>
+        <div class="tab ${tab==='risk'?'on':''}" data-tab="risk" onclick="setTab('risk')">🎯 Risk</div>
         <div class="tab ${tab==='timeline'?'on':''}" data-tab="timeline" onclick="setTab('timeline')">Timeline</div>
         <div class="tab ${tab==='chat'?'on':''}" data-tab="chat" onclick="setTab('chat')">Chat</div>
         <div class="tab ${tab==='log'?'on':''}" data-tab="log" onclick="setTab('log')">Log</div>
@@ -336,7 +337,38 @@ function drawTab(md){
   else if(tab==='chat') renderChat(info.case_id);
   else if(tab==='log') renderLog(info.case_id);
   else if(tab==='config') renderConfig(info);
+  else if(tab==='risk') renderRisk(info);
   else renderReport(info);
+}
+function renderRisk(info){
+  $('#tabc').innerHTML='<div class="md">loading risk…</div>';
+  api('/api/cases/'+info.case_id+'/risk').then(d=>{
+    const rows=d.rows||[];
+    if(!rows.length){$('#tabc').innerHTML='<div class="empty">No fused data yet — fuse the case first.</div>';return;}
+    const sc={critical:'#f85149',high:'#db6d28',medium:'#d29922',low:'#3fb950',informational:'#8b949e'};
+    const body=rows.map((r,i)=>{
+      const c=sc[r.severity]||'#8b949e', t=r.by_severity||{};
+      const cov=(r.modules||[]).join(', ')+(r.escalate?' 🔺':(r.deep?' ✓':''));
+      return `<tr style="border-bottom:1px solid var(--bd)">
+        <td style="text-align:right;color:var(--muted);padding:6px 8px">${i+1}</td>
+        <td style="padding:6px 8px"><b>${esc(r.host)}</b></td>
+        <td style="text-align:right;font-weight:700;padding:6px 8px">${r.risk_score}</td>
+        <td style="padding:6px 8px"><span style="color:${c};font-weight:600">${esc(r.severity)}</span></td>
+        <td style="text-align:center;padding:6px 8px;font-variant-numeric:tabular-nums">${t.critical||0}/${t.high||0}/${t.medium||0}</td>
+        <td style="padding:6px 8px;font-size:12px">${esc(r.why)}</td>
+        <td style="padding:6px 8px;font-size:12px;color:var(--muted)">${esc(cov)}</td>
+        <td style="padding:6px 8px;font-size:12px">${esc(r.next_action)}</td></tr>`;}).join('');
+    $('#tabc').innerHTML=`
+      <div style="margin-bottom:8px;color:var(--muted);font-size:13px">Endpoints ranked by risk (Σ finding severity; cross-host findings ×2). Work top-down — these are the clients to focus on first.${d.is_stale?' <span style="color:#d29922">⚠ new data — rescan to refresh</span>':''}</div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="text-align:left;border-bottom:1px solid var(--bd);color:var(--muted)">
+          <th style="padding:6px 8px"></th><th style="padding:6px 8px">Host</th>
+          <th style="padding:6px 8px;text-align:right">Risk</th><th style="padding:6px 8px">Severity</th>
+          <th style="padding:6px 8px;text-align:center" title="critical / high / medium">C/H/M</th>
+          <th style="padding:6px 8px">Why (top findings)</th><th style="padding:6px 8px">Coverage</th>
+          <th style="padding:6px 8px">Next action</th>
+        </tr></thead><tbody>${body}</tbody></table>`;
+  }).catch(e=>{$('#tabc').innerHTML='<div class="empty">risk load failed: '+esc(e.message||e)+'</div>';});
 }
 function renderConfig(info){
   const aud=info.audience||'both', mk=info.masking||{}, tw=info.time_window||{};

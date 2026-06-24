@@ -301,6 +301,22 @@ def get_case(case_id):
                     "llm_enabled": _llm_enabled()})
 
 
+@case_bp.route("/api/cases/<case_id>/risk", methods=["GET"])
+def get_case_risk(case_id):
+    """Per-endpoint identity-risk table — 'which clients to focus on first + why'.
+    Read-only: derived deterministically from the case's already-fused graph
+    (no re-fuse, no LLM). Each row = host, risk score, severity, finding tally,
+    the concrete reasons driving the score, module coverage, and next action."""
+    d = store.get_case(case_id)
+    if not d:
+        return jsonify({"error": "case not found"}), 404
+    g = store.load_graph(case_id)
+    rows = render.risk_table(g, window=d.get("time_window") or None,
+                             min_severity=d.get("min_severity") or "informational")
+    return jsonify({"case_id": case_id, "rows": rows, "total": len(rows),
+                    "is_stale": bool(store.stale_member_runs(case_id, d))})
+
+
 @case_bp.route("/api/cases/<case_id>", methods=["DELETE"])
 def delete_case(case_id):
     """Delete a workspace and everything in it (its tagged runs + baseline). The
