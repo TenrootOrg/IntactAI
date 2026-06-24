@@ -306,7 +306,7 @@ function render(info,md,g){
           <div style="color:var(--muted);font-size:12px">${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
       </div>
       ${info.is_stale ? `<div style="margin:8px 0;padding:8px 12px;border:1px solid #d29922;border-radius:6px;background:#2b2400;color:#e3b341;font-size:13px;display:flex;align-items:center;gap:10px;justify-content:space-between">
-        <span>⚠ New data added — ${(info.stale_run_ids||[]).length} run(s) finished since the last scan. The graph below is from the previous scan; rescan to include them.</span>
+        <span>ℹ ${(info.stale_run_ids||[]).length} new run(s) loaded — the data below (hosts, entities, links, findings, risk &amp; timeline) is up to date. The report &amp; chat still reflect the earlier scan; Save &amp; rescan to refresh them.</span>
         <button onclick="doRescan('${info.case_id}')" style="white-space:nowrap;cursor:pointer">💾 Save &amp; rescan</button>
       </div>` : ''}
       <div style="margin:6px 0 14px">${statSpans(g)}${tokenBadge(info.token_ab)}</div>
@@ -359,7 +359,7 @@ function renderRisk(info){
         <td style="padding:6px 8px;font-size:12px;color:var(--muted)">${esc(cov)}</td>
         <td style="padding:6px 8px;font-size:12px">${esc(r.next_action)}</td></tr>`;}).join('');
     $('#tabc').innerHTML=`
-      <div style="margin-bottom:8px;color:var(--muted);font-size:13px">Endpoints ranked by risk (Σ finding severity; cross-host findings ×2). Work top-down — these are the clients to focus on first.${d.is_stale?' <span style="color:#d29922">⚠ new data — rescan to refresh</span>':''}</div>
+      <div style="margin-bottom:8px;color:var(--muted);font-size:13px">Endpoints ranked by risk (Σ finding severity; cross-host findings ×2). Work top-down — these are the clients to focus on first. <span style="color:var(--muted)">Always reflects the latest data.</span></div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="text-align:left;border-bottom:1px solid var(--bd);color:var(--muted)">
           <th style="padding:6px 8px"></th><th style="padding:6px 8px">Host</th>

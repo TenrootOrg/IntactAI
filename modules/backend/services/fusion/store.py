@@ -533,6 +533,14 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     if d.get("report_md"):
         report = d.get("report_md")
         analysis = d.get("analysis") or {}
+        # Report reused verbatim → it still reflects whatever members it was last
+        # written from, NOT the (possibly newer) graph members. Tracking this
+        # separately from fused_run_ids lets the deterministic graph auto-refresh
+        # on every load while the UI can still tell the operator the narrative is
+        # behind ("Save & rescan to refresh the report").
+        report_members = d.get("report_run_ids")
+        if report_members is None:
+            report_members = d.get("fused_run_ids")  # legacy graphs: best-effort
     else:
         report = llm_sim.generate_report(
             gv, window=window, min_severity=min_sev,
@@ -547,6 +555,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         # SEPARATELY from the deterministic findings; fed prior operator dispositions.
         analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
                                    dispositions=d.get("dispositions") or None)
+        report_members = list(members)   # report now reflects exactly these members
     # customer-confirmation checklist — generate once (preserve operator decisions on re-fuse)
     checklist = d.get("disposition_checklist")
     if not checklist:
@@ -582,6 +591,11 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
                                   # have landed since (stale_member_runs) and show a
                                   # "rescan suggested" hint without re-fusing on load.
                                   "fused_run_ids": list(members),
+                                  # members the LLM report/chat narrative reflects
+                                  # (updated only when the report is rebuilt, not on
+                                  # a plain graph re-fuse) — drives the "rescan to
+                                  # refresh the report" hint.
+                                  "report_run_ids": report_members,
                                   "disposition_checklist": checklist})
     log_case_event(case_id, "Fuse", "ok",
                    f"rebuilt case graph — {len(g.entities):,} entities, "
@@ -608,6 +622,48 @@ def stale_member_runs(case_id, d=None) -> list:
                 and r.get("run_id") not in fused):
             out.append(r.get("run_id"))
     return out
+
+
+def report_stale_runs(case_id, d=None) -> list:
+    """Completed member runs the LLM report/chat narrative does NOT yet reflect —
+    i.e. data present in the (always-current) graph but added since the report was
+    last written. Returns their run_ids. Empty when the report is current, or for
+    legacy cases that predate report_run_ids tracking. This is what the UI keys
+    its 'Save & rescan to refresh the report' hint off — the deterministic graph
+    (hosts/entities/links/findings/risk/timeline) auto-refreshes on load, so data
+    is never stale; only the narrative can lag."""
+    d = d or get_case(case_id) or {}
+    rep = d.get("report_run_ids")
+    if rep is None:
+        return []
+    rep = set(rep)
+    ws = _ws()
+    out = []
+    for r in ws.get_automation_runs_by_case(case_id):
+        if (r.get("automation_type") in ws.AGENTIC_TYPES
+                and r.get("status") in ("completed", "success")
+                and r.get("run_id") not in rep):
+            out.append(r.get("run_id"))
+    return out
+
+
+def refresh_graph_if_stale(case_id, d=None) -> bool:
+    """Auto-include newly-completed member runs in the deterministic graph so the
+    data the operator sees on load is always current — WITHOUT touching the LLM
+    report/chat (fuse_case reuses the cached report when one exists, so this is
+    fast + token-free). Returns True if a re-fuse happened. Cheap no-op when the
+    graph already covers every member (stale_member_runs is a member scan, no
+    graph build)."""
+    d = d or get_case(case_id)
+    if not d or not d.get("fused_run_ids"):
+        return False          # never fused yet → nothing to refresh (first scan)
+    if not stale_member_runs(case_id, d):
+        return False
+    try:
+        fuse_case(case_id)
+        return True
+    except Exception:
+        return False
 
 
 def watch_and_fuse(case_id, run_id, *, poll=10, timeout=10800) -> None:

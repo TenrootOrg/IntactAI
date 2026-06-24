@@ -275,7 +275,15 @@ def get_case(case_id):
     d = store.get_case(case_id)
     if not d:
         return jsonify({"error": "case not found"}), 404
-    stale = store.stale_member_runs(case_id, d)
+    # Opening a case auto-includes any newly-completed member runs in the
+    # deterministic graph, so the data (counts/risk/timeline) is always current
+    # with no manual step. Token-free — reuses the cached LLM report. Re-read the
+    # case after, since the re-fuse rewrote it.
+    if store.refresh_graph_if_stale(case_id, d):
+        d = store.get_case(case_id) or d
+    # Data is now current; only the LLM report/chat narrative can lag it. This is
+    # what the "Save & rescan to refresh the report" hint keys off.
+    stale = store.report_stale_runs(case_id, d)
     return jsonify({"case_id": case_id, "name": d.get("name"),
                     "time_window": d.get("time_window"),
                     "initial_access_estimate": d.get("initial_access_estimate"),
@@ -310,11 +318,14 @@ def get_case_risk(case_id):
     d = store.get_case(case_id)
     if not d:
         return jsonify({"error": "case not found"}), 404
+    # Auto-include new runs so the risk table reflects current data (no manual rescan).
+    if store.refresh_graph_if_stale(case_id, d):
+        d = store.get_case(case_id) or d
     g = store.load_graph(case_id)
     rows = render.risk_table(g, window=d.get("time_window") or None,
                              min_severity=d.get("min_severity") or "informational")
     return jsonify({"case_id": case_id, "rows": rows, "total": len(rows),
-                    "is_stale": bool(store.stale_member_runs(case_id, d))})
+                    "is_stale": bool(store.report_stale_runs(case_id, d))})
 
 
 @case_bp.route("/api/cases/<case_id>", methods=["DELETE"])
@@ -626,6 +637,8 @@ def graph(case_id):
 def timeline(case_id):
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
+    # Auto-include new runs so the timeline reflects current data (no manual rescan).
+    store.refresh_graph_if_stale(case_id)
     # each row carries finding_id + validation status (real/not_real/unknown)
     return jsonify({"case_id": case_id, "timeline": store.get_timeline(case_id)})
 
