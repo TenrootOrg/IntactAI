@@ -658,6 +658,57 @@ def upgrade_intact(version: str = None, logger: Callable = None) -> Dict:
     return {"success": True, "message": "Code updated"}
 
 
+def stamp_intact_version(package_dir, version=None, logger=None, run_id=None):
+    """Write WORKDIR/VERSION for the just-applied intact release so the sidebar
+    + Settings show a real version instead of "unknown". Precedence:
+      1. a release-stamped source/intact/VERSION in the package — copy verbatim
+         (the GitHub release action commits it)
+      2. manifest.json -> versions.intact
+      3. the passed `version` (ignored when it's the 'from_package' sentinel)
+
+    Shared by upgrade_intact_offline (Phase 1, pre-restart) AND the Phase-2
+    resume finalizer (post-restart, NEW code) so the stamp is governed by
+    whichever code is newest. Idempotent — being called in both phases is
+    harmless. Returns the stamped string, or None if nothing could be resolved.
+    """
+    log = logger or (lambda m, l="info": None)
+    version_dest = os.path.join(WORKDIR, 'VERSION')
+    intact_root = os.path.join(package_dir, 'source', 'intact') if package_dir else None
+    version_source = os.path.join(intact_root, 'VERSION') \
+        if (intact_root and os.path.isdir(intact_root)) else None
+
+    if version_source and os.path.exists(version_source):
+        log("Stamping VERSION from release-built package source...", "info")
+        run_command(f"cp -a {version_source} {version_dest}", logger=log, run_id=run_id)
+        try:
+            return open(version_dest).read().strip()
+        except Exception:
+            return None
+
+    # No release-stamped file (dev-built package). Resolve from the manifest,
+    # then the passed version; skip the 'from_package' sentinel.
+    stamp = version if (version and version != 'from_package') else None
+    if not stamp and package_dir:
+        try:
+            import json as _json
+            with open(os.path.join(package_dir, 'manifest.json')) as _mf:
+                stamp = ((_json.load(_mf).get('versions') or {}).get('intact'))
+        except Exception:
+            stamp = None
+    if stamp and stamp != 'from_package':
+        log(f"Stamping VERSION = {stamp} (no release-stamped file in source)...", "info")
+        try:
+            with open(version_dest, 'w') as _vf:
+                _vf.write(str(stamp).strip() + "\n")
+            return stamp
+        except Exception as e:
+            log(f"  Could not stamp VERSION ({e}); sidebar may show 'unknown'", "warning")
+            return None
+    log("  No VERSION in package source and no manifest version — sidebar shows "
+        "'unknown' until a release-built upgrade", "warning")
+    return None
+
+
 def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callable = None,
                             run_id: Optional[str] = None) -> Dict:
     """Upgrade Intact.AI Platform from offline package source files.
@@ -724,42 +775,10 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
         log("Copying frontend files...", "info")
         run_command(f"cp -a {frontend_source}/* {nginx_html}/", logger=log, run_id=run_id)
 
-    # Stamp VERSION at the install root so the sidebar + Settings page
-    # reflect the new release.
-    #   1. Release-built packages carry a stamped VERSION at source/intact/
-    #      (the GitHub release action commits it) — copy it verbatim.
-    #   2. Dev-built packages (prepared off a non-release branch) have NO
-    #      VERSION in the source tree, but the manifest target version is
-    #      passed in as `version`. Stamp that so the UI shows a real version
-    #      instead of "unknown".
-    version_dest = os.path.join(WORKDIR, 'VERSION')
-    version_source = os.path.join(intact_root, 'VERSION') if os.path.isdir(intact_root) else None
-    # Resolve the version to stamp. The orchestrator passes the manifest's
-    # intact version, but uses the 'from_package' sentinel when the manifest
-    # didn't pin one — so read manifest.json directly as the authoritative
-    # fallback before giving up.
-    stamp_version = version if (version and version != 'from_package') else None
-    if not stamp_version:
-        try:
-            import json as _json
-            with open(os.path.join(package_dir, 'manifest.json')) as _mf:
-                stamp_version = ((_json.load(_mf).get('versions') or {}).get('intact'))
-        except Exception:
-            stamp_version = None
-    if version_source and os.path.exists(version_source):
-        log("Copying VERSION file...", "info")
-        run_command(f"cp -a {version_source} {version_dest}", logger=log, run_id=run_id)
-    elif stamp_version and stamp_version != 'from_package':
-        log(f"No VERSION file in package source — stamping version "
-            f"'{stamp_version}'...", "info")
-        try:
-            with open(version_dest, 'w') as _vf:
-                _vf.write(str(stamp_version).strip() + "\n")
-        except Exception as e:
-            log(f"  Could not stamp VERSION ({e}); sidebar may show 'unknown'", "warning")
-    else:
-        log("  No VERSION in package source and no manifest version — "
-            "sidebar shows 'unknown' until a release-built upgrade", "warning")
+    # Stamp WORKDIR/VERSION so the sidebar + Settings reflect the new release.
+    # Shared with the Phase-2 resume finalizer (services/upgrade.__init__) so
+    # whichever code is NEWEST governs the stamp — see stamp_intact_version.
+    stamp_intact_version(package_dir, version, logger=log, run_id=run_id)
 
     # Fix file permissions (files copied by root need correct ownership for future upgrades)
     log("Fixing file permissions...", "info")

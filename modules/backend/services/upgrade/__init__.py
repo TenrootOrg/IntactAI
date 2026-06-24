@@ -547,6 +547,30 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             package_dir = package_dir_raw
             extract_dir = package_dir_raw
 
+    # ── Phase 2 (NEW code) finalizes intact's version + config pin ───────────
+    # Phase 1 copied the package source and restarted; we are now executing the
+    # JUST-INSTALLED code. Re-stamp WORKDIR/VERSION and re-write config.yaml's
+    # backend pin HERE so the SHIPPING release governs them — a fix landed in the
+    # new code (e.g. a VERSION-stamping or writeback change) takes effect on the
+    # very upgrade that delivers it, not one upgrade later. The package-source
+    # COPY + the restart are the only intact steps that must run in the old
+    # pre-restart code; everything else is the new code's job. Idempotent: Phase
+    # 1 may already have done this in the old code — re-doing it just lets the
+    # newest logic win.
+    intact_target = (modules or {}).get('intact')
+    if intact_target:
+        try:
+            from .intact import stamp_intact_version
+            stamp_intact_version(package_dir, intact_target, logger=log)
+        except Exception as e:
+            log(f"  Phase-2 VERSION stamp raised ({type(e).__name__}: {e})", "warning")
+        if intact_target != 'from_package':
+            try:
+                from .base import set_module_version_in_config
+                set_module_version_in_config('backend', intact_target, logger=log)
+            except Exception as e:
+                log(f"  Phase-2 backend config writeback raised ({type(e).__name__}: {e})", "warning")
+
     # 2026-06-16 incident: volweb was silently dropped from Phase 2
     # because resume_upgrade_workflow's upgrade_order didn't include it,
     # even though run_offline_upgrade_workflow and run_online_upgrade
