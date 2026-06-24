@@ -659,7 +659,7 @@ def import_to_iris(run_id: str, case_name: str, timeline_events: List[dict],
                    artifact_summaries: dict = None,
                    min_ioc_severity: Optional[str] = None,
                    logger: Callable = None) -> dict:
-    """Main entry point for importing agentic analysis results to IRIS.
+    """Main entry point for importing agentic collection results to IRIS.
 
     Orchestrates the full import process:
     1. Get API key
@@ -792,7 +792,7 @@ def import_to_iris(run_id: str, case_name: str, timeline_events: List[dict],
 - **IOCs Identified:** {len(iocs)}
 
 ### Data Sources
-This case was automatically created by the Intact.AI Agentic Analysis module using Velociraptor forensic collection.
+This case was automatically created by the Intact.AI Agentic Collection module using Velociraptor forensic collection.
 
 ---
 *For detailed findings, see the attached forensic reports.*

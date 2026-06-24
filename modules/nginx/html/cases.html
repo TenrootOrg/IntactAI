@@ -250,14 +250,12 @@ function loadCases(cb){
       return `<div class="caseitem ${sel===c.case_id?'sel':''}" onclick="rowClick('${c.case_id}')">
       <div class="casehead"><span class="nm">${isAct?'● ':''}${esc(c.name||c.case_id)}</span>
         <div class="row" style="gap:6px">
-          ${isAct?'<span class="defbadge" style="color:var(--ok)">active</span>'
-                 :`<button class="ghost" style="font-size:11px;padding:3px 8px" onclick="activateWorkspace('${c.case_id}',event)">Use</button>`}
           <button class="ghost" style="font-size:11px;padding:3px 8px;display:none" onclick="exportWorkspace('${c.case_id}',event)" title="Download this workspace as a portable bundle">Export</button>
           ${c.is_default?'<span class="defbadge">default</span>'
             :c.is_system?'<span class="defbadge">system</span>'
                        :`<button class="del" onclick="delWorkspace('${c.case_id}','${nm}',event)">delete</button>`}
         </div></div>
-      <div class="meta">${c.members} run(s) · ${c.status}</div></div>`;}).join('')||'<i style="color:var(--muted)">no workspaces yet</i>';
+      <div class="meta">${c.members} run(s)</div></div>`;}).join('')||'<i style="color:var(--muted)">no workspaces yet</i>';
     if(cb)cb();
   });
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-External Data Parser - Parse uploaded CSV/JSON/JSONL files for agentic analysis
+External Data Parser - Parse uploaded CSV/JSON/JSONL files for agentic collection
 """
 
 import os

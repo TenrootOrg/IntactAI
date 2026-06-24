@@ -394,7 +394,7 @@ def handle_tus_hook():
                 thread.start()
 
             elif purpose == 'agentic_external':
-                # External log file for agentic analysis - no processing needed
+                # External log file for agentic collection - no processing needed
                 # File is stored and will be picked up by the agentic pipeline
                 print(f"[TUS HOOK] External log uploaded: {original_filename}", flush=True)
                 if run_id:

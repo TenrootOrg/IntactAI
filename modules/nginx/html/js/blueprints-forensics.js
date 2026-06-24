@@ -47,7 +47,7 @@ function setForensicsDefaultBlueprint(mode, blueprints = null) {
     // Find the default blueprint based on mode
     let defaultBp = null;
     if (mode === 'ai') {
-        // AI Analysis → [Agentic] Quick Wins
+        // Collection → [Agentic] Quick Wins
         defaultBp = bps.find(bp => bp.name && bp.name.includes('[Agentic] Quick Wins'));
     } else {
         // Raw Velociraptor → [Velociraptor] BestPractice
