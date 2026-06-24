@@ -633,6 +633,23 @@ def upgrade_intact(version: str = None, logger: Callable = None) -> Dict:
     run_command("chown -R 1000:1000 /app/workdir/modules/backend/", logger=None)
     run_command("chown -R 1000:1000 /app/workdir/modules/nginx/html/", logger=None)
 
+    # A non-release branch (e.g. `development`) carries no stamped VERSION file
+    # (the stamp action only commits it on a published release), so after the
+    # pull WORKDIR/VERSION may be missing/empty → the sidebar shows "unknown".
+    # Fall back to the target version when one was provided.
+    version_dest = os.path.join(WORKDIR, 'VERSION')
+    try:
+        _have = os.path.exists(version_dest) and bool(open(version_dest).read().strip())
+    except Exception:
+        _have = False
+    if not _have and version and version != 'from_package':
+        log(f"No stamped VERSION file — writing target version '{version}'...", "info")
+        try:
+            with open(version_dest, 'w') as _vf:
+                _vf.write(str(version).strip() + "\n")
+        except Exception as e:
+            log(f"  Could not stamp VERSION ({e})", "warning")
+
     # NOTE: Nginx and backend restarts are handled by the upgrade orchestrator
     # to support two-phase upgrades
 
@@ -708,16 +725,41 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
         run_command(f"cp -a {frontend_source}/* {nginx_html}/", logger=log, run_id=run_id)
 
     # Stamp VERSION at the install root so the sidebar + Settings page
-    # reflect the new release. Only present in the new `source/intact/`
-    # layout — legacy packages that ship just source/backend + source/frontend
-    # have no VERSION file to copy (and were built before the sidebar
-    # version display existed, so reporting "unknown" until the next
-    # upgrade is the right behaviour).
+    # reflect the new release.
+    #   1. Release-built packages carry a stamped VERSION at source/intact/
+    #      (the GitHub release action commits it) — copy it verbatim.
+    #   2. Dev-built packages (prepared off a non-release branch) have NO
+    #      VERSION in the source tree, but the manifest target version is
+    #      passed in as `version`. Stamp that so the UI shows a real version
+    #      instead of "unknown".
+    version_dest = os.path.join(WORKDIR, 'VERSION')
     version_source = os.path.join(intact_root, 'VERSION') if os.path.isdir(intact_root) else None
+    # Resolve the version to stamp. The orchestrator passes the manifest's
+    # intact version, but uses the 'from_package' sentinel when the manifest
+    # didn't pin one — so read manifest.json directly as the authoritative
+    # fallback before giving up.
+    stamp_version = version if (version and version != 'from_package') else None
+    if not stamp_version:
+        try:
+            import json as _json
+            with open(os.path.join(package_dir, 'manifest.json')) as _mf:
+                stamp_version = ((_json.load(_mf).get('versions') or {}).get('intact'))
+        except Exception:
+            stamp_version = None
     if version_source and os.path.exists(version_source):
-        version_dest = os.path.join(WORKDIR, 'VERSION')
         log("Copying VERSION file...", "info")
         run_command(f"cp -a {version_source} {version_dest}", logger=log, run_id=run_id)
+    elif stamp_version and stamp_version != 'from_package':
+        log(f"No VERSION file in package source — stamping version "
+            f"'{stamp_version}'...", "info")
+        try:
+            with open(version_dest, 'w') as _vf:
+                _vf.write(str(stamp_version).strip() + "\n")
+        except Exception as e:
+            log(f"  Could not stamp VERSION ({e}); sidebar may show 'unknown'", "warning")
+    else:
+        log("  No VERSION in package source and no manifest version — "
+            "sidebar shows 'unknown' until a release-built upgrade", "warning")
 
     # Fix file permissions (files copied by root need correct ownership for future upgrades)
     log("Fixing file permissions...", "info")

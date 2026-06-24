@@ -305,7 +305,11 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
 
             try:
                 if module_name == 'intact':
-                    result = upgrade_fn(logger=log)
+                    # Pass the target version (kwarg — the offline intact handler
+                    # is a **kw lambda) so the handler can stamp WORKDIR/VERSION
+                    # even when the source tree has no release-stamped VERSION
+                    # file (dev-built packages / non-release branches).
+                    result = upgrade_fn(version=target_version, logger=log)
                 else:
                     result = upgrade_fn(target_version, logger=log)
 
@@ -703,7 +707,11 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
 
             try:
                 if module_name == 'intact':
-                    result = upgrade_fn(logger=log)
+                    # Pass the target version (kwarg — the offline intact handler
+                    # is a **kw lambda) so the handler can stamp WORKDIR/VERSION
+                    # even when the source tree has no release-stamped VERSION
+                    # file (dev-built packages / non-release branches).
+                    result = upgrade_fn(version=target_version, logger=log)
                 else:
                     result = upgrade_fn(target_version, logger=log)
 
