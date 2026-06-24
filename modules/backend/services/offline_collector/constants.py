@@ -135,6 +135,108 @@ DEFAULT_ARTIFACTS = [
     "Windows.Forensics.PersistenceSniper",   # Persistence detection (Exchange artifact)
 ]
 
+# Linux triage set — the analogue of the Windows KAPE sweep above, restricted to
+# artifacts that EXIST and actually collect on a Linux endpoint (verified against
+# the velociraptor binary the platform ships, v0.77.x). Deliberately excludes the
+# broad cross-OS filesystem scanners — see HEAVY_FS_SCAN_ARTIFACTS below.
+LINUX_DEFAULT_ARTIFACTS = [
+    "Linux.Sys.Pslist",            # Running processes
+    "Generic.System.Pstree",       # Process tree (cross-platform)
+    "Linux.Network.NetstatEnriched",  # Network connections + owning process
+    "Linux.Proc.Arp",              # ARP cache
+    "Linux.Sys.Services",          # systemd / init services (persistence)
+    "Linux.Sys.Crontab",           # cron persistence
+    "Linux.Ssh.AuthorizedKeys",    # SSH backdoor keys
+    "Linux.Ssh.KnownHosts",        # Lateral-movement targets
+    "Linux.Sys.BashHistory",       # Command history (execution evidence)
+    "Linux.Sys.LastUserLogin",     # wtmp/btmp logon history
+    "Linux.Sys.Users",             # /etc/passwd accounts
+    "Linux.Sys.Groups",            # /etc/group membership
+    "Linux.Sys.SUID",              # SUID binaries (privesc)
+    "Linux.Proc.Modules",          # Loaded kernel modules (rootkits)
+    "Linux.Syslog.SSHLogin",       # SSH auth events
+    "Linux.Forensics.Journal",     # systemd journal
+    "Linux.Debian.Packages",       # Installed packages (best-effort, Debian/Ubuntu)
+]
+
+# macOS triage set — best-effort; the velociraptor binary ships only a handful of
+# MacOS.* artifacts. Kept minimal so a darwin collector gathers something useful
+# rather than the Windows set.
+DARWIN_DEFAULT_ARTIFACTS = [
+    "MacOS.Sys.Pslist",
+    "Generic.System.Pstree",
+    "MacOS.Network.Netstat",
+]
+
+ARTIFACTS_BY_OS = {
+    "windows": DEFAULT_ARTIFACTS,
+    "linux":   LINUX_DEFAULT_ARTIFACTS,
+    "darwin":  DARWIN_DEFAULT_ARTIFACTS,
+}
+
+# Cross-OS ('Generic.*' / 'DetectRaptor.Generic.*') artifacts that walk the entire
+# filesystem. On Windows they scope to user-profile dirs and finish fast; on Linux
+# the same globs expand to '/' and crawl /proc, /sys and /var/lib/docker overlay
+# mounts, chasing symlink cycles. That is what turned a Linux triage into a ~1h
+# run with thousands of "Globber: Symlink cycle detected" lines. Dropped from any
+# non-Windows collector.
+HEAVY_FS_SCAN_ARTIFACTS = {
+    "Generic.Collectors.File",
+    "Generic.Forensic.SQLiteHunter",
+    "Generic.Detection.Yara.Glob",
+    "DetectRaptor.Generic.Detection.YaraWebshell",
+}
+
+_OS_ARTIFACT_PREFIX = {"windows": "Windows.", "linux": "Linux.", "darwin": "MacOS."}
+_ALL_OS_PREFIXES = ("Windows.", "Linux.", "MacOS.")
+
+
+def artifacts_for_os(os_type, configured=None):
+    """Filter an artifact list to ones that apply to the collector's TARGET OS.
+
+    The blueprints are Windows-centric: ``DEFAULT_ARTIFACTS`` and most saved configs
+    are full of ``Windows.*`` artifacts. The collector *binary* is already chosen
+    per-OS (``get_velo_client_path``), but if a Linux/macOS binary is fed Windows
+    artifacts you hit the v0.77 failure mode reported on the vagrant box: ``Symbol
+    Memory not found`` / ``TokenIsElevated not found``, ``users()``/``token()`` "not
+    implemented for linux_amd64_cgo", ``Unknown filesystem accessor ntfs``/
+    ``registry``, Windows ``.exe`` helper tools that can't exec, and the broad
+    Generic scanners crawling the whole filesystem. The reverse (a Linux blueprint
+    built for a Windows target) is just as broken.
+
+    Rules:
+      * Drop artifacts prefixed for a *different* OS (e.g. ``Windows.*`` on a Linux
+        target, ``Linux.*`` on a Windows target).
+      * On a non-Windows target also drop the heavy ``Generic.*`` filesystem
+        scanners (``HEAVY_FS_SCAN_ARTIFACTS``) — fine on a scoped Windows profile,
+        a multi-hour /proc + /sys + docker crawl on Linux. Light ``Generic.*`` and
+        ``Custom.*`` artifacts are kept for every OS.
+      * If nothing OS-native survives (the common case: a Windows-only blueprint
+        pointed at a Linux host), fall back to the curated OS triage set in
+        ``ARTIFACTS_BY_OS`` so the collector still gathers real evidence instead of
+        erroring out.
+      * Unknown ``os_type`` -> return the list unchanged (don't mangle it).
+    """
+    configured = list(configured) if configured else list(DEFAULT_ARTIFACTS)
+    prefix = _OS_ARTIFACT_PREFIX.get(os_type)
+    if not prefix:
+        return configured
+    foreign = tuple(p for p in _ALL_OS_PREFIXES if p != prefix)
+
+    def _applies(a):
+        if a.startswith(foreign):
+            return False                      # another OS's artifact
+        if os_type != "windows" and a in HEAVY_FS_SCAN_ARTIFACTS:
+            return False                      # broad scanner — crawls all of / on Linux/macOS
+        return True
+
+    kept = [a for a in configured if _applies(a)]
+    if not any(a.startswith(prefix) for a in kept):
+        # No OS-native artifact survived -> use the curated OS triage set.
+        return list(ARTIFACTS_BY_OS.get(os_type, configured))
+    return kept
+
+
 # Artifacts that work fully OFFLINE (no external tool downloads)
 # These are built into the Velociraptor binary and don't need internet
 OFFLINE_SAFE_ARTIFACTS = [

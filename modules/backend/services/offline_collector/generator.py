@@ -16,6 +16,7 @@ from services.offline_collector.constants import (
     VELOCIRAPTOR_CONTAINER,
     VELO_CLIENT_PATHS,
     DEFAULT_ARTIFACTS,
+    artifacts_for_os,
     ONLINE_REQUIRED_ARTIFACTS,
     EMBEDDABLE_TOOLS,
     TOOL_DEPENDENT_ARTIFACTS
@@ -181,8 +182,34 @@ def generate_collector(config_id, os_type="windows",
         config_name = config.get("config_name", "Collection")
         safe_name = config_name.replace(" ", "_").replace("/", "-").replace("[", "").replace("]", "").replace("(", "").replace(")", "")
 
-        # Get artifacts and parameters
-        artifacts = config.get("artifacts", DEFAULT_ARTIFACTS)
+        # Get artifacts and parameters — pick the set appropriate for the TARGET OS.
+        # The blueprints are Windows-centric; feeding Windows artifacts to a Linux/
+        # macOS collector binary produces missing-symbol / wrong-accessor errors and
+        # a full-filesystem crawl (see artifacts_for_os).
+        _configured = config.get("artifacts") or list(DEFAULT_ARTIFACTS)
+        artifacts = artifacts_for_os(os_type, _configured)
+        if os_type != "windows":
+            dropped = [a for a in _configured if a not in artifacts]
+            print(f"[OFFLINE] Target OS '{os_type}': using {len(artifacts)} OS-appropriate artifacts", flush=True)
+            # Surface the swap as an operator-visible WARNING rather than letting the
+            # wrong-OS artifacts reach the binary and fail noisily. Velociraptor does
+            # NOT reliably skip wrong-OS artifacts — some lack an OS precondition and
+            # throw hard 'Symbol … not found' errors with a non-zero exit — so we
+            # pre-filter and tell the operator exactly what changed.
+            if dropped and run_id:
+                try:
+                    from services.workflow_service import add_log_to_run
+                    add_log_to_run(
+                        run_id,
+                        f"Target OS is '{os_type}', but the selected blueprint contains "
+                        f"{len(dropped)} artifact(s) that don't apply to {os_type} "
+                        f"(Windows-only VQL / accessors). Substituted the {os_type} triage "
+                        f"set ({len(artifacts)} artifacts) so the collector runs clean. "
+                        f"Dropped: {', '.join(dropped[:12])}{' …' if len(dropped) > 12 else ''}",
+                        "warning",
+                    )
+                except Exception:
+                    pass
         parameters = config.get("parameters", {})
 
         # Filter out truly online-only artifacts
@@ -658,7 +685,7 @@ def create_collection_script(config, file_id, os_type, output_path):
     require downloading external tools since the collector must work fully offline.
     """
     try:
-        raw_artifacts = config.get("artifacts", DEFAULT_ARTIFACTS)
+        raw_artifacts = artifacts_for_os(os_type, config.get("artifacts"))
         config_name = config.get("config_name", "Collection")
         parameters = config.get("parameters", {})
 

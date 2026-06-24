@@ -240,6 +240,40 @@ WHERE client_id IN ('{client_list}')
     return hostnames
 
 
+def get_client_os(stub, client_ids):
+    """Map client_id -> normalized OS ('windows'/'linux'/'darwin') from the
+    server's enrollment record. Used to drop wrong-OS artifacts before tasking a
+    client: a Windows-only artifact on a Linux endpoint logs hard VQL errors (and a
+    broad Generic scanner crawls that endpoint's filesystem). Best-effort — clients
+    we can't resolve are left out of the map and treated as 'unknown' by callers."""
+    os_map = {}
+    try:
+        client_list = "', '".join(client_ids)
+        query = f"""
+SELECT client_id, os_info.system AS OS
+FROM clients()
+WHERE client_id IN ('{client_list}')
+"""
+        request_obj = api_pb2.VQLCollectorArgs(
+            max_wait=10,
+            max_row=1000,
+            Query=[api_pb2.VQLRequest(VQL=query)]
+        )
+        for response in stub.Query(request_obj, timeout=30):
+            if response.Response:
+                try:
+                    for row in json.loads(response.Response):
+                        cid = row.get('client_id')
+                        osv = (row.get('OS') or '').strip().lower()
+                        if cid and osv:
+                            os_map[cid] = osv
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return os_map
+
+
 def resolve_hostnames(client_ids):
     """Public wrapper around get_client_hostnames() that handles its own
     gRPC connection. Designed for callers that don't have a stub in
@@ -294,8 +328,13 @@ def create_collections(run_id, artifacts, settings, client_ids):
     # so we deliberately don't pass it into the VQL.
     _ = settings.get('flow_max_logs', 1000000)
 
-    # Get hostname mapping for all clients
+    # Get hostname + OS mapping for all clients. The OS map lets us drop wrong-OS
+    # artifacts per client before tasking it (see artifacts_for_os): Windows-only
+    # VQL on a Linux endpoint throws hard errors, and a broad Generic scanner would
+    # crawl that live endpoint's filesystem.
     client_hostnames = get_client_hostnames(stub, client_ids)
+    client_os = get_client_os(stub, client_ids)
+    from services.offline_collector.constants import artifacts_for_os
 
     # Multi-client: make parallelism visible. The for-loop below just
     # submits gRPC create_collection requests (each returns in ms with a
@@ -322,13 +361,31 @@ def create_collections(run_id, artifacts, settings, client_ids):
         start_time, _ = calculate_time_range(time_filter)
         add_log_to_run(run_id, f"[Velociraptor] Time filter enabled: collecting data since {start_time}", "info")
 
-    artifacts_list = json.dumps(artifacts)
-    spec_str = build_artifact_spec(artifacts, settings)
-
     results = []
     for i, client_id in enumerate(client_ids):
         hostname = client_hostnames.get(client_id, client_id)
         try:
+            # Per-client OS-aware artifact selection. For a Windows client (or an
+            # unknown OS) the list is unchanged; for a Linux/macOS client we drop
+            # Windows-only + heavy filesystem-scanning artifacts so the flow runs
+            # clean instead of erroring and crawling the endpoint.
+            target_os = client_os.get(client_id)
+            if target_os in ('linux', 'darwin'):
+                client_artifacts = artifacts_for_os(target_os, artifacts)
+                dropped = [a for a in artifacts if a not in client_artifacts]
+                if dropped:
+                    add_log_to_run(
+                        run_id,
+                        f"[Velociraptor] {hostname} is {target_os}: removed "
+                        f"{len(dropped)} wrong-OS artifact(s) before tasking "
+                        f"(Windows-only VQL / accessors). Dropped: "
+                        f"{', '.join(dropped[:8])}{' …' if len(dropped) > 8 else ''}",
+                        "warning",
+                    )
+            else:
+                client_artifacts = artifacts
+            artifacts_list = json.dumps(client_artifacts)
+            spec_str = build_artifact_spec(client_artifacts, settings)
             query = f"""
 LET collection = collect_client(
     client_id='{client_id}',

@@ -300,6 +300,54 @@ velociraptor:
       - DetectRaptor.Windows.Detection.Amcache
       - Windows.System.Powershell.PSReadline
 
+  # --------------------------------------------------------------------------
+  # LINUX BLUEPRINT
+  # --------------------------------------------------------------------------
+  # Dedicated Linux triage set. Every other blueprint above is Windows-centric;
+  # building a collector from them for a Linux target used to fail (Windows-only
+  # VQL: Symbol Memory/TokenIsElevated not found, users()/token() not implemented,
+  # ntfs/registry accessors absent) and broad Generic scanners crawled the whole
+  # filesystem. These artifacts all exist + collect on a Linux endpoint (verified
+  # against the shipped velociraptor binary) and avoid the filesystem-wide scanners.
+  - id: agentic_linux_triage
+    name: "Velociraptor Agentic: Linux Triage"
+    description: "Linux endpoint triage — processes, persistence, accounts, logs (17 artifacts)"
+    is_default: true
+    os: linux
+    settings:
+      hunt_expiry: 720
+      timeout: 3600
+      cpu_limit: 90
+      # Flow-level resource limits — see velociraptor_quick_scan for notes.
+      flow_max_rows: 10000000
+      flow_max_logs: 1000000
+      flow_max_upload_mb: 51200
+    artifacts:
+      # Processes / network
+      - Linux.Sys.Pslist
+      - Generic.System.Pstree
+      - Linux.Network.NetstatEnriched
+      - Linux.Proc.Arp
+      # Persistence
+      - Linux.Sys.Services
+      - Linux.Sys.Crontab
+      - Linux.Ssh.AuthorizedKeys
+      - Linux.Ssh.KnownHosts
+      # Execution evidence
+      - Linux.Sys.BashHistory
+      - Linux.Sys.LastUserLogin
+      # Accounts / privilege
+      - Linux.Sys.Users
+      - Linux.Sys.Groups
+      - Linux.Sys.SUID
+      # Kernel / rootkits
+      - Linux.Proc.Modules
+      # Logs
+      - Linux.Syslog.SSHLogin
+      - Linux.Forensics.Journal
+      # Packages
+      - Linux.Debian.Packages
+
 # ============================================================================
 # Timesketch Blueprints
 # ============================================================================
