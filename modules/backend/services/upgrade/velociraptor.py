@@ -165,6 +165,48 @@ def _verify_velo_ca_unchanged(before_fp, logger: Callable = None) -> None:
             f"original config as a fallback.", "error")
 
 
+def _existing_artifact_names(logger: Callable = None) -> Optional[set]:
+    """Set of artifact names already present in the running Velociraptor
+    registry — includes the curated bundle loaded at boot via --definitions
+    plus anything Layer-1 init imported. Returns None if the registry can't
+    be queried, so callers fall back to importing everything (correctness
+    over speed). Lets the snapshot re-imports SKIP artifacts that already
+    exist instead of re-importing ~400 of them one-by-one over the API
+    (~6.5s each → the ~45-min silent stall seen on offline upgrades)."""
+    log = logger or (lambda msg, level="info": None)
+    try:
+        from services.tools_download_service import setup_velociraptor_connection
+        from pyvelociraptor import api_pb2, api_pb2_grpc
+        ch = setup_velociraptor_connection()
+        if not ch:
+            return None
+        stub = api_pb2_grpc.APIStub(ch)
+        have = set()
+        for resp in stub.Query(api_pb2.VQLCollectorArgs(
+                max_wait=60, max_row=10000,
+                Query=[api_pb2.VQLRequest(VQL='SELECT name FROM artifact_definitions()')]),
+                timeout=65):
+            if resp.Response:
+                for d in json.loads(resp.Response):
+                    n = d.get('name')
+                    if n:
+                        have.add(n)
+        return have
+    except Exception as e:
+        log(f"  Could not list existing artifacts ({type(e).__name__}: {e}); "
+            f"will re-import all", "warning")
+        return None
+
+
+def _artifact_name_from_yaml(text: str) -> Optional[str]:
+    """Pull the top-level `name:` (artifact identifier) out of an exported
+    artifact YAML without a full parse. Column-0 `name:` only, so nested
+    source/parameter `name:` keys don't match."""
+    import re
+    m = re.search(r'^name:\s*["\']?([A-Za-z0-9_.]+)', text, re.MULTILINE)
+    return m.group(1) if m else None
+
+
 def _reimport_artifacts_post_upgrade(velo_data: str, logger: Callable = None,
                                        skip_exchange_imports: bool = False) -> None:
     """Re-register all custom + imported artifacts in the freshly-upgraded
@@ -240,20 +282,40 @@ def _reimport_artifacts_post_upgrade(velo_data: str, logger: Callable = None,
     exported = os.path.join(velo_data, 'artifact_definitions', 'Exported')
     if not os.path.isdir(exported):
         return
-    count = 0
-    for fn in sorted(os.listdir(exported)):
-        if not (fn.endswith('.yaml') or fn.endswith('.yml')):
-            continue
+    yamls = sorted(
+        f for f in os.listdir(exported) if f.endswith(('.yaml', '.yml'))
+    )
+    if not yamls:
+        return
+    # SKIP artifacts already in the registry. The curated bundle is loaded at
+    # boot via --definitions and Layer 1 imported the TenRoot/custom set, so
+    # most of this snapshot is already present — re-importing all of it
+    # one-by-one over the API is ~6.5s each (the ~45-min SILENT stall on
+    # offline upgrades). Only the operator's genuinely-custom artifacts remain.
+    present = _existing_artifact_names(logger=log)
+    total = len(yamls)
+    log(f"  Re-importing pre-upgrade snapshot ({total} artifacts; "
+        f"skipping any already loaded)...", "info")
+    count = skipped = 0
+    for i, fn in enumerate(yamls, 1):
         try:
             with open(os.path.join(exported, fn), 'r') as f:
                 yaml_content = f.read()
-            ok = import_custom_artifact(yaml_content, logger_func=log)
-            if ok:
+            if present is not None:
+                nm = _artifact_name_from_yaml(yaml_content)
+                if nm and nm in present:
+                    skipped += 1
+                    continue
+            if import_custom_artifact(yaml_content, logger_func=None):
                 count += 1
         except Exception as e:
             log(f"  Re-import {fn} failed ({e}); continuing.", "warning")
-    if count:
-        log(f"  Re-imported {count} pre-upgrade-snapshot artifacts", "success")
+        # Progress every 25 so the step is never a silent black box.
+        if i % 25 == 0 or i == total:
+            log(f"    snapshot progress: {i}/{total} "
+                f"(imported {count}, skipped {skipped} already-present)", "info")
+    log(f"  Re-imported {count} pre-upgrade-snapshot artifacts "
+        f"({skipped} already present, skipped)", "success")
 
 
 def _restore_bundled_artifact_sources(package_dir: str,
@@ -382,12 +444,23 @@ def _import_bundled_registry_snapshot(package_dir: str,
     if not yamls:
         return 0
 
-    log(f"  Importing {len(yamls)} artifacts from bundled registry snapshot...", "info")
-    ok = 0
-    for fn in yamls:
+    # SKIP artifacts already in the registry (the --definitions bundle loaded
+    # at boot covers most of this snapshot). Avoids re-importing ~400 already-
+    # present artifacts one-by-one over the API — the silent multi-minute stall.
+    present = _existing_artifact_names(logger=log)
+    total = len(yamls)
+    log(f"  Importing bundled registry snapshot ({total} artifacts; "
+        f"skipping any already loaded)...", "info")
+    ok = skipped = 0
+    for i, fn in enumerate(yamls, 1):
         try:
             with open(os.path.join(snap_dir, fn), 'r') as f:
                 yaml_content = f.read()
+            if present is not None:
+                nm = _artifact_name_from_yaml(yaml_content)
+                if nm and nm in present:
+                    skipped += 1
+                    continue
             if import_custom_artifact(yaml_content, logger_func=None):
                 ok += 1
         except Exception:
@@ -395,7 +468,12 @@ def _import_bundled_registry_snapshot(package_dir: str,
             # (newer artifact YAML using fields the new binary
             # doesn't understand). Swallow + continue.
             continue
-    log(f"  Registry snapshot: {ok}/{len(yamls)} artifacts imported", "success" if ok else "warning")
+        # Progress every 25 so the step is never a silent black box.
+        if i % 25 == 0 or i == total:
+            log(f"    registry-snapshot progress: {i}/{total} "
+                f"(imported {ok}, skipped {skipped} already-present)", "info")
+    log(f"  Registry snapshot: {ok} imported, {skipped} already present",
+        "success" if (ok or skipped) else "warning")
     return ok
 
 
