@@ -6,16 +6,17 @@ This module provides the main agentic forensics pipeline functionality.
 Re-exports all public functions for backward compatibility.
 """
 
-# Load DFIR skill index once at module import. Threads in analyze_artifacts
-# share this read-only index; the loader is idempotent so re-import is cheap.
-# Failure is non-fatal — the analyzer falls back to the base prompt.
+# Load the STATIC macro-skill index once at module import. The fusion analyst
+# shares this read-only index; the loader is idempotent so re-import is cheap.
+# The macros ship as static files in services/agentic/skills/macros/ (no
+# download). Failure is non-fatal — the analyst falls back to the base prompt.
 try:
-    from services.agentic.skills import load_skill_index_at_boot
-    load_skill_index_at_boot()
+    from services.agentic.skills import load_macro_index_at_boot
+    load_macro_index_at_boot()
 except Exception as _skill_load_err:  # noqa: BLE001
     import logging as _logging
     _logging.getLogger(__name__).warning(
-        "[Skills] index load failed at boot: %s — analyzer will use base prompt only",
+        "[Skills] macro index load failed at boot: %s — analyst will use base prompt only",
         _skill_load_err,
     )
 
