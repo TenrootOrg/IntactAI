@@ -71,10 +71,10 @@ def test_multi_run_case_merges_all_runs():
     cid = store.create_case("ws-multi", min_severity="informational")
     cd1 = {"Windows.System.Pslist": [{"Hostname": "HOST-A", "Pid": 11, "Name": "a.exe"}]}
     cd2 = {"Windows.System.Pslist": [{"Hostname": "HOST-B", "Pid": 22, "Name": "b.exe"}]}
-    ws.create_automation_run("agentic", "r1",
+    ws.create_automation_run("velociraptor_collection", "r1",
                              details={"client_name": "HOST-A", "collected_data": cd1,
                                       "hostnames": {}}, case_id=cid)
-    ws.create_automation_run("agentic", "r2",
+    ws.create_automation_run("velociraptor_collection", "r2",
                              details={"client_name": "HOST-B", "collected_data": cd2,
                                       "hostnames": {}}, case_id=cid)
     g = store.fuse_case(cid)
@@ -86,7 +86,7 @@ def test_multi_run_case_merges_all_runs():
 
 def test_members_are_tag_based():
     cid = store.create_case("ws-test-members")
-    rid = ws.create_automation_run("agentic", "tagged run", details={"client_name": "H"},
+    rid = ws.create_automation_run("velociraptor_collection", "tagged run", details={"client_name": "H"},
                                    case_id=cid)
     members = store._members_for_case(cid)
     assert rid in members, "a run tagged with case_id must be a member without manual attach"

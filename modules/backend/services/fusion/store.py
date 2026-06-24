@@ -133,7 +133,7 @@ def _raw_payload_size(run) -> int:
     det = run.get("details") or {}
     blob = (det.get("collected_data") or det.get("plugins") or det.get("events")
             or det.get("timeline_events") or det.get("findings") or det.get("sigma_findings"))
-    if not blob and run.get("automation_type") in ("agentic", "velociraptor_upload"):
+    if not blob and run.get("automation_type") in ("velociraptor_collection", "velociraptor_upload"):
         # Agentic / offline-import runs persist their rows to disk
         # (/data/downloads/<rid>/raw_results.json), not into details — read them
         # back so the raw-vs-fusion token A/B reflects the real input size.
@@ -441,13 +441,13 @@ def _contribution_for_run(run, log=None):
     try:
         if atype == "memory":
             return _memory_contribution(rid, det)
-        # "agentic" = a live/collect agentic run; "velociraptor_upload" = an
+        # "velociraptor_collection" = a live/collect Velociraptor run; "velociraptor_upload" = an
         # offline-collector import fused into its own upload row (one workflow
         # row, not two). Both persist rows the same way and fuse via the same
         # mapper — but the offline import ran NO agent, so relabel its source
         # "agentic" -> "velociraptor" (the data is just imported Velociraptor
         # artifacts) so the report doesn't read as if an agent had run.
-        if atype in ("agentic", "velociraptor_upload"):
+        if atype in ("velociraptor_collection", "velociraptor_upload"):
             ents, rels = map_agentic(_agentic_collected_data(rid, det), run_id=rid,
                                      hostnames=det.get("hostnames") or {})
             if atype == "velociraptor_upload":

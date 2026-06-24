@@ -88,6 +88,24 @@ if storage_initialized:
 else:
     print("[STORAGE] SQLite storage initialization failed", flush=True)
 
+# One-time rename migration: automation_type 'agentic' -> 'velociraptor_collection'
+# (the collect-only Velociraptor collection; the old per-artifact 'agentic'
+# analysis was removed — analysis now lives in Case Analysis / fusion). Idempotent
+# — once migrated, the WHERE matches 0 rows, so it's safe on every boot/upgrade.
+if storage_initialized:
+    try:
+        _conn = get_connection()
+        _n = _conn.execute(
+            "UPDATE workflows SET automation_type='velociraptor_collection' "
+            "WHERE automation_type='agentic'").rowcount
+        _conn.commit()
+        if _n:
+            print(f"[STORAGE] Migrated {_n} run(s): automation_type "
+                  f"agentic -> velociraptor_collection", flush=True)
+    except Exception as _e:  # noqa: BLE001
+        print(f"[STORAGE] agentic->velociraptor_collection migration skipped ({_e})",
+              flush=True)
+
 
 # Backwards compatibility aliases (private function names used internally)
 _get_connection = get_connection

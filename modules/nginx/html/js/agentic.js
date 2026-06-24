@@ -91,7 +91,7 @@ async function startAgenticPipeline() {
     const bp = await getBlueprintById(blueprintId, 'agentic');
     const blueprintName = bp ? bp.name : blueprintId;
 
-    if (!confirm(`Start Agentic Collection pipeline for ${clientIds.length} client(s)?\n\nBlueprint: ${blueprintName}\nArtifacts: ${bp?.artifacts?.length || 0}\nCollection Time: ${collectionMinutes} minutes\nReports: ${reportTypes.join(', ')}\n${anonymization.enabled ? '\nData Anonymization: Enabled' : ''}\n${iris.enabled ? '\nIRIS Import: Enabled' : ''}\n\nCheck the Workflows tab to monitor progress.`)) {
+    if (!confirm(`Start Velociraptor Collection pipeline for ${clientIds.length} client(s)?\n\nBlueprint: ${blueprintName}\nArtifacts: ${bp?.artifacts?.length || 0}\nCollection Time: ${collectionMinutes} minutes\nReports: ${reportTypes.join(', ')}\n${anonymization.enabled ? '\nData Anonymization: Enabled' : ''}\n${iris.enabled ? '\nIRIS Import: Enabled' : ''}\n\nCheck the Workflows tab to monitor progress.`)) {
         return;
     }
 

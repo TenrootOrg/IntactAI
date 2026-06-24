@@ -336,7 +336,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
 
                 # Generate case name if not provided
                 if not iris_case_name:
-                    iris_case_name = f"Agentic Collection - {blueprint.get('name', 'Unknown')} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                    iris_case_name = f"Velociraptor Collection - {blueprint.get('name', 'Unknown')} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
                 # Extract timeline events with severity filter applied
                 all_events = extract_timeline_events(all_results, include_no_timestamp=True)
@@ -367,7 +367,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                     technical_report=technical_report,
                     iris_config=IRIS_CONFIG,
                     clients=selected_clients,
-                    blueprint_name=blueprint.get('name', 'Agentic Collection'),
+                    blueprint_name=blueprint.get('name', 'Velociraptor Collection'),
                     all_events_for_iocs=all_events,
                     artifact_summaries=artifact_summaries,
                     min_ioc_severity=blueprint.get('min_ioc_severity'),

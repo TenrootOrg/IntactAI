@@ -176,8 +176,8 @@ def start_agentic_run():
 
         # Create workflow run
         run_id = create_automation_run(
-            automation_type="agentic",
-            name=f"Agentic Collection - {client_label}, {collection_minutes}m",
+            automation_type="velociraptor_collection",
+            name=f"Velociraptor Collection - {client_label}, {collection_minutes}m",
             details={
                 "blueprint_id": blueprint_id,
                 "blueprint": blueprint_name,

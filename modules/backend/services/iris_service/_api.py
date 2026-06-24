@@ -792,7 +792,7 @@ def import_to_iris(run_id: str, case_name: str, timeline_events: List[dict],
 - **IOCs Identified:** {len(iocs)}
 
 ### Data Sources
-This case was automatically created by the Intact.AI Agentic Collection module using Velociraptor forensic collection.
+This case was automatically created by the Intact.AI Velociraptor Collection module using Velociraptor forensic collection.
 
 ---
 *For detailed findings, see the attached forensic reports.*

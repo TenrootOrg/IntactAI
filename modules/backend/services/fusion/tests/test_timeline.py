@@ -44,7 +44,7 @@ def _fresh_case():
          "RuleTitle": "Defender Alert (Severe)",
          "Channel": "Microsoft-Windows-Windows Defender/Operational",
          "EventID": "1116", "RecordID": "5"}]}
-    rid = ws.create_automation_run("agentic", "timeline-test-run",
+    rid = ws.create_automation_run("velociraptor_collection", "timeline-test-run",
                                    {"collected_data": cd, "hostnames": {"C.a": "DC01"}})
     cid = store.create_case("timeline-test", min_severity="low", member_run_ids=[rid])
     store.fuse_case(cid)

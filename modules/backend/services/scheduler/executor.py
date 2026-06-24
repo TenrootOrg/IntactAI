@@ -61,7 +61,7 @@ def run_scheduled_blueprint(job_id: str):
 
             # Create automation run
             run_id = create_automation_run(
-                automation_type="agentic",
+                automation_type="velociraptor_collection",
                 name=f"Scheduled: {job_meta['name']}",
                 details={
                     "blueprint_id": blueprint_id,
