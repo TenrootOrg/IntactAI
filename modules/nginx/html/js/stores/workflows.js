@@ -19,19 +19,25 @@ document.addEventListener('alpine:init', () => {
 
             try {
                 const response = await fetch('/api/dashboard/automations');
+                if (!response.ok) throw new Error('HTTP ' + response.status);
                 const data = await response.json();
                 const newRuns = data.runs || [];
 
-                // Smart merge - only update if data changed (prevents flickering)
+                // Only reassign allRuns when the data actually changed (avoids
+                // flicker). But ALWAYS re-derive the visible `runs` from allRuns:
+                // a prior transient error clears `runs` (below), and if we gated
+                // applyFilter() on "data changed" the unchanged next poll would
+                // skip it and leave the list permanently empty.
                 if (this.initialLoad || JSON.stringify(this.allRuns) !== JSON.stringify(newRuns)) {
                     this.allRuns = newRuns;
-                    this.applyFilter();
                 }
+                this.applyFilter();
                 this.initialLoad = false;
             } catch (e) {
                 console.error('Failed to load workflows:', e);
-                if (this.initialLoad) this.allRuns = [];
-                this.runs = [];
+                // Only blank the list on the very first load. On a transient poll
+                // error keep the last-known-good list rather than flashing empty.
+                if (this.initialLoad) { this.allRuns = []; this.runs = []; }
             }
             this.loading = false;
         },

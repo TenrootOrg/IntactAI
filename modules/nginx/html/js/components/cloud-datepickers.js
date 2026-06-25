@@ -1,6 +1,7 @@
 /* AWS + Azure date-range pickers (flatpickr) — extracted from inline <script>
- * in index.html. These stay window-global: the cloud tabs call init*/update*/
- * getAzureCustomDates from x-init / @change / their Alpine startScan methods.
+ * in index.html. These stay window-global: the cloud tabs call the init,
+ * update and getAzureCustomDates functions from x-init / @change / their
+ * Alpine startScan methods.
  */
 
 // ---- Azure date pickers --------------------------------------------------
