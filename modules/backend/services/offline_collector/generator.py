@@ -26,6 +26,32 @@ from services.offline_collector.constants import (
 from services.offline_collector.config import get_config
 
 
+def _encryption_spec(scheme, password):
+    """Build the VQL fragment appended to the Server.Utils.CreateCollector spec for
+    the chosen container-encryption scheme. Pure + side-effect free (so it's unit
+    testable); returns "" for no encryption.
+
+      none / unknown          -> "" (plaintext container)
+      password (with secret)  -> encryption_scheme="password" + encryption_args
+                                 (the password, JSON-encoded as a string literal)
+      password (no secret)    -> "" (can't encrypt without a password)
+      x509                    -> encryption_scheme="x509", NO args, so CreateCollector
+                                 falls back to this server's certificate (the CA in
+                                 data/velociraptor) and auto-decrypts on import
+
+    encryption_args is a json-typed CreateCollector param, so (like artifacts /
+    parameters) it is inlined as a triple-quoted JSON STRING literal.
+    """
+    scheme = (scheme or "none").strip().lower()
+    if scheme == "password" and password:
+        enc_args = json.dumps({"password": password})
+        return (',\n                    encryption_scheme="password"'
+                f",\n                    encryption_args='''{enc_args}'''")
+    if scheme == "x509":
+        return ',\n                    encryption_scheme="x509"'
+    return ""
+
+
 def get_blueprint_as_config(blueprint_id):
     """Try to load a blueprint as an offline collector config.
 
@@ -339,13 +365,7 @@ def generate_collector(config_id, os_type="windows",
         # encryption_args is a json-typed param, so (like artifacts/parameters)
         # it is inlined as a JSON STRING literal.
         enc_scheme = (encryption_scheme or "none").strip().lower()
-        encryption_vql = ""
-        if enc_scheme == "password" and encryption_password:
-            enc_args = json.dumps({"password": encryption_password})
-            encryption_vql = (f',\n                    encryption_scheme="password"'
-                              f",\n                    encryption_args='''{enc_args}'''")
-        elif enc_scheme == "x509":
-            encryption_vql = ',\n                    encryption_scheme="x509"'
+        encryption_vql = _encryption_spec(encryption_scheme, encryption_password)
 
         # Operator-facing encryption logging — make the chosen scheme and what it
         # means for import explicit in the run log.
