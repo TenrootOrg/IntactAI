@@ -253,6 +253,39 @@
                                     </svg>
                                     <span>Artifacts that don't apply to the selected OS are removed automatically before building (e.g. Windows-only artifacts are dropped for a Linux or macOS target, and replaced with the matching OS triage set). The collector run log lists exactly what was removed.</span>
                                 </div>
+
+                                <!-- No-progress watchdog (optional, per build) -->
+                                <div class="bg-gray-900/60 border border-gray-700 rounded-lg p-3">
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">No-progress timeout <span class="text-xs text-gray-500 font-normal">(seconds, optional)</span></label>
+                                    <input type="number" id="offline-progress-timeout" min="60" max="86400" placeholder="1800 (default)"
+                                           class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-2.5 text-sm focus:border-blue-500 focus:outline-none">
+                                    <p class="text-xs text-gray-500 mt-1">A single artifact that produces no output for this long is terminated, so one stuck artifact (e.g. a glob wedged on a dead mount) can't hang the whole collection. Blank = 1800s (30 min).</p>
+                                </div>
+
+                                <!-- Container encryption (optional, opt-in) -->
+                                <div class="bg-gray-900/60 border border-gray-700 rounded-lg p-3 space-y-3">
+                                    <label class="block text-sm font-medium text-gray-300">Encryption <span class="text-xs text-gray-500 font-normal">(optional — protects the collected data)</span></label>
+                                    <select id="offline-enc-scheme" onchange="onOfflineEncSchemeChange(this.value)"
+                                            class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-2.5 text-sm focus:border-blue-500 focus:outline-none">
+                                        <option value="none">None — unencrypted ZIP (default)</option>
+                                        <option value="password">Password — one shared secret locks &amp; unlocks (portable across servers)</option>
+                                        <option value="x509">X509 — this server's certificate; auto-decrypts on import (no password)</option>
+                                    </select>
+
+                                    <!-- Password field -->
+                                    <div id="offline-enc-password-wrap" class="hidden">
+                                        <input type="password" id="offline-enc-password" placeholder="Encryption password"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-2.5 text-sm focus:border-blue-500 focus:outline-none">
+                                        <p class="text-xs text-gray-500 mt-1">You'll need this same password at import. Portable: import on any server with the password.</p>
+                                    </div>
+
+                                    <!-- Scheme explainer -->
+                                    <div id="offline-enc-explain" class="hidden flex items-start gap-2 text-xs text-gray-400 bg-gray-800/60 border border-gray-700 rounded-lg p-2.5">
+                                        <svg class="w-4 h-4 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                        <span id="offline-enc-explain-text"></span>
+                                    </div>
+                                </div>
+
                                 <button onclick="generateOfflineCollector()" class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-3 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2">
                                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
@@ -278,6 +311,12 @@
                                         <p id="offline-dropzone-text" class="text-sm font-medium">Click to select ZIP file or drag & drop</p>
                                         <p class="text-xs text-gray-500 mt-1">Any file size supported (resumable upload)</p>
                                     </div>
+                                </div>
+                                <!-- Optional decryption password (only for encrypted collections) -->
+                                <div class="mb-1">
+                                    <input type="password" id="offline-import-password" placeholder="Decryption password (only if the collection is encrypted)"
+                                           class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-2.5 text-sm focus:border-blue-500 focus:outline-none">
+                                    <p class="text-xs text-gray-500 mt-1">Leave blank for unencrypted collections. For X509/PGP, enter the session password recovered with your private key.</p>
                                 </div>
                                 <!-- Upload Progress -->
                                 <div id="offline-upload-progress" class="hidden">

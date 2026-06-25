@@ -336,6 +336,22 @@ async function deleteOfflineConfig(configId) {
     }
 }
 
+// Toggle the encryption inputs + explainer based on the selected scheme.
+function onOfflineEncSchemeChange(scheme) {
+    const pwWrap = document.getElementById('offline-enc-password-wrap');
+    const expl = document.getElementById('offline-enc-explain');
+    const explText = document.getElementById('offline-enc-explain-text');
+    const explain = {
+        password: "Symmetric: one secret encrypts and decrypts. Simplest and fully portable — import on any server by supplying the same password. The password is a shared secret, so protect it.",
+        x509: "Asymmetric, integrated: uses THIS server's certificate (the CA managed in data/velociraptor). The server auto-decrypts on import — no password, nothing to manage. To import on a DIFFERENT server, copy data/velociraptor (the CA) to it, or use Password for full portability."
+    };
+    if (pwWrap) pwWrap.classList.toggle('hidden', scheme !== 'password');
+    if (expl && explText) {
+        if (explain[scheme]) { explText.textContent = explain[scheme]; expl.classList.remove('hidden'); }
+        else expl.classList.add('hidden');
+    }
+}
+
 async function generateOfflineCollector() {
     const configId = document.getElementById('offline-gen-config').value;
     // The radio group encodes both OS and variant in a single value
@@ -369,6 +385,31 @@ async function generateOfflineCollector() {
         } else if (variant === 'musl') {
             body.musl = true;
         }
+
+        // Optional per-build no-progress watchdog (seconds)
+        const ptRaw = (document.getElementById('offline-progress-timeout')?.value || '').trim();
+        if (ptRaw) {
+            const pt = parseInt(ptRaw, 10);
+            if (isNaN(pt) || pt < 60 || pt > 86400) {
+                alert('No-progress timeout must be between 60 and 86400 seconds (or blank for the default).');
+                statusEl.classList.add('hidden'); return;
+            }
+            body.progress_timeout = pt;
+        }
+
+        // Optional container encryption
+        const encScheme = document.getElementById('offline-enc-scheme')?.value || 'none';
+        if (encScheme === 'password') {
+            const pw = document.getElementById('offline-enc-password')?.value || '';
+            if (!pw) { alert('Enter an encryption password (or set Encryption to None).'); statusEl.classList.add('hidden'); return; }
+            body.encryption_scheme = 'password';
+            body.encryption_password = pw;
+        } else if (encScheme === 'x509') {
+            // Always this server's certificate (the CA in data/velociraptor); the
+            // server auto-decrypts on import. No key input.
+            body.encryption_scheme = 'x509';
+        }
+
         const response = await fetch('/api/velociraptor/offline/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -475,10 +516,15 @@ function importOfflineResults() {
     filenameEl.textContent = selectedImportFile.name;
     importBtn.disabled = true;
 
+    // Optional decryption password for an encrypted collection (sent via tus
+    // metadata to the import hook). Empty for unencrypted collections.
+    const importPw = document.getElementById('offline-import-password')?.value || '';
+    const importMeta = importPw ? { password: importPw } : {};
+
     // Create uploader - progress is tracked in Workflows tab via tus hooks
     const uploader = new TusUploader({
         purpose: 'velociraptor',
-        metadata: {},
+        metadata: importMeta,
         onProgress: (info) => {
             // Progress is tracked in workflow logs, no need to update UI here
         },

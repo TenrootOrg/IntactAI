@@ -106,6 +106,25 @@ VELO_CLIENT_PATHS = _LazyVeloPaths()
 
 # Default artifacts (same as BestPractice)
 # All artifacts verified to exist in Velociraptor 0.75.x
+# Number of artifacts the offline collector runs in parallel. Velociraptor's
+# Server.Utils.CreateCollector defaults opt_concurrency to 2 — far too low for a
+# multi-artifact triage: a couple of slow detection artifacts (e.g.
+# DetectRaptor.Windows.Detection.BinaryRename, ZoneIdentifier) seize both slots for
+# hours and every other artifact "Timed out in concurrency control" without ever
+# starting (observed 2026-06-24: a 31-artifact BestPractice run collected only 5
+# artifacts in ~2h53m). cpu_limit still caps total CPU, so a higher slot count just
+# stops fast artifacts from starving behind slow ones. Override per blueprint via
+# settings.concurrency.
+DEFAULT_COLLECTOR_CONCURRENCY = 8
+
+# Per-query no-progress watchdog (seconds). Velociraptor's CreateCollector already
+# defaults this to 1800, so setting it changes nothing unless a blueprint overrides
+# via settings.progress_timeout — it's exposed here only to make the value tunable
+# and explicit. A single artifact that stalls (e.g. a glob wedged on a dead network
+# mount) is terminated after this long with no progress, while opt_timeout caps the
+# whole collection.
+DEFAULT_COLLECTOR_PROGRESS_TIMEOUT = 1800
+
 DEFAULT_ARTIFACTS = [
     "Windows.NTFS.MFT",
     "Windows.Sys.AllUsers",

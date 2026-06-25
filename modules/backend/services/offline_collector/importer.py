@@ -10,10 +10,96 @@ import time
 import subprocess
 import zipfile
 
-from services.offline_collector.constants import VELOCIRAPTOR_CONTAINER
+from services.offline_collector.constants import VELOCIRAPTOR_CONTAINER, get_velo_client_path
 
 
-def import_results(zip_file_path, original_filename="import.zip", run_id=None):
+def _decrypt_container_if_needed(zip_file_path, password, log):
+    """Return a path to a PLAINTEXT collection container, decrypting first if the
+    upload is an encrypted Velociraptor container.
+
+    Server.Utils.ImportCollection has no password/key parameter, so an encrypted
+    container can't be imported directly. An encrypted container wraps everything
+    as a single top-level 'data.zip' (a plaintext one exposes 'collection_context.json'
+    directly). For the Password scheme we decrypt with `velociraptor unzip
+    --password` and repack into a plaintext container ImportCollection can read.
+    X509 containers carry no password — the server decrypts them transparently with
+    its own CA key, so those pass straight through (the no-password branch below).
+
+    Raises ValueError (operator-facing) on an incorrect password.
+    """
+    try:
+        with zipfile.ZipFile(zip_file_path) as zf:
+            names = zf.namelist()
+    except Exception:
+        log("Could not read the upload as a ZIP — passing it through unchanged.", "warning")
+        return zip_file_path  # not introspectable as a zip — let downstream handle it
+
+    if any('collection_context.json' in n for n in names):
+        log("Container is UNENCRYPTED (plaintext) — importing directly.")
+        return zip_file_path  # already plaintext (or transparently decrypted)
+
+    # Encrypted shape: everything is wrapped in a single 'data.zip'. An X509
+    # container also carries a 'metadata.json' (with the wrapped session key);
+    # a password (symmetric) container is just the encrypted 'data.zip'.
+    has_metadata = any(n.endswith('metadata.json') for n in names)
+    scheme = "x509" if has_metadata else "password"
+    log(f"Container is ENCRYPTED (scheme: {scheme}).")
+
+    if not password:
+        if scheme == "x509":
+            # Normal X509 path: the container is sealed with this server's
+            # certificate; Server.Utils.ImportCollection (running on the server,
+            # which holds the CA private key in data/velociraptor) decrypts it
+            # transparently. Pass it straight through.
+            log("X509 container — the server will decrypt it automatically with its "
+                "CA key (data/velociraptor) during import. No password needed.")
+        else:
+            # Password-encrypted but no password supplied — import WILL fail.
+            log("This container is password-encrypted but no decryption password was "
+                "supplied — the import will fail. Re-import and enter the password "
+                "used when the collector was built.", "warning")
+        return zip_file_path
+
+    velo = get_velo_client_path('linux')
+    if not velo or not os.path.exists(velo):
+        raise ValueError("Velociraptor binary not found — cannot decrypt the container.")
+
+    import tempfile
+    import shutil
+    workdir = tempfile.mkdtemp(prefix='offdec_')
+    dump_dir = os.path.join(workdir, 'dump')
+    os.makedirs(dump_dir, exist_ok=True)
+    log("Decrypting the container with the supplied password...")
+    proc = subprocess.run(
+        [velo, '--nobanner', 'unzip', '--password', password,
+         '--dump_dir', dump_dir, zip_file_path],
+        capture_output=True, text=True, timeout=1800,
+    )
+    extracted = [os.path.join(r, f) for r, _d, fs in os.walk(dump_dir) for f in fs]
+    if not any('collection_context.json' in p for p in extracted):
+        shutil.rmtree(workdir, ignore_errors=True)
+        log("Decryption FAILED — wrong password (or not a password-encrypted "
+            "container).", "error")
+        raise ValueError("Decryption failed — wrong password, or this is not a "
+                         f"password-decryptable container. {(proc.stderr or '').strip()[:300]}")
+    log(f"Decryption succeeded — recovered {len(extracted)} files from the container.", "success")
+
+    out_zip = os.path.join(workdir, 'decrypted.zip')
+    SAFE_MTIME = 315532800  # 1980-01-01 UTC — zipfile rejects timestamps before 1980,
+                            # and velociraptor's unzip dumps files with epoch-0 mtimes.
+    with zipfile.ZipFile(out_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for p in extracted:
+            try:
+                if os.stat(p).st_mtime < SAFE_MTIME:
+                    os.utime(p, (SAFE_MTIME, SAFE_MTIME))
+            except Exception:
+                pass
+            zf.write(p, os.path.relpath(p, dump_dir))
+    log(f"Decrypted and repacked {len(extracted)} files for import.")
+    return out_zip
+
+
+def import_results(zip_file_path, original_filename="import.zip", run_id=None, password=None):
     """Import offline collection results to Velociraptor using Server.Utils.ImportCollection
 
     Args:
@@ -53,6 +139,18 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None):
         print(f"[OFFLINE] Importing collection for hostname: {hostname}", flush=True)
 
         update_run_status(run_id, "running", progress=15)
+
+        # Decrypt first if this is an encrypted container (ImportCollection can't
+        # read encrypted ones — it has no password/key parameter).
+        try:
+            zip_file_path = _decrypt_container_if_needed(
+                zip_file_path, password,
+                lambda m, lvl="info": add_log_to_run(run_id, m, lvl),
+            )
+        except ValueError as ve:
+            add_log_to_run(run_id, str(ve), "error")
+            update_run_status(run_id, "failed")
+            return {"success": False, "error": str(ve)}
 
         # Verify this is a valid Velociraptor collection ZIP
         add_log_to_run(run_id, "Verifying ZIP contents...")

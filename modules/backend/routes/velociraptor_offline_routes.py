@@ -130,6 +130,15 @@ def generate_offline_collector():
         musl   = bool(data.get('musl'))
         legacy_source = (data.get('legacy_source') or 'offline').lower()
         legacy_version = data.get('legacy_version') or None
+        # Optional container encryption (opt-in). scheme: none|password|x509
+        #   password -> requires encryption_password (portable across servers)
+        #   x509     -> always THIS server's certificate (the CA in
+        #               data/velociraptor); the server auto-decrypts on import
+        encryption_scheme   = (data.get('encryption_scheme') or 'none').strip().lower()
+        encryption_password = data.get('encryption_password') or ''
+        # Optional per-build no-progress watchdog (seconds). A stalled artifact is
+        # terminated after this long with no output. Blank -> blueprint/default (1800).
+        progress_timeout = data.get('progress_timeout')
 
         if not config_id:
             return jsonify({"error": "config_id is required"}), 400
@@ -150,6 +159,27 @@ def generate_offline_collector():
         # then fail at the file-swap step with a cryptic ENOENT.
         if legacy and os_type == 'darwin':
             return jsonify({"error": "legacy variant is not available for macOS (no upstream darwin asset for v0.7.x)"}), 400
+
+        if encryption_scheme not in ('none', 'password', 'x509'):
+            return jsonify({"error": "encryption_scheme must be none, password, or x509"}), 400
+        if encryption_scheme == 'password' and not encryption_password:
+            return jsonify({"error": "encryption_password is required for the password scheme"}), 400
+        # X509 always uses THIS server's certificate (the CA in data/velociraptor),
+        # which the server auto-decrypts on import — no key input needed.
+        # The password is inlined into a triple-quoted VQL string literal; reject a
+        # value that could break out of it (defence-in-depth — operator input).
+        if "'''" in encryption_password:
+            return jsonify({"error": "encryption password must not contain triple single-quotes"}), 400
+
+        if progress_timeout not in (None, ''):
+            try:
+                progress_timeout = int(progress_timeout)
+            except (TypeError, ValueError):
+                return jsonify({"error": "progress_timeout must be a whole number of seconds"}), 400
+            if not (60 <= progress_timeout <= 86400):
+                return jsonify({"error": "progress_timeout must be between 60 and 86400 seconds"}), 400
+        else:
+            progress_timeout = None
 
         # Get config name for workflow
         config = get_config(config_id)
@@ -242,6 +272,9 @@ def generate_offline_collector():
                     legacy_source=legacy_source,
                     musl=musl,
                     run_id=run_id,
+                    encryption_scheme=encryption_scheme,
+                    encryption_password=encryption_password,
+                    progress_timeout=progress_timeout,
                 )
 
                 if result.get('cancelled'):
@@ -258,6 +291,11 @@ def generate_offline_collector():
                     add_log_to_run(run_id, f"Collector generated successfully", "success")
                     add_log_to_run(run_id, f"File: {file_name}", "info")
                     add_log_to_run(run_id, f"Size: {file_size / (1024*1024):.2f} MB", "info")
+                    _enc_label = {
+                        'password': "PASSWORD (supply the same password at import)",
+                        'x509': "X509 (this server's certificate — auto-decrypts on import)",
+                    }.get(encryption_scheme, "NONE (plaintext)")
+                    add_log_to_run(run_id, f"Container encryption: {_enc_label}", "success" if encryption_scheme != 'none' else "info")
                     add_log_to_run(run_id, f"Download URL: /api/velociraptor/offline/download/{file_id}", "info")
 
                     if result.get('note'):
@@ -364,7 +402,11 @@ def import_offline_results():
 
         print(f"[OFFLINE] Importing: {file.filename} ({file_size} bytes)", flush=True)
 
-        result = import_results(temp_path, file.filename)
+        # Optional decryption password for encrypted containers (password scheme,
+        # or the recovered session password for X509/PGP).
+        import_password = request.form.get('password') or None
+
+        result = import_results(temp_path, file.filename, password=import_password)
 
         return jsonify(result)
     except Exception as e:

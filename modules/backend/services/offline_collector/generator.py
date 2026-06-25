@@ -16,6 +16,8 @@ from services.offline_collector.constants import (
     VELOCIRAPTOR_CONTAINER,
     VELO_CLIENT_PATHS,
     DEFAULT_ARTIFACTS,
+    DEFAULT_COLLECTOR_CONCURRENCY,
+    DEFAULT_COLLECTOR_PROGRESS_TIMEOUT,
     artifacts_for_os,
     ONLINE_REQUIRED_ARTIFACTS,
     EMBEDDABLE_TOOLS,
@@ -55,7 +57,9 @@ def get_blueprint_as_config(blueprint_id):
                     'artifacts': bp.get('artifacts', []),
                     'parameters': {
                         'CpuLimit': bp.get('settings', {}).get('cpu_limit', 80),
-                        'MaxExecutionTimeInSeconds': bp.get('settings', {}).get('timeout', 3600)
+                        'MaxExecutionTimeInSeconds': bp.get('settings', {}).get('timeout', 3600),
+                        'Concurrency': bp.get('settings', {}).get('concurrency', DEFAULT_COLLECTOR_CONCURRENCY),
+                        'ProgressTimeout': bp.get('settings', {}).get('progress_timeout', DEFAULT_COLLECTOR_PROGRESS_TIMEOUT)
                     }
                 }
 
@@ -69,7 +73,9 @@ def get_blueprint_as_config(blueprint_id):
                     'artifacts': bp.get('artifacts', []),
                     'parameters': {
                         'CpuLimit': bp.get('settings', {}).get('cpu_limit', 80),
-                        'MaxExecutionTimeInSeconds': bp.get('settings', {}).get('timeout', 3600)
+                        'MaxExecutionTimeInSeconds': bp.get('settings', {}).get('timeout', 3600),
+                        'Concurrency': bp.get('settings', {}).get('concurrency', DEFAULT_COLLECTOR_CONCURRENCY),
+                        'ProgressTimeout': bp.get('settings', {}).get('progress_timeout', DEFAULT_COLLECTOR_PROGRESS_TIMEOUT)
                     }
                 }
 
@@ -98,6 +104,8 @@ def get_blueprint_as_config(blueprint_id):
                         'CpuLimit': s.get('cpu_limit', 80),
                         'MaxExecutionTimeInSeconds': s.get('collection_timeout',
                                                            s.get('timeout', 100000)),
+                        'Concurrency': s.get('concurrency', DEFAULT_COLLECTOR_CONCURRENCY),
+                        'ProgressTimeout': s.get('progress_timeout', DEFAULT_COLLECTOR_PROGRESS_TIMEOUT),
                     },
                     # Per-artifact env dict. generator picks this up and inlines
                     # it into the Server.Utils.CreateCollector spec.
@@ -115,7 +123,9 @@ def get_blueprint_as_config(blueprint_id):
 
 def generate_collector(config_id, os_type="windows",
                        legacy=False, legacy_version=None, legacy_source="offline",
-                       musl=False, run_id=None):
+                       musl=False, run_id=None,
+                       encryption_scheme="none", encryption_password=None,
+                       progress_timeout=None):
     """`run_id` makes the call honour the workflow's Stop button — between
     each phase (gRPC setup, collection wait, file copy, binary swap,
     repack) we check the cancel event and abort cleanly. Without this,
@@ -210,7 +220,11 @@ def generate_collector(config_id, os_type="windows",
                     )
                 except Exception:
                     pass
-        parameters = config.get("parameters", {})
+        parameters = dict(config.get("parameters", {}))
+        # Per-build override from the Generate page (falls back to the blueprint
+        # setting, then DEFAULT_COLLECTOR_PROGRESS_TIMEOUT).
+        if progress_timeout is not None:
+            parameters['ProgressTimeout'] = int(progress_timeout)
 
         # Filter out truly online-only artifacts
         filtered_artifacts = [a for a in artifacts if a not in ONLINE_REQUIRED_ARTIFACTS]
@@ -251,6 +265,47 @@ def generate_collector(config_id, os_type="windows",
         )
         stub = api_pb2_grpc.APIStub(channel)
 
+        # ── Pre-build artifact validation ──────────────────────────────
+        # Drop any requested artifact the Velociraptor repository doesn't
+        # know about (blueprint drift, a DetectRaptor/third-party pack that
+        # never loaded). CreateCollector would otherwise bake a dangling
+        # name that silently collects nothing on the endpoint. Best-effort:
+        # if the lookup fails we proceed with the full list rather than block.
+        try:
+            available = set()
+            val_req = api_pb2.VQLCollectorArgs(
+                max_wait=10, max_row=100000,
+                Query=[api_pb2.VQLRequest(VQL="SELECT name FROM artifact_definitions()")],
+            )
+            for resp in stub.Query(val_req, timeout=60):
+                if resp.Response:
+                    try:
+                        for row in json.loads(resp.Response):
+                            n = row.get("name")
+                            if n:
+                                available.add(n)
+                    except Exception:
+                        pass
+            if available:
+                missing = [a for a in filtered_artifacts if a not in available]
+                if missing:
+                    filtered_artifacts = [a for a in filtered_artifacts if a in available]
+                    msg = (f"Dropped {len(missing)} artifact(s) not in the Velociraptor "
+                           f"repository (blueprint drift / pack not loaded): "
+                           f"{', '.join(missing[:10])}{' …' if len(missing) > 10 else ''}")
+                    print(f"[OFFLINE] {msg}", flush=True)
+                    if run_id:
+                        try:
+                            from services.workflow_service import add_log_to_run
+                            add_log_to_run(run_id, msg, "warning")
+                        except Exception:
+                            pass
+                if not filtered_artifacts:
+                    return {"success": False,
+                            "error": "None of the requested artifacts exist in the Velociraptor repository — nothing to collect."}
+        except Exception as _ve:
+            print(f"[OFFLINE] Artifact validation skipped ({type(_ve).__name__}: {_ve})", flush=True)
+
         # Server.Utils.CreateCollector declares both `artifacts` and
         # `parameters` as type=json / json_array. The artifact dispatcher
         # expects them as JSON-encoded STRINGS — passing a VQL list / dict
@@ -272,6 +327,52 @@ def generate_collector(config_id, os_type="windows",
         if artifact_env:
             print(f"[OFFLINE] Inlining parameter overrides for {len(artifact_env)} artifact(s): {list(artifact_env.keys())}", flush=True)
 
+        # ── Container encryption (optional) ────────────────────────────
+        # Velociraptor encrypts the whole collection container so the sensitive
+        # forensic data is protected in transit / at rest. Two schemes:
+        #   password : symmetric — same secret encrypts + decrypts; portable
+        #              across servers (supply it again at import).
+        #   x509     : always THIS server's own certificate (the CA in
+        #              data/velociraptor). No key is passed, so CreateCollector
+        #              falls back to server_frontend_cert() and the server
+        #              auto-decrypts on import — no password, nothing to manage.
+        # encryption_args is a json-typed param, so (like artifacts/parameters)
+        # it is inlined as a JSON STRING literal.
+        enc_scheme = (encryption_scheme or "none").strip().lower()
+        encryption_vql = ""
+        if enc_scheme == "password" and encryption_password:
+            enc_args = json.dumps({"password": encryption_password})
+            encryption_vql = (f',\n                    encryption_scheme="password"'
+                              f",\n                    encryption_args='''{enc_args}'''")
+        elif enc_scheme == "x509":
+            encryption_vql = ',\n                    encryption_scheme="x509"'
+
+        # Operator-facing encryption logging — make the chosen scheme and what it
+        # means for import explicit in the run log.
+        def _enc_log(msg, lvl="info"):
+            print(f"[OFFLINE] {msg}", flush=True)
+            if run_id:
+                try:
+                    from services.workflow_service import add_log_to_run
+                    add_log_to_run(run_id, msg, lvl)
+                except Exception:
+                    pass
+
+        if enc_scheme == "password" and encryption_password:
+            _enc_log("Encryption: PASSWORD — the collection container will be encrypted "
+                     "with the supplied password. The SAME password is required at import "
+                     "(portable: import on any server with the password).")
+        elif enc_scheme == "x509":
+            _enc_log("Encryption: X509 — the container will be encrypted with THIS server's "
+                     "certificate (the CA in data/velociraptor). This server auto-decrypts on "
+                     "import; to import on a different server, copy data/velociraptor or use "
+                     "the password scheme.")
+        elif enc_scheme == "password" and not encryption_password:
+            _enc_log("Encryption: PASSWORD requested but no password was provided — building "
+                     "an UNENCRYPTED container instead.", "warning")
+        else:
+            _enc_log("Encryption: NONE — the collection container will be unencrypted (plaintext).")
+
         # Use "Generic" OS type - this has NO size limit and embeds tools
         vql_query = f'''SELECT collect_client(
             client_id="server",
@@ -288,7 +389,9 @@ def generate_collector(config_id, os_type="windows",
                     opt_prompt="N",
                     opt_admin="Y",
                     opt_cpu_limit={parameters.get('CpuLimit', 80)},
-                    opt_timeout={parameters.get('MaxExecutionTimeInSeconds', 3600)}
+                    opt_timeout={parameters.get('MaxExecutionTimeInSeconds', 3600)},
+                    opt_concurrency={parameters.get('Concurrency', DEFAULT_COLLECTOR_CONCURRENCY)},
+                    opt_progress_timeout={parameters.get('ProgressTimeout', DEFAULT_COLLECTOR_PROGRESS_TIMEOUT)}{encryption_vql}
                 )
             )
         ) AS Collection FROM scope()'''
