@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Run every standalone unit-test file under modules/backend and print a tally.
+"""Run every consolidated unit-test file in this folder (intact/tests) and tally.
 
-pytest is NOT installed in the backend container, so each unit-test file ships a
-`if __name__ == "__main__"` runner that prints "<pass>/<total> passed". This script
-discovers those files, runs each in its own subprocess (isolation), and aggregates.
+All backend unit tests live here, one (or a few) file(s) per module. pytest is NOT
+installed in the backend container, so each file ships an `if __name__ == "__main__"`
+runner that prints "<pass>/<total> passed"; this discovers + runs each in its own
+subprocess (isolation) and aggregates.
 
 Run inside the backend container (the repo is bind-mounted at /app/workdir):
-    docker exec intact_backend python3 /app/workdir/modules/backend/run_unit_tests.py
+    docker exec intact_backend python3 /app/workdir/tests/run_all.py
 
-The fusion module also has its own richer runner with calibration metrics:
+The large fusion subsystem keeps its own coupled suite + calibration:
     docker exec intact_backend python3 /app/services/fusion/tests/run_all.py
 """
 import glob
