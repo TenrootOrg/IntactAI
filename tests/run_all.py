@@ -22,7 +22,10 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
 def main():
-    files = sorted(set(glob.glob(f"{ROOT}/**/test_*.py", recursive=True)))
+    # Top-level only. The fusion suite lives in the fusion/ subpackage and MUST be
+    # run by its own runner (tests/fusion/run_all.py) which re-execs into a throwaway
+    # storage dir — running those files here would hit the LIVE DB.
+    files = sorted(set(glob.glob(f"{ROOT}/test_*.py")))
     total = passed = ran = 0
     failures = []
     skipped = []

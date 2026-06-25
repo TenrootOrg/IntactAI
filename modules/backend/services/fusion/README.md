@@ -105,7 +105,7 @@ docker exec -w /app intact_backend python3 -m services.fusion.calibrate --sweep
 Suites: `test_fusion` (correlation), `test_budget` (token caps + facts-not-sent),
 `test_llm_contract` (mocked real-LLM seam), `test_baseline_fp` + `test_baseline_subtraction`
 (the FP regression gate), `test_chat_retrieval`, `test_kb_enrichment`, `test_fuzz_mappers`.
-Fixtures `tests/fixtures/{clean,attack}.json` are real Velociraptor purple-team data.
+Fixtures `fixtures/{clean,attack}.json` are real Velociraptor purple-team data.
 Validated end-to-end on real VolWeb evidence-6 (isolates the MsMpEng + powershell_ise
 RWX injections) and on a multi-host fixture (cross-module process merge, cross-host
 C2 IP + admin account → lateral movement, cross-host file hash, injected-process-with-C2).

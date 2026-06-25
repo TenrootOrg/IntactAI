@@ -12,7 +12,7 @@ if "/app" not in sys.path:
     sys.path.insert(0, "/app")
 
 from services.fusion import llm_sim  # noqa: E402
-import services.fusion.tests.test_fusion as T  # noqa: E402
+import tests.fusion.test_fusion as T  # noqa: E402
 
 
 @contextlib.contextmanager
@@ -88,7 +88,7 @@ def test_chat_falls_back_to_deterministic_on_error():
 
 def test_default_is_simulated():
     # "simulated" now means: no real-mode flag AND no LLM transport available.
-    from services.fusion.tests.test_fusion import force_sim
+    from tests.fusion.test_fusion import force_sim
     g = T.build()
     with force_sim():
         out = llm_sim.generate_report(g, window=T.WINDOW, min_severity="low", case_name="X")

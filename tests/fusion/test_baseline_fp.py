@@ -7,7 +7,7 @@ subtract to silence. This test FAILS today (no baseline-subtraction) and turns G
 Phase 3 — a permanent regression gate on the coordinated-activity false positive.
 
 Run inside the backend container:
-    python3 -m services.fusion.tests.test_baseline_fp
+    python3 -m tests.fusion.test_baseline_fp
 """
 
 import sys

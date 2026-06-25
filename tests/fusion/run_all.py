@@ -1,7 +1,7 @@
 """Run every fusion test module + print the calibrate.py F1 — the one-command
 'fix test fix test' loop.
 
-    docker exec -w /app intact_backend python3 -m services.fusion.tests.run_all
+    docker exec -w /app intact_backend python3 -m tests.fusion.run_all
 """
 
 # Test isolation: these tests import services.* (which boots SQLite storage at
@@ -19,7 +19,7 @@ if not _os.environ.get("FUSION_TEST_ISOLATED"):
     _os.environ["INTACT_STORAGE_BASE"] = _tmp
     print(f"[run_all] isolating storage -> {_tmp} (re-exec)", flush=True)
     _os.execv(_sys.executable,
-              [_sys.executable, "-m", "services.fusion.tests.run_all"] + _sys.argv[1:])
+              [_sys.executable, "-m", "tests.fusion.run_all"] + _sys.argv[1:])
 
 import sys
 import importlib
@@ -28,28 +28,28 @@ if "/app" not in sys.path:
     sys.path.insert(0, "/app")
 
 MODULES = [
-    "services.fusion.tests.test_fusion",
-    "services.fusion.tests.test_details_parser",
-    "services.fusion.tests.test_detection_linking",
-    "services.fusion.tests.test_hash_bridge",
-    "services.fusion.tests.test_auth_kerberos",
-    "services.fusion.tests.test_blindspot_mappers",
-    "services.fusion.tests.test_analysis_contract",
-    "services.fusion.tests.test_case_routes",
-    "services.fusion.tests.test_workspaces",
-    "services.fusion.tests.test_dispositions",
-    "services.fusion.tests.test_validation_attack2",
-    "services.fusion.tests.test_no_llm",
-    "services.fusion.tests.test_time_filter",
-    "services.fusion.tests.test_budget",
-    "services.fusion.tests.test_llm_contract",
-    "services.fusion.tests.test_baseline_fp",
-    "services.fusion.tests.test_baseline_subtraction",
-    "services.fusion.tests.test_chat_retrieval",
-    "services.fusion.tests.test_kb_enrichment",
-    "services.fusion.tests.test_fuzz_mappers",
-    "services.fusion.tests.test_event_dedup",
-    "services.fusion.tests.test_timeline",
+    "tests.fusion.test_fusion",
+    "tests.fusion.test_details_parser",
+    "tests.fusion.test_detection_linking",
+    "tests.fusion.test_hash_bridge",
+    "tests.fusion.test_auth_kerberos",
+    "tests.fusion.test_blindspot_mappers",
+    "tests.fusion.test_analysis_contract",
+    "tests.fusion.test_case_routes",
+    "tests.fusion.test_workspaces",
+    "tests.fusion.test_dispositions",
+    "tests.fusion.test_validation_attack2",
+    "tests.fusion.test_no_llm",
+    "tests.fusion.test_time_filter",
+    "tests.fusion.test_budget",
+    "tests.fusion.test_llm_contract",
+    "tests.fusion.test_baseline_fp",
+    "tests.fusion.test_baseline_subtraction",
+    "tests.fusion.test_chat_retrieval",
+    "tests.fusion.test_kb_enrichment",
+    "tests.fusion.test_fuzz_mappers",
+    "tests.fusion.test_event_dedup",
+    "tests.fusion.test_timeline",
 ]
 
 

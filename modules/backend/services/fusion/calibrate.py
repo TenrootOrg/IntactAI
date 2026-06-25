@@ -18,7 +18,7 @@ import os
 from . import correlate, severity as sev
 from .mappers import map_agentic
 
-FIX_DIR = os.path.join(os.path.dirname(__file__), "tests", "fixtures")
+FIX_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 
 
 def load_fixture(name: str) -> dict:

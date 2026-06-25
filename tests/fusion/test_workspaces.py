@@ -57,7 +57,7 @@ def test_checklist_is_grounded_to_real_findings():
 def test_masked_report_anonymizes_host_labels():
     from services.fusion import llm_sim
     from services.data_anonymizer import DataAnonymizer
-    from services.fusion.tests.test_fusion import force_sim
+    from tests.fusion.test_fusion import force_sim
     g = calibrate.fuse("attack2")
     hosts = [e.label for e in g.entities.values() if e.type == "asset" and e.label]
     with force_sim():            # deterministic masking path (no live LLM in tests)

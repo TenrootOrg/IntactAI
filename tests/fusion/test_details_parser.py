@@ -53,7 +53,7 @@ def test_colon_in_value_and_last_wins():
 
 def test_against_real_fixture():
     import json
-    fx = json.load(open("/app/services/fusion/tests/fixtures/attack.json"))
+    fx = json.load(open("/app/services/fusion/fixtures/attack.json"))
     rows = fx["collected_data"]["Windows.Hayabusa.Rules"]
     parsed = [D.parse_details(r.get("Details")) for r in rows]
     # at least one EID-1-style row yields a pid + proc + hashes, proving real-data parse

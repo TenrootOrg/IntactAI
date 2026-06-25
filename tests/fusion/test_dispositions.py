@@ -72,7 +72,7 @@ def test_chat_detects_environment_scope():
 def test_chat_surfaces_dispositions():
     g = _graph_with_finding("high")
     # deterministic fallback path (a live LLM would phrase this its own way)
-    from services.fusion.tests.test_fusion import force_sim
+    from tests.fusion.test_fusion import force_sim
     with force_sim():
         out = llm_sim.chat(g, "what have I marked benign?",
                            dispositions=[{"target": "f_psexec", "verdict": "benign",

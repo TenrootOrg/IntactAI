@@ -1,7 +1,7 @@
 """Fusion correlation + report tests, fixture-driven (no live infra).
 
 Run inside the backend container:
-    python3 -m services.fusion.tests.test_fusion          # prints the demo report
+    python3 -m tests.fusion.test_fusion          # prints the demo report
     python3 -m pytest services/fusion/tests/test_fusion.py # asserts
 """
 

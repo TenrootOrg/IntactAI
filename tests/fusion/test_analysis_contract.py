@@ -8,8 +8,8 @@ if "/app" not in sys.path:
     sys.path.insert(0, "/app")
 
 from services.fusion import llm_sim, calibrate  # noqa: E402
-import services.fusion.tests.test_fusion as T  # noqa: E402
-from services.fusion.tests.test_llm_contract import real_mode  # noqa: E402  (reuse ctx)
+import tests.fusion.test_fusion as T  # noqa: E402
+from tests.fusion.test_llm_contract import real_mode  # noqa: E402  (reuse ctx)
 
 
 def test_analysis_sends_distilled_not_facts_and_threads_run_id():

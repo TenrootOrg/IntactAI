@@ -9,7 +9,7 @@ if "/app" not in sys.path:
     sys.path.insert(0, "/app")
 
 from services.fusion import kb  # noqa: E402
-import services.fusion.tests.test_fusion as T  # noqa: E402
+import tests.fusion.test_fusion as T  # noqa: E402
 
 
 def test_degrades_silently_without_es():
