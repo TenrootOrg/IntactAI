@@ -183,6 +183,29 @@ def _read_pg_data_major(logger: Callable = None) -> Optional[str]:
     return v if v.isdigit() else None
 
 
+def _read_volume_pg_major(vol_name: Optional[str], env_file: str, logger: Callable = None) -> Optional[str]:
+    """Major version of the EXISTING data dir, read straight off the volume.
+
+    Unlike _read_pg_data_major (which execs the live container), this works when
+    the postgres container is DOWN or crash-looping — the situation we're in when
+    a rollback brings up a wrong-major container. Mounts the volume into the pinned
+    postgres image (already local) with `cat` as the entrypoint, so nothing tries
+    to start a cluster."""
+    if not vol_name:
+        return None
+    try:
+        tag = (read_env_file(env_file).get('POSTGRES_VERSION') or '13').strip()
+    except Exception:
+        tag = '13'
+    r = run_command(
+        f"docker run --rm --entrypoint cat -v {shlex.quote(vol_name)}:/v "
+        f"{shlex.quote('postgres:' + tag)} /v/PG_VERSION", logger=None)
+    if not r.get('success'):
+        return None
+    v = (r.get('stdout') or '').strip().split('.')[0]
+    return v if v.isdigit() else None
+
+
 def _read_pinned_pg_major(env_file: str) -> Optional[str]:
     """Major pinned in modules/timesketch/.env POSTGRES_VERSION
     (e.g. '13.0-alpine' -> '13'), or None."""
@@ -261,6 +284,57 @@ def _migrate_pg_major(work_dir: str, db_backup_path: Optional[str], vol_name: Op
         return False
     log("Postgres major migration complete — data restored under the new major.", "success")
     return True
+
+
+def _rollback_restore_db(work_dir: str, env_file: str, db_backup_path: Optional[str],
+                        vol_name: Optional[str], logger: Callable = None) -> None:
+    """Restore the pre-upgrade DB as the final rollback step.
+
+    Cheap path first: if postgres in the rolled-back stack comes up, just restore
+    the dump. But if it WON'T come up because the data-dir major no longer matches
+    the (rolled-back) pinned major — e.g. a legacy PG15 volume against a PG13 pin —
+    restoring the .env can never fix that (a PG13 binary can't open a PG15 data
+    dir). In that case reconcile with the SAME dump->wipe->restore migration the
+    forward path uses, so a FAILED upgrade still rolls back to a WORKING Timesketch
+    instead of a crash-looping postgres."""
+    log = logger or (lambda m, l="info": print(f"[{l}] {m}"))
+    if not db_backup_path:
+        return
+
+    # Cheap path: wait briefly for postgres in the rolled-back stack.
+    pg_ok = False
+    for _ in range(15):
+        if run_command(f"docker exec {_PG_CONTAINER} pg_isready -U {_PG_USER}",
+                       logger=None).get('success'):
+            pg_ok = True
+            break
+        time.sleep(2)
+
+    if pg_ok:
+        if _restore_timesketch_db(db_backup_path, logger=log):
+            log(f"ROLLED BACK DB from {db_backup_path}", "warning")
+        else:
+            log(f"DB restore failed — dump kept at {db_backup_path} for manual recovery", "error")
+        return
+
+    # Postgres didn't come up. Diagnose a major mismatch and reconcile if so.
+    vol_name = vol_name or _read_pg_volume_name(logger=log)
+    pinned = _read_pinned_pg_major(env_file)
+    vol_major = _read_volume_pg_major(vol_name, env_file, logger=log)
+    if vol_major and pinned and vol_major != pinned:
+        log(f"Rollback: postgres won't start — the data dir is PG{vol_major} but config "
+            f"pins PG{pinned}. Reconciling via dump->wipe->restore (in-place major "
+            f"changes aren't possible).", "warning")
+        run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
+        if _migrate_pg_major(work_dir, db_backup_path, vol_name, logger=log):
+            run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
+            log(f"ROLLED BACK DB after reconciling postgres PG{vol_major} -> PG{pinned}", "warning")
+        else:
+            log(f"Postgres major reconciliation failed — dump kept at {db_backup_path} "
+                f"for manual recovery", "error")
+    else:
+        log(f"Postgres did not become ready (data PG{vol_major or '?'}, pinned PG{pinned or '?'}) — "
+            f"dump kept at {db_backup_path} for manual recovery", "error")
 
 
 def _count_timesketch_rows(table: str, logger: Callable = None) -> Optional[int]:
@@ -846,19 +920,11 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
             run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
             log(f"ROLLED BACK Timesketch config to version {current_version}", "warning")
 
-            # With the old-version container back up, restore the pre-upgrade
-            # DB so the schema matches what the rolled-back code expects.
-            if db_backup_path:
-                # Wait briefly for postgres in the rolled-back container to be ready.
-                for _ in range(15):
-                    chk = run_command(f"docker exec {_PG_CONTAINER} pg_isready -U {_PG_USER}", logger=None)
-                    if chk['success']:
-                        break
-                    time.sleep(2)
-                if _restore_timesketch_db(db_backup_path, logger=log):
-                    log(f"ROLLED BACK DB from {db_backup_path}", "warning")
-                else:
-                    log(f"DB restore failed — dump kept at {db_backup_path} for manual recovery", "error")
+            # Restore the pre-upgrade DB. If postgres won't come up because the
+            # data-dir major no longer matches the rolled-back pin (legacy PG15
+            # volume vs PG13 pin), this reconciles the volume (dump->wipe->restore)
+            # so the rollback ends in a WORKING Timesketch, not a crash loop.
+            _rollback_restore_db(work_dir, env_file, db_backup_path, pg_vol_name, logger=log)
 
         if plaso_backup and restore_env_file(backend_env, plaso_backup, logger=log):
             log(f"ROLLED BACK Plaso to version {current_plaso_version}", "warning")
@@ -1077,16 +1143,9 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
             run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
             log(f"ROLLED BACK Timesketch config to version {current_version}", "warning")
 
-            if db_backup_path:
-                for _ in range(15):
-                    chk = run_command(f"docker exec {_PG_CONTAINER} pg_isready -U {_PG_USER}", logger=None)
-                    if chk['success']:
-                        break
-                    time.sleep(2)
-                if _restore_timesketch_db(db_backup_path, logger=log):
-                    log(f"ROLLED BACK DB from {db_backup_path}", "warning")
-                else:
-                    log(f"DB restore failed — dump kept at {db_backup_path} for manual recovery", "error")
+            # Same as the online path: restore the DB, reconciling a postgres
+            # major mismatch (volume vs rolled-back pin) if postgres won't start.
+            _rollback_restore_db(work_dir, env_file, db_backup_path, pg_vol_name, logger=log)
 
         if plaso_backup and restore_env_file(backend_env, plaso_backup, logger=log):
             log(f"ROLLED BACK Plaso to version {current_plaso_version}", "warning")
