@@ -16,8 +16,37 @@ from services.workflow_service import create_automation_run, add_log_to_run, upd
 
 upload_bp = Blueprint('uploads', __name__)
 
-# Store mapping of upload_id -> run_id for workflow tracking
+# Store mapping of upload_id -> run_id for workflow tracking. This is an
+# in-memory cache only — if the backend restarts between an upload's pre-create
+# and post-finish the mapping is lost, so _resolve_upload_run() falls back to
+# durable storage (the run carries its upload_id in details). Without that
+# recovery the upload run orphans at RUNNING and processing spawns a SECOND run
+# instead of continuing the same workflow.
 _upload_runs = {}
+
+
+def _resolve_upload_run(upload_id, *, pop=False):
+    """Return the run_id for this upload — from the in-memory map, or recovered
+    from storage by matching details.upload_id. Keeps upload + processing as ONE
+    workflow even if the backend restarted mid-upload."""
+    if not upload_id:
+        return None
+    run_id = _upload_runs.pop(upload_id, None) if pop else _upload_runs.get(upload_id)
+    if run_id:
+        return run_id
+    try:
+        from services.workflow_service import get_all_automation_runs
+        for r in get_all_automation_runs():
+            d = r.get("details") or {}
+            if d.get("upload_id") == upload_id:
+                rid = r.get("id") or r.get("run_id")
+                if rid:
+                    print(f"[TUS HOOK] recovered upload run {rid} for {upload_id} "
+                          f"(in-memory map was empty — backend likely restarted)", flush=True)
+                    return rid
+    except Exception as e:
+        print(f"[TUS HOOK] upload-run recovery failed: {e}", flush=True)
+    return None
 
 
 def decode_tus_metadata(metadata_str):
@@ -166,7 +195,9 @@ def handle_tus_hook():
         print(f"[TUS HOOK] Event: {event_type}", flush=True)
         print(f"[TUS HOOK] Upload ID: {upload_info.get('ID', 'unknown')}", flush=True)
         print(f"[TUS HOOK] Size: {upload_info.get('Size', 0)}", flush=True)
-        print(f"[TUS HOOK] Metadata: {metadata}", flush=True)
+        # Redact any decryption password before logging the metadata.
+        _meta_log = {k: ('***' if k == 'password' else v) for k, v in (metadata or {}).items()}
+        print(f"[TUS HOOK] Metadata: {_meta_log}", flush=True)
 
         if event_type == 'pre-create':
             # Validate upload before it starts (no ID assigned yet)
@@ -270,7 +301,7 @@ def handle_tus_hook():
             total_size = upload_info.get('Size', 0)
 
             # Get workflow run_id (don't pop, just get)
-            run_id = _upload_runs.get(upload_id)
+            run_id = _resolve_upload_run(upload_id)
 
             if run_id and total_size > 0:
                 percentage = (offset / total_size) * 100
@@ -303,6 +334,9 @@ def handle_tus_hook():
             file_path = f"/data/uploads/{upload_id}"
             purpose = metadata.get('purpose', '')
             original_filename = metadata.get('filename', 'upload.zip')
+            # Optional decryption password for an encrypted offline collection
+            # (password scheme, or the recovered session password for X509/PGP).
+            import_password = metadata.get('password') or None
 
             # Extract db_overwrite for upgrade packages (JSON string -> dict)
             db_overwrite_str = metadata.get('db_overwrite', '{}')
@@ -311,8 +345,9 @@ def handle_tus_hook():
             except (json.JSONDecodeError, TypeError):
                 db_overwrite = {}
 
-            # Get workflow run_id from pre-create
-            run_id = _upload_runs.pop(upload_id, None)
+            # Get workflow run_id from pre-create (recover from storage if the
+            # in-memory map was lost to a restart — keeps this ONE workflow).
+            run_id = _resolve_upload_run(upload_id, pop=True)
 
             print(f"[TUS HOOK] Upload complete: {original_filename}", flush=True)
             print(f"[TUS HOOK] File path: {file_path}", flush=True)
@@ -343,7 +378,7 @@ def handle_tus_hook():
                 def run_velociraptor_import():
                     try:
                         from services.offline_collector.importer import import_results
-                        result = import_results(file_path, original_filename, run_id=run_id)
+                        result = import_results(file_path, original_filename, run_id=run_id, password=import_password)
                         print(f"[TUS HOOK] Velociraptor import result: {result}", flush=True)
                         # Fuse the imported flow into the Case as a final step of THIS
                         # upload run — read the rows back and persist them for the
@@ -427,7 +462,7 @@ def handle_tus_hook():
         elif event_type == 'post-terminate':
             # Upload was cancelled/terminated
             upload_id = upload_info.get('ID', '')
-            run_id = _upload_runs.pop(upload_id, None)
+            run_id = _resolve_upload_run(upload_id, pop=True)
             print(f"[TUS HOOK] Upload terminated: {upload_id}", flush=True)
 
             # Update workflow status

@@ -72,28 +72,36 @@ def _active_case_from_request():
 
 
 def _resolve_case_id(automation_type, case_id):
-    """Tag a run to a workspace:
+    """Tag every run to a workspace. ONE universal rule so no module/feature can
+    silently fall through and become invisible in the workspace-scoped views:
+
     - System-operation runs (SYSTEM_TYPES) ALWAYS go to the System workspace,
       regardless of the request's active case.
-    - Investigation runs (AGENTIC_TYPES): explicit case_id wins; else the request's
-      active case; else (scheduler/background) the Default workspace.
-    - Anything else stays untagged."""
+    - EVERYTHING ELSE is module/feature work and goes to the ACTIVE workspace:
+      an explicitly-passed case_id wins, then the request's active case
+      (X-Case-Id), then (scheduler/background, no request) the Default
+      workspace. The System workspace is reserved for system ops, so module
+      work must never land there.
+
+    Previously only an allow-list (AGENTIC_TYPES) got the active-case treatment
+    and anything else returned an untagged (None) run that vanished from every
+    workspace's Workflows view (e.g. velociraptor_offline_collector). Defaulting
+    to the active case closes that gap for all current and future run types.
+    """
     if automation_type in SYSTEM_TYPES:
         return _system_case_id() or case_id
-    if automation_type not in AGENTIC_TYPES:
-        return case_id
-    # Investigation run. An explicitly-passed case_id wins, then the browser's
-    # active case, then (scheduler/background, no request) the Default
-    # workspace. Either way the System workspace is off-limits to investigation
-    # features — it's the home for system/admin operations, not case work.
+
+    # Module / feature run -> active workspace.
     cid = case_id or _active_case_from_request()
     if cid:
         if cid == _system_case_id():
             raise WorkspaceError(
-                "Investigation features can't run in the System workspace. "
-                "Switch to or create an investigation workspace first."
+                "Modules run against an investigation workspace, not the System "
+                "workspace. Switch to or create an investigation workspace first."
             )
         return cid
+
+    # No active case (scheduler / background, no request context) -> Default.
     if not _DEFAULT_CASE_CACHE["id"]:
         try:
             from services.fusion import store
