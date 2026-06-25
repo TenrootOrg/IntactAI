@@ -1,0 +1,6 @@
+# Release hygiene: keep the test suite in the repo (development/main) but NEVER
+# ship it in a release. GitHub's release/codeload source tarballs are produced by
+# `git archive`, which honours `export-ignore` — and services/upgrade/package.py
+# pulls exactly that tarball at the release tag. So /tests is present for
+# developers and CI, but absent from every release artifact operators install.
+/tests export-ignore
