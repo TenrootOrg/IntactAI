@@ -199,14 +199,45 @@ def run_timesketch_collection():
         return jsonify({"error": str(e)}), 500
 
 
+def _sanitize_hunt_labels(raw):
+    """Normalise an optional include_labels value from a hunt request into a
+    clean list of label strings. Anything not a non-empty string is dropped;
+    duplicates removed; capped at 64 labels of <=256 chars each. Returns [] for
+    missing/invalid input — and an empty list means the hunt targets ALL clients
+    (no label condition). json.dumps quotes the labels safely into the VQL, but
+    we still bound the shape here."""
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for x in raw:
+        if isinstance(x, str):
+            s = x.strip()
+            if s and len(s) <= 256 and s not in out:
+                out.append(s)
+        if len(out) >= 64:
+            break
+    return out
+
+
+def _hunt_labels_clause(include_labels):
+    """VQL fragment (indented, trailing comma+newline) that adds
+    include_labels=[...] to a hunt() call — or '' when no labels are given, so
+    the hunt runs on every client."""
+    if not include_labels:
+        return ""
+    return f"    include_labels={json.dumps(include_labels)},\n"
+
+
 def _create_single_velo_hunt(stub, artifacts, hunt_desc, expire_seconds, timeout_seconds,
-                             cpu_limit, flow_max_rows, flow_max_bytes, log_fn):
+                             cpu_limit, flow_max_rows, flow_max_bytes, log_fn,
+                             include_labels=None):
     """Build + send the VQL `hunt()` call against the Velociraptor gRPC
     stub for a given artifact list, return `(hunt_id, error_str)`.
 
     Used by both the bulk path (artifacts = full list) and the
     per-artifact path (artifacts = a one-element list). Keeps the gRPC
-    plumbing in one place."""
+    plumbing in one place. ``include_labels`` (optional) scopes the hunt to
+    clients carrying ANY of those Velociraptor labels; empty => all clients."""
     artifacts_list = json.dumps(artifacts)
     spec_parts = ", ".join([f"`{a}`=dict()" for a in artifacts])
     # max_logs is rejected by hunt() (collect_client-only) so we omit.
@@ -217,7 +248,7 @@ LET collection = hunt(
     spec=dict({spec_parts}),
     expires=now() + {expire_seconds},
     timeout={timeout_seconds},
-    max_rows={flow_max_rows},
+{_hunt_labels_clause(include_labels)}    max_rows={flow_max_rows},
     max_bytes={flow_max_bytes},
     cpu_limit={cpu_limit}
 )
@@ -292,6 +323,9 @@ def run_bestpractice_hunts():
         timeout_seconds = data.get('timeout_seconds', 10000)
         cpu_limit = data.get('cpu_limit', 80)
         per_artifact = bool(data.get('per_artifact', False))
+        # Optional label targeting: scope the hunt to clients carrying any of
+        # these Velociraptor labels. Empty/missing => run on ALL clients.
+        include_labels = _sanitize_hunt_labels(data.get('include_labels'))
         # Optional blueprint_id lets us pull resource caps from the stored
         # blueprint settings (instead of inheriting old hardcoded defaults).
         # When absent, the request body can override directly via flow_max_*
@@ -367,11 +401,14 @@ def run_bestpractice_hunts():
                         continue
                     add_log_to_run(rid, f"Starting per-artifact hunt for `{a}`")
                     add_log_to_run(rid, f"Settings: Expire={expire_minutes}m, Timeout={timeout_seconds}s, CPU={cpu_limit}%")
+                    add_log_to_run(rid, f"Targeting clients with labels: {', '.join(include_labels)}"
+                                   if include_labels else "Targeting ALL clients (no label filter)")
                     hunt_desc = f"{blueprint_name} · {a}"
                     hunt_id, err = _create_single_velo_hunt(
                         stub, [a], hunt_desc, expire_seconds, timeout_seconds,
                         cpu_limit, flow_max_rows, flow_max_bytes,
                         log_fn=lambda m, lvl='info', _rid=rid: add_log_to_run(_rid, m, lvl),
+                        include_labels=include_labels,
                     )
                     if hunt_id:
                         add_log_to_run(rid, f"Hunt created: {hunt_id}")
@@ -439,7 +476,7 @@ LET collection = hunt(
     spec=dict({spec_parts}),
     expires=now() + {expire_seconds},
     timeout={timeout_seconds},
-    max_rows={flow_max_rows},
+{_hunt_labels_clause(include_labels)}    max_rows={flow_max_rows},
     max_bytes={flow_max_bytes},
     cpu_limit={cpu_limit}
 )
@@ -447,6 +484,8 @@ SELECT HuntId FROM collection
 """
 
         add_log_to_run(run_id, f"Creating bulk hunt with {len(artifacts)} artifacts")
+        add_log_to_run(run_id, f"Targeting clients with labels: {', '.join(include_labels)}"
+                       if include_labels else "Targeting ALL clients (no label filter)")
         print(f"[HUNT] Creating bulk hunt with {len(artifacts)} artifacts", flush=True)
         print(f"[HUNT] VQL Query:\n{query}", flush=True)
 
@@ -570,6 +609,40 @@ def get_hunts_status():
         print(f"[HUNTS] ✗ Error getting hunt status: {e}", flush=True)
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@velociraptor_bp.route('/api/velociraptor/labels', methods=['GET'])
+def get_client_labels():
+    """Distinct Velociraptor client labels in use — populates the hunt
+    label-target picker in the GUI. Empty list means no labels exist (so a hunt
+    runs on all clients). Best-effort: returns {labels: []} if the query fails
+    so the GUI degrades to 'all clients' rather than erroring."""
+    try:
+        channel = setup_velociraptor_connection()
+        if not channel:
+            return jsonify({"labels": []})
+        stub = api_pb2_grpc.APIStub(channel)
+        # Flatten the per-client labels list into a distinct, sorted set.
+        query = ("SELECT _value AS label FROM foreach("
+                 "row={SELECT labels FROM clients() WHERE labels}, column='labels') "
+                 "WHERE label GROUP BY label ORDER BY label")
+        labels = []
+        for response in stub.Query(api_pb2.VQLCollectorArgs(
+                max_wait=20, max_row=2000,
+                Query=[api_pb2.VQLRequest(VQL=query)]), timeout=25):
+            if response.Response:
+                try:
+                    for d in json.loads(response.Response):
+                        lbl = d.get('label')
+                        if lbl and lbl not in labels:
+                            labels.append(lbl)
+                except Exception:
+                    pass
+        channel.close()
+        return jsonify({"labels": labels})
+    except Exception as e:
+        print(f"[LABELS] ✗ Error listing client labels: {e}", flush=True)
+        return jsonify({"labels": []})
 
 
 # ============================================================================

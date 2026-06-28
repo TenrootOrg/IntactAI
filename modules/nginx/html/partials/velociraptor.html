@@ -94,11 +94,23 @@
 
                             <!-- Hunt Info (Raw mode only) -->
                             <div x-show="forensicsMode === 'raw'" class="bg-gray-900 border border-gray-700 rounded-lg p-4 space-y-3">
-                                <div class="flex items-center gap-2 text-gray-300">
-                                    <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                                    </svg>
-                                    <span class="text-sm">Hunt will run on <strong>all online clients</strong></span>
+                                <!-- Label targeting. Pick one or more Velociraptor client
+                                     labels to scope the hunt; select none to run on ALL
+                                     clients. Populated from /api/velociraptor/labels. -->
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">
+                                        Target labels
+                                        <span class="text-xs text-gray-500 font-normal">— optional; none selected = all clients</span>
+                                    </label>
+                                    <select id="forensics-hunt-labels" multiple size="4"
+                                            class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                                    </select>
+                                    <p id="forensics-hunt-labels-hint" class="text-xs text-gray-500 mt-1">
+                                        Hold Ctrl/Cmd to select multiple. The hunt runs only on clients carrying any selected label; select none to hunt all clients.
+                                    </p>
+                                    <p id="forensics-hunt-labels-empty" class="text-xs text-gray-500 mt-1 hidden">
+                                        No client labels found — the hunt will run on <strong>all clients</strong>.
+                                    </p>
                                 </div>
                                 <!-- One hunt per artifact (raw-mode only). Default: false = one
                                      bundled hunt with all N artifacts (existing behavior). When

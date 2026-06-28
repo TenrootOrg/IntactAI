@@ -34,6 +34,47 @@ async function initForensicsTab(mode = 'ai') {
 
     // Load clients
     await loadForensicsClients();
+    // Load the hunt label-target options (raw/hunt mode)
+    await loadForensicsHuntLabels();
+}
+
+// Populate the hunt label-target multi-select (raw/hunt mode). When Velociraptor
+// reports no client labels, hide the select and show the "runs on all clients"
+// note — selecting nothing always means "all clients".
+async function loadForensicsHuntLabels() {
+    const sel = document.getElementById('forensics-hunt-labels');
+    if (!sel) return;
+    const hint = document.getElementById('forensics-hunt-labels-hint');
+    const empty = document.getElementById('forensics-hunt-labels-empty');
+    const setEmpty = (isEmpty) => {
+        sel.classList.toggle('hidden', isEmpty);
+        if (hint) hint.classList.toggle('hidden', isEmpty);
+        if (empty) empty.classList.toggle('hidden', !isEmpty);
+    };
+    try {
+        const r = await fetch('/api/velociraptor/labels');
+        const d = await r.json();
+        const labels = (d && d.labels) || [];
+        sel.innerHTML = '';
+        labels.forEach(l => {
+            const opt = document.createElement('option');
+            opt.value = l;
+            opt.textContent = l;
+            sel.appendChild(opt);
+        });
+        setEmpty(labels.length === 0);
+    } catch (e) {
+        // Degrade gracefully to "all clients".
+        sel.innerHTML = '';
+        setEmpty(true);
+    }
+}
+
+// Currently-selected hunt labels; [] means "all clients".
+function getSelectedForensicsLabels() {
+    const sel = document.getElementById('forensics-hunt-labels');
+    if (!sel) return [];
+    return Array.from(sel.selectedOptions || []).map(o => o.value).filter(Boolean);
 }
 
 // Set default blueprint based on mode
@@ -282,6 +323,8 @@ async function startForensicsCollection() {
                     timeout_seconds: blueprint.settings?.timeout || 3600,
                     cpu_limit: blueprint.settings?.cpu_limit || 90,
                     per_artifact: perArtifact,
+                    // Label targeting: [] => run on all clients.
+                    include_labels: getSelectedForensicsLabels(),
                 })
             });
 
