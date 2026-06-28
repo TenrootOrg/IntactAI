@@ -114,16 +114,29 @@
    * If System is already active, just switch the tab (no reload).
    */
   async function gotoSystemWorkflows() {
-    try {
-      const cases = await listCases();
-      const sys = cases.find(c => c.is_system);
-      if (sys && get() !== sys.case_id) {
+    // Resolve the System workspace. Some system features (online upgrade, apply)
+    // restart the backend right after starting, so /api/cases can momentarily
+    // fail — retry once rather than silently skipping the switch and leaving the
+    // run hidden in a workspace the operator isn't looking at.
+    let sys = null;
+    for (let attempt = 0; attempt < 2 && !sys; attempt++) {
+      try {
+        const cases = await listCases();
+        sys = (cases || []).find(c => c.is_system) || null;
+      } catch (e) { /* retry */ }
+      if (!sys && attempt === 0) await new Promise(r => setTimeout(r, 800));
+    }
+    if (sys) {
+      if (get() !== sys.case_id) {
         set(sys.case_id);
-        window.location.hash = 'workflows';
-        window.location.reload();
+        window.location.hash = 'workflows';   // restored after the reload below
+        window.location.reload();             // refresh case-scoped views under System
         return;
       }
-    } catch (e) { /* fall through to a plain tab switch */ }
+    } else {
+      console.warn('[workspace] Could not resolve the System workspace — the run is ' +
+                   'in System; switch workspaces manually to see it.');
+    }
     try { window.Alpine && Alpine.store('app').switchTab('workflows'); }
     catch (e) { window.location.hash = 'workflows'; }
   }
