@@ -169,3 +169,6 @@ modules/nginx/package-lock.json
 data/*.db
 data/*.db-shm
 data/*.db-wal
+
+# Fused-graph sidecar files (runtime, per-case)
+data/fusion_graphs/

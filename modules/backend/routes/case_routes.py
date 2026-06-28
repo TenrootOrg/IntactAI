@@ -285,7 +285,8 @@ def get_case(case_id):
                     "initial_access_estimate": d.get("initial_access_estimate"),
                     "min_severity": d.get("min_severity"),
                     "member_run_ids": d.get("member_run_ids") or [],
-                    "has_graph": bool(d.get("fusion_graph")),
+                    "has_graph": bool((d.get("graph_counts") or {}).get("entities")
+                                      or d.get("fusion_graph")),
                     "is_default": bool(d.get("is_default")
                                        or d.get("name") == store.DEFAULT_CASE_NAME),
                     "is_system": bool(d.get("is_system")
@@ -636,17 +637,16 @@ def report_download_pdf(case_id):
 @case_bp.route("/api/cases/<case_id>/graph", methods=["GET"])
 def graph(case_id):
     d = store.get_case(case_id)
-    fg = d.get("fusion_graph") or {}
+    g = store.load_graph(case_id)   # reads the sidecar (falls back to legacy inline)
     # Auto-populate: if the case has member runs but no graph has been built yet
     # (e.g. right after an offline import), fuse once on first view so Case
     # Analysis isn't blank. A non-empty cached graph is returned as-is (fast).
-    if not (fg.get("entities")) and store._members_for_case(case_id, d):
+    if not g.entities and store._members_for_case(case_id, d):
         try:
             g = store.fuse_case(case_id)
-            fg = g.to_dict()
         except Exception as e:
             print(f"[CASE] on-view fuse failed for {case_id}: {e}", flush=True)
-    return jsonify({"case_id": case_id, "fusion_graph": fg})
+    return jsonify({"case_id": case_id, "fusion_graph": g.to_dict()})
 
 
 @case_bp.route("/api/cases/<case_id>/timeline", methods=["GET"])

@@ -29,14 +29,31 @@ def _assets_of(e) -> list[str]:
 
 
 def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None,
-             dispositions=None) -> FusionGraph:
+             min_severity="informational", dispositions=None) -> FusionGraph:
     g = FusionGraph(case_id=case_id)
     for rid in run_ids or []:
         g.note_run(rid)
+    # INGEST FILTER (performance + relevance): only fuse non-asset entities that
+    # fall inside the case's time window AND meet the severity floor, so the stored
+    # graph and ALL downstream processing skip the bulk of low-signal / out-of-window
+    # rows instead of building the full graph and filtering only at render time
+    # (that was storing ~190 MB and re-parsing it on every API call). Assets (hosts)
+    # are always kept so the graph stays anchored. Severity uses the anomaly-derived
+    # effective level (matches _rollup_severity) so a high-anomaly row with a low base
+    # severity isn't dropped. Trade-off: the graph is now the FILTERED set, so changing
+    # the window/severity requires a Refusion (it's no longer a free re-render).
+    pending_rels = []
     for ents, rels in contributions:
         for e in ents:
+            if e.type != "asset":
+                eff = sev.max_level(e.severity, sev.from_anomaly(e.anomaly))
+                if not (sev.at_least(eff, min_severity) and in_window(e.first_seen, window)):
+                    continue
             g.upsert(e)
-        for r in rels:
+        pending_rels.extend(rels)
+    # Drop edges whose endpoint was filtered out (no dangling relationships).
+    for r in pending_rels:
+        if r.src in g.entities and r.dst in g.entities:
             g.relate(r)
     _resolve_host_assets(g)
     _bridge_hashes(g)

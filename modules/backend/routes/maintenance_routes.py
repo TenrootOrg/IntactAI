@@ -588,14 +588,19 @@ def _delete_runs_preserve_cases(c, run_id, include_system=False):
         if not isinstance(d, dict):
             continue
         changed = False
-        for k in ("fusion_graph", "fused_run_ids", "report_md", "report_html",
-                  "stale_run_ids"):
+        for k in ("fusion_graph", "graph_counts", "fused_run_ids", "report_md",
+                  "report_html", "stale_run_ids"):
             if k in d:
                 d.pop(k, None)
                 changed = True
         if changed:
             c.execute("UPDATE workflows SET details = ? WHERE run_id = ?",
                       (_json.dumps(d), cid))
+        try:                                  # drop the fused-graph sidecar file too
+            from services.fusion.store import _delete_graph_sidecar
+            _delete_graph_sidecar(cid)
+        except Exception:
+            pass
     return max(0, before - after), cases
 
 

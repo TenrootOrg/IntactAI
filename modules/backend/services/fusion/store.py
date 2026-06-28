@@ -10,6 +10,7 @@ fetched, dispatched to their module mapper, assembled into one graph by
 from __future__ import annotations
 
 import json
+import os
 
 from .schema import FusionGraph
 from . import correlate, llm_sim, keys, render, budget
@@ -429,7 +430,13 @@ def export_case(case_id) -> dict | None:
         return None
     member_ids = _members_for_case(case_id)
     runs = [r for r in (ws.get_automation_run(rid) for rid in member_ids) if r]
-    det = case_run.get("details") or {}
+    det = dict(case_run.get("details") or {})
+    # The graph now lives in a sidecar — embed it back inline so the bundle stays
+    # self-contained (import reads it inline; a later re-fuse moves it to a sidecar).
+    fg = _read_graph_sidecar(case_id)
+    if fg is not None:
+        det["fusion_graph"] = fg
+        case_run = {**case_run, "details": det}
     return {
         "kind": EXPORT_KIND,
         "schema": EXPORT_SCHEMA,
@@ -542,6 +549,7 @@ def delete_case(case_id) -> dict:
             delete_workflow(r.get("run_id"))
             removed_baselines += 1
     delete_workflow(case_id)
+    _delete_graph_sidecar(case_id)   # remove the fused-graph sidecar file too
     return {"deleted": True, "runs_deleted": len(run_ids),
             "baselines_deleted": removed_baselines}
 
@@ -809,7 +817,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     # automation noise doesn't read as attack signal.
     baseline = None if d.get("is_baseline") else load_baseline(_env_key_from_members(members))
     g = correlate.assemble(case_id, contributions, members, baseline=baseline, window=window,
-                           dispositions=d.get("dispositions") or None)
+                           min_severity=min_sev, dispositions=d.get("dispositions") or None)
     if not _record:
         return g
     # cross-case KB: enrich with prior sightings, then index this case (best-effort,
@@ -895,10 +903,15 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     except Exception:
         token_ab = {}
 
+    # Persist the graph to its sidecar (NOT inline in the case row) + precompute the
+    # stat-bar counts, so metadata/report/config/log reads never deserialize the
+    # graph. `fusion_graph: {}` clears any legacy inline graph from older fuses.
+    pruned = g.pruned(max_entities=int(d.get("max_entities")
+                                       or DEFAULT_MAX_ENTITIES)).to_dict()
+    _write_graph_sidecar(case_id, pruned)
     ws.update_run_status(case_id, "completed",
-                         details={"fusion_graph": g.pruned(
-                                      max_entities=int(d.get("max_entities")
-                                                       or DEFAULT_MAX_ENTITIES)).to_dict(),
+                         details={"fusion_graph": {},
+                                  "graph_counts": _counts_from_graph_dict(pruned),
                                   "report_md": report,
                                   "token_ab": token_ab, "analysis": analysis,
                                   # Record exactly which member runs this graph was
@@ -983,9 +996,70 @@ def watch_and_fuse(case_id, run_id, *, poll=10, timeout=10800) -> None:
         pass
 
 
+# ── Fusion-graph sidecar storage ─────────────────────────────────────────────
+# The fused graph is large (10s–100s of MB). Storing it inline in the case's
+# workflow-row `details` meant get_case() deserialised the whole graph on EVERY
+# metadata/report/config/log call (8–18 s per call once big). The Case Analysis
+# UI never needs the raw node-link graph — it consumes derived views (report,
+# timeline, risk, chat, log, config, macro counts), all small. So the graph lives
+# in a per-case sidecar file, loaded ONLY when a view actually needs it
+# (risk/timeline/chat/rescan/export), and the case row carries just precomputed
+# `graph_counts`. Legacy cases (graph still inline) keep working via fallback.
+_FUSION_GRAPH_DIR = "/app/data/fusion_graphs"
+
+
+def _graph_path(case_id):
+    return os.path.join(_FUSION_GRAPH_DIR, f"{case_id}.json")
+
+
+def _write_graph_sidecar(case_id, graph_dict) -> bool:
+    try:
+        os.makedirs(_FUSION_GRAPH_DIR, exist_ok=True)
+        tmp = _graph_path(case_id) + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(graph_dict, f, default=str)
+        os.replace(tmp, _graph_path(case_id))   # atomic
+        return True
+    except Exception as e:
+        print(f"[FUSION] sidecar write failed for {case_id}: {e}", flush=True)
+        return False
+
+
+def _read_graph_sidecar(case_id):
+    try:
+        with open(_graph_path(case_id)) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        print(f"[FUSION] sidecar read failed for {case_id}: {e}", flush=True)
+        return None
+
+
+def _delete_graph_sidecar(case_id) -> None:
+    try:
+        os.remove(_graph_path(case_id))
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+
+def _counts_from_graph_dict(fg) -> dict:
+    ents = fg.get("entities") or {}
+    findings = fg.get("findings") or []
+    return {"hosts": sum(1 for e in ents.values() if (e or {}).get("type") == "asset"),
+            "entities": len(ents),
+            "links": len(fg.get("relationships") or []),
+            "findings": len(findings),
+            "cross_host": sum(1 for f in findings if (f or {}).get("kind") == "cross_host")}
+
+
 def load_graph(case_id) -> FusionGraph:
-    d = get_case(case_id)
-    return FusionGraph.from_dict(d.get("fusion_graph") or {"case_id": case_id})
+    fg = _read_graph_sidecar(case_id)
+    if fg is None:   # legacy / imported cases stored the graph inline in details
+        fg = (get_case(case_id) or {}).get("fusion_graph") or {"case_id": case_id}
+    return FusionGraph.from_dict(fg)
 
 
 def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
@@ -1066,10 +1140,15 @@ def log_case_event(case_id, action, status="ok", detail="", **meta) -> None:
 
 
 def graph_counts(case_id) -> dict:
-    """Lightweight stat-bar counts from the STORED (pruned) graph — no re-fuse and
-    no multi-MB payload to the browser. Lets Case Analysis show hosts/entities/
-    links/findings/cross-host without downloading the whole graph."""
-    fg = (get_case(case_id) or {}).get("fusion_graph") or {}
+    """Lightweight stat-bar counts — read from the PRECOMPUTED `graph_counts`
+    stored on the case row at fuse time, so this never deserializes the graph.
+    Falls back to a legacy inline graph / the sidecar for cases fused before
+    counts were precomputed."""
+    d = get_case(case_id) or {}
+    gc = d.get("graph_counts")
+    if gc:
+        return gc
+    fg = d.get("fusion_graph") or _read_graph_sidecar(case_id) or {}
     ents = fg.get("entities") or {}
     findings = fg.get("findings") or []
     return {"hosts": sum(1 for e in ents.values() if (e or {}).get("type") == "asset"),
