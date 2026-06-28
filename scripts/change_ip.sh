@@ -178,24 +178,20 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Regenerate TLS certs with the new CN. generate_certificates skips when
-#    the cert already exists, so remove the old nginx + IRIS web certs first
-#    (the generic IRIS Root CA is reused). DOMAIN drives the CN.
+# 4. Regenerate TLS certs with the new CN, IN PLACE. We do NOT `rm` the old
+#    certs first: FORCE_CERT_REGEN=1 makes generate_certificates overwrite the
+#    existing files (openssl -out / cp truncate, keeping the inode), so the
+#    containers that bind-mount the cert pick up the new content on restart.
+#    Deleting+recreating would orphan those bind mounts at the old inode and a
+#    restart would keep serving the OLD cert — the bug behind the broken
+#    Timesketch/Kibana UIs after an IP change. DOMAIN drives the CN; the IRIS
+#    web cert is re-synced (in place) by generate_certificates when enabled.
 # ---------------------------------------------------------------------------
-log_info "Regenerating TLS certificates for CN=$NEW_IP"
-rm -f "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.crt" \
-      "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key"
-# generate_certificates only re-syncs the IRIS web cert when IRIS is enabled
-# (gated in lib/modules.sh). Removing it unconditionally would delete a cert
-# nothing regenerates when IRIS is disabled, leaving an empty web_certificates/
-# dir — so when IRIS is later enabled, intact_iris_nginx crash-loops on a
-# missing cert. Gate the removal the same way the regeneration is gated.
-if is_enabled "$(read_config "['modules']['iris']['enabled']")"; then
-    rm -f "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_cert.pem" \
-          "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_key.pem"
-fi
+log_info "Regenerating TLS certificates for CN=$NEW_IP (in place)"
 export DOMAIN="$NEW_IP"
+export FORCE_CERT_REGEN=1
 generate_certificates
+unset FORCE_CERT_REGEN
 
 # ---------------------------------------------------------------------------
 # 5. Restart the affected containers.
@@ -269,8 +265,11 @@ else
             || log_warn "  VolWeb recreate failed — re-run: (cd modules/volweb && docker compose up -d --force-recreate)"
     fi
 
-    # nginx: clears stale upstream DNS cache AND makes them serve the new cert.
-    refresh_nginx_upstreams
+    # Reload every TLS cert consumer so it serves the freshly-rotated cert:
+    # restarts each (clearing stale upstream DNS too), verifies it comes back
+    # healthy, and recreates any that don't. Covers the previously-unhandled
+    # Kibana (:5601) and Portainer in addition to the nginx proxies.
+    recreate_cert_consumers
 
     # ---------------------------------------------------------------------
     # 6. Regenerate Velociraptor client installers with the new server IP.

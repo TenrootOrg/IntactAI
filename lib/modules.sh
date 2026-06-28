@@ -121,7 +121,15 @@ generate_certificates() {
     # Nginx SSL
     local nginx_ssl="${SCRIPT_DIR}/modules/nginx/ssl"
     mkdir -p "$nginx_ssl"
-    if [[ ! -f "$nginx_ssl/nginx-cert.crt" ]]; then
+    # FORCE_CERT_REGEN=1 (set by change_ip.sh) regenerates even when the cert
+    # already exists. Critically, we regenerate IN PLACE: `openssl -out <file>`
+    # truncates the existing file, keeping its inode — so containers that
+    # bind-mount the cert file see the new content and pick it up on a plain
+    # restart. If we instead `rm`+recreate (new inode), the bind mount stays
+    # pinned to the deleted inode and a restart serves the OLD cert forever —
+    # only a full container recreate would help. So change_ip MUST set
+    # FORCE_CERT_REGEN=1 and must NOT `rm` the cert first.
+    if [[ ! -f "$nginx_ssl/nginx-cert.crt" || "${FORCE_CERT_REGEN:-0}" == "1" ]]; then
         log_info "  Generating Nginx SSL certificate for domain: $domain"
         openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
             -keyout "$nginx_ssl/nginx-cert.key" \

@@ -342,6 +342,80 @@ refresh_nginx_upstreams() {
 }
 
 # ============================================================================
+# Cert-consumer reload + verify (used after a TLS cert rotation)
+# ============================================================================
+#
+# After change_ip.sh regenerates the shared cert IN PLACE, every container that
+# bind-mounts it must re-read it. With the inode preserved (see
+# generate_certificates / FORCE_CERT_REGEN) a plain `docker restart` is enough;
+# if a consumer still isn't healthy we fall back to a full recreate (which
+# re-binds the mount unconditionally). Only the containers that actually serve
+# the shared cert are touched, and only if they're running. Velociraptor (its
+# own cert) and VolWeb (CSRF) are handled separately by change_ip.
+#
+# Returns 0 always — failures are logged loudly (and recorded for the final
+# issues report) but never abort the caller (operator constraint).
+
+# True if $1 is Up and neither Restarting nor (unhealthy), within ~30s.
+_cert_consumer_healthy() {
+    local c="$1" i status
+    for i in $(seq 1 15); do
+        status=$(docker ps -a --filter "name=^${c}$" --format '{{.Status}}' 2>/dev/null)
+        if [[ "$status" == Up* && "$status" != *Restarting* && "$status" != *'(unhealthy)'* ]]; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+recreate_cert_consumers() {
+    log_info "Reloading TLS cert consumers (nginx, timesketch, kibana, iris, portainer)…"
+
+    # container -> module dir. The recreate fallback is `docker rm -f` + a
+    # `compose up -d` in the module dir, so we don't need the compose service
+    # name — compose just recreates the one container that's now missing.
+    # --pull never keeps it air-gap-safe (images are already loaded).
+    local consumers=(
+        "intact_nginx:modules/nginx"
+        "intact_timesketch_nginx:modules/timesketch"
+        "intact_iris_nginx:modules/iris"
+        "intact_kibana:modules/elk"
+        "intact_portainer:modules/portainer"
+    )
+
+    local entry c dir
+    for entry in "${consumers[@]}"; do
+        c="${entry%%:*}"
+        dir="${SCRIPT_DIR}/${entry#*:}"
+
+        # Skip consumers that aren't running (module disabled / not installed).
+        if ! docker ps --filter "name=^${c}$" --format '{{.Names}}' 2>/dev/null | grep -q .; then
+            continue
+        fi
+
+        log_info "  $c: restarting to pick up the rotated cert…"
+        docker restart "$c" >/dev/null 2>&1 || true
+        if _cert_consumer_healthy "$c"; then
+            log_success "  $c healthy"
+            continue
+        fi
+
+        # Restart didn't bring it back — recreate (re-binds the cert mount).
+        log_warn "  $c unhealthy after restart — recreating…"
+        docker rm -f "$c" >/dev/null 2>&1 || true
+        ( cd "$dir" && docker compose up -d --pull never >/dev/null 2>&1 ) || true
+        if _cert_consumer_healthy "$c"; then
+            log_success "  $c healthy after recreate"
+        else
+            log_warn "  $c STILL unhealthy — check 'docker logs $c'"
+        fi
+    done
+
+    return 0
+}
+
+# ============================================================================
 # Final ATTENTION report — surfaces every warning/error that scrolled past
 # ============================================================================
 #
