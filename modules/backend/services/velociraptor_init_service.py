@@ -186,9 +186,67 @@ def start_server_event_artifact(artifact_name, logger_func=None):
         return success
 
     except Exception as e:
-        log(f"Error starting server event artifact {artifact_name}: {e}", "error")
+        # Transient "API not up yet" (UNAVAILABLE / connection refused) -> warning,
+        # so a post-upgrade timing race never trips the run's auto-fail rule.
+        log(f"Error starting server event artifact {artifact_name}: {e}",
+            "warning" if _is_transient_grpc(e) else "error")
         traceback.print_exc()
         return False
+
+
+def _is_transient_grpc(exc) -> bool:
+    """True if the exception looks like the Velociraptor API not being up yet
+    (gRPC UNAVAILABLE / connection refused) rather than a real artifact error.
+    Used to log such hiccups at WARNING so a post-upgrade reimport race never
+    trips the run's '>=2 error logs -> failed' rule."""
+    s = str(exc)
+    return ("UNAVAILABLE" in s
+            or "Connection refused" in s
+            or "failed to connect" in s
+            or "Failed to connect" in s)
+
+
+def _velociraptor_api_answers(timeout: int = 8) -> bool:
+    """True iff the Velociraptor gRPC API actually ANSWERS a query — not merely
+    that a channel object could be built. setup_velociraptor_connection() returns
+    a LAZY grpc channel that 'succeeds' before the server accepts connections, so
+    a trivial VQL probe is the only reliable readiness signal."""
+    channel = setup_velociraptor_connection()
+    if not channel:
+        return False
+    try:
+        stub = api_pb2_grpc.APIStub(channel)
+        for _ in stub.Query(
+            api_pb2.VQLCollectorArgs(
+                max_wait=1, max_row=1,
+                Query=[api_pb2.VQLRequest(Name="ready_probe",
+                                          VQL="SELECT 1 AS ok FROM scope()")]),
+                timeout=timeout):
+            return True          # got a streamed row -> serving
+        return True              # stream completed cleanly -> serving
+    except Exception:
+        return False             # UNAVAILABLE / refused / TLS-not-ready
+    finally:
+        try:
+            channel.close()
+        except Exception:
+            pass
+
+
+def wait_for_velociraptor_ready(log=None, attempts: int = 45, delay: int = 2) -> bool:
+    """Block until the Velociraptor API answers a VQL probe (or give up).
+
+    ~attempts*delay seconds (default 90s) — generous because the gRPC API can
+    take a while to start serving after a binary upgrade/restart. Replaces the
+    old check that only verified a lazy channel could be constructed."""
+    _log = log or (lambda m, l="info": None)
+    for i in range(attempts):
+        if _velociraptor_api_answers():
+            return True
+        if i == 0 or (i + 1) % 5 == 0:
+            _log(f"  Velociraptor API not answering yet, waiting... ({(i + 1) * delay}s)", "info")
+        time.sleep(delay)
+    return False
 
 
 def initialize_velociraptor_artifacts(logger_func=None, skip_exchange_imports=False):
@@ -235,20 +293,16 @@ def initialize_velociraptor_artifacts(logger_func=None, skip_exchange_imports=Fa
         "skipped": []
     }
 
-    # Wait for Velociraptor to be ready
-    log("Waiting for Velociraptor to be ready...")
-    max_retries = 5
-    for i in range(max_retries):
-        channel = setup_velociraptor_connection()
-        if channel:
-            channel.close()
-            log("Velociraptor is ready")
-            break
-        log(f"Velociraptor not ready, retrying... ({i+1}/{max_retries})")
-        time.sleep(1)
-    else:
-        log("Velociraptor not available, skipping artifact initialization", "warning")
+    # Wait for the Velociraptor API to actually ANSWER a query — not just for a
+    # (lazy) gRPC channel to be constructible. setup_velociraptor_connection()
+    # returns a channel before the server accepts connections, so the old check
+    # passed prematurely and the imports below hit "Connection refused", logging
+    # errors that flipped post-upgrade runs to 'failed'.
+    log("Waiting for the Velociraptor API to answer...")
+    if not wait_for_velociraptor_ready(log=log):
+        log("Velociraptor API never became ready — skipping artifact initialization", "warning")
         return results
+    log("Velociraptor API is ready")
 
     # The curated artifact bundle — Server.Import.* (ArtifactExchange /
     # DetectRaptor / Extras) AND the TenRoot custom pack — is now BAKED into
@@ -413,7 +467,10 @@ def import_custom_artifact(yaml_content, logger_func=None):
         return artifact_name or already_builtin
 
     except Exception as e:
-        log(f"Error importing artifact: {e}", "error")
+        # Transient "API not up yet" -> warning (see _is_transient_grpc); real
+        # parse/registry errors stay at error level.
+        log(f"Error importing artifact: {e}",
+            "warning" if _is_transient_grpc(e) else "error")
         return None
 
 
