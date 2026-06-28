@@ -45,7 +45,7 @@ full pipeline even when <NEW_IP> already equals the current IP — so it doubles
 as the repair tool when certs/containers have drifted out of sync.
 
 Arguments:
-  <NEW_IP>      The new IPv4 address (e.g. 192.168.120.10)
+  <NEW_IP>      The new IPv4 address (e.g. 192.168.120.11)
 
 Options:
   -y, --yes     Accepted for back-compat; no-op (the script is always non-interactive)
