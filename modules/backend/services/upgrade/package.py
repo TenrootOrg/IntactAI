@@ -555,6 +555,18 @@ def _pull_and_save_image(image: str, output_path: str, logger: Callable,
     return True
 
 
+def _intact_first(modules: Dict):
+    """Order (module, version) pairs so 'intact' is processed FIRST.
+
+    The intact step extracts the release into source/intact/, which later modules
+    read from — notably velociraptor, whose image bake refreshes its build files
+    (Dockerfile / bundled_artifacts) from source/intact/modules/velociraptor. If a
+    modules dict is ordered velociraptor-before-intact (e.g. a prepare with
+    selected_modules=[velociraptor]), velociraptor would bake from stale on-disk
+    files and ship a bundle-less image. Stable sort: other modules keep order."""
+    return sorted(modules.items(), key=lambda kv: kv[0] != 'intact')
+
+
 def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             compress: bool = True,
                             work_dir: Optional[str] = None) -> Dict:
@@ -667,8 +679,16 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         total_modules = len(modules)
         completed = 0
 
-        # Process each module
-        for module, version in modules.items():
+        # Process each module. ALWAYS process 'intact' FIRST so its source is
+        # extracted into source/intact/ before any module that reads from it —
+        # notably velociraptor, whose image bake refreshes its build files
+        # (Dockerfile / bundled_artifacts) from source/intact/modules/velociraptor.
+        # Without this, a modules dict ordered velociraptor-before-intact (e.g. a
+        # prepare with selected_modules=[velociraptor]) bakes from stale on-disk
+        # build files and ships a bundle-less image. Stable sort keeps the order
+        # of the remaining modules.
+        ordered_modules = _intact_first(modules)
+        for module, version in ordered_modules:
             log("", "info")
             log(f"=== {module.upper()} ({version}) ===", "info")
 
