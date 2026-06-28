@@ -14,6 +14,67 @@ from .base import (
 )
 
 
+def ensure_iris_web_cert(work_dir: str, logger: Callable = None) -> None:
+    """Make sure the IRIS nginx TLS cert exists before the stack comes up.
+
+    The IRIS web cert (config/certificates/web_certificates/iris_dev_{cert,key}.pem)
+    is operator-generated and gitignored — the ONLY thing that creates it is
+    lib/modules.sh:generate_certificates at install time, gated on iris.enabled.
+    So enabling IRIS after a disabled install, or a change_ip that removed the
+    cert while IRIS was disabled, leaves intact_iris_nginx with no cert and it
+    crash-loops on `cannot load certificate "/www/certs/iris_dev_cert.pem"` —
+    the whole IRIS UI is then down even though app/db/worker are healthy.
+
+    Every IRIS bring-up path (online upgrade, offline apply, package install)
+    calls this to self-heal. It mirrors lib/modules.sh: copy the shared nginx
+    cert into the IRIS web-cert path, and generate the IRIS Root CA if missing.
+    Missing-only — a present cert (operator- or change_ip-managed, carrying the
+    current CN) is never clobbered.
+    """
+    log = logger or (lambda m, l="info": None)
+    web_dir = os.path.join(work_dir, 'config', 'certificates', 'web_certificates')
+    cert = os.path.join(web_dir, 'iris_dev_cert.pem')
+    key = os.path.join(web_dir, 'iris_dev_key.pem')
+
+    def _present(p):
+        return os.path.exists(p) and os.path.getsize(p) > 0
+
+    if not (_present(cert) and _present(key)):
+        nginx_crt = os.path.join(WORKDIR, 'modules', 'nginx', 'ssl', 'nginx-cert.crt')
+        nginx_key = os.path.join(WORKDIR, 'modules', 'nginx', 'ssl', 'nginx-cert.key')
+        if _present(nginx_crt) and _present(nginx_key):
+            try:
+                import shutil
+                os.makedirs(web_dir, exist_ok=True)
+                shutil.copy2(nginx_crt, cert)
+                shutil.copy2(nginx_key, key)
+                # 0o644: iris nginx reads these as a non-root user; a 0o600
+                # root-owned mount would be unreadable (mirrors lib/modules.sh).
+                os.chmod(cert, 0o644)
+                os.chmod(key, 0o644)
+                log("  Synced IRIS web TLS cert from the shared nginx certificate", "success")
+            except Exception as e:
+                log(f"  Could not sync IRIS web cert ({type(e).__name__}: {e}) — "
+                    "intact_iris_nginx may fail to start", "warning")
+        else:
+            log("  IRIS web cert missing and the shared nginx cert is unavailable "
+                "to sync from — intact_iris_nginx may fail to start", "warning")
+
+    # IRIS Root CA — best-effort parity with lib/modules.sh.
+    ca_dir = os.path.join(work_dir, 'config', 'certificates', 'rootCA')
+    ca_cert = os.path.join(ca_dir, 'irisRootCACert.pem')
+    ca_key = os.path.join(ca_dir, 'irisRootCAKey.pem')
+    if not _present(ca_cert):
+        try:
+            os.makedirs(ca_dir, exist_ok=True)
+            run_command(
+                "openssl req -x509 -nodes -days 3650 -newkey rsa:2048 "
+                f"-keyout {ca_key} -out {ca_cert} "
+                "-subj '/CN=IRIS Root CA/O=Intact.AI/C=US'", logger=None)
+        except Exception:
+            pass
+
+
 def upgrade_iris(version: str, logger: Callable = None) -> Dict:
     """Upgrade IRIS to specified version with automatic rollback on failure."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
@@ -44,6 +105,9 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
         # Pull new images
         log("Pulling new images...", "info")
         run_command("docker compose pull", cwd=work_dir, timeout=1800, logger=log)
+
+        # Ensure the web TLS cert exists or iris-nginx crash-loops (see helper).
+        ensure_iris_web_cert(work_dir, logger=log)
 
         # Start containers
         log("Starting IRIS containers...", "info")
@@ -159,6 +223,9 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
         # Update version in .env
         log(f"Updating version to {version}...", "info")
         update_env_file(env_file, 'IRIS_VERSION', version, logger=log)
+
+        # Ensure the web TLS cert exists or iris-nginx crash-loops (see helper).
+        ensure_iris_web_cert(work_dir, logger=log)
 
         # Start containers
         log("Starting IRIS containers...", "info")
@@ -311,6 +378,9 @@ def install_iris_offline(package_dir: str, version: str, logger=None, run_id=Non
         log(f"  transitive .env stamp raised "
             f"({type(_e).__name__}: {_e}); compose up will likely fail",
             "warning")
+
+    # Ensure the web TLS cert exists or iris-nginx crash-loops (see helper).
+    ensure_iris_web_cert(work_dir, logger=log)
 
     compose_result = install_module_compose_up(
         'iris', package_dir, version,

@@ -176,9 +176,16 @@ fi
 # ---------------------------------------------------------------------------
 log_info "Regenerating TLS certificates for CN=$NEW_IP"
 rm -f "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.crt" \
-      "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key" \
-      "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_cert.pem" \
-      "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_key.pem"
+      "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key"
+# generate_certificates only re-syncs the IRIS web cert when IRIS is enabled
+# (gated in lib/modules.sh). Removing it unconditionally would delete a cert
+# nothing regenerates when IRIS is disabled, leaving an empty web_certificates/
+# dir — so when IRIS is later enabled, intact_iris_nginx crash-loops on a
+# missing cert. Gate the removal the same way the regeneration is gated.
+if is_enabled "$(read_config "['modules']['iris']['enabled']")"; then
+    rm -f "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_cert.pem" \
+          "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_key.pem"
+fi
 export DOMAIN="$NEW_IP"
 generate_certificates
 
