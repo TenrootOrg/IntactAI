@@ -38,43 +38,85 @@ async function initForensicsTab(mode = 'ai') {
     await loadForensicsHuntLabels();
 }
 
-// Populate the hunt label-target multi-select (raw/hunt mode). When Velociraptor
-// reports no client labels, hide the select and show the "runs on all clients"
-// note — selecting nothing always means "all clients".
+// Hunt label-target dropdown (raw/hunt mode). Single-line trigger shows a
+// selection summary; clicking reveals a checkbox list of the available labels.
+// No selection => all clients. When Velociraptor reports no labels, the dropdown
+// is hidden and a "runs on all clients" note is shown.
+const _forensicsSelectedLabels = new Set();
+
 async function loadForensicsHuntLabels() {
-    const sel = document.getElementById('forensics-hunt-labels');
-    if (!sel) return;
-    const hint = document.getElementById('forensics-hunt-labels-hint');
+    const dd = document.getElementById('forensics-hunt-labels-dd');
+    const menu = document.getElementById('forensics-hunt-labels-menu');
     const empty = document.getElementById('forensics-hunt-labels-empty');
-    const setEmpty = (isEmpty) => {
-        sel.classList.toggle('hidden', isEmpty);
-        if (hint) hint.classList.toggle('hidden', isEmpty);
-        if (empty) empty.classList.toggle('hidden', !isEmpty);
-    };
+    if (!dd || !menu) return;
+
+    _forensicsSelectedLabels.clear();
+    let labels = [];
     try {
         const r = await fetch('/api/velociraptor/labels');
         const d = await r.json();
-        const labels = (d && d.labels) || [];
-        sel.innerHTML = '';
-        labels.forEach(l => {
-            const opt = document.createElement('option');
-            opt.value = l;
-            opt.textContent = l;
-            sel.appendChild(opt);
-        });
-        setEmpty(labels.length === 0);
+        labels = (d && d.labels) || [];
     } catch (e) {
-        // Degrade gracefully to "all clients".
-        sel.innerHTML = '';
-        setEmpty(true);
+        labels = [];
     }
+
+    const none = labels.length === 0;
+    dd.classList.toggle('hidden', none);
+    if (empty) empty.classList.toggle('hidden', !none);
+
+    // Render one checkbox row per (unique, backend-deduped) label.
+    menu.innerHTML = '';
+    labels.forEach(l => {
+        const row = document.createElement('label');
+        row.className = 'flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-700 cursor-pointer text-sm text-gray-200';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = l;
+        cb.className = 'w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500';
+        cb.addEventListener('change', () => onForensicsLabelToggle(l, cb.checked));
+        const span = document.createElement('span');
+        span.textContent = l;
+        row.appendChild(cb);
+        row.appendChild(span);
+        menu.appendChild(row);
+    });
+    updateForensicsLabelsSummary();
+}
+
+function onForensicsLabelToggle(label, checked) {
+    if (checked) _forensicsSelectedLabels.add(label);
+    else _forensicsSelectedLabels.delete(label);
+    updateForensicsLabelsSummary();
+}
+
+function updateForensicsLabelsSummary() {
+    const el = document.getElementById('forensics-hunt-labels-summary');
+    if (!el) return;
+    const n = _forensicsSelectedLabels.size;
+    el.textContent = n === 0 ? 'All clients'
+        : n === 1 ? Array.from(_forensicsSelectedLabels)[0]
+        : `${n} labels selected`;
+}
+
+function toggleForensicsLabelsDropdown(e) {
+    if (e) e.stopPropagation();
+    const menu = document.getElementById('forensics-hunt-labels-menu');
+    if (menu) menu.classList.toggle('hidden');
+}
+
+// Close the dropdown on any outside click (bound once).
+if (!window._forensicsLabelsOutsideBound) {
+    window._forensicsLabelsOutsideBound = true;
+    document.addEventListener('click', (e) => {
+        const dd = document.getElementById('forensics-hunt-labels-dd');
+        const menu = document.getElementById('forensics-hunt-labels-menu');
+        if (dd && menu && !dd.contains(e.target)) menu.classList.add('hidden');
+    });
 }
 
 // Currently-selected hunt labels; [] means "all clients".
 function getSelectedForensicsLabels() {
-    const sel = document.getElementById('forensics-hunt-labels');
-    if (!sel) return [];
-    return Array.from(sel.selectedOptions || []).map(o => o.value).filter(Boolean);
+    return Array.from(_forensicsSelectedLabels);
 }
 
 // Set default blueprint based on mode

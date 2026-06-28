@@ -100,14 +100,23 @@
                                 <div>
                                     <label class="block text-sm font-medium text-gray-300 mb-1">
                                         Target labels
-                                        <span class="text-xs text-gray-500 font-normal">— optional; none selected = all clients</span>
+                                        <span class="text-xs text-gray-500 font-normal">— optional; none = all clients</span>
                                     </label>
-                                    <select id="forensics-hunt-labels" multiple size="4"
-                                            class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
-                                    </select>
-                                    <p id="forensics-hunt-labels-hint" class="text-xs text-gray-500 mt-1">
-                                        Hold Ctrl/Cmd to select multiple. The hunt runs only on clients carrying any selected label; select none to hunt all clients.
-                                    </p>
+                                    <!-- Single-line dropdown: shows the selection summary; click to
+                                         reveal a checkbox list of labels. No selection = all clients. -->
+                                    <div class="relative" id="forensics-hunt-labels-dd">
+                                        <button type="button" id="forensics-hunt-labels-btn"
+                                                onclick="toggleForensicsLabelsDropdown(event)"
+                                                class="w-full flex items-center justify-between bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white text-left focus:border-blue-500 focus:outline-none">
+                                            <span id="forensics-hunt-labels-summary" class="truncate">All clients</span>
+                                            <svg class="w-4 h-4 text-gray-400 flex-shrink-0 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                            </svg>
+                                        </button>
+                                        <div id="forensics-hunt-labels-menu"
+                                             class="hidden absolute z-20 mt-1 w-full max-h-48 overflow-y-auto bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-1">
+                                        </div>
+                                    </div>
                                     <p id="forensics-hunt-labels-empty" class="text-xs text-gray-500 mt-1 hidden">
                                         No client labels found — the hunt will run on <strong>all clients</strong>.
                                     </p>
