@@ -100,6 +100,34 @@
     return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
+  /**
+   * Switch to the built-in System workspace, then land on the Workflows tab.
+   *
+   * System-operation runs (upgrade / online upgrade / prepare package / apply /
+   * maintenance / support bundle / purge / settings) are ALWAYS tagged to the
+   * System workspace by the backend (SYSTEM_TYPES in workflow_service.py), so the
+   * workspace-scoped Workflows tab only shows them when System is active. Every
+   * system feature must call this after kicking off its run — otherwise the run
+   * is invisible until the operator manually switches workspaces. Changing the
+   * active workspace requires a reload (like the workspace selector) so all
+   * case-scoped views refresh; we restore the Workflows tab via the URL hash.
+   * If System is already active, just switch the tab (no reload).
+   */
+  async function gotoSystemWorkflows() {
+    try {
+      const cases = await listCases();
+      const sys = cases.find(c => c.is_system);
+      if (sys && get() !== sys.case_id) {
+        set(sys.case_id);
+        window.location.hash = 'workflows';
+        window.location.reload();
+        return;
+      }
+    } catch (e) { /* fall through to a plain tab switch */ }
+    try { window.Alpine && Alpine.store('app').switchTab('workflows'); }
+    catch (e) { window.location.hash = 'workflows'; }
+  }
+
   window.ActiveCase = { get, set, listCases, createCase, deleteCase, ensureActiveCase,
-                        renderCaseSelector };
+                        renderCaseSelector, gotoSystemWorkflows };
 })();

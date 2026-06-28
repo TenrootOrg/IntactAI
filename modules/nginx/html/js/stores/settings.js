@@ -153,7 +153,7 @@ document.addEventListener('alpine:init', () => {
                     window.currentConfig = this.config;
                     this.showMessage('Timesketch settings saved - containers restarting...', 'success');
                     setTimeout(() => {
-                        Alpine.store('app').switchTab('workflows');
+                        window.ActiveCase.gotoSystemWorkflows();
                     }, 1000);
                 } else {
                     this.showMessage('Failed to save Timesketch config', 'error');
@@ -228,7 +228,7 @@ document.addEventListener('alpine:init', () => {
                     this.showMessage('Maintenance started - redirecting to Workflows', 'success');
                     // Switch to workflows view after a short delay
                     setTimeout(() => {
-                        Alpine.store('app').switchTab('workflows');
+                        window.ActiveCase.gotoSystemWorkflows();
                     }, 500);
                 } else {
                     this.showMessage('Maintenance workflow failed: ' + (result.error || 'Unknown error'), 'error');
@@ -246,7 +246,7 @@ document.addEventListener('alpine:init', () => {
                 const result = await response.json();
                 if (response.ok && result.success) {
                     this.showMessage('Bundle generation started - redirecting to Workflows', 'success');
-                    setTimeout(() => { Alpine.store('app').switchTab('workflows'); }, 500);
+                    setTimeout(() => { window.ActiveCase.gotoSystemWorkflows(); }, 500);
                 } else {
                     this.showMessage('Bundle start failed: ' + (result.error || 'Unknown error'), 'error');
                 }
@@ -360,7 +360,7 @@ document.addEventListener('alpine:init', () => {
                 if (!r.ok || !j.run_id) throw new Error(j.error || `HTTP ${r.status}`);
                 this.showMessage(`Purging ${ids.length} section(s) — redirecting to Workflows`, 'info');
                 this.purgeModalOpen = false;
-                setTimeout(() => { Alpine.store('app').switchTab('workflows'); }, 500);
+                setTimeout(() => { window.ActiveCase.gotoSystemWorkflows(); }, 500);
             } catch (e) {
                 this.purgeError = 'Purge error: ' + e.message;
             } finally {
@@ -586,7 +586,7 @@ document.addEventListener('alpine:init', () => {
                             '(', file.size, 'bytes), modules:', selected);
                 this.showMessage('Uploading package… (you can watch the upload run in Workflows)', 'info');
                 this.closeApplyPackageModal();
-                Alpine.store('app').switchTab('workflows');
+                window.ActiveCase.gotoSystemWorkflows();
                 this.applying = false;
                 const upload = new tus.Upload(file, {
                     endpoint: '/api/uploads/',
@@ -648,7 +648,7 @@ document.addEventListener('alpine:init', () => {
                 if (r.ok && d.success) {
                     this.closeApplyPackageModal();
                     this.showMessage('Apply started — check Workflows for progress', 'success');
-                    setTimeout(() => { Alpine.store('app').switchTab('workflows'); }, 500);
+                    setTimeout(() => { window.ActiveCase.gotoSystemWorkflows(); }, 500);
                 } else {
                     this.showMessage('Apply failed: ' + (d.error || 'unknown'), 'error');
                 }
@@ -952,7 +952,7 @@ document.addEventListener('alpine:init', () => {
                     this.prepareRunId = d.run_id;
                     this.closePreparePackageModal();
                     this.showMessage(successMsg, 'success');
-                    setTimeout(() => { Alpine.store('app').switchTab('workflows'); }, 500);
+                    setTimeout(() => { window.ActiveCase.gotoSystemWorkflows(); }, 500);
                 } else {
                     this.showMessage('Upgrade request failed: ' + (d.error || 'unknown'), 'error');
                 }
