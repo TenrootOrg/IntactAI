@@ -948,6 +948,20 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # Module build context dirs (mirror the COPY paths in
                 # modules/velociraptor/Dockerfile).
                 velo_dir = "/app/workdir/modules/velociraptor"
+
+                # Refresh the build files (Dockerfile / entrypoint.sh /
+                # bundled_artifacts) from the TARGET release's source before
+                # baking, so the image is built from the current Dockerfile +
+                # full artifact bundle — not whatever stale copy is on this box.
+                # The 'intact' module (processed earlier) extracted the release
+                # into source/intact/. Without this, a box with old
+                # modules/velociraptor re-bakes the old bundle-less image and the
+                # server is missing ~400 artifacts (e.g. Windows.Hayabusa.Rules).
+                from .velociraptor import refresh_velociraptor_build_files
+                refresh_velociraptor_build_files(
+                    os.path.join(package_dir, 'source', 'intact', 'modules', 'velociraptor'),
+                    velo_dir, logger=log)
+
                 staging_map = {
                     upstream_binaries[0]: os.path.join(velo_dir, 'clients', 'linux',   'velociraptor'),
                     upstream_binaries[1]: os.path.join(velo_dir, 'clients', 'mac',     'velociraptor_client'),

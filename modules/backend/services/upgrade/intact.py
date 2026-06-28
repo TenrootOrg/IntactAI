@@ -880,6 +880,23 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
                 "additive copy (no prune) to avoid wiping the install", "warning")
             run_command(f"cp -a {frontend_source}/* {nginx_html}/", logger=log, run_id=run_id)
 
+    # Refresh the velociraptor IMAGE BUILD FILES (Dockerfile, entrypoint.sh,
+    # bundled_artifacts/) from the new release source. Velociraptor is the only
+    # module whose image is built locally; its bake reads these on-disk files,
+    # and they are NOT part of the backend/frontend mirror above — so without
+    # this an upgraded box keeps stale build files and re-bakes the old,
+    # bundle-less image (server then missing ~400 artifacts). Only with the
+    # full-repo layout (source/intact/); harmless no-op otherwise.
+    if os.path.isdir(intact_root):
+        try:
+            from .velociraptor import refresh_velociraptor_build_files
+            refresh_velociraptor_build_files(
+                os.path.join(intact_root, 'modules', 'velociraptor'),
+                os.path.join(WORKDIR, 'modules', 'velociraptor'),
+                logger=log)
+        except Exception as e:
+            log(f"  Could not refresh velociraptor build files: {e}", "warning")
+
     # Stamp WORKDIR/VERSION so the sidebar + Settings reflect the new release.
     # Shared with the Phase-2 resume finalizer (services/upgrade.__init__) so
     # whichever code is NEWEST governs the stamp — see stamp_intact_version.

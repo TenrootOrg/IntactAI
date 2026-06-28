@@ -1165,6 +1165,50 @@ def _refresh_offline_collector_downloads(clean_version: str,
     }
 
 
+def refresh_velociraptor_build_files(src_velo_dir: str, dst_velo_dir: Optional[str] = None,
+                                     logger: Optional[Callable] = None) -> bool:
+    """Refresh the velociraptor image build inputs from a fresh source tree.
+
+    Copies Dockerfile, entrypoint.sh, .dockerignore and the whole
+    bundled_artifacts/ pack from ``src_velo_dir`` into the build context
+    (``dst_velo_dir``, default WORKDIR/modules/velociraptor) BEFORE the image is
+    baked. This is the fix for "many artifacts missing after upgrade": velociraptor
+    is the only module whose image is BUILT locally, and the bake reads the
+    on-disk build files — but modules/velociraptor is NOT covered by the intact
+    source-mirror, so a box with stale build files re-bakes the OLD, bundle-less
+    image and the server then has only its ~438 compiled-in built-ins (no
+    --definitions pack). Refreshing from the target release's source guarantees
+    the image is baked from the CURRENT Dockerfile + the full ~400-artifact bundle
+    on every path that rebuilds (online prepare, offline package, local rebuild).
+    No-op (returns False) when src is absent — caller falls back to on-disk files.
+    """
+    import shutil
+    log = logger or (lambda m, l="info": None)
+    dst = dst_velo_dir or os.path.join(WORKDIR, 'modules', 'velociraptor')
+    if not src_velo_dir or not os.path.isdir(src_velo_dir):
+        log(f"  No fresh velociraptor source at {src_velo_dir} — baking from on-disk build files", "warning")
+        return False
+    copied = []
+    try:
+        os.makedirs(dst, exist_ok=True)
+        for fname in ('Dockerfile', 'entrypoint.sh', '.dockerignore'):
+            s = os.path.join(src_velo_dir, fname)
+            if os.path.isfile(s):
+                shutil.copy2(s, os.path.join(dst, fname))
+                copied.append(fname)
+        src_bundle = os.path.join(src_velo_dir, 'bundled_artifacts')
+        if os.path.isdir(src_bundle):
+            dst_bundle = os.path.join(dst, 'bundled_artifacts')
+            shutil.rmtree(dst_bundle, ignore_errors=True)
+            shutil.copytree(src_bundle, dst_bundle)
+            copied.append(f"bundled_artifacts/ ({len(os.listdir(src_bundle))} YAMLs)")
+    except Exception as e:
+        log(f"  Could not refresh velociraptor build files ({type(e).__name__}: {e})", "warning")
+        return False
+    log(f"  Refreshed velociraptor build files from source: {', '.join(copied) or '(nothing)'}", "success")
+    return True
+
+
 def _stage_binaries_for_build(
     module_dir: str,
     clean_version: str,
@@ -1779,16 +1823,24 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         images_dir = os.path.join(package_dir, 'images')
         image_path = os.path.join(images_dir, f"velociraptor-{actual_version}.tar")
 
+        # Any local (fallback) build must use the package's velociraptor build
+        # files (Dockerfile / entrypoint.sh / bundled_artifacts), not this box's
+        # possibly-stale on-disk copy — otherwise the rebuilt image lacks the
+        # artifact bundle. Pre-built image load is already correct (it was baked
+        # from the right source during prepare).
+        pkg_velo_src = os.path.join(package_dir, 'source', 'intact', 'modules', 'velociraptor')
         if os.path.exists(image_path):
             log("Loading pre-built Velociraptor image...", "info")
             result = load_docker_image(image_path, logger=log, run_id=run_id)
             if not result['success']:
                 log(f"  Image load failed, falling back to local build: {result.get('error', '')[:80]}", "warning")
+                refresh_velociraptor_build_files(pkg_velo_src, work_dir, logger=log)
                 build = run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log, run_id=run_id)
                 if not build['success']:
                     raise Exception(f"docker compose build failed: {build.get('error','')[:200]}")
         else:
             log("No pre-built image in package — building locally (offline-safe).", "info")
+            refresh_velociraptor_build_files(pkg_velo_src, work_dir, logger=log)
             build = run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log, run_id=run_id)
             if not build['success']:
                 raise Exception(f"docker compose build failed: {build.get('error','')[:200]}")
