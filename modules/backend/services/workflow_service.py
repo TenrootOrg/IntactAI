@@ -35,6 +35,12 @@ SYSTEM_TYPES = {"upgrade", "online_upgrade", "prepare_package", "maintenance",
                 "system_purge", "support_bundle", "settings",
                 "case_import", "case_export"}
 
+# Internal bookkeeping run-types (match services.fusion.store CASE_TYPE /
+# BASELINE_TYPE). The workspace row + fusion baseline marker are not case work
+# and not system ops — they carry their own case_id and must never be forced to
+# the active workspace or blocked by the System-workspace guard.
+INTERNAL_CASE_TYPES = {"case", "fusion_baseline"}
+
 
 _DEFAULT_CASE_CACHE = {"id": None}
 _SYSTEM_CASE_CACHE = {"id": None}
@@ -88,6 +94,15 @@ def _resolve_case_id(automation_type, case_id):
     workspace's Workflows view (e.g. velociraptor_offline_collector). Defaulting
     to the active case closes that gap for all current and future run types.
     """
+    # Internal bookkeeping rows — the workspace/case row itself ("case") and the
+    # fusion baseline marker ("fusion_baseline"). These are neither module work
+    # nor system ops: they manage their own case_id (passed explicitly, usually
+    # None = untagged). They must bypass BOTH active-case tagging AND the
+    # System-workspace guard, or creating a workspace WHILE the System workspace
+    # is active raises WorkspaceError ("create failed"). Return case_id verbatim.
+    if automation_type in INTERNAL_CASE_TYPES:
+        return case_id
+
     if automation_type in SYSTEM_TYPES:
         return _system_case_id() or case_id
 
