@@ -1302,6 +1302,53 @@ sys.stdout.write(v if v else '')
     fi
 }
 
+enforce_iris_admin_password() {
+    # Make config.yaml the source of truth for the IRIS administrator password.
+    # IRIS only honours IRIS_ADM_PASSWORD at FIRST init (post_init.py); on later
+    # boots an existing admin keeps whatever it had. So if the secret wasn't
+    # applied at first-init (e.g. an unreadable secret file -> IRIS fell back to
+    # a RANDOM password), the documented config.yaml creds never work. Re-assert
+    # them here using IRIS's own bcrypt hashing (flask-bcrypt), idempotently.
+    local iris_user iris_pass
+    iris_user=$(read_config "['modules']['iris']['id']"); [[ -z "$iris_user" ]] && iris_user="administrator"
+    iris_pass=$(read_config "['modules']['iris']['password']")
+    if [[ -z "$iris_pass" ]]; then
+        log_warn "  IRIS password not set in config.yaml — skipping admin-password enforcement"
+        return 0
+    fi
+    if ! docker ps --filter 'name=^intact_iris_app$' --format '{{.Names}}' 2>/dev/null | grep -q . \
+       || ! docker ps --filter 'name=^intact_iris_db$' --format '{{.Names}}' 2>/dev/null | grep -q .; then
+        log_warn "  IRIS app/db not running — skipping IRIS admin-password enforcement"
+        return 0
+    fi
+
+    log_info "  Enforcing IRIS administrator password from config.yaml..."
+    # Step 1: hash with IRIS's own flask-bcrypt, standalone (NO db access — a
+    # fresh `docker exec` lacks the DB secret the entrypoint exports, so importing
+    # `app` can't connect). Password comes from the container env, never the body.
+    local hash
+    hash=$(docker exec -e IRIS_RESET_PW="$iris_pass" intact_iris_app python3 -c \
+        'import os;from flask_bcrypt import Bcrypt;print(Bcrypt().generate_password_hash(os.environ["IRIS_RESET_PW"].encode()).decode())' \
+        2>/dev/null | tail -1)
+    if [[ "$hash" != \$2* ]]; then
+        log_warn "  Could not compute IRIS password hash — skipping"
+        return 0
+    fi
+    # Step 2: write it straight into iris_db (psql authenticates locally). bcrypt
+    # has no single quotes so the SQL literal is safe.
+    local res
+    res=$(docker exec intact_iris_db psql -U iris -d iris_db \
+        -c "UPDATE \"user\" SET password='$hash' WHERE \"user\"='$iris_user';" 2>&1 | tail -1)
+    if [[ "$res" == *"UPDATE 1"* ]]; then
+        log_success "  IRIS administrator password set from config.yaml"
+    elif [[ "$res" == *"UPDATE 0"* ]]; then
+        log_warn "  IRIS administrator row not found — password not set"
+    else
+        log_warn "  Could not enforce IRIS admin password: $res"
+    fi
+    return 0
+}
+
 # ============================================================================
 # Portainer Module
 # ============================================================================
@@ -1767,6 +1814,9 @@ start_services() {
     # blocks until the admin row is populated, so it's safe to run here
     # even if IRIS's own migrations are still finishing.
     bootstrap_iris_api_key
+    # Re-assert the IRIS admin password from config.yaml (IRIS only honours it at
+    # first-init, so this fixes the "config password doesn't work" case).
+    enforce_iris_admin_password
     echo ""
     deploy_nginx
     echo ""

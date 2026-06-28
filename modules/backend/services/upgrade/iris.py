@@ -75,6 +75,73 @@ def ensure_iris_web_cert(work_dir: str, logger: Callable = None) -> None:
             pass
 
 
+def enforce_iris_admin_password(logger: Callable = None) -> None:
+    """Re-assert the IRIS administrator password from config.yaml.
+
+    IRIS only honours IRIS_ADM_PASSWORD at FIRST init (post_init.py); an existing
+    admin keeps whatever password it had. So enabling IRIS late, or a first-init
+    where the secret file wasn't readable (IRIS then generates a RANDOM admin
+    password), leaves config.yaml's documented creds not working. Reset it
+    idempotently using IRIS's own bcrypt hashing (flask-bcrypt) so config.yaml is
+    authoritative. Best-effort: logs and returns on any problem, never raises.
+    """
+    import shlex
+    log = logger or (lambda m, l="info": print(f"[{l}] {m}"))
+    try:
+        from config import load_main_config
+        cfg = load_main_config() or {}
+        iris = (cfg.get('modules', {}) or {}).get('iris', {}) or {}
+        user = str(iris.get('id') or 'administrator')
+        pw = iris.get('password')
+    except Exception as e:
+        log(f"  IRIS admin-password enforcement skipped (config read failed: {e})", "warning")
+        return
+    if not pw:
+        log("  IRIS password not set in config.yaml — skipping admin-password enforcement", "warning")
+        return
+
+    def _running(name):
+        r = run_command(f"docker ps --filter name=^{name}$ --format '{{{{.Names}}}}'", logger=None)
+        return name in (r.get('stdout') or '')
+
+    if not (_running('intact_iris_app') and _running('intact_iris_db')):
+        log("  IRIS app/db not running — skipping admin-password enforcement", "warning")
+        return
+
+    log("Enforcing IRIS administrator password from config.yaml...", "info")
+    # Step 1: hash the password with IRIS's own flask-bcrypt — standalone, NO db
+    # access (Bcrypt() with no app uses the same defaults IRIS does). We deliberately
+    # avoid the app's DB layer here: a fresh `docker exec` doesn't inherit the DB
+    # secret the entrypoint exports, so importing `app` fails to connect. The
+    # password is read from the container env, never interpolated into the snippet.
+    hgen = ("import os;from flask_bcrypt import Bcrypt;"
+            "print(Bcrypt().generate_password_hash(os.environ['IRIS_RESET_PW'].encode()).decode())")
+    r = run_command(
+        f"docker exec -e IRIS_RESET_PW={shlex.quote(str(pw))} intact_iris_app "
+        f"python3 -c {shlex.quote(hgen)}", logger=None, timeout=60)
+    h = (((r.get('stdout') or '').strip().splitlines() or [''])[-1]).strip()
+    if not h.startswith('$2'):
+        err = ((r.get('stderr') or '') + (r.get('stdout') or '')).strip()[-160:]
+        log(f"  Could not compute IRIS password hash: {err}", "warning")
+        return
+
+    # Step 2: write the hash straight into iris_db (psql authenticates locally, so
+    # no app DB-config needed). bcrypt's charset has no single quotes, so the SQL
+    # literal is safe; shlex.quote stops the shell expanding the hash's '$' chars.
+    name_lit = user.replace("'", "''")
+    sql = f"UPDATE \"user\" SET password='{h}' WHERE \"user\"='{name_lit}';"
+    r2 = run_command(
+        f"docker exec intact_iris_db psql -U iris -d iris_db -c {shlex.quote(sql)}",
+        logger=None, timeout=60)
+    out = ((r2.get('stdout') or '') + (r2.get('stderr') or '')).strip()
+    if 'UPDATE 1' in out:
+        log("  IRIS administrator password set from config.yaml", "success")
+    elif 'UPDATE 0' in out:
+        log("  IRIS administrator row not found — password not set", "warning")
+    else:
+        log(f"  Could not enforce IRIS admin password: {out[-200:]}", "warning")
+
+
 def upgrade_iris(version: str, logger: Callable = None) -> Dict:
     """Upgrade IRIS to specified version with automatic rollback on failure."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
@@ -148,6 +215,10 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"IRIS failed to start - container status: {container_status}")
             log("IRIS health check: TIMEOUT (containers may still be starting)", "warning")
+
+        # Re-assert the IRIS admin password from config.yaml (config is the
+        # source of truth; IRIS itself only applies it at first-init).
+        enforce_iris_admin_password(logger=log)
 
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
@@ -265,6 +336,10 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
             if 'Restarting' in container_status or 'Exited' in container_status:
                 raise Exception(f"IRIS failed to start - container status: {container_status}")
             log("IRIS health check: TIMEOUT (containers may still be starting)", "warning")
+
+        # Re-assert the IRIS admin password from config.yaml (config is the
+        # source of truth; IRIS itself only applies it at first-init).
+        enforce_iris_admin_password(logger=log)
 
         # Success - cleanup backup
         cleanup_backup(backup_file, logger=log)
@@ -461,5 +536,10 @@ def install_iris_offline(package_dir: str, version: str, logger=None, run_id=Non
             log("  IRIS api_key set_secret() returned False. Fix manually.", "warning")
     except Exception as e:
         log(f"  Failed to persist IRIS api_key to backend secrets: {e}", "warning")
+
+    # Re-assert the IRIS admin password from config.yaml. The admin row exists
+    # by now (we waited for its api_key above), so this guarantees the documented
+    # config.yaml creds work even if IRIS first-init fell back to a random one.
+    enforce_iris_admin_password(logger=log)
 
     return compose_result
