@@ -89,7 +89,9 @@ from services.workflow_service import WorkspaceError
 @app.errorhandler(WorkspaceError)
 def _handle_workspace_error(e):
     from flask import jsonify
-    return jsonify({"error": str(e)}), 409
+    # `code` lets the UI reliably detect "module run blocked in the System
+    # workspace" (vs string-matching the message) and show one clear alert.
+    return jsonify({"error": str(e), "code": "workspace_system_blocked"}), 409
 
 # Global flag to track initialization status
 initialization_status = {

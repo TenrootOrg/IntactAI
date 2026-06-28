@@ -17,11 +17,23 @@
     window.dispatchEvent(new CustomEvent('active-case-changed', { detail: { id } }));
   }
 
+  // Surface "module run blocked in the System workspace" ONCE (debounced) — the
+  // backend rejects module/feature runs in System with HTTP 409 +
+  // code 'workspace_system_blocked'. Without this the run silently does nothing.
+  let _wsBlockedAt = 0;
+  function _showWorkspaceBlocked(msg) {
+    const now = Date.now();
+    if (now - _wsBlockedAt < 3000) return;   // collapse duplicate 409s from one action
+    _wsBlockedAt = now;
+    try { window.alert(msg); } catch (e) { /* headless / no window.alert */ }
+  }
+
   // --- the tagging hook -----------------------------------------------------
   window.fetch = function (input, init) {
+    let isApi = false;
     try {
       const url = (typeof input === 'string') ? input : (input && input.url) || '';
-      const isApi = url.startsWith('/api') || url.indexOf(location.host + '/api') !== -1;
+      isApi = url.startsWith('/api') || url.indexOf(location.host + '/api') !== -1;
       const cid = get();
       if (isApi && cid) {
         init = init || {};
@@ -30,13 +42,67 @@
         init.headers = h;
       }
     } catch (e) { /* never let tagging break a request */ }
-    return _fetch(input, init);
+
+    const p = _fetch(input, init);
+    if (!isApi) return p;
+    // Globally catch the System-workspace block (409 + code) for EVERY module
+    // launch — offline-collector import, hunts, timesketch, memory, cve,
+    // blueprints, cloud scans, … — and pop one clear alert. System features
+    // (upgrade / maintenance / support bundle / purge / settings) run IN System
+    // so they never get this 409 and are naturally excluded.
+    return p.then(function (resp) {
+      try {
+        if (resp && resp.status === 409) {
+          resp.clone().json().then(function (d) {
+            if (d && d.code === 'workspace_system_blocked') {
+              _showWorkspaceBlocked(d.error ||
+                'This action runs against an investigation workspace, not System. ' +
+                'Switch to or create an investigation workspace first.');
+            }
+          }).catch(function () { /* non-JSON 409 — ignore */ });
+        }
+      } catch (e) { /* never break the response chain */ }
+      return resp;
+    });
   };
 
   // --- helpers --------------------------------------------------------------
   async function listCases() {
     try { const r = await _fetch('/api/cases'); const d = await r.json(); return d.cases || []; }
     catch (e) { return []; }
+  }
+
+  // Cache the System workspace id so the proactive guard below is cheap on repeat
+  // calls. Resolved from /api/cases (the is_system flag) on first use.
+  let _systemCaseId = null;
+  async function _ensureSystemCaseId() {
+    if (_systemCaseId) return _systemCaseId;
+    const sys = (await listCases()).find(c => c.is_system);
+    if (sys) _systemCaseId = sys.case_id;
+    return _systemCaseId;
+  }
+
+  /**
+   * PROACTIVE System-workspace guard for module launches that DON'T go through a
+   * fetch the UI can inspect — notably tus uploads (velociraptor offline
+   * collector, timesketch import), where the backend creates the run server-side
+   * AFTER the upload finishes, so its 409 never reaches the browser. Call this
+   * BEFORE starting such work: if the active workspace is System it pops the same
+   * one-shot alert and returns true (caller should abort); otherwise false.
+   * Fetch-based launches don't need this — the window.fetch 409 interceptor above
+   * catches them automatically. System features (settings page) never call it.
+   */
+  async function blockIfSystem(msg) {
+    try {
+      const sys = await _ensureSystemCaseId();
+      if (sys && get() === sys) {
+        _showWorkspaceBlocked(msg ||
+          'This action runs against an investigation workspace, not System. ' +
+          'Switch to or create an investigation workspace first.');
+        return true;
+      }
+    } catch (e) { /* on any error, don't block — fall through to the backend 409 */ }
+    return false;
   }
 
   async function createCase(name, extra) {
@@ -142,5 +208,5 @@
   }
 
   window.ActiveCase = { get, set, listCases, createCase, deleteCase, ensureActiveCase,
-                        renderCaseSelector, gotoSystemWorkflows };
+                        renderCaseSelector, gotoSystemWorkflows, blockIfSystem };
 })();

@@ -54,6 +54,25 @@ class TusUploader {
             return null;
         }
 
+        // PROACTIVE System-workspace guard. tus uploads (velociraptor offline
+        // collector, timesketch import) are MODULE work: the backend creates the
+        // run server-side AFTER the upload completes, so when the active workspace
+        // is System it rejects the run with a 409 the browser never sees — the
+        // import just silently does nothing. Block up front with a clear alert,
+        // BEFORE wasting time uploading a (possibly large) collection ZIP.
+        if (window.ActiveCase && window.ActiveCase.blockIfSystem) {
+            window.ActiveCase.blockIfSystem(
+                'This import runs against an investigation workspace, not System. ' +
+                'Switch to or create an investigation workspace first, then re-import.'
+            ).then((blocked) => { if (!blocked) this._beginUpload(file); });
+            return null;
+        }
+        this._beginUpload(file);
+        return null;
+    }
+
+    /** Start the actual tus upload (after the System-workspace guard passes). */
+    _beginUpload(file) {
         this._startTime = Date.now();
         this._lastTime = this._startTime;
         this._lastBytes = 0;
