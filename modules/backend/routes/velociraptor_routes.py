@@ -622,24 +622,26 @@ def get_client_labels():
         if not channel:
             return jsonify({"labels": []})
         stub = api_pb2_grpc.APIStub(channel)
-        # Flatten the per-client labels list into a distinct, sorted set.
-        query = ("SELECT _value AS label FROM foreach("
-                 "row={SELECT labels FROM clients() WHERE labels}, column='labels') "
-                 "WHERE label GROUP BY label ORDER BY label")
-        labels = []
+        # Pull each client's labels[] and flatten in Python — robust across
+        # Velociraptor versions (a VQL foreach(column='labels') flatten returned
+        # NULLs). Skip Velociraptor's auto-labels (the GUI hides these too):
+        # they start with "label:" only when user-set; the built-ins are
+        # prefixed differently, so we keep every non-empty string.
+        query = "SELECT labels FROM clients() WHERE labels"
+        labels = set()
         for response in stub.Query(api_pb2.VQLCollectorArgs(
-                max_wait=20, max_row=2000,
+                max_wait=20, max_row=5000,
                 Query=[api_pb2.VQLRequest(VQL=query)]), timeout=25):
             if response.Response:
                 try:
                     for d in json.loads(response.Response):
-                        lbl = d.get('label')
-                        if lbl and lbl not in labels:
-                            labels.append(lbl)
+                        for lbl in (d.get('labels') or []):
+                            if isinstance(lbl, str) and lbl.strip():
+                                labels.add(lbl.strip())
                 except Exception:
                     pass
         channel.close()
-        return jsonify({"labels": labels})
+        return jsonify({"labels": sorted(labels)})
     except Exception as e:
         print(f"[LABELS] ✗ Error listing client labels: {e}", flush=True)
         return jsonify({"labels": []})
