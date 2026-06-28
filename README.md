@@ -151,15 +151,22 @@ Available modules: `elk`, `timesketch`, `velociraptor`, `iris`, `portainer`, `ba
 Repoint an already-installed platform to a new IP (e.g. after moving the
 VM to a different network). `config.yaml`'s `domain:` is the single
 source of truth; this script updates it and re-runs the same propagation
-the installer uses, then restarts the affected containers.
+the installer uses, then recreates/restarts the affected containers.
 
 ```bash
-# Interactive (asks for confirmation)
+# Change the platform IP (always non-interactive — never prompts)
 sudo bash scripts/change_ip.sh 192.168.120.11
 
-# Non-interactive
-sudo bash scripts/change_ip.sh 192.168.120.11 --yes
+# Re-run with the CURRENT IP to REPAIR a broken state
+# (re-applies config, regenerates certs, recreates/heals the module
+#  containers). This is the fix when a UI is down after an IP change.
+sudo bash scripts/change_ip.sh "$(grep -E '^domain:' config.yaml | awk '{print $2}')"
 ```
+
+> The script always runs **force + non-interactive**: it never asks for
+> confirmation, and it re-applies the full pipeline **even when the IP is
+> unchanged**. `-y`/`--yes` is still accepted but is now a no-op. This is
+> deliberate — `change_ip.sh` doubles as the platform **repair** tool.
 
 What it does:
 1. Sets `domain: <NEW_IP>` in `config.yaml`
@@ -171,8 +178,9 @@ What it does:
 6. Refreshes the nginx containers (clears upstream DNS cache + serves the new cert)
 7. Regenerates the Velociraptor client installers in `client_installers/`
 
-It is idempotent (re-running with the current IP is a no-op) and safe to
-re-run if interrupted.
+It is idempotent (re-running with the current IP re-applies everything but
+the IP sweeps become no-ops) and safe to re-run if interrupted — which is
+exactly why it works as a repair tool.
 
 > **Note:** Velociraptor agents already deployed on endpoints have the
 > old server IP baked in and will **not** reconnect. Redeploy those

@@ -40,11 +40,15 @@ Usage: sudo ./scripts/change_ip.sh <NEW_IP> [-y|--yes]
 
 Repoint the Intact.AI platform to a new IP after install.
 
+Runs FORCE + non-interactive ALWAYS: it never prompts, and it re-applies the
+full pipeline even when <NEW_IP> already equals the current IP — so it doubles
+as the repair tool when certs/containers have drifted out of sync.
+
 Arguments:
   <NEW_IP>      The new IPv4 address (e.g. 192.168.120.10)
 
 Options:
-  -y, --yes     Don't prompt for confirmation (non-interactive)
+  -y, --yes     Accepted for back-compat; no-op (the script is always non-interactive)
   -h, --help    Show this help
 
 What it does:
@@ -54,6 +58,9 @@ What it does:
   4. Regenerates the TLS certs with CN=<NEW_IP>
   5. Recreates Velociraptor, restarts the backend, refreshes nginx
   6. Regenerates the Velociraptor client installers
+
+Re-running with the same IP is safe and idempotent (the IP sweeps become no-ops);
+use it to repair a broken platform state.
 EOF
 }
 
@@ -109,23 +116,24 @@ if [[ -z "$OLD_IP" ]]; then
     exit 1
 fi
 
+# FORCE by default: even when the IP is unchanged we re-run the full pipeline
+# (re-derive .env files, regenerate certs, recreate/heal the module containers).
+# This is deliberate — change_ip doubles as the repair tool when the platform is
+# in a partial/broken state (stale cert, crash-looping module nginx) but the
+# domain already matches the target. The old "already set — nothing to do" exit
+# made that unrepairable. Re-runs are idempotent (the IP sweeps become no-ops).
 if [[ "$OLD_IP" == "$NEW_IP" ]]; then
-    log_success "Platform IP is already $NEW_IP — nothing to do."
-    exit 0
+    log_info "Platform IP is already $NEW_IP — re-running anyway (force) to re-apply"
+    log_info "config, regenerate certs, and recreate/heal the module containers."
 fi
 
 echo
-log_info "About to change the platform IP:"
+log_info "Changing the platform IP:"
 echo "    OLD: $OLD_IP"
 echo "    NEW: $NEW_IP"
 echo
-if [[ "$ASSUME_YES" != true ]]; then
-    read -r -p "Proceed? This will edit configs, regenerate certs, and restart containers. [y/N] " reply
-    case "${reply,,}" in
-        y|yes) ;;
-        *) log_warn "Aborted by user."; exit 0 ;;
-    esac
-fi
+# Always non-interactive: this script runs unattended (installer / re-IP / repair).
+# -y is accepted for back-compat but is now a no-op — there is never a prompt.
 
 # ---------------------------------------------------------------------------
 # 1. Update the source of truth
