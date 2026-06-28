@@ -20,8 +20,8 @@ window.services = {
 window.defaultConfig = {
     agentic: {
         llm_mode: "offline",
-        offline_llm: { provider: "ollama", model: "llama3.3:70b", url: "http://localhost:11434", batch_size: 100 },
-        online_llm: { provider: "claude", api_key: "", model: "claude-sonnet-latest", batch_size: 100 },
+        offline_llm: { provider: "ollama", model: "llama3.3:70b", url: "http://localhost:11434" },
+        online_llm: { provider: "claude", api_key: "", model: "claude-sonnet-latest" },
     }
 };
 

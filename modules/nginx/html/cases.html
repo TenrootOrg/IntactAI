@@ -303,6 +303,19 @@ function tokenBadge(ab){
     <b style="color:var(--ok)">${ab.reduction_ratio||'?'}×</b> token cut
     <span style="color:var(--muted)">(${(ab.raw_approx||0).toLocaleString()}→${(ab.fusion_approx||0).toLocaleString()})</span></span>`;
 }
+// Estimated USD cost of one Rescan (LLM), priced live from the configured model.
+// Shows BOTH sides of the fusion ontology — raw (before) → distilled (after) — the
+// dollar twin of the token-cut badge. In simulated mode it's the projected cost if live.
+function _usd(v){ v=v||0; return '$'+(v>=1?v.toFixed(2):(v>=0.01?v.toFixed(3):v.toFixed(4))); }
+function costBadge(ce){
+  if(!ce) return '';
+  if(!ce.model) return `<span class="stat" title="No fusion LLM model configured — set Settings ▸ Agentic ▸ model to price this"><b style="color:var(--muted)">—</b> cost/rescan <span style="color:var(--muted)">(no model)</span></span>`;
+  const after=(ce.after&&ce.after.usd)||0, before=(ce.before&&ce.before.usd)||0;
+  if(!(before>0||after>0)) return `<span class="stat" title="No pricing for ${esc(ce.model)} in the model catalog"><b style="color:var(--muted)">—</b> cost/rescan <span style="color:var(--muted)">(${esc(ce.model)})</span></span>`;
+  const sim = (ce.mode!=='real') ? ' if live' : '';
+  return `<span class="stat" title="Cost of one Rescan (LLM) with ${esc(ce.model)} — report + advisory (2 passes), ~${(ce.output_tokens||0).toLocaleString()} output tokens. BEFORE = feeding raw rows (${((ce.before&&ce.before.input_tokens)||0).toLocaleString()} in); AFTER = the distilled fusion payload (${((ce.after&&ce.after.input_tokens)||0).toLocaleString()} in). Tune 'LLM payload' + 'Output token cap'.">
+    <span style="color:var(--muted)">${_usd(before)}</span> → <b style="color:var(--warn,#d29922)">${_usd(after)}</b> /rescan${sim} <span style="color:var(--muted)">(${esc(ce.model)})</span></span>`;
+}
 function render(info,md,g){
   curInfo=info; curGraph=g;
   $('#llmbadge').textContent='LLM: '+(info.llm_enabled?'real':'simulated (no key)');
@@ -324,7 +337,7 @@ function render(info,md,g){
           <button onclick="doRescanLLM('${info.case_id}')" style="cursor:pointer;background:var(--acc);border-color:var(--acc)">✨ Rescan (LLM)</button>
         </span>
       </div>` : ''}
-      <div style="margin:6px 0 14px">${statSpans(g)}${tokenBadge(info.token_ab)}</div>
+      <div style="margin:6px 0 14px">${statSpans(g)}${tokenBadge(info.token_ab)}${costBadge(info.cost_estimate)}</div>
       <div class="tabs">
         <div class="tab ${tab==='config'?'on':''}" data-tab="config" onclick="setTab('config')">⚙ Configuration</div>
         <div class="tab ${tab==='report'?'on':''}" data-tab="report" onclick="setTab('report')">Report</div>
@@ -396,8 +409,11 @@ function renderConfig(info){
         <label>Time window — end <span style="color:var(--muted)">(empty = up to now)</span></label><input id="cf-end" value="${esc(tw.end||'')}" placeholder="empty = now / open"/>
         <label>Min severity</label>
         <select id="cf-sev">${['informational','low','medium','high','critical'].map(s=>opt(s,s,info.min_severity||'informational')).join('')}</select>
-        <label style="margin-top:8px">Entity limit <span style="color:var(--muted)">(graph cap)</span></label>
-        <input id="cf-maxent" type="number" min="100" max="20000" step="100" value="${info.max_entities||2500}" placeholder="2500" title="Max entities kept in the fused graph. Findings + hosts/IOCs/accounts/vulns are always kept; the rest fills by anomaly. Default 2500."/>
+        <label style="margin-top:8px">Entity limit <span style="color:var(--muted)">(graph size)</span></label>
+        <input id="cf-maxent" type="number" min="100" max="1000000" step="10000" value="${info.max_entities||500000}" placeholder="500000" title="Max entities kept in the fused graph you browse (Risk / Timeline / graph). Findings + hosts/IOCs/accounts/vulns are always kept; the rest fills by anomaly. The LLM report automatically uses a context-safe subset of this (the top entities that fit the model window), so a large graph never overflows the model. Default 500000."/>
+        <label style="margin-top:8px">Output token cap <span style="color:var(--muted)">(model response limit)</span></label>
+        ${(info.cost_estimate&&info.cost_estimate.model)?`<div style="font-size:11px;color:var(--muted);margin:1px 0 3px">${esc(info.cost_estimate.model)} max: <b style="color:var(--tx,#e6edf3)">${(info.cost_estimate.model_max_output_tokens||0).toLocaleString()}</b> tokens</div>`:`<div style="font-size:11px;color:var(--muted);margin:1px 0 3px">no model set — configure Settings ▸ Agentic</div>`}
+        <input id="cf-llmout" type="number" min="256" max="64000" step="256" value="${info.llm_max_output_tokens||(info.cost_estimate&&info.cost_estimate.model_max_output_tokens)||''}" placeholder="model max" title="Max tokens the model WRITES per LLM call (report + advisory). Defaults to the configured model's maximum; lower it to cut output cost (the pricier side of the bill)."/>
         <label style="margin-top:8px">Modules <span style="color:var(--muted)">— what fuses</span></label>
         <div class="modwarn">⚠ Enabling more modules can raise cost sharply — some artifacts (e.g. full hunts) produce huge output.</div>
         <div id="cf-modules">
@@ -506,7 +522,8 @@ async function _railCfg(){
     min_severity:$('#cf-sev').value, audience:$('#cf-aud').value,
     customer_name:$('#cf-cust').value, tlp:$('#cf-tlp').value,
     master_prompt:$('#cf-mp').value,
-    max_entities:parseInt($('#cf-maxent')?.value)||2500,
+    max_entities:parseInt($('#cf-maxent')?.value)||500000,
+    llm_max_output_tokens:parseInt($('#cf-llmout')?.value)||null,
     fusion_modules:[...document.querySelectorAll('#cf-modules input[data-mod]:checked')].map(c=>c.dataset.mod),
     excluded_hosts:[..._hostExc],            // hosts unchecked = dropped from report/LLM
     masking:{enabled:$('#cf-mask').checked, patterns:$('#cf-maskpat').value.split('\n').map(s=>s.trim()).filter(Boolean)}

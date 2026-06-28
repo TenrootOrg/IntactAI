@@ -15,14 +15,12 @@ DEFAULT_CONFIG = {
         "offline_llm": {
             "provider": "ollama",
             "model": "llama3.3:70b",
-            "url": "http://localhost:11434",
-            "batch_size": 100
+            "url": "http://localhost:11434"
         },
         "online_llm": {
             "provider": "openrouter",
             "api_key": "",
-            "model": "~anthropic/claude-haiku-latest",
-            "batch_size": 100
+            "model": "~anthropic/claude-haiku-latest"
         }
     }
 }

@@ -73,10 +73,26 @@ def _estimate_llm_cost(model: str, in_tokens: int, out_tokens: int) -> float:
         for k in _LLM_COST_PER_MTOK:
             if cand.startswith(k.lower()) and (best is None or len(k) > len(best)):
                 best = k
-    if best is None:
-        return 0.0
-    cin, cout = _LLM_COST_PER_MTOK[best]
-    return (in_tokens / 1_000_000.0) * cin + (out_tokens / 1_000_000.0) * cout
+    if best is not None:
+        cin, cout = _LLM_COST_PER_MTOK[best]
+        return (in_tokens / 1_000_000.0) * cin + (out_tokens / 1_000_000.0) * cout
+    # Fallback: the OpenRouter catalog carries per-token pricing for 300+ models
+    # (incl. DeepSeek, Qwen, Mistral, …) so any model the operator picks under
+    # Settings > Agentic > OpenRouter is priced without hardcoding. Pricing values
+    # are USD PER TOKEN (not per-million).
+    try:
+        from services.llm_catalogs.openrouter import load_catalog
+        for m in (load_catalog() or []):
+            if key in (str(m.get("id", "")).lower(), str(m.get("canonical_id", "")).lower()):
+                pr = m.get("pricing") or {}
+                pin = float(pr.get("prompt") or 0.0)
+                pout = float(pr.get("completion") or 0.0)
+                if pin or pout:
+                    return in_tokens * pin + out_tokens * pout
+                break
+    except Exception:
+        pass
+    return 0.0
 
 
 def _record_llm_usage(run_id, provider, model, response):

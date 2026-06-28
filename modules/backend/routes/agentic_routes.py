@@ -22,18 +22,15 @@ agentic_bp = Blueprint('agentic', __name__)
 DEFAULT_LLM_CONFIG = {
     "agentic": {
         "llm_mode": "online",
-        "max_concurrent_requests": 5,
         "offline_llm": {
             "provider": "ollama",
             "model": "llama3.3:70b",
-            "url": "http://localhost:11434",
-            "batch_size": 100
+            "url": "http://localhost:11434"
         },
         "online_llm": {
             "provider": "claude",
             "api_key": "",
-            "model": "claude-sonnet-4-6",
-            "batch_size": 100
+            "model": "claude-sonnet-4-6"
         }
     }
 }
@@ -181,6 +178,10 @@ def start_agentic_run():
             details={
                 "blueprint_id": blueprint_id,
                 "blueprint": blueprint_name,
+                # Runs from the agentic pipeline are agentic by definition (the
+                # run name doesn't carry the '[Agentic]' marker, so tag it
+                # explicitly for the 'Velociraptor (Agentic)' fusion module).
+                "is_agentic": True,
                 "client_ids": client_ids,
                 # Stashed so the report generator can read the same map
                 # without re-querying. Keys are client_ids; values are

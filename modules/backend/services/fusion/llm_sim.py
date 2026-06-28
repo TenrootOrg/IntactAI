@@ -111,12 +111,21 @@ def _llm_available() -> bool:
         return False
 
 
-def _real_llm(system_prompt: str, user_message: str, *, run_id=None) -> str:
+def _real_llm(system_prompt: str, user_message: str, *, run_id=None,
+              max_output_tokens=None) -> str:
     """Production path. The distilled graph is KB-sized, so this is cheap. Token
-    counts land on the run's llm_metrics automatically via call_llm's recorder."""
+    counts land on the run's llm_metrics automatically via call_llm's recorder.
+    `max_output_tokens` (the case 'Output token cap') overrides the global
+    agentic max_response_tokens for THIS call only — caps output cost per rescan."""
     from services.agentic.analyzers import call_llm
     from services.memory.pipeline import _llm_config_from_runtime
-    return call_llm(user_message, system_prompt, _llm_config_from_runtime(), run_id=run_id)
+    cfg = _llm_config_from_runtime()
+    if max_output_tokens:
+        cfg = dict(cfg)
+        ag = dict(cfg.get("agentic") or {})
+        ag["max_response_tokens"] = int(max_output_tokens)
+        cfg["agentic"] = ag
+    return call_llm(user_message, system_prompt, cfg, run_id=run_id)
 
 
 REPORT_SYSTEM_PROMPT = (
@@ -217,14 +226,18 @@ def _apply_mask(text, mask):
 def generate_report(graph, *, window=None, min_severity="informational",
                     initial_access=None, case_name="Case", run_id=None,
                     audience="both", language="en", master_prompt=None, mask=None,
-                    dispositions=None, validations=None, prefer_llm=True) -> str:
+                    dispositions=None, validations=None, prefer_llm=True,
+                    max_entities=None, budget_chars=None, max_output_tokens=None) -> str:
     """Case report. Real path = LLM narrative over distilled() + deterministic
     fact tables appended verbatim. `audience` (exec/technical/both) + `language`
     tailor the narrative (reusing the engagement directive); `master_prompt` is the
     operator's "remove X / focus Y" steering, prepended as ground truth. `mask` is an
     optional DataAnonymizer — when set, the distilled LLM payload AND the rendered
-    markdown are anonymized (customer-facing). Falls back to the deterministic narrator
-    on any failure (or when mode='simulated')."""
+    markdown are anonymized (customer-facing). `max_entities`/`budget_chars` size the
+    LLM payload (the case 'LLM payload' knob); None = the default fixed budget. Falls
+    back to the deterministic narrator on any failure (or when mode='simulated')."""
+    me = max_entities or budget.REPORT_MAX_ENTITIES
+    bc = budget_chars or budget.REPORT_BUDGET_CHARS
     # Use a real model only when asked (prefer_llm) AND one is configured. The FIRST
     # scan generates a fast, free, deterministic report (prefer_llm=False); the
     # premium LLM narrative is produced ONLY on an explicit Rescan/Regenerate
@@ -232,8 +245,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
     if prefer_llm and (_use_real() or _llm_available()):
         try:
             payload = render.distilled(graph, window=window, min_severity=min_severity,
-                                       max_entities=budget.REPORT_MAX_ENTITIES,
-                                       budget_chars=budget.REPORT_BUDGET_CHARS)
+                                       max_entities=me, budget_chars=bc)
             # give the model the analyst's triage so the narrative reflects it
             if dispositions:
                 payload["operator_dispositions"] = dispositions
@@ -254,7 +266,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
                 system = ("## OPERATOR CONTEXT (from interactive validation) — treat as "
                           "ground truth; apply the removals/focus described:\n"
                           f"{master_prompt.strip()}\n\n---\n\n") + system
-            narrative = _real_llm(system, payload_str, run_id=run_id)
+            narrative = _real_llm(system, payload_str, run_id=run_id,
+                                  max_output_tokens=max_output_tokens)
             facts = render.facts_md(graph, window=window, min_severity=min_severity,
                                     initial_access=initial_access,
                                     dispositions=dispositions, validations=validations)
@@ -336,17 +349,20 @@ def _simulated_analysis(graph, findings) -> dict:
 
 
 def analyze(graph, *, window=None, min_severity="informational", run_id=None,
-            dispositions=None) -> dict:
+            dispositions=None, max_entities=None, budget_chars=None,
+            max_output_tokens=None) -> dict:
     """ADVISORY analyst pass over the distilled graph: incident-grouping + grounded
     hypotheses. Reuses the agentic skills corpus for expertise. Never mutates
-    graph.findings. Real path is grounding-gated; simulated path is deterministic."""
+    graph.findings. Real path is grounding-gated; simulated path is deterministic.
+    `max_entities`/`budget_chars` size the LLM payload (the case 'LLM payload' knob)."""
+    me = max_entities or budget.REPORT_MAX_ENTITIES
+    bc = budget_chars or budget.REPORT_BUDGET_CHARS
     _, findings = render.scope(graph, window=window, min_severity=min_severity)
     if not _use_real():
         return _simulated_analysis(graph, findings)
     try:
         payload = render.distilled(graph, window=window, min_severity=min_severity,
-                                   max_entities=budget.REPORT_MAX_ENTITIES,
-                                   budget_chars=budget.REPORT_BUDGET_CHARS)
+                                   max_entities=me, budget_chars=bc)
         # select the curated DFIR macro playbook FROM THE GRAPH (reuse agentic skills)
         system = ANALYST_SYSTEM_PROMPT
         try:
@@ -366,7 +382,7 @@ def analyze(graph, *, window=None, min_severity="informational", run_id=None,
         if dispositions:
             user += ("\n\nOPERATOR DISPOSITIONS (already triaged — do not re-flag): "
                      + json.dumps(dispositions))
-        raw = _real_llm(system, user, run_id=run_id)
+        raw = _real_llm(system, user, run_id=run_id, max_output_tokens=max_output_tokens)
         return _ground(_parse_json(raw), graph)
     except Exception:  # noqa: BLE001 — advisory only; never break a case
         return _simulated_analysis(graph, findings)

@@ -275,6 +275,42 @@ def setup_velociraptor_connection():
         sys.stderr.flush()
         return None
 
+
+def get_hunt_description(hunt_id):
+    """Return a Velociraptor hunt's description string (or '' if unknown).
+
+    The agentic blueprints stamp every hunt/collector they generate with an
+    '[Agentic]' description (e.g. '[Agentic] Quick Wins Extended (15 artifacts)').
+    For an OFFLINE-COLLECTOR import that description is the only agentic-provenance
+    signal that survives the ZIP round-trip (the IntactAI blueprint_id does not),
+    so fusion reads it back here to decide whether the import is an agentic run."""
+    if not hunt_id:
+        return ""
+    try:
+        channel = setup_velociraptor_connection()
+        if not channel:
+            return ""
+        stub = api_pb2_grpc.APIStub(channel)
+        vql = ("SELECT hunt_description FROM hunts() "
+               f"WHERE hunt_id = '{hunt_id}' LIMIT 1")
+        req = api_pb2.VQLCollectorArgs(
+            max_wait=10, max_row=1,
+            Query=[api_pb2.VQLRequest(VQL=vql)],
+        )
+        for resp in stub.Query(req, timeout=15):
+            if resp.Response:
+                try:
+                    rows = json.loads(resp.Response)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(rows, list) and rows:
+                    return str(rows[0].get("hunt_description") or "")
+        return ""
+    except Exception as e:
+        print(f"[GRPC] get_hunt_description({hunt_id}) failed: {e}", flush=True)
+        return ""
+
+
 def create_velociraptor_hunt(
     artifact_name,
     description="",

@@ -387,6 +387,7 @@ def run_bestpractice_hunts():
                             "timeout_seconds": timeout_seconds,
                             "cpu_limit": cpu_limit,
                             "per_artifact": True,
+                            "is_agentic": "agentic" in (blueprint_name or "").lower(),
                         },
                     )
                     run_ids.append(rid)
@@ -437,7 +438,10 @@ def run_bestpractice_hunts():
         run_id = create_automation_run(
             automation_type="velociraptor_hunt",
             name=f"{blueprint_name} ({len(artifacts)} artifacts)",
-            details={"blueprint": blueprint_name, "artifact_count": len(artifacts), "expire_minutes": expire_minutes, "timeout_seconds": timeout_seconds, "cpu_limit": cpu_limit}
+            # Tag agentic-or-general from the blueprint name ('[Agentic] …' /
+            # 'Velociraptor Agentic: …'). The hunt fuses either way; this only
+            # decides 'Velociraptor (Agentic)' vs 'Velociraptor (All)' inclusion.
+            details={"blueprint": blueprint_name, "artifact_count": len(artifacts), "expire_minutes": expire_minutes, "timeout_seconds": timeout_seconds, "cpu_limit": cpu_limit, "is_agentic": "agentic" in (blueprint_name or "").lower()}
         )
         add_log_to_run(run_id, f"Starting hunt with {len(artifacts)} artifacts")
         add_log_to_run(run_id, f"Settings: Expire={expire_minutes}m, Timeout={timeout_seconds}s, CPU={cpu_limit}%")

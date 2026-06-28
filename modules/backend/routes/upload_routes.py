@@ -131,6 +131,26 @@ def _fuse_offline_import(import_result, upload_run_id):
         if hn:
             det["hostnames"] = hn
         det["offline_hunt_id" if hunt_id else "offline_flow_id"] = hunt_id or flow_id
+        # Capture the imported hunt's description ('[Agentic] …' for agentic
+        # collectors). It's the only agentic-provenance signal that survives the
+        # offline-collector ZIP round-trip — fusion reads it to classify this
+        # upload as an agentic run (see fusion.store._is_agentic_run).
+        if hunt_id:
+            try:
+                from services.velociraptor_service import get_hunt_description
+                hd = get_hunt_description(hunt_id)
+                if hd:
+                    det["hunt_description"] = hd
+                    add_log_to_run(upload_run_id, f"[Fusion] Imported hunt: {hd}")
+            except Exception:
+                hd = ""
+        else:
+            hd = ""
+        # Tag the import agentic-or-general from the imported hunt description
+        # ('[Agentic] …' for agentic collectors). The import ALWAYS fuses; this
+        # flag only decides whether it counts toward 'Velociraptor (Agentic)' vs
+        # only 'Velociraptor (All)' in the Case Analysis modules picker.
+        det["is_agentic"] = "agentic" in (hd or "").lower()
         run["details"] = det
         try:
             save_workflow(run)

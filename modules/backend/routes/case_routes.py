@@ -299,7 +299,12 @@ def get_case(case_id):
                     "counts": store.graph_counts(case_id),
                     # entity-cap textbox + module picker (velociraptor default;
                     # memory optional; timesketch/cve/cloud disabled for now)
+                    # Single entity knob: sizes the stored graph AND the LLM payload.
                     "max_entities": d.get("max_entities") or store.DEFAULT_MAX_ENTITIES,
+                    # cap on tokens the model WRITES per call (None = model default).
+                    "llm_max_output_tokens": d.get("llm_max_output_tokens"),
+                    # estimated USD cost of one Rescan (LLM) with the configured model.
+                    "cost_estimate": store.estimate_rescan_cost(d),
                     "fusion_modules": store.normalize_modules(d.get("fusion_modules")),
                     "modules_catalog": store.fusion_modules_catalog(),
                     # Staleness split: data (new runs not in the graph) drives the

@@ -21,7 +21,8 @@ DEFAULT_CASE_NAME = "Default"
 SYSTEM_CASE_NAME = "System"
 
 # Per-case storage cap on the fused graph (operator-tunable via the config rail).
-DEFAULT_MAX_ENTITIES = 2500
+DEFAULT_MAX_ENTITIES = 500000       # entity limit default (stored graph; LLM auto-takes a context-safe subset)
+MAX_GRAPH_ENTITIES = 1_000_000      # sanity ceiling only (a graph never has this many)
 
 # Fusion modules: which run types each selectable module groups.
 #   velociraptor_agentic = runs from Velociraptor *Agentic* blueprints (the
@@ -82,6 +83,179 @@ def _enabled_run_types(d):
     for m in normalize_modules(d.get("fusion_modules")):
         allowed |= FUSION_MODULE_TYPES.get(m, set())
     return allowed
+
+
+_VELOCIRAPTOR_TYPES = {"velociraptor_collection", "velociraptor_upload", "velociraptor_hunt"}
+
+
+def _is_agentic_run(run) -> bool:
+    """True when a Velociraptor run came from an AGENTIC blueprint.
+
+    Every Velociraptor run is fused regardless; this only TAGS it so the Case
+    Analysis 'Modules' picker can include 'Velociraptor (Agentic)' (agentic only)
+    vs 'Velociraptor (All)' (agentic + general).
+
+    Prefer the explicit details['is_agentic'] flag stamped at run-creation /
+    import time. Fall back to the '[Agentic]' marker the agentic blueprints put
+    on every hunt/collector description (e.g. '[Agentic] Quick Wins Extended') —
+    visible in the run name, blueprint label, or captured hunt description — so
+    runs created before tagging existed still classify correctly. (Neither run
+    TYPE nor a blueprint_id is reliable: imports carry no blueprint_id and hunts
+    store only a name; for imports the description is captured at import time via
+    upload_routes._fuse_offline_import -> velociraptor_service.get_hunt_description
+    into details['hunt_description'].)"""
+    det = run.get("details") or {}
+    if det.get("is_agentic") is not None:
+        return bool(det.get("is_agentic"))
+    hay = " ".join(str(x) for x in (
+        run.get("name"), det.get("blueprint"),
+        det.get("hunt_description"), det.get("description"),
+    ) if x).lower()
+    return "agentic" in hay
+
+
+def _run_passes_gate(run, d) -> bool:
+    """Whether `run` belongs to at least one of the case's enabled fusion modules.
+
+    The Velociraptor split is by AGENTIC PROVENANCE (the '[Agentic]' description),
+    NOT by run type:
+      - velociraptor_agentic -> Velociraptor runs (collection/upload/hunt) whose
+        description/name is tagged Agentic.
+      - velociraptor_all     -> every Velociraptor run, agentic or not.
+    Non-Velociraptor modules (memory/cve/aws/azure/timesketch) gate on type as
+    before. Replaces the old pure-type gate (`automation_type in
+    _enabled_run_types`) so an agentic HUNT now fuses under 'Velociraptor
+    (Agentic)' and a non-agentic collection/import no longer does."""
+    atype = run.get("automation_type")
+    mods = set(normalize_modules(d.get("fusion_modules")))
+    if atype in _VELOCIRAPTOR_TYPES:
+        if "velociraptor_all" in mods:
+            return True
+        if "velociraptor_agentic" in mods or "velociraptor" in mods:
+            return _is_agentic_run(run)
+        return False
+    allowed = set()
+    for m in mods:
+        if m in ("velociraptor_agentic", "velociraptor_all", "velociraptor"):
+            continue
+        allowed |= FUSION_MODULE_TYPES.get(m, set())
+    return atype in allowed
+
+
+# Per-entity char allowance used to scale the LLM char budget with the entity
+# count, so a bigger 'LLM payload' setting isn't immediately clawed back by the
+# distiller's char step-down. ~ REPORT_BUDGET_CHARS / REPORT_MAX_ENTITIES.
+_LLM_CHARS_PER_ENTITY = 550
+# Safety ceiling on the LLM payload so a large Entity limit can't overflow the
+# model context — distilled() trims entities to fit this. ~100k tokens, which
+# leaves headroom for output inside a 128k-context model (the common floor).
+_LLM_MAX_BUDGET_CHARS = 400_000
+
+
+def _llm_payload_budget(d):
+    """LLM payload size, derived from the case's 'Entity limit' (max_entities) but
+    BOUNDED to a context-safe size. The Entity limit can be huge (it sizes the
+    stored graph you browse); the LLM only ever receives the top-N entities that
+    fit ~_LLM_MAX_BUDGET_CHARS, so a 500k graph cap can't overflow the model
+    context. For small graph caps the LLM payload tracks the limit 1:1; above the
+    context-safe cap it plateaus. Returns (llm_max_entities, budget_chars)."""
+    n = d.get("max_entities")
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        n = DEFAULT_MAX_ENTITIES
+    n = max(20, n)
+    safe_cap = _LLM_MAX_BUDGET_CHARS // _LLM_CHARS_PER_ENTITY   # entities that fit the context
+    return min(n, safe_cap), _LLM_MAX_BUDGET_CHARS
+
+
+def _llm_output_cap(d):
+    """The case 'Output token cap' — max tokens the model WRITES per LLM call
+    (the pricey side of the bill). None = use the model/global default."""
+    n = d.get("llm_max_output_tokens")
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return None
+    return max(256, min(n, 64000)) if n else None
+
+
+# Rescan-cost model: a rescan makes 2 LLM passes (report + advisory), each gets
+# the distilled payload (~fusion_approx tokens) + a small system prompt, and
+# writes up to the output cap. All approximate — for a pre-spend sanity number.
+_RESCAN_LLM_CALLS = 2
+_SYS_PROMPT_TOKENS = 3000
+_DEFAULT_OUTPUT_TOKENS = 4000
+
+
+def _configured_fusion_model():
+    """(model, provider, fusion_mode) read from the agentic LLM config — the same
+    keys call_llm uses. Returns (None, None, 'simulated') when nothing is set."""
+    try:
+        from services.storage.config_store import load_frontend_config
+        ac = (load_frontend_config() or {}).get("agentic", {}) or {}
+    except Exception:
+        return None, None, "simulated"
+    fusion_mode = str(ac.get("fusion_llm_mode", "simulated")).lower()
+    if str(ac.get("llm_mode", "online")).lower() == "offline":
+        off = ac.get("offline_llm", {}) or {}
+        return off.get("model"), "ollama", fusion_mode
+    on = ac.get("online_llm", {}) or {}
+    model = on.get("custom_model") if on.get("model") == "custom" else on.get("model")
+    return model, on.get("provider", "claude"), fusion_mode
+
+
+def _model_max_output(model, provider):
+    """The configured model's max output tokens (catalog/alias resolved). This is
+    the DEFAULT output cap — i.e. let the model write up to its own ceiling unless
+    the operator sets a smaller cap. Falls back to _DEFAULT_OUTPUT_TOKENS."""
+    try:
+        from services.agentic.analyzers._llm import get_model_max_output_tokens
+        mx = get_model_max_output_tokens(model or "", provider or "claude")
+        if mx:
+            return int(mx)
+    except Exception:
+        pass
+    return _DEFAULT_OUTPUT_TOKENS
+
+
+def estimate_rescan_cost(d):
+    """Estimate the USD cost of one Rescan (LLM), priced LIVE from the configured
+    model's catalog pricing. Returns BOTH sides of the fusion ontology:
+
+      - before: feeding the RAW rows to the LLM (token_ab.raw_approx)
+      - after:  feeding the distilled fusion payload (token_ab.fusion_approx)
+
+    so the operator sees the dollar saving the ontology buys (the $ twin of the
+    'token cut'). In simulated mode it's the projected cost IF run live. All values
+    0.0 when no model/pricing is resolvable."""
+    try:
+        from services.agentic.analyzers._llm import _estimate_llm_cost
+    except Exception:
+        return {}
+    ab = d.get("token_ab") or {}
+    raw_in = int(ab.get("raw_approx") or 0)
+    fused_in = int(ab.get("fusion_approx") or 0)
+    model, provider, mode = _configured_fusion_model()
+    calls = _RESCAN_LLM_CALLS
+    # Output defaults to the MODEL'S MAX (the operator can cap it lower).
+    model_max_out = _model_max_output(model, provider)
+    out_per_call = _llm_output_cap(d) or model_max_out
+    out_tokens = out_per_call * calls
+
+    def _side(in_one):
+        in_tokens = (in_one + _SYS_PROMPT_TOKENS) * calls
+        return {"input_tokens": in_tokens,
+                "usd": round(_estimate_llm_cost(model or "", in_tokens, out_tokens), 4)}
+
+    before, after = _side(raw_in), _side(fused_in)
+    return {"model": model, "provider": provider, "mode": mode,
+            "output_tokens": out_tokens,
+            "model_max_output_tokens": model_max_out,   # UI uses this as the cap default
+            "priced": before["usd"] > 0 or after["usd"] > 0,
+            "before": before, "after": after,
+            "per_rescan_usd": after["usd"],
+            "savings_usd": round(before["usd"] - after["usd"], 2)}
 
 
 def _env_key_from_members(members) -> str | None:
@@ -619,13 +793,12 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         # (default = velociraptor only). Disabled modules' runs stay tagged
         # members but contribute nothing to the graph. Drop the filtered runs
         # from `members` too so run_ids/baseline reflect what was actually fused.
-        allowed = _enabled_run_types(d)
         contributions, kept = [], []
         for rid in members:
             run = ws.get_automation_run(rid)
             if not run:
                 continue
-            if run.get("automation_type") not in allowed:
+            if not _run_passes_gate(run, d):
                 continue
             kept.append(rid)
             contributions.append(_contribution_for_run(run, log=log))
@@ -676,6 +849,8 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         if report_members is None:
             report_members = d.get("fused_run_ids")  # legacy graphs: best-effort
     else:
+        llm_ent, llm_chars = _llm_payload_budget(d)
+        llm_out = _llm_output_cap(d)
         report = llm_sim.generate_report(
             gv, window=window, min_severity=min_sev,
             initial_access=d.get("initial_access_estimate"),
@@ -684,11 +859,14 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
             master_prompt=d.get("master_prompt"), mask=mask,
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
-            prefer_llm=False)   # first scan = fast, free, deterministic; LLM on Rescan
+            prefer_llm=False,   # first scan = fast, free, deterministic; LLM on Rescan
+            max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out)
         # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
         # SEPARATELY from the deterministic findings; fed prior operator dispositions.
         analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
-                                   dispositions=d.get("dispositions") or None)
+                                   dispositions=d.get("dispositions") or None,
+                                   max_entities=llm_ent, budget_chars=llm_chars,
+                                   max_output_tokens=llm_out)
         report_members = list(members)   # report now reflects exactly these members
     # customer-confirmation checklist — generate once (preserve operator decisions on re-fuse)
     checklist = d.get("disposition_checklist")
@@ -708,9 +886,9 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
             run = ws.get_automation_run(rid)
             if run:
                 raw_approx += _raw_payload_size(run)
+        _le, _lc = _llm_payload_budget(d)
         distilled = render.distilled(g, window=window, min_severity=min_sev,
-                                     max_entities=budget.REPORT_MAX_ENTITIES,
-                                     budget_chars=budget.REPORT_BUDGET_CHARS)
+                                     max_entities=_le, budget_chars=_lc)
         fusion_approx = budget.approx_tokens(json.dumps(distilled))
         token_ab = {"raw_approx": raw_approx, "fusion_approx": fusion_approx,
                     "reduction_ratio": round(raw_approx / max(fusion_approx, 1), 1)}
@@ -754,11 +932,10 @@ def stale_member_runs(case_id, d=None) -> list:
     # Only runs whose MODULE is enabled count as "new data to fold in" — a disabled
     # module's runs can never enter the graph via Refusion, so flagging them as
     # stale is misleading (the banner would prompt a Refusion that does nothing).
-    allowed = _enabled_run_types(d)
     ws = _ws()
     out = []
     for r in ws.get_automation_runs_by_case(case_id):
-        if (r.get("automation_type") in allowed
+        if (_run_passes_gate(r, d)
                 and r.get("status") in ("completed", "success")
                 and r.get("run_id") not in fused):
             out.append(r.get("run_id"))
@@ -778,11 +955,10 @@ def report_stale_runs(case_id, d=None) -> list:
     if rep is None:
         return []
     rep = set(rep)
-    allowed = _enabled_run_types(d)   # only enabled-module runs can reach the report
     ws = _ws()
     out = []
     for r in ws.get_automation_runs_by_case(case_id):
-        if (r.get("automation_type") in allowed
+        if (_run_passes_gate(r, d)   # only enabled-module runs can reach the report
                 and r.get("status") in ("completed", "success")
                 and r.get("run_id") not in rep):
             out.append(r.get("run_id"))
@@ -974,6 +1150,8 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     window = d.get("time_window") or None
     min_sev = d.get("min_severity", "informational")
     gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
+    llm_ent, llm_chars = _llm_payload_budget(d)
+    llm_out = _llm_output_cap(d)
     report = llm_sim.generate_report(
         gv, window=window, min_severity=min_sev,
         initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
@@ -981,9 +1159,12 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
         master_prompt=d.get("master_prompt"),
         dispositions=d.get("dispositions") or None,
         validations=d.get("timeline_validations") or None,
-        prefer_llm=use_llm)
+        prefer_llm=use_llm, max_entities=llm_ent, budget_chars=llm_chars,
+        max_output_tokens=llm_out)
     analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
-                               dispositions=d.get("dispositions") or None)
+                               dispositions=d.get("dispositions") or None,
+                               max_entities=llm_ent, budget_chars=llm_chars,
+                               max_output_tokens=llm_out)
     _merge_case_details(case_id, {"report_md": report, "analysis": analysis})
     log_case_event(case_id, "Regenerate report", "ok", "report rebuilt from current case state")
     return {"report_md": report, "audience": d.get("audience", "both")}
@@ -1032,7 +1213,13 @@ def set_analysis_config(case_id, cfg) -> dict:
         patch["excluded_hosts"] = [h for h in (cfg.get("excluded_hosts") or []) if h]
     if "max_entities" in cfg:              # operator cap on the stored graph
         try:
-            patch["max_entities"] = max(100, min(int(cfg["max_entities"]), 20000))
+            patch["max_entities"] = max(100, min(int(cfg["max_entities"]), MAX_GRAPH_ENTITIES))
+        except (TypeError, ValueError):
+            pass
+    if "llm_max_output_tokens" in cfg:     # cap on tokens the model WRITES per call
+        try:
+            v = int(cfg["llm_max_output_tokens"])
+            patch["llm_max_output_tokens"] = max(256, min(v, 64000)) if v else None
         except (TypeError, ValueError):
             pass
     if "fusion_modules" in cfg:            # which modules fuse (only available ones honored)
@@ -1106,6 +1293,9 @@ def case_members(case_id) -> list:
             os_name = "unknown"
         out.append({"run_id": rid, "type": atype, "host": host, "os": os_name,
                     "host_scoped": host_scoped, "status": r.get("status"),
+                    # agentic-vs-general tag (Velociraptor runs only) so the UI can
+                    # show which runs the 'Velociraptor (Agentic)' module includes.
+                    "is_agentic": _is_agentic_run(r) if atype in _VELOCIRAPTOR_TYPES else None,
                     "included": (inc_set is None) or (rid in inc_set)})
     return out
 

@@ -8,7 +8,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 
 from pyvelociraptor import api_pb2
 from pyvelociraptor import api_pb2_grpc
@@ -49,9 +49,6 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
     llm_futures = {}  # future -> artifact
     total_rows_before_filter = 0  # Track raw row count before any filtering
 
-    # Get max concurrent requests from config
-    max_concurrent = llm_config.get('agentic', {}).get('max_concurrent_requests', 5)
-
     # Create time filter function (if enabled)
     time_filter_func = None
     if time_filter and time_filter.get('enabled'):
@@ -86,12 +83,8 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
     add_log_to_run(run_id, f"[Velociraptor] Streaming mode: polling {len(artifacts)} artifacts across {len(active_flows)} clients", "info")
     add_log_to_run(run_id, f"[Pipeline] Streaming analysis enabled - LLM starts as artifacts complete", "info")
 
-    # Thread pool for parallel LLM analysis
-    executor = ThreadPoolExecutor(max_workers=max_concurrent)
-
     # Register cleanup callbacks for stop support
     from services.workflow_service import register_cleanup
-    register_cleanup(run_id, lambda: executor.shutdown(wait=False, cancel_futures=True))
     register_cleanup(run_id, lambda: cancel_collections(run_id, active_flows))
 
     def _wf_log(msg, level="info"):
@@ -504,7 +497,6 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
     finally:
         if channel:
             channel.close()
-        executor.shutdown(wait=False)
 
     # Return whether we timed out (vs completed naturally)
     timed_out = elapsed >= total_seconds
