@@ -386,6 +386,23 @@ def is_populated(path: Optional[Path] = None) -> bool:
         return False
 
 
+def has_cves(path: Optional[Path] = None) -> bool:
+    """True iff the local NVD database exists and holds at least one CVE.
+
+    The cheap O(1) signal behind CVE Scan's "installed" state: CVE Scan has no
+    container, so being ready/installed simply means its database is populated —
+    a scan can't run without it. Uses LIMIT 1 (not count(*)) so it's safe to
+    call on every status poll. Returns False on a missing/locked/corrupt DB."""
+    db = path or _DEFAULT_DB
+    if not db.exists():
+        return False
+    try:
+        with sqlite3.connect(str(db)) as con:
+            return con.execute("SELECT 1 FROM cve LIMIT 1").fetchone() is not None
+    except sqlite3.Error:
+        return False
+
+
 def db_stats(path: Optional[Path] = None) -> Dict[str, Any]:
     """For the maintenance UI / status surface."""
     db = path or _DEFAULT_DB

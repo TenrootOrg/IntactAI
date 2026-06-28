@@ -118,7 +118,21 @@ def get_container_status():
         try:
             from config import is_module_enabled
             for module in ON_DEMAND_MODULES:
-                results[module] = 'online' if is_module_enabled(module) else 'not_installed'
+                if not is_module_enabled(module):
+                    results[module] = 'not_installed'
+                elif module == 'cve_scan':
+                    # CVE Scan has no container, so "installed" can't mean a
+                    # running process — it means the local NVD database actually
+                    # holds CVEs (a scan can't run otherwise). Reflect the DB
+                    # state, not just the config flag, so the dashboard/sidebar
+                    # show CVE Scan as available only once its data is present.
+                    try:
+                        from services.cve_scan.local_db import has_cves
+                        results[module] = 'online' if has_cves() else 'not_installed'
+                    except Exception:
+                        results[module] = 'not_installed'
+                else:
+                    results[module] = 'online'
         except Exception:
             # If config load fails for any reason, conservatively report
             # 'not_installed' so the sidebar doesn't show modules that
