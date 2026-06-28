@@ -209,7 +209,9 @@ else
     # clients pin the CA not the hostname), then restart so the entrypoint
     # regenerates client.config.yaml + api.config.yaml and repacks installers.
     log_info "Bringing Velociraptor up so its config volume is available…"
-    ( cd "${SCRIPT_DIR}/modules/velociraptor" && docker compose up -d ) >/dev/null 2>&1
+    # --pull never: images are already loaded post-install; never reach a
+    # registry, so this works on air-gapped hosts.
+    ( cd "${SCRIPT_DIR}/modules/velociraptor" && docker compose up -d --pull never ) >/dev/null 2>&1
 
     velo_cfg="/velociraptor/server.config.yaml"
     log_info "Waiting for Velociraptor server config…"
@@ -260,9 +262,9 @@ else
     # CSRF on the new IP. `up -d --force-recreate` re-reads the updated .env.
     if docker ps -a --format '{{.Names}}' | grep -q '^intact_volweb_backend$'; then
         log_info "Recreating VolWeb so its CSRF origins pick up $NEW_IP…"
-        ( cd "${SCRIPT_DIR}/modules/volweb" && docker compose up -d --force-recreate ) >/dev/null 2>&1 \
+        ( cd "${SCRIPT_DIR}/modules/volweb" && docker compose up -d --force-recreate --pull never ) >/dev/null 2>&1 \
             && log_success "  VolWeb recreated" \
-            || log_warn "  VolWeb recreate failed — re-run: (cd modules/volweb && docker compose up -d --force-recreate)"
+            || log_warn "  VolWeb recreate failed — re-run: (cd modules/volweb && docker compose up -d --force-recreate --pull never)"
     fi
 
     # Reload every TLS cert consumer so it serves the freshly-rotated cert:
