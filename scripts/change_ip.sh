@@ -41,7 +41,7 @@ Usage: sudo ./scripts/change_ip.sh <NEW_IP> [-y|--yes]
 Repoint the Intact.AI platform to a new IP after install.
 
 Arguments:
-  <NEW_IP>      The new IPv4 address (e.g. 192.168.120.11)
+  <NEW_IP>      The new IPv4 address (e.g. 192.168.120.10)
 
 Options:
   -y, --yes     Don't prompt for confirmation (non-interactive)
