@@ -218,7 +218,7 @@ velociraptor:
 
   - id: agentic_quick_wins_extended
     name: "Velociraptor Agentic: Quick Wins Extended"
-    description: "Extended detection with program execution, C2, and browser artifacts (14 artifacts)"
+    description: "Extended detection with program execution, C2, defense-evasion, and browser artifacts (18 artifacts)"
     is_default: true
     settings:
       hunt_expiry: 720
@@ -242,6 +242,11 @@ velociraptor:
       # C2/Network
       - DetectRaptor.Windows.Detection.NamedPipes
       - DetectRaptor.Windows.Detection.Webhistory
+      # Defense evasion / priv-esc (DLL sideload, BYOVD, bootkit)
+      - DetectRaptor.Windows.Detection.HijackLibsMFT
+      - DetectRaptor.Windows.Detection.HijackLibsEnv
+      - DetectRaptor.Windows.Detection.LolDriversMalicious
+      - DetectRaptor.Windows.Detection.Bootloaders
       # Context
       - Windows.System.UntrustedBinaries
       - Windows.Forensics.SAM
