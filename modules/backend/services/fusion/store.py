@@ -645,9 +645,13 @@ def _velo_hunt_contribution(rid, det, log=None):
     the source 'velociraptor' (no agent ran). Empty if the hunt has no rows yet —
     rescan after clients report."""
     hunt_id = det.get("hunt_id")
-    if not hunt_id:
+    flow_id = det.get("flow_id")
+    client_id = det.get("client_id")
+    # A hunt export stores hunt_id; a single-host offline import stores flow_id +
+    # client_id (no hunt). Support both — pull by whichever locator is present.
+    if not hunt_id and not (flow_id and client_id):
         if log:
-            log(f"hunt run {rid} has no hunt_id — cannot fuse", "warning")
+            log(f"run {rid} has no hunt_id or flow/client_id — cannot fuse", "warning")
         return [], []
     # ALWAYS pull live so an in-flight hunt shows its current partial data and each
     # rescan picks up whatever has arrived since — no need to wait for the hunt to
@@ -658,7 +662,8 @@ def _velo_hunt_contribution(rid, det, log=None):
         from services.agentic.collectors import get_existing_collection_results
         from services.agentic.reports import persist_pipeline_artifacts
         cd, _arts, client_info = get_existing_collection_results(
-            rid, flow_id=None, hunt_id=hunt_id, client_ids=None)
+            rid, flow_id=(None if hunt_id else flow_id),
+            hunt_id=hunt_id, client_ids=(None if hunt_id else [client_id]))
         if cd:
             try:
                 persist_pipeline_artifacts(rid, {}, cd)      # fallback snapshot

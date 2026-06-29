@@ -174,6 +174,22 @@ SUPPORTED_ARTIFACTS = frozenset({
     "windows.forensics.sam",
     "windows.eventlogs.condensedaccountusage",
     "windows.kerberos.goldentickettriage",
+    # --- Linux (agentic_quick_wins_linux) ---
+    "linux.sys.pslist",
+    "generic.system.pstree",
+    "linux.network.netstatenriched",
+    "linux.sys.services",
+    "linux.sys.crontab",
+    "linux.ssh.authorizedkeys",
+    "linux.sys.suid",
+    "linux.sys.getcap",
+    "linux.syslog.sshlogin",
+    "linux.users.rootusers",
+    "linux.persistence.ldpreload",
+    "linux.detection.memfd",
+    "linux.detection.sshkeyfilecmd",
+    "linux.forensics.environmentvariables",
+    "linux.detection.incorrectpermissions",
 })
 
 
@@ -196,6 +212,19 @@ def _scalar(v):
                 seen.append(s)
         return seen[0] if seen else ""
     return str(v).strip()
+
+
+_LINUX_SUSP = ("curl", "wget", "bash -i", "/dev/tcp", "base64", " nc ", "ncat", "|sh", "| sh",
+               "|bash", "| bash", "ld_preload", "ld_library_path", "/tmp/", "/dev/shm",
+               "python -c", "python3 -c", "perl -e", "chmod +x", "history -c", "/var/tmp/")
+
+
+def _linux_susp(text):
+    """True if a Linux command/script line looks attacker-ish (download-and-run,
+    reverse shell, in-temp execution, env-var hijack, history wipe). Used to grade
+    cron/service/env-var/shell rows so benign entries stay below the severity floor."""
+    t = str(text or "").lower()
+    return any(k in t for k in _LINUX_SUSP)
 
 
 def _account_eid(asset, domain, user):
@@ -303,6 +332,152 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     ents.append(_ent(yid, "yarahit", str(rule), asset, run_id, loc,
                                      anomaly=50, first=ts, rule=rule))
                     rels.append(Relationship(yid, eid, "matched", sources=[MODULE], ts=ts))
+
+            # ---- Linux agentic artifacts (quick_wins_linux) -----------------
+            # Placed before the generic Windows branches so e.g. linux.sys.services
+            # doesn't fall into the Windows 'services' handler. Pslist/Pstree/Netstat
+            # are intentionally NOT here — they reuse the generic process/network
+            # handlers below.
+            elif ab == "linux.persistence.ldpreload":
+                content = str(F.get(r, "Content", default="") or "").strip()
+                path = F.get(r, "OSPath", default="/etc/ld.so.preload")
+                eid = keys.event_id(asset, f"{asset}:{path}", f"ldpreload:{content[:60]}")
+                ents.append(_ent(eid, "event", f"LD_PRELOAD persistence: {content[:55]}", asset,
+                                 run_id, loc, anomaly=70,
+                                 first=keys.norm_ts(F.get(r, "Mtime", "Ctime", default=ts)),
+                                 artifact=artifact, flags=["detection", "persistence", "linux"],
+                                 title="LD_PRELOAD persistence", path=str(path), content=content[:200]))
+
+            elif ab == "linux.detection.sshkeyfilecmd":
+                cmd = F.get(r, "CMD", "Command", default="")
+                path = F.get(r, "OSPath", default=None)
+                eid = keys.event_id(asset, f"{asset}:{path}", f"sshcmd:{str(cmd)[:50]}")
+                ents.append(_ent(eid, "event", f"SSH forced-command backdoor: {str(cmd)[:45]}", asset,
+                                 run_id, loc, anomaly=70, first=ts, artifact=artifact,
+                                 flags=["detection", "persistence", "ssh", "linux"],
+                                 title="SSH authorized_keys command= backdoor",
+                                 path=str(path) if path else None, command=str(cmd)))
+
+            elif ab == "linux.detection.incorrectpermissions":
+                path = F.get(r, "OSPath", default="?")
+                mism = F.get(r, "Mismatch", default="")
+                eid = keys.event_id(asset, f"{asset}:{path}", f"perm:{mism}")
+                ents.append(_ent(eid, "event", f"Permission anomaly: {str(path)[:45]} ({mism})", asset,
+                                 run_id, loc, anomaly=45,
+                                 first=keys.norm_ts(F.get(r, "Ctime", "Mtime", default=ts)),
+                                 artifact=artifact, flags=["detection", "linux"],
+                                 title="File permission anomaly", path=str(path), mismatch=str(mism)))
+
+            elif ab == "linux.forensics.environmentvariables":
+                line = str(F.get(r, "Line", default="") or "")
+                sev = _linux_susp(line)
+                eid = keys.event_id(asset, f"{asset}:{F.get(r, 'OSPath', default='')}", f"envvar:{line[:60]}")
+                ents.append(_ent(eid, "event", f"shell-config: {line[:55]}", asset, run_id, loc,
+                                 anomaly=60 if sev else 5, first=ts, artifact=artifact,
+                                 flags=(["detection", "persistence", "linux"] if sev else ["linux"]),
+                                 title="Shell-config env persistence" if sev else None,
+                                 line=line[:200], path=F.get(r, "OSPath", default=None)))
+
+            elif ab == "linux.sys.crontab":
+                cmd = str(F.get(r, "Command", default="") or "")
+                sev = _linux_susp(cmd)
+                cu = F.get(r, "User", default=None); cpath = F.get(r, "Path", default=None)
+                eid = keys.event_id(asset, f"{asset}:{cpath}:{cu}", f"cron:{cmd[:50]}")
+                ents.append(_ent(eid, "event", f"cron: {cmd[:55]}", asset, run_id, loc,
+                                 anomaly=60 if sev else 4, first=ts, artifact=artifact,
+                                 flags=(["detection", "persistence", "cron", "linux"] if sev
+                                        else ["cron", "linux"]),
+                                 title="Suspicious cron job" if sev else None,
+                                 command=cmd[:200], user=str(cu) if cu else None,
+                                 path=str(cpath) if cpath else None))
+
+            elif ab == "linux.sys.services":
+                name = F.get(r, "Name", "Id", "OSPath", default=artifact)
+                execs = str(F.get(r, "ExecStart", "Exec", "Fragment", default="") or "")
+                sev = _linux_susp(execs) or _linux_susp(str(name))
+                eid = keys.event_id(asset, f"{asset}:{name}", f"svc:{name}")
+                ents.append(_ent(eid, "event", f"systemd service: {str(name)[:45]}", asset, run_id,
+                                 loc, anomaly=55 if sev else 3, first=ts, artifact=artifact,
+                                 flags=(["detection", "persistence", "linux"] if sev else ["linux"]),
+                                 title="Suspicious systemd service" if sev else None,
+                                 service=str(name), exec=execs[:200] if execs else None))
+
+            elif ab == "linux.users.rootusers":
+                uname = F.get(r, "User", "Name", default=None)
+                uid = F.get(r, "Uid", "UID", default=None)
+                aeid, d, u = _account_eid(asset, None, uname)
+                if aeid:
+                    rogue = str(uid) == "0" and str(uname).lower() != "root"
+                    ents.append(_ent(aeid, "account", (u or str(uname)), asset, run_id, loc,
+                                     anomaly=60 if rogue else 1, first=ts, user=u,
+                                     uid=str(uid) if uid is not None else None,
+                                     home=F.get(r, "Homedir", default=None),
+                                     shell=F.get(r, "Shell", default=None),
+                                     flags=(["detection", "privilege_escalation", "linux"] if rogue else None)))
+
+            elif ab == "linux.syslog.sshlogin":
+                ip = F.get(r, "IP", default=None)
+                res = str(F.get(r, "Result", default="")).lower()
+                uname = F.get(r, "AttemptedUser", "User", default=None)
+                aeid, d, u = _account_eid(asset, None, uname)
+                if aeid:
+                    ents.append(_ent(aeid, "account", (u or str(uname)), asset, run_id, loc,
+                                     first=ts, user=u))
+                    if res == "accepted":
+                        rels.append(Relationship(aeid, asset, "authenticated", sources=[MODULE], ts=ts,
+                                    attrs={"src_ip": ip, "result": res,
+                                           "method": F.get(r, "Method", default=None)}))
+                if ip and keys.classify_indicator(ip) == "ip":
+                    iid = keys.ioc_id("ip", ip)
+                    ents.append(_ent(iid, "ioc", str(ip), asset, run_id, loc,
+                                     anomaly=1, ioc_kind="ip", first=ts))
+
+            elif ab == "linux.sys.suid":
+                path = str(F.get(r, "OSPath", *F.PATH, default="?"))
+                std = any(path.startswith(p) for p in ("/usr/bin/", "/bin/", "/usr/sbin/",
+                                                       "/sbin/", "/usr/lib/", "/lib/"))
+                eid = keys.event_id(asset, f"{asset}:{path}", f"suid:{path}")
+                ents.append(_ent(eid, "event", f"SUID: {path[:50]}", asset, run_id, loc,
+                                 anomaly=60 if not std else 2,
+                                 first=keys.norm_ts(F.get(r, "Mtime", default=ts)), artifact=artifact,
+                                 flags=(["detection", "privilege_escalation", "linux"] if not std
+                                        else ["linux"]),
+                                 title="SUID binary in non-standard path" if not std else None, path=path))
+
+            elif ab == "linux.sys.getcap":
+                path = str(F.get(r, "OSPath", *F.PATH, default="?"))
+                cap = F.get(r, "Capabilities", "Cap", "Caps", default="")
+                eid = keys.event_id(asset, f"{asset}:{path}", f"cap:{cap}")
+                ents.append(_ent(eid, "event", f"capability {str(cap)[:30]}: {path[:40]}", asset,
+                                 run_id, loc, anomaly=45, first=ts, artifact=artifact,
+                                 flags=["detection", "privilege_escalation", "linux"],
+                                 title="File capability (privesc vector)", path=path, capability=str(cap)))
+
+            elif ab == "linux.detection.memfd":
+                pid = F.get(r, *F.PID)
+                name = F.get(r, *F.PROC_NAME) or "?"
+                eid = keys.event_id(asset, f"{asset}:{pid}", f"memfd:{name}")
+                ents.append(_ent(eid, "event", f"in-memory exec (memfd): {name}", asset, run_id, loc,
+                                 anomaly=80, first=ts, artifact=artifact,
+                                 flags=["detection", "defense_evasion", "linux"],
+                                 title="In-memory execution (memfd_create)",
+                                 pid=str(pid) if pid is not None else None, name=name))
+
+            elif ab == "linux.ssh.authorizedkeys":
+                opts = F.get(r, "options", default=None)
+                path = F.get(r, "OSPath", default=None)
+                kt = F.get(r, "keytype", default=None)
+                comment = F.get(r, "comment", default=None)
+                has_cmd = bool(opts and any("command=" in str(o)
+                                            for o in (opts if isinstance(opts, (list, tuple)) else [opts])))
+                eid = keys.event_id(asset, f"{asset}:{path}", f"authkey:{comment or kt}")
+                ents.append(_ent(eid, "event", f"SSH authorized_key: {str(comment or kt)[:40]}", asset,
+                                 run_id, loc, anomaly=65 if has_cmd else 6, first=ts, artifact=artifact,
+                                 flags=(["detection", "persistence", "ssh", "linux"] if has_cmd
+                                        else ["ssh", "linux"]),
+                                 title="SSH authorized_keys forced-command backdoor" if has_cmd else None,
+                                 path=str(path) if path else None, keytype=str(kt) if kt else None,
+                                 comment=str(comment) if comment else None))
 
             # ---- named pipes -> detection event (C2 / lateral movement) ------
             # DetectRaptor flags these (e.g. "Cobalt Strike: trick_ryuk.profile" in
