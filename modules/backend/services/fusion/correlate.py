@@ -582,6 +582,33 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
             entity_ids=[e.id], asset_ids=asset, sources=e.sources,
             evidence=list(e.evidence), mitre=["T1558"], ts=e.first_seen, kind="single"))
 
+    # suspicious / rogue ACCOUNTS on a single host. Cross-host account abuse already
+    # surfaces via _cross_host_findings (which stamps 'cross_host'); this catches the
+    # single-host case the mapper explicitly flagged 'detection' (e.g. a rogue uid-0
+    # backdoor account, anomaly 60) that previously produced NO finding because the
+    # generic detection loop only iterates events.
+    for e in g.by_type("account"):
+        fl = e.flags or []
+        if "detection" not in fl or "cross_host" in fl:
+            continue
+        if not sev.at_least(e.severity, "medium"):
+            continue
+        asset = _assets_of(e)
+        host = _host_label(g, asset[0]) if asset else "?"
+        mitre = (["T1548"] if "privilege_escalation" in fl else
+                 ["T1136"] if "persistence" in fl else ["T1078"])
+        tags = ", ".join(t for t in fl if t not in ("detection", "linux", "windows")) or "suspicious"
+        uid = e.attrs.get("uid")
+        shell = e.attrs.get("shell")
+        detail = (f" — uid {uid}" if uid is not None else "") + (f", shell {shell}" if shell else "")
+        g.add_finding(Finding(
+            id=_fid("acct", e.id),
+            title=f"Suspicious account '{e.label}' on {host}",
+            severity=sev.from_anomaly(e.anomaly), confidence="medium",
+            summary=f"Account '{e.label}' on {host} flagged ({tags}){detail}.",
+            entity_ids=[e.id], asset_ids=asset, sources=e.sources,
+            evidence=list(e.evidence), mitre=mitre, ts=e.first_seen, kind="single"))
+
     # endpoint SIGMA detections (Hayabusa) -> findings, grouped by detection
     # title per host so a rule firing N times is ONE finding (not N). Only
     # high/critical surface as findings; medium/low stay as ranked events.

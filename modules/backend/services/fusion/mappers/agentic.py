@@ -351,7 +351,9 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             elif ab == "linux.detection.sshkeyfilecmd":
                 cmd = F.get(r, "CMD", "Command", default="")
                 path = F.get(r, "OSPath", default=None)
-                eid = keys.event_id(asset, f"{asset}:{path}", f"sshcmd:{str(cmd)[:50]}")
+                # shared id with the AuthorizedKeys handler for the same file so the two
+                # detectors of one backdoor key merge into ONE finding (not two).
+                eid = keys.event_id(asset, f"{asset}:{path}", "ssh_authkey_backdoor")
                 ents.append(_ent(eid, "event", f"SSH forced-command backdoor: {str(cmd)[:45]}", asset,
                                  run_id, loc, anomaly=70, first=ts, artifact=artifact,
                                  flags=["detection", "persistence", "ssh", "linux"],
@@ -470,7 +472,10 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 comment = F.get(r, "comment", default=None)
                 has_cmd = bool(opts and any("command=" in str(o)
                                             for o in (opts if isinstance(opts, (list, tuple)) else [opts])))
-                eid = keys.event_id(asset, f"{asset}:{path}", f"authkey:{comment or kt}")
+                # a forced-command key is the same backdoor SSHKeyFileCmd flags — share its
+                # event id (per file) so they dedup to one finding; benign keys keep their own.
+                eid = keys.event_id(asset, f"{asset}:{path}",
+                                    "ssh_authkey_backdoor" if has_cmd else f"authkey:{comment or kt}")
                 ents.append(_ent(eid, "event", f"SSH authorized_key: {str(comment or kt)[:40]}", asset,
                                  run_id, loc, anomaly=65 if has_cmd else 6, first=ts, artifact=artifact,
                                  flags=(["detection", "persistence", "ssh", "linux"] if has_cmd
