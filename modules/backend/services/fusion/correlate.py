@@ -357,9 +357,12 @@ def _cross_host_findings(g: FusionGraph) -> None:
         assets = _assets_of(e)
         if len(assets) < 2 or e.type not in ("ioc", "account", "yarahit"):
             continue
-        # a pure-context indicator (anomaly 0 — e.g. benign cloud telemetry linked
-        # from a detection's Details) on N hosts is NOT lateral movement; skip it.
-        if e.type == "ioc" and e.anomaly < 1:
+        # A pure-context domain/IP (anomaly 0 — e.g. benign cloud telemetry, every
+        # host hits microsoft.com) on N hosts is NOT lateral movement; skip it.
+        # A shared *hash* is different: the same binary on multiple hosts is a real
+        # cross-host signal (shared tooling / lateral tool transfer), so let hashes
+        # through regardless of anomaly (severity is graded below).
+        if e.type == "ioc" and e.anomaly < 1 and e.attrs.get("ioc_kind") != "hash":
             continue
         if "cross_host" not in e.flags:
             e.flags.append("cross_host")
@@ -371,11 +374,21 @@ def _cross_host_findings(g: FusionGraph) -> None:
             mitre = ["T1021", "T1078"]
             severity = "high"
         elif e.type == "ioc":
-            title = f"Indicator {e.label} seen on {len(assets)} hosts"
-            summ = (f"The indicator {e.label} ({e.attrs.get('ioc_kind')}) appears on multiple "
-                    f"assets ({hosts}) — shared C2 / common infrastructure across hosts.")
-            mitre = ["T1071"]
-            severity = "high"
+            kind = e.attrs.get("ioc_kind")
+            if kind == "hash":
+                title = f"File hash {e.label} seen on {len(assets)} hosts"
+                summ = (f"The same binary (hash {e.label}) is present on multiple assets "
+                        f"({hosts}) — shared tooling / lateral tool transfer across hosts.")
+                mitre = ["T1570"]
+                # graded: an independently-suspicious hash is high; a shared-but-
+                # unenriched hash is a medium lead worth correlating, not an alarm.
+                severity = "high" if e.anomaly >= 1 else "medium"
+            else:
+                title = f"Indicator {e.label} seen on {len(assets)} hosts"
+                summ = (f"The indicator {e.label} ({kind}) appears on multiple "
+                        f"assets ({hosts}) — shared C2 / common infrastructure across hosts.")
+                mitre = ["T1071"]
+                severity = "high"
         else:
             title = f"YARA rule {e.label} hit on {len(assets)} hosts"
             summ = f"Signature {e.label} matched on multiple assets ({hosts})."

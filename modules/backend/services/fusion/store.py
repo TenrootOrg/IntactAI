@@ -28,10 +28,12 @@ MAX_GRAPH_ENTITIES = 1_000_000      # sanity ceiling only (a graph never has thi
 # Fusion modules: which run types each selectable module groups.
 #   velociraptor_agentic = runs from Velociraptor *Agentic* blueprints (the
 #       curated, bounded forensic collections + offline-collector imports).
-#   velociraptor_all     = ALL Velociraptor blueprints, incl. hunts — some hunt
-#       artifacts produce huge output, so this is the costly option (disabled).
-# `available` modules can be toggled in the UI; `disabled` ones are shown greyed
-# (their runs stay tagged but never fuse). Default = velociraptor_agentic only.
+# We fuse ONLY the agentic blueprints — their artifacts are the ones the agentic
+# mapper actually understands (see "SUPPORTED ARTIFACTS" in mappers/agentic.py).
+# General / ad-hoc hunts are intentionally NOT fusable: 'velociraptor_all' has
+# been removed from the picker (legacy case configs that still carry it normalize
+# back to agentic). 'velociraptor_all' stays in TYPES only as that alias target.
+# `available` modules can be toggled in the UI; `disabled` ones are shown greyed.
 FUSION_MODULE_TYPES = {
     "velociraptor_agentic": {"velociraptor_collection", "velociraptor_upload"},
     "velociraptor_all": {"velociraptor_collection", "velociraptor_upload",
@@ -44,12 +46,13 @@ FUSION_MODULE_TYPES = {
     # legacy alias for cases saved before the agentic/all split (maps to agentic)
     "velociraptor": {"velociraptor_collection", "velociraptor_upload"},
 }
-# Order + membership of the UI picker (legacy 'velociraptor' alias is not shown).
-FUSION_MODULES_UI = ["velociraptor_agentic", "velociraptor_all", "memory",
+# Order + membership of the UI picker. 'velociraptor_all' and the legacy
+# 'velociraptor' alias are intentionally NOT shown — only agentic blueprints fuse.
+FUSION_MODULES_UI = ["velociraptor_agentic", "memory",
                      "timesketch", "cve", "aws", "azure"]
-# Selectable now: Velociraptor (Agentic) [default-on], Velociraptor (All) + Memory
-# [selectable, off]. The rest (TimeSketch/CVE/AWS/Azure) are shown greyed/disabled.
-FUSION_MODULES_AVAILABLE = ("velociraptor_agentic", "velociraptor_all", "memory")
+# Selectable now: Velociraptor (Agentic) [default-on] + Memory [selectable, off].
+# The rest (TimeSketch/CVE/AWS/Azure) are shown greyed/disabled.
+FUSION_MODULES_AVAILABLE = ("velociraptor_agentic", "memory")
 FUSION_MODULES_DEFAULT = ["velociraptor_agentic"]
 _FUSION_MODULE_LABELS = {
     "velociraptor_agentic": "Velociraptor (Agentic)",
@@ -64,7 +67,10 @@ def normalize_modules(mods):
     saved before the agentic/all rename working without a data migration."""
     if not mods:
         return list(FUSION_MODULES_DEFAULT)
-    out = ["velociraptor_agentic" if m == "velociraptor" else m for m in mods]
+    # legacy 'velociraptor' AND the now-removed 'velociraptor_all' both collapse
+    # to agentic — we only fuse agentic blueprints.
+    _ALIAS = {"velociraptor": "velociraptor_agentic", "velociraptor_all": "velociraptor_agentic"}
+    out = [_ALIAS.get(m, m) for m in mods]
     return out or list(FUSION_MODULES_DEFAULT)
 
 

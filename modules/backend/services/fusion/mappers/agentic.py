@@ -139,10 +139,25 @@ def _ent(eid, etype, label, asset, run_id, locator, *, anomaly=0, first=None,
                   last_seen=first, flags=list(flags or []))
 
 
+def _scalar(v):
+    """Coerce a possibly list/tuple field to ONE string (first distinct value).
+    Some Velociraptor artifacts return multi-valued domain/user fields; without
+    this they'd stringify as e.g. "['workgroup']" and fragment the account id so
+    the same account never merges across hosts (breaks cross-host detection)."""
+    if isinstance(v, (list, tuple)):
+        seen = []
+        for x in v:
+            s = str(x).strip()
+            if s and s not in seen:
+                seen.append(s)
+        v = seen[0] if seen else ""
+    return str(v).strip()
+
+
 def _account_eid(asset, domain, user):
     """Domain accounts -> global node (cross-host); local -> asset-scoped."""
-    d = (str(domain) if domain else "").strip().lower()
-    u = (str(user) if user else "").strip().lower()
+    d = _scalar(domain).lower()
+    u = _scalar(user).lower()
     if not u or u in ("-", "n/a"):
         return None, d, u
     if d and d not in _LOCAL_DOMAINS and not d.endswith("$"):
@@ -151,6 +166,39 @@ def _account_eid(asset, domain, user):
 
 
 def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = None) -> tuple[list, list]:
+    """Map Velociraptor AGENTIC-blueprint artifacts into fusion entities/findings.
+
+    Only agentic blueprints are fused (see store.py FUSION_MODULES_*). Dispatch is
+    substring-keyed on the artifact name. SUPPORTED ARTIFACTS — keyword => artifact:
+      malfind                       => Windows.Detection.Malfind
+      namedpipe                     => DetectRaptor...Detection.NamedPipes
+      pstree/pslist/processes       => Generic.System.Pstree, Windows.System.Pslist
+      logon/rdpauth/rdpclient/      => EventLogs.CondensedAccountUsage, LogonSessions,
+        authentication/accountusage      RDPAuth, RDPClientActivity
+      kerberos/goldenticket         => Windows.Kerberos.GoldenTicketTriage
+      sys.users/.users/.sam/        => Windows.Forensics.SAM, Windows.Sys.Users
+        allusers/localusers
+      psreadline                    => DetectRaptor...Detection.Powershell.PSReadline
+      netstat/network               => Windows.Network.Netstat
+      yara                          => *.Detection.Yara* / *.YaraProcess*
+      dnscache/webhistory/          => Windows.System.DNSCache,
+        history/download                 DetectRaptor...Detection.Webhistory
+      autoruns/services/scheduledtask  => persistence events
+      hayabusa/sigma                => Windows.Hayabusa.Rules
+      mft + detection               => DetectRaptor...Detection.MFT
+      application+detection/lolrmm  => DetectRaptor...Detection.Applications, ...LolRMM
+      amcache/prefetch/userassist/  => DetectRaptor...Detection.Amcache, exec evidence
+        shimcache/appcompat/srum/bam
+      loldriver                     => DetectRaptor...Detection.LolDrivers[Malicious]
+      hijacklib                     => DetectRaptor...Detection.HijackLibs{MFT,Env}
+      binaryrename                  => DetectRaptor...Detection.BinaryRename
+      bootloader                    => DetectRaptor...Detection.Bootloaders
+      wmiconsumer                   => Windows.Analysis.SuspiciousWMIConsumers
+      untrusted                     => Windows.System.UntrustedBinaries
+      evtx/eventlog/lnk/detection   => DetectRaptor...Detection.Evtx, ...Lnk, + ANY
+        (catch-all)                      artifact whose name contains 'detection'
+    Anything else is ignored (no entity). Add an elif branch to support more.
+    """
     ents: list[Entity] = []
     rels: list[Relationship] = []
     hostnames = hostnames or {}
