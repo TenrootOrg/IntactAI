@@ -45,7 +45,14 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     pending_rels = []
     for ents, rels in contributions:
         for e in ents:
-            if e.type != "asset":
+            # Filter ONLY time-stamped rows (the bulk: events / files / hashes) by
+            # window + severity. NEVER drop:
+            #   - assets (hosts) — the graph's anchors;
+            #   - entities with NO timestamp — accounts, IOCs, identities, config:
+            #     structural pivots we can't time-judge, and the most reusable
+            #     correlation signal. Dropping these would silently lose key info
+            #     (e.g. 36k account + IOC entities on a real case).
+            if e.type != "asset" and e.first_seen:
                 eff = sev.max_level(e.severity, sev.from_anomaly(e.anomaly))
                 if not (sev.at_least(eff, min_severity) and in_window(e.first_seen, window)):
                     continue
