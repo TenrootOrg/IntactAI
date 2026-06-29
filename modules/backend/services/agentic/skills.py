@@ -202,17 +202,6 @@ def _score_skill(skill: dict, artifact_tokens: List[str], mitre_ids: List[str]) 
 # Public API (used by services/fusion/llm_sim.py)
 # ---------------------------------------------------------------------------
 
-def get_macro_index() -> Dict[str, dict]:
-    """Read-only accessor for the macro index."""
-    return _MACRO_INDEX
-
-
-def get_macro_body(name: str) -> Optional[str]:
-    """Return the body text of a macro skill by name, or None if absent."""
-    macro = _MACRO_INDEX.get(name)
-    return macro.get("body") if macro else None
-
-
 def compose_system_prompt(base_prompt: str, skill_names: List[str]) -> str:
     """Append the bodies of `skill_names` (macro names) to `base_prompt`. If
     none resolve, `base_prompt` is returned unchanged."""

@@ -8,7 +8,6 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
-from concurrent.futures import as_completed
 
 from pyvelociraptor import api_pb2
 from pyvelociraptor import api_pb2_grpc
@@ -18,22 +17,16 @@ from services.workflow_service import add_log_to_run
 from services.agentic.collectors._base import *  # noqa: F401,F403
 
 def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes, llm_config, anonymizer=None, update_phase_func=None, min_severity='informational', time_filter=None, cancel_event=None, master_prompt=None):
-    """Monitor collection, poll artifact sources for data, analyze as data becomes available.
-    Returns (all_results dict, summaries dict, timed_out bool).
-    If anonymizer is provided, data is masked before LLM analysis.
-    min_severity filters rows by severity level before LLM analysis (informational, low, medium, high, critical).
-    time_filter filters rows by timestamp fields (StartTime, EventTime, etc.) - applied in Python post-collection.
-    timed_out is True if collection ended due to timeout, False if all flows completed naturally.
+    """Monitor a collection: poll artifact sources, retrieve/merge/filter rows as
+    flows complete. Returns (all_results, summaries, timed_out, total_rows_before_filter).
 
-    STREAMING OPTIMIZATION: LLM analysis starts immediately when an artifact's flow completes,
-    rather than waiting for all collections to finish."""
+    Collection-only — rows are persisted for Case-level fusion; no analysis runs
+    here. `summaries` is always an empty dict (kept for the return-tuple contract).
+    If `anonymizer` is provided data is masked; `min_severity` filters rows by
+    severity (informational..critical); `time_filter` filters by timestamp fields
+    (StartTime, EventTime, …) post-collection; `timed_out` is True if collection
+    ended due to timeout, False if all flows completed naturally."""
     from services.agentic.utils import filter_row_by_time
-
-    # Agentic per-artifact LLM analysis was REMOVED — the pipeline is always
-    # COLLECT-ONLY: collect/poll/merge/filter rows normally, never call the LLM.
-    # The run stays fuseable (rows are persisted); analysis happens at the Case
-    # level (fusion). The LLM branches below are gated on this and never run.
-    _llm_on = False
 
     total_seconds = collection_minutes * 60
     elapsed = 0
@@ -44,9 +37,8 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
     retrieved_artifacts = {}  # (client_id, artifact) -> row_count (to detect new data)
     stable_artifacts = {}  # artifact -> polls_stable (how many polls with no change)
     all_results = {}  # artifact -> [rows] (combined from all clients)
-    summaries = {}  # artifact -> summary
-    analyzed_artifacts = set()  # Artifacts already submitted for LLM analysis
-    llm_futures = {}  # future -> artifact
+    summaries = {}  # always empty in collection-only; kept for the return contract
+    analyzed_artifacts = set()  # source names already retrieved + marked stable
     total_rows_before_filter = 0  # Track raw row count before any filtering
 
     # Create time filter function (if enabled)
@@ -94,76 +86,10 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
         missing it."""
         add_log_to_run(run_id, msg, level)
 
-    def submit_for_analysis(artifact_name, rows):
-        """Mark an artifact as processed. Collect-only — the agentic LLM
-        analysis was removed, so rows are simply persisted (they already live
-        in all_results) for Case-level fusion; no LLM call is made."""
-        if artifact_name in analyzed_artifacts:
-            return
-        analyzed_artifacts.add(artifact_name)
-
-    # Circuit-breaker state. Track consecutive LLM failures across the
-    # whole streaming loop. If we hit `_circuit_threshold` failures in a
-    # row with zero successes ever recorded, the LLM is dead — bail out
-    # of the pipeline cleanly instead of sitting in the polling loop for
-    # the rest of the collection window producing nothing useful.
-    _circuit_state = {
-        'consecutive_failures': 0,
-        'successful_analyses': 0,
-        'failed_analyses': 0,
-        'tripped': False,
-    }
-    _circuit_threshold = 5
-
-    def check_completed_analyses():
-        """Check for completed LLM analyses (non-blocking)."""
-        completed = []
-        for future in list(llm_futures.keys()):
-            if future.done():
-                artifact = llm_futures.pop(future)
-                try:
-                    result_artifact, summary, error = future.result(timeout=1)
-                    summaries[result_artifact] = summary
-                    if error:
-                        add_log_to_run(run_id, f"[LLM] Error for {result_artifact}: {error}", "warning")
-                        _circuit_state['consecutive_failures'] += 1
-                        _circuit_state['failed_analyses'] += 1
-                    else:
-                        add_log_to_run(run_id, f"[LLM] Analysis complete: {result_artifact}", "success")
-                        _circuit_state['consecutive_failures'] = 0
-                        _circuit_state['successful_analyses'] += 1
-                    completed.append(result_artifact)
-                except Exception as e:
-                    add_log_to_run(run_id, f"[LLM] Analysis failed for {artifact}: {str(e)}", "warning")
-                    summaries[artifact] = f"Analysis failed: {str(e)}"
-                    _circuit_state['consecutive_failures'] += 1
-                    _circuit_state['failed_analyses'] += 1
-
-        # Trip the breaker only on a sustained-failure-with-zero-success
-        # pattern. Tolerates short blips because a single later success
-        # resets `consecutive_failures` to 0.
-        if (_circuit_state['consecutive_failures'] >= _circuit_threshold
-                and _circuit_state['successful_analyses'] == 0
-                and not _circuit_state['tripped']):
-            _circuit_state['tripped'] = True
-            add_log_to_run(
-                run_id,
-                f"[Pipeline] LLM circuit breaker tripped — "
-                f"{_circuit_state['consecutive_failures']} consecutive failures, "
-                f"0 successes. Aborting before more time is wasted on a dead LLM.",
-                "error",
-            )
-            # Cancel any pending LLM futures so they stop retrying.
-            for f in list(llm_futures.keys()):
-                try:
-                    f.cancel()
-                except Exception:
-                    pass
-            # The pipeline.py except handler catches RuntimeError and
-            # moves the run to `failed`; cancel_event propagation also
-            # ensures the outer collection loop exits its sleep().
-            raise RuntimeError("LLM circuit breaker tripped — LLM is unreachable")
-        return completed
+    def mark_collected(source_name):
+        """Mark a source as retrieved + stable — its rows already live in
+        all_results for Case-level fusion (collection-only, no analysis here)."""
+        analyzed_artifacts.add(source_name)
 
     # Track discovered sources (including sub-artifacts)
     discovered_sources = {}  # flow_id -> set of source names
@@ -282,16 +208,10 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                             if source_name in all_results and source_name not in analyzed_artifacts:
                                 stable_artifacts[source_name] = stable_artifacts.get(source_name, 0) + 1
 
-                                # STREAMING: Process artifact when data is stable (no new data for 1 poll)
+                                # Mark a source done once its data is stable (no new data for 1 poll)
                                 if stable_artifacts[source_name] >= 1 and all_results[source_name]:
-                                    rows_to_analyze = all_results[source_name]
-                                    if rows_to_analyze:
-                                        # TODO: LLM DISABLED - message updated to reflect this
-                                        add_log_to_run(run_id, f"[Pipeline] Artifact {source_name} stable ({len(rows_to_analyze)} rows)", "info")
-                                        submit_for_analysis(source_name, rows_to_analyze)
-                                    else:
-                                        add_log_to_run(run_id, f"[Filter] {source_name}: All rows filtered out - skipping LLM", "info")
-                                        analyzed_artifacts.add(source_name)  # Mark as done
+                                    add_log_to_run(run_id, f"[Velociraptor] {source_name} stable ({len(all_results[source_name])} rows)", "info")
+                                    mark_collected(source_name)
 
             # Check flow status
             for col in active_flows:
@@ -330,17 +250,10 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                         bt_first_line = error_info['backtrace'].split('\n')[0][:100]
                         print(f"[AGENTIC] Flow {flow_id} error: {bt_first_line}", flush=True)
 
-            # Check for completed LLM analyses
-            check_completed_analyses()
-
             # Check if all flows are done
             all_flows_completed = len(completed_flows) == len(active_flows)
             if all_flows_completed:
                 add_log_to_run(run_id, f"[Velociraptor] All {len(active_flows)} flows completed!", "success")
-                # Wait for any remaining LLM analyses before breaking
-                total_sources = sum(len(srcs) for srcs in discovered_sources.values())
-                if len(summaries) == len(analyzed_artifacts) and len(llm_futures) == 0:
-                    add_log_to_run(run_id, f"[Pipeline] All {total_sources} sources analyzed - finishing!", "success")
                 break
 
             # Calculate and display remaining time
@@ -354,22 +267,14 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
 
             artifacts_found = len(all_results)
             total_rows = sum(len(r) for r in all_results.values())
-            analyzing_count = len(analyzed_artifacts)
 
             # Count total discovered sources
             total_sources = sum(len(srcs) for srcs in discovered_sources.values())
 
-            # Show successes vs failures separately so a misleading
-            # "Done: 10/10" never hides that every single one errored
-            # — the QA bug that prompted the circuit-breaker work.
-            ok_n = _circuit_state['successful_analyses']
-            fail_n = _circuit_state['failed_analyses']
-            done_part = f"Done: {ok_n} ✓ / {fail_n} ✗" if fail_n else f"Done: {ok_n}"
-
             add_log_to_run(run_id,
-                f"[Pipeline] {remaining_min}m {remaining_sec}s | "
+                f"[Velociraptor] {remaining_min}m {remaining_sec}s | "
                 f"Collected: {artifacts_found}/{total_sources} sources | "
-                f"Analyzing: {analyzing_count} | {done_part}",
+                f"{total_rows} rows",
                 "info")
 
             # Per-client breakdown (multi-client only) so the operator
@@ -457,43 +362,14 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                         all_results[source_name] = existing_other_clients + filtered_rows
                         add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Final: {source_name} ({len(filtered_rows)} rows added — total now {len(all_results[source_name])})", "info")
 
-        # Submit any remaining sources that haven't been analyzed yet
+        # Mark any remaining collected sources
         for source_name in all_results.keys():
             if all_results[source_name] and source_name not in analyzed_artifacts:
-                submit_for_analysis(source_name, all_results[source_name])
+                mark_collected(source_name)
 
         # All sources collected
         total_rows = sum(len(r) for r in all_results.values())
-        add_log_to_run(run_id, f"[Pipeline] Collection complete: {len(all_results)} sources, {total_rows} rows", "success")
-
-        # Wait for remaining LLM analyses to complete
-        remaining_analyses = len(llm_futures)
-        if remaining_analyses > 0:
-            add_log_to_run(run_id, f"[LLM] Waiting for {remaining_analyses} remaining analyses...", "info")
-            if update_phase_func:
-                update_phase_func(run_id, "analyzing", 60)
-
-            for future in as_completed(llm_futures.keys(), timeout=600):
-                artifact = llm_futures.get(future, "unknown")
-                try:
-                    result_artifact, summary, error = future.result(timeout=60)
-                    summaries[result_artifact] = summary
-
-                    progress = 60 + int((len(summaries) / len(analyzed_artifacts)) * 25) if analyzed_artifacts else 85
-                    if update_phase_func:
-                        update_phase_func(run_id, "analyzing", progress)
-
-                    if error:
-                        add_log_to_run(run_id, f"[LLM] Error for {result_artifact}: {error}", "warning")
-                    else:
-                        add_log_to_run(run_id, f"[LLM] Analysis complete: {result_artifact}", "success")
-                except Exception as e:
-                    add_log_to_run(run_id, f"[LLM] Analysis failed for {artifact}: {str(e)}", "warning")
-                    summaries[artifact] = f"Analysis failed: {str(e)}"
-
-        # (collection-only: no per-artifact analysis runs here; summaries stays empty)
-        if summaries:
-            add_log_to_run(run_id, f"[Velociraptor] Retrieved {len(summaries)} artifact result sets", "success")
+        add_log_to_run(run_id, f"[Velociraptor] Collection complete: {len(all_results)} sources, {total_rows} rows", "success")
 
     finally:
         if channel:
