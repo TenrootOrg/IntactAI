@@ -191,7 +191,7 @@ velociraptor:
 
   - id: agentic_quick_wins
     name: "Velociraptor Agentic: Quick Wins"
-    description: "Low-volume detection artifacts for fast analysis (11 artifacts)"
+    description: "Low-volume detection artifacts for fast analysis (13 artifacts)"
     is_default: true
     settings:
       hunt_expiry: 720
@@ -204,7 +204,6 @@ velociraptor:
     artifacts:
       - Windows.Hayabusa.Rules
       - Windows.Detection.Malfind
-      - Windows.EventLogs.RDPAuth
       - DetectRaptor.Windows.Detection.BinaryRename
       - DetectRaptor.Windows.Detection.Powershell.PSReadline
       - DetectRaptor.Windows.Detection.Applications
@@ -213,10 +212,13 @@ velociraptor:
       - Windows.System.UntrustedBinaries
       - Generic.System.Pstree
       - Windows.Forensics.SAM
+      - Windows.Kerberos.GoldenTicketTriage
+      - Windows.EventLogs.RDPClientActivity
+      - Windows.System.DNSCache
 
   - id: agentic_quick_wins_extended
     name: "Velociraptor Agentic: Quick Wins Extended"
-    description: "Extended detection with program execution, C2, and browser artifacts (15 artifacts)"
+    description: "Extended detection with program execution, C2, and browser artifacts (14 artifacts)"
     is_default: true
     settings:
       hunt_expiry: 720
@@ -241,13 +243,9 @@ velociraptor:
       - DetectRaptor.Windows.Detection.NamedPipes
       - DetectRaptor.Windows.Detection.Webhistory
       # Context
-      - Windows.EventLogs.RDPAuth
       - Windows.System.UntrustedBinaries
-      - Generic.System.Pstree
       - Windows.Forensics.SAM
-      - Windows.Forensics.Lnk
       # Authentication / lateral movement (domain hosts) + Kerberos abuse
-      - Windows.EventLogs.LogonSessions
       - Windows.EventLogs.CondensedAccountUsage
       - Windows.Kerberos.GoldenTicketTriage
 
