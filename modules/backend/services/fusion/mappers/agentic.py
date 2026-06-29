@@ -522,6 +522,33 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  flags=(["firmware", "firmware_bad"] if bad else ["firmware"]),
                                  path=F.get(r, "OSPath", default=None)))
 
+            # ---- suspicious WMI consumers -> persistence finding (T1546.003) -
+            # Windows.Analysis.SuspiciousWMIConsumers pre-filters the benign default
+            # consumers, so every row is a real lead: a WMI event subscription whose
+            # action runs a command/script at a trigger. High anomaly so it clears the
+            # severity floor and becomes a finding; carry the action + WQL trigger for
+            # the LLM. No reliable timestamp on the row -> kept as no-ts entity.
+            elif "wmiconsumer" in an:
+                cons = F.get(r, "ConsumerDetails", default=None)
+                filt = F.get(r, "FilterDetails", default=None)
+                cons = cons if isinstance(cons, dict) else {}
+                filt = filt if isinstance(filt, dict) else {}
+                cname = cons.get("Name") or "WMI consumer"
+                action = (cons.get("CommandLineTemplate") or cons.get("ExecutablePath")
+                          or cons.get("ScriptText") or cons.get("ScriptFileName") or "")
+                query = filt.get("Query") or None
+                ns = F.get(r, "Namespace", default=None)
+                title = f"WMI persistence: {str(cname)[:50]}"
+                eid = keys.event_id(asset, f"{asset}:{cname}",
+                                    f"wmiconsumer:{cname}:{str(action)[:40]}")
+                ents.append(_ent(eid, "event", title, asset, run_id, loc,
+                                 anomaly=70, first=ts, artifact=artifact,
+                                 flags=["detection", "persistence", "wmi"], title=title,
+                                 consumer=str(cname),
+                                 action=str(action)[:400] if action else None,
+                                 wql=str(query)[:300] if query else None,
+                                 namespace=str(ns) if ns else None))
+
             # ---- other high-signal detections -> event -------------------
             elif any(k in an for k in ("evtx", "eventlog", "binaryrename",
                                        "untrusted", "lnk", "detection")):
