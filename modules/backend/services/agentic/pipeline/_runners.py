@@ -69,16 +69,13 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
 
     try:
         update_run_status(run_id, "running", progress=2)
-        add_log_to_run(run_id, "[Pipeline] Starting Agentic Forensics pipeline", "info")
+        add_log_to_run(run_id, "[Collection] Starting Velociraptor collection", "info")
 
-        # The agentic pipeline is COLLECT-ONLY. The per-artifact LLM analysis +
-        # synthesis were REMOVED — investigation analysis happens at the Case
-        # level (fusion). Collection runs the same regardless of any LLM config;
-        # there is no LLM call, preflight or key requirement here anymore.
+        # Collection-only: the run gathers artifacts and is then fused into a Case
+        # for analysis. (No per-run analysis happens here.)
         llm_enabled = False
         add_log_to_run(run_id,
-            "[Pipeline] Running COLLECT-ONLY (agentic LLM analysis removed; analysis "
-            "happens at the Case level). The run completes and is fuseable in a Case.",
+            "[Collection] Gathering artifacts — fuse this run into a Case for analysis.",
             "info")
 
         # Store report_types in workflow details for UI
@@ -199,8 +196,8 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
         if cancel_event and cancel_event.is_set():
             return
 
-        # 3. Stream collect and analyze - monitors flows, retrieves results as available, runs LLM in parallel
-        add_log_to_run(run_id, f"[Velociraptor] Collecting data for up to {collection_minutes} minutes (streaming analysis)...", "info")
+        # 3. Stream-collect: monitor flows, retrieve results as they become available.
+        add_log_to_run(run_id, f"[Velociraptor] Collecting data for up to {collection_minutes} minutes...", "info")
         if min_severity != 'informational':
             add_log_to_run(run_id, f"[Pipeline] Severity filter active: {min_severity}+ only", "info")
         _update_phase(run_id, "collecting", 10)
@@ -305,12 +302,11 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
                 return
 
         report_content = {}
-        # No LLM -> emit a collect-only report (the rows are persisted below for
-        # fusion). Skips the LLM report generators entirely.
+        # Emit the collection summary; the rows are persisted below for fusion.
         if not llm_enabled:
-            add_log_to_run(run_id, f"[Report] Collect-only (no LLM): {total_rows} rows across "
-                           f"{len(all_results)} artifacts — fuse this run into a Case for "
-                           f"deterministic findings.", "info")
+            add_log_to_run(run_id, f"[Collection] {total_rows} rows across "
+                           f"{len(all_results)} artifacts collected — fuse this run into a "
+                           f"Case for analysis.", "info")
             report_content = {'technical': _collect_only_report(
                 total_rows, all_results, len(client_ids))}
             save_report_content(run_id, report_content)
@@ -404,7 +400,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, l
             print(f"[AGENTIC] persist_pipeline_artifacts failed (non-fatal): {_e}", flush=True)
 
         _update_phase(run_id, "completed", 100)
-        add_log_to_run(run_id, "[Pipeline] Analysis complete! Report ready for download.", "success")
+        add_log_to_run(run_id, "[Collection] Collection complete — fuse into a Case for analysis.", "success")
         if not is_cancelled(run_id):
             update_run_status(run_id, "completed", progress=100)
 

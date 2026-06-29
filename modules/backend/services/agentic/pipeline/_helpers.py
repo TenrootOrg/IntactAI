@@ -65,17 +65,14 @@ def _start_watchdog(run_id: str, collection_minutes: int, label: str = "agentic"
     return t
 
 def _collect_only_report(total_rows, all_results, client_count) -> str:
-    """Deterministic report for the collect-only agentic pipeline — states what was
-    collected and points the operator at the Case fusion path for analysis."""
+    """Completion report for a collection run — states what was collected and
+    points the operator at fusion (Case Analysis) for the actual analysis."""
     arts = ", ".join(sorted(all_results.keys())) if all_results else "(none)"
     return (
         "# Collection complete\n\n"
         f"Collected **{total_rows} rows** across **{len(all_results)} artifact(s)** from "
         f"**{client_count} client(s)**.\n\n"
-        "The agentic pipeline is **collection-only** — analysis happens at the **Case** "
-        "level. **This run is fully usable**: fuse it into a **Case** (Cases UI / "
-        "`/api/cases`) to get deterministic correlation, findings, timeline, and "
-        "interactive chat.\n\n"
+        "Fuse this run into a **Case** to get correlation, findings, and a timeline.\n\n"
         f"**Artifacts collected:** {arts}\n"
     )
 

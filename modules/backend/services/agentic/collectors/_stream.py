@@ -81,7 +81,7 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
         return all_results, summaries, False, 0
 
     add_log_to_run(run_id, f"[Velociraptor] Streaming mode: polling {len(artifacts)} artifacts across {len(active_flows)} clients", "info")
-    add_log_to_run(run_id, f"[Pipeline] Streaming analysis enabled - LLM starts as artifacts complete", "info")
+    add_log_to_run(run_id, f"[Velociraptor] Streaming collection — results retrieved as artifacts complete", "info")
 
     # Register cleanup callbacks for stop support
     from services.workflow_service import register_cleanup
@@ -491,8 +491,9 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                     add_log_to_run(run_id, f"[LLM] Analysis failed for {artifact}: {str(e)}", "warning")
                     summaries[artifact] = f"Analysis failed: {str(e)}"
 
-        # All LLM analyses complete
-        add_log_to_run(run_id, f"[LLM] All {len(summaries)} artifacts analyzed", "success")
+        # (collection-only: no per-artifact analysis runs here; summaries stays empty)
+        if summaries:
+            add_log_to_run(run_id, f"[Velociraptor] Retrieved {len(summaries)} artifact result sets", "success")
 
     finally:
         if channel:
