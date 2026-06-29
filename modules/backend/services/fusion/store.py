@@ -280,14 +280,21 @@ def _env_key_from_members(members) -> str | None:
 
 
 def set_disposition(case_id, target, *, verdict="benign", attribution="it_admin",
-                    reason="", scope="case", by="operator") -> dict:
+                    reason="", scope="case", by="operator", watermark=None) -> dict:
     """Record an operator triage on a finding/entity ('that PsExec was IT'), re-fuse so it
     takes effect, and — when scope='environment' — fold it into the env baseline so it
-    suppresses across FUTURE cases too. Returns the disposition."""
+    suppresses across FUTURE cases too. Returns the disposition.
+
+    `watermark` (occurrence snapshot from the timeline) binds a benign verdict to the
+    occurrences it covered: when the finding later shows new activity beyond it, the
+    suppression is treated as stale and the finding re-opens (correlate._apply_dispositions).
+    None = no watermark (e.g. chat entity dispositions), which stay broad as before."""
     ws = _ws()
     d = get_case(case_id)
     disp = {"target": target, "verdict": verdict, "attribution": attribution,
             "reason": reason, "scope": scope, "by": by}
+    if watermark:
+        disp["watermark"] = watermark
     existing = [x for x in (d.get("dispositions") or []) if x.get("target") != target]
     ws.update_run_status(case_id, "pending", details={"dispositions": existing + [disp]})
     log_case_event(case_id, "Risk · disposition applied", "info",
@@ -1527,20 +1534,31 @@ def validate_timeline(case_id, finding_id, status, notes="") -> dict:
     if str(finding_id).startswith("manual:"):
         return _set_manual_event_status(case_id, finding_id, status, notes)
 
+    # Snapshot the finding's CURRENT occurrence watermark — the verdict covers exactly
+    # this much activity; new activity later re-opens it (see correlate._wm_new_activity).
+    wm = None
+    try:
+        f = next((x for x in load_graph(case_id).findings if x.id == finding_id), None)
+        if f is not None:
+            wm = f.watermark()
+    except Exception:
+        wm = None
+
     d = get_case(case_id)
     vals = [v for v in (d.get("timeline_validations") or []) if v.get("finding_id") != finding_id]
     if status != "pending":
-        vals.append({"finding_id": finding_id, "status": status, "notes": notes})
+        vals.append({"finding_id": finding_id, "status": status, "notes": notes,
+                     "watermark": wm})
     _merge_case_details(case_id, {"timeline_validations": vals})
 
     if status == "not_real":
         set_disposition(case_id, finding_id, verdict="benign", attribution="operator",
                         reason=f"timeline: marked not real{(' — ' + notes) if notes else ''}",
-                        scope="case")
+                        scope="case", watermark=wm)
     elif status == "known_it":
         set_disposition(case_id, finding_id, verdict="benign", attribution="it_admin",
                         reason=f"timeline: IT confirms expected{(' — ' + notes) if notes else ''}",
-                        scope="case")
+                        scope="case", watermark=wm)
     else:
         # real or pending — un-suppress (no-op if there was no disposition).
         clear_disposition(case_id, finding_id)
@@ -1637,17 +1655,32 @@ def get_timeline(case_id) -> list:
     Each row: finding_id, ts, host, phase, title, severity, mitre, artifacts,
     source ('fusion'|'manual'), validation ('real'|'not_real'|'known_it'|
     'pending'), suggested_benign (analyst hinted it looks expected), manual."""
+    from services.fusion.correlate import _wm_new_activity
     d = get_case(case_id)
     g = _filter_graph_by_hosts(load_graph(case_id), d.get("excluded_hosts"))
-    vmap = {v.get("finding_id"): v.get("status")
-            for v in (d.get("timeline_validations") or [])}
+    vrec = {v.get("finding_id"): v for v in (d.get("timeline_validations") or [])}
+    fwm = {f.id: f.watermark() for f in g.findings}     # current occurrence watermark
     # analyst "looks benign" suggestions (the old checklist) -> inline hint
     suggested = {it.get("finding_id") for it in (d.get("disposition_checklist") or [])
                  if it.get("suggestion") == "benign"}
     rows = render.timeline(g, window=d.get("time_window") or None)
     for r in rows:
-        r["validation"] = vmap.get(r.get("finding_id"), "pending")
-        r["suggested_benign"] = r.get("finding_id") in suggested
+        fid = r.get("finding_id")
+        v = vrec.get(fid)
+        r["reopened"] = False
+        if v:
+            st = v.get("status", "pending")
+            # A benign verdict (Known/False-positive) RE-OPENS to Pending when new
+            # activity arrived since it was made — it only covered the watermark it
+            # snapshotted. Real/pending are not occurrence-bound.
+            if st in ("known_it", "not_real") and _wm_new_activity(v.get("watermark"), fwm.get(fid, "")):
+                r["validation"] = "pending"
+                r["reopened"] = True
+            else:
+                r["validation"] = st
+        else:
+            r["validation"] = "pending"
+        r["suggested_benign"] = fid in suggested
         r["manual"] = False
     # manual events carry their own status on the record
     for e in (d.get("manual_timeline_events") or []):

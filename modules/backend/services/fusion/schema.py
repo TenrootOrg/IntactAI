@@ -143,6 +143,17 @@ class Finding:
     mitre: list[str] = field(default_factory=list)
     ts: Optional[str] = None                                 # primary time (for ordering)
     kind: str = "single"                                     # "single" | "cross_host" | "derived"
+    # Occurrence watermark: how many times this finding fired + the latest time it
+    # did. A triage verdict (Known/False-positive) covers exactly this watermark;
+    # when a later re-fuse yields MORE occurrences or a NEWER one, the verdict is
+    # "stale" and the finding re-opens to Pending (see correlate._apply_dispositions
+    # + store.get_timeline). occ_latest defaults to ts; occ_count defaults to 1.
+    occ_count: int = 1
+    occ_latest: Optional[str] = None
+
+    def watermark(self) -> str:
+        """Comparable signature of the occurrences this finding covers."""
+        return f"{int(self.occ_count or 1)}|{self.occ_latest or self.ts or ''}"
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -161,6 +172,7 @@ class Finding:
             evidence=[EvidenceRef.from_dict(e) for e in (d.get("evidence") or [])],
             mitre=list(d.get("mitre") or []), ts=d.get("ts"),
             kind=d.get("kind", "single"),
+            occ_count=int(d.get("occ_count") or 1), occ_latest=d.get("occ_latest"),
         )
 
 

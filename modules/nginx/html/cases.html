@@ -572,7 +572,7 @@ function renderAdvisory(info){
 }
 // ---- Unified timeline (findings + manual events; validate with the IT team) ----
 const TL_SEV_RANK={informational:0,info:0,low:1,medium:2,high:3,critical:4};
-const TL_STATES=[['pending','Pending'],['real','Real'],['not_real','Not real'],['known_it','Known']];
+const TL_STATES=[['pending','Pending'],['real','True Positive'],['not_real','False Positive'],['known_it','Known']];
 window._tlf={status:{pending:1,real:1,not_real:1,known_it:1},artifact:'',host:'',sev:'informational'};
 function renderTimeline(id){
   window._tlCase=id;
@@ -588,7 +588,7 @@ function tlBuild(){
   const hostOpts=`<option value="">all hosts</option>`+hosts.map(h=>`<option ${f.host===h?'selected':''}>${esc(h)}</option>`).join('');
   const sevOpts=['informational','low','medium','high','critical'].map(s=>`<option value="${s}" ${f.sev===s?'selected':''}>${s}+</option>`).join('');
   $('#tabc').innerHTML=`
-    <p style="color:var(--muted);margin:2px 0 6px">One timeline of everything observed. Set each entry <b>Real</b> (keep) · <b>Not real</b> (false positive) · <b>Known</b> (IT confirms expected) · <b>Pending</b>. Not-real & Known are suppressed from findings/risk but stay here, fully reversible. Use the source <span class="arti">artifact</span> + time to check with the IT team, then filter out what's validated.</p>
+    <p style="color:var(--muted);margin:2px 0 6px">One timeline of everything observed. Set each entry <b>True Positive</b> (real threat, keep) · <b>False Positive</b> (detection error) · <b>Known</b> (real but IT-authorized) · <b>Pending</b>. False Positive &amp; Known are suppressed from findings/risk but stay here, fully reversible. A verdict covers only the activity present when you set it — a new occurrence later re-opens it (⟳). Use the source <span class="arti">artifact</span> + time to check with the IT team, then filter out what's validated.</p>
     <div class="tlbar">
       ${statusChips}
       <span style="width:1px;height:18px;background:var(--bd)"></span>
@@ -630,7 +630,7 @@ function tlPaint(){
       <code style="white-space:nowrap">${esc(r.ts||'—')}</code>
       <div class="tlmeta">
         <span><strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(r.title||'')}</span>
-        <span class="l2">${arts}${r.suggested_benign?'<span class="sg-hint">analyst: looks expected</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
+        <span class="l2">${arts}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.suggested_benign?'<span class="sg-hint">analyst: looks expected</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
       </div>
       <span class="chip c-${r.severity}">${esc(r.severity)}</span>
       <span class="seg">${seg}</span>

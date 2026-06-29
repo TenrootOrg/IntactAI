@@ -70,6 +70,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _derive_findings(g, baseline=baseline, window=window)
     _coordinated_activity(g, window=window, baseline=baseline)
     _corroboration(g)
+    _stamp_finding_watermarks(g)              # occurrence watermark — before dispositions
     _apply_dispositions(g, dispositions)      # operator triage — before severity rollup
     _rollup_asset_severity(g)
     _score_assets(g)
@@ -77,11 +78,50 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     return g
 
 
+def _stamp_finding_watermarks(g: FusionGraph) -> None:
+    """Ensure every finding carries an occurrence watermark (occ_count + occ_latest).
+    Aggregated findings (sigma/coord) set these at creation; for the rest we derive
+    them from the cited entities, so single-entity findings also re-open when their
+    entity gains newer activity on a later re-fuse."""
+    for f in g.findings:
+        if not f.occ_latest:
+            latest = f.ts
+            for eid in (f.entity_ids or []):
+                e = g.entities.get(eid)
+                if not e:
+                    continue
+                for t in (e.last_seen, e.first_seen):
+                    if t and (latest is None or t > latest):
+                        latest = t
+            f.occ_latest = latest
+        if not f.occ_count or f.occ_count < 1:
+            f.occ_count = max(1, len(f.entity_ids or []))
+
+
+def _wm_new_activity(stored, current) -> bool:
+    """True if `current` watermark shows occurrences BEYOND what `stored` covered —
+    more hits OR a later one. That means the verdict snapshotting `stored` is stale
+    (new activity arrived since), so the finding should re-open rather than stay
+    suppressed. Removal / re-narrowing (fewer, not-later) does NOT count as stale."""
+    if not stored:
+        return False
+    try:
+        sc, sl = str(stored).split("|", 1)
+        cc, cl = str(current).split("|", 1)
+        return int(cc) > int(sc) or cl > sl
+    except Exception:
+        return False
+
+
 def _apply_dispositions(g: FusionGraph, dispositions) -> None:
     """Operator triage — the human-in-the-loop FP killer. A finding whose id or a cited
     entity is dispositioned `benign` (e.g. 'that PsExec was IT') is down-ranked to
     informational + annotated with the attribution, so it stops driving host risk; never
-    silently for >=critical (surfaced anyway for review). `malicious` raises confidence."""
+    silently for >=critical (surfaced anyway for review). `malicious` raises confidence.
+
+    WATERMARK: a benign disposition only suppresses the occurrences it covered. If the
+    matched finding now shows new activity beyond the disposition's watermark, the
+    verdict is stale — we DON'T suppress (it re-enters risk) and note it re-opened."""
     for d in (dispositions or []):
         if not isinstance(d, dict):
             continue
@@ -91,9 +131,14 @@ def _apply_dispositions(g: FusionGraph, dispositions) -> None:
         verdict = (d.get("verdict") or "benign").lower()
         attr = d.get("attribution") or "operator"
         reason = d.get("reason") or ""
+        wm = d.get("watermark")
         note = f" [operator: {attr}" + (f" — {reason}" if reason else "") + "]"
         for f in g.findings:
             if f.id != target and target not in (f.entity_ids or []):
+                continue
+            if verdict == "benign" and wm and _wm_new_activity(wm, f.watermark()):
+                # Stale verdict: new activity since it was made → re-open, don't suppress.
+                f.summary += " [re-opened: new activity since the prior verdict]"
                 continue
             if verdict == "benign":
                 if sev.at_least(f.severity, "critical"):
@@ -552,7 +597,9 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
                     f"{(' (' + ', '.join(chans) + ')') if chans else ''}.",
             entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
             sources=top.sources, evidence=list(top.evidence), mitre=[],
-            ts=top.first_seen, kind="single"))
+            ts=top.first_seen, kind="single",
+            occ_count=len(evs),
+            occ_latest=max((e.first_seen for e in evs if e.first_seen), default=top.first_seen)))
 
     # cloud SIGMA detections (AWS/Azure) -> findings; cross-domain corroboration
     # (same account/IP also on an endpoint) is surfaced automatically via the
@@ -646,7 +693,9 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
             entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
             sources=["agentic"], evidence=list(evs[0].evidence),
             mitre=[], ts=min((e.first_seen for e in evs if e.first_seen), default=None),
-            kind="derived"))
+            kind="derived",
+            occ_count=len(evs),
+            occ_latest=max((e.first_seen for e in evs if e.first_seen), default=None)))
 
 
 # ------------------------------------------------------------------ scope

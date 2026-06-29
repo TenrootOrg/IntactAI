@@ -299,8 +299,8 @@ def narrative_md(graph, *, window=None, min_severity="informational",
     return "\n".join(out)
 
 
-_STATE_LABEL = {"real": "Confirmed real", "not_real": "False positive",
-                "known_it": "Known / expected (IT-confirmed)", "pending": "Pending"}
+_STATE_LABEL = {"real": "True Positive", "not_real": "False Positive",
+                "known_it": "Known (IT-confirmed)", "pending": "Pending"}
 
 
 def _analyst_validations_md(graph, dispositions, validations) -> str:
