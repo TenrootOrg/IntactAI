@@ -601,6 +601,34 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
             occ_count=len(evs),
             occ_latest=max((e.first_seen for e in evs if e.first_seen), default=top.first_seen)))
 
+    # Generic detection findings: every NON-SIGMA detection event (MFT, named-pipe,
+    # binary-rename, web, …) grouped per host + detection name, so each detection
+    # artifact kind surfaces in the timeline (with watermark + click-detail) — not
+    # only SIGMA. Keyed by the 'detection' flag the mapper stamps; medium+ only
+    # (anything lower was already dropped at ingest). SIGMA has its own loop above.
+    _det_groups: dict = {}
+    for e in g.by_type("event"):
+        if "detection" not in e.flags or "sigma" in e.flags:
+            continue
+        if not sev.at_least(e.severity, "medium"):
+            continue
+        title = e.attrs.get("title") or e.attrs.get("detection") or e.label
+        for a in _assets_of(e) or ["?"]:
+            _det_groups.setdefault((a, title), []).append(e)
+    for (asset_id, title), evs in _det_groups.items():
+        host = _host_label(g, asset_id)
+        top = max(evs, key=lambda x: x.anomaly)
+        g.add_finding(Finding(
+            id=_fid("det", f"{asset_id}:{title}"),
+            title=f"{title} on {host}",
+            severity=top.severity, confidence="medium",
+            summary=f"Detection '{title}' fired {len(evs)}× on {host}.",
+            entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
+            sources=top.sources, evidence=list(top.evidence), mitre=[],
+            ts=top.first_seen, kind="single",
+            occ_count=len(evs),
+            occ_latest=max((e.first_seen for e in evs if e.first_seen), default=top.first_seen)))
+
     # cloud SIGMA detections (AWS/Azure) -> findings; cross-domain corroboration
     # (same account/IP also on an endpoint) is surfaced automatically via the
     # global account/IOC keys + the cross-host pass.

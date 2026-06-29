@@ -71,6 +71,13 @@
   .stat{display:inline-block;margin-right:16px;font-size:13px} .stat b{color:#fff;font-size:18px}
   .toast{position:fixed;bottom:18px;right:18px;background:var(--panel2);border:1px solid var(--acc);padding:10px 14px;border-radius:8px;display:none;opacity:0;transition:opacity .35s ease;z-index:9999;box-shadow:0 8px 28px rgba(0,0,0,.45);max-width:420px}
   .toast.show{opacity:1}
+  .fdetail{position:fixed;top:0;right:0;width:540px;max-width:94vw;height:100vh;background:var(--panel,#161b22);border-left:1px solid var(--bd);box-shadow:-10px 0 30px rgba(0,0,0,.5);transform:translateX(100%);transition:transform .22s ease;z-index:9998;overflow:auto;padding:16px 18px}
+  .fdetail.open{transform:translateX(0)}
+  .fdocc{border:1px solid var(--bd);border-radius:6px;padding:8px 10px;margin:6px 0;font-size:12px}
+  .fdocc .kv{display:flex;gap:6px;padding:1px 0;word-break:break-word}
+  .fdocc .kv b{color:var(--muted);font-weight:500;flex:0 0 120px}
+  .fdback{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9997;display:none}
+  .fdback.open{display:block}
   .casehead{display:flex;align-items:center;gap:8px;justify-content:space-between}
   .del{background:transparent;border:1px solid var(--bd);color:var(--crit);font-size:11px;padding:3px 8px;border-radius:5px}
   .del:hover{background:rgba(248,81,73,.12)}
@@ -188,6 +195,8 @@
   </div>
 </div>
 <div class="toast" id="toast"></div>
+<div class="fdback" id="fdback" onclick="closeFindingDetail()"></div>
+<div class="fdetail" id="fdetail"></div>
 <script>
 const $=s=>document.querySelector(s), api=(p,o)=>fetch(p,o).then(r=>r.json());
 let sel=null, tab='report';
@@ -628,8 +637,8 @@ function tlPaint(){
     const arts=(r.artifacts||[]).map(a=>`<span class="arti">${esc(a)}</span>`).join(' ');
     return `<div class="tlrow ${supp(v)?'suppressed':''} ${r.manual?'manual':''}">
       <code style="white-space:nowrap">${esc(r.ts||'—')}</code>
-      <div class="tlmeta">
-        <span><strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(r.title||'')}</span>
+      <div class="tlmeta" style="cursor:pointer" title="Click for full event detail" onclick="openFindingDetail('${r.finding_id}')">
+        <span><strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(r.title||'')} <span style="color:var(--muted);font-size:10px">▸ detail</span></span>
         <span class="l2">${arts}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.suggested_benign?'<span class="sg-hint">analyst: looks expected</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
       </div>
       <span class="chip c-${r.severity}">${esc(r.severity)}</span>
@@ -639,6 +648,38 @@ function tlPaint(){
     : '<i style="color:var(--muted)">nothing matches the current filters</i>';
   $('#tlrows').innerHTML=`<div style="color:var(--muted);font-size:11px;margin:4px 0">${rows.length} of ${(window._tlData||[]).length} events</div>`+html;
 }
+// On-demand per-occurrence detail (side drawer) — keeps the timeline table lean.
+function openFindingDetail(fid){
+  const dr=$('#fdetail'), bk=$('#fdback'); if(!dr)return;
+  dr.classList.add('open'); if(bk)bk.classList.add('open');
+  dr.innerHTML='<div style="color:var(--muted)">loading detail…</div>';
+  api('/api/cases/'+window._tlCase+'/finding/'+encodeURIComponent(fid)).then(d=>{
+    if(!d||d.error){dr.innerHTML=`<div style="display:flex;justify-content:space-between"><b>Detail</b><button class="ghost" onclick="closeFindingDetail()">✕</button></div><p style="color:var(--muted)">${esc((d&&d.error)||'not found')}</p>`;return;}
+    const f=d.finding||{}, occ=d.occurrences||[];
+    const occHtml=occ.length? occ.map(o=>{
+      const kv=Object.entries(o.attrs||{}).map(([k,v])=>`<div class="kv"><b>${esc(k)}</b><span>${esc(String(v))}</span></div>`).join('');
+      return `<div class="fdocc">
+        <div style="color:var(--muted);font-size:11px;margin-bottom:3px">⏱ ${esc(o.ts||'—')} · anomaly ${o.anomaly||0}${o.locator?` · <span class="arti">${esc(o.locator)}</span>`:''}</div>
+        ${kv||'<i style="color:var(--muted)">no fields</i>'}</div>`;}).join('')
+      : '<i style="color:var(--muted)">no per-occurrence detail available</i>';
+    const more=(f.occ_count>f.shown_occurrences)?` <span style="color:var(--muted)">(showing ${f.shown_occurrences} of ${f.occ_count})</span>`:'';
+    dr.innerHTML=`
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <h3 style="margin:0;font-size:15px">${esc(f.title||'')}</h3>
+        <button class="ghost" onclick="closeFindingDetail()">✕</button>
+      </div>
+      <div style="margin:6px 0;font-size:12px;color:var(--muted)">
+        <span class="chip c-${f.severity}">${esc(f.severity||'')}</span>
+        ${(f.hosts||[]).length?' · '+esc((f.hosts||[]).join(', ')):''} · ${f.occ_count||occ.length}× occurrences</div>
+      ${f.summary?`<p style="font-size:13px;margin:6px 0">${esc(f.summary)}</p>`:''}
+      ${(f.mitre&&f.mitre.length)?`<div style="font-size:11px;color:var(--muted)">MITRE: ${f.mitre.map(esc).join(', ')}</div>`:''}
+      ${(f.sources&&f.sources.length)?`<div style="font-size:11px;color:var(--muted)">source: ${f.sources.map(esc).join(', ')}</div>`:''}
+      <h4 style="margin:14px 0 4px;text-transform:none">Occurrences${more}</h4>
+      ${occHtml}`;
+  }).catch(_=>{dr.innerHTML='<div style="color:#f85149">could not load detail</div>';});
+}
+function closeFindingDetail(){const dr=$('#fdetail'),bk=$('#fdback');if(dr)dr.classList.remove('open');if(bk)bk.classList.remove('open');}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeFindingDetail();});
 function tlToggleStatus(k){window._tlf.status[k]=!window._tlf.status[k];tlBuild();}
 function tlSet(k,v){window._tlf[k]=v;tlPaint();}
 function tlAddToggle(){document.getElementById('tladd').classList.toggle('open');}

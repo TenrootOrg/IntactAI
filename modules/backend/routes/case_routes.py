@@ -660,6 +660,18 @@ def timeline(case_id):
     return jsonify({"case_id": case_id, "timeline": store.get_timeline(case_id)})
 
 
+@case_bp.route("/api/cases/<case_id>/finding/<path:finding_id>", methods=["GET"])
+def finding_detail(case_id, finding_id):
+    """On-demand per-occurrence detail for one timeline finding (clicked row). Keeps the
+    timeline table lean — detail is fetched only when needed."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    det = store.get_finding_detail(case_id, finding_id)
+    if det is None:
+        return jsonify({"error": "case not found"}), 404
+    return jsonify(det)
+
+
 @case_bp.route("/api/cases/<case_id>/chat", methods=["POST"])
 def chat(case_id):
     d = request.get_json(silent=True) or {}

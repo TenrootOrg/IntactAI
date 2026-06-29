@@ -207,16 +207,25 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                      anomaly=50, first=ts, rule=rule))
                     rels.append(Relationship(yid, eid, "matched", sources=[MODULE], ts=ts))
 
-            # ---- named pipes -> event (C2 / lateral movement signal) --------
+            # ---- named pipes -> detection event (C2 / lateral movement) ------
+            # DetectRaptor flags these (e.g. "Cobalt Strike: trick_ryuk.profile" in
+            # `Detection`); a flagged pipe is a real C2 detection, not noise — score
+            # it high so it survives the severity floor and becomes a finding.
             elif "namedpipe" in an:
                 pipe = F.get(r, "PipeName", "Name", default=None)
                 if not pipe:
                     continue
+                detn = F.get(r, "Detection", default=None)
                 pid = F.get(r, "ProcPid", *F.PID)
                 eid = keys.event_id(asset, f"{asset}:{pid}", f"pipe:{pipe}")
-                ents.append(_ent(eid, "event", f"named pipe: {str(pipe)[:60]}", asset, run_id,
-                                 loc, anomaly=score_row(r) or 10, first=ts, artifact=artifact,
-                                 pipe=str(pipe), proc_name=F.get(r, "ProcName", default=None)))
+                ents.append(_ent(eid, "event",
+                                 f"named-pipe detection: {str(detn or pipe)[:60]}", asset, run_id,
+                                 loc, anomaly=70 if detn else (score_row(r) or 10), first=ts,
+                                 artifact=artifact,
+                                 flags=(["detection", "c2", "named_pipe"] if detn else None),
+                                 title=(str(detn) if detn else f"Named pipe {pipe}"),
+                                 pipe=str(pipe), detection=str(detn) if detn else None,
+                                 proc_name=F.get(r, "ProcName", default=None)))
                 src = proc_by_asset_pid.get((asset, str(pid))) if pid is not None else None
                 if src:
                     rels.append(Relationship(src, eid, "event_about", sources=[MODULE], ts=ts))
@@ -357,8 +366,24 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     rels.append(Relationship(yid, proc_by_asset_pid[(asset, str(pid))],
                                              "matched", sources=[MODULE], ts=ts))
 
-            # ---- web / dns -> domain ioc ---------------------------------
+            # ---- web / dns -> domain ioc (+ web detection event) ------------
             elif "dnscache" in an or "webhistory" in an or "history" in an or "download" in an:
+                # DetectRaptor.Webhistory flags suspicious visits (Detection/Category,
+                # e.g. Category='Enumeration', Domain='advanced-ip-scanner.com'). Turn a
+                # flagged visit into a detection event so it surfaces as a finding.
+                detn = F.get(r, "Detection", default=None)
+                cat = F.get(r, "Category", default=None)
+                dom = F.get(r, "Domain", "Host", default=None)
+                if detn or cat:
+                    dname = (detn.get("Category") if isinstance(detn, dict) else detn) or cat or "web"
+                    title = f"Web: {str(dname)[:30]} — {str(dom)[:40]}" if dom else f"Web: {str(dname)[:40]}"
+                    eid = keys.event_id(asset, f"{asset}:{dom}", f"webdet:{dname}:{dom}")
+                    ents.append(_ent(eid, "event", title, asset, run_id, loc,
+                                     anomaly=40, first=ts, artifact=artifact,
+                                     flags=["detection", "web"], title=title,
+                                     category=str(cat) if cat else None,
+                                     domain=str(dom) if dom else None,
+                                     browser=F.get(r, "BrowserArtifact", default=None)))
                 url = F.get(r, "Url", "URL", "Name", "Domain", "Host", default=None)
                 kind = keys.classify_indicator(url) if url else None
                 if kind:
@@ -416,7 +441,8 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 ev = _ent(keys.event_id(asset, f"{asset}:{path}", f"mft:{dname}"),
                           "event", f"MFT: {str(dname)[:70]}", asset, run_id, loc,
                           anomaly=_level_anomaly(crit), first=ts, artifact=artifact,
-                          flags=["mft_detection"], detection=str(dname),
+                          flags=["mft_detection", "detection"],
+                          title=f"MFT: {str(dname)[:60]}", detection=str(dname),
                           criticality=str(crit).lower(), path=str(path)[:200])
                 ev.severity = from_string(str(crit))
                 ents.append(ev)
@@ -466,6 +492,24 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  path=F.get(r, "OSPath", "ExecutablePath", default=None),
                                  hijack_type=(info.get("Type") if isinstance(info, dict) else
                                               F.get(r, "Type", default=None))))
+
+            # ---- binary rename / masquerading -> detection event (T1036) ---
+            # DetectRaptor.BinaryRename flags an executable whose real identity (per
+            # its version info / hash) differs from its on-disk name — classic evasion.
+            # Pre-filtered hit => real detection; carry the file + hash for pivoting.
+            elif "binaryrename" in an:
+                name = F.get(r, "Name", default=None)
+                path = F.get(r, "OSPath", *F.PATH, default=None)
+                sha = _sha256_of(r)
+                btime = keys.norm_ts(F.get(r, "Btime", "Ctime", "Mtime", default=ts))
+                title = f"Renamed binary: {str(name or path)[:55]}"
+                eid = keys.event_id(asset, f"{asset}:{path}", f"binrename:{name or path}")
+                ents.append(_ent(eid, "event", title, asset, run_id, loc,
+                                 anomaly=50, first=btime, artifact=artifact,
+                                 flags=["detection", "masquerading"], title=title,
+                                 name=str(name) if name else None,
+                                 path=str(path) if path else None,
+                                 full_hash=str(sha) if sha else None, **_hash_attrs(r)))
 
             # ---- Bootloaders -> firmware event (verdict-gated finding) -----
             elif "bootloader" in an:

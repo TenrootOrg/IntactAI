@@ -1694,6 +1694,61 @@ def get_timeline(case_id) -> list:
     return rows
 
 
+def get_finding_detail(case_id, finding_id) -> dict | None:
+    """On-demand detail for ONE timeline finding — fetched only when a row is clicked,
+    so the timeline table itself stays lean. Returns the finding plus its per-occurrence
+    events (timestamp, matched fields, raw 'details', source-artifact row) pulled from
+    the already-fused graph — no extra collection read. entity_ids are capped per finding,
+    so `shown_occurrences` may be < `occ_count` for very high-volume rules."""
+    d = get_case(case_id)
+    if not d:
+        return None
+    # Manual events have no graph finding — return the stored record.
+    if str(finding_id).startswith("manual:"):
+        ev = next((e for e in (d.get("manual_timeline_events") or [])
+                   if e.get("finding_id") == finding_id), None)
+        if not ev:
+            return {"error": "not found"}
+        return {"finding": {"id": finding_id, "title": ev.get("title"),
+                            "severity": ev.get("severity"), "manual": True,
+                            "ts": ev.get("ts"), "hosts": [ev.get("host")] if ev.get("host") else [],
+                            "summary": ev.get("notes") or "", "occ_count": 1,
+                            "shown_occurrences": 0, "mitre": [], "sources": ["manual"]},
+                "occurrences": []}
+    g = load_graph(case_id)
+    f = next((x for x in g.findings if x.id == finding_id), None)
+    if not f:
+        return {"error": "not found"}
+
+    def _attrs(e):
+        out = {}
+        for k, v in (e.attrs or {}).items():
+            if k == "_assets" or k.startswith("_") or k.endswith("_observations"):
+                continue
+            if v in (None, "", []):
+                continue
+            out[k] = v
+        return out
+
+    occ = []
+    for eid in (f.entity_ids or []):
+        e = g.entities.get(eid)
+        if not e:
+            continue
+        occ.append({"ts": e.first_seen, "label": e.label, "type": e.type,
+                    "severity": e.severity, "anomaly": e.anomaly,
+                    "attrs": _attrs(e),
+                    "locator": (e.evidence[0].locator if e.evidence else None)})
+    occ.sort(key=lambda o: o.get("ts") or "")
+    hosts = [(g.entities.get(a).label if g.entities.get(a) else a) for a in (f.asset_ids or [])]
+    return {"finding": {"id": f.id, "title": f.title, "severity": f.severity,
+                        "confidence": f.confidence, "summary": f.summary,
+                        "occ_count": f.occ_count, "occ_latest": f.occ_latest,
+                        "shown_occurrences": len(occ), "mitre": f.mitre,
+                        "sources": f.sources, "hosts": hosts},
+            "occurrences": occ}
+
+
 def chat_case(case_id, question) -> str:
     d = get_case(case_id)
     g = load_graph(case_id)
