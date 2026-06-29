@@ -92,7 +92,8 @@ def _enabled_run_types(d):
     return allowed
 
 
-_VELOCIRAPTOR_TYPES = {"velociraptor_collection", "velociraptor_upload", "velociraptor_hunt"}
+_VELOCIRAPTOR_TYPES = {"velociraptor_collection", "velociraptor_upload",
+                       "velociraptor_hunt", "velociraptor_offline_import"}
 
 
 def _is_agentic_run(run) -> bool:
@@ -727,7 +728,10 @@ def _contribution_for_run(run, log=None):
             if atype == "velociraptor_upload":
                 _relabel_source(ents, rels, "agentic", "velociraptor")
             return ents, rels
-        if atype == "velociraptor_hunt":
+        if atype in ("velociraptor_hunt", "velociraptor_offline_import"):
+            # An offline import lands its rows under a Velociraptor HUNT (the
+            # importer stores hunt_id on the run); read it the same way as a live
+            # hunt. The artifact allowlist in the mapper keeps the graph clean.
             return _velo_hunt_contribution(rid, det, log=log)
         if atype == "cve_scan":
             return _cve_contribution(rid, det)

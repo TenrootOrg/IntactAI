@@ -7,6 +7,7 @@ import os
 import re
 import json
 import time
+import shlex
 import subprocess
 import zipfile
 
@@ -175,7 +176,9 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
         add_log_to_run(run_id, "Copying ZIP to Velociraptor server...")
         container_path = f"/tmp/offline_import_{int(time.time())}.zip"
 
-        copy_cmd = f"docker cp {zip_file_path} {VELOCIRAPTOR_CONTAINER}:{container_path}"
+        # shlex.quote the host path — uploaded filenames routinely contain spaces
+        # (e.g. "tenroot org hunt cross.zip"); unquoted they split the docker-cp args.
+        copy_cmd = f"docker cp {shlex.quote(zip_file_path)} {VELOCIRAPTOR_CONTAINER}:{shlex.quote(container_path)}"
         result = subprocess.run(copy_cmd, shell=True, capture_output=True, text=True, timeout=120)
 
         if result.returncode != 0:
@@ -474,7 +477,19 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
 
             add_log_to_run(run_id, f"Import complete: {detail_msg}")
             add_log_to_run(run_id, f"Artifacts: {', '.join(artifacts) if artifacts else 'Check Velociraptor UI for details'}")
-            update_run_status(run_id, "completed", progress=100)
+            # Persist the import's data locators onto the run so fusion can find it.
+            # A hunt-export import lands its per-client rows under a HUNT, so store
+            # hunt_id (+ client/flow/artifacts). is_agentic=True: an operator import
+            # is an explicit ingest action and always fuses; the artifact allowlist
+            # is what keeps the graph clean. Without these, fusion can't locate the
+            # imported data and the case fuses to 0 entities.
+            update_run_status(run_id, "completed", progress=100, details={
+                "hunt_id": imported_hunt_id,
+                "client_id": client_id,
+                "flow_id": flow_id,
+                "artifacts": artifacts,
+                "is_agentic": True,
+            })
 
             print(f"[OFFLINE] Import complete! Client: {client_id}, Flow: {flow_id}", flush=True)
             print(f"[OFFLINE] Total rows: {total_rows}, Artifacts: {artifacts}", flush=True)

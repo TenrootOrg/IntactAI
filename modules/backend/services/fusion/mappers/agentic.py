@@ -139,18 +139,62 @@ def _ent(eid, etype, label, asset, run_id, locator, *, anomaly=0, first=None,
                   last_seen=first, flags=list(flags or []))
 
 
+def _artifact_base(name):
+    """Normalize a collected-data key to its base artifact name: strip an 'All '
+    export prefix and any '/SubSource' suffix -> lowercase base."""
+    n = str(name or "")
+    if n[:4].lower() == "all ":
+        n = n[4:]
+    return n.split("/")[0].strip().lower()
+
+
+# Hardcoded allowlist of artifacts fusion supports (mapped + tested). Decoupled
+# from blueprints ON PURPOSE: fusion ingests ONLY these, regardless of what a
+# collection / hunt / offline import happens to contain — no raw Velociraptor
+# data ever enters the graph. Base names, lowercased (sub-sources like
+# "<name>/Parsed" normalize to the base). Currently == the agentic_quick_wins
+# set; add a line here when a new artifact gets a mapper.
+SUPPORTED_ARTIFACTS = frozenset({
+    "windows.hayabusa.rules",
+    "windows.detection.malfind",
+    "detectraptor.windows.detection.evtx",
+    "detectraptor.windows.detection.mft",
+    "detectraptor.windows.detection.binaryrename",
+    "detectraptor.windows.detection.applications",
+    "detectraptor.windows.detection.powershell.psreadline",
+    "detectraptor.windows.detection.amcache",
+    "detectraptor.windows.detection.namedpipes",
+    "detectraptor.windows.detection.webhistory",
+    "detectraptor.windows.detection.hijacklibsmft",
+    "detectraptor.windows.detection.hijacklibsenv",
+    "detectraptor.windows.detection.loldriversmalicious",
+    "detectraptor.windows.detection.bootloaders",
+    "windows.analysis.suspiciouswmiconsumers",
+    "windows.system.untrustedbinaries",
+    "windows.forensics.sam",
+    "windows.eventlogs.condensedaccountusage",
+    "windows.kerberos.goldentickettriage",
+})
+
+
 def _scalar(v):
-    """Coerce a possibly list/tuple field to ONE string (first distinct value).
-    Some Velociraptor artifacts return multi-valued domain/user fields; without
-    this they'd stringify as e.g. "['workgroup']" and fragment the account id so
-    the same account never merges across hosts (breaks cross-host detection)."""
+    """Coerce a possibly list/tuple field to ONE string (first distinct value), or
+    "" for None/empty. Some Velociraptor artifacts return multi-valued domain/user
+    fields; without this they'd stringify as e.g. "['workgroup']" and fragment the
+    account id. The None->"" case matters: a None domain must stay empty so a local
+    account is asset-scoped, NOT keyed globally as "none\\user" (which would falsely
+    merge local accounts across hosts)."""
+    if v is None:
+        return ""
     if isinstance(v, (list, tuple)):
         seen = []
         for x in v:
+            if x is None:
+                continue
             s = str(x).strip()
             if s and s not in seen:
                 seen.append(s)
-        v = seen[0] if seen else ""
+        return seen[0] if seen else ""
     return str(v).strip()
 
 
@@ -216,6 +260,11 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
 
     for artifact, rows in (collected_data or {}).items():
         an = artifact.lower()
+        ab = _artifact_base(artifact)   # base name, sub-source ("/Parsed") stripped
+        # ALLOWLIST: ingest ONLY artifacts we support (mapped + tested) — never
+        # raw Velociraptor data. See SUPPORTED_ARTIFACTS above.
+        if ab not in SUPPORTED_ARTIFACTS:
+            continue
         for i, r in enumerate(rows or []):
             if not isinstance(r, dict):
                 continue
@@ -358,7 +407,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
 
             # ---- user inventory (Sys.Users / AllUsers / SAM) -> account ---
             elif "sys.users" in an or "allusers" in an or "localusers" in an \
-                    or an.endswith(".users") or an.endswith(".sam"):
+                    or ab.endswith(".users") or ab.endswith(".sam"):
                 uname = F.get(r, "Name", *F.USER)
                 aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), uname)
                 if aeid:
