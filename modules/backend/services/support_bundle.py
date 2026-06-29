@@ -195,6 +195,44 @@ def _dump_workflow_runs(dest_dir: str, logger: Callable) -> int:
     return written
 
 
+def _dump_case_logs(dest_dir: str, logger: Callable) -> int:
+    """Write each Case Analysis activity log as a readable .log file (workflow-log
+    style: `[ts] [LEVEL] action — detail`), so a support engineer gets the full
+    config-change / refusion / report / chat audit trail without unpacking JSON."""
+    try:
+        from services.workflow_service import get_all_automation_runs
+    except Exception as e:
+        logger(f"workflow_service import failed (case logs): {e}", 'error')
+        return 0
+    written = 0
+    for run in (get_all_automation_runs() or []):
+        try:
+            if run.get('automation_type') != 'case':
+                continue
+            det = run.get('details') or {}
+            log = det.get('activity_log') or []
+            if not log:
+                continue
+            rid = run.get('run_id') or run.get('id') or 'case'
+            name = det.get('name') or run.get('name') or rid
+            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(name))[:60] or "case"
+            out_path = os.path.join(dest_dir, f"{safe}-{rid}.log")
+            with open(out_path, 'w', encoding='utf-8') as f:
+                f.write(f"# Case Analysis activity log — {name} ({rid})\n")
+                f.write("# All times in UTC+00:00\n\n")
+                for e in log:
+                    line = f"[{e.get('ts','')}] [{str(e.get('status') or 'ok').upper()}] {e.get('action','')}"
+                    if e.get('detail'):
+                        line += f" — {e.get('detail')}"
+                    if e.get('code'):
+                        line += f" (HTTP {e.get('code')})"
+                    f.write(line + "\n")
+            written += 1
+        except Exception as e:
+            logger(f"  could not write case log for {run.get('run_id')}: {e}", 'warning')
+    return written
+
+
 def _copy_compose_configs(workdir: str, dest_dir: str, logger: Callable) -> int:
     """Copy every `modules/<m>/docker-compose.yaml` so the support engineer
     can see how the platform is wired together.
@@ -329,7 +367,7 @@ def prepare_support_bundle(run_id: str, logger: Callable) -> Dict:
     staging_root = tempfile.mkdtemp(prefix=f"support-bundle-{stamp}-", dir="/tmp")
     bundle_root_name = f"intact-support-{stamp}"
     bundle_root = os.path.join(staging_root, bundle_root_name)
-    for sub in ('containers', 'service_logs', 'workflows', 'compose'):
+    for sub in ('containers', 'service_logs', 'workflows', 'case_logs', 'compose'):
         os.makedirs(os.path.join(bundle_root, sub), exist_ok=True)
 
     manifest: Dict = {
@@ -343,6 +381,7 @@ def prepare_support_bundle(run_id: str, logger: Callable) -> Dict:
         'containers': {},
         'service_log_files': 0,
         'workflow_runs': 0,
+        'case_activity_logs': 0,
         'compose_files': 0,
         # Filled in at Phase 7 after every section is built — gives the
         # support engineer a per-section MB breakdown without unzipping.
@@ -423,6 +462,11 @@ def prepare_support_bundle(run_id: str, logger: Callable) -> Dict:
         count = _dump_workflow_runs(wf_dir, logger)
         manifest['workflow_runs'] = count
         logger(f"  ✓ {count} workflow runs serialised", 'info')
+        # Case Analysis activity logs as readable .log files (config changes,
+        # refusion/rescan progress, report LLM calls, chat actions, errors).
+        cl = _dump_case_logs(os.path.join(bundle_root, 'case_logs'), logger)
+        manifest['case_activity_logs'] = cl
+        logger(f"  ✓ {cl} case activity log(s) exported", 'info')
 
         if _check_cancel():
             raise RuntimeError('cancelled')

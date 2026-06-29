@@ -135,9 +135,11 @@
   /* log tab */
   .logrow{display:flex;gap:8px;align-items:baseline;padding:4px 6px;border-bottom:1px solid var(--bd);font-size:12px}
   .logrow.err{background:rgba(248,81,73,.07)}
+  .logrow.warn{background:rgba(210,153,34,.08)}
   .logrow code{font-size:11px}
   .lbadge{font-size:10px;padding:1px 6px;border-radius:4px;text-transform:uppercase;letter-spacing:.03em}
   .b-ok{color:var(--ok);border:1px solid var(--bd)} .b-err{color:#fff;background:#f85149}
+  .b-info{color:var(--info,#58a6ff);border:1px solid var(--bd)} .b-warn{color:#0d1117;background:#d29922}
   .lact{font-family:var(--mono,monospace);color:var(--tx);white-space:nowrap}
   .lcode{font-size:10px;color:var(--muted);border:1px solid var(--bd);border-radius:4px;padding:0 4px}
   .ldetail{color:var(--muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
@@ -451,9 +453,8 @@ function renderConfig(info){
       </div>
     </div>
     <div class="cfgactions">
-      <button class="ghost" onclick="doSave('${info.case_id}')" title="Save these settings only — no re-fuse, no LLM. Takes effect on the next Refusion or Rescan (LLM).">💾 Save</button>
-      <button onclick="doRefusion('${info.case_id}')" style="background:var(--info);border-color:var(--info);color:#0d1117" title="Re-fuse the deterministic graph from the current runs + these settings — updates hosts, entities, links, findings, risk &amp; timeline. Fast, no LLM, no tokens.">🔄 Refusion</button>
-      <button onclick="doRescanLLM('${info.case_id}')" style="background:var(--acc);border-color:var(--acc)" title="Re-fuse, then regenerate the report &amp; chat narrative with the LLM. Spends tokens — use when you want the written analysis to reflect the latest data.">✨ Rescan (LLM)</button>
+      <button onclick="doRefusion('${info.case_id}')" style="background:var(--info);border-color:var(--info);color:#0d1117" title="Saves your configuration first, then re-fuses the deterministic graph (hosts, entities, links, findings, risk &amp; timeline). Fast — no LLM, no tokens.">🔄 Refusion</button>
+      <button onclick="doRescanLLM('${info.case_id}')" style="background:var(--acc);border-color:var(--acc)" title="Saves your configuration, re-fuses, then regenerates the report &amp; chat narrative with the LLM. Spends tokens.">✨ Rescan (LLM)</button>
     </div>`;
   loadHosts(info.case_id);
   // friendly single-field date+time picker — choosing a date pops the hour inline
@@ -531,24 +532,20 @@ async function _railCfg(){
   if(logo) cfg.customer_logo_b64=logo;
   return cfg;
 }
-// Save = persist the settings only. No re-fuse, no LLM — takes effect next Refusion.
-async function doSave(id){
-  toast('saving settings…');
-  await api('/api/cases/'+id+'/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(await _railCfg())});
-  toast('settings saved — apply with Refusion or Rescan (LLM)');
-}
-// Refusion = save + re-fuse the DATA (deterministic graph). Fast, no LLM/tokens.
+// Refusion = SAVE config → re-fuse the DATA (deterministic graph). Fast, no LLM/tokens.
+// The /rescan endpoint persists the posted config (set_analysis_config) before fusing,
+// so saving is always the first step — there is no separate Save button.
 async function doRefusion(id){
-  toast('refusion — updating the data…');
+  toast('saving + refusing — updating the data…');
   await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(await _railCfg())});
-  toast('data updated'); openCase(id);
+  toast('saved + data updated'); openCase(id);
 }
-// Rescan (LLM) = save + re-fuse THEN regenerate report + chat narrative with the LLM.
+// Rescan (LLM) = SAVE config → re-fuse → regenerate report + chat narrative with the LLM.
 async function doRescanLLM(id){
-  toast('rescan (LLM) — refusing + regenerating report…');
+  toast('saving + rescanning (LLM) — refusing + regenerating report…');
   await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(await _railCfg())});
   await api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})});
-  toast('report + chat regenerated (LLM)'); tab='report'; openCase(id);
+  toast('saved + report & chat regenerated (LLM)'); tab='report'; openCase(id);
 }
 function synthFromChat(id){toast('synthesizing from chat…');
   fetch('/api/cases/'+id+'/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(async r=>{
@@ -659,42 +656,53 @@ function tlDelete(eid){
    .then(_=>{toast('event deleted');renderTimeline(window._tlCase);});
 }
 
-// ---- Log tab: follows every action + error inside Case Analysis ----
+// ---- Log tab: workflow-style log (monospace, UTC time + level-colored message) ----
+// Exact workflow-log palette (Tailwind -400): info=blue, success=green, warning=yellow, error=red, ok=neutral.
+const _LOG_COLOR={error:'#f87171',warning:'#facc15',info:'#60a5fa',success:'#4ade80',ok:'#9ca3af'};
 function renderLog(id){
   window._logCase=id;
   $('#tabc').innerHTML=`
-    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:4px">
-      <p style="color:var(--muted);margin:0">Activity log — every action and error in this case (auto-refreshes). The case has no workflow row, so this is its audit trail.</p>
+    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+      <p style="color:var(--muted);margin:0;font-size:12px">Activity log — every action, step &amp; error in this case. Auto-refreshes · all times UTC+00:00.</p>
       <div style="display:flex;gap:6px;align-items:center">
         <label style="font-size:11px;color:var(--muted);display:flex;gap:4px;align-items:center"><input type="checkbox" id="log-follow" checked style="width:auto" onchange="logFollow(this.checked)"> follow</label>
         <button class="ghost" onclick="logRefresh()">↻</button>
+        <button class="ghost" onclick="logDownload()">Download Log</button>
         <button class="ghost" onclick="logClear()">Clear</button>
       </div>
     </div>
-    <div id="logrows"><i style="color:var(--muted)">loading…</i></div>`;
+    <div id="logrows" style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.5;background:#0d1117;border:1px solid var(--bd);border-radius:6px;padding:10px;max-height:62vh;overflow:auto"><i style="color:var(--muted)">loading…</i></div>`;
   logRefresh();
   logFollow(true);
 }
 function logFollow(on){
+  window._logFollow=on;
   if(window._logTimer){clearInterval(window._logTimer);window._logTimer=null;}
   if(on && tab==='log') window._logTimer=setInterval(logRefresh,4000);
 }
 function logRefresh(){
   if(!window._logCase) return;
   api('/api/cases/'+window._logCase+'/log').then(d=>{
-    const rows=(d.log||[]).slice().reverse(); // newest first
+    const rows=window._logData=(d.log||[]);            // chronological (oldest → newest)
     const box=$('#logrows'); if(!box)return;
     box.innerHTML = rows.length? rows.map(e=>{
-      const err=e.status==='error';
-      return `<div class="logrow ${err?'err':''}">
-        <code style="white-space:nowrap;color:var(--muted)">${esc(e.ts||'')}</code>
-        <span class="lbadge ${err?'b-err':'b-ok'}">${err?'error':'ok'}</span>
-        <span class="lact">${esc(e.action||'')}</span>
-        ${e.code?`<span class="lcode">${esc(String(e.code))}</span>`:''}
-        <span class="ldetail">${esc(e.detail||'')}</span>
-      </div>`;}).join('')
+      const st=(e.status||'ok').toLowerCase(), c=_LOG_COLOR[st]||'#8b949e';
+      const msg=esc(e.action||'')+(e.detail?' — '+esc(e.detail):'')+(e.code?` (HTTP ${esc(String(e.code))})`:'');
+      return `<div style="display:flex;gap:16px;padding:1px 0">
+        <span style="color:#6e7681;flex:0 0 72px;white-space:nowrap">${esc((e.ts||'').slice(11,19))}Z</span>
+        <span style="color:${c};flex:1;word-break:break-word">${msg}</span></div>`;}).join('')
       : '<i style="color:var(--muted)">no activity recorded yet — actions in this case will appear here.</i>';
-  }).catch(_=>{const b=$('#logrows');if(b)b.innerHTML='<i style="color:var(--sev-high,#db6d28)">could not load the log</i>';});
+    if(window._logFollow!==false) box.scrollTop=box.scrollHeight;   // follow newest at the bottom
+  }).catch(_=>{const b=$('#logrows');if(b)b.innerHTML='<i style="color:#f85149">could not load the log</i>';});
+}
+function logDownload(){
+  const log=window._logData||[];
+  const name=(curInfo&&curInfo.name)||window._logCase||'case';
+  const head=`# ${name} — Case Analysis activity log\n# All times in UTC+00:00\n\n`;
+  const body=log.map(e=>`[${e.ts||''}] [${(e.status||'ok').toUpperCase()}] ${e.action||''}${e.detail?' — '+e.detail:''}${e.code?` (HTTP ${e.code})`:''}`).join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([head+body],{type:'text/plain'}));
+  a.download=`${String(name).replace(/[^a-z0-9_-]+/gi,'_')}-activity.log`; a.click(); URL.revokeObjectURL(a.href);
 }
 function logClear(){
   if(!confirm('Clear the activity log for this case?'))return;

@@ -290,6 +290,8 @@ def set_disposition(case_id, target, *, verdict="benign", attribution="it_admin"
             "reason": reason, "scope": scope, "by": by}
     existing = [x for x in (d.get("dispositions") or []) if x.get("target") != target]
     ws.update_run_status(case_id, "pending", details={"dispositions": existing + [disp]})
+    log_case_event(case_id, "Risk · disposition applied", "info",
+                   f"{target} → {verdict} ({attribution}, scope={scope}); re-fusing")
     if scope == "environment" and verdict == "benign":
         _promote_disposition_to_baseline(case_id, target)
     fuse_case(case_id)
@@ -304,6 +306,7 @@ def clear_disposition(case_id, target) -> dict:
     d = get_case(case_id)
     remaining = [x for x in (d.get("dispositions") or []) if x.get("target") != target]
     ws.update_run_status(case_id, "pending", details={"dispositions": remaining})
+    log_case_event(case_id, "Risk · disposition cleared", "info", f"{target}; re-fusing")
     fuse_case(case_id)
     return {"target": target, "cleared": True}
 
@@ -789,6 +792,11 @@ def _contribution_for_run(run, log=None):
 def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -> FusionGraph:
     ws = _ws()
     d = get_case(case_id)
+
+    def _plog(msg, status="info", detail=""):   # progress -> case log (recorded fuses only)
+        if _record:
+            log_case_event(case_id, msg, status, detail)
+
     members = _members_for_case(case_id, d)
     # include/exclude: scope the fusion to a chosen subset of the case's runs (None = all)
     inc = d.get("included_run_ids")
@@ -801,6 +809,8 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         # (default = velociraptor only). Disabled modules' runs stay tagged
         # members but contribute nothing to the graph. Drop the filtered runs
         # from `members` too so run_ids/baseline reflect what was actually fused.
+        _plog("Refusion · reading + mapping run data", "info",
+              f"{len(members)} member run(s)")
         contributions, kept = [], []
         for rid in members:
             run = ws.get_automation_run(rid)
@@ -813,11 +823,17 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         members = kept
     window = d.get("time_window") or None
     min_sev = d.get("min_severity", "informational")
+    _plog("Refusion · building case graph", "info",
+          f"window {(window or {}).get('start') or 'open'}…{(window or {}).get('end') or 'now'}, "
+          f"severity {min_sev}+ · {len(contributions)} contributing run(s)")
     # subtract the environment baseline (if one was captured) so provisioning /
     # automation noise doesn't read as attack signal.
     baseline = None if d.get("is_baseline") else load_baseline(_env_key_from_members(members))
     g = correlate.assemble(case_id, contributions, members, baseline=baseline, window=window,
                            min_severity=min_sev, dispositions=d.get("dispositions") or None)
+    _plog("Refusion · graph built", "info",
+          f"{len(g.entities):,} entities, {len(g.relationships):,} links, "
+          f"{len(g.findings):,} findings")
     if not _record:
         return g
     # cross-case KB: enrich with prior sightings, then index this case (best-effort,
@@ -908,7 +924,10 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     # graph. `fusion_graph: {}` clears any legacy inline graph from older fuses.
     pruned = g.pruned(max_entities=int(d.get("max_entities")
                                        or DEFAULT_MAX_ENTITIES)).to_dict()
-    _write_graph_sidecar(case_id, pruned)
+    _plog("Refusion · writing graph to database", "info",
+          f"{len(pruned.get('entities') or {}):,} entities → sidecar")
+    if not _write_graph_sidecar(case_id, pruned):
+        _plog("Refusion · graph write", "error", "sidecar write failed (see backend log)")
     ws.update_run_status(case_id, "completed",
                          details={"fusion_graph": {},
                                   "graph_counts": _counts_from_graph_dict(pruned),
@@ -925,8 +944,8 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
                                   # refresh the report" hint.
                                   "report_run_ids": report_members,
                                   "disposition_checklist": checklist})
-    log_case_event(case_id, "Fuse", "ok",
-                   f"rebuilt case graph — {len(g.entities):,} entities, "
+    log_case_event(case_id, "Refusion complete", "success",
+                   f"saved to database — {len(g.entities):,} entities, "
                    f"{len(g.relationships):,} links, {len(g.findings):,} findings "
                    f"across {len(members)} run(s)")
     return g
@@ -1123,9 +1142,11 @@ def log_case_event(case_id, action, status="ok", detail="", **meta) -> None:
     try:
         if not get_case(case_id):
             return                       # not a real case (e.g. 'quick', calibration ids)
+        lvl = str(status or "ok").lower()
+        if lvl not in ("info", "ok", "success", "warning", "error"):
+            lvl = "ok"
         entry = {"ts": _now_iso() + "Z", "action": str(action)[:120],
-                 "status": "error" if status == "error" else "ok",
-                 "detail": str(detail)[:500]}
+                 "status": lvl, "detail": str(detail)[:500]}
         for k, v in (meta or {}).items():
             entry[k] = v
 
@@ -1231,21 +1252,44 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
     llm_ent, llm_chars = _llm_payload_budget(d)
     llm_out = _llm_output_cap(d)
-    report = llm_sim.generate_report(
-        gv, window=window, min_severity=min_sev,
-        initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
-        run_id=case_id, audience=d.get("audience", "both"), language=d.get("language", "en"),
-        master_prompt=d.get("master_prompt"),
-        dispositions=d.get("dispositions") or None,
-        validations=d.get("timeline_validations") or None,
-        prefer_llm=use_llm, max_entities=llm_ent, budget_chars=llm_chars,
-        max_output_tokens=llm_out)
-    analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
-                               dispositions=d.get("dispositions") or None,
-                               max_entities=llm_ent, budget_chars=llm_chars,
-                               max_output_tokens=llm_out)
-    _merge_case_details(case_id, {"report_md": report, "analysis": analysis})
-    log_case_event(case_id, "Regenerate report", "ok", "report rebuilt from current case state")
+    model, provider, mode = _configured_fusion_model()
+    if use_llm:
+        if model:
+            log_case_event(case_id, "Report · sending request to the LLM", "info",
+                           f"model {model} ({provider}); payload ≤{llm_ent:,} entities, "
+                           f"output ≤{llm_out or 'model max'} tokens")
+        else:
+            log_case_event(case_id, "Report · LLM not configured", "warning",
+                           "no model set — using the deterministic narrator")
+    else:
+        log_case_event(case_id, "Report · regenerating (deterministic)", "info",
+                       "no LLM tokens spent")
+    try:
+        report = llm_sim.generate_report(
+            gv, window=window, min_severity=min_sev,
+            initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
+            run_id=case_id, audience=d.get("audience", "both"), language=d.get("language", "en"),
+            master_prompt=d.get("master_prompt"),
+            dispositions=d.get("dispositions") or None,
+            validations=d.get("timeline_validations") or None,
+            prefer_llm=use_llm, max_entities=llm_ent, budget_chars=llm_chars,
+            max_output_tokens=llm_out)
+        if use_llm and model:
+            log_case_event(case_id, "Report · LLM responded", "success",
+                           f"narrative generated ({len(report):,} chars)")
+        analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
+                                   dispositions=d.get("dispositions") or None,
+                                   max_entities=llm_ent, budget_chars=llm_chars,
+                                   max_output_tokens=llm_out)
+    except Exception as e:
+        log_case_event(case_id, "Report generation", "error", f"LLM/render failed: {e}")
+        raise
+    try:
+        _merge_case_details(case_id, {"report_md": report, "analysis": analysis})
+        log_case_event(case_id, "Report saved", "success", "report + advisory written to the database")
+    except Exception as e:
+        log_case_event(case_id, "Report save", "error", f"database write failed: {e}")
+        raise
     return {"report_md": report, "audience": d.get("audience", "both")}
 
 
@@ -1270,6 +1314,51 @@ def engagement_markdown(case_id) -> str:
 
 
 # ---- Case Analysis console: config + rescan + checklist + timeline validation ----
+
+# Human labels + formatters for the config-change audit log (the Log tab shows
+# e.g. "Entity limit: 20000 → 50000" for every setting the operator changes).
+_CONFIG_LABELS = {
+    "max_entities": "Entity limit", "llm_max_output_tokens": "Output token cap",
+    "min_severity": "Min severity", "time_window": "Time window",
+    "fusion_modules": "Fusion modules", "masking": "Masking",
+    "excluded_hosts": "Excluded hosts", "included_run_ids": "Included runs",
+    "audience": "Report audience", "language": "Report language", "tlp": "TLP",
+    "customer_name": "Customer name", "master_prompt": "Master prompt",
+    "customer_logo_b64": "Customer logo",
+}
+
+
+def _fmt_cfg_val(k, v) -> str:
+    if k == "customer_logo_b64":
+        return "set" if v else "none"
+    if k == "time_window":
+        v = v or {}
+        return f"{v.get('start') or 'open'} … {v.get('end') or 'now'}"
+    if k == "fusion_modules":
+        return ", ".join(v) if v else "none"
+    if k == "masking":
+        return "on" if (v or {}).get("enabled") else "off"
+    if k == "excluded_hosts":
+        return f"{len(v or [])} host(s)"
+    if k == "included_run_ids":
+        return "all" if v is None else f"{len(v or [])} run(s)"
+    if k == "master_prompt":
+        return f"{len(v)} chars" if v else "none"
+    if v in (None, ""):
+        return "unset"
+    return str(v)[:80]
+
+
+def _log_config_changes(case_id, before, patch) -> None:
+    """Audit-log each setting the operator actually changed, old → new."""
+    for k, new in patch.items():
+        old = before.get(k)
+        if old == new:
+            continue
+        label = _CONFIG_LABELS.get(k, k)
+        log_case_event(case_id, f"Config · {label}", "info",
+                       f"{_fmt_cfg_val(k, old)} → {_fmt_cfg_val(k, new)}")
+
 
 def set_analysis_config(case_id, cfg) -> dict:
     """Persist the analysis variables from the config rail (time window, severity,
@@ -1306,7 +1395,16 @@ def set_analysis_config(case_id, cfg) -> dict:
         patch["fusion_modules"] = [m for m in mods
                                    if m in FUSION_MODULES_AVAILABLE] or list(FUSION_MODULES_DEFAULT)
     if patch:
-        _merge_case_details(case_id, patch)
+        before = get_case(case_id) or {}
+        _log_config_changes(case_id, before, patch)
+        try:
+            _merge_case_details(case_id, patch)
+            log_case_event(case_id, "Configuration saved", "success",
+                           f"{len(patch)} setting(s) written to the database")
+        except Exception as e:        # surface DB write failures in the log
+            log_case_event(case_id, "Configuration save", "error",
+                           f"database write failed: {e}")
+            raise
     return {k: ("<logo>" if k == "customer_logo_b64" else v) for k, v in patch.items()}
 
 
@@ -1415,6 +1513,8 @@ def validate_timeline(case_id, finding_id, status, notes="") -> dict:
     Manual events (finding_id 'manual:…') carry their own status on the event
     record — they have no graph finding to suppress."""
     status = status if status in _TL_STATES else "pending"
+    log_case_event(case_id, "Timeline · validation", "info",
+                   f"{finding_id} marked {status}" + (f" — {notes}" if notes else ""))
 
     if str(finding_id).startswith("manual:"):
         return _set_manual_event_status(case_id, finding_id, status, notes)
@@ -1459,6 +1559,8 @@ def add_manual_timeline_event(case_id, event) -> dict:
     d = get_case(case_id)
     evs = list(d.get("manual_timeline_events") or []) + [row]
     _merge_case_details(case_id, {"manual_timeline_events": evs})
+    log_case_event(case_id, "Timeline · manual event added", "info",
+                   f"{row['title']} @ {row['ts'] or 'no ts'} on {row['host']}")
     return row
 
 
@@ -1466,6 +1568,7 @@ def delete_manual_timeline_event(case_id, event_id) -> dict:
     d = get_case(case_id)
     evs = [e for e in (d.get("manual_timeline_events") or []) if e.get("finding_id") != event_id]
     _merge_case_details(case_id, {"manual_timeline_events": evs})
+    log_case_event(case_id, "Timeline · manual event deleted", "info", event_id)
     return {"event_id": event_id, "deleted": True}
 
 
@@ -1553,10 +1656,15 @@ def get_timeline(case_id) -> list:
 def chat_case(case_id, question) -> str:
     d = get_case(case_id)
     g = load_graph(case_id)
+    # Log the ACTION only (never the message content) so the audit trail stays useful
+    # without leaking case Q&A into the log.
+    log_case_event(case_id, "Chat · question received", "info", f"{len(question or '')} chars")
     # FP-triage via chat: if the message attributes activity to IT/employee/etc and grounds
     # to a real finding/entity, record the disposition + re-fuse, then confirm.
     disp = llm_sim.detect_disposition(g, question)
     if disp:
+        log_case_event(case_id, "Chat · disposition detected", "info",
+                       f"{disp.get('label')} → {disp.get('verdict')} ({disp.get('attribution')})")
         set_disposition(case_id, disp["target"], verdict=disp["verdict"],
                         attribution=disp["attribution"], reason=disp.get("reason", ""),
                         scope=disp.get("scope", "case"))
@@ -1564,11 +1672,19 @@ def chat_case(case_id, question) -> str:
                f"({disp['attribution']}). It's suppressed from active findings and won't "
                f"drive host risk; re-fused. Say 'environment' to suppress it fleet-wide.")
     else:
-        ans = llm_sim.chat(g, question, history=d.get("chat_messages") or [],
-                           window=d.get("time_window") or None,
-                           min_severity=d.get("min_severity", "informational"),
-                           run_id=case_id, dispositions=d.get("dispositions") or None,
-                           validations=d.get("timeline_validations") or None)
+        model, provider, _m = _configured_fusion_model()
+        log_case_event(case_id, "Chat · sending to LLM", "info",
+                       f"model {model} ({provider})" if model else "deterministic (no model set)")
+        try:
+            ans = llm_sim.chat(g, question, history=d.get("chat_messages") or [],
+                               window=d.get("time_window") or None,
+                               min_severity=d.get("min_severity", "informational"),
+                               run_id=case_id, dispositions=d.get("dispositions") or None,
+                               validations=d.get("timeline_validations") or None)
+            log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
+        except Exception as e:
+            log_case_event(case_id, "Chat", "error", f"LLM failed: {e}")
+            raise
     def _append_msgs(details):           # atomic, so concurrent turns don't clobber
         msgs = list(details.get("chat_messages") or [])
         msgs += [{"role": "user", "content": question},
