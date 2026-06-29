@@ -314,7 +314,10 @@ def get_case(case_id):
                     "data_stale": len(data_stale),
                     "report_stale": len(report_stale),
                     "stale_run_ids": data_stale or report_stale,
-                    "is_stale": bool(data_stale or report_stale),
+                    # report_dirty: triage/disposition re-fuses changed the data but left
+                    # the report frozen — so the report may not reflect recent changes.
+                    "report_dirty": bool(d.get("report_dirty")),
+                    "is_stale": bool(data_stale or report_stale or d.get("report_dirty")),
                     "llm_enabled": _llm_enabled()})
 
 

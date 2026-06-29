@@ -872,6 +872,9 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         report_members = d.get("report_run_ids")
         if report_members is None:
             report_members = d.get("fused_run_ids")  # legacy graphs: best-effort
+        # Report left frozen while the graph was rebuilt (a triage/disposition
+        # re-fuse) → it may now be behind. Surface a "report not up to date" hint.
+        report_dirty = True
     else:
         llm_ent, llm_chars = _llm_payload_budget(d)
         llm_out = _llm_output_cap(d)
@@ -892,6 +895,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
                                    max_entities=llm_ent, budget_chars=llm_chars,
                                    max_output_tokens=llm_out)
         report_members = list(members)   # report now reflects exactly these members
+        report_dirty = False             # report freshly generated → up to date
     # customer-confirmation checklist — generate once (preserve operator decisions on re-fuse)
     checklist = d.get("disposition_checklist")
     if not checklist:
@@ -943,6 +947,9 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
                                   # a plain graph re-fuse) — drives the "rescan to
                                   # refresh the report" hint.
                                   "report_run_ids": report_members,
+                                  # True when this fuse left the report frozen (triage/
+                                  # disposition re-fuse) → UI shows "report not up to date".
+                                  "report_dirty": report_dirty,
                                   "disposition_checklist": checklist})
     log_case_event(case_id, "Refusion complete", "success",
                    f"saved to database — {len(g.entities):,} entities, "
@@ -1285,7 +1292,8 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
         log_case_event(case_id, "Report generation", "error", f"LLM/render failed: {e}")
         raise
     try:
-        _merge_case_details(case_id, {"report_md": report, "analysis": analysis})
+        _merge_case_details(case_id, {"report_md": report, "analysis": analysis,
+                                      "report_dirty": False})
         log_case_event(case_id, "Report saved", "success", "report + advisory written to the database")
     except Exception as e:
         log_case_event(case_id, "Report save", "error", f"database write failed: {e}")

@@ -69,7 +69,8 @@
   .chatbar{display:flex;gap:8px;margin-top:8px}
   .empty{color:var(--muted);text-align:center;margin-top:60px}
   .stat{display:inline-block;margin-right:16px;font-size:13px} .stat b{color:#fff;font-size:18px}
-  .toast{position:fixed;bottom:18px;right:18px;background:var(--panel2);border:1px solid var(--acc);padding:10px 14px;border-radius:8px;display:none}
+  .toast{position:fixed;bottom:18px;right:18px;background:var(--panel2);border:1px solid var(--acc);padding:10px 14px;border-radius:8px;display:none;opacity:0;transition:opacity .35s ease;z-index:9999;box-shadow:0 8px 28px rgba(0,0,0,.45);max-width:420px}
+  .toast.show{opacity:1}
   .casehead{display:flex;align-items:center;gap:8px;justify-content:space-between}
   .del{background:transparent;border:1px solid var(--bd);color:var(--crit);font-size:11px;padding:3px 8px;border-radius:5px}
   .del:hover{background:rgba(248,81,73,.12)}
@@ -194,7 +195,11 @@ const VIEW=new URLSearchParams(location.search).get('view')||'';
 // In manage mode a row click switches the active workspace (no fusion panel here);
 // otherwise it opens the workspace's fusion view.
 function rowClick(id){ if(VIEW==='manage') activateWorkspace(id); else openCase(id); }
-function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2600);}
+function toast(m,ms){const t=$('#toast');if(!t)return;t.textContent=m;t.style.display='block';
+  requestAnimationFrame(()=>t.classList.add('show'));            // fade in
+  clearTimeout(window._toastT);
+  window._toastT=setTimeout(()=>{t.classList.remove('show');     // fade out
+    setTimeout(()=>{if(!t.classList.contains('show'))t.style.display='none';},400);},ms||2800);}
 function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 
 function createWorkspace(){
@@ -333,7 +338,9 @@ function render(info,md,g){
       ${info.is_stale ? `<div style="margin:8px 0;padding:8px 12px;border:1px solid #d29922;border-radius:6px;background:#2b2400;color:#e3b341;font-size:13px;display:flex;align-items:center;gap:10px;justify-content:space-between">
         <span>${info.data_stale
           ? `ℹ ${info.data_stale} new run(s) available — click <b>Refusion</b> to fold them into the data (fast, no LLM), or <b>Rescan (LLM)</b> to also refresh the report &amp; chat.`
-          : `ℹ The data is current. The report &amp; chat reflect an earlier scan — <b>Rescan (LLM)</b> to refresh them.`}</span>
+          : info.report_dirty
+            ? `⚠ You've made changes (triage / timeline validations) since the last report — the <b>report &amp; chat are not up to date</b>. Click <b>Rescan (LLM)</b> to refresh them.`
+            : `ℹ The data is current. The report &amp; chat reflect an earlier scan — <b>Rescan (LLM)</b> to refresh them.`}</span>
         <span style="display:flex;gap:8px;white-space:nowrap">
           ${info.data_stale ? `<button onclick="doRefusion('${info.case_id}')" style="cursor:pointer;background:var(--info);border-color:var(--info);color:#0d1117">🔄 Refusion</button>` : ''}
           <button onclick="doRescanLLM('${info.case_id}')" style="cursor:pointer;background:var(--acc);border-color:var(--acc)">✨ Rescan (LLM)</button>
@@ -538,14 +545,14 @@ async function _railCfg(){
 async function doRefusion(id){
   toast('saving + refusing — updating the data…');
   await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(await _railCfg())});
-  toast('saved + data updated'); openCase(id);
+  toast('✓ Refusion complete — data, risk & timeline updated'); openCase(id);
 }
 // Rescan (LLM) = SAVE config → re-fuse → regenerate report + chat narrative with the LLM.
 async function doRescanLLM(id){
   toast('saving + rescanning (LLM) — refusing + regenerating report…');
   await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(await _railCfg())});
   await api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})});
-  toast('saved + report & chat regenerated (LLM)'); tab='report'; openCase(id);
+  toast('✓ Rescan complete — report & chat regenerated'); tab='report'; openCase(id);
 }
 function synthFromChat(id){toast('synthesizing from chat…');
   fetch('/api/cases/'+id+'/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(async r=>{
