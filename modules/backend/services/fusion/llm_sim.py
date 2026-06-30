@@ -353,18 +353,31 @@ def _build_mask_mapping(graph, mask):
         mask.reverse_mapping[cp] = canon
 
 
+# Identifier characters that are part of ONE token, so a match can't run across
+# them. Dash/underscore/@/\\ are token-internal (so 'WS-01' never matches inside
+# 'WS-011', 'corp' never inside 'corp_backup', and DOMAIN\\user stays whole). DOT
+# and $ are intentionally NOT here: DOT acts as a label delimiter so a domain/host
+# label is still masked when embedded in an FQDN ('adatumlab' in 'srv.adatumlab.local'),
+# and $ as a delimiter so a machine account 'HOST$' still masks the host. Both are
+# the leak-safe choice. re.escape() handles any special chars in the value itself.
+_MASK_BOUNDARY = r"A-Za-z0-9_@\\-"
+
+
+def _mask_pattern(token: str, ignorecase: bool):
+    flags = re.IGNORECASE if ignorecase else 0
+    return re.compile(rf"(?<![{_MASK_BOUNDARY}]){re.escape(token)}(?![{_MASK_BOUNDARY}])", flags)
+
+
 def _apply_mask(text, mask):
-    """Replace originals→pseudonyms (longest-first), CASE-INSENSITIVE and token-
-    boundary aware, so lowercase/uppercase/FQDN/path variants are all caught without
-    matching inside a larger identifier. Used on the LLM INPUT. No-op when off."""
+    """Replace originals→pseudonyms (longest-first), CASE-INSENSITIVE and identifier-
+    boundary aware (see _MASK_BOUNDARY), so lowercase/uppercase/FQDN/path variants
+    are caught without matching inside a larger identifier. LLM INPUT only; no-op off."""
     if not mask:
         return text
     mapping = getattr(mask, "mapping", {}) or {}
     for orig in sorted((k for k in mapping if k), key=len, reverse=True):
         ps = mapping[orig]
-        pat = re.compile(r"(?<![A-Za-z0-9])" + re.escape(orig) + r"(?![A-Za-z0-9])",
-                         re.IGNORECASE)
-        text = pat.sub(lambda _m, _p=ps: _p, text)
+        text = _mask_pattern(orig, True).sub(lambda _m, _p=ps: _p, text)
     return text
 
 
@@ -377,8 +390,7 @@ def _revert_mask(text, mask):
     rev = getattr(mask, "reverse_mapping", {}) or {}
     for ps in sorted((k for k in rev if k), key=len, reverse=True):
         orig = rev[ps]
-        pat = re.compile(r"(?<![A-Za-z0-9])" + re.escape(ps) + r"(?![A-Za-z0-9])")
-        text = pat.sub(lambda _m, _o=orig: _o, text)
+        text = _mask_pattern(ps, False).sub(lambda _m, _o=orig: _o, text)
     return text
 
 

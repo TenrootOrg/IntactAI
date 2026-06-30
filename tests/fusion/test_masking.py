@@ -205,3 +205,51 @@ def test_system_account_skipped_in_identity_scheme():
     mask = _ident_graph(["NT AUTHORITY\\SYSTEM", "adatumlab\\almogs"])
     assert "NT AUTHORITY\\SYSTEM" not in mask.mapping, "system account must not be numbered/masked"
     assert mask.mapping.get("adatumlab\\almogs", "").startswith("USER")
+
+
+# -- edge cases: dashes / underscores / dots / machine accounts / complex names ----
+def test_boundary_handles_dashes_underscores_dots():
+    m = DataAnonymizer(custom_patterns=[])
+    m.mapping = {"WS-01": "Hostname1", "corp_dc": "Hostname2", "ad-corp.local": "Domain1"}
+    out = llm_sim._apply_mask(
+        "WS-01 ws-01 WS-011 | corp_dc corp_dc_backup | srv.ad-corp.local", m)
+    # exact host masked incl. lowercase, but NOT inside a longer alnum token (WS-011)
+    assert "Hostname1 Hostname1 WS-011" in out, out
+    # underscore is token-internal: 'corp_dc' masked, 'corp_dc_backup' untouched
+    assert "Hostname2 corp_dc_backup" in out, out
+    # dot is a delimiter: the domain is masked even embedded in an FQDN
+    assert "srv.Domain1" in out, out
+
+
+def test_machine_account_host_dollar_masks_host():
+    m = DataAnonymizer(custom_patterns=[])
+    m.mapping = {"ALDC02": "Hostname1"}
+    out = llm_sim._apply_mask("machine ALDC02$ and host ALDC02 on ALDC02X", m)
+    assert "Hostname1$" in out and "ALDC02$" not in out, out   # HOST$ -> host masked
+    assert out.count("Hostname1") == 2 and "ALDC02X" in out, out  # not inside ALDC02X
+
+
+def test_complex_username_with_dash_underscore_roundtrips():
+    g = FusionGraph("case:edge")
+    aid = "asset:endpoint:C.x"
+    g.upsert(Entity(id=aid, type="asset", label="ALDC02"))
+    g.upsert(Entity(id="a1", type="account", label="ad-corp\\svc_sql-01", attrs={"_assets": [aid]}))
+    g.upsert(Entity(id="a2", type="account", label="svc_sql-01@ad-corp.local", attrs={"_assets": [aid]}))
+    mask = DataAnonymizer(custom_patterns=[])
+    llm_sim._build_mask_mapping(g, mask)
+    nt = mask.mapping["ad-corp\\svc_sql-01"]
+    upn = mask.mapping["svc_sql-01@ad-corp.local"]
+    assert re.match(r"^USER\d+$", nt) and re.match(r"^UPN\d+$", upn), (nt, upn)
+    assert nt[4:] == upn[3:], "complex NT + UPN identity shares the number"
+    t = "ad-corp\\svc_sql-01 logged in; UPN svc_sql-01@ad-corp.local on ALDC02"
+    masked = llm_sim._apply_mask(t, mask)
+    assert "svc_sql-01" not in masked, masked            # complex username gone
+    reverted = llm_sim._revert_mask(masked, mask)
+    assert "ad-corp\\svc_sql-01" in reverted and "svc_sql-01@ad-corp.local" in reverted
+
+
+def test_no_overmask_of_substring_domains():
+    m = DataAnonymizer(custom_patterns=[])
+    m.mapping = {"corp": "Domain1"}
+    out = llm_sim._apply_mask("corp and corp-eu and corp_x and corporate and acorp", m)
+    assert out == "Domain1 and corp-eu and corp_x and corporate and acorp", out
