@@ -52,24 +52,49 @@ def map_memory(payload: dict, *, run_id: str, asset: str, hostname=None) -> tupl
     # ---- processes (pslist/psscan/pstree) + spawned + cmdline -----------
     cmd_by_pid = {str(F.get(r, *F.PID)): F.get(r, *F.CMDLINE)
                   for r in by_short.get("cmdline", []) if F.get(r, *F.PID) is not None}
-    seen_proc: dict[str, str] = {}            # pid -> entity id
+    # Collect every process row per PID across the three process plugins, then
+    # emit ONE entity per real process. pslist/psscan/pstree each list the same
+    # processes, so the old per-row append produced 2-3x duplicate entities (a
+    # PID gets different ids when one source records a createtime and another
+    # doesn't). Dedup key = (pid, createtime): rows sharing a PID AND createtime
+    # are the same process; a PID appearing with two DIFFERENT createtimes is
+    # genuine PID reuse (a dead process + a live one) and stays split so we
+    # never merge distinct processes. A process seen ONLY by psscan
+    # (unlinked/terminated — pslist missed it) is flagged `hidden`, a
+    # DKOM-hiding signal the old code threw away as a duplicate.
+    proc_rows: dict[str, list] = {}                 # pid -> [(src, row), ...]
     for src in ("pslist", "psscan", "pstree"):
         for r in by_short.get(src, []):
             pid = F.get(r, *F.PID)
-            if pid is None:
-                continue
-            pid = str(pid)
-            name = F.get(r, *F.PROC_NAME) or "?"
-            ct = F.get(r, *F.CREATETIME)
+            if pid is not None:
+                proc_rows.setdefault(str(pid), []).append((src, r))
+
+    seen_proc: dict[str, str] = {}                  # pid -> canonical entity id
+    for pid, rows in proc_rows.items():
+        srcs = {s for s, _ in rows}
+        hidden = "psscan" in srcs and "pslist" not in srcs
+        ct_buckets = list(dict.fromkeys(
+            keys.ct_bucket(F.get(r, *F.CREATETIME))
+            for _, r in rows
+            if keys.ct_bucket(F.get(r, *F.CREATETIME)) != "?"))
+        # >=2 distinct createtimes on one PID == reuse -> keep each row split.
+        groups = ([[pr] for pr in rows] if len(ct_buckets) >= 2 else [rows])
+        for grp in groups:
+            canon = next((r for _, r in grp
+                          if keys.ct_bucket(F.get(r, *F.CREATETIME)) != "?"), grp[0][1])
+            ct = F.get(canon, *F.CREATETIME)
+            name = next((F.get(r, *F.PROC_NAME) for _, r in grp
+                         if F.get(r, *F.PROC_NAME)), None) or "?"
             pid_eid = keys.process_id(asset, pid, ct, name)
             seen_proc[pid] = pid_eid
-            anom = score_row(r)
             cmd = cmd_by_pid.get(pid)
-            if cmd and score_row({"c": cmd}) > anom:
-                anom = score_row({"c": cmd})
+            anom = max([score_row(r) for _, r in grp]
+                       + ([score_row({"c": cmd})] if cmd else [0]))
             ents.append(_ent(pid_eid, "process", f"{name} ({pid})", asset, run_id,
-                             f"{src}/PID={pid}", anomaly=anom, first=keys.norm_ts(ct),
-                             pid=pid, name=name, cmdline=cmd, createtime=keys.norm_ts(ct)))
+                             f"{'/'.join(sorted(srcs))}/PID={pid}", anomaly=anom,
+                             first=keys.norm_ts(ct), flags=(["hidden"] if hidden else []),
+                             pid=pid, name=name, cmdline=cmd,
+                             createtime=keys.norm_ts(ct), seen_by=sorted(srcs)))
 
     # spawned edges from PPID
     for src in ("pslist", "psscan", "pstree"):
@@ -100,6 +125,7 @@ def map_memory(payload: dict, *, run_id: str, asset: str, hostname=None) -> tupl
         else:
             name = F.get(r, *F.PROC_NAME) or "?"
             eid = keys.process_id(asset, pid, None, name)
+            seen_proc[str(pid)] = eid     # so yara/netconn for this PID still link
             ents.append(_ent(eid, "process", f"{name} ({pid})", asset, run_id,
                              f"malfind/PID={pid}", anomaly=max(score_row(r), 100),
                              flags=["injected"], pid=str(pid), name=name, protection=prot))

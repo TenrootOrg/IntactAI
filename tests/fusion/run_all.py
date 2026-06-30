@@ -49,6 +49,7 @@ MODULES = [
     "tests.fusion.test_kb_enrichment",
     "tests.fusion.test_fuzz_mappers",
     "tests.fusion.test_event_dedup",
+    "tests.fusion.test_memory_mapper",
     "tests.fusion.test_timeline",
 ]
 
