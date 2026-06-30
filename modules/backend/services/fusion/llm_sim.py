@@ -88,6 +88,18 @@ def _agentic_cfg() -> dict:
         return {}
 
 
+def _chat_full_context() -> bool:
+    """ESCAPE HATCH (config `agentic.chat_send_full_context`, default OFF).
+
+    When ON, the case chat SKIPS entity resolution/clarify entirely and sends the
+    FULL distilled graph on every message — so no question can ever be 'blocked'
+    by a clarify, at the price of much higher token cost per message (the
+    question-scoped subgraph is ~20 entities/12k chars; the full graph is up to
+    ~60 entities/32k chars and is re-sent every turn). Leave OFF unless an
+    operator explicitly wants maximum recall over cost."""
+    return bool(_agentic_cfg().get("chat_send_full_context", False))
+
+
 def _use_real() -> bool:
     cfg = _agentic_cfg()
     if str(cfg.get("fusion_llm_mode", "simulated")).lower() != "real":
@@ -162,7 +174,10 @@ CHAT_SYSTEM_PROMPT = (
     "cite it. You may reason, correlate, prioritise and recommend — just keep OBSERVATION "
     "(in the graph) distinct from INFERENCE (your analysis). Never invent hosts, accounts, "
     "hashes or events that aren't present; if the graph can't answer, say so and suggest "
-    "what to collect next."
+    "what to collect next.\n"
+    "If the payload has `resolved_focus`, the analyst named that specific host/identity — "
+    "OPEN your answer by stating which one you're answering on (e.g. \"On DESKTOP-566AT85:\") "
+    "so a mis-resolved name is caught, then answer scoped to it."
 )
 
 # The grounded analyst pass. Anti-hallucination discipline mirrors the agentic HARD
@@ -438,17 +453,45 @@ def generate_disposition_checklist(graph, *, window=None, min_severity="high",
 
 
 def chat(graph, question: str, history=None, *, window=None, min_severity="informational",
-         run_id=None, dispositions=None, validations=None) -> str:
+         run_id=None, dispositions=None, validations=None, full_context=None) -> str:
     """Grounded Q&A. Real path narrates the distilled graph; simulated = deterministic
     retrieval. Surfaces operator dispositions (what's been triaged as benign/IT)."""
+    # --- entity resolution + safety clarify (BEFORE any LLM call, so an ambiguous
+    # or typo'd host name is never silently answered on the wrong machine). The
+    # clarify reply reads as the assistant asking back; it costs no LLM tokens.
+    # The operator can DISABLE all of this via `chat_send_full_context` (see
+    # _chat_full_context) — the escape hatch: never clarifies, always sends the
+    # full graph. More expensive (see the warning on the flag).
+    from . import resolve as _resolve
+    # per-case toggle (Case Analysis → Configuration) wins; else the global default.
+    full_ctx = bool(full_context) if full_context is not None else _chat_full_context()
+    pinned = []
+    if not full_ctx:
+        pinned = _resolve.resolve_followup(graph, question, history)
+        if pinned is None:
+            _res = _resolve.resolve(graph, question)
+            _clar = _resolve.clarify_text(_res)
+            if _clar:
+                return _clar
+            pinned = _res["resolved"]
+    pin_ids = [e.id for e in pinned]
+    focus = [e.label for e in pinned]
+
     # PRIMARY: whenever a model is configured, this is ONE generic, grounded
     # conversation over the whole infrastructure graph — no prepared intents. Just
     # configuring an LLM (online key or offline Ollama) turns it on; no extra flag.
     if _use_real() or _llm_available():
         try:
-            payload = render.chat_subgraph(graph, question, window=window,
-                                           min_severity=min_severity,
-                                           max_entities=budget.CHAT_MAX_ENTITIES)
+            if full_ctx:
+                # Bypass: send the FULL distilled graph every turn (pricier).
+                payload = render.distilled(graph, window=window, min_severity=min_severity,
+                                           max_entities=budget.REPORT_MAX_ENTITIES,
+                                           budget_chars=budget.REPORT_BUDGET_CHARS)
+            else:
+                payload = render.chat_subgraph(graph, question, window=window,
+                                               min_severity=min_severity,
+                                               max_entities=budget.CHAT_MAX_ENTITIES,
+                                               pin_ids=pin_ids, focus_labels=focus)
             if dispositions:
                 payload["operator_dispositions"] = dispositions   # so the LLM can answer triage Qs
             if validations:
@@ -458,6 +501,22 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                              f"{json.dumps(payload)}\n\n{turns}Q: {question}", run_id=run_id)
         except Exception:  # noqa: BLE001 — fall through to deterministic retrieval
             pass
+
+    # FALLBACK (no LLM): if the question resolved to a HOST, answer scoped to it
+    # deterministically so the pin works even without a model configured. Account/
+    # IOC mentions fall through to the existing keyword retrieval below (which has
+    # dedicated identity/IOC handling).
+    pin_assets = [e for e in pinned if e.id.startswith("asset:")]
+    if pin_assets:
+        _aids = {e.id for e in pin_assets}
+        _, _findings = render.scope(graph, window=window, min_severity=min_severity)
+        hits = sorted((f for f in _findings if _aids & set(f.asset_ids)),
+                      key=lambda f: -sev.rank(f.severity))
+        head = "On " + ", ".join(e.label for e in pin_assets) + ":"
+        if not hits:
+            return f"{head} no findings in the current window/severity filter."
+        lines = [f"- **[{f.severity}]** {f.title} — {f.summary}" for f in hits[:15]]
+        return head + "\n" + "\n".join(lines)
 
     # FALLBACK (no LLM configured): deterministic keyword retrieval over the graph.
     q0 = (question or "").lower()

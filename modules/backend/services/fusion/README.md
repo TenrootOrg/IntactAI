@@ -45,6 +45,19 @@ Set `agentic.fusion_llm_mode = "real"` in `frontend_config` (with an API key in
 **distilled graph** via `call_llm(run_id=case_id)` — real token/cost land on the case's
 `llm_metrics`, and the deterministic **fact tables (IOC/MITRE/per-host) are appended
 verbatim, never sent to the model** (so they can't be hallucinated and cost no tokens).
+
+### Chat host/identity resolution (`resolve.py`)
+Chat resolves the host/account named in a question (case-insensitive, partial — `desktop-566`
+→ `DESKTOP-566AT85`) and pins its full context. Ambiguous name → it asks which (offers all,
+accepts "both"); likely typo → "did you mean…?"; partial hash/IP → ignored (exact only). A
+name that matches nothing just answers normally — **the user is never blocked.**
+
+> ⚠️ **`agentic.chat_send_full_context` (default `false`) — COST WARNING.** Set `true` in
+> `frontend_config` to BYPASS resolution/clarify entirely and send the **full distilled graph
+> on every chat message**. Guarantees no question is ever gated, but it is **much more
+> expensive** — each message jumps from the ~20-entity/12k-char question-scoped subgraph to the
+> full ~60-entity/32k-char payload, re-sent every turn. Leave OFF unless maximum recall is
+> worth the per-message token cost.
 Any LLM failure → deterministic fallback. Default `simulated` (airgap-safe, no key).
 
 ## Cross-module / cross-host "combining" (the join points)

@@ -138,17 +138,33 @@ def _entity_dict(graph, e):
 
 
 def chat_subgraph(graph, question, *, window=None, min_severity="informational",
-                  max_entities=20):
+                  max_entities=20, pin_ids=None, focus_labels=None):
     """Question-scoped subgraph for chat — far smaller than the whole distilled graph,
     so chat tokens stay flat as cases grow. ALWAYS includes every >=high finding
     (escalation-critical facts must never be retrieved away), plus the findings and
-    entities lexically relevant to the question."""
+    entities lexically relevant to the question.
+
+    `pin_ids` are entities resolved from the question (services/fusion/resolve.py)
+    — a pinned host gets its FULL context (all its findings, not just >=high) so
+    'why is desktop-566 bad?' loads everything about DESKTOP-566AT85. `focus_labels`
+    is echoed back in the payload so the assistant states which host it answered on
+    (the analyst can catch a mis-resolution)."""
     q = (question or "").lower()
+    pin_ids = set(pin_ids or [])
     _, findings = scope(graph, window=window, min_severity=min_severity)
     picked: dict = {f.id: f for f in findings if sev.at_least(f.severity, "high")}
     rel_ents: list = []
 
-    for a in graph.by_type("asset"):                       # host mentioned
+    # Resolved pins: full context for the named host/account (every finding on it).
+    pin_asset_ids = {i for i in pin_ids if i.startswith("asset:")}
+    for f in findings:
+        if pin_asset_ids & set(f.asset_ids) or (pin_ids & set(f.entity_ids)):
+            picked[f.id] = f
+    for e in graph.entities.values():
+        if e.id in pin_ids:
+            rel_ents.append(e)
+
+    for a in graph.by_type("asset"):                       # host mentioned (lexical)
         if a.label and a.label.lower() in q:
             for f in findings:
                 if a.id in f.asset_ids:
@@ -187,7 +203,7 @@ def chat_subgraph(graph, question, *, window=None, min_severity="informational",
             seen.add(e.id); ents.append(e)
         if len(ents) >= max_entities:
             break
-    return {
+    out = {
         "case_id": graph.case_id,
         "question_scope": True,
         "assets": [{"id": a.id, "host": a.label, "severity": a.severity}
@@ -195,6 +211,11 @@ def chat_subgraph(graph, question, *, window=None, min_severity="informational",
         "findings": [_finding_dict(graph, f) for f in picked.values()],
         "top_entities": [_entity_dict(graph, e) for e in ents],
     }
+    if focus_labels:
+        # The assistant must state which identity it resolved to, so a wrong
+        # resolution is visible to the analyst before they act on it.
+        out["resolved_focus"] = list(focus_labels)
+    return out
 
 
 # ------------------------------------------------------------------ report

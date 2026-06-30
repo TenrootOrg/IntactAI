@@ -304,6 +304,9 @@ def get_case(case_id):
                     "max_entities": d.get("max_entities") or store.DEFAULT_MAX_ENTITIES,
                     # cap on tokens the model WRITES per call (None = model default).
                     "llm_max_output_tokens": d.get("llm_max_output_tokens"),
+                    # COST escape hatch: chat sends the FULL graph every message
+                    # (skips host-resolution/clarify). Default off.
+                    "chat_send_full_context": bool(d.get("chat_send_full_context")),
                     # estimated USD cost of one Rescan (LLM) with the configured model.
                     "cost_estimate": store.estimate_rescan_cost(d),
                     "fusion_modules": store.normalize_modules(d.get("fusion_modules")),

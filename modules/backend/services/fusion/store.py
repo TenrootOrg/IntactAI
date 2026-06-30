@@ -1452,6 +1452,8 @@ def set_analysis_config(case_id, cfg) -> dict:
             patch["llm_max_output_tokens"] = max(256, min(v, 64000)) if v else None
         except (TypeError, ValueError):
             pass
+    if "chat_send_full_context" in cfg:    # COST: bypass chat host-resolution, send
+        patch["chat_send_full_context"] = bool(cfg["chat_send_full_context"])  # full graph/msg
     if "fusion_modules" in cfg:            # which modules fuse (only available ones honored)
         mods = normalize_modules(cfg.get("fusion_modules"))
         patch["fusion_modules"] = [m for m in mods
@@ -1823,7 +1825,8 @@ def chat_case(case_id, question) -> str:
                                window=d.get("time_window") or None,
                                min_severity=d.get("min_severity", "informational"),
                                run_id=case_id, dispositions=d.get("dispositions") or None,
-                               validations=d.get("timeline_validations") or None)
+                               validations=d.get("timeline_validations") or None,
+                               full_context=d.get("chat_send_full_context"))
             log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
         except Exception as e:
             log_case_event(case_id, "Chat", "error", f"LLM failed: {e}")

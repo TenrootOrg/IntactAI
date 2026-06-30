@@ -439,6 +439,9 @@ function renderConfig(info){
             const badge=dis?'<span class="modbadge dis">disabled</span>':(m.default?'<span class="modbadge def">default</span>':'');
             return `<label class="modrow${dis?' dis':''}${on?' on':''}"><input type="checkbox" data-mod="${m.name}" ${on?'checked':''} ${dis?'disabled':''}/> <span class="t">${esc(m.label)}</span>${badge}</label>`;}).join('')}
         </div>
+        <label style="margin-top:8px">Chat context</label>
+        <label class="modrow${info.chat_send_full_context?' on':''}"><input type="checkbox" id="cf-chatfull" ${info.chat_send_full_context?'checked':''} style="width:auto"/> <span class="t">Send full context on every chat message</span></label>
+        <div class="modwarn">⚠ Cost: bypasses chat host-name resolution &amp; the disambiguation prompts — chat never asks "which host?", but every message sends the FULL graph (~20→60 entities, re-sent each turn) so token cost rises sharply. Leave off unless you want maximum recall over cost.</div>
         <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled?'checked':''} style="width:auto"/> Mask hosts / users / IPs</label>
         <textarea id="cf-maskpat" placeholder="extra patterns, one per line (optional)" style="min-height:38px">${esc((mk.patterns||[]).join('\n'))}</textarea>
       </div>
@@ -541,6 +544,7 @@ async function _railCfg(){
     master_prompt:$('#cf-mp').value,
     max_entities:parseInt($('#cf-maxent')?.value)||500000,
     llm_max_output_tokens:parseInt($('#cf-llmout')?.value)||null,
+    chat_send_full_context:$('#cf-chatfull')?.checked||false,
     fusion_modules:[...document.querySelectorAll('#cf-modules input[data-mod]:checked')].map(c=>c.dataset.mod),
     excluded_hosts:[..._hostExc],            // hosts unchecked = dropped from report/LLM
     masking:{enabled:$('#cf-mask').checked, patterns:$('#cf-maskpat').value.split('\n').map(s=>s.trim()).filter(Boolean)}
