@@ -61,10 +61,10 @@ FUSION_MODULE_TYPES = {
 # 'velociraptor' alias are intentionally NOT shown — only agentic blueprints fuse.
 FUSION_MODULES_UI = ["velociraptor_agentic", "memory",
                      "timesketch", "cve", "aws", "azure"]
-# Selectable now: Velociraptor (Agentic) [default-on] + Memory [selectable, off].
+# Selectable now: Velociraptor (Agentic) [default-on] + Memory [default-on].
 # The rest (TimeSketch/CVE/AWS/Azure) are shown greyed/disabled.
 FUSION_MODULES_AVAILABLE = ("velociraptor_agentic", "memory")
-FUSION_MODULES_DEFAULT = ["velociraptor_agentic"]
+FUSION_MODULES_DEFAULT = ["velociraptor_agentic", "memory"]
 _FUSION_MODULE_LABELS = {
     "velociraptor_agentic": "Velociraptor (Agentic)",
     "velociraptor_all": "Velociraptor (All)",
