@@ -533,7 +533,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 # binaries would flood the graph with benign hashes).
                 if phash and untrusted and keys.classify_indicator(phash) == "hash":
                     iid = keys.ioc_id("hash", phash)
-                    ents.append(_ent(iid, "ioc", phash[:16] + "…", asset, run_id, loc,
+                    ents.append(_ent(iid, "ioc", phash, asset, run_id, loc,           # full hash (IOC appendix)
                                      anomaly=20, ioc_kind="hash", first=ts, full_hash=phash,
                                      image=name, **_hash_attrs(r)))   # md5/sha1 = bridge fuel
                     rels.append(Relationship(eid, iid, "matched", sources=[MODULE], ts=ts))
@@ -849,7 +849,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 iid = keys.ioc_id("hash", h)
                 # execution-evidence hashes are benign context (anomaly 0, never
                 # auto cross-host); detection hashes (binaryrename) stay suspicious.
-                ents.append(_ent(iid, "ioc", h[:16] + "…", asset, run_id, loc,
+                ents.append(_ent(iid, "ioc", h, asset, run_id, loc,               # full hash (IOC appendix)
                                  anomaly=0 if is_exec else 10, ioc_kind="hash",
                                  first=ts, full_hash=h, **_hash_attrs(r)))
 
@@ -921,7 +921,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
         sha = hh.get("sha256")
         if sha and keys.classify_indicator(sha) == "hash":
             hid = keys.ioc_id("hash", sha)
-            ents.append(_ent(hid, "ioc", sha[:16] + "…", asset, run_id, "hayabusa/details",
+            ents.append(_ent(hid, "ioc", sha, asset, run_id, "hayabusa/details",  # full hash
                              anomaly=0, ioc_kind="hash", first=ts, full_hash=sha,
                              md5=hh.get("md5"), imphash=hh.get("imphash")))
             if proc_eid:

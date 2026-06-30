@@ -510,26 +510,27 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
     if av:
         out.append(av)
 
-    # ---- Risk overview ------------------------------------------------
+    # ---- Risk overview (NO host-ranking list — that's the Identity Risk table) ----
     out.append("## Risk Overview\n")
     tally = _sev_tally(findings)
     out.append("**Findings by severity:** " + ", ".join(
         f"{tally[lv]} {lv}" for lv in reversed(sev.LEVELS) if tally[lv]) + "\n")
     ranked_assets = sorted(assets, key=lambda a: -(a.attrs.get("risk_score") or 0))
-    out.append("**Hosts (by risk):**")
-    for a in ranked_assets:
-        nf = sum(1 for f in findings if a.id in f.asset_ids)
-        mods = ", ".join(a.attrs.get("modules") or [])
-        flag = "  🔺 escalate" if a.attrs.get("escalate") else ("  ✓ deep" if a.attrs.get("deep") else "")
-        out.append(f"- **{a.label}** — {a.severity} · risk {a.attrs.get('risk_score', 0)} · "
-                   f"{nf} findings · [{mods}]{flag}")
     xh = [f for f in findings if f.kind == "cross_host"]
     if xh:
-        out.append(f"\n**Cross-host activity:** {len(xh)} finding(s) span multiple hosts "
+        out.append(f"**Cross-host activity:** {len(xh)} finding(s) span multiple hosts "
                    f"(lateral movement / shared infrastructure):")
         for f in xh:
             out.append(f"- {f.title}")
-    out.append("")
+        out.append("")
+    # shared file hashes are summarised once here + detailed in the IOC appendix,
+    # NOT repeated as one finding per hash.
+    shared_hashes = [e for e in graph.by_type("ioc")
+                     if e.attrs.get("ioc_kind") == "hash" and "cross_host" in e.flags]
+    if shared_hashes:
+        out.append(f"**Shared binaries:** {len(shared_hashes)} file hash(es) appear on "
+                   f"more than one host (tool reuse / lateral transfer) — full hashes in "
+                   f"the IOC appendix.\n")
 
     # ---- Timeline -----------------------------------------------------
     out.append("## Timeline of Key Events\n")
@@ -551,9 +552,12 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
     out.append("## Affected Hosts — Detail\n")
     for a in ranked_assets:
         out.append(f"### {a.label}  ({a.severity})")
-        afind = [f for f in findings if a.id in f.asset_ids]
+        # findings in CHRONOLOGICAL order (a per-host timeline), not a flat dump
+        afind = sorted((f for f in findings if a.id in f.asset_ids),
+                       key=lambda f: (f.ts or "9999", -sev.rank(f.severity)))
         for f in afind:
-            out.append(f"- **[{f.severity}]** {f.summary}")
+            ts = f"`{fmt_ts(f.ts)}` · " if f.ts else ""
+            out.append(f"- {ts}**[{f.severity}]** {f.summary}")
         # notable entities on this host (suspicious only — no benign baseline noise)
         procs = sorted((e for e in graph.by_type("process")
                         if a.id in _assets_of(e) and (e.anomaly >= 20 or "injected" in e.flags)),
@@ -561,9 +565,10 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
         if procs:
             out.append("  - _suspicious processes:_ " + ", ".join(
                 f"{p.label}{'⚠' if 'injected' in p.flags else ''}" for p in procs))
+        # IOCs are NOT dumped per host (they're in the appendix) — just a pointer.
         iocs = [e for e in graph.by_type("ioc") if a.id in _assets_of(e)]
         if iocs:
-            out.append("  - _indicators:_ " + ", ".join(i.label for i in iocs[:12]))
+            out.append(f"  - _{len(iocs)} indicator(s) on this host — see IOC appendix._")
         accts = [e for e in graph.by_type("account") if a.id in _assets_of(e)]
         if accts:
             out.append("  - _accounts:_ " + ", ".join(
