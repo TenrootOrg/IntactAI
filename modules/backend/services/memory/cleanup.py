@@ -165,8 +165,20 @@ def cleanup_after_run(
                 f"The dir + results survive for this evidence.",
                 "warning",
             )
-        else:
+        elif delete_evidence_row:
+            # Full purge requested ('Delete scan') — drop the analysis dir too.
             _remove_volweb_media_dir(evidence_id, log)
+        else:
+            # DEFAULT: KEEP the per-evidence dir. It holds the yarascan RESULTS
+            # jsonl (small) — the analysis OUTPUT, not the multi-GB .raw (already
+            # reclaimed above). Deleting it 404'd BOTH VolWeb's YARA Scan tab and
+            # the Case-fusion lazy fetch, for zero real space saving.
+            log(
+                f"cleanup: keeping media/{evidence_id}/ — yarascan results stay "
+                f"browsable in VolWeb and readable by Case fusion (only the .raw "
+                f"is reclaimed)",
+                "info",
+            )
 
         if delete_evidence_row and volweb_client is not None:
             try:
