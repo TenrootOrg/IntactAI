@@ -158,3 +158,50 @@ def test_audit_logger_is_safe_without_run_id():
     llm_sim._build_mask_mapping(g, mask)
     assert mask.mapping, "mapping should be populated"
     llm_sim._log_mask_audit(None, mask)   # no run_id -> no-op, must not raise
+
+
+def _ident_graph(labels):
+    g = FusionGraph("case:id")
+    aid = "asset:endpoint:C.h1"
+    g.upsert(Entity(id=aid, type="asset", label="H1"))
+    for lbl in labels:
+        g.upsert(Entity(id=f"account:{lbl.lower()}", type="account", label=lbl,
+                        attrs={"_assets": [aid]}))
+    mask = DataAnonymizer(custom_patterns=[])
+    llm_sim._build_mask_mapping(g, mask)
+    return mask
+
+
+def test_identity_forms_share_one_number():
+    mask = _ident_graph(["adatumlab\\almogs", "almogs@adatumlab.local", "contoso\\jsmith"])
+    nt = mask.mapping["adatumlab\\almogs"]
+    upn = mask.mapping["almogs@adatumlab.local"]
+    other = mask.mapping["contoso\\jsmith"]
+
+    def num(p):
+        return re.match(r"^(USER|UPN|SAM|SID)(\d+)$", p).group(2)
+    assert nt.startswith("USER") and upn.startswith("UPN"), (nt, upn)
+    assert num(nt) == num(upn), "same person's NT + UPN forms share the identity number"
+    assert num(other) != num(nt), "a different person gets a different number"
+    # each form reverts to its own exact original
+    for lbl in ["adatumlab\\almogs", "almogs@adatumlab.local", "contoso\\jsmith"]:
+        masked = llm_sim._apply_mask(f"x {lbl} y", mask)
+        assert lbl not in masked, f"{lbl} should be masked"
+        assert lbl in llm_sim._revert_mask(masked, mask), f"{lbl} should revert"
+
+
+def test_audit_log_groups_identity_forms():
+    mask = _ident_graph(["adatumlab\\almogs", "almogs@adatumlab.local"])
+    detail = llm_sim._mask_audit_lines(mask)
+    assert "identity #" in detail
+    assert "adatumlab\\almogs = USER" in detail
+    assert "almogs@adatumlab.local = UPN" in detail
+    # both forms appear under ONE identity line (same number)
+    line = [l for l in detail.split("; ") if l.startswith("identity #")][0]
+    assert "USER" in line and "UPN" in line, "NT + UPN grouped on one identity line"
+
+
+def test_system_account_skipped_in_identity_scheme():
+    mask = _ident_graph(["NT AUTHORITY\\SYSTEM", "adatumlab\\almogs"])
+    assert "NT AUTHORITY\\SYSTEM" not in mask.mapping, "system account must not be numbered/masked"
+    assert mask.mapping.get("adatumlab\\almogs", "").startswith("USER")

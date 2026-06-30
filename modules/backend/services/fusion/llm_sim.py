@@ -223,6 +223,20 @@ _MASK_SKIP_DOMAINS = {
     "nt authority", "nt service", "nt virtual machine", "font driver host",
     "window manager", "azuread", "local", "localhost", "workgroup", "iis apppool",
 }
+# Per-FORM pseudonym prefix for an identity. The NUMBER is the identity — every
+# form of the same person shares it, so USER1/UPN1/SAM1/SID1 are one identity.
+_IDENT_PREFIX = {"nt": "USER", "upn": "UPN", "sam": "SAM", "sid": "SID"}
+
+# Prepended to the LLM system prompt when masking is on, so the model can connect
+# the forms of one identity by the shared number (we don't pass an alias table).
+_MASK_IDENTITY_LEGEND = (
+    "IDENTITY KEY (this data is anonymised): pseudonyms that share a NUMBER are the "
+    "SAME identity in different forms — USER<n> = a Windows DOMAIN\\user, UPN<n> = "
+    "user@domain, SAM<n> = a bare account name, SID<n> = a security identifier. So "
+    "USER1, UPN1, SAM1 and SID1 are ONE and the same person; likewise Hostname<n>, "
+    "Domain<n> and IP_*<n> are consistent per real value. Correlate and reason over "
+    "these as if they were the real entities.\n\n"
+)
 
 
 def _norm_domain(d: str) -> str:
@@ -238,7 +252,15 @@ def _build_mask_mapping(graph, mask):
     IOC hashes + external/malicious domains are intentionally NOT masked: they're
     threat intel (the attacker's infra), not the customer's identity, and the LLM
     needs them unmasked to recognise and correlate. They're reverted-safe regardless."""
+    try:
+        from services.data_anonymizer import SYSTEM_ACCOUNTS
+    except Exception:
+        SYSTEM_ACCOUNTS = set()
     rows = []
+    accounts = []
+    ident_num: dict = {}          # (user-stem, domain-root) -> identity number
+    stem_nums: dict = {}          # user-stem -> {numbers} (for bare-SAM stem linking)
+    nseq = [0]
 
     def _add_org_domain(d):
         d = _norm_domain(d)
@@ -250,6 +272,38 @@ def _build_mask_mapping(graph, mask):
             except Exception:
                 pass
 
+    def _parts(lbl):
+        if "\\" in lbl:
+            return "nt", lbl.split("\\", 1)[1], lbl.split("\\", 1)[0]
+        if "@" in lbl:
+            return "upn", lbl.split("@", 1)[0], lbl.split("@", 1)[1]
+        return "sam", lbl, ""
+
+    def _assign_account(lbl):
+        """Number each IDENTITY and mask every FORM with a typed pseudonym sharing
+        that number (USER<n>/UPN<n>/SAM<n>). A bare SAM with no domain LINKS to an
+        existing identity when its username uniquely matches one (so 'almogs' joins
+        adatumlab\\almogs); ambiguous or unknown -> its own number."""
+        form, user, dom = _parts(lbl)
+        if _norm_domain(dom) in _MASK_SKIP_DOMAINS or \
+                any(sa in lbl.upper() for sa in SYSTEM_ACCOUNTS):
+            return                                # Windows built-in / system account
+        stem = user.strip().lower()
+        root = _norm_domain(dom).split(".", 1)[0]
+        if form == "sam" and not root and len(stem_nums.get(stem, set())) == 1:
+            n = next(iter(stem_nums[stem]))       # unambiguous stem -> same identity
+        else:
+            key = (stem, root)
+            if key not in ident_num:
+                nseq[0] += 1
+                ident_num[key] = nseq[0]
+            n = ident_num[key]
+        stem_nums.setdefault(stem, set()).add(n)
+        mask.mapping[lbl] = f"{_IDENT_PREFIX[form]}{n}"
+        mask.reverse_mapping[mask.mapping[lbl]] = lbl
+        if dom:
+            _add_org_domain(dom)
+
     for e in graph.entities.values():
         lbl = (e.label or "").strip()
         if not lbl:
@@ -259,15 +313,19 @@ def _build_mask_mapping(graph, mask):
             if "." in lbl:                        # AD FQDN -> org domain suffix
                 _add_org_domain(lbl.split(".", 1)[1])
         elif e.type == "account":
-            rows.append({"username": lbl})        # _mask_user skips system accounts
-            if "\\" in lbl:                       # NT DOMAIN\user
-                _add_org_domain(lbl.split("\\", 1)[0])
-            elif "@" in lbl:                      # UPN user@domain
-                _add_org_domain(lbl.split("@", 1)[1])
+            accounts.append(lbl)
         elif e.type == "netconn":
             rows.append({"ipaddress": lbl})
         elif e.type == "ioc" and (e.attrs or {}).get("ioc_kind") == "ip":
             rows.append({"ipaddress": lbl})       # IOC domains/hashes: kept (threat intel)
+    # Accounts: domain'd forms FIRST (establish identities), then bare SAMs so they
+    # can stem-link to an already-numbered identity.
+    for lbl in accounts:
+        if "\\" in lbl or "@" in lbl:
+            _assign_account(lbl)
+    for lbl in accounts:
+        if "\\" not in lbl and "@" not in lbl:
+            _assign_account(lbl)
     if rows:
         try:
             mask.mask_data(rows)
@@ -324,11 +382,29 @@ def _revert_mask(text, mask):
     return text
 
 
+def _mask_audit_lines(mask) -> str:
+    """Human-readable mapping for the audit log: identity FORMS grouped by their
+    shared number (so an analyst sees the whole identity at a glance), then the rest.
+    e.g. 'identity #1: adatumlab\\almogs = USER1, almogs@adatumlab.local = UPN1, ...'."""
+    mapping = getattr(mask, "mapping", {}) or {}
+    idents: dict = {}
+    others = []
+    for orig, ps in mapping.items():
+        m = re.match(r"^(USER|UPN|SAM|SID)(\d+)$", str(ps))
+        if m:
+            idents.setdefault(m.group(2), []).append(f"{orig} = {ps}")
+        else:
+            others.append(f"{orig} = {ps}")
+    parts = [f"identity #{n}: " + ", ".join(sorted(idents[n]))
+             for n in sorted(idents, key=lambda x: int(x))]
+    parts += sorted(others)
+    return "; ".join(parts)
+
+
 def _log_mask_audit(run_id, mask):
-    """Write the FULL original→pseudonym mapping to the case log BEFORE anything is
-    sent to the LLM — an audit trail of exactly what was anonymised (and how to read
-    it back). Runs ONLY when masking is enabled (mask is set). Operator-side only;
-    the LLM never sees this."""
+    """Write the FULL mapping to the case log BEFORE anything is sent to the LLM — an
+    audit trail of exactly what was anonymised (identity forms grouped by number) and
+    how to read it back. Runs ONLY when masking is enabled. Operator-side only."""
     if not run_id or not mask:
         return
     mapping = getattr(mask, "mapping", {}) or {}
@@ -336,10 +412,9 @@ def _log_mask_audit(run_id, mask):
         return
     try:
         from .store import log_case_event
-        pairs = "; ".join(f"{o} → {p}" for o, p in sorted(mapping.items()))
         log_case_event(run_id, "Masking · pre-LLM mapping", "info",
                        f"{len(mapping)} value(s) masked before LLM send (reverted in "
-                       f"the returned report) — {pairs}")
+                       f"the returned report) — {_mask_audit_lines(mask)}")
     except Exception:
         pass
 
@@ -388,6 +463,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
                 system = ("## OPERATOR CONTEXT (from interactive validation) — treat as "
                           "ground truth; apply the removals/focus described:\n"
                           f"{master_prompt.strip()}\n\n---\n\n") + system
+            if mask:                              # teach the model the identity-number key
+                system = _MASK_IDENTITY_LEGEND + system
             narrative = _real_llm(system, payload_str, run_id=run_id,
                                   max_output_tokens=max_output_tokens)
             narrative = _revert_mask(narrative, mask)   # un-mask the LLM's output
