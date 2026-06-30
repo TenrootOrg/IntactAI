@@ -694,6 +694,20 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
             entity_ids=[e.id], asset_ids=_assets_of(e), sources=e.sources,
             evidence=list(e.evidence), ts=e.first_seen, kind="single"))
 
+    # BASELINE SUBTRACTION (environment-normal): drop any finding whose title also
+    # fired on the clean baseline — admin tooling / provisioning noise that is
+    # normal for THIS environment — except >=critical (always surfaced for review).
+    # The SIGMA loop already subtracts sigma_titles inline; this generalizes that to
+    # the generic-detection / account / driver / sideload findings the inline check
+    # missed, so a clean box that is its own baseline silences to ~0 and an attack
+    # keeps only its non-baseline signal. baseline_fingerprint() already records
+    # finding_titles (title without the ' on <host>' suffix).
+    base_finding_titles = set((baseline or {}).get("finding_titles") or [])
+    if base_finding_titles:
+        g.findings = [f for f in g.findings
+                      if sev.at_least(f.severity, "critical")
+                      or f.title.split(" on ")[0] not in base_finding_titles]
+
 
 # ---------------------------------------------------- coordinated activity
 # Tactic buckets — a cheap, robust proxy for ATT&CK tactics when Hayabusa rows
