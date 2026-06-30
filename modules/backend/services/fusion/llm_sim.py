@@ -243,6 +243,18 @@ def _norm_domain(d: str) -> str:
     return (d or "").strip().strip(".").lower()
 
 
+# Free-text evidence scanners (explicit-detail reports surface real cmdlines/paths).
+# Conservative by construction so they don't mangle benign Windows paths:
+#  - IPv4 / UPN are specific enough to match directly.
+#  - DOMAIN\user is only accepted when its domain root is a KNOWN org domain (so
+#    'Users\Public' in a path is never mistaken for an account).
+#  - UNC '\\HOST\share' yields a host (lateral-movement targets that aren't entities).
+_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_UPN_RE = re.compile(r"\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_DOMUSER_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]+)\\([A-Za-z0-9._$-]+)")
+_UNC_RE = re.compile(r"\\\\([A-Za-z0-9][A-Za-z0-9._-]+)\\")
+
+
 def _build_mask_mapping(graph, mask):
     """Populate the anonymizer mapping from the graph's CUSTOMER-IDENTIFYING values
     (hosts, users, internal IPs, and the org/AD domain) so they can be masked before
@@ -258,6 +270,7 @@ def _build_mask_mapping(graph, mask):
         SYSTEM_ACCOUNTS = set()
     rows = []
     accounts = []
+    org_roots: set = set()        # known org-domain netbios roots (evidence DOMAIN\user gate)
     ident_num: dict = {}          # (user-stem, domain-root) -> identity number
     stem_nums: dict = {}          # user-stem -> {numbers} (for bare-SAM stem linking)
     nseq = [0]
@@ -266,6 +279,7 @@ def _build_mask_mapping(graph, mask):
         d = _norm_domain(d)
         if (not d or len(d) < 2 or d in _MASK_SKIP_DOMAINS or d in _MASK_KEEP_DOMAINS):
             return
+        org_roots.add(d.split(".", 1)[0])
         if d not in mask.mapping:
             try:                                  # reuse the anonymizer's domain pool +
                 mask._get_or_create_pseudo(d, "domain")   # reverse registration
@@ -326,6 +340,32 @@ def _build_mask_mapping(graph, mask):
     for lbl in accounts:
         if "\\" not in lbl and "@" not in lbl:
             _assign_account(lbl)
+    # Evidence free-text scan: explicit-detail reports surface real cmdlines/paths to
+    # the LLM, which can carry customer identifiers that are NOT their own graph entity
+    # (a lateral-movement target host in a UNC path, a DOMAIN\user inside a command).
+    # Feed those tokens through the SAME identity-numbering masker so the explicit
+    # payload never leaks. Runs AFTER accounts so org domains are already established.
+    for e in graph.entities.values():
+        if e.type != "event":
+            continue
+        a = e.attrs or {}
+        if a.get("ev_user"):
+            _assign_account(str(a["ev_user"]))        # structured principal — reliable
+        tip = str(a.get("ev_tgtip") or "").strip()
+        if tip and _IPV4_RE.fullmatch(tip):
+            rows.append({"ipaddress": tip})
+        text = " ".join(str(a.get(k) or "") for k in ("ev_cmdline", "details"))
+        if not text.strip():
+            continue
+        for upn in _UPN_RE.findall(text):
+            _assign_account(upn)
+        for dom, usr in _DOMUSER_RE.findall(text):
+            if _norm_domain(dom).split(".", 1)[0] in org_roots:   # gate vs benign paths
+                _assign_account(f"{dom}\\{usr}")
+        for host in _UNC_RE.findall(text):
+            rows.append({"hostname": host})
+        for ip in _IPV4_RE.findall(text):
+            rows.append({"ipaddress": ip})
     if rows:
         try:
             mask.mask_data(rows)
@@ -360,12 +400,20 @@ def _build_mask_mapping(graph, mask):
 # label is still masked when embedded in an FQDN ('adatumlab' in 'srv.adatumlab.local'),
 # and $ as a delimiter so a machine account 'HOST$' still masks the host. Both are
 # the leak-safe choice. re.escape() handles any special chars in the value itself.
-_MASK_BOUNDARY = r"A-Za-z0-9_@\\-"
+# Identifier chars that bind a token (a match can't run across them): alnum + _ @ -
+# keep 'WS-01' out of 'WS-011' and 'corp' out of 'corp_backup'. DOT and $ are
+# delimiters (so a label is masked inside an FQDN / a machine account 'HOST$'), and
+# BACKSLASH is ALSO a delimiter: a UNC host '\\HOST\share' or DOMAIN\user inside a
+# cmdline must mask (DOMAIN\user keys still mask whole — longest-first runs first).
+_MASK_BOUNDARY = r"A-Za-z0-9_@-"
 
 
 def _mask_pattern(token: str, ignorecase: bool):
     flags = re.IGNORECASE if ignorecase else 0
-    return re.compile(rf"(?<![{_MASK_BOUNDARY}]){re.escape(token)}(?![{_MASK_BOUNDARY}])", flags)
+    # Tolerate JSON-doubled backslashes: a key 'DOMAIN\user' must match the serialized
+    # payload form 'DOMAIN\\user' too (json.dumps escapes every backslash).
+    esc = re.escape(token).replace("\\\\", r"\\+")
+    return re.compile(rf"(?<![{_MASK_BOUNDARY}]){esc}(?![{_MASK_BOUNDARY}])", flags)
 
 
 def _apply_mask(text, mask):
@@ -435,7 +483,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     initial_access=None, case_name="Case", run_id=None,
                     audience="both", language="en", master_prompt=None, mask=None,
                     dispositions=None, validations=None, prefer_llm=True,
-                    max_entities=None, budget_chars=None, max_output_tokens=None) -> str:
+                    max_entities=None, budget_chars=None, max_output_tokens=None,
+                    detail="auto") -> str:
     """Case report. Real path = LLM narrative over distilled() + deterministic
     fact tables appended verbatim. `audience` (exec/technical/both) + `language`
     tailor the narrative (reusing the engagement directive); `master_prompt` is the
@@ -453,7 +502,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
     if prefer_llm and (_use_real() or _llm_available()):
         try:
             payload = render.distilled(graph, window=window, min_severity=min_severity,
-                                       max_entities=me, budget_chars=bc)
+                                       max_entities=me, budget_chars=bc, detail=detail)
             # give the model the analyst's triage so the narrative reflects it
             if dispositions:
                 payload["operator_dispositions"] = dispositions
@@ -482,7 +531,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
             narrative = _revert_mask(narrative, mask)   # un-mask the LLM's output
             facts = render.facts_md(graph, window=window, min_severity=min_severity,
                                     initial_access=initial_access,
-                                    dispositions=dispositions, validations=validations)
+                                    dispositions=dispositions, validations=validations,
+                                    detail=detail)
             # Real values throughout: masking protected the data only in transit to
             # the LLM; the operator's report is reverted (narrative) + never-masked facts.
             md = (f"# Incident Case Report — {case_name}\n\n{narrative}\n\n{facts}"
@@ -491,14 +541,16 @@ def generate_report(graph, *, window=None, min_severity="informational",
         except Exception as e:  # noqa: BLE001 — never let LLM failure break a case
             md = render.report(graph, window=window, min_severity=min_severity,
                                initial_access=initial_access, case_name=case_name,
-                               dispositions=dispositions, validations=validations)
+                               dispositions=dispositions, validations=validations,
+                               detail=detail)
             return md + (f"\n\n---\n_Live LLM unavailable "
                          f"({type(e).__name__}); deterministic fallback._\n")
     # Deterministic (no-LLM) path: nothing is sent to a provider, so no masking —
     # the operator gets the real report directly.
     md = render.report(graph, window=window, min_severity=min_severity,
                        initial_access=initial_access, case_name=case_name,
-                       dispositions=dispositions, validations=validations) + _SIM_TAG
+                       dispositions=dispositions, validations=validations,
+                       detail=detail) + _SIM_TAG
     return md
 
 

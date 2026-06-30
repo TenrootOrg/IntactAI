@@ -946,7 +946,8 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
             prefer_llm=False,   # first scan = fast, free, deterministic; LLM on Rescan
-            max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out)
+            max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out,
+            detail=d.get("report_detail") or "auto")
         # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
         # SEPARATELY from the deterministic findings; fed prior operator dispositions.
         analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
@@ -1316,6 +1317,17 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     window = d.get("time_window") or None
     min_sev = d.get("min_severity", "informational")
     gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
+    # masking (customer-facing): anonymize host/user/ip in the LLM payload + narrative.
+    # This is the LLM path (use_llm=True) where masking actually matters — the first-scan
+    # path is deterministic. Build it here too so anonymization is applied on Rescan.
+    mask = None
+    mk = d.get("masking") or {}
+    if mk.get("enabled"):
+        try:
+            from services.data_anonymizer import DataAnonymizer
+            mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
+        except Exception:
+            mask = None
     llm_ent, llm_chars = _llm_payload_budget(d)
     llm_out = _effective_output_cap(d)
     model, provider, mode = _configured_fusion_model()
@@ -1335,11 +1347,11 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
             gv, window=window, min_severity=min_sev,
             initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
             run_id=case_id, audience=d.get("audience", "both"), language=d.get("language", "en"),
-            master_prompt=d.get("master_prompt"),
+            master_prompt=d.get("master_prompt"), mask=mask,
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
             prefer_llm=use_llm, max_entities=llm_ent, budget_chars=llm_chars,
-            max_output_tokens=llm_out)
+            max_output_tokens=llm_out, detail=d.get("report_detail") or "auto")
         if use_llm and model:
             log_case_event(case_id, "Report · LLM responded", "success",
                            f"narrative generated ({len(report):,} chars)")
@@ -1391,7 +1403,7 @@ _CONFIG_LABELS = {
     "excluded_hosts": "Excluded hosts", "included_run_ids": "Included runs",
     "audience": "Report audience", "language": "Report language", "tlp": "TLP",
     "customer_name": "Customer name", "master_prompt": "Master prompt",
-    "customer_logo_b64": "Customer logo",
+    "customer_logo_b64": "Customer logo", "report_detail": "Report detail",
 }
 
 
@@ -1463,6 +1475,9 @@ def set_analysis_config(case_id, cfg) -> dict:
             pass
     if "chat_send_full_context" in cfg:    # COST: bypass chat host-resolution, send
         patch["chat_send_full_context"] = bool(cfg["chat_send_full_context"])  # full graph/msg
+    if "report_detail" in cfg:             # per-event evidence explicitness in the report
+        v = str(cfg.get("report_detail") or "auto").lower()
+        patch["report_detail"] = v if v in ("auto", "explicit", "summary") else "auto"
     if "fusion_modules" in cfg:            # which modules fuse (only available ones honored)
         mods = normalize_modules(cfg.get("fusion_modules"))
         patch["fusion_modules"] = [m for m in mods

@@ -18,6 +18,10 @@ from . import details as DET
 
 MODULE = "agentic"
 
+# Raw SIGMA Details kept on the event for explicit-detail reports (report_detail).
+# Lossy ontology truncates here; 2000 chars holds a full cmdline + hashes + paths.
+_EV_DETAILS_CAP = 2000
+
 _LOCAL_DOMAINS = {"", "nt authority", "workgroup", "builtin", "font driver host",
                   "window manager", "local service", "network service"}
 
@@ -694,17 +698,26 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 anom = _level_anomaly(level)
                 eid = keys.event_id(asset, f"{F.get(r, 'EID', 'EventID', default='')}",
                                     f"sigma:{title}:{F.get(r, 'RecordID', default=ts)}")
+                raw_details = str(F.get(r, "Details", "Message", default=""))
+                pd = DET.parse_details(raw_details)        # parse once, reuse for linking
+                _hh = DET.hashes(pd)
+                _edom, _eusr = DET.user(pd)
                 ev = _ent(eid, "event", f"SIGMA: {str(title)[:80]}", asset, run_id, loc,
                           anomaly=anom, first=ts, artifact=artifact,
                           flags=["sigma"], title=str(title), level=str(level).lower(),
                           channel=F.get(r, "Channel", default=None),
                           eid_num=F.get(r, "EID", "EventID", default=None),
-                          details=str(F.get(r, "Details", "Message", default=""))[:300])
+                          details=raw_details[:_EV_DETAILS_CAP],
+                          # parsed evidence persisted for explicit-detail reports
+                          ev_cmdline=DET.cmdline(pd), ev_proc=DET.proc(pd),
+                          ev_pid=DET.pid(pd), ev_parentpid=DET.parentpid(pd),
+                          ev_user=(f"{_edom}\\{_eusr}" if _edom and _eusr else _eusr),
+                          ev_tgtip=DET.tgtip(pd),
+                          ev_sha256=_hh.get("sha256"), ev_md5=_hh.get("md5"))
                 ev.severity = from_string(str(level))   # true SIGMA level, not anomaly-derived
                 ents.append(ev)
-                # stash the FULL details (not the truncated attr) for the linking pass
-                sigma_events.append((eid, asset,
-                                     DET.parse_details(F.get(r, "Details", "Message", default="")), ts))
+                # stash the parsed details (reused) for the linking pass
+                sigma_events.append((eid, asset, pd, ts))
 
             # ---- MFT detections -> criticality-typed event ----------------
             # Detection={Name,Criticality}; OSPath is the file. Criticality is

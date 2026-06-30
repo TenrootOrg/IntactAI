@@ -444,6 +444,9 @@ function renderConfig(info){
         <div class="modwarn">⚠ Cost: bypasses chat host-name resolution &amp; the disambiguation prompts — chat never asks "which host?", but every message sends the FULL graph (~20→60 entities, re-sent each turn) so token cost rises sharply. Leave off unless you want maximum recall over cost.</div>
         <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled?'checked':''} style="width:auto"/> Mask hosts / users / IPs</label>
         <textarea id="cf-maskpat" placeholder="extra patterns, one per line (optional)" style="min-height:38px">${esc((mk.patterns||[]).join('\n'))}</textarea>
+        <label style="margin-top:8px">Report detail <span style="color:var(--muted)">— per-event evidence</span></label>
+        <select id="cf-detail">${[['auto','Auto (size-based)'],['explicit','Explicit — real cmdline / path / hash'],['summary','Summary — abstracted findings']].map(o=>opt(o[0],o[1],info.report_detail||'auto')).join('')}</select>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">Auto = explicit for small/specific cases (≤12 hosts), summary at scale. Explicit surfaces the actual command line, path &amp; full hash per high finding (masked if masking is on); summary keeps the report abstracted.</div>
       </div>
       <div class="cfgcol">
         <h4>Hosts (include)</h4>
@@ -545,6 +548,7 @@ async function _railCfg(){
     max_entities:parseInt($('#cf-maxent')?.value)||500000,
     llm_max_output_tokens:parseInt($('#cf-llmout')?.value)||null,
     chat_send_full_context:$('#cf-chatfull')?.checked||false,
+    report_detail:$('#cf-detail')?.value||'auto',
     fusion_modules:[...document.querySelectorAll('#cf-modules input[data-mod]:checked')].map(c=>c.dataset.mod),
     excluded_hosts:[..._hostExc],            // hosts unchecked = dropped from report/LLM
     masking:{enabled:$('#cf-mask').checked, patterns:$('#cf-maskpat').value.split('\n').map(s=>s.trim()).filter(Boolean)}

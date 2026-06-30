@@ -87,19 +87,95 @@ def _phase(f) -> str:
     return "Execution / Injection"
 
 
-def _distilled_at(graph, *, window, min_severity, max_entities):
+# ---- report_detail: per-case explicitness control --------------------------
+# Auto resolves to EXPLICIT (per-event evidence: real cmdline / path / user / full
+# hash) for small, specific cases and SUMMARY (abstracted findings only) for big /
+# cross-org cases. EXPLICIT_MAX_HOSTS mirrors correlate.FLEET_RELATIVE_MIN (the
+# fleet-relative threshold) — below it a case is "specific", above it "at scale".
+EXPLICIT_MAX_HOSTS = 12
+EXPLICIT_MAX_FINDINGS = 150
+EXPLICIT_EVENTS_PER_FINDING = 5            # evidence lines surfaced per finding
+EXPLICIT_EVIDENCE_CHARS = 200             # per evidence line
+
+
+def _resolve_detail(graph, detail, *, window=None, min_severity="informational"):
+    """Resolve the per-case ``report_detail`` control to (effective_mode, reason).
+    'explicit'/'summary' are honored verbatim; 'auto' picks explicit when the case
+    is small AND specific (few hosts AND bounded finding volume), else summary."""
+    d = (detail or "auto").lower()
+    if d not in ("auto", "explicit", "summary"):
+        d = "auto"
+    if d != "auto":
+        return d, d
+    hosts = len(graph.by_type("asset"))
+    _, findings = scope(graph, window=window, min_severity=min_severity)
+    nf = len(findings)
+    if hosts <= EXPLICIT_MAX_HOSTS and nf <= EXPLICIT_MAX_FINDINGS:
+        return "explicit", f"auto — {hosts} host{'' if hosts == 1 else 's'}, {nf} findings"
+    return "summary", f"auto — {hosts} hosts, {nf} findings (at scale)"
+
+
+def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
+                      cap_chars=EXPLICIT_EVIDENCE_CHARS) -> list:
+    """Per-event explicit evidence for a finding — the real cmdline / path / user /
+    target IP / full hash captured on its linked event entities (EXPLICIT mode only;
+    the lossy ontology drops these from the summary view). Capped for budget safety."""
+    lines = []
+    for eid in (f.entity_ids or []):
+        e = graph.entities.get(eid)
+        if not e or e.type != "event":
+            continue
+        a = e.attrs or {}
+        parts = []
+        if a.get("ev_user"):
+            parts.append(f"user={a['ev_user']}")
+        if a.get("ev_cmdline"):
+            parts.append(f"cmd: {a['ev_cmdline']}")
+        elif a.get("ev_proc"):
+            parts.append(f"proc: {a['ev_proc']}")
+        if a.get("ev_tgtip"):
+            parts.append(f"→ {a['ev_tgtip']}")
+        if a.get("ev_sha256"):
+            parts.append(f"sha256={a['ev_sha256']}")
+        if not parts and a.get("details"):
+            parts.append(str(a["details"]))
+        if not parts:
+            continue
+        s = " · ".join(parts)
+        if len(s) > cap_chars:
+            s = s[:cap_chars - 1] + "…"
+        if s not in lines:
+            lines.append(s)
+        if len(lines) >= cap_events:
+            break
+    return lines
+
+
+def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"):
     assets, findings = scope(graph, window=window, min_severity=min_severity)
+    eff_detail, _ = _resolve_detail(graph, detail, window=window, min_severity=min_severity)
     ents = sorted((e for e in graph.entities.values()
                    if e.type != "asset" and sev.at_least(e.severity, min_severity)
                    and in_window(e.first_seen, window)),
                   key=lambda e: -e.anomaly)[:max_entities]
+
+    def _fd(f):
+        fd = {"title": f.title, "severity": f.severity, "confidence": f.confidence,
+              "hosts": [_host_label(graph, x) for x in f.asset_ids],
+              "summary": f.summary, "mitre": f.mitre, "kind": f.kind, "ts": f.ts}
+        # EXPLICIT: surface real per-event evidence so the narrative can cite specifics.
+        if eff_detail == "explicit" and (sev.at_least(f.severity, "high")
+                                         or f.kind == "cross_host"):
+            ev = _finding_evidence(graph, f)
+            if ev:
+                fd["evidence"] = ev
+        return fd
+
     return {
         "case_id": graph.case_id,
+        "report_detail": eff_detail,
         "assets": [{"id": a.id, "host": a.label, "severity": a.severity} for a in assets],
-        "findings": [{"title": f.title, "severity": f.severity, "confidence": f.confidence,
-                      "hosts": [_host_label(graph, x) for x in f.asset_ids],
-                      "summary": f.summary, "mitre": f.mitre, "kind": f.kind, "ts": f.ts}
-                     for f in findings],
+        "findings": [_fd(f) for f in findings],
         "timeline": timeline(graph, window=window),
         "top_entities": [{"type": e.type, "label": e.label, "severity": e.severity,
                           "anomaly": e.anomaly, "flags": e.flags,
@@ -108,20 +184,23 @@ def _distilled_at(graph, *, window, min_severity, max_entities):
 
 
 def distilled(graph, *, window=None, min_severity="informational", max_entities=60,
-              budget_chars=None):
+              budget_chars=None, detail="summary"):
     """Compact, in-window, high-signal payload — what a real LLM would get.
 
     If ``budget_chars`` is set and the payload exceeds it, halve ``max_entities``
     up to ``budget.MAX_STEPDOWNS`` times. Findings/assets/timeline are always kept
-    (they are the signal); only the ranked ``top_entities`` tail is trimmed."""
+    (they are the signal); only the ranked ``top_entities`` tail is trimmed.
+    ``detail`` ('auto'/'explicit'/'summary') controls per-event evidence — explicit
+    adds the real cmdline/path/hash to each high finding (see _resolve_detail)."""
     from . import budget as _b
-    p = _distilled_at(graph, window=window, min_severity=min_severity, max_entities=max_entities)
+    p = _distilled_at(graph, window=window, min_severity=min_severity,
+                      max_entities=max_entities, detail=detail)
     if budget_chars:
         steps = 0
         while _b.over_budget(p, budget_chars) and steps < _b.MAX_STEPDOWNS and max_entities > 5:
             max_entities = max(5, max_entities // 2)
             p = _distilled_at(graph, window=window, min_severity=min_severity,
-                              max_entities=max_entities)
+                              max_entities=max_entities, detail=detail)
             steps += 1
     return p
 
@@ -563,7 +642,7 @@ def _attack_assessment(graph, assets, findings) -> str:
 
 
 def facts_md(graph, *, window=None, min_severity="informational", initial_access=None,
-             dispositions=None, validations=None) -> str:
+             dispositions=None, validations=None, detail="auto") -> str:
     """DETERMINISTIC report body — Priority Hosts table, cross-host correlation,
     analyst validations, ONE flat chronological timeline, IOC appendix, MITRE,
     recommendations. Appended verbatim to every report; NEVER sent to the LLM.
@@ -572,7 +651,10 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
     an Escalation section (the table's Next column says it), per-host detail (the
     single timeline carries it), and phase-split sub-sections."""
     assets, findings = scope(graph, window=window, min_severity=min_severity)
+    eff_detail, reason = _resolve_detail(graph, detail, window=window,
+                                         min_severity=min_severity)
     out: list[str] = []
+    out.append(f"_Report detail: **{eff_detail}** ({reason})._\n")
 
     # ---- Priority Hosts (who to focus on first + why) — the ONLY ranking ----
     rt = risk_table_md(graph, window=window, min_severity=min_severity)
@@ -619,6 +701,9 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
         for f in tl:
             mitre = f" `[{', '.join(f.mitre)}]`" if f.mitre else ""
             out.append(f"- `{fmt_ts(f.ts)}` · **[{f.severity}]** {f.title}{mitre}")
+            if eff_detail == "explicit":           # real per-event evidence inline
+                for ev in _finding_evidence(graph, f):
+                    out.append(f"    - `{ev}`")
     out.append("")
 
     # ---- 4. Key Indicators (IOCs) -------------------------------------
@@ -652,7 +737,7 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
 
 
 def report(graph, *, window=None, min_severity="informational", initial_access=None,
-           case_name="Case", dispositions=None, validations=None) -> str:
+           case_name="Case", dispositions=None, validations=None, detail="auto") -> str:
     """Full deterministic report = narrative prose + deterministic fact tables.
     The real-LLM path (llm_sim) swaps ONLY ``narrative_md`` for an LLM call over
     ``distilled()`` and re-appends ``facts_md`` verbatim."""
@@ -660,7 +745,7 @@ def report(graph, *, window=None, min_severity="informational", initial_access=N
                          initial_access=initial_access, case_name=case_name)
             + "\n" + facts_md(graph, window=window, min_severity=min_severity,
                               dispositions=dispositions, validations=validations,
-                              initial_access=initial_access))
+                              initial_access=initial_access, detail=detail))
 
 
 _MITRE_NAMES = {

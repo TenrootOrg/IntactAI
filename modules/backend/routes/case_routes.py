@@ -307,6 +307,8 @@ def get_case(case_id):
                     # COST escape hatch: chat sends the FULL graph every message
                     # (skips host-resolution/clarify). Default off.
                     "chat_send_full_context": bool(d.get("chat_send_full_context")),
+                    # per-event evidence explicitness: auto | explicit | summary
+                    "report_detail": d.get("report_detail") or "auto",
                     # estimated USD cost of one Rescan (LLM) with the configured model.
                     "cost_estimate": store.estimate_rescan_cost(d),
                     "fusion_modules": store.normalize_modules(d.get("fusion_modules")),
