@@ -476,6 +476,92 @@ def risk_table_md(graph, *, window=None, min_severity="informational") -> str:
     return "\n".join(out)
 
 
+# ATT&CK-tactic synthesis for the Attack Assessment — categorises each detection by
+# what the adversary was DOING (objective), turning a flat detection list into
+# analysis. Kept separate from correlate's coord proxy so it never affects calibration.
+_ASSESS_TACTICS = [
+    ("Execution",
+     ("powershell", "encoded", "base64", "scriptblock", "mshta", "rundll", "wscript",
+      "cscript", "iex", "frombase64", "obfuscat", "wmi exec", "script interpreter")),
+    ("Process Injection", ("inject", "hollow", " rwx")),
+    ("Credential Access",
+     ("lsass", "mimikatz", "credential", "ntds", "sam dump", "password dump", "dumper",
+      "rubeus", "kerberos", "dcsync", "secretsdump", "hashdump", "wdigest", "certipy",
+      "krbrelay", "petitpotam", "safetykatz", "sharpdump", "seatbelt")),
+    ("Defense Evasion",
+     ("log file cleared", "eventlog cleared", "disable", "bypass", "amsi", "etw",
+      "defender", "real-time protection", "threat detection", "tamper", "uac",
+      "renamed", "masquerad", "rename of", "exploitation framework", "hacktool",
+      "relevant file paths", "antivirus")),
+    ("Discovery",
+     ("discovery", "recon", "whoami", "nltest", "enumerat", "adfind", "bloodhound",
+      "sharphound", "ldap", "net group", "ip scanner", "epmap", "powerscan")),
+    ("Lateral Movement",
+     ("rdp", "psexec", "smbexec", "wmiexec", "crackmapexec", "netexec", "remote desktop",
+      "outbound rdp", "pass the", "across ", "lateral")),
+    ("Persistence",
+     ("autorun", "run key", "service install", "scheduled task", "new service",
+      "registry run", "startup", "service creation", "service path", "service name",
+      "schtasks", "boot", "sharpersist", "inveigh")),
+    ("Command & Control",
+     ("beacon", "cobalt strike", "download", "webrequest", "dns query", "named pipe",
+      "file sharing", "callback", "anydesk", "teamviewer", "tailscale", "quick assist")),
+    ("Exfiltration / Tooling", ("data transfer", "7-zip", "archive", "rclone", "exfil")),
+]
+
+
+def _clean_det(title: str) -> str:
+    """A detection's display name: drop 'SIGMA:'/rule wrappers + the trailing host."""
+    import re as _re
+    t = title
+    for p in ("Hayabusa/SIGMA rule ", "SIGMA: ", "Detection '", "Detection: "):
+        if t.startswith(p):
+            t = t[len(p):]
+    t = _re.sub(r"\s+(on|across)\s+.*$", "", t)
+    return t.strip().strip("'\"").rstrip(".")
+
+
+def _host_tactics(findings, host_id) -> dict:
+    """{tactic-label: {detection names}} for one host — by adversary objective."""
+    buckets: dict = {}
+    for f in findings:
+        if host_id not in f.asset_ids:
+            continue
+        tl = f.title.lower()
+        for label, kws in _ASSESS_TACTICS:   # first (highest-priority) tactic wins — one bucket
+            if any(w in tl for w in kws) or (label == "Lateral Movement" and f.kind == "cross_host"):
+                buckets.setdefault(label, set()).add(_clean_det(f.title))
+                break
+    return buckets
+
+
+def _attack_assessment(graph, assets, findings) -> str:
+    """Synthesis by ATT&CK tactic: WHAT the adversary did, fleet-wide + per host —
+    the analytical layer over the raw detections."""
+    ranked = sorted(assets, key=lambda a: -(a.attrs.get("risk_score") or 0))
+    order = [lab for lab, _ in _ASSESS_TACTICS]
+    fleet: dict = {}
+    per_host = []
+    for a in ranked:
+        b = _host_tactics(findings, a.id)
+        if b:
+            per_host.append((a, b))
+        for lab in b:
+            fleet.setdefault(lab, set()).add(a.label)
+    if not fleet:
+        return ""
+    out = ["## Attack Assessment\n"]
+    cov = [f"**{lab}** ({len(fleet[lab])} host{'s' if len(fleet[lab]) > 1 else ''})"
+           for lab in order if lab in fleet]
+    out.append("What the adversary did, by objective (hosts affected): "
+               + " · ".join(cov) + ".\n")
+    for a, b in per_host:
+        parts = [f"_{lab}:_ " + ", ".join(sorted(b[lab])[:4]) for lab in order if lab in b]
+        out.append(f"- **{a.label}** ({a.severity}) — " + " · ".join(parts))
+    out.append("")
+    return "\n".join(out)
+
+
 def facts_md(graph, *, window=None, min_severity="informational", initial_access=None,
              dispositions=None, validations=None) -> str:
     """DETERMINISTIC report body — Priority Hosts table, cross-host correlation,
@@ -492,6 +578,11 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
     rt = risk_table_md(graph, window=window, min_severity=min_severity)
     if rt:
         out.append(rt)
+
+    # ---- Attack Assessment (WHAT the adversary did, by ATT&CK tactic) -------
+    aa = _attack_assessment(graph, assets, findings)
+    if aa:
+        out.append(aa)
 
     # ---- Cross-host correlation (stated ONCE) -------------------------
     xh = [f for f in findings if f.kind == "cross_host"]
