@@ -213,3 +213,82 @@ def test_masking_keeps_benign_path_token():
     llm_sim._build_mask_mapping(g, mask)
     # 'Users' / 'Temp' are not org domains -> never registered as identities
     assert not any(k.lower().startswith(("users\\", "temp\\")) for k in mask.mapping)
+
+
+# ---- IOC high-confidence / validated filter (#4) ---------------------------
+
+def _ioc_graph():
+    g = FusionGraph("case:ioc")
+    a, b = "asset:endpoint:C.h", "asset:endpoint:C.h2"
+    g.upsert(Entity(id=a, type="asset", label="H0"))
+    g.upsert(Entity(id=b, type="asset", label="H1"))
+    g.upsert(Entity(id="ioc:hash:noise", type="ioc", label="n" * 64,        # seen once
+                    attrs={"ioc_kind": "hash", "_assets": [a]}))
+    g.upsert(Entity(id="ioc:hash:xh", type="ioc", label="x" * 64, flags=["cross_host"],
+                    attrs={"ioc_kind": "hash", "_assets": [a, b]}))
+    g.upsert(Entity(id="ioc:hash:cited", type="ioc", label="c" * 64,
+                    attrs={"ioc_kind": "hash", "_assets": [a]}))
+    g.add_finding(Finding(id="f1", title="SIGMA: yara hit", severity="high",
+                          confidence="high", summary="x", asset_ids=[a],
+                          entity_ids=["ioc:hash:cited"], ts=_TS))
+    return g
+
+
+def test_ioc_filter_keeps_high_confidence_drops_noise():
+    g = _ioc_graph()
+    kept, supp = render._high_confidence_iocs(g)
+    ids = {i.id for i, _ in kept}
+    assert "ioc:hash:noise" not in ids and supp >= 1     # merely-seen hash dropped
+    assert "ioc:hash:xh" in ids and "ioc:hash:cited" in ids
+    md = render.facts_md(g, detail="summary")
+    assert "n" * 64 not in md and "x" * 64 in md          # noise gone from report
+
+
+def test_ioc_filter_marks_validated():
+    g = _ioc_graph()
+    kept, _ = render._high_confidence_iocs(
+        g, validations=[{"finding_id": "f1", "status": "real"}])
+    reason = {i.id: r for i, r in kept}
+    assert reason.get("ioc:hash:cited") == "validated"    # operator-confirmed -> 'by us'
+
+
+# ---- Attack Assessment prose (#1) + exec-summary storytelling (#2) ----------
+
+def _story_graph():
+    g = FusionGraph("case:story")
+    a = "asset:endpoint:C.h"
+    g.upsert(Entity(id=a, type="asset", label="WS1", severity="critical",
+                    attrs={"risk_score": 90}))
+    g.add_finding(Finding(id="e", title="SIGMA: Encoded PowerShell", severity="critical",
+                          confidence="high", summary="x", asset_ids=[a], ts=_TS))
+    g.add_finding(Finding(id="c", title="SIGMA: LSASS Credential Dump", severity="high",
+                          confidence="high", summary="x", asset_ids=[a], ts=_TS))
+    return g
+
+
+def test_attack_assessment_is_natural_language():
+    g = _story_graph()
+    md = render._attack_assessment(g, g.by_type("asset"), list(g.findings))
+    assert "the adversary" in md                          # prose, not a title dump
+    assert "executed code" in md and "harvested credentials" in md
+    assert "_Execution:_" not in md and "(SIGMA" not in md  # no raw title list / wrapper
+
+
+def test_exec_summary_tells_a_story():
+    g = _story_graph()
+    s = render._exec_summary(g, g.by_type("asset"), list(g.findings), window=None)
+    assert "the adversary" in s and "Bottom line" in s and "most affected" in s
+    assert len(s) > 300                                   # substantive, not one-liner
+
+
+# ---- section order: Identity Risk moved to the bottom (#3) ------------------
+
+def test_identity_risk_is_near_the_bottom():
+    g = _ioc_graph()
+    g.upsert(Entity(id="asset:endpoint:C.h", type="asset", label="H0", severity="high"))
+    md = render.facts_md(g, detail="summary")
+    i_ioc = md.find("## Indicators of Compromise")
+    i_idn = md.find("## 🎯 Identity Risk")
+    i_rec = md.find("## Recommendations")
+    assert i_ioc != -1 and i_idn != -1 and i_rec != -1
+    assert i_ioc < i_idn < i_rec                          # IOCs ... Identity ... Recommendations

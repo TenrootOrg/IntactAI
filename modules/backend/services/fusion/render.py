@@ -337,26 +337,74 @@ def _sev_tally(findings):
     return t
 
 
-def _exec_summary(graph, assets, findings) -> str:
-    """A plain-language executive summary (what / how big / how bad / bottom line)."""
+def _join_nat(items) -> str:
+    """Oxford-comma natural-language join: [a,b,c] -> 'a, b, and c'."""
+    items = [i for i in items if i]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
+def _exec_summary(graph, assets, findings, *, initial_access=None, window=None) -> str:
+    """A plain-language, story-telling executive summary: what happened in the
+    organization, how the adversary operated, how far it spread, and the bottom line.
+    Deterministic — the live LLM replaces this with a richer narrative."""
+    if not findings:
+        return ("This investigation did not surface findings at or above the configured "
+                "severity threshold within the selected window. No adversary activity is "
+                "indicated; routine monitoring is sufficient.")
     hosts = sorted(assets, key=lambda a: -sev.rank(a.severity))
     crit = [f for f in findings if sev.at_least(f.severity, "critical")]
     high = [f for f in findings if f.severity == "high"]
     xh = [f for f in findings if f.kind == "cross_host"]
-    bits = [f"This investigation correlated activity across **{len(assets)} host(s)** and "
-            f"identified **{len(findings)} finding(s)**"
-            + (f" — {len(crit)} critical, {len(high)} high" if (crit or high) else "") + "."]
+    affected = [a for a in assets if any(a.id in f.asset_ids for f in findings)]
+    order = [lab for lab, _ in _ASSESS_TACTICS]
+    fleet: dict = {}
+    for a in assets:
+        for lab in _host_tactics(findings, a.id):
+            fleet.setdefault(lab, set()).add(a.label)
+    objectives = [lab for lab in order if lab in fleet]
+    tl = timeline(graph, window=window)
+    first_ts = tl[0]["ts"] if tl else None
+    last_ts = tl[-1]["ts"] if tl else None
+
+    bits = []
+    sev_word = "critical" if crit else ("high" if high else "moderate")
+    bits.append(
+        f"This investigation correlated suspicious activity across "
+        f"**{len(affected) or len(assets)} of {len(assets)} host(s)** and surfaced "
+        f"**{len(findings)} finding(s)** ({len(crit)} critical, {len(high)} high), "
+        f"placing the overall severity of this incident at **{sev_word}**.")
+    if first_ts:
+        span = (f"between `{first_ts}` and `{last_ts}`" if last_ts and last_ts != first_ts
+                else f"around `{first_ts}`")
+        bits.append("The earliest time-anchored activity runs " + span
+                    + (f", with initial access estimated near `{initial_access}`." if initial_access
+                       else "."))
+    if objectives:
+        did = _join_nat([_TACTIC_VERB.get(l, l.lower()) for l in objectives])
+        bits.append(f"Across the environment the adversary {did} — consistent with a "
+                    f"hands-on-keyboard intrusion rather than isolated, unrelated alerts."
+                    if (crit or high) else
+                    f"Across the environment the observed activity involved {did}.")
     if hosts:
         w = hosts[0]
+        wt = [lab for lab in order if lab in _host_tactics(findings, w.id)]
         nf = sum(1 for f in findings if w.id in f.asset_ids)
-        bits.append(f"The most affected system is **{w.label}** ({w.severity}, {nf} finding(s)), "
-                    f"the likely focal point of the activity.")
+        focus = (" — the focal point, where activity spanned "
+                 + _join_nat([_TACTIC_SHORT.get(l, l.lower()) for l in wt[:5]])) if wt else ""
+        bits.append(f"**{w.label}** ({w.severity}, {nf} finding(s)) is the most affected "
+                    f"system{focus}.")
     if xh:
-        bits.append(f"**{len(xh)} finding(s)** span multiple hosts, indicating lateral "
-                    f"movement or shared adversary infrastructure.")
-    word = "critical" if crit else ("high" if high else "moderate")
-    bits.append(f"Overall severity is assessed **{word}**"
-                + (" and immediate containment is recommended." if (crit or high) else "."))
+        bits.append(f"Critically, **{len(xh)} finding(s)** correlate across multiple hosts — "
+                    f"evidence the activity spread laterally or shares adversary infrastructure, "
+                    f"so this should be treated as an environment-wide event, not single-host alerts.")
+    if crit or high:
+        bits.append("**Bottom line:** immediate containment of the priority hosts and a "
+                    "deeper forensic review (memory, full timeline) are recommended before "
+                    "the adversary consolidates access further.")
     return " ".join(bits)
 
 
@@ -396,7 +444,8 @@ def narrative_md(graph, *, window=None, min_severity="informational",
                f"{initial_access or 'unknown'} · severity ≥ {min_severity} · "
                f"{len(findings)} findings_\n")
     out.append("## Executive Summary\n")
-    out.append(_exec_summary(graph, assets, findings) + "\n")
+    out.append(_exec_summary(graph, assets, findings,
+                             initial_access=initial_access, window=window) + "\n")
     # NOTE: the deterministic "Incident Overview" + phase-grouped "Attack Narrative"
     # were removed — they duplicated the Executive Summary + the single Timeline. The
     # live-LLM path replaces this whole function with a real narrative.
@@ -459,10 +508,12 @@ def _recommendations_md(graph, findings, assets) -> str:
         recs.append(("Credentials", "Reset and review the accounts used across multiple "
                      "hosts (" + ", ".join(e.label for e in xacct[:6]) + "); rotate tier-0 "
                      "credentials if a privileged/domain account is involved."))
-    iocs = graph.by_type("ioc")
-    if iocs:
+    # Only recommend blocking VALIDATED / high-confidence indicators — never the
+    # merely-observed hashes (don't send the SOC to block a benign binary).
+    kept_iocs = [i for i, _ in _high_confidence_iocs(graph)[0]]
+    if kept_iocs:
         recs.append(("Network", "Block these indicators at the perimeter / EDR and hunt for "
-                     "further callbacks: " + ", ".join(f"`{e.label}`" for e in iocs[:8]) + "."))
+                     "further callbacks: " + ", ".join(f"`{e.label}`" for e in kept_iocs[:8]) + "."))
     if [f for f in findings if f.title.lower().startswith("vulnerab")]:
         recs.append(("Patching", "Patch the exposed vulnerabilities on the affected hosts."))
     esc = [a for a in assets if a.attrs.get("escalate")]
@@ -596,6 +647,28 @@ _ASSESS_TACTICS = [
     ("Exfiltration / Tooling", ("data transfer", "7-zip", "archive", "rclone", "exfil")),
 ]
 
+# Natural-language verb phrase per tactic (for the prose Attack Assessment + exec
+# summary) and a short noun form (for inline lists), so the report reads as sentences
+# describing what the adversary DID — not a flat list of detection titles.
+_TACTIC_VERB = {
+    "Execution": "executed code on the host",
+    "Process Injection": "injected code into running processes",
+    "Credential Access": "harvested credentials",
+    "Defense Evasion": "took steps to evade or disable defenses",
+    "Discovery": "performed host and domain reconnaissance",
+    "Lateral Movement": "moved laterally to other systems",
+    "Persistence": "established persistence",
+    "Command & Control": "established command-and-control",
+    "Exfiltration / Tooling": "staged tooling or data for exfiltration",
+}
+_TACTIC_SHORT = {
+    "Execution": "code execution", "Process Injection": "process injection",
+    "Credential Access": "credential theft", "Defense Evasion": "defense evasion",
+    "Discovery": "reconnaissance", "Lateral Movement": "lateral movement",
+    "Persistence": "persistence", "Command & Control": "command-and-control",
+    "Exfiltration / Tooling": "exfiltration tooling",
+}
+
 
 def _clean_det(title: str) -> str:
     """A detection's display name: drop 'SIGMA:'/rule wrappers + the trailing host."""
@@ -638,15 +711,57 @@ def _attack_assessment(graph, assets, findings) -> str:
     if not fleet:
         return ""
     out = ["## Attack Assessment\n"]
-    cov = [f"**{lab}** ({len(fleet[lab])} host{'s' if len(fleet[lab]) > 1 else ''})"
-           for lab in order if lab in fleet]
-    out.append("What the adversary did, by objective (hosts affected): "
-               + " · ".join(cov) + ".\n")
+    objectives = [lab for lab in order if lab in fleet]
+    did = _join_nat([_TACTIC_VERB.get(l, l.lower()) for l in objectives])
+    nhost = len(set().union(*fleet.values()))
+    out.append(f"Across {nhost} host(s), the adversary {did}. The per-host breakdown below "
+               f"describes what was observed on each system, with the detections that "
+               f"evidence it.\n")
     for a, b in per_host:
-        parts = [f"_{lab}:_ " + ", ".join(sorted(b[lab])[:4]) for lab in order if lab in b]
-        out.append(f"- **{a.label}** ({a.severity}) — " + " · ".join(parts))
+        present = [lab for lab in order if lab in b]
+        clauses = [f"{_TACTIC_VERB.get(lab, lab.lower())} "
+                   f"({', '.join(sorted(b[lab])[:3])})" for lab in present]
+        out.append(f"- On **{a.label}** ({a.severity}), the adversary {_join_nat(clauses)}.")
     out.append("")
     return "\n".join(out)
+
+
+def _high_confidence_iocs(graph, validations=None):
+    """Filter IOCs to those we can stand behind, so the IOC list is genuine indicators
+    rather than an inventory of every benign hash on disk. KEEP an indicator only when:
+      - validated — cited by a finding the analyst confirmed TRUE POSITIVE ('by us'),
+      - detection — cited by any finding (it drove a detection),
+      - cross-host — the same artefact appears on 2+ hosts (tool reuse / lateral spread),
+      - high-anomaly — independently scored high on its own.
+    Everything else (a hash merely seen once, low/zero anomaly) is dropped as noise.
+    Returns (list[(ioc, reason)], suppressed_count)."""
+    iocs = graph.by_type("ioc")
+    cited = set()
+    for f in graph.findings:
+        cited.update(f.entity_ids or [])
+    real_fids = {v.get("finding_id") for v in (validations or [])
+                 if v.get("status") == "real"}
+    validated = set()
+    for f in graph.findings:
+        if f.id in real_fids:
+            validated.update(f.entity_ids or [])
+    kept = []
+    for i in iocs:
+        if i.id in validated:
+            reason = "validated"
+        elif "cross_host" in (i.flags or []):
+            reason = "cross-host"
+        elif i.id in cited:
+            reason = "detection"
+        elif sev.at_least(i.severity, "high"):
+            reason = "high-anomaly"
+        else:
+            continue
+        kept.append((i, reason))
+    # validated/detection/cross-host first, then by host spread
+    rank = {"validated": 0, "detection": 1, "cross-host": 2, "high-anomaly": 3}
+    kept.sort(key=lambda kr: (rank.get(kr[1], 9), -len(_assets_of(kr[0])), kr[0].label))
+    return kept, len(iocs) - len(kept)
 
 
 def facts_md(graph, *, window=None, min_severity="informational", initial_access=None,
@@ -663,11 +778,6 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
                                          min_severity=min_severity)
     out: list[str] = []
     out.append(f"_Report detail: **{eff_detail}** ({reason})._\n")
-
-    # ---- Priority Hosts (who to focus on first + why) — the ONLY ranking ----
-    rt = risk_table_md(graph, window=window, min_severity=min_severity)
-    if rt:
-        out.append(rt)
 
     # ---- Attack Assessment (WHAT the adversary did, by ATT&CK tactic) -------
     aa = _attack_assessment(graph, assets, findings)
@@ -714,15 +824,19 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
                     out.append(f"    - `{ev}`")
     out.append("")
 
-    # ---- 4. Key Indicators (IOCs) -------------------------------------
-    iocs = graph.by_type("ioc")
-    if iocs:
+    # ---- 4. Key Indicators (IOCs) — high-confidence / validated only --------
+    kept_iocs, suppressed = _high_confidence_iocs(graph, validations)
+    if kept_iocs:
         out.append("## Indicators of Compromise (IOCs)\n")
-        out.append("| Indicator | Type | Hosts | Cross-host |")
-        out.append("|---|---|---|---|")
-        for i in sorted(iocs, key=lambda e: (-len(_assets_of(e)), e.label)):
+        out.append("_Only validated or high-confidence indicators are listed; "
+                   f"{suppressed} merely-observed artefact(s) were suppressed as noise._\n"
+                   if suppressed else
+                   "_Validated or high-confidence indicators._\n")
+        out.append("| Indicator | Type | Confidence | Hosts | Cross-host |")
+        out.append("|---|---|---|---|---|")
+        for i, reason in kept_iocs:
             hosts = ", ".join(_host_label(graph, x) for x in _assets_of(i))
-            out.append(f"| `{i.label}` | {i.attrs.get('ioc_kind', '?')} | {hosts} | "
+            out.append(f"| `{i.label}` | {i.attrs.get('ioc_kind', '?')} | {reason} | {hosts} | "
                        f"{'⚠ YES' if 'cross_host' in i.flags else 'no'} |")
         out.append("")
 
@@ -737,6 +851,11 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
             extra = f" (+{len(techs[t]) - 1} more)" if len(techs[t]) > 1 else ""
             out.append(f"- **{t} — {_MITRE_NAMES.get(t, '')}** · {techs[t][0]}{extra}")
         out.append("")
+
+    # ---- Identity Risk (focus order) — placed near the bottom -------------
+    rt = risk_table_md(graph, window=window, min_severity=min_severity)
+    if rt:
+        out.append(rt)
 
     # ---- Recommendations (actionable next steps) ----------------------
     out.append(_recommendations_md(graph, findings, assets))
