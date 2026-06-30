@@ -203,7 +203,25 @@ _BAND_BASE = {"critical": 80, "high": 60, "medium": 40, "low": 20, "informationa
 # Critical reaches 100; lower tiers stop 1 point below the next floor so integer
 # rounding can never collide two tiers (e.g. a high maxes at 79, never 80).
 _BAND_SPAN = {"critical": 20, "high": 19, "medium": 19, "low": 19, "informational": 19}
-REF_INTENSITY = 900.0
+# Within-band fill reference. We FLOAT it to the fleet's p95 intensity (per tier)
+# once an environment is breached enough that the fixed floor would saturate, so
+# the worst ~5% peg at 100 and the rest SPREAD instead of a wall of identical
+# 100s (the large-heavy-fleet failure mode). Below that the floor keeps a small/
+# calm fleet on an absolute scale (a mild worst-host is NOT inflated to 100).
+REF_FLOOR = 900.0
+
+
+def _percentile(values, p: float) -> float:
+    """Linear-interpolation percentile (p in [0, 1]); no numpy dependency."""
+    s = sorted(values)
+    if not s:
+        return 0.0
+    if len(s) == 1:
+        return float(s[0])
+    k = (len(s) - 1) * p
+    lo = int(k)
+    hi = min(lo + 1, len(s) - 1)
+    return s[lo] + (s[hi] - s[lo]) * (k - lo)
 
 # Cross-host scoring. Small fleets keep the historical FLAT x2; once a fleet is
 # large enough the boost scales by prevalence (k affected / N total) so 2-of-100
@@ -233,13 +251,22 @@ def _score_assets(g: FusionGraph) -> None:
     worst-finding tier (the band floor)."""
     assets = list(g.by_type("asset"))
     n_hosts = len(assets)
+    # Pass 1 — raw intensity per host + the per-tier intensity distribution.
+    by_tier: dict[str, list] = {}
     for a in assets:
         intensity = 0.0
         for f in g.findings:
             if a.id in f.asset_ids:
                 intensity += _RISK_W.get(f.severity, 0) * _cross_host_factor(f, n_hosts)
+        a.attrs["risk_intensity"] = round(intensity, 2)   # exact within-band sort tiebreaker
         tier = a.severity if a.severity in _BAND_BASE else "informational"
-        frac = min(intensity / REF_INTENSITY, 1.0)        # band fill, 0..1
+        by_tier.setdefault(tier, []).append(intensity)
+    # Per-tier fill reference: float to the fleet's p95 once it exceeds the floor.
+    ref = {t: max(REF_FLOOR, _percentile(v, 0.95)) for t, v in by_tier.items()}
+    # Pass 2 — band position + coverage flags.
+    for a in assets:
+        tier = a.severity if a.severity in _BAND_BASE else "informational"
+        frac = min(a.attrs["risk_intensity"] / max(ref.get(tier, REF_FLOOR), 1.0), 1.0)
         a.attrs["risk_score"] = int(round(_BAND_BASE[tier] + frac * _BAND_SPAN[tier]))
         modules = set()
         for e in g.entities.values():

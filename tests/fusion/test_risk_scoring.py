@@ -79,3 +79,33 @@ def test_cross_host_factor_is_prevalence_relative_above_the_gate():
 def test_non_cross_host_finding_has_no_boost():
     f = _finding("s", "high", ["a"], kind="single")
     assert correlate._cross_host_factor(f, n_hosts=999) == 1.0
+
+
+def test_adaptive_ref_spreads_a_heavy_breached_fleet():
+    # 30 critical hosts, intensities far above the REF_FLOOR and widely varied.
+    # A fixed floor would peg most at 100; the p95-adaptive REF must spread them.
+    g = FusionGraph("case:test")
+    for i in range(30):
+        aid = f"asset:endpoint:H{i:02d}"
+        g.upsert(_asset(aid, "critical"))
+        g.add_finding(_finding(f"c{i}", "critical", [aid]))
+        for j in range(5 + i * 3):                 # rising high counts -> rising intensity
+            g.add_finding(_finding(f"h{i}_{j}", "high", [aid]))
+    correlate._score_assets(g)
+    scores = [g.entities[f"asset:endpoint:H{i:02d}"].attrs["risk_score"] for i in range(30)]
+    assert scores.count(100) < 15, f"adaptive REF must not peg most hosts at 100 (got {scores.count(100)}/30)"
+    assert len(set(scores)) >= 8, "scores must spread across the band, not collapse"
+    intens = [g.entities[f"asset:endpoint:H{i:02d}"].attrs["risk_intensity"] for i in range(30)]
+    assert len(set(intens)) == 30, "raw intensity is a strict tiebreaker for hosts that share a display score"
+
+
+def test_small_calm_fleet_stays_absolute_via_floor():
+    # p95 (130) < REF_FLOOR (900) -> REF=floor -> a mild worst-host is NOT inflated to ~100.
+    g = FusionGraph("case:test")
+    A = "asset:endpoint:A"
+    g.upsert(_asset(A, "critical"))
+    g.add_finding(_finding("c", "critical", [A]))
+    for j in range(4):
+        g.add_finding(_finding(f"h{j}", "high", [A]))   # intensity 50 + 80 = 130 << 900
+    correlate._score_assets(g)
+    assert g.entities[A].attrs["risk_score"] < 90, "calm fleet must stay absolute, not inflate to 100"

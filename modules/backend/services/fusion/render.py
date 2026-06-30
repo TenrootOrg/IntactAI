@@ -414,6 +414,7 @@ def risk_table(graph, *, window=None, min_severity="informational") -> list:
             "host": a.label,
             "hostname": a.attrs.get("hostname") or a.label,
             "risk_score": int(a.attrs.get("risk_score") or 0),
+            "risk_intensity": float(a.attrs.get("risk_intensity") or 0),
             "severity": a.severity,
             "escalate": escalate,
             "deep": deep,
@@ -425,7 +426,10 @@ def risk_table(graph, *, window=None, min_severity="informational") -> list:
             "why": "; ".join(reasons[:3]) or "no findings in window",
             "next_action": action,
         })
-    rows.sort(key=lambda r: (-r["risk_score"], -sev.rank(r["severity"]), r["host"]))
+    # risk_score encodes the tier band; raw intensity breaks display-integer ties
+    # so 'who is #1 of the hosts showing 100' is always answered.
+    rows.sort(key=lambda r: (-r["risk_score"], -r["risk_intensity"],
+                             -sev.rank(r["severity"]), r["host"]))
     return rows
 
 

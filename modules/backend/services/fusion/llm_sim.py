@@ -510,6 +510,7 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
             def _hcount(a):
                 return len([f for f in findings if a.id in f.asset_ids])
             hosts.sort(key=lambda a: (a.attrs.get("risk_score") or 0,
+                                      a.attrs.get("risk_intensity") or 0,
                                       sev.rank(a.severity), _hcount(a)), reverse=True)
             n = _n_from(q)
             lines = [f"- **{a.label}** — {a.severity}, risk {a.attrs.get('risk_score', 0)}, "
