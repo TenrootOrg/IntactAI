@@ -119,6 +119,43 @@ def test_distilled_explicit_findings_carry_evidence():
 
 # ---- caps ------------------------------------------------------------------
 
+def test_evidence_is_single_line_and_backtick_safe():
+    """Raw details can carry newlines + backticks (e.g. a multi-line Defender message
+    + URL). Evidence must flatten to ONE line with backticks neutralised, else the
+    markdown inline-code span breaks and corrupts the whole report."""
+    g = FusionGraph("case:san")
+    aid = "asset:endpoint:C.h"
+    g.upsert(Entity(id=aid, type="asset", label="H0"))
+    g.upsert(Entity(id="event:s", type="event", label="e", severity="high",
+                    first_seen=_TS,
+                    attrs={"_assets": [aid],
+                           "details": "Defender removed item.\nMore info:\r\nhttp://x/`bad`"}))
+    f = Finding(id="fs", title="SIGMA: defender", severity="high", confidence="high",
+                summary="x", asset_ids=[aid], entity_ids=["event:s"], ts=_TS)
+    g.add_finding(f)
+    lines = render._finding_evidence(g, f)
+    assert lines, "expected evidence from the details fallback"
+    for l in lines:
+        assert "\n" not in l and "\r" not in l, "evidence must be a single line"
+        assert "`" not in l, "backticks must be neutralised"
+    # and it must render balanced inside facts_md
+    md = render.facts_md(g, detail="explicit")
+    assert md.count("`") % 2 == 0, "unbalanced backticks corrupt the report"
+
+
+def test_evidence_skips_placeholder_values():
+    g = FusionGraph("case:ph")
+    aid = "asset:endpoint:C.h"
+    g.upsert(Entity(id=aid, type="asset", label="H0"))
+    g.upsert(Entity(id="event:p", type="event", label="e", severity="high",
+                    first_seen=_TS,
+                    attrs={"_assets": [aid], "ev_proc": "Unknown", "ev_user": "-"}))
+    f = Finding(id="fp", title="SIGMA: x", severity="high", confidence="high",
+                summary="x", asset_ids=[aid], entity_ids=["event:p"], ts=_TS)
+    g.add_finding(f)
+    assert render._finding_evidence(g, f) == []   # all placeholders -> no noise line
+
+
 def test_evidence_caps_events_and_chars():
     g = FusionGraph("case:caps")
     aid = "asset:endpoint:C.h"

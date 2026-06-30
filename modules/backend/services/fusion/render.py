@@ -120,6 +120,10 @@ def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
     """Per-event explicit evidence for a finding — the real cmdline / path / user /
     target IP / full hash captured on its linked event entities (EXPLICIT mode only;
     the lossy ontology drops these from the summary view). Capped for budget safety."""
+    def _v(x):                              # usable value, or "" for noise/placeholders
+        x = ("" if x is None else str(x)).strip()
+        return "" if x.lower() in ("", "unknown", "-", "n/a", "none") else x
+
     lines = []
     for eid in (f.entity_ids or []):
         e = graph.entities.get(eid)
@@ -127,24 +131,28 @@ def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
             continue
         a = e.attrs or {}
         parts = []
-        if a.get("ev_user"):
-            parts.append(f"user={a['ev_user']}")
-        if a.get("ev_cmdline"):
-            parts.append(f"cmd: {a['ev_cmdline']}")
-        elif a.get("ev_proc"):
-            parts.append(f"proc: {a['ev_proc']}")
-        if a.get("ev_tgtip"):
-            parts.append(f"→ {a['ev_tgtip']}")
-        if a.get("ev_sha256"):
-            parts.append(f"sha256={a['ev_sha256']}")
-        if not parts and a.get("details"):
-            parts.append(str(a["details"]))
+        if _v(a.get("ev_user")):
+            parts.append(f"user={_v(a.get('ev_user'))}")
+        if _v(a.get("ev_cmdline")):
+            parts.append(f"cmd: {_v(a.get('ev_cmdline'))}")
+        elif _v(a.get("ev_proc")):
+            parts.append(f"proc: {_v(a.get('ev_proc'))}")
+        if _v(a.get("ev_tgtip")):
+            parts.append(f"→ {_v(a.get('ev_tgtip'))}")
+        if _v(a.get("ev_sha256")):
+            parts.append(f"sha256={_v(a.get('ev_sha256'))}")
+        if not parts and _v(a.get("details")):
+            parts.append(_v(a.get("details")))
         if not parts:
             continue
+        # Flatten to ONE clean line: raw details can carry newlines / tabs / backticks
+        # (e.g. a multi-line Defender message + URL) which would break the markdown
+        # inline-code span and corrupt the whole report. Collapse + neutralise.
         s = " · ".join(parts)
+        s = " ".join(s.split()).replace("`", "'")
         if len(s) > cap_chars:
             s = s[:cap_chars - 1] + "…"
-        if s not in lines:
+        if s and s not in lines:
             lines.append(s)
         if len(lines) >= cap_events:
             break
