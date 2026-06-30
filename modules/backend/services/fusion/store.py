@@ -975,8 +975,11 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
             if run:
                 raw_approx += _raw_payload_size(run)
         _le, _lc = _llm_payload_budget(d)
+        # report_detail=explicit adds per-event evidence to the payload, so the token
+        # A/B + Rescan price must reflect the SELECTED mode (re-priced on Refusion).
         distilled = render.distilled(g, window=window, min_severity=min_sev,
-                                     max_entities=_le, budget_chars=_lc)
+                                     max_entities=_le, budget_chars=_lc,
+                                     detail=d.get("report_detail") or "auto")
         fusion_approx = budget.approx_tokens(json.dumps(distilled))
         token_ab = {"raw_approx": raw_approx, "fusion_approx": fusion_approx,
                     "reduction_ratio": round(raw_approx / max(fusion_approx, 1), 1)}
