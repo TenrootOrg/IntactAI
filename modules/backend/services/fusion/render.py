@@ -436,9 +436,11 @@ def risk_table_md(graph, *, window=None, min_severity="informational") -> str:
     if not rows:
         return ""
     out = ["## 🎯 Identity Risk — who to focus on first\n",
-           "Endpoints ranked by risk (Σ finding severity; cross-host findings count "
-           "double). _Why_ = the top findings driving the score; _Next_ = the "
-           "recommended action.\n",
+           "Endpoints ranked by risk (0-100) — severity tier sets the band "
+           "(critical 80-100, high 60-79, medium 40-59, low 20-39) so a 'critical' host "
+           "always outranks a 'high' one; finding intensity orders hosts within the band. "
+           "Cross-host findings are weighted relative to fleet size. _Why_ = the top "
+           "findings driving the score; _Next_ = the recommended action.\n",
            "| # | Host | Risk | Severity | Findings (C/H/M) | Why | Coverage | Next |",
            "|---|------|-----:|----------|------------------|-----|----------|------|"]
     for i, r in enumerate(rows, 1):

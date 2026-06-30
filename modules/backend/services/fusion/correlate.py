@@ -188,24 +188,63 @@ def _corroboration(g: FusionGraph) -> None:
             f.summary += f" [corroborated by {len(mods)} modules: {', '.join(sorted(mods))}]"
 
 
-_RISK_W = {"critical": 100, "high": 40, "medium": 10, "low": 2, "informational": 0}
+# Severity-weighted intensity. These only ORDER hosts that share a top tier —
+# tier dominance itself is enforced by the 0-100 bands below.
+_RISK_W = {"critical": 50, "high": 20, "medium": 5, "low": 2, "informational": 0}
+
+# risk_score is a 0-100 scale split into per-tier BANDS. A host sits in the band
+# of its WORST finding (a.severity); its position INSIDE the band is set by
+# intensity (severity-weighted, fleet-adjusted finding sum). Bands don't overlap
+# (high tops out at 79, critical starts at 80), so accumulation of lower-tier
+# findings can NEVER push a host into a higher tier ('critical must never sit
+# below high'). REF_INTENSITY = how much intensity 'fills' a band — the knob for
+# how fast a host climbs within its own tier.
+_BAND_BASE = {"critical": 80, "high": 60, "medium": 40, "low": 20, "informational": 0}
+# Critical reaches 100; lower tiers stop 1 point below the next floor so integer
+# rounding can never collide two tiers (e.g. a high maxes at 79, never 80).
+_BAND_SPAN = {"critical": 20, "high": 19, "medium": 19, "low": 19, "informational": 19}
+REF_INTENSITY = 900.0
+
+# Cross-host scoring. Small fleets keep the historical FLAT x2; once a fleet is
+# large enough the boost scales by prevalence (k affected / N total) so 2-of-100
+# hosts is no longer worth the same as 2-of-3 — 'relative to the environment
+# above some amount of machines'. Tune FLEET_RELATIVE_MIN per deployment.
+FLEET_RELATIVE_MIN = 12
+_CROSS_HOST_FLAT = 2.0
+
+
+def _cross_host_factor(f, n_hosts: int) -> float:
+    if getattr(f, "kind", None) != "cross_host":
+        return 1.0
+    if n_hosts < FLEET_RELATIVE_MIN:
+        return _CROSS_HOST_FLAT                       # flat / absolute for small fleets
+    k = len(set(f.asset_ids or []))
+    return 1.0 + min(1.0, k / max(n_hosts, 1))        # prevalence-scaled, in (1, 2]
 
 
 def _score_assets(g: FusionGraph) -> None:
-    """Per-host triage score + which modules have data on it — drives the
-    Phase-1 'which endpoints to deep-dive' recommendation. A high-risk host
-    seen ONLY by the broad tools (velociraptor/cloud), with no memory/
-    timesketch yet, is an escalation candidate."""
-    for a in g.by_type("asset"):
-        score = 0
+    """Per-host triage score (0-100) + which modules have data on it — drives
+    the Phase-1 'which endpoints to deep-dive' recommendation. The score is
+    tier-dominant (see _BAND_BASE) so the ranking never puts a 'critical' host
+    below a 'high' one, and cross-host weighting is fleet-relative above
+    FLEET_RELATIVE_MIN hosts. A high-risk host seen ONLY by the broad tools
+    (velociraptor/cloud), with no memory/timesketch yet, is an escalation
+    candidate. Runs after _rollup_asset_severity, so a.severity is the host's
+    worst-finding tier (the band floor)."""
+    assets = list(g.by_type("asset"))
+    n_hosts = len(assets)
+    for a in assets:
+        intensity = 0.0
         for f in g.findings:
             if a.id in f.asset_ids:
-                score += _RISK_W.get(f.severity, 0) * (2 if f.kind == "cross_host" else 1)
+                intensity += _RISK_W.get(f.severity, 0) * _cross_host_factor(f, n_hosts)
+        tier = a.severity if a.severity in _BAND_BASE else "informational"
+        frac = min(intensity / REF_INTENSITY, 1.0)        # band fill, 0..1
+        a.attrs["risk_score"] = int(round(_BAND_BASE[tier] + frac * _BAND_SPAN[tier]))
         modules = set()
         for e in g.entities.values():
             if a.id in _assets_of(e):
                 modules.update(e.sources)
-        a.attrs["risk_score"] = score
         a.attrs["modules"] = sorted(modules)
         a.attrs["deep"] = bool({"memory", "timesketch"} & modules)
         # escalate: looks malicious (high/critical) but only broad tooling has touched it
