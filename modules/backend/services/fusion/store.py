@@ -585,15 +585,36 @@ def delete_case(case_id) -> dict:
 def _memory_contribution(rid, det):
     asset = keys.asset_id(det.get("client_id") or rid)
     host = det.get("client_name")
-    from services.memory.volweb_client import VolWebClient
-    from services.memory.analyzers import _build_plugin_payload, _build_yara_payload
-    client = VolWebClient()
-    evid = det.get("evidence_id")
-    plugins, _w = _build_plugin_payload(client, evid)
-    try:                                  # yara is optional — never lose plugins over it
-        hits, _t = _build_yara_payload(client, evid)
-    except Exception:
-        hits = []
+    # Prefer the run-time snapshot the memory pipeline persists BEFORE its
+    # cleanup purges the VolWeb evidence dir. The yarascan results live in a
+    # file under that dir, so a live re-fetch here 404s and silently drops
+    # every yara hit from the graph (plugin rows survive in VolWeb's DB; yara
+    # does not). The snapshot also avoids a VolWeb round-trip per fuse. Older
+    # runs predating the snapshot fall back to the live fetch below.
+    import json
+    import os
+    plugins = hits = None
+    for base in (f"/app/data/downloads/{rid}", f"/data/downloads/{rid}"):
+        fp = os.path.join(base, "memory_payload.json")
+        if os.path.exists(fp):
+            try:
+                with open(fp) as f:
+                    snap = json.load(f)
+                plugins = snap.get("plugins") or {}
+                hits = snap.get("yara") or []
+            except Exception:
+                plugins = hits = None
+            break
+    if plugins is None:
+        from services.memory.volweb_client import VolWebClient
+        from services.memory.analyzers import _build_plugin_payload, _build_yara_payload
+        client = VolWebClient()
+        evid = det.get("evidence_id")
+        plugins, _w = _build_plugin_payload(client, evid)
+        try:                              # yara is optional — never lose plugins over it
+            hits, _t = _build_yara_payload(client, evid)
+        except Exception:
+            hits = []
     return map_memory({"plugins": plugins, "yara": hits, "host": host},
                       run_id=rid, asset=asset, hostname=host)
 

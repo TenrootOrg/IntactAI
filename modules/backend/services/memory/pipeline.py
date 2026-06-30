@@ -362,6 +362,42 @@ def _build_extraction_only_report(
     return "\n".join(parts)
 
 
+def _persist_fusion_payload(run_id, client, evidence_id, log) -> None:
+    """Snapshot the memory fusion payload (plugin rows + yara hits) to
+    ``/data/downloads/<run_id>/memory_payload.json`` BEFORE cleanup runs.
+
+    Why this exists: cleanup purges the VolWeb evidence dir to reclaim the
+    multi-GB image, and the yarascan RESULTS FILE lives under that dir. Fusion
+    (``store._memory_contribution``) used to lazily re-fetch plugins + yara
+    from VolWeb at fuse time — but by then cleanup has deleted the yara
+    results, so ``/yarascan/results/`` 404s and every hit silently vanishes
+    from the graph (plugin rows survive in VolWeb's DB; yara does not). We
+    fetch both here, while the evidence is still intact, and let fusion read
+    this snapshot first. Bonus: no VolWeb round-trip per fuse.
+    """
+    import json
+    import os
+
+    from .analyzers import _build_plugin_payload, _build_yara_payload
+
+    plugins, _pw = _build_plugin_payload(client, evidence_id)
+    try:
+        hits, _tot = _build_yara_payload(client, evidence_id)
+    except Exception as e:  # noqa: BLE001 — yara is optional, never lose plugins
+        log(f"persist: yara fetch failed ({e}) — snapshot will omit yara", "warning")
+        hits = []
+    downloads_dir = f"/data/downloads/{run_id}"
+    os.makedirs(downloads_dir, exist_ok=True)
+    with open(f"{downloads_dir}/memory_payload.json", "w") as f:
+        json.dump({"plugins": plugins, "yara": hits}, f)
+    plugin_rows = sum(len(v) for v in plugins.values() if hasattr(v, "__len__"))
+    log(
+        f"persist: memory fusion payload snapshot saved "
+        f"({plugin_rows} plugin rows, {len(hits)} yara hits)",
+        "info",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -743,6 +779,21 @@ def run_memory_pipeline(
                 "case_name": case_name,
             },
         )
+
+        # ----------------------------------------------------------------
+        # Snapshot the fusion payload (plugins + yara hits) to a sidecar
+        # BEFORE cleanup. Cleanup purges the VolWeb evidence dir, which holds
+        # the yarascan RESULTS FILE — so a lazy re-fetch at fuse time 404s and
+        # every yara hit vanishes from the graph. See _persist_fusion_payload.
+        # ----------------------------------------------------------------
+        try:
+            _persist_fusion_payload(run_id, client, evidence_id, log)
+        except Exception as _pe:  # noqa: BLE001 — never block completion on the snapshot
+            log(
+                f"persist: fusion-payload snapshot failed ({_pe}) — fusion will fall "
+                "back to a live VolWeb fetch (yara may be lost after cleanup)",
+                "warning",
+            )
 
         # ----------------------------------------------------------------
         # Phase 6 — Cleanup (post-success: keep DB rows, remove .raw files)
