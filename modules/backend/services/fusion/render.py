@@ -310,13 +310,9 @@ def narrative_md(graph, *, window=None, min_severity="informational",
                f"{len(findings)} findings_\n")
     out.append("## Executive Summary\n")
     out.append(_exec_summary(graph, assets, findings) + "\n")
-    out.append("## Incident Overview\n")
-    story = _attack_story(graph, findings, assets, initial_access)
-    out.append((story or "_No activity above the configured severity threshold._") + "\n")
-    narr = _attack_narrative(graph, window, initial_access)
-    if narr:
-        out.append("## Attack Narrative\n")
-        out.append(narr + "\n")
+    # NOTE: the deterministic "Incident Overview" + phase-grouped "Attack Narrative"
+    # were removed — they duplicated the Executive Summary + the single Timeline. The
+    # live-LLM path replaces this whole function with a real narrative.
     return "\n".join(out)
 
 
@@ -482,27 +478,32 @@ def risk_table_md(graph, *, window=None, min_severity="informational") -> str:
 
 def facts_md(graph, *, window=None, min_severity="informational", initial_access=None,
              dispositions=None, validations=None) -> str:
-    """DETERMINISTIC report body — identity-risk table, escalation, risk ranking,
-    analyst validations, timeline, per-host detail, IOC table, MITRE,
-    recommendations. Appended verbatim to every report; NEVER sent to the LLM."""
+    """DETERMINISTIC report body — Priority Hosts table, cross-host correlation,
+    analyst validations, ONE flat chronological timeline, IOC appendix, MITRE,
+    recommendations. Appended verbatim to every report; NEVER sent to the LLM.
+
+    Deliberately NOT here (they duplicated each other): a second host-ranking list,
+    an Escalation section (the table's Next column says it), per-host detail (the
+    single timeline carries it), and phase-split sub-sections."""
     assets, findings = scope(graph, window=window, min_severity=min_severity)
     out: list[str] = []
 
-    # ---- Identity Risk table (who to focus on first + why) ------------
+    # ---- Priority Hosts (who to focus on first + why) — the ONLY ranking ----
     rt = risk_table_md(graph, window=window, min_severity=min_severity)
     if rt:
         out.append(rt)
 
-    # ---- Escalation (the Phase-1 triage hero) -------------------------
-    esc = sorted((a for a in assets if a.attrs.get("escalate")),
-                 key=lambda a: -(a.attrs.get("risk_score") or 0))
-    if esc:
-        out.append("## ⚠ Escalation — recommend deep-dive\n")
-        out.append("Malicious under broad collection (Velociraptor / cloud) but **no "
-                   "memory or Timesketch yet** — run those on these hosts next:\n")
-        for a in esc:
-            out.append(f"- **{a.label}** — {a.severity}, risk {a.attrs.get('risk_score', 0)} "
-                       f"· seen by [{', '.join(a.attrs.get('modules') or [])}]")
+    # ---- Cross-host correlation (stated ONCE) -------------------------
+    xh = [f for f in findings if f.kind == "cross_host"]
+    shared_hashes = [e for e in graph.by_type("ioc")
+                     if e.attrs.get("ioc_kind") == "hash" and "cross_host" in e.flags]
+    if xh or shared_hashes:
+        out.append("## Cross-Host Correlation\n")
+        for f in xh:
+            out.append(f"- {f.title}")
+        if shared_hashes:
+            out.append(f"- {len(shared_hashes)} file hash(es) shared across hosts "
+                       f"(tool reuse / lateral transfer) — full hashes in the IOC appendix")
         out.append("")
 
     # ---- analyst validations (Timeline triage) ------------------------
@@ -510,72 +511,24 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
     if av:
         out.append(av)
 
-    # ---- Risk overview (NO host-ranking list — that's the Identity Risk table) ----
-    out.append("## Risk Overview\n")
+    # ---- ONE flat chronological timeline — what happened, in order ----
     tally = _sev_tally(findings)
-    out.append("**Findings by severity:** " + ", ".join(
-        f"{tally[lv]} {lv}" for lv in reversed(sev.LEVELS) if tally[lv]) + "\n")
-    ranked_assets = sorted(assets, key=lambda a: -(a.attrs.get("risk_score") or 0))
-    xh = [f for f in findings if f.kind == "cross_host"]
-    if xh:
-        out.append(f"**Cross-host activity:** {len(xh)} finding(s) span multiple hosts "
-                   f"(lateral movement / shared infrastructure):")
-        for f in xh:
-            out.append(f"- {f.title}")
-        out.append("")
-    # shared file hashes are summarised once here + detailed in the IOC appendix,
-    # NOT repeated as one finding per hash.
-    shared_hashes = [e for e in graph.by_type("ioc")
-                     if e.attrs.get("ioc_kind") == "hash" and "cross_host" in e.flags]
-    if shared_hashes:
-        out.append(f"**Shared binaries:** {len(shared_hashes)} file hash(es) appear on "
-                   f"more than one host (tool reuse / lateral transfer) — full hashes in "
-                   f"the IOC appendix.\n")
-
-    # ---- Timeline -----------------------------------------------------
-    out.append("## Timeline of Key Events\n")
-    tl = timeline(graph, window=window, initial_access=initial_access)
+    out.append("## Timeline of Events\n")
+    out.append("_" + ", ".join(f"{tally[lv]} {lv}" for lv in reversed(sev.LEVELS) if tally[lv])
+               + " — high/critical events in chronological order (host in each entry)._\n")
+    tl = sorted((f for f in findings
+                 if f.ts and in_window(f.ts, window)
+                 and f.kind != "cross_host"                         # in Cross-Host Correlation
+                 and not f.title.startswith("Coordinated suspicious activity")  # vacuous rollup
+                 and sev.at_least(f.severity, "high")),
+                key=lambda f: (f.ts, -sev.rank(f.severity)))
     if not tl:
-        out.append("_No time-anchored activity in window._\n")
+        out.append("_No time-anchored high/critical activity in window._\n")
     else:
-        cur_phase = None
-        for row in tl:
-            if row["phase"] != cur_phase:
-                cur_phase = row["phase"]
-                out.append(f"\n**▸ {cur_phase}**")
-            mitre = f" `[{', '.join(row['mitre'])}]`" if row["mitre"] else ""
-            out.append(f"- `{row['ts'] or '—'}` · **{row['host']}** · "
-                       f"{row['title']} ({row['severity']}){mitre}")
+        for f in tl:
+            mitre = f" `[{', '.join(f.mitre)}]`" if f.mitre else ""
+            out.append(f"- `{fmt_ts(f.ts)}` · **[{f.severity}]** {f.title}{mitre}")
     out.append("")
-
-    # ---- Affected hosts detail ----------------------------------------
-    out.append("## Affected Hosts — Detail\n")
-    for a in ranked_assets:
-        out.append(f"### {a.label}  ({a.severity})")
-        # findings in CHRONOLOGICAL order (a per-host timeline), not a flat dump
-        afind = sorted((f for f in findings if a.id in f.asset_ids),
-                       key=lambda f: (f.ts or "9999", -sev.rank(f.severity)))
-        for f in afind:
-            ts = f"`{fmt_ts(f.ts)}` · " if f.ts else ""
-            out.append(f"- {ts}**[{f.severity}]** {f.summary}")
-        # notable entities on this host (suspicious only — no benign baseline noise)
-        procs = sorted((e for e in graph.by_type("process")
-                        if a.id in _assets_of(e) and (e.anomaly >= 20 or "injected" in e.flags)),
-                       key=lambda e: -e.anomaly)[:8]
-        if procs:
-            out.append("  - _suspicious processes:_ " + ", ".join(
-                f"{p.label}{'⚠' if 'injected' in p.flags else ''}" for p in procs))
-        # IOCs are NOT dumped per host (they're in the appendix) — just a pointer.
-        iocs = [e for e in graph.by_type("ioc") if a.id in _assets_of(e)]
-        if iocs:
-            out.append(f"  - _{len(iocs)} indicator(s) on this host — see IOC appendix._")
-        accts = [e for e in graph.by_type("account") if a.id in _assets_of(e)]
-        if accts:
-            out.append("  - _accounts:_ " + ", ".join(
-                f"{x.label}{'⚠' if 'cross_host' in x.flags else ''}" for x in accts[:10]))
-        if not afind and not procs and not iocs:
-            out.append("- _no findings above threshold._")
-        out.append("")
 
     # ---- 4. Key Indicators (IOCs) -------------------------------------
     iocs = graph.by_type("ioc")

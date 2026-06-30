@@ -148,9 +148,12 @@ def test_report_has_three_altitudes_and_cross_host():
     with force_sim():
         md = llm_sim.generate_report(g, window=WINDOW, min_severity="low",
                                      initial_access="2026-05-19T08:14:20", case_name="INTRUSION-MAY")
-    for section in ("Risk Overview", "Timeline of Key Events", "Affected Hosts — Detail"):
+    # New structure: strategic (Exec Summary) · operational (Priority Hosts table) ·
+    # tactical (single Timeline) + the IOC appendix — no duplicated sections.
+    for section in ("Executive Summary", "Identity Risk", "Timeline of Events",
+                    "Indicators of Compromise"):
         assert section in md, f"missing section: {section}"
-    assert "Lateral Movement" in md
+    assert "across" in md.lower() or "cross-host" in md.lower()   # lateral / cross-host
     assert "5.100.251.10" in md
 
 
@@ -248,7 +251,7 @@ def test_four_module_integration():
     with force_sim():
         md = llm_sim.generate_report(g, window=WINDOW, min_severity="medium", case_name="FULL")
     assert "Vulnerability" in md or "CVE-2024-0001" in md
-    assert "Lateral Movement" in md
+    assert "Timeline of Events" in md   # all four modules render into the single report
 
 
 def test_cloud_endpoint_correlation():
@@ -289,7 +292,9 @@ def test_escalation_recommendation():
     assert a.attrs.get("modules") == ["agentic"]
     with force_sim():
         md = llm_sim.generate_report(g, min_severity="low", case_name="X")
-    assert "Escalation" in md and "WS9" in md
+    # Escalation is now shown in the Priority Hosts table (🔺 + "Deep-dive now"),
+    # not as a separate duplicate section.
+    assert "WS9" in md and ("🔺" in md or "Deep-dive now" in md)
     with force_sim():
         nxt = llm_sim.chat(g, "what should I investigate next?", min_severity="low")
     assert "deep-dive" in nxt.lower()
