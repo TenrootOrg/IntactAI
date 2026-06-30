@@ -10,7 +10,7 @@ import sys
 if "/app" not in sys.path:
     sys.path.insert(0, "/app")
 
-from services.fusion import resolve as R, llm_sim          # noqa: E402
+from services.fusion import resolve as R, llm_sim, store    # noqa: E402
 from services.fusion.schema import Entity, Finding, FusionGraph  # noqa: E402
 
 
@@ -215,3 +215,16 @@ def test_per_case_false_overrides_global_on():
         assert "matches multiple identities" in out, "explicit per-case False must win"
     finally:
         llm_sim._agentic_cfg = orig
+
+
+# -- output-token cap defaults to the selected model's max (no global setting) ----
+def test_output_cap_defaults_to_model_max():
+    o1, o2 = store._configured_fusion_model, store._model_max_output
+    store._configured_fusion_model = lambda: ("m", "p", "real")
+    store._model_max_output = lambda m, p: 50000
+    try:
+        assert store._effective_output_cap({}) == 50000, "empty cap -> model max"
+        assert store._effective_output_cap({"llm_max_output_tokens": 8000}) == 8000
+        assert store._effective_output_cap({"llm_max_output_tokens": 999999}) == 50000, "clamp to model max"
+    finally:
+        store._configured_fusion_model, store._model_max_output = o1, o2

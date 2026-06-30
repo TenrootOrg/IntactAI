@@ -495,9 +495,8 @@
                                              select(model) {
                                                  this.selectedModel = model;
                                                  $store.settings.config.agentic.online_llm.model = model.id;
-                                                 if (model.max_output_tokens) {
-                                                     $store.settings.config.agentic.max_response_tokens = model.max_output_tokens;
-                                                 }
+                                                 // (max_response_tokens removed — the per-case Output token cap
+                                                 //  in Case Analysis defaults to the model's max output.)
                                                  this.open = false;
                                              }
                                          }"
@@ -587,16 +586,9 @@
                             </div>
                         </div>
 
-                        <!-- Advanced Settings -->
-                        <div class="mt-3 pt-3 border-t border-gray-700">
-                            <div class="text-xs text-gray-500 mb-2">Advanced Settings</div>
-                            <div class="grid grid-cols-2 gap-3">
-                                <div>
-                                    <label class="block text-xs text-gray-400 mb-1">Max Response Tokens (auto-set from model — clear to revert)</label>
-                                    <input type="number" x-model.number="$store.settings.config.agentic.max_response_tokens" min="0" max="200000" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="auto">
-                                </div>
-                            </div>
-                        </div>
+                        <!-- (Max Response Tokens removed — Case Analysis is the only LLM
+                             consumer and its per-case "Output token cap" defaults to the
+                             selected model's max output.) -->
 
                         <!-- Save Button -->
                         <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">

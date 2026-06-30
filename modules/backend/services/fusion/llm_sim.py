@@ -453,7 +453,8 @@ def generate_disposition_checklist(graph, *, window=None, min_severity="high",
 
 
 def chat(graph, question: str, history=None, *, window=None, min_severity="informational",
-         run_id=None, dispositions=None, validations=None, full_context=None) -> str:
+         run_id=None, dispositions=None, validations=None, full_context=None,
+         max_output_tokens=None) -> str:
     """Grounded Q&A. Real path narrates the distilled graph; simulated = deterministic
     retrieval. Surfaces operator dispositions (what's been triaged as benign/IT)."""
     # --- entity resolution + safety clarify (BEFORE any LLM call, so an ambiguous
@@ -498,7 +499,8 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                 payload["analyst_validations"] = validations      # Timeline real/not-real/known
             turns = "".join(f"{m.get('role')}: {m.get('content')}\n" for m in (history or []))
             return _real_llm(CHAT_SYSTEM_PROMPT,
-                             f"{json.dumps(payload)}\n\n{turns}Q: {question}", run_id=run_id)
+                             f"{json.dumps(payload)}\n\n{turns}Q: {question}", run_id=run_id,
+                             max_output_tokens=max_output_tokens)
         except Exception:  # noqa: BLE001 — fall through to deterministic retrieval
             pass
 

@@ -188,15 +188,20 @@ def _llm_payload_budget(d):
     return min(n, safe_cap), _LLM_MAX_BUDGET_CHARS
 
 
-def _llm_output_cap(d):
-    """The case 'Output token cap' — max tokens the model WRITES per LLM call
-    (the pricey side of the bill). None = use the model/global default."""
+def _effective_output_cap(d):
+    """Max tokens the model WRITES per LLM call for THIS case. Uses the per-case
+    'Output token cap' if the operator set one; otherwise DEFAULTS TO THE SELECTED
+    MODEL'S MAX OUTPUT (there is no global Settings cap anymore — Case Analysis is
+    the only LLM consumer). Always clamped to the model max so a stale/oversized
+    value can never exceed what the model allows."""
+    model, provider, _ = _configured_fusion_model()
+    model_max = _model_max_output(model, provider)
     n = d.get("llm_max_output_tokens")
     try:
         n = int(n)
     except (TypeError, ValueError):
-        return None
-    return max(256, min(n, 64000)) if n else None
+        n = 0
+    return max(256, min(n, model_max)) if n and n > 0 else model_max
 
 
 # Rescan-cost model: a rescan makes 2 LLM passes (report + advisory), each gets
@@ -259,7 +264,7 @@ def estimate_rescan_cost(d):
     calls = _RESCAN_LLM_CALLS
     # Output defaults to the MODEL'S MAX (the operator can cap it lower).
     model_max_out = _model_max_output(model, provider)
-    out_per_call = _llm_output_cap(d) or model_max_out
+    out_per_call = _effective_output_cap(d)
     out_tokens = out_per_call * calls
 
     def _side(in_one):
@@ -931,7 +936,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         report_dirty = True
     else:
         llm_ent, llm_chars = _llm_payload_budget(d)
-        llm_out = _llm_output_cap(d)
+        llm_out = _effective_output_cap(d)
         report = llm_sim.generate_report(
             gv, window=window, min_severity=min_sev,
             initial_access=d.get("initial_access_estimate"),
@@ -1312,7 +1317,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     min_sev = d.get("min_severity", "informational")
     gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
     llm_ent, llm_chars = _llm_payload_budget(d)
-    llm_out = _llm_output_cap(d)
+    llm_out = _effective_output_cap(d)
     model, provider, mode = _configured_fusion_model()
     if use_llm:
         if model:
@@ -1449,7 +1454,11 @@ def set_analysis_config(case_id, cfg) -> dict:
     if "llm_max_output_tokens" in cfg:     # cap on tokens the model WRITES per call
         try:
             v = int(cfg["llm_max_output_tokens"])
-            patch["llm_max_output_tokens"] = max(256, min(v, 64000)) if v else None
+            if v:
+                mdl, prov, _ = _configured_fusion_model()
+                patch["llm_max_output_tokens"] = max(256, min(v, _model_max_output(mdl, prov)))
+            else:
+                patch["llm_max_output_tokens"] = None   # empty = default to model max
         except (TypeError, ValueError):
             pass
     if "chat_send_full_context" in cfg:    # COST: bypass chat host-resolution, send
@@ -1826,7 +1835,8 @@ def chat_case(case_id, question) -> str:
                                min_severity=d.get("min_severity", "informational"),
                                run_id=case_id, dispositions=d.get("dispositions") or None,
                                validations=d.get("timeline_validations") or None,
-                               full_context=d.get("chat_send_full_context"))
+                               full_context=d.get("chat_send_full_context"),
+                               max_output_tokens=_effective_output_cap(d))
             log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
         except Exception as e:
             log_case_event(case_id, "Chat", "error", f"LLM failed: {e}")

@@ -7,7 +7,6 @@ document.addEventListener('alpine:init', () => {
                 llm_mode: 'offline',
                 offline_llm: { provider: 'ollama', model: 'llama3.3:70b', url: 'http://localhost:11434' },
                 online_llm: { provider: 'claude', api_key: '', model: 'claude-sonnet-latest' },
-                max_response_tokens: 16384,
                 ollama_context_size: 65536,
                 ollama_timeout: 600
             },
@@ -51,7 +50,6 @@ document.addEventListener('alpine:init', () => {
                         llm_mode: data.agentic?.llm_mode || 'offline',
                         offline_llm: { ...this.config.agentic.offline_llm, ...data.agentic?.offline_llm },
                         online_llm: { ...this.config.agentic.online_llm, ...data.agentic?.online_llm },
-                        max_response_tokens: data.agentic?.max_response_tokens || 16384,
                         ollama_context_size: data.agentic?.ollama_context_size || 65536,
                         ollama_timeout: data.agentic?.ollama_timeout || 600
                     };
@@ -1169,9 +1167,8 @@ document.addEventListener('alpine:init', () => {
                 if (!picked) picked = list[0];
                 if (picked) {
                     this.config.agentic.online_llm.model = picked.id;
-                    if (picked.max_output_tokens) {
-                        this.config.agentic.max_response_tokens = picked.max_output_tokens;
-                    }
+                    // (max_response_tokens removed — Case Analysis per-case Output token cap
+                    //  defaults to the model's max output.)
                 }
             } catch (e) {
                 // Network/parse failure → fall back to a sensible
