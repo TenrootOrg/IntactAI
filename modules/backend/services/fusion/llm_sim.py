@@ -204,38 +204,144 @@ _SIM_TAG = ("\n\n---\n_Narrative by the in-graph narrator (simulated — determi
             "Set agentic.fusion_llm_mode='real' to use a live model._\n")
 
 
+# Masking model: protect CUSTOMER-IDENTIFYING values in transit to the LLM
+# provider (hosts, users, the org/AD domain, internal IPs) and REVERT them in the
+# LLM's output — the operator always gets the real report back. THREAT-INTEL IOCs
+# (file hashes, external/malicious domains) are deliberately kept: they're the
+# attacker's infrastructure, not the customer's identity, and the LLM correlates +
+# recognises them far better unmasked. Everything is derived dynamically from the
+# data (the org domain is read from the accounts/FQDNs), so it works for ANY company.
+
+# Public infra domains that may show up in a UPN — never treat these as the org domain.
+_MASK_KEEP_DOMAINS = {
+    "microsoft.com", "windows.com", "windowsupdate.com", "office.com",
+    "office365.com", "google.com", "gmail.com", "outlook.com", "azure.com",
+    "windows.net", "amazonaws.com", "cloudflare.com",
+}
+# Windows built-in "domains" — part of system accounts, not org-identifying.
+_MASK_SKIP_DOMAINS = {
+    "nt authority", "nt service", "nt virtual machine", "font driver host",
+    "window manager", "azuread", "local", "localhost", "workgroup", "iis apppool",
+}
+
+
+def _norm_domain(d: str) -> str:
+    return (d or "").strip().strip(".").lower()
+
+
 def _build_mask_mapping(graph, mask):
-    """Populate the anonymizer's mapping from the graph's sensitive entity labels
-    (hosts, accounts, IPs), using typed rows so its field-name detection fires. We then
-    literal-replace those originals everywhere (payload + report) for consistency."""
+    """Populate the anonymizer mapping from the graph's CUSTOMER-IDENTIFYING values
+    (hosts, users, internal IPs, and the org/AD domain) so they can be masked before
+    the LLM call and reverted after. DYNAMIC — the org domain is read from the data
+    (NT DOMAIN\\user, UPN user@domain, host FQDN suffix), nothing hardcoded.
+
+    IOC hashes + external/malicious domains are intentionally NOT masked: they're
+    threat intel (the attacker's infra), not the customer's identity, and the LLM
+    needs them unmasked to recognise and correlate. They're reverted-safe regardless."""
     rows = []
+
+    def _add_org_domain(d):
+        d = _norm_domain(d)
+        if (not d or len(d) < 2 or d in _MASK_SKIP_DOMAINS or d in _MASK_KEEP_DOMAINS):
+            return
+        if d not in mask.mapping:
+            try:                                  # reuse the anonymizer's domain pool +
+                mask._get_or_create_pseudo(d, "domain")   # reverse registration
+            except Exception:
+                pass
+
     for e in graph.entities.values():
         lbl = (e.label or "").strip()
         if not lbl:
             continue
         if e.type == "asset":
             rows.append({"hostname": lbl})
+            if "." in lbl:                        # AD FQDN -> org domain suffix
+                _add_org_domain(lbl.split(".", 1)[1])
         elif e.type == "account":
-            rows.append({"username": lbl})
-        elif e.type in ("netconn", "ioc"):
+            rows.append({"username": lbl})        # _mask_user skips system accounts
+            if "\\" in lbl:                       # NT DOMAIN\user
+                _add_org_domain(lbl.split("\\", 1)[0])
+            elif "@" in lbl:                      # UPN user@domain
+                _add_org_domain(lbl.split("@", 1)[1])
+        elif e.type == "netconn":
             rows.append({"ipaddress": lbl})
+        elif e.type == "ioc" and (e.attrs or {}).get("ioc_kind") == "ip":
+            rows.append({"ipaddress": lbl})       # IOC domains/hashes: kept (threat intel)
     if rows:
         try:
             mask.mask_data(rows)
         except Exception:
             pass
+    # Collapse case-variant duplicates (e.g. asset 'DESKTOP-566AT85' and the local
+    # account domain 'desktop-566at85' from DESKTOP-566AT85\\user) onto ONE pseudonym,
+    # preferring the asset-label casing — so case-insensitive masking reverts to the
+    # real value cleanly instead of producing two pseudonyms for one machine.
+    asset_labels = {e.label for e in graph.entities.values()
+                    if e.type == "asset" and e.label}
+    groups: dict[str, list] = {}
+    for orig in list(mask.mapping):
+        groups.setdefault(orig.lower(), []).append(orig)
+    for origs in groups.values():
+        if len(origs) < 2:
+            continue
+        canon = next((o for o in origs if o in asset_labels), max(origs, key=len))
+        cp = mask.mapping[canon]
+        for o in origs:
+            old = mask.mapping.get(o)
+            mask.mapping[o] = cp
+            if old and old != cp:
+                mask.reverse_mapping.pop(old, None)
+        mask.reverse_mapping[cp] = canon
 
 
 def _apply_mask(text, mask):
-    """Literal-replace originals→pseudonyms (longest-first) using the anonymizer's
-    accumulated mapping, so the LLM input + fact tables + narrative are masked
-    consistently. No-op when masking is off."""
+    """Replace originals→pseudonyms (longest-first), CASE-INSENSITIVE and token-
+    boundary aware, so lowercase/uppercase/FQDN/path variants are all caught without
+    matching inside a larger identifier. Used on the LLM INPUT. No-op when off."""
     if not mask:
         return text
     mapping = getattr(mask, "mapping", {}) or {}
     for orig in sorted((k for k in mapping if k), key=len, reverse=True):
-        text = text.replace(orig, mapping[orig])
+        ps = mapping[orig]
+        pat = re.compile(r"(?<![A-Za-z0-9])" + re.escape(orig) + r"(?![A-Za-z0-9])",
+                         re.IGNORECASE)
+        text = pat.sub(lambda _m, _p=ps: _p, text)
     return text
+
+
+def _revert_mask(text, mask):
+    """Restore real values in the LLM's RETURNED text (pseudonyms → originals),
+    boundary-aware + longest-first. Masking only protected the data in transit; the
+    operator always gets the real report back. No-op when off."""
+    if not mask:
+        return text
+    rev = getattr(mask, "reverse_mapping", {}) or {}
+    for ps in sorted((k for k in rev if k), key=len, reverse=True):
+        orig = rev[ps]
+        pat = re.compile(r"(?<![A-Za-z0-9])" + re.escape(ps) + r"(?![A-Za-z0-9])")
+        text = pat.sub(lambda _m, _o=orig: _o, text)
+    return text
+
+
+def _log_mask_audit(run_id, mask):
+    """Write the FULL original→pseudonym mapping to the case log BEFORE anything is
+    sent to the LLM — an audit trail of exactly what was anonymised (and how to read
+    it back). Runs ONLY when masking is enabled (mask is set). Operator-side only;
+    the LLM never sees this."""
+    if not run_id or not mask:
+        return
+    mapping = getattr(mask, "mapping", {}) or {}
+    if not mapping:
+        return
+    try:
+        from .store import log_case_event
+        pairs = "; ".join(f"{o} → {p}" for o, p in sorted(mapping.items()))
+        log_case_event(run_id, "Masking · pre-LLM mapping", "info",
+                       f"{len(mapping)} value(s) masked before LLM send (reverted in "
+                       f"the returned report) — {pairs}")
+    except Exception:
+        pass
 
 
 def generate_report(graph, *, window=None, min_severity="informational",
@@ -269,6 +375,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
             payload_str = json.dumps(payload)
             if mask:                                  # anonymize the LLM input too
                 _build_mask_mapping(graph, mask)
+                _log_mask_audit(run_id, mask)         # audit trail BEFORE the LLM send
                 payload_str = _apply_mask(payload_str, mask)
             system = REPORT_SYSTEM_PROMPT
             if (audience and audience != "both") or (language and language != "en"):
@@ -283,24 +390,26 @@ def generate_report(graph, *, window=None, min_severity="informational",
                           f"{master_prompt.strip()}\n\n---\n\n") + system
             narrative = _real_llm(system, payload_str, run_id=run_id,
                                   max_output_tokens=max_output_tokens)
+            narrative = _revert_mask(narrative, mask)   # un-mask the LLM's output
             facts = render.facts_md(graph, window=window, min_severity=min_severity,
                                     initial_access=initial_access,
                                     dispositions=dispositions, validations=validations)
+            # Real values throughout: masking protected the data only in transit to
+            # the LLM; the operator's report is reverted (narrative) + never-masked facts.
             md = (f"# Incident Case Report — {case_name}\n\n{narrative}\n\n{facts}"
                   "\n\n---\n_Narrative by live LLM; fact tables deterministic._\n")
-            return _apply_mask(md, mask)
+            return md
         except Exception as e:  # noqa: BLE001 — never let LLM failure break a case
             md = render.report(graph, window=window, min_severity=min_severity,
                                initial_access=initial_access, case_name=case_name,
                                dispositions=dispositions, validations=validations)
-            return _apply_mask(md, mask) + (f"\n\n---\n_Live LLM unavailable "
-                                            f"({type(e).__name__}); deterministic fallback._\n")
+            return md + (f"\n\n---\n_Live LLM unavailable "
+                         f"({type(e).__name__}); deterministic fallback._\n")
+    # Deterministic (no-LLM) path: nothing is sent to a provider, so no masking —
+    # the operator gets the real report directly.
     md = render.report(graph, window=window, min_severity=min_severity,
                        initial_access=initial_access, case_name=case_name,
                        dispositions=dispositions, validations=validations) + _SIM_TAG
-    if mask:                                          # populate the mapping, then mask the md
-        _build_mask_mapping(graph, mask)
-        md = _apply_mask(md, mask)
     return md
 
 

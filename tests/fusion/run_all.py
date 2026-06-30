@@ -47,6 +47,7 @@ MODULES = [
     "tests.fusion.test_baseline_subtraction",
     "tests.fusion.test_chat_retrieval",
     "tests.fusion.test_chat_resolve",
+    "tests.fusion.test_masking",
     "tests.fusion.test_kb_enrichment",
     "tests.fusion.test_fuzz_mappers",
     "tests.fusion.test_event_dedup",

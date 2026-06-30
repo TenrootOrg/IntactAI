@@ -55,15 +55,24 @@ def test_checklist_is_grounded_to_real_findings():
 
 
 def test_masked_report_anonymizes_host_labels():
-    from services.fusion import llm_sim
+    # New semantics: masking anonymizes identifiers IN TRANSIT to the LLM, then
+    # REVERTS in the output (the operator's report is real). So host labels must be
+    # gone from the masked LLM INPUT, and restored by revert.
+    import json
+    from services.fusion import llm_sim, render
     from services.data_anonymizer import DataAnonymizer
-    from tests.fusion.test_fusion import force_sim
     g = calibrate.fuse("attack2")
     hosts = [e.label for e in g.entities.values() if e.type == "asset" and e.label]
-    with force_sim():            # deterministic masking path (no live LLM in tests)
-        md = llm_sim.generate_report(g, case_name="X", mask=DataAnonymizer())
     assert hosts, "fixture should have host assets"
-    assert all(h not in md for h in hosts), "host labels must be masked in the report"
+    mask = DataAnonymizer()
+    llm_sim._build_mask_mapping(g, mask)
+    raw = json.dumps(render.distilled(g))
+    present = [h for h in hosts if h in raw]          # distilled() trims to top entities
+    assert present, "some host labels should be in the distilled payload"
+    masked_input = llm_sim._apply_mask(raw, mask)
+    assert all(h not in masked_input for h in present), "host labels must be masked in the LLM input"
+    reverted = llm_sim._revert_mask(masked_input, mask)
+    assert all(h in reverted for h in present), "revert restores hosts"
 
 
 def test_multi_run_case_merges_all_runs():
