@@ -274,6 +274,30 @@ def test_attack_assessment_is_natural_language():
     assert "_Execution:_" not in md and "(SIGMA" not in md  # no raw title list / wrapper
 
 
+def test_attack_assessment_is_one_campaign_story():
+    """The assessment must read as ONE infrastructure-wide campaign — entry point,
+    lateral movement via shared creds/tooling, and a chronological progression —
+    not isolated per-host bullets."""
+    g = FusionGraph("case:campaign")
+    a, b = "asset:endpoint:C.a", "asset:endpoint:C.b"
+    g.upsert(Entity(id=a, type="asset", label="WS1", severity="critical",
+                    attrs={"risk_score": 90}))
+    g.upsert(Entity(id=b, type="asset", label="WS2", severity="high",
+                    attrs={"risk_score": 65}))
+    g.upsert(Entity(id="account:adatumlab\\srv", type="account", label="adatumlab\\srv",
+                    flags=["cross_host"], attrs={"_assets": [a, b]}))
+    g.add_finding(Finding(id="f1", title="SIGMA: Encoded PowerShell", severity="critical",
+                          confidence="high", summary="x", asset_ids=[a],
+                          ts="2025-01-01T00:00:00Z"))
+    g.add_finding(Finding(id="f2", title="SIGMA: LSASS Credential Dump", severity="high",
+                          confidence="high", summary="x", asset_ids=[b],
+                          ts="2025-01-02T00:00:00Z"))
+    md = render._attack_assessment(g, g.by_type("asset"), list(g.findings))
+    assert "single campaign" in md and "Reconstructed progression" in md
+    assert "pivoted between systems" in md and "adatumlab\\srv" in md   # lateral story
+    assert md.index("WS1") < md.index("WS2")                            # chronological
+
+
 def test_exec_summary_tells_a_story():
     g = _story_graph()
     s = render._exec_summary(g, g.by_type("asset"), list(g.findings), window=None)

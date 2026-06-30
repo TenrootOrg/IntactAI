@@ -246,7 +246,8 @@ def audience_language_directive(audience: str = 'both', language: str = 'en') ->
     return "\n\n".join(lines)
 
 
-def cover_block(name, generated_at, sources, tlp='AMBER', version=1, customer_name='', severity_summary=''):
+def cover_block(name, generated_at, sources, tlp='AMBER', version=1, customer_name='',
+                severity_summary='', include_workflows=True):
     """Return the markdown cover block that opens the assembled
     report. Layered like a professional IR firm deliverable:
 
@@ -298,19 +299,22 @@ def cover_block(name, generated_at, sources, tlp='AMBER', version=1, customer_na
         "",
         "---",
         "",
-        "## Workflows included",
-        "",
-        "| Environment | Source workflow | Source name |",
-        "|---|---|---|",
     ]
-    pipe_escape = "\\|"
-    for src in sources:
-        name_safe = (src.get('name') or '').replace('|', pipe_escape)
-        lines.append(
-            f"| {src.get('section', '?')} | `{src.get('run_id', '?')}` | "
-            f"{name_safe} |"
-        )
-    lines.append("")
+    if include_workflows:
+        lines += [
+            "## Workflows included",
+            "",
+            "| Environment | Source workflow | Source name |",
+            "|---|---|---|",
+        ]
+        pipe_escape = "\\|"
+        for src in sources:
+            name_safe = (src.get('name') or '').replace('|', pipe_escape)
+            lines.append(
+                f"| {src.get('section', '?')} | `{src.get('run_id', '?')}` | "
+                f"{name_safe} |"
+            )
+        lines.append("")
     lines.append("## Document History")
     lines.append("")
     lines.append("| Version | Date | Author | Summary |")

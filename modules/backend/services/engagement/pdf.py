@@ -457,7 +457,7 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>{_html_escape(meta['name'])}</title>
+  <title>{_html_escape('Incident Response Report — ' + (meta.get('customer') or meta['name']))}</title>
   <style>{css}</style>
 </head>
 <body>

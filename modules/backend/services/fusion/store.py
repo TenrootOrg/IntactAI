@@ -1390,7 +1390,8 @@ def engagement_markdown(case_id) -> str:
     cover = cover_block(d.get("name", "Case"),
                         datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
                         sources, tlp=d.get("tlp", "AMBER"), version=1,
-                        customer_name=d.get("customer_name", ""))
+                        customer_name=d.get("customer_name", ""),
+                        include_workflows=False)   # operator: not needed in case reports
     body = d.get("report_md") or "_No report yet — fuse the case first._"
     return f"{cover}\n\n{body}"
 

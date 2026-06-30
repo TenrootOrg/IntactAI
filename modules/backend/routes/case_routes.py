@@ -15,6 +15,17 @@ from services.fusion.schema import FusionGraph
 
 case_bp = Blueprint("case", __name__)
 
+
+def _report_filename(d, ext):
+    """A professional download name: 'IntactAI Incident Report - <Case> - <date>.<ext>'
+    (the case/customer name sanitised to a filesystem-safe string)."""
+    import re as _re
+    from datetime import datetime, timezone
+    base = (d.get("customer_name") or d.get("name") or "Case").strip()
+    base = _re.sub(r"[^\w .-]", "", base).strip() or "Case"
+    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return f"IntactAI Incident Report - {base} - {date}.{ext}"
+
 # At most one import and one export in flight at a time, system-wide. The backend
 # is a single threaded process (app.run(threaded=True)), so module-level locks are
 # global. Independent locks, so one import + one export may overlap.
@@ -623,7 +634,8 @@ def report_download(case_id):
         return jsonify({"error": "case not found"}), 404
     md = store.engagement_markdown(case_id)
     return Response(md, mimetype="text/markdown",
-                    headers={"Content-Disposition": f'attachment; filename="case_{case_id}.md"'})
+                    headers={"Content-Disposition":
+                             f'attachment; filename="{_report_filename(store.get_case(case_id), "md")}"'})
 
 
 @case_bp.route("/api/cases/<case_id>/report/download/pdf", methods=["GET"])
@@ -639,7 +651,8 @@ def report_download_pdf(case_id):
     except Exception as e:
         return jsonify({"error": f"pdf render failed: {e}"}), 503
     return Response(pdf, mimetype="application/pdf",
-                    headers={"Content-Disposition": f'attachment; filename="case_{case_id}.pdf"'})
+                    headers={"Content-Disposition":
+                             f'attachment; filename="{_report_filename(d, "pdf")}"'})
 
 
 @case_bp.route("/api/cases/<case_id>/graph", methods=["GET"])

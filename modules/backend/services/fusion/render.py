@@ -695,33 +695,80 @@ def _host_tactics(findings, host_id) -> dict:
     return buckets
 
 
-def _attack_assessment(graph, assets, findings) -> str:
-    """Synthesis by ATT&CK tactic: WHAT the adversary did, fleet-wide + per host —
-    the analytical layer over the raw detections."""
-    ranked = sorted(assets, key=lambda a: -(a.attrs.get("risk_score") or 0))
+def _attack_assessment(graph, assets, findings, *, window=None, initial_access=None) -> str:
+    """Reconstruct the intrusion as ONE infrastructure-wide story — how the adversary
+    likely entered, moved between hosts (shared credentials / reused tooling), and what
+    they did — ordered by the timeline rather than treating each host in isolation.
+    More-malicious hosts (higher risk score / severity) get the deeper write-up."""
     order = [lab for lab, _ in _ASSESS_TACTICS]
-    fleet: dict = {}
-    per_host = []
-    for a in ranked:
-        b = _host_tactics(findings, a.id)
-        if b:
-            per_host.append((a, b))
-        for lab in b:
-            fleet.setdefault(lab, set()).add(a.label)
-    if not fleet:
+    prof = []
+    for a in assets:
+        af = [f for f in findings if a.id in f.asset_ids]
+        if not af:
+            continue
+        tac = _host_tactics(findings, a.id)
+        ts_list = sorted(f.ts for f in af if f.ts)
+        prof.append({"host": a.label, "sev": a.severity,
+                     "risk": int(a.attrs.get("risk_score") or 0),
+                     "tactics": [l for l in order if l in tac], "tac_map": tac,
+                     "first": ts_list[0] if ts_list else None, "n": len(af)})
+    if not prof:
         return ""
+    chrono = sorted(prof, key=lambda p: (p["first"] or "9999", -p["risk"]))
+    worst = max(prof, key=lambda p: (p["risk"], sev.rank(p["sev"])))
+    entry = chrono[0]
+
+    # how the adversary moved between systems (the "infrastructure" view)
+    xacct = [e for e in graph.by_type("account") if "cross_host" in (e.flags or [])]
+    xhash = [e for e in graph.by_type("ioc")
+             if e.attrs.get("ioc_kind") == "hash" and "cross_host" in (e.flags or [])]
+    xfind = [f for f in findings if f.kind == "cross_host"]
+
     out = ["## Attack Assessment\n"]
-    objectives = [lab for lab in order if lab in fleet]
-    did = _join_nat([_TACTIC_VERB.get(l, l.lower()) for l in objectives])
-    nhost = len(set().union(*fleet.values()))
-    out.append(f"Across {nhost} host(s), the adversary {did}. The per-host breakdown below "
-               f"describes what was observed on each system, with the detections that "
-               f"evidence it.\n")
-    for a, b in per_host:
-        present = [lab for lab in order if lab in b]
-        clauses = [f"{_TACTIC_VERB.get(lab, lab.lower())} "
-                   f"({', '.join(sorted(b[lab])[:3])})" for lab in present]
-        out.append(f"- On **{a.label}** ({a.severity}), the adversary {_join_nat(clauses)}.")
+    # 1. opening — entry point + scope, as a story
+    lead = (f"The earliest observed activity was on **{entry['host']}** "
+            + (f"around `{entry['first']}`" if entry['first'] else "(time not anchored)")
+            + (f", where the adversary "
+               + _join_nat([_TACTIC_VERB.get(l, l.lower()) for l in entry['tactics'][:3]])
+               if entry['tactics'] else "") + ".")
+    if initial_access:
+        lead += f" Initial access is estimated near `{initial_access}`."
+    out.append(f"This reconstructs the likely course of the intrusion across "
+               f"**{len(prof)} affected host(s)** as a single campaign — ordered as it "
+               f"unfolded, not host-by-host in isolation. {lead}")
+
+    # 2. lateral movement — how he pivoted across the infrastructure
+    move = []
+    if xacct:
+        move.append("the account(s) " + _join_nat([f"`{e.label}`" for e in xacct[:3]])
+                    + " authenticated on multiple hosts")
+    if xhash:
+        move.append(f"{len(xhash)} tool/binary hash(es) were reused across hosts")
+    if xfind and not (xacct or xhash):
+        move.append(_join_nat([f.title for f in xfind[:2]]))
+    if move:
+        out.append(f"\nThe adversary pivoted between systems rather than acting locally: "
+                   f"{_join_nat(move)} — evidence of lateral movement using shared "
+                   f"credentials or tooling. Treat this as one environment-wide intrusion.")
+
+    # 3. the focal point — most-compromised host gets the spotlight
+    if worst['tactics']:
+        out.append(f"\n**{worst['host']}** ({worst['sev']}, {worst['n']} finding(s)) is the "
+                   f"focal point of the compromise, where activity reached "
+                   f"{_join_nat([_TACTIC_SHORT.get(l, l.lower()) for l in worst['tactics'][:5]])}.")
+
+    # 4. reconstructed progression by host — deeper detail for the malicious ones
+    out.append("\n**Reconstructed progression:**")
+    for p in chrono:
+        when = f"`{p['first']}` — " if p['first'] else ""
+        if sev.at_least(p['sev'], "high") or p['risk'] >= 60:    # malicious → full prose
+            clauses = [f"{_TACTIC_VERB.get(l, l.lower())} "
+                       f"({', '.join(sorted(p['tac_map'][l])[:2])})" for l in p['tactics']]
+            body = _join_nat(clauses) if clauses else "suspicious activity recorded"
+        else:                                                    # lower signal → brief
+            body = _join_nat([_TACTIC_SHORT.get(l, l.lower())
+                              for l in p['tactics']]) or "lower-severity activity"
+        out.append(f"- {when}**{p['host']}** ({p['sev']}): the adversary {body}.")
     out.append("")
     return "\n".join(out)
 
@@ -779,8 +826,9 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
     out: list[str] = []
     out.append(f"_Report detail: **{eff_detail}** ({reason})._\n")
 
-    # ---- Attack Assessment (WHAT the adversary did, by ATT&CK tactic) -------
-    aa = _attack_assessment(graph, assets, findings)
+    # ---- Attack Assessment (infrastructure-wide story from the timeline) ----
+    aa = _attack_assessment(graph, assets, findings, window=window,
+                            initial_access=initial_access)
     if aa:
         out.append(aa)
 
