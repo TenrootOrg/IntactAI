@@ -290,10 +290,11 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
     for artifact, rows in (collected_data or {}).items():
         an = artifact.lower()
         ab = _artifact_base(artifact)   # base name, sub-source ("/Parsed") stripped
-        # ALLOWLIST: ingest ONLY artifacts we support (mapped + tested) — never
-        # raw Velociraptor data. See SUPPORTED_ARTIFACTS above.
-        if ab not in SUPPORTED_ARTIFACTS:
-            continue
+        # NOTE: the supported-artifact ALLOWLIST is enforced at the fusion INGEST
+        # boundary (store._filter_supported), NOT here — map_agentic stays a pure
+        # artifact->entity function (so its unit tests exercise the handlers
+        # directly). `ab` is still used by the sub-source-aware dispatch below
+        # (e.g. SAM/users `.endswith`).
         for i, r in enumerate(rows or []):
             if not isinstance(r, dict):
                 continue

@@ -15,6 +15,17 @@ import os
 from .schema import FusionGraph
 from . import correlate, llm_sim, keys, render, budget
 from .mappers import map_memory, map_agentic, map_cve, map_timesketch, map_cloud
+from .mappers.agentic import SUPPORTED_ARTIFACTS, _artifact_base
+
+
+def _filter_supported(cd):
+    """Fusion INGEST allowlist: keep only artifacts we support (the hardcoded
+    SUPPORTED_ARTIFACTS set), applied here at the boundary — before map_agentic —
+    so the mapper stays a pure artifact->entity function and cases NEVER ingest raw
+    / unsupported Velociraptor data regardless of source (collection/hunt/import)."""
+    if not cd or not SUPPORTED_ARTIFACTS:
+        return cd
+    return {k: v for k, v in cd.items() if _artifact_base(k) in SUPPORTED_ARTIFACTS}
 
 CASE_TYPE = "case"
 BASELINE_TYPE = "fusion_baseline"
@@ -680,7 +691,7 @@ def _velo_hunt_contribution(rid, det, log=None):
         cd = _agentic_collected_data(rid, det)
     if not cd:
         return [], []
-    ents, rels = map_agentic(cd, run_id=rid, hostnames=det.get("hostnames") or {})
+    ents, rels = map_agentic(_filter_supported(cd), run_id=rid, hostnames=det.get("hostnames") or {})
     _relabel_source(ents, rels, "agentic", "velociraptor")
     return ents, rels
 
@@ -728,7 +739,7 @@ def _contribution_for_run(run, log=None):
         # "agentic" -> "velociraptor" (the data is just imported Velociraptor
         # artifacts) so the report doesn't read as if an agent had run.
         if atype in ("velociraptor_collection", "velociraptor_upload"):
-            ents, rels = map_agentic(_agentic_collected_data(rid, det), run_id=rid,
+            ents, rels = map_agentic(_filter_supported(_agentic_collected_data(rid, det)), run_id=rid,
                                      hostnames=det.get("hostnames") or {})
             if atype == "velociraptor_upload":
                 _relabel_source(ents, rels, "agentic", "velociraptor")
