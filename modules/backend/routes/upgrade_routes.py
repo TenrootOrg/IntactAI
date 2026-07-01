@@ -1123,10 +1123,23 @@ def get_prepare_status(run_id):
                 "versions": manifest.get('versions', {})
             })
         else:
+            # Only ONE prepared package exists at a time (fixed filename — each
+            # prepare overwrites the last). So an older prepare workflow's package
+            # is gone once a newer prepare ran. Tell the operator which newer
+            # workflow superseded it + both ways forward.
+            newer = (pkg or {}).get('run_id')
+            if newer and newer != run_id:
+                msg = ("This upgrade package was overwritten by a newer preparation "
+                       f"(workflow {newer}). Re-create the package from this workflow, "
+                       "or use the newer workflow instead.")
+            else:
+                msg = ("The prepared package is no longer available on the server. "
+                       "Re-create it from this workflow.")
             return jsonify({
                 "success": True,
                 "ready": False,
-                "message": "Package was replaced by a newer preparation"
+                "superseded_by": newer,
+                "message": msg,
             })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1138,9 +1151,19 @@ def download_prepared_package(run_id):
     try:
         pkg = _get_package_info()
 
-        # Check if package exists and matches this run_id
+        # Check if package exists and matches this run_id. Only the LAST prepared
+        # package is kept (fixed filename), so an older workflow's package is gone
+        # once a newer prepare ran — point the operator to the newer workflow.
         if not pkg or pkg.get('run_id') != run_id:
-            return jsonify({"error": "Package was replaced by a newer preparation. Please prepare again."}), 410
+            newer = (pkg or {}).get('run_id')
+            if newer and newer != run_id:
+                err = (f"This upgrade package was overwritten by a newer preparation "
+                       f"(workflow {newer}). Re-create the package from this workflow, "
+                       f"or use the newer workflow instead.")
+            else:
+                err = ("The prepared package is no longer available on the server. "
+                       "Please prepare it again.")
+            return jsonify({"error": err, "superseded_by": (pkg or {}).get('run_id')}), 410
 
         package_path = pkg['path']
         package_name = pkg['name']

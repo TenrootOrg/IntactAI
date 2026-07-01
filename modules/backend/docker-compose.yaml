@@ -48,6 +48,12 @@ services:
       # install.sh:ensure_shared_volumes() so it exists at compose-up
       # time on a fresh box.
       - memory_dumps_shared:/data/memory_dumps:rw
+      # Persist run/report downloads + the last upgrade package on named volumes.
+      # Without these they lived in the container's writable layer — bloating it and,
+      # worse, getting WIPED on every container recreate (upgrade/redeploy), which
+      # silently dropped run results in /data/downloads. Volumes = durable + de-bloated.
+      - report_downloads:/data/downloads:rw
+      - upgrade_packages:/data/upgrade_packages:rw
       - ../..:/app/workdir:rw  # Intact.AI root for upgrade operations
       # Also mount at the install's real host path so `docker run -v ${host}:...`
       # calls issued from inside the backend (Plaso, DFIR-O365RC, etc.) resolve
@@ -104,6 +110,8 @@ services:
 
 volumes:
   upload_data:
+  report_downloads:      # /data/downloads — run/report downloads (was ephemeral)
+  upgrade_packages:      # /data/upgrade_packages — last upgrade package (was ephemeral)
   # Shared memory-dump staging — pre-created externally by install.sh
   # so the backend can come up even when Velociraptor + VolWeb composes
   # haven't run yet on a fresh install.

@@ -86,6 +86,12 @@ modules/timesketch/config/dfiq/
 # DFIR-O365RC temp output
 data/tmp/
 
+# Operator runtime data — report/run downloads + upgrade package staging. These are
+# docker-volume-backed at runtime (see modules/backend/docker-compose.yaml); ignored
+# here so an operator-side copy never lands in git.
+data/downloads/
+data/upgrade_packages/
+
 # Misc artefacts that must never be committed
 *.bak
 *.corrupt
