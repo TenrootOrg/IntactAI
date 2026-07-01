@@ -61,15 +61,17 @@ FUSION_MODULE_TYPES = {
 # 'velociraptor' alias are intentionally NOT shown — only agentic blueprints fuse.
 FUSION_MODULES_UI = ["velociraptor_agentic", "memory",
                      "timesketch", "cve", "aws", "azure"]
-# Selectable now: Velociraptor (Agentic) [default-on] + Memory [default-on].
-# The rest (TimeSketch/CVE/AWS/Azure) are shown greyed/disabled.
-FUSION_MODULES_AVAILABLE = ("velociraptor_agentic", "memory")
+# Selectable now: Velociraptor (Agentic) [default-on] + Memory [default-on] +
+# AWS (CloudTrail) [opt-in]. AWS is off by default (not every case is cloud) but
+# selectable so a CloudTrail scan fuses into the case. TimeSketch/CVE/Azure stay
+# greyed/disabled.
+FUSION_MODULES_AVAILABLE = ("velociraptor_agentic", "memory", "aws")
 FUSION_MODULES_DEFAULT = ["velociraptor_agentic", "memory"]
 _FUSION_MODULE_LABELS = {
     "velociraptor_agentic": "Velociraptor (Agentic)",
     "velociraptor_all": "Velociraptor (All)",
     "memory": "Memory (VolWeb)",
-    "timesketch": "TimeSketch", "cve": "CVE", "aws": "AWS", "azure": "Azure",
+    "timesketch": "TimeSketch", "cve": "CVE", "aws": "AWS (CloudTrail)", "azure": "Azure",
 }
 
 
@@ -624,6 +626,72 @@ def _memory_contribution(rid, det):
                       run_id=rid, asset=asset, hostname=host)
 
 
+def _flatten_cloud_findings(raw):
+    """AWS/Azure findings are persisted keyed by source/rule (``{src: [finding,...]}``)
+    or, for older/test rows, already a flat list. map_cloud wants a flat list of
+    finding dicts, so normalise either shape here."""
+    if isinstance(raw, list):
+        return [f for f in raw if isinstance(f, dict)]
+    if isinstance(raw, dict):
+        out = []
+        for v in raw.values():
+            if isinstance(v, list):
+                out.extend(f for f in v if isinstance(f, dict))
+            elif isinstance(v, dict):
+                out.append(v)
+        return out
+    return []
+
+
+def _cloud_account(det, findings):
+    """Best-effort cloud account/tenant id for the asset anchor: explicit run
+    detail first, else read it off the first CloudTrail record."""
+    acct = (det.get("account") or det.get("account_id") or det.get("tenant_id")
+            or det.get("aws_account"))
+    if acct:
+        return acct
+    for f in findings:
+        rec = f.get("matched_record") if isinstance(f.get("matched_record"), dict) else f
+        if not isinstance(rec, dict):
+            continue
+        a = rec.get("recipientAccountId")
+        if not a:
+            ui = rec.get("userIdentity")
+            if isinstance(ui, dict):
+                a = ui.get("accountId")
+        if a:
+            return a
+    return None
+
+
+def _cloud_contribution(rid, det, provider):
+    """Fuse an AWS/Azure scan. The pipeline is collect-only: SIGMA findings +
+    state snapshots feed the case via the cloud mapper. Findings live inline on
+    small/test rows (``details.findings``), else in the persisted run file the
+    aws route writes (/data/aws_runs/<rid>.json) to avoid bloating the run blob."""
+    raw = det.get("findings") or det.get("sigma_findings")
+    if not raw:
+        fb = det.get("findings_by_severity")
+        if isinstance(fb, dict):
+            raw = fb
+    if not raw:
+        import json
+        import os
+        for base in (f"/app/data/aws_runs/{rid}.json", f"/data/aws_runs/{rid}.json"):
+            if os.path.exists(base):
+                try:
+                    with open(base) as f:
+                        raw = (json.load(f) or {}).get("findings")
+                except Exception:
+                    raw = None
+                break
+    finds = _flatten_cloud_findings(raw)
+    if not finds:
+        return [], []
+    return map_cloud(finds, run_id=rid, provider=provider,
+                     account=_cloud_account(det, finds))
+
+
 def _cve_contribution(rid, det):
     import json
     import os
@@ -833,15 +901,7 @@ def _contribution_for_run(run, log=None):
                 return map_timesketch(evs, run_id=rid, asset=asset, hostname=hostname)
         if atype in ("aws_scan", "azure_scan"):
             prov = "aws" if atype == "aws_scan" else "azure"
-            finds = det.get("findings") or det.get("sigma_findings")
-            if not finds:
-                fb = det.get("findings_by_severity")
-                if isinstance(fb, dict):
-                    finds = [x for v in fb.values() for x in (v or [])]
-            if finds:
-                return map_cloud(finds, run_id=rid, provider=prov,
-                                 account=det.get("account") or det.get("account_id")
-                                 or det.get("tenant_id"))
+            return _cloud_contribution(rid, det, prov)
     except Exception as e:  # never let one run break the fuse
         if log:
             log(f"fuse: run {rid} ({atype}) skipped: {e}", "warning")
