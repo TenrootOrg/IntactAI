@@ -573,7 +573,7 @@ def get_upgrade_status():
         latest = get_latest_versions()
 
         versions = {}
-        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb', 'intact']:
+        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'cloudtrail', 'o365rc', 'volweb', 'intact']:
             versions[module] = {
                 'latest': latest.get(module, 'unknown')
             }
@@ -776,7 +776,7 @@ def prepare_upgrade_package():
 
     2. LEGACY SHAPE A (online-style — diff against local state)::
 
-           {"target": "<ref>", "opted_in_optional": ["prowler", ...]}
+           {"target": "<ref>", "opted_in_optional": ["cloudtrail", ...]}
 
        Backed by :func:`_modules_from_track`. Was the original Prepare
        behavior but it leaked local state into the bundle decision —
@@ -857,7 +857,7 @@ def prepare_upgrade_package():
         # - Plaso: 1 image
         # - IRIS: 2 images (app, nginx)
         # - Velociraptor: 1 binary download
-        # - Prowler (AWS posture): 1 image
+        # - CloudTrail (AWS SIGMA rule pack): 1 artifact
         # - DFIR-O365RC (Microsoft 365 UAL): 1 image
         # - Intact.AI: 2 source copies (backend, frontend)
         # Plus: manifest (1) + archive (1)
@@ -867,7 +867,7 @@ def prepare_upgrade_package():
             'plaso': 1,
             'iris': 2,
             'velociraptor': 1,
-            'prowler': 1,
+            'cloudtrail': 1,
             'o365rc': 1,
             'intact': 2
         }
@@ -1021,7 +1021,7 @@ def start_online_upgrade():
         # prepare-side image saves + apply-side per-module completions.
         steps_per_module_prepare = {
             'elk': 3, 'timesketch': 1, 'plaso': 1, 'iris': 2,
-            'velociraptor': 1, 'prowler': 1, 'o365rc': 1,
+            'velociraptor': 1, 'cloudtrail': 1, 'o365rc': 1,
             'volweb': 2, 'intact': 2,
         }
         prepare_steps_total = sum(steps_per_module_prepare.get(m, 1) for m in modules) + 1

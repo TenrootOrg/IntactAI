@@ -104,7 +104,7 @@ def get_plaso_image():
 def _fresh_image_from_env(var_name: str, image_fmt: str, fallback: str) -> str:
     """Read a version var fresh from the backend .env and format the image
     ref, so an upgrade takes effect without restarting the backend (same
-    trick as get_plaso_image). `image_fmt` is e.g. 'toniblyx/prowler:{}'."""
+    trick as get_plaso_image). `image_fmt` is e.g. 'anssi/dfir-o365rc:{}'."""
     env_paths = [
         '/app/workdir/modules/backend/.env',
         os.path.join(os.path.dirname(__file__), '.env'),
@@ -116,16 +116,6 @@ def _fresh_image_from_env(var_name: str, image_fmt: str, fallback: str) -> str:
                     if line.startswith(f'{var_name}='):
                         return image_fmt.format(line.strip().split('=', 1)[1])
     return fallback
-
-
-# AWS Prowler configuration (posture scans run this image on demand)
-PROWLER_VERSION = os.environ.get('PROWLER_VERSION', '5.28.1')
-PROWLER_IMAGE = f"toniblyx/prowler:{PROWLER_VERSION}"
-
-
-def get_prowler_image():
-    """Prowler image, read fresh from .env so upgrades apply without restart."""
-    return _fresh_image_from_env('PROWLER_VERSION', 'toniblyx/prowler:{}', PROWLER_IMAGE)
 
 
 # Azure DFIR-O365RC configuration (Unified Audit Log collection on demand).

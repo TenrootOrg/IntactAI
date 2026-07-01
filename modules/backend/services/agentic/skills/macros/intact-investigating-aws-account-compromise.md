@@ -3,8 +3,9 @@ name: intact-investigating-aws-account-compromise
 description: Macro playbook for investigating a suspected AWS-account compromise.
   Walks the five-stage attack arc (initial access → privilege escalation →
   persistence → defense evasion → blast radius), correlates CloudTrail events
-  with GuardDuty findings and Prowler posture, and produces a chronological
-  narrative with concrete containment actions per stage.
+  (native boto3 collection + SIGMA) with GuardDuty and AccessAnalyzer
+  findings, and produces a chronological narrative with concrete containment
+  actions per stage.
 domain: cybersecurity
 subdomain: incident-response
 tags:
@@ -129,8 +130,8 @@ Containment for this stage:
 
 What can the compromised principal touch, and what did they actually touch?
 
-Map the principal to its effective permissions (Prowler's IAM checks +
-AccessAnalyzer's findings make this concrete), then look at what the
+Map the principal to its effective permissions (native IAM enumeration via
+boto3 + AccessAnalyzer's findings make this concrete), then look at what the
 window's events actually exercised:
 
 - **Data exfiltration**: `s3:GetObject` from new IPs, especially after

@@ -2,14 +2,14 @@
 AWS Security Automation Service
 
 Mirror of `services.azure` for the AWS provider. Collects CloudTrail
-events, GuardDuty findings, AccessAnalyzer findings, and Prowler-shaped
-posture findings, runs them through the same SIGMA → LLM analyzer →
+events, GuardDuty findings, AccessAnalyzer findings, and IAM principal
+posture, runs them through the same SIGMA → LLM analyzer →
 report pipeline.
 
 This module is currently a *scaffold*: every per-source collector
 returns hand-curated fixture data from `fake_data/*.json` rather than
 calling a real AWS API. The shape and call graph match Azure exactly so
-that swapping in a real boto3 / Prowler integration later is a
+that swapping in a real boto3 integration later is a
 one-function edit per source (see `collectors._FAKE_SOURCES`).
 """
 

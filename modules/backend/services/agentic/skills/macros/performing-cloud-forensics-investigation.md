@@ -295,7 +295,7 @@ PYEOF
 | Azure Monitor | Azure logging and diagnostics platform |
 | GCP Cloud Logging | Google Cloud audit and access logging service |
 | Athena | AWS serverless SQL query service for analyzing CloudTrail logs at scale |
-| Prowler | Open-source AWS security assessment and forensic collection tool |
+| CloudTrail + SIGMA | Native AWS control-plane detection: CloudTrail events matched by SIGMA rules |
 | ScoutSuite | Multi-cloud security auditing tool |
 | CADO Response | Cloud-native digital forensics and incident response platform |
 

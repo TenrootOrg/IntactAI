@@ -225,7 +225,7 @@ Implement controls to prevent recurrence:
 
 - **AWS CloudTrail / Azure Activity Logs / GCP Audit Logs**: Cloud-native API logging services providing the primary audit trail
 - **Cado Response**: Cloud-native forensics platform for automated evidence capture from AWS, Azure, and GCP
-- **Prowler (AWS) / ScoutSuite (multi-cloud)**: Open-source cloud security assessment tools for post-incident posture review
+- **CloudTrail (native boto3 collection) + SIGMA (AWS)**: Native event collection and detection for post-incident review of AWS API activity
 - **Steampipe**: Open-source SQL-based tool for querying cloud APIs to investigate IAM configurations and resource states
 - **Cartography (Lyft)**: Open-source tool for mapping cloud infrastructure relationships and identifying attack paths
 

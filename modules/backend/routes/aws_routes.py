@@ -4,8 +4,8 @@ AWS Automation API Routes
 Endpoints mirror `azure_routes.py`. Online mode goes through
 `services.aws.pipeline.run_aws_pipeline`; offline mode parses uploaded
 log files and calls `run_aws_on_existing`. Currently the online path
-relies on stub collectors that return fixture data — real boto3 /
-Prowler integration lands in a follow-up mission.
+relies on stub collectors that return fixture data — real boto3
+integration lands in a follow-up mission.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from datetime import datetime
 from flask import Blueprint, Response, jsonify, request
 from werkzeug.utils import secure_filename
 
-from config import is_module_enabled
 from routes.config_routes import _load_cloud_config
 from services.aws.pipeline import (
     get_available_sources,
@@ -82,7 +81,7 @@ def get_aws_status():
                 'online_mode': has_credentials,
                 'offline_mode': True,
             },
-            'note': 'Collectors are currently stub fixtures — real boto3/Prowler integration is a follow-up mission.',
+            'note': 'Collectors are currently stub fixtures — real boto3 integration is a follow-up mission.',
         })
     except Exception as e:
         return jsonify({'status': 'error', 'error': str(e)}), 500
@@ -205,13 +204,6 @@ def start_scan():
             from services.connectivity import require_internet
             if not require_internet(run_id, "AWS scan"):
                 return
-
-            if not is_module_enabled('prowler'):
-                # AWS module isn't gated by a config.yaml flag the way Azure
-                # is; treat it as always-on for the scaffold. Keep the check
-                # for symmetry — when the config gate is added it'll come on
-                # automatically.
-                pass
 
             cloud_config = _load_cloud_config()
             aws_config = cloud_config.get('aws', {})

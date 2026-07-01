@@ -227,7 +227,7 @@
                     <!-- CVE Scan — NVD-backed vulnerability matcher. No
                          external console (operator drives it from
                          Automation > On-Prem > CVE Scan in the sidebar).
-                         Same "No console" treatment as prowler/o365rc:
+                         Same "No console" treatment as o365rc:
                          disabled grey button so the operator immediately
                          understands there's no web UI to open from here. -->
                     <div x-show="$store.services.statuses['cve_scan'] !== 'not_installed'"
@@ -251,37 +251,8 @@
                         </button>
                     </div>
 
-                    <!-- Prowler — AWS cloud posture scanner. On-demand
-                         docker run per scan (no persistent container, no
-                         web UI). "No console" button is intentionally
-                         disabled-styled — the dashboard Automation > Cloud
-                         > AWS page is where the operator actually triggers
-                         scans. Status dot reflects config.yaml + .env pin
-                         (the install signal for modules without a
-                         container). -->
-                    <div x-show="$store.services.statuses['prowler'] !== 'not_installed'"
-                         class="service-card bg-gray-800 rounded-lg p-6 border border-gray-700">
-                        <div class="flex justify-between items-start mb-4">
-                            <div class="flex items-center gap-3">
-                                <div class="bg-blue-600 p-3 rounded-lg">
-                                    <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93z"/>
-                                    </svg>
-                                </div>
-                                <div>
-                                    <h3 class="text-lg font-semibold">Prowler</h3>
-                                    <p class="text-sm text-gray-400">AWS Cloud Posture Scan</p>
-                                </div>
-                            </div>
-                            <div :class="$store.services.getStatusClass('prowler')"></div>
-                        </div>
-                        <button disabled class="w-full bg-gray-700 text-gray-400 py-2.5 rounded-lg font-medium cursor-not-allowed">
-                            No console
-                        </button>
-                    </div>
-
                     <!-- DFIR-O365RC — Microsoft 365 Unified Audit Log
-                         collection. Same on-demand pattern as Prowler:
+                         collection. On-demand pattern:
                          no persistent container, no web UI. Operator
                          drives scans from Automation > Cloud > Microsoft 365. -->
                     <div x-show="$store.services.statuses['o365rc'] !== 'not_installed'"

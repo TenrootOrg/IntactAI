@@ -28,12 +28,13 @@ SERVICE_CONTAINERS = {
 }
 
 # On-demand modules — no persistent container. Each scan is a one-shot
-# `docker run` (prowler/o365rc) or runs in-process inside the backend
-# (cve_scan). `docker ps -a` returns nothing for these, so the install
-# state comes from the operator's explicit opt-in in config.yaml
-# (modules.<name>.enabled). Used by the sidebar to hide Cloud > AWS /
-# Microsoft 365 / CVE Scan when the customer didn't enable them.
-ON_DEMAND_MODULES = ('prowler', 'o365rc', 'cve_scan')
+# `docker run` (o365rc) or runs in-process inside the backend
+# (aws native CloudTrail collection, cve_scan). `docker ps -a` returns
+# nothing for these, so the install state comes from the operator's
+# explicit opt-in in config.yaml (modules.<name>.enabled). Used by the
+# sidebar to hide Cloud > AWS / Microsoft 365 / CVE Scan when the
+# customer didn't enable them.
+ON_DEMAND_MODULES = ('cloudtrail', 'o365rc', 'cve_scan')
 
 @system_bp.route('/api/test', methods=['GET', 'POST'])
 def test_endpoint():

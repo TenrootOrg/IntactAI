@@ -244,14 +244,14 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
     db_overwrite = db_overwrite or {}
 
     # Intact.AI must be first so backend code is updated before modules
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb', 'cve_scan']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'cloudtrail', 'o365rc', 'volweb', 'cve_scan']
     upgrade_functions = {
         'elk': upgrade_elk,
         'timesketch': upgrade_timesketch,
         'plaso': upgrade_plaso,
         'iris': upgrade_iris,
         'velociraptor': upgrade_velociraptor,
-        'prowler': upgrade_aws,
+        'cloudtrail': upgrade_aws,
         'o365rc': upgrade_azure,
         'volweb': upgrade_volweb,
         'intact': upgrade_intact,
@@ -580,7 +580,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     # in the list, never got dispatched, never appeared in the summary.
     # All three copies of upgrade_order must include the same modules;
     # this one drifted. Keep them in sync.
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb', 'cve_scan']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'cloudtrail', 'o365rc', 'volweb', 'cve_scan']
 
     # Pick functions by the mode SAVED IN THE STATE — which matters for
     # BACKWARD COMPATIBILITY: when upgrading FROM an older release, Phase 1 runs
@@ -598,7 +598,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'plaso': lambda v, **kw: upgrade_plaso_offline(package_dir, v, **kw),
             'iris': lambda v, **kw: upgrade_iris_offline(package_dir, v, **kw),
             'velociraptor': lambda v, **kw: upgrade_velociraptor_offline(package_dir, v, **kw),
-            'prowler': lambda v, **kw: upgrade_aws_offline(package_dir, v, **kw),
+            'cloudtrail': lambda v, **kw: upgrade_aws_offline(package_dir, v, **kw),
             'o365rc': lambda v, **kw: upgrade_azure_offline(package_dir, v, **kw),
             'volweb': lambda v, **kw: upgrade_volweb_offline(package_dir, v, **kw),
             'intact': lambda **kw: upgrade_intact_offline(package_dir, **kw),
@@ -996,7 +996,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         'plaso': upgrade_plaso_offline,
         'iris': upgrade_iris_offline,
         'velociraptor': upgrade_velociraptor_offline,
-        'prowler': upgrade_aws_offline,
+        'cloudtrail': upgrade_aws_offline,
         'o365rc': upgrade_azure_offline,
         'intact': upgrade_intact_offline,
         'volweb': upgrade_volweb_offline,
@@ -1014,13 +1014,13 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         'velociraptor': install_velociraptor_offline,
         'volweb':       install_volweb_offline,
         # On-demand modules — same function handles both install and
-        # upgrade (the only difference is whether PROWLER_VERSION /
+        # upgrade (the only difference is whether CLOUDTRAIL_VERSION /
         # DFIR_O365RC_VERSION was already pinned). Registering them here
         # lets the install-vs-upgrade dispatcher show "INSTALLING" on
         # fresh deploys and "UPGRADING" on version bumps. _module_container_exists
         # now reads the .env pin for these so the False-vs-True branch
         # actually fires.
-        'prowler':      upgrade_aws_offline,
+        'cloudtrail':      upgrade_aws_offline,
         'o365rc':       upgrade_azure_offline,
     }
 
@@ -1032,7 +1032,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     # Intact.AI must be first so backend code is updated before modules.
     # VolWeb is at the end so its install (a multi-container compose) runs
     # last when the operator is adding VolWeb to an existing install.
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'prowler', 'o365rc', 'volweb', 'cve_scan']
+    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'cloudtrail', 'o365rc', 'volweb', 'cve_scan']
 
     results = {}
     total = 0
@@ -1457,7 +1457,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
             # Iterate over a stable, predictable order that matches the
             # VERSION SUMMARY at run start.
             row_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris',
-                         'velociraptor', 'prowler', 'o365rc', 'volweb']
+                         'velociraptor', 'cloudtrail', 'o365rc', 'volweb']
             for mod in row_order:
                 before = current_versions.get(mod, {}).get('current', '?') if isinstance(current_versions, dict) else '?'
                 after = after_versions.get(mod, {}).get('current', '?') if isinstance(after_versions, dict) else '?'

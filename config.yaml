@@ -35,7 +35,10 @@ options:
   check_module_updates: false
 
 modules:
-  prowler:
+  # CloudTrail — native AWS DFIR detection (CloudTrail events + SIGMA rules,
+  # feeding the fusion engine). No container image; the versioned artifact is the
+  # AWS SIGMA rule pack (see versions.cloudtrail). Ships OFF until validated.
+  cloudtrail:
     enabled: false
   o365rc:
     enabled: false
@@ -92,9 +95,10 @@ versions:
   portainer: 2.39.1
   timesketch: '20260617'
   velociraptor: '0.77.1'
-  # AWS posture scans run the Prowler image (toniblyx/prowler). Pinned to a
-  # real release tag for reproducible installs + upgrades.
-  prowler: '5.28.1'
+  # AWS DFIR detection = the SIGMA AWS CloudTrail rule pack (cloned from SigmaHQ).
+  # No container image; this pins the rule-pack version that install / upgrade /
+  # prepare-package bundle + update. Bump to refresh the AWS detection rules.
+  cloudtrail: '2026.04'
   # Azure Unified Audit Log collection runs the DFIR-O365RC image
   # (anssi/dfir-o365rc). Upstream only publishes ':latest' (no version tags),
   # so we track latest — "upgrade" re-pulls the newest latest.

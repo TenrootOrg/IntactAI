@@ -7,7 +7,7 @@ LOG_SOURCES dict, and the `collect_aws_logs()` orchestration are the same
 shape as `services.azure.collectors` so the upstream pipeline doesn't
 know it's looking at fake data.
 
-When real tool integrations are wired in (boto3 / Prowler / etc.), each
+When real tool integrations are wired in (boto3 / etc.), each
 `_collect_<source>_fake()` function becomes a thin caller of the real API
 — that's the only edit needed; pipeline, sigma_runner, reports, and the
 routes don't change.
@@ -69,13 +69,7 @@ LOG_SOURCES: Dict[str, Dict[str, Any]] = {
         'tier': 3,
         'fixture': 'fake_cloudtrail_full.json',
     },
-    # Tier 4: State / posture snapshots (Prowler-shaped, no event timeline)
-    'prowler_posture': {
-        'name': 'Prowler Posture Findings',
-        'sigma_prefix': 'AWS.Prowler',
-        'tier': 4,
-        'fixture': 'fake_prowler_posture.json',
-    },
+    # Tier 4: State / posture snapshots (no event timeline)
     'iam_principals': {
         'name': 'IAM Principals + Keys (CloudFox-equivalent)',
         'sigma_prefix': 'AWS.IAM',
@@ -133,34 +127,6 @@ def _stub_collect(
         log(f"[AWS] Unknown source: {source}", "warning")
         return []
     sigma_prefix = cfg.get('sigma_prefix', 'AWS')
-
-    # --- Real-runner path (Prowler) -----------------------------------
-    if source == 'prowler_posture' and aws_config:
-        try:
-            from . import prowler_runner
-            avail = prowler_runner.is_available()
-            if avail.get('available'):
-                records = prowler_runner.run_prowler_scan(
-                    aws_config,
-                    services=['iam', 'cloudtrail', 'guardduty', 's3', 'accessanalyzer'],
-                    severities=['critical', 'high'],
-                    regions=regions,
-                    resource_arn=resource_arn,
-                    fail_only=True,
-                    log_func=log,
-                    is_cancelled_func=is_cancelled_func,
-                )
-                if records:
-                    for r in records:
-                        r.setdefault('_source', source)
-                        r.setdefault('EventSource', sigma_prefix)
-                    log(f"[AWS] {cfg['name']}: {len(records)} live findings (Prowler)", "info")
-                    return records
-                log(f"[AWS] {cfg['name']}: Prowler returned no findings — falling back to fixture", "warning")
-            else:
-                log(f"[AWS] {cfg['name']}: Prowler unavailable ({avail.get('message')}) — using fixture", "warning")
-        except Exception as e:
-            log(f"[AWS] {cfg['name']}: Prowler call raised {e!r} — using fixture", "error")
 
     # --- Real-runner path (CloudTrail via boto3 LookupEvents) ---------
     # Same runner serves all three cloudtrail_* sources; the mode flag
@@ -311,7 +277,7 @@ def collect_aws_logs(
     returns, so the rest of the pipeline is provider-agnostic.
 
     In this scaffold every source's collector is a fixture loader. The
-    real implementation will call boto3 / Prowler here and keep the same
+    real implementation will call boto3 here and keep the same
     return shape.
     """
 
@@ -338,9 +304,9 @@ def collect_aws_logs(
                 effective_sources.append(s)
         log("[AWS] cloudtrail_mode=light — replaced cloudtrail_full with console+iam slices", "info")
 
-    # If we have a single target principal, pass it as Prowler's
-    # --resource-arn for scan-time scoping (Mode 1 in the data-eval doc).
-    # The runner only acts on it for source='prowler_posture'.
+    # If we have a single target principal, keep its ARN for scan-time
+    # scoping (Mode 1 in the data-eval doc). Currently unused by the
+    # remaining collectors but preserved for per-resource scoping hooks.
     resource_arn = None
     if target_principals and len(target_principals) == 1:
         tp = target_principals[0]
@@ -462,7 +428,6 @@ _FILENAME_PREFIX_MAP: List[Tuple[str, str]] = [
     ('guardduty', 'AWS.GuardDuty'),
     ('accessanalyzer', 'AWS.AccessAnalyzer'),
     ('access_analyzer', 'AWS.AccessAnalyzer'),
-    ('prowler', 'AWS.Prowler'),
 ]
 
 
@@ -493,7 +458,4 @@ def detect_source_type(record: Dict) -> Optional[str]:
     # AccessAnalyzer findings have Resource + ResourceType + Status.
     if 'resourceType' in record and 'status' in record and 'resource' in record:
         return 'AWS.AccessAnalyzer'
-    # Prowler OCSF-style findings have check_id + status_code.
-    if 'check_id' in record or 'finding_info' in record:
-        return 'AWS.Prowler'
     return None

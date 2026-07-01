@@ -254,7 +254,7 @@ def is_source_relevant(source_name: str, product: str, service: str) -> bool:
     # AWS product matching — SigmaHQ AWS rules have `logsource.product: aws`
     # and a service like `cloudtrail` / `guardduty`. Records collected by
     # the AWS pipeline are grouped under sigma_prefix keys like
-    # `AWS.CloudTrail`, `AWS.GuardDuty`, `AWS.AccessAnalyzer`, `AWS.Prowler`
+    # `AWS.CloudTrail`, `AWS.GuardDuty`, `AWS.AccessAnalyzer`
     # — match any of those when the rule targets AWS.
     if product == 'aws':
         if 'aws' in source_lower:

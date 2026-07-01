@@ -132,7 +132,7 @@
                              $store.services.statuses['volweb'] !== 'not_installed' ||
                              $store.services.statuses['cve_scan'] !== 'not_installed' ||
                              $store.services.statuses['o365rc'] !== 'not_installed' ||
-                             $store.services.statuses['prowler'] !== 'not_installed'">
+                             $store.services.statuses['cloudtrail'] !== 'not_installed'">
                     <!-- Parent item -->
                     <div class="nav-item flex items-center gap-3"
                          :class="{ 'justify-center': $store.app.sidebarCollapsed, 'bg-gray-800/50': ($store.app.currentTab === 'modules-forensics' || $store.app.currentTab === 'modules-timesketch' || $store.app.currentTab === 'modules-cve-scan' || $store.app.currentTab === 'cloud-aws' || $store.app.currentTab === 'cloud-azure') && !automationOpen }"
@@ -228,12 +228,12 @@
                         </div>
 
                         <!-- Cloud Section — collapses entirely when neither
-                             Microsoft 365 (o365rc) nor AWS (prowler) is
+                             Microsoft 365 (o365rc) nor AWS is
                              enabled in config.yaml. These modules have no
                              persistent container — install state comes from
                              the opt-in flag via /api/system/containers. -->
                         <div x-show="$store.services.statuses['o365rc'] !== 'not_installed' ||
-                                     $store.services.statuses['prowler'] !== 'not_installed'">
+                                     $store.services.statuses['cloudtrail'] !== 'not_installed'">
                             <div class="nav-item flex items-center gap-3 py-2 text-sm cursor-pointer"
                                  :class="{ 'text-blue-400': cloudOpen }"
                                  @click.stop="cloudOpen = !cloudOpen">
@@ -257,7 +257,7 @@
                                     <span>Microsoft 365</span>
                                 </div>
                                 <!-- AWS -->
-                                <div x-show="$store.services.statuses['prowler'] !== 'not_installed'"
+                                <div x-show="$store.services.statuses['cloudtrail'] !== 'not_installed'"
                                      class="nav-item flex items-center gap-3 py-2 text-sm"
                                      :class="{ 'active': $store.app.currentTab === 'cloud-aws' }"
                                      @click.stop="$store.app.switchTab('cloud-aws')">

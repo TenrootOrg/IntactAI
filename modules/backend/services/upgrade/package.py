@@ -44,9 +44,6 @@ PRIMARY_IMAGES = {
         ('ghcr.io/dfir-iris/iriswebapp_db:{version}',
          'iris-db-{version}.tar'),
     ],
-    'prowler': [
-        ('toniblyx/prowler:{version}', 'prowler-{version}.tar'),
-    ],
     'o365rc': [
         # Upstream only ships ':latest', so {version} is normally 'latest'.
         ('anssi/dfir-o365rc:{version}', 'dfir-o365rc-{version}.tar'),
@@ -1834,6 +1831,37 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             "the air-gap target. Operator can run "
                             "Maintenance → Refresh YARA Rulesets later if "
                             "the target gets internet.", "warning")
+            elif module == 'cloudtrail':
+                # CloudTrail ships no docker image — the versioned artifact is the
+                # SIGMA AWS CloudTrail rule pack (cloned from SigmaHQ into
+                # /opt/sigma-rules). Bundle it as images/cloudtrail-<version>.tar so an
+                # air-gapped target installs the detection rules on apply
+                # (services/upgrade/aws.py:upgrade_cloudtrail_offline). Mirrors the
+                # cve_scan pattern (a no-image module that ships a data artifact).
+                import tarfile as _cttf
+                aws_rules = "/opt/sigma-rules/rules/cloud/aws"
+                if os.path.isdir(aws_rules):
+                    images_dir = f"{package_dir}/images"
+                    os.makedirs(images_dir, exist_ok=True)
+                    out_tar = f"{images_dir}/cloudtrail-{version}.tar"
+                    with _cttf.open(out_tar, 'w') as tar:
+                        tar.add(aws_rules, arcname='.')
+                    n_rules = sum(1 for _r, _d, fs in os.walk(aws_rules)
+                                  for f in fs if f.endswith(('.yml', '.yaml')))
+                    size_mb = os.path.getsize(out_tar) / (1024 * 1024)
+                    manifest["contents"].setdefault("rule_packs", []).append({
+                        "module": "cloudtrail",
+                        "file": f"images/cloudtrail-{version}.tar",
+                        "rules": n_rules, "size_mb": round(size_mb, 2),
+                    })
+                    log(f"  Bundled SIGMA AWS rule pack: {n_rules} rules "
+                        f"({size_mb:.1f} MB)", "success")
+                else:
+                    log(f"  WARNING: no SIGMA AWS rules at {aws_rules} — cloudtrail was "
+                        "selected but this build host has no rule pack to bundle. Run the "
+                        "installer's download_sigma_rules first, otherwise the air-gap "
+                        "target starts with no AWS detection rules.", "warning")
+
             elif module == 'cve_scan':
                 # CVE Scan ships no docker image — what we bundle is the
                 # prebuilt SQLite CVE database (cves.db) so an air-gapped
@@ -1869,7 +1897,8 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         has_content = (manifest["contents"]["images"] or
                       manifest["contents"]["binaries"] or
                       manifest["contents"].get("include_source", False) or
-                      manifest["contents"].get("cve_db"))
+                      manifest["contents"].get("cve_db") or
+                      manifest["contents"].get("rule_packs"))
         if not has_content:
             raise Exception("No modules were packaged successfully. Check your internet connection and try again.")
 

@@ -4,7 +4,7 @@ CloudTrail Runner — live boto3 LookupEvents collection.
 Replaces the fixture-based `cloudtrail_console` / `cloudtrail_iam` /
 `cloudtrail_full` sources. The IntactAI-shape records this module
 emits feed straight into the SIGMA matcher + LLM analyzer alongside
-the IAM / Prowler collectors.
+the IAM collector.
 
 Notes:
   - `LookupEvents` is rate-limited to 2 req/s per region. We page

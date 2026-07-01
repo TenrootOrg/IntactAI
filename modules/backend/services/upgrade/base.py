@@ -255,9 +255,6 @@ _MODULE_IMAGE_REPOS = {
         'docker.elastic.co/kibana/kibana',
         'docker.elastic.co/logstash/logstash',
     ],
-    'prowler': [
-        'toniblyx/prowler',
-    ],
     'o365rc': [
         'anssi/dfir-o365rc',
     ],
@@ -460,7 +457,7 @@ def set_module_block_in_config(module_name: str, block: dict, logger=None) -> bo
 def set_module_enabled_in_config(module_name: str, logger=None) -> bool:
     """Flip ``modules.<module_name>.enabled`` to ``true`` in config.yaml.
 
-    Used by the on-demand module upgraders (Prowler / DFIR-O365RC) so that
+    Used by the on-demand module upgraders (CloudTrail / DFIR-O365RC) so that
     an online or offline upgrade through the dashboard also marks the
     module as enabled — matching what install.sh would do if the operator
     had set enabled: true before re-running it. Without this the
@@ -655,13 +652,13 @@ def get_current_versions() -> Dict:
     }
 
     # Helper: is the on-demand module enabled in operator's local
-    # config.yaml? install.sh seeds PLASO_VERSION / PROWLER_VERSION /
+    # config.yaml? install.sh seeds PLASO_VERSION / CLOUDTRAIL_VERSION /
     # DFIR_O365RC_VERSION into backend's .env unconditionally (the
     # backend code path needs the constants regardless), so a pinned
     # version in .env does NOT mean the operator opted into the
     # module. We must ALSO check the modules.<name>.enabled flag.
     # Discovered when an operator did a backend+cve-only install and
-    # the Online Upgrade modal incorrectly listed plaso/prowler/o365rc
+    # the Online Upgrade modal incorrectly listed plaso/cloudtrail/o365rc
     # as "installed → upgrade automatically" — they'd never agreed
     # to deploy any of those.
     def _ondemand_enabled(name: str) -> bool:
@@ -716,18 +713,18 @@ def get_current_versions() -> Dict:
         'env_file': volweb_env,
     }
 
-    # On-demand modules (Prowler / DFIR-O365RC) have no long-running
+    # On-demand/native modules (CloudTrail / DFIR-O365RC) have no long-running
     # container — the install signal is the .env pin AND the
     # modules.<name>.enabled flag in config.yaml. install.sh seeds the
     # .env pin regardless of the operator's choice (backend code path
     # needs the constants), so the enabled-flag gate is mandatory —
     # otherwise a backend-only install incorrectly classifies these as
     # "installed → upgrade automatically".
-    prowler_version = backend_vars.get('PROWLER_VERSION', '').strip()
-    if not _ondemand_enabled('prowler'):
-        prowler_version = ''
-    versions['prowler'] = {
-        'current': prowler_version if prowler_version else 'Not installed',
+    cloudtrail_version = backend_vars.get('CLOUDTRAIL_VERSION', '').strip()
+    if not _ondemand_enabled('cloudtrail'):
+        cloudtrail_version = ''
+    versions['cloudtrail'] = {
+        'current': cloudtrail_version if cloudtrail_version else 'Not installed',
         'env_file': backend_env,
     }
     o365rc_version = backend_vars.get('DFIR_O365RC_VERSION', '').strip()
@@ -796,7 +793,7 @@ def get_latest_versions() -> Dict:
         'plaso':        'plaso',
         'iris':         'iris',
         'velociraptor': 'velociraptor',
-        'prowler':      'prowler',
+        'cloudtrail':   'cloudtrail',
         'o365rc':       'o365rc',
         'intact':       'backend',
         # VolWeb (memory-forensics analysis stack). Single
@@ -813,7 +810,7 @@ def get_latest_versions() -> Dict:
         'plaso': '20260119',
         'iris': 'v2.4.27',
         'velociraptor': '0.76.5',
-        'prowler': '5.28.1',
+        'cloudtrail': '2026.04',
         'o365rc': 'latest',
         'intact': '1.0.0',
         'volweb': '3.16.0',
@@ -1113,7 +1110,7 @@ _MODULE_PRIMARY_CONTAINERS = {
 def _module_container_exists(module_id: str) -> Optional[bool]:
     """True iff the module's primary container exists (running or stopped).
     For container-based modules, queries `docker ps -a`. For on-demand
-    modules (prowler / o365rc) with no container concept, falls back to
+    modules (cloudtrail / o365rc) with no container concept, falls back to
     "is the .env version pin present?" — that's the equivalent install
     signal so the dispatcher can correctly label fresh-install runs as
     INSTALLING instead of UPGRADING. Returns None for plaso (no .env pin
@@ -1129,10 +1126,10 @@ def _module_container_exists(module_id: str) -> Optional[bool]:
             return name in (result.stdout or '')
         except Exception:
             return None
-    # On-demand modules: read the matching .env pin. Both prowler and
+    # On-demand/native modules: read the matching .env pin. Both cloudtrail and
     # DFIR-O365RC keep their version in the backend .env.
     on_demand_env_keys = {
-        'prowler': 'PROWLER_VERSION',
+        'cloudtrail': 'CLOUDTRAIL_VERSION',
         'o365rc':  'DFIR_O365RC_VERSION',
     }
     env_key = on_demand_env_keys.get(module_id)

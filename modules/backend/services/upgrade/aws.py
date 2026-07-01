@@ -1,119 +1,121 @@
 #!/usr/bin/env python3
-"""Prowler (AWS posture scanner) upgrade functions.
+"""CloudTrail (AWS DFIR detection) upgrade functions.
 
-Prowler runs on demand against AWS accounts — there's no long-running
-Prowler container, so "upgrade" means pulling a new image tag and pinning
-it in the backend .env (PROWLER_VERSION). The scan runner
-(services/aws/prowler_runner.py) reads that version fresh, so the new
-image is used on the next scan without a backend restart. Mirrors the
-Plaso upgrader.
+The AWS module is native: CloudTrail events are collected via boto3 and matched
+by the SIGMA AWS CloudTrail rule pack (cloned from SigmaHQ into /opt/sigma-rules).
+There is NO container image — the versioned artifact is the SIGMA AWS rule pack.
+"Upgrade" therefore means refreshing that rule pack and pinning CLOUDTRAIL_VERSION
+in the backend .env. No backend restart is needed (rules are read fresh per scan).
 
-Internal function names (`upgrade_aws`, `upgrade_aws_offline`) kept for
-backwards compatibility with the dispatcher tables; the public module key
-exposed via the API + run logs is now 'prowler'.
+/opt/sigma-rules is mounted read-only inside the backend, so writes to it are done
+by a one-shot container that mounts the host path read-write (the backend has the
+docker socket) — the same host directory install-time `download_sigma_rules` writes.
+Every rule operation is best-effort: a rule refresh must never fail the upgrade.
+
+Internal function names `upgrade_aws` / `upgrade_aws_offline` are kept as aliases so
+the dispatcher tables in __init__.py continue to resolve; the public module key is
+now 'cloudtrail'.
 """
 
 import os
+import shlex
 from typing import Dict, Callable, Optional
 
 from .base import (
     WORKDIR,
-    run_command, read_env_file, update_env_file, load_docker_image,
+    run_command, read_env_file, update_env_file,
     backup_env_file, restore_env_file, cleanup_backup,
     set_module_enabled_in_config,
 )
 
+SIGMA_RULES_DIR = "/opt/sigma-rules"
+AWS_RULES_SUBPATH = "rules/cloud/aws"
+_GIT_IMAGE = "alpine/git:latest"
+_TAR_IMAGE = "ubuntu:22.04"
 
-def upgrade_aws(version: str, logger: Callable = None) -> Dict:
-    """Upgrade the Prowler image to `version` with automatic rollback."""
+
+def upgrade_cloudtrail(version: str, logger: Callable = None) -> Dict:
+    """Online: refresh the SIGMA AWS rule pack (git pull the SigmaHQ clone) and pin
+    CLOUDTRAIL_VERSION. Rule refresh is best-effort; version pin + enable always run."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
 
-    log("Starting Prowler upgrade...", "info")
-
-    current_vars = read_env_file(backend_env)
-    current_version = current_vars.get('PROWLER_VERSION', 'unknown')
-
-    log(f"Backing up current config (version {current_version})...", "info")
+    log("Starting CloudTrail (SIGMA AWS rule pack) upgrade...", "info")
+    current_version = read_env_file(backend_env).get('CLOUDTRAIL_VERSION', 'unknown')
     backup_file = backup_env_file(backend_env, logger=log)
 
     try:
-        log(f"Pulling Prowler {version}...", "info")
-        result = run_command(f"docker pull toniblyx/prowler:{version}", logger=log, timeout=1800)
-        if not result['success']:
-            raise Exception(f"Failed to pull Prowler image: {result['error']}")
+        # Refresh the host-mounted SigmaHQ clone via a one-shot git container.
+        log(f"Refreshing SIGMA AWS rule pack -> {version}...", "info")
+        r = run_command(
+            f"docker run --rm -w {SIGMA_RULES_DIR} -v {SIGMA_RULES_DIR}:{SIGMA_RULES_DIR} "
+            f"{_GIT_IMAGE} pull --ff-only",
+            logger=log, timeout=600)
+        if not r.get('success'):
+            log("  Rule-pack git pull skipped (non-fatal) — keeping current rules", "warning")
 
-        log(f"Updating Prowler version to {version}...", "info")
-        update_env_file(backend_env, 'PROWLER_VERSION', version, logger=log)
-
-        # Mark prowler as enabled in config.yaml so the sidebar, dashboard
-        # cards and runtime is_module_enabled() gate all see this install.
-        # No-op when already enabled.
-        set_module_enabled_in_config('prowler', logger=log)
-
-        # No backend restart needed — Prowler runs as a separate container
-        # per scan and prowler_runner reads PROWLER_VERSION fresh from .env.
+        update_env_file(backend_env, 'CLOUDTRAIL_VERSION', version, logger=log)
+        set_module_enabled_in_config('cloudtrail', logger=log)
 
         cleanup_backup(backup_file, logger=log)
-        log(f"Prowler upgrade completed: {current_version} -> {version}", "success")
+        log(f"CloudTrail rule-pack upgrade completed: {current_version} -> {version}", "success")
         return {"success": True, "version": version}
 
     except Exception as e:
         error_msg = str(e)
-        log(f"Prowler upgrade FAILED: {error_msg}", "error")
-        log(f"Rolling back to version {current_version}...", "warning")
+        log(f"CloudTrail upgrade FAILED: {error_msg}", "error")
         if restore_env_file(backend_env, backup_file, logger=log):
-            log(f"ROLLED BACK Prowler to version {current_version}", "warning")
-        return {
-            "success": False,
-            "error": error_msg,
-            "rolled_back": True,
-            "restored_version": current_version,
-        }
+            log(f"ROLLED BACK CloudTrail to version {current_version}", "warning")
+        return {"success": False, "error": error_msg, "rolled_back": True,
+                "restored_version": current_version}
 
 
-def upgrade_aws_offline(package_dir: str, version: str, logger: Callable = None,
-                          run_id: Optional[str] = None) -> Dict:
-    """Upgrade Prowler from an offline package with automatic rollback."""
+def upgrade_cloudtrail_offline(package_dir: str, version: str, logger: Callable = None,
+                               run_id: Optional[str] = None) -> Dict:
+    """Offline: install the bundled AWS rule pack (cloudtrail-<version>.tar) into the
+    host SIGMA rules dir via a one-shot container (tar streamed over stdin, so no
+    host-path translation needed). Best-effort; version pin + enable always run."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
     images_dir = os.path.join(package_dir, 'images')
 
-    log("Starting Prowler offline upgrade...", "info")
-
-    current_vars = read_env_file(backend_env)
-    current_version = current_vars.get('PROWLER_VERSION', 'unknown')
-
-    log(f"Backing up current config (version {current_version})...", "info")
+    log("Starting CloudTrail (SIGMA AWS rule pack) offline upgrade...", "info")
+    current_version = read_env_file(backend_env).get('CLOUDTRAIL_VERSION', 'unknown')
     backup_file = backup_env_file(backend_env, logger=log)
 
     try:
-        prowler_tar = os.path.join(images_dir, f"prowler-{version}.tar")
-        if os.path.exists(prowler_tar):
-            log("Loading Prowler image from package...", "info")
-            result = load_docker_image(prowler_tar, logger=log, run_id=run_id)
-            if not result['success']:
-                raise Exception(f"Failed to load Prowler image: {result.get('error', 'unknown')}")
+        tar_path = os.path.join(images_dir, f"cloudtrail-{version}.tar")
+        if os.path.exists(tar_path):
+            log("Installing SIGMA AWS rule pack from package...", "info")
+            dest = f"{SIGMA_RULES_DIR}/{AWS_RULES_SUBPATH}"
+            # Stream the tar (readable in the backend fs) into a one-shot that mounts
+            # the host rules dir read-write. Avoids mounting the tar (no host-path map).
+            r = run_command(
+                f"docker run --rm -i -v {SIGMA_RULES_DIR}:{SIGMA_RULES_DIR} {_TAR_IMAGE} "
+                f"sh -c 'mkdir -p {dest} && tar xf - -C {dest}' < {shlex.quote(tar_path)}",
+                logger=log, timeout=300)
+            if not r.get('success'):
+                log("  Rule-pack extract failed (non-fatal) — keeping current rules", "warning")
         else:
-            log(f"Prowler image not found in package: {prowler_tar}", "warning")
+            log(f"CloudTrail rule pack not in package (cloudtrail-{version}.tar) — "
+                f"skipping (rules ship with the SigmaHQ clone)", "warning")
 
-        log(f"Updating Prowler version to {version}...", "info")
-        update_env_file(backend_env, 'PROWLER_VERSION', version, logger=log)
-        set_module_enabled_in_config('prowler', logger=log)
+        update_env_file(backend_env, 'CLOUDTRAIL_VERSION', version, logger=log)
+        set_module_enabled_in_config('cloudtrail', logger=log)
 
         cleanup_backup(backup_file, logger=log)
-        log(f"Prowler offline upgrade completed: {current_version} -> {version}", "success")
+        log(f"CloudTrail offline upgrade completed: {current_version} -> {version}", "success")
         return {"success": True, "version": version}
 
     except Exception as e:
         error_msg = str(e)
-        log(f"Prowler offline upgrade FAILED: {error_msg}", "error")
-        log(f"Rolling back to version {current_version}...", "warning")
+        log(f"CloudTrail offline upgrade FAILED: {error_msg}", "error")
         if restore_env_file(backend_env, backup_file, logger=log):
-            log(f"ROLLED BACK Prowler to version {current_version}", "warning")
-        return {
-            "success": False,
-            "error": error_msg,
-            "rolled_back": True,
-            "restored_version": current_version,
-        }
+            log(f"ROLLED BACK CloudTrail to version {current_version}", "warning")
+        return {"success": False, "error": error_msg, "rolled_back": True,
+                "restored_version": current_version}
+
+
+# Back-compat aliases for the dispatcher tables in __init__.py.
+upgrade_aws = upgrade_cloudtrail
+upgrade_aws_offline = upgrade_cloudtrail_offline

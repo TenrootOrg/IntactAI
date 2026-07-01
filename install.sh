@@ -158,12 +158,10 @@ main() {
     generate_azure_certificate
 
     # -------------------------------------------------------------------------
-    # AWS Security Tools (Prowler posture image)
-    # -------------------------------------------------------------------------
-    # boto3 for the IAM enumeration (CloudFox-equivalent) is installed
-    # into the backend container by install_deps.py — driven off the
-    # `aws` module entry in config.yaml + requirements-aws.txt.
-    pull_prowler_image
+    # AWS DFIR (CloudTrail + SIGMA) — native, no image to pull. boto3 is
+    # installed into the backend by install_deps.py; the SIGMA AWS rule pack
+    # is fetched by download_sigma_rules() above when the cloudtrail (or
+    # azure) module is enabled in config.yaml.
 
     # -------------------------------------------------------------------------
     # Backend base image — always built, so always pre-pull. Keeps the

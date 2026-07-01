@@ -1,4 +1,11 @@
-# AWS pipeline — mirror Azure, wrap Prowler the way we wrap DFIR-O365RC
+# AWS pipeline — mirror Azure, native CloudTrail (boto3) + SIGMA
+
+> **Superseded note:** the original plan proposed wrapping an external
+> posture scanner as the AWS state/posture source. The shipped design
+> instead uses **CloudTrail (native boto3 collection) + SIGMA** for events
+> and detection, with GuardDuty / AccessAnalyzer / IAM-principals as the
+> other native boto3 sources. References below to that external scanner are
+> historical; read them as "CloudTrail (native) + SIGMA".
 
 ## Context
 
@@ -26,7 +33,7 @@ DFIR/SOC pipeline:
 
 | Tool | Stars | Last push | What it does | Fit for our pipeline |
 |---|---:|---|---|---|
-| **Prowler** ([prowler-cloud/prowler](https://github.com/prowler-cloud/prowler)) | **13,750** | **2026-05-07** | 572 AWS posture checks across 83 services, 41 compliance frameworks, OCSF JSON output, Docker image, CLI. Now powers attack-path graph via Cartography integration. | ✅ **Best fit.** Plays the same role DFIR-O365RC plays for Azure — single tool that wraps disparate APIs and emits structured JSON. Replaces our state-snapshot collector and gives us posture findings as a bonus. |
+| **Prowler** ([prowler-cloud/prowler](https://github.com/prowler-cloud/prowler)) | **13,750** | **2026-05-07** | 572 AWS posture checks across 83 services, 41 compliance frameworks, OCSF JSON output, Docker image, CLI. Now powers attack-path graph via Cartography integration. | ⚠️ **Evaluated, not shipped.** Strong posture scanner, but adds an external image dependency for coverage beyond DFIR triage. Shipped design derives state/posture natively from boto3 (CloudTrail + SIGMA, AccessAnalyzer, IAM principals) instead. |
 | **Steampipe** ([turbot/steampipe](https://github.com/turbot/steampipe)) | 7,808 | 2026-04-24 | SQL queries over 153 cloud-API plugins, 2,000+ tables. Excellent for ad-hoc IR queries. | Too unstructured for an automated pipeline. Better as an analyst tool. |
 | **ScoutSuite** ([nccgroup/ScoutSuite](https://github.com/nccgroup/ScoutSuite)) | 7,648 | 2025-09-23 | Multi-cloud audit, ~200 checks. | Once a strong choice; cadence has slowed sharply (8+ month gap mid-2025 per public commentary, despite the 2025-09 commit). Prowler has surpassed it on every dimension. |
 | **CloudQuery** ([cloudquery/cloudquery](https://github.com/cloudquery/cloudquery)) | 6,398 | 2026-05-06 | ELT cloud asset normalization → data warehouse. | Designed for SQL-warehouse ingestion. Heavyweight; we'd discard most of its value. |
@@ -39,33 +46,30 @@ DFIR/SOC pipeline:
 | **DFIR-O365RC** *(baseline)* | 282 | 2025-09-22 | Azure/M365 audit log collector — what we wrap today. | Reference point only. |
 | **Diffy** ([Netflix-Skunkworks/diffy](https://github.com/Netflix-Skunkworks/diffy)) | 630 | 2024-01-11 | DFIR triage. | **Dormant.** Skip. |
 
-**Recommendation: Prowler is the AWS analog of DFIR-O365RC.** It's
-the only AWS tool that simultaneously (a) clears the maturity bar
-DFIR-O365RC sets, (b) wraps disparate AWS APIs behind one stable
-interface, (c) emits structured JSON suitable for downstream pipeline
-consumption, (d) ships a Docker image, and (e) is actively maintained
-(commits today, 13.7k stars, commercial backing).
+**Recommendation (shipped): CloudTrail (native boto3) + SIGMA is the AWS
+core.** Rather than depending on an external posture scanner, the AWS
+module collects raw events with plain boto3 (`cloudtrail.lookup_events`,
+`guardduty.list_findings`, `accessanalyzer.list_findings`, IAM-principal
+enumeration) and runs them through the same SIGMA → analyzer → report
+pipeline Azure uses. This keeps the AWS surface dependency-free (no extra
+container image to pin/pull) and gives event-level detail SIGMA can match
+against.
 
-**Important caveat that changes architecture:** Prowler is a *posture
-checker*, not a raw-event collector. It tells you *"is CloudTrail
-multi-region enabled?"*, not *"give me every CloudTrail event from
-yesterday."* So Prowler replaces what we'd otherwise build as
-`state_collector.py` (IAM + S3 + GuardDuty config snapshots), but we
-still need plain boto3 for the raw-event side that feeds SIGMA
-detection — the AWS analog of Microsoft Graph's `auditLogs/signIns`,
-which Azure uses for SIGMA matches against event patterns.
+**Posture / state** is derived natively too: AccessAnalyzer findings and
+IAM-principal enumeration fold into the `INV.*` finding buckets as
+state-snapshots, the same way Azure wraps CA policies / federation.
 
 **Optional v2 supplement: CloudFox** for IR scenarios where the
-operator wants per-principal blast-radius enumeration. Different role
-from Prowler (recon vs. posture), tiny binary (~30 MB), trivial to
-wrap. Defer to phase 4.
+operator wants per-principal blast-radius enumeration. Tiny binary
+(~30 MB), trivial to wrap. Defer to phase 4.
 
 ## Strategy
 
-**Mirror the Azure module structure 1-for-1. Wrap Prowler in Docker
-the same way we wrap DFIR-O365RC for state/posture. Use plain boto3
-for raw CloudTrail event collection (the SIGMA-matching path). Ship in
-three phases so each is independently testable.**
+**Mirror the Azure module structure 1-for-1. Use plain boto3 for raw
+CloudTrail event collection (the SIGMA-matching path) plus GuardDuty /
+AccessAnalyzer / IAM-principal enumeration; derive state/posture natively
+from those sources. Ship in three phases so each is independently
+testable.**
 
 The Azure pipeline's shape works because it factors collection from
 detection from analysis from report from IRIS. AWS gets the same factor:
@@ -73,26 +77,24 @@ detection from analysis from report from IRIS. AWS gets the same factor:
 ```
 phase 1 validation -> phase 2 collection
    ├─ raw events    : boto3 cloudtrail.lookup_events  (analog of MS Graph signin/audit)
-   └─ state/posture : Prowler in Docker, OCSF JSON    (analog of DFIR-O365RC)
+   └─ state/posture : boto3 AccessAnalyzer + IAM-principal enumeration
    -> phase 3 time filter
    -> phase 4 SIGMA detection (existing rules at /opt/sigma-rules/rules/cloud/aws/)
    -> phase 4b CloudTrail event-name pre-detection (parallel to UAL pre-detect)
-   -> phase 4c state-snapshot wrapping from Prowler findings
-                  (replaces the manual IAM/SCP/S3-bucket-policy enumeration)
+   -> phase 4c state-snapshot wrapping from AccessAnalyzer + IAM findings
    -> phase 5 LLM analysis (with pipeline_kind="aws")
    -> phase 6 AWS-formatted report
    -> phase 7 IRIS import (existing, generic)
 ```
 
-**Why Prowler instead of rolling our own state collector:** the original
-plan called for ~400 LOC of boto3 across 5 services (IAM principals,
-IAM policies, SCPs, S3 bucket policies, federation). Prowler already
-covers all of that PLUS 567 other checks across 78 other services we
-hadn't planned to touch — for free. Wrapping it costs ~80 LOC of
-Docker subprocess + JSON parsing, mirroring `dfir_o365rc.py`. Net win:
-~5× less code to maintain, broader posture coverage, plus the CIS /
-NIST / SOC2 compliance frameworks come along for free if we ever want
-to surface them.
+**Why native boto3 state collection (shipped decision):** rather than
+add an external posture-scanner dependency (extra image to pin/pull, a
+Docker-subprocess wrapper to maintain), the module derives posture from
+the boto3 sources it already collects — AccessAnalyzer findings and
+IAM-principal enumeration folded into `INV.*` state-snapshot buckets.
+This keeps the AWS surface self-contained and event-level, at the cost
+of the broader compliance-framework coverage an external scanner would
+have added (out of scope for DFIR triage).
 
 Auth scope for v1: **single account, long-lived access key + optional
 session token** (matches what Settings already collects). Cross-account
@@ -111,10 +113,10 @@ events (EC2, S3, Lambda) need per-region queries.
 | File | Mirrors | Responsibilities |
 |---|---|---|
 | `__init__.py` | `azure/__init__.py` | Re-exports |
-| `collectors.py` | `azure/collectors.py` | `LOG_SOURCES` dict, `collect_aws_logs()`, `parse_uploaded_logs()`, **boto3-only** per-source collectors for raw events (`cloudtrail.lookup_events`, `guardduty.list_findings`, `accessanalyzer.list_findings`), `detect_source_type()` for offline. No state-snapshot logic — that's Prowler's job. |
-| `prowler_runner.py` | `azure/dfir_o365rc.py` | Docker-based Prowler invocation. `is_available()` (image present + creds configured), `run_prowler(scan_options)` returns parsed OCSF JSON findings. Mirrors the DFIR-O365RC wrapper pattern: pulls the image, runs the container with creds mounted, captures stdout/JSON, cleans up. Light/full mode parallel: `prowler_mode="light"` runs only the high-signal check categories (iam, s3, cloudtrail, guardduty); `"full"` runs everything. |
-| `pipeline.py` | `azure/pipeline.py` | `run_aws_pipeline()`, `run_aws_on_existing()`, `_run_post_collection_phases()`. Reuses `services.agentic.analyzers.analyze_artifacts` with `pipeline_kind="aws"`. Phase 2 calls both `collect_aws_logs()` (for events) and `run_prowler()` (for state/posture). |
-| `reports.py` | `azure/reports.py` | `generate_aws_report()`, `save_aws_report()`. New AWS-flavored system prompt (CloudTrail event semantics, IAM permissions, GuardDuty finding types, Prowler check IDs, MITRE ATT&CK Cloud Matrix). |
+| `collectors.py` | `azure/collectors.py` | `LOG_SOURCES` dict, `collect_aws_logs()`, `parse_uploaded_logs()`, **boto3-only** per-source collectors for events + state (`cloudtrail.lookup_events`, `guardduty.list_findings`, `accessanalyzer.list_findings`, IAM-principal enumeration), `detect_source_type()` for offline. State-snapshot posture is derived from AccessAnalyzer + IAM findings. |
+| `cloudtrail_runner.py` | `azure/dfir_o365rc.py` (role) | Native boto3 CloudTrail `LookupEvents` collector. `is_available(aws_config)` (creds configured), `collect_cloudtrail(...)` returns IntactAI-shaped records. Light/full mode parallel: `cloudtrail_mode="light"` collects only the high-signal event names; `"full"` paginates everything up to a cap. |
+| `pipeline.py` | `azure/pipeline.py` | `run_aws_pipeline()`, `run_aws_on_existing()`, `_run_post_collection_phases()`. Reuses `services.agentic.analyzers.analyze_artifacts` with `pipeline_kind="aws"`. Phase 2 calls `collect_aws_logs()` for events + state; phase 4c wraps AccessAnalyzer + IAM findings as state snapshots. |
+| `reports.py` | `azure/reports.py` | `generate_aws_report()`, `save_aws_report()`. New AWS-flavored system prompt (CloudTrail event semantics, IAM permissions, GuardDuty finding types, SIGMA rule matches, MITRE ATT&CK Cloud Matrix). |
 
 **Sources** (the AWS analog of `LOG_SOURCES`):
 
@@ -128,24 +130,18 @@ Event sources collected via **boto3** (raw events for SIGMA matching):
 | `guardduty_findings` | `AWS.GuardDuty` | `guardduty` | `list_findings` + `get_findings`, multi-region |
 | `accessanalyzer_findings` | `AWS.AccessAnalyzer` | `accessanalyzer` | `list_findings` per analyzer per region |
 
-State / posture sources collected via **Prowler** (replaces what would have been hand-rolled `iam_principals` / `iam_policies` / `s3_bucket_policies` / `federation` collectors):
+State / posture sources collected natively via **boto3** (folded into `INV.*` state-snapshot buckets):
 
-| Source ID | sigma_prefix | Prowler check categories | Notes |
+| Source ID | sigma_prefix | boto3 client | Notes |
 |---|---|---|---|
-| `prowler_iam` | `INV.IAM` | `iam` (~50 checks) | IAM users / roles / policies / federation as findings |
-| `prowler_s3` | `INV.S3` | `s3` (~25 checks) | bucket policies, public access, encryption |
-| `prowler_cloudtrail` | `INV.CloudTrail` | `cloudtrail` (~10 checks) | trail config, multi-region, log file validation |
-| `prowler_guardduty` | `INV.GuardDuty` | `guardduty` (~5 checks) | enablement, detector config |
-| `prowler_full` | `INV.Posture` | (all 572 checks) | comprehensive posture; only when `prowler_mode="full"` |
+| `iam_principals` | `AWS.IAM` | `iam` | IAM users / roles / access keys / effective-admin (CloudFox-equivalent) |
+| `accessanalyzer_findings` | `AWS.AccessAnalyzer` | `accessanalyzer` | external/public access findings per analyzer per region |
 
 **`ual_mode` analog → two knobs**, one per collection axis:
 
 * **`cloudtrail_mode`**: `light` (default for big accounts:
   `cloudtrail_console` + `cloudtrail_iam` only; same idea as Azure's
   light UAL) or `full` (multi-region unfiltered).
-* **`prowler_mode`**: `light` (default: just the four high-signal
-  categories above) or `full` (all 572 checks; takes 10-20 min on a
-  busy account).
 
 ### B. Backend route `modules/backend/routes/aws_routes.py` (new)
 

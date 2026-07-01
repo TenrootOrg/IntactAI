@@ -49,11 +49,10 @@ SEVERITY_RANK = {
 
 
 # State-snapshot sources — current configuration not time-bound events.
-# Prowler findings are posture state; AccessAnalyzer findings are current
-# permissions. Both fold into the same "INV.*" finding-bucket pattern
-# the Azure pipeline uses for CA policies / federation.
+# AccessAnalyzer findings are current permissions; IAM principals are the
+# current identity inventory. Both fold into the same "INV.*"
+# finding-bucket pattern the Azure pipeline uses for CA policies / federation.
 STATE_SOURCE_MAP = {
-    'AWS.Prowler':        'INV.prowler_posture',
     'AWS.AccessAnalyzer': 'INV.access_analyzer',
     'AWS.IAM':            'INV.iam_principals',
 }
@@ -168,14 +167,14 @@ def _run_post_collection_phases(
     for rname, rcount in sorted(rule_tally.items(), key=lambda kv: -kv[1]):
         add_log_to_run(run_id, f"[AWS]   {rname}: {rcount}", "info")
 
-    # Phase 4c — state-snapshot wrapping (Prowler + AccessAnalyzer)
+    # Phase 4c — state-snapshot wrapping (AccessAnalyzer + IAM)
     min_rank = SEVERITY_RANK.get(min_severity, 1)
     state_findings_added = 0
     for src_key, finding_key in STATE_SOURCE_MAP.items():
         records = collected_data.get(src_key, [])
         if not records:
             continue
-        # Prowler records carry `severity` in lowercase or uppercase strings.
+        # State records carry `severity` in lowercase or uppercase strings.
         def _rec_rank(r):
             sev = (r.get('severity') or r.get('_severity') or 'low').lower()
             return SEVERITY_RANK.get(sev, 1)
@@ -207,7 +206,7 @@ def _run_post_collection_phases(
         )
         # Roll state-snapshot findings into the detection-phase counters
         # so the dashboard's findings tally reflects real coverage instead
-        # of only SIGMA hits. Posture findings (Prowler etc.) ARE findings.
+        # of only SIGMA hits. Posture findings ARE findings.
         det = result['phases'].get('detection') or {}
         det['total_findings'] = det.get('total_findings', 0) + state_findings_added
         sev_counts = dict(det.get('findings_by_severity') or {})
@@ -310,15 +309,6 @@ def run_aws_pipeline(
         add_log_to_run(run_id, f"Min Severity: {options.get('min_severity', 'medium')}", "info")
         # Tell the run-log which collectors are live tools vs still on
         # fixtures. Updated as each tool integration lands.
-        try:
-            from . import prowler_runner
-            prowler_avail = prowler_runner.is_available()
-            if prowler_avail.get('available'):
-                add_log_to_run(run_id, "[AWS] Live collector: Prowler (posture; --service iam/cloudtrail/guardduty/s3/accessanalyzer, --severity critical/high, --status FAIL)", "info")
-            else:
-                add_log_to_run(run_id, f"[AWS] Prowler unavailable — fixture fallback active ({prowler_avail.get('message')})", "warning")
-        except Exception as e:
-            add_log_to_run(run_id, f"[AWS] Prowler runner check raised {e!r} — fixture fallback active", "warning")
         try:
             from . import iam_runner
             iam_avail = iam_runner.is_available(aws_config)
@@ -500,12 +490,12 @@ def get_aws_blueprints() -> List[Dict]:
         {
             'id': 'aws_privilege_escalation',
             'name': 'Privilege Escalation Hunt',
-            'description': 'Hunt for IAM privesc patterns — Prowler posture + IAM principals + AttachUserPolicy/CreateAccessKey/AssumeRole events.',
+            'description': 'Hunt for IAM privesc patterns — IAM principals + AccessAnalyzer + AttachUserPolicy/CreateAccessKey/AssumeRole events.',
             'use_case': 'Reactive after a flagged IAM event, or routine privilege drift audit',
             'duration': '~1-2 min',
             'volume': 'Medium',
             'settings': {
-                'sources': ['cloudtrail_iam', 'accessanalyzer_findings', 'prowler_posture', 'iam_principals'],
+                'sources': ['cloudtrail_iam', 'accessanalyzer_findings', 'iam_principals'],
                 'time_range_days': 7,
                 'cloudtrail_mode': 'light',
                 'max_events_per_region': 2000,
@@ -515,7 +505,7 @@ def get_aws_blueprints() -> List[Dict]:
         {
             'id': 'aws_full_investigation',
             'name': 'Full Investigation',
-            'description': 'Comprehensive account audit — every source including full CloudTrail and Prowler posture.',
+            'description': 'Comprehensive account audit — every source including full CloudTrail and IAM posture.',
             'use_case': 'Annual review, post-breach forensics, deep audit',
             'duration': '~5-10 min (stub: instant)',
             'volume': 'HIGH',
