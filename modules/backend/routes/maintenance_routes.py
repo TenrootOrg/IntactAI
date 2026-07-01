@@ -6,6 +6,7 @@ Maintenance Routes - System maintenance and tool management endpoints
 from flask import Blueprint, jsonify, request
 import subprocess
 import threading
+import shlex
 
 from services import (
     create_automation_run,
@@ -1673,6 +1674,111 @@ def _purge_docker_deep(_):
     return max(0, before - after), ""
 
 
+# ---- Orphaned containerd image store -----------------------------------
+# When Docker is flipped from the containerd image store (containerd-snapshotter
+# true) back to overlay2 (false), every image that was in the containerd store is
+# STRANDED there: Docker's engine no longer tracks it, so `docker image prune`
+# can't see it, and it just occupies disk forever (24 GB observed on one host).
+# `docker system prune` (docker_deep) cannot reach it either. We reclaim it via
+# containerd's own client (`ctr`) in a one-shot container that mounts the host
+# containerd socket + the host `ctr` binary — the same one-shot pattern the
+# system_journal section uses. STRICTLY GUARDED: only runs when Docker's active
+# storage driver is overlay2 (i.e. the containerd store is NOT the live image
+# store), and only removes ctr images whose ref is absent from BOTH `docker
+# images` and the running set (normalized), so a live image is never touched.
+_CTR_ONESHOT = ("docker run --rm "
+                "-v /run/containerd/containerd.sock:/run/containerd/containerd.sock "
+                "-v /usr/bin/ctr:/usr/bin/ctr:ro ubuntu:22.04 ctr -n moby ")
+
+
+def _norm_ref(r: str) -> str:
+    r = (r or "").strip()
+    for p in ("docker.io/library/", "docker.io/", "library/"):
+        if r.startswith(p):
+            r = r[len(p):]
+    return r
+
+
+def _containerd_image_store_active() -> bool:
+    """True when Docker's LIVE image store is containerd (snapshotter enabled) — in
+    which case the containerd store is in USE and must NOT be pruned. False when the
+    driver is overlay2/etc (containerd store is safe to reclaim)."""
+    from services.upgrade.base import run_command
+    drv = (run_command("docker info --format '{{.Driver}}'", logger=None)
+           .get("stdout") or "").strip().lower()
+    # overlay2/overlay/aufs/btrfs/zfs/devicemapper = classic engine store (safe)
+    return drv in ("", "containerd", "overlayfs")
+
+
+def _containerd_orphan_refs() -> list:
+    """ctr ns=moby images whose normalized ref is in neither `docker images` nor the
+    running set — i.e. stranded old versions. Never includes the ubuntu one-shot helper."""
+    from services.upgrade.base import run_command
+
+    def sh(c):
+        return (run_command(c, logger=None).get("stdout") or "")
+
+    safe = {_norm_ref(x) for x in sh("docker images --format '{{.Repository}}:{{.Tag}}'").splitlines()
+            if x and "<none>" not in x}
+    safe |= {_norm_ref(x) for x in sh("docker ps --format '{{.Image}}'").splitlines() if x}
+    ctr = [x.strip() for x in sh(_CTR_ONESHOT + "images ls -q 2>/dev/null").splitlines() if x.strip()]
+    return [r for r in ctr if _norm_ref(r) not in safe and "ubuntu" not in r]
+
+
+def _containerd_store_bytes() -> int:
+    from services.upgrade.base import run_command
+    out = (run_command(
+        "docker run --rm -v /var/lib/containerd:/var/lib/containerd:ro ubuntu:22.04 "
+        "du -sb /var/lib/containerd 2>/dev/null", logger=None).get("stdout") or "")
+    try:
+        return int(out.split()[0])
+    except (ValueError, IndexError):
+        return 0
+
+
+def _scan_containerd_orphans():
+    if _containerd_image_store_active():
+        return 0, "containerd image store is the ACTIVE driver — nothing to reclaim"
+    try:
+        refs = _containerd_orphan_refs()
+    except Exception as e:  # noqa: BLE001
+        return 0, f"scan error: {e}"
+    if not refs:
+        return 0, "no orphaned containerd images"
+    # Estimate = compressed content freed (SIZE column, e.g. "667.7 MiB"). Actual is
+    # typically higher once the now-unreferenced snapshots are GC'd by `--sync`.
+    from services.upgrade.base import run_command
+    _mult = {"B": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4,
+             "KB": 1000, "MB": 1000**2, "GB": 1000**3}
+    total = 0
+    ls = (run_command(_CTR_ONESHOT + "images ls 2>/dev/null", logger=None).get("stdout") or "")
+    refset = set(refs)
+    for line in ls.splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[0] in refset:
+            try:
+                total += int(float(parts[3]) * _mult.get(parts[4], 1))
+            except ValueError:
+                pass
+    return total, f"{len(refs)} orphaned image(s) from a containerd-snapshotter→overlay2 switch"
+
+
+def _purge_containerd_orphans(_):
+    if _containerd_image_store_active():
+        return 0, "skipped — containerd image store is the active driver"
+    from services.upgrade.base import run_command
+    refs = _containerd_orphan_refs()
+    if not refs:
+        return 0, "no orphaned containerd images"
+    before = _containerd_store_bytes()
+    quoted = " ".join(shlex.quote(r) for r in refs)
+    # --sync forces containerd GC so content + snapshots are actually reclaimed, not
+    # just dereferenced. Removing only Docker-untracked refs = live images untouched.
+    run_command(_CTR_ONESHOT + f"images rm --sync {quoted}", logger=None)
+    after = _containerd_store_bytes()
+    return max(0, before - after), f"removed {len(refs)} orphaned image(s)"
+
+
 def _purge_system_journal(_):
     """`journalctl --vacuum-size=200M` via a one-shot Ubuntu container
     with /var/log/journal mounted read-write. Trims old archived
@@ -1693,7 +1799,7 @@ def _purge_system_journal(_):
 # Sections deliberately EXCLUDED from the "Select all" button — the operator
 # must tick them individually. System operation history is an audit trail, so a
 # blanket "purge everything" must never sweep it away by accident.
-_EXCLUDE_FROM_ALL = {"system_workflows"}
+_EXCLUDE_FROM_ALL = {"system_workflows", "containerd_orphans"}
 
 _PURGE_SECTIONS = (
     # System operation history first — but excluded from "Select all" (above).
@@ -1719,6 +1825,11 @@ _PURGE_SECTIONS = (
     # reports (orphan layers from image upgrades, failed builds,
     # crashed containers). Safe for running services.
     ("docker_deep",        "Docker Deep Prune (recover orphan layers)", _scan_docker_deep, _purge_docker_deep),
+    # Orphaned containerd image store — images stranded in /var/lib/containerd after a
+    # containerd-snapshotter→overlay2 switch, invisible to docker prune. Excluded from
+    # "Select all" (touches the shared containerd store) — select deliberately.
+    ("containerd_orphans", "Orphaned containerd Images (snapshotter switch)",
+                                                                   _scan_containerd_orphans, _purge_containerd_orphans),
     # Systemd journal — accumulates over time on long-running boxes.
     ("system_journal",     "System Journal (archived)",           _scan_system_journal,    _purge_system_journal),
 )
