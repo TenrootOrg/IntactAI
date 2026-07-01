@@ -746,7 +746,7 @@ function logRefresh(){
       const msg=esc(e.action||'')+(e.detail?' — '+esc(e.detail):'')+(e.code?` (HTTP ${esc(String(e.code))})`:'');
       return `<div style="display:flex;gap:16px;padding:1px 0">
         <span style="color:#6e7681;flex:0 0 72px;white-space:nowrap">${esc((e.ts||'').slice(11,19))}Z</span>
-        <span style="color:${c};flex:1;word-break:break-word">${msg}</span></div>`;}).join('')
+        <span style="color:${c};flex:1;word-break:break-word;white-space:pre-wrap">${msg}</span></div>`;}).join('')
       : '<i style="color:var(--muted)">no activity recorded yet — actions in this case will appear here.</i>';
     if(window._logFollow!==false) box.scrollTop=box.scrollHeight;   // follow newest at the bottom
   }).catch(_=>{const b=$('#logrows');if(b)b.innerHTML='<i style="color:#f85149">could not load the log</i>';});

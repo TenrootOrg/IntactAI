@@ -192,12 +192,13 @@ def test_identity_forms_share_one_number():
 
 def test_audit_log_groups_identity_forms():
     mask = _ident_graph(["adatumlab\\almogs", "almogs@adatumlab.local"])
-    detail = llm_sim._mask_audit_lines(mask)
+    detail = llm_sim._mask_audit_lines(mask.mapping)
     assert "identity #" in detail
     assert "adatumlab\\almogs = USER" in detail
     assert "almogs@adatumlab.local = UPN" in detail
-    # both forms appear under ONE identity line (same number)
-    line = [l for l in detail.split("; ") if l.startswith("identity #")][0]
+    # both forms appear under ONE identity line (same number), and the audit is
+    # one value per line (newline-separated) so the operator can scan it.
+    line = [l for l in detail.split("\n") if l.startswith("identity #")][0]
     assert "USER" in line and "UPN" in line, "NT + UPN grouped on one identity line"
 
 
@@ -205,6 +206,27 @@ def test_system_account_skipped_in_identity_scheme():
     mask = _ident_graph(["NT AUTHORITY\\SYSTEM", "adatumlab\\almogs"])
     assert "NT AUTHORITY\\SYSTEM" not in mask.mapping, "system account must not be numbered/masked"
     assert mask.mapping.get("adatumlab\\almogs", "").startswith("USER")
+
+
+def test_generic_words_not_masked_no_overmask():
+    # Regression: generic words / OS path components (bad account labels like
+    # "user"/"null"/"root", or path segments the UNC/path scan reads as hosts:
+    # Windows/Users/Temp) must NOT be masked — masking them corrupts the payload
+    # ("root cause" -> "SAM cause", C:\Windows -> C:\Hostname) and shows wrong
+    # identities. Real named accounts alongside them still mask.
+    g = FusionGraph("case:noise")
+    aid = "asset:endpoint:C.h1"
+    g.upsert(Entity(id=aid, type="asset", label="H1"))
+    for lbl in ["user", "null", "root", "Windows", "Users", "Temp", "system", "administrator"]:
+        g.upsert(Entity(id=f"account:{lbl.lower()}", type="account", label=lbl,
+                        attrs={"_assets": [aid]}))
+    g.upsert(Entity(id="account:realuser", type="account", label="ADATUMLAB\\almogs",
+                    attrs={"_assets": [aid]}))
+    mask = DataAnonymizer(custom_patterns=[])
+    llm_sim._build_mask_mapping(g, mask)
+    for noise in ["user", "null", "root", "Windows", "Users", "Temp", "system", "administrator"]:
+        assert noise not in mask.mapping, f"{noise!r} is a generic word — must not be masked"
+    assert mask.mapping.get("ADATUMLAB\\almogs", "").startswith("USER"), "real account still masks"
 
 
 # -- edge cases: dashes / underscores / dots / machine accounts / complex names ----
