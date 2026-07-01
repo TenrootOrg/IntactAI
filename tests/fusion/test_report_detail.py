@@ -298,6 +298,41 @@ def test_attack_assessment_is_one_campaign_story():
     assert md.index("WS1") < md.index("WS2")                            # chronological
 
 
+def test_focal_host_consistent_with_risk_order():
+    """Exec summary 'most affected' and Attack Assessment 'focal point' must both name
+    the highest RISK-SCORE host (matching the Identity Risk table) — not diverge because
+    exec summary tie-broke on severity alone."""
+    g = FusionGraph("case:focal")
+    a, b = "asset:endpoint:C.a", "asset:endpoint:C.b"
+    g.upsert(Entity(id=a, type="asset", label="LOWRISK", severity="critical",
+                    attrs={"risk_score": 80}))
+    g.upsert(Entity(id=b, type="asset", label="HIGHRISK", severity="critical",
+                    attrs={"risk_score": 98}))
+    g.add_finding(Finding(id="a0", title="SIGMA: Encoded PowerShell", severity="critical",
+                          confidence="high", summary="x", asset_ids=[a], ts=_TS))
+    g.add_finding(Finding(id="b0", title="SIGMA: LSASS Credential Dump", severity="critical",
+                          confidence="high", summary="x", asset_ids=[b], ts=_TS))
+    assets, finds = g.by_type("asset"), list(g.findings)
+    s = render._exec_summary(g, assets, finds)
+    ma = s[max(0, s.find("most affected") - 140):s.find("most affected")]
+    assert "HIGHRISK" in ma and "LOWRISK" not in ma
+    aa = render._attack_assessment(g, assets, finds)
+    fp = aa[max(0, aa.find("focal point") - 140):aa.find("focal point")]
+    assert "HIGHRISK" in fp
+
+
+def test_mitre_names_have_no_blank_dangling():
+    g = FusionGraph("case:mitre")
+    aid = "asset:endpoint:C.h"
+    g.upsert(Entity(id=aid, type="asset", label="H0", severity="high"))
+    g.add_finding(Finding(id="m", title="Shared binary seen on 2 hosts", severity="high",
+                          confidence="high", summary="x", asset_ids=[aid],
+                          mitre=["T1570", "T1574"], ts=_TS))
+    md = render.facts_md(g, detail="summary")
+    assert "T1570 — Lateral Tool Transfer" in md
+    assert re.search(r"\*\*T\d+ —\s*\*\*", md) is None       # no dangling blank name
+
+
 def test_exec_summary_tells_a_story():
     g = _story_graph()
     s = render._exec_summary(g, g.by_type("asset"), list(g.findings), window=None)

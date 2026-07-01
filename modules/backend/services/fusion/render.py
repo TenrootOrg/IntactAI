@@ -355,7 +355,10 @@ def _exec_summary(graph, assets, findings, *, initial_access=None, window=None) 
         return ("This investigation did not surface findings at or above the configured "
                 "severity threshold within the selected window. No adversary activity is "
                 "indicated; routine monitoring is sufficient.")
-    hosts = sorted(assets, key=lambda a: -sev.rank(a.severity))
+    # Rank by risk_score first (same order as the Identity Risk table + Attack
+    # Assessment) so "most affected" is consistent everywhere in the report.
+    hosts = sorted(assets, key=lambda a: (-(a.attrs.get("risk_score") or 0),
+                                          -sev.rank(a.severity)))
     crit = [f for f in findings if sev.at_least(f.severity, "critical")]
     high = [f for f in findings if f.severity == "high"]
     xh = [f for f in findings if f.kind == "cross_host"]
@@ -438,7 +441,8 @@ def narrative_md(graph, *, window=None, min_severity="informational",
     When the real LLM is wired it regenerates this from ``distilled()`` — the
     deterministic fact tables in ``facts_md`` are never sent to it."""
     assets, findings = scope(graph, window=window, min_severity=min_severity)
-    win = f"{(window or {}).get('start','?')} → {(window or {}).get('end','?')}" if window else "all"
+    win = (f"{(window or {}).get('start') or 'open'} → {(window or {}).get('end') or 'now'}"
+           if window else "all")
     out: list[str] = [f"# Incident Case Report — {case_name}\n"]
     out.append(f"_Scope: {len(assets)} host(s) · window {win} · initial access ≈ "
                f"{initial_access or 'unknown'} · severity ≥ {min_severity} · "
@@ -838,8 +842,9 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
                      if e.attrs.get("ioc_kind") == "hash" and "cross_host" in e.flags]
     if xh or shared_hashes:
         out.append("## Cross-Host Correlation\n")
-        for f in xh:
-            out.append(f"- {f.title}")
+        from collections import Counter
+        for title, n in Counter(f.title for f in xh).items():   # collapse identical titles
+            out.append(f"- {title}" + (f" (×{n})" if n > 1 else ""))
         if shared_hashes:
             out.append(f"- {len(shared_hashes)} file hash(es) shared across hosts "
                        f"(tool reuse / lateral transfer) — full hashes in the IOC appendix")
@@ -897,7 +902,9 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
         out.append("## MITRE ATT&CK Mapping\n")
         for t in sorted(techs):
             extra = f" (+{len(techs[t]) - 1} more)" if len(techs[t]) > 1 else ""
-            out.append(f"- **{t} — {_MITRE_NAMES.get(t, '')}** · {techs[t][0]}{extra}")
+            name = _MITRE_NAMES.get(t)
+            label = f"{t} — {name}" if name else t          # no dangling '— ' when unknown
+            out.append(f"- **{label}** · {techs[t][0]}{extra}")
         out.append("")
 
     # ---- Identity Risk (focus order) — placed near the bottom -------------
@@ -928,4 +935,14 @@ _MITRE_NAMES = {
     "T1021": "Remote Services", "T1078": "Valid Accounts",
     "T1543": "Create/Modify System Process", "T1053": "Scheduled Task/Job",
     "T1547": "Boot/Logon Autostart", "T1059": "Command & Scripting Interpreter",
+    "T1570": "Lateral Tool Transfer", "T1574": "Hijack Execution Flow",
+    "T1003": "OS Credential Dumping", "T1558": "Steal or Forge Kerberos Tickets",
+    "T1562": "Impair Defenses", "T1070": "Indicator Removal", "T1105": "Ingress Tool Transfer",
+    "T1082": "System Information Discovery", "T1087": "Account Discovery",
+    "T1018": "Remote System Discovery", "T1049": "System Network Connections Discovery",
+    "T1136": "Create Account", "T1218": "System Binary Proxy Execution",
+    "T1548": "Abuse Elevation Control Mechanism", "T1134": "Access Token Manipulation",
+    "T1027": "Obfuscated Files or Information", "T1036": "Masquerading",
+    "T1112": "Modify Registry", "T1569": "System Services", "T1219": "Remote Access Software",
+    "T1560": "Archive Collected Data", "T1048": "Exfiltration Over Alternative Protocol",
 }
