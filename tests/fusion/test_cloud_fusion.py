@@ -24,6 +24,7 @@ if "/app" not in sys.path:
     sys.path.insert(0, "/app")
 
 from services.fusion import store as S  # noqa: E402
+from services.fusion.mappers.cloud import _mitre_ids, map_cloud  # noqa: E402
 
 _ACCT = "137050702114"
 
@@ -88,6 +89,38 @@ def test_flatten_garbage_is_empty():
     assert S._flatten_cloud_findings("nope") == []
     # non-dict members are dropped, not crashed on
     assert S._flatten_cloud_findings({"s": [1, 2, {"matched_record": {}}]}) == [{"matched_record": {}}]
+
+
+# ---------------------------------------------------------------- mitre
+
+def test_mitre_ids_normalizes_sigma_dicts():
+    # SIGMA's real shape: a list of {type, id|name} dicts.
+    m = [{"type": "tactic", "name": "Persistence"}, {"type": "technique", "id": "T1098"}]
+    assert _mitre_ids(m) == ["Persistence", "T1098"]
+
+
+def test_mitre_ids_handles_str_list_and_none():
+    assert _mitre_ids(None) == []
+    assert _mitre_ids("T1078") == ["T1078"]
+    assert _mitre_ids(["T1078", "T1098"]) == ["T1078", "T1098"]
+    assert _mitre_ids({"type": "technique", "id": "T1550"}) == ["T1550"]
+
+
+def test_dict_mitre_findings_produce_hashable_event_mitre():
+    # Regression: real SIGMA mitre_attack (list of dicts) must not reach the graph
+    # as dicts — render._phase does set(f.mitre), so it has to be hashable strings.
+    finds = [{
+        "rule_title": "AWS IAM Backdoor Users Keys", "_severity": "high",
+        "mitre_attack": [{"type": "tactic", "name": "Persistence"},
+                         {"type": "technique", "id": "T1098"}],
+        "matched_record": {"eventName": "CreateAccessKey", "recipientAccountId": _ACCT,
+                           "userIdentity": {"userName": "nofl"}},
+    }]
+    ents, _ = map_cloud(finds, run_id="r-mitre", provider="aws", account=_ACCT)
+    ev = [e for e in ents if e.type == "event"][0]
+    mitre = ev.attrs.get("mitre")
+    assert mitre == ["Persistence", "T1098"], mitre
+    set(mitre)  # must not raise (would raise on dict members)
 
 
 # ---------------------------------------------------------------- account

@@ -41,6 +41,32 @@ def _ip(rec: dict):
                  "ip", "RemoteAddr", default=None)
 
 
+def _mitre_ids(mitre) -> list[str]:
+    """Normalise a SIGMA rule's mitre_attack to a flat list of hashable strings.
+
+    SIGMA emits it as a list of dicts — ``[{'type':'technique','id':'T1098'},
+    {'type':'tactic','name':'Persistence'}]`` — but downstream findings put mitre
+    in a ``set()`` (render._phase), so dicts must collapse to their id/name string
+    (a technique id like 'T1098' when present, else the tactic name)."""
+    if not mitre:
+        return []
+    if isinstance(mitre, str):
+        return [mitre]
+    if isinstance(mitre, dict):
+        mitre = [mitre]
+    out = []
+    for m in mitre:
+        if isinstance(m, str):
+            out.append(m)
+        elif isinstance(m, dict):
+            v = m.get("id") or m.get("technique") or m.get("name") or m.get("tactic")
+            if v:
+                out.append(str(v))
+        elif m is not None:
+            out.append(str(m))
+    return out
+
+
 def _account_key(user) -> str | None:
     """Key a cloud principal the SAME way the agentic mapper keys a domain
     account, so cloud UPNs bridge to endpoint domain accounts."""
@@ -78,9 +104,7 @@ def map_cloud(findings, *, run_id: str, provider: str = "cloud", account=None) -
                 or F.get(rec, "eventName", "operationName", "displayName", default="cloud event"))
         severity = from_string(F.get(f, "_severity", "severity", "Severity", "riskLevel",
                                      default="medium"))
-        mitre = f.get("mitre_attack") or f.get("mitre") or []
-        if isinstance(mitre, str):
-            mitre = [mitre]
+        mitre = _mitre_ids(f.get("mitre_attack") or f.get("mitre"))
         loc = f"{provider}/finding={i}"
         eid = keys.event_id(casset, ts, f"{provider}:{rule}")
         ents.append(Entity(id=eid, type="event", label=f"{provider}: {rule}",
