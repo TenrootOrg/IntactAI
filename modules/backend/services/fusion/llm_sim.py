@@ -472,9 +472,14 @@ def _log_mask_audit(run_id, mask):
         return
     try:
         from .store import log_case_event
+        # The full identity->pseudonym map is the whole point of this audit line, so
+        # override the default 500-char log-detail cap (which otherwise truncates all
+        # but the first handful of identities). ~20k chars covers hundreds of identities;
+        # the "N value(s) masked" count makes any (rare) overflow obvious.
         log_case_event(run_id, "Masking · pre-LLM mapping", "info",
                        f"{len(mapping)} value(s) masked before LLM send (reverted in "
-                       f"the returned report) — {_mask_audit_lines(mask)}")
+                       f"the returned report) — {_mask_audit_lines(mask)}",
+                       detail_max=20000)
     except Exception:
         pass
 

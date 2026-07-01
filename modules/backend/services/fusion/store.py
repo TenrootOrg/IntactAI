@@ -1264,7 +1264,7 @@ def _now_iso() -> str:
 _CASE_LOG_CAP = 500
 
 
-def log_case_event(case_id, action, status="ok", detail="", **meta) -> None:
+def log_case_event(case_id, action, status="ok", detail="", detail_max=500, **meta) -> None:
     """Append an entry to the case's activity log. Best-effort + bounded: logging
     must NEVER raise into (or break) the action it records. Captures both the
     action and its outcome (ok/error) so the Log tab can follow everything that
@@ -1276,7 +1276,7 @@ def log_case_event(case_id, action, status="ok", detail="", **meta) -> None:
         if lvl not in ("info", "ok", "success", "warning", "error"):
             lvl = "ok"
         entry = {"ts": _now_iso() + "Z", "action": str(action)[:120],
-                 "status": lvl, "detail": str(detail)[:500]}
+                 "status": lvl, "detail": str(detail)[:max(1, int(detail_max or 500))]}
         for k, v in (meta or {}).items():
             entry[k] = v
 
