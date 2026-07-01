@@ -140,6 +140,29 @@ def test_account_from_user_identity_when_no_recipient():
     assert S._cloud_account({}, finds) == "555"
 
 
+# ------------------------------------------------ IAM principal -> account (mask)
+
+def test_iam_state_principal_becomes_account_entity():
+    # IAM-posture STATE findings name their subject in ResourceName, not in a
+    # userIdentity block. It must still become an account entity so it correlates
+    # AND gets masked (otherwise the username only lives in the event label and
+    # leaks to the LLM). Regression guard for the AWS masking gap.
+    finds = [{
+        "rule_title": "State: User intactai-test-backdoor has admin privileges",
+        "_severity": "critical",
+        "matched_record": {
+            "_source": "iam_principals", "EventSource": "AWS.IAM", "Service": "iam",
+            "ResourceType": "AWS::IAM::User", "ResourceName": "intactai-test-backdoor",
+            "ResourceUid": "arn:aws:iam::137050702114:user/intactai-test-backdoor",
+            "IsAdmin": True,
+        },
+    }]
+    ents, _ = map_cloud(finds, run_id="r-iam", provider="aws", account="137050702114")
+    accts = [e for e in ents if e.type == "account"]
+    assert any(e.label == "intactai-test-backdoor" for e in accts), \
+        f"IAM principal must be an account entity, got {[e.label for e in accts]}"
+
+
 # ---------------------------------------------------- contribution (inline)
 
 def test_contribution_inline_dict_findings_builds_graph():

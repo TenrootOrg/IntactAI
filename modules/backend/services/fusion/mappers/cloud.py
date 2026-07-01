@@ -30,6 +30,13 @@ def _user(rec: dict):
         u = ui.get("userName") or ui.get("arn") or ui.get("principalId")
         if u:
             return u
+    # IAM-posture STATE findings (AccessAnalyzer / IAM principals) name their
+    # subject in ResourceName (AWS::IAM::User/Role). Surface it so the principal
+    # becomes an account entity — it then correlates AND is masked like any other
+    # user (otherwise the username only lives in the event label -> leaks to LLM).
+    rt = str(rec.get("ResourceType") or "")
+    if rec.get("ResourceName") and ("IAM" in rt or str(rec.get("Service") or "").lower() == "iam"):
+        return rec.get("ResourceName")
     return F.get(rec, "userPrincipalName", "user", "caller", "Caller", "Actor",
                  "InitiatedBy", "SubjectUserName", default=None)
 
