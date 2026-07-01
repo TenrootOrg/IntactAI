@@ -693,7 +693,8 @@ def start_offline_upgrade():
         # Run upgrade in background
         def run_offline_upgrade():
             try:
-                from services.upgrade import run_offline_upgrade_workflow
+                from services.upgrade import (run_offline_upgrade_workflow,
+                                              sweep_stale_upgrade_staging)
 
                 def logger(msg, level="info"):
                     add_log_to_run(run_id, msg, level)
@@ -706,6 +707,10 @@ def start_offline_upgrade():
                             # Estimate 6 modules max, progress from 5% to 95%
                             progress = 5 + min(completed_modules[0] * 15, 90)
                             update_run_status(run_id, "running", progress=progress)
+
+                # Reclaim any orphaned staging from a prior run that died before
+                # Phase 2's cleanup (crash / failed resume / killed by the restart).
+                sweep_stale_upgrade_staging(logger=logger)
 
                 result = run_offline_upgrade_workflow(
                     package_path, run_id=run_id, logger=logger,
@@ -1038,7 +1043,8 @@ def start_online_upgrade():
 
         def run_online():
             try:
-                from services.upgrade import run_online_upgrade_workflow
+                from services.upgrade import (run_online_upgrade_workflow,
+                                              sweep_stale_upgrade_staging)
                 from services.connectivity import require_internet
                 if not require_internet(run_id, "Online upgrade"):
                     return
@@ -1049,6 +1055,9 @@ def start_online_upgrade():
                         bump_progress_from_log(msg, level)
                     except Exception:
                         pass
+
+                # Reclaim orphaned staging from any prior run before we build a new one.
+                sweep_stale_upgrade_staging(logger=logger)
 
                 result = run_online_upgrade_workflow(
                     modules=modules,

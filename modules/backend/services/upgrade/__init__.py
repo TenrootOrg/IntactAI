@@ -28,6 +28,7 @@ from .base import (
     verify_upgrade_package,
     get_package_info,
     ensure_module_enabled_in_config,
+    sweep_stale_upgrade_staging,
 )
 
 # Module-specific upgrade functions

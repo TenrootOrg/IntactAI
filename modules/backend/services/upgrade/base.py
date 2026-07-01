@@ -192,6 +192,39 @@ def cleanup_backup(backup_file: str, logger: Callable = None):
         log(f"  Warning: Could not remove backup: {e}", "warning")
 
 
+# Upgrade staging dirs (data/tmp/intact-upgrade-<ts>) are created by BOTH the
+# offline apply (verify_upgrade_package extracts here) and the online flow
+# (prepare_upgrade_package builds here) and MUST survive the mid-upgrade backend
+# restart so Phase 2 can finish. Phase 2 removes its own dir in a `finally`, but
+# if Phase 2 never completes (crash, failed resume, killed by the restart) the
+# multi-GB dir is orphaned. This sweep — run at the START of every new upgrade —
+# reclaims those orphans regardless of how the prior run ended. Age-guarded so it
+# can never touch the current run's freshly-created dir.
+_UPGRADE_STAGING_GLOBS = ("/app/data/tmp/intact-upgrade-*", "/tmp/intact-upgrade-*")
+
+
+def sweep_stale_upgrade_staging(logger: Callable = None, max_age_hours: float = 2.0) -> int:
+    """Remove leftover intact-upgrade-* staging dirs older than ``max_age_hours``.
+    Returns the number removed. Safe: only dirs, only older than the cutoff (the
+    current run's dir is seconds old), errors swallowed per-dir."""
+    import glob
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    for pattern in _UPGRADE_STAGING_GLOBS:
+        for d in glob.glob(pattern):
+            try:
+                if os.path.isdir(d) and os.path.getmtime(d) < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
+                    removed += 1
+                    log(f"  Swept stale upgrade staging: {d}", "info")
+            except OSError as e:
+                log(f"  Could not sweep {d}: {e}", "warning")
+    if removed:
+        log(f"Reclaimed {removed} stale upgrade staging dir(s) from prior runs", "info")
+    return removed
+
+
 # Per-module image repos used by remove_old_module_image() below.
 # When a module's upgrade succeeds, the helper removes
 # `<repo>:<old_version>` for each repo listed here. Add an entry
