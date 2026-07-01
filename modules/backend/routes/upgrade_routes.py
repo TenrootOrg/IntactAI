@@ -58,17 +58,23 @@ def _reject_package_path(package_path):
 
 # Fixed package path (only keep one package, overwrite each time)
 PACKAGE_PATH = "/data/upgrade_packages/intact-upgrade-latest.tar.gz"
-PACKAGE_INFO_FILE = "/data/db/prepared_package.json"
+# Co-locate the package RECORD on the SAME persistent volume as the package file, so
+# it survives a container recreate exactly like the package does. Legacy installs kept
+# it in the ephemeral /data/db (wiped on recreate) — read that as a fallback so an
+# in-place upgrade doesn't lose track of an already-prepared package.
+PACKAGE_INFO_FILE = "/data/upgrade_packages/prepared_package.json"
+_LEGACY_PACKAGE_INFO_FILE = "/data/db/prepared_package.json"
 
 
 def _get_package_info():
-    """Get current prepared package info."""
-    if os.path.exists(PACKAGE_INFO_FILE):
-        try:
-            with open(PACKAGE_INFO_FILE, 'r') as f:
-                return json.load(f)
-        except Exception:
-            pass
+    """Get current prepared package info (new volume path, then legacy fallback)."""
+    for path in (PACKAGE_INFO_FILE, _LEGACY_PACKAGE_INFO_FILE):
+        if os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    return json.load(f)
+            except Exception:
+                pass
     return None
 
 
