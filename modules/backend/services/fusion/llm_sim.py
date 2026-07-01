@@ -255,7 +255,36 @@ _DOMUSER_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]+)\\([A-Za-z0-9._$-]+)")
 _UNC_RE = re.compile(r"\\\\([A-Za-z0-9][A-Za-z0-9._-]+)\\")
 
 
-def _build_mask_mapping(graph, mask):
+# Per-event char cap for the evidence free-text scan. Real cmdlines/paths carrying
+# identifiers are short; anything past this is a serialized blob that only adds regex
+# backtracking cost. Generous enough to cover any explicit-detail evidence the payload
+# would actually surface.
+_EVIDENCE_SCAN_CAP = 4000
+
+
+def _payload_label_set(payload):
+    """Every string leaf in the distilled LLM payload — the universe of identifiers
+    that can reach the model. Passed to _build_mask_mapping as ``only_labels`` so the
+    mask is built over payload entities (fast) instead of the whole graph (which hangs
+    on large cases). An entity outside the payload is never sent, so never needs a
+    pseudonym; identifiers embedded in a payload event's cmdline are still caught,
+    because that event's label IS in this set (so the event is scanned)."""
+    out = set()
+    stack = [payload]
+    while stack:
+        v = stack.pop()
+        if isinstance(v, dict):
+            stack.extend(v.values())
+        elif isinstance(v, (list, tuple)):
+            stack.extend(v)
+        elif isinstance(v, str):
+            s = v.strip()
+            if s:
+                out.add(s)
+    return out
+
+
+def _build_mask_mapping(graph, mask, *, only_labels=None):
     """Populate the anonymizer mapping from the graph's CUSTOMER-IDENTIFYING values
     (hosts, users, internal IPs, and the org/AD domain) so they can be masked before
     the LLM call and reverted after. DYNAMIC — the org domain is read from the data
@@ -263,7 +292,15 @@ def _build_mask_mapping(graph, mask):
 
     IOC hashes + external/malicious domains are intentionally NOT masked: they're
     threat intel (the attacker's infra), not the customer's identity, and the LLM
-    needs them unmasked to recognise and correlate. They're reverted-safe regardless."""
+    needs them unmasked to recognise and correlate. They're reverted-safe regardless.
+
+    ``only_labels`` bounds the scan to entities whose label is in that set — pass the
+    labels present in the distilled LLM payload so masking is O(payload) not O(graph).
+    Building the map over a full multi-thousand-entity graph is pathologically slow
+    (mask_data + the per-event evidence regex sweep) and only the payload is ever sent
+    to the LLM, so anything outside it never needs a pseudonym. None = whole graph."""
+    def _skip(lbl):
+        return only_labels is not None and lbl not in only_labels
     try:
         from services.data_anonymizer import SYSTEM_ACCOUNTS
     except Exception:
@@ -320,7 +357,7 @@ def _build_mask_mapping(graph, mask):
 
     for e in graph.entities.values():
         lbl = (e.label or "").strip()
-        if not lbl:
+        if not lbl or _skip(lbl):
             continue
         if e.type == "asset":
             rows.append({"hostname": lbl})
@@ -345,8 +382,13 @@ def _build_mask_mapping(graph, mask):
     # (a lateral-movement target host in a UNC path, a DOMAIN\user inside a command).
     # Feed those tokens through the SAME identity-numbering masker so the explicit
     # payload never leaks. Runs AFTER accounts so org domains are already established.
+    # PERF: the findall sweep dominates on big cases (it was ~100% of a multi-minute
+    # build), so (a) cap each event's text — identifiers live in short cmdlines, long
+    # blobs only add regex backtracking — and (b) dedupe identical evidence, which
+    # recurs verbatim across thousands of same-type events.
+    _ev_seen: set = set()
     for e in graph.entities.values():
-        if e.type != "event":
+        if e.type != "event" or _skip((e.label or "").strip()):
             continue
         a = e.attrs or {}
         if a.get("ev_user"):
@@ -357,6 +399,10 @@ def _build_mask_mapping(graph, mask):
         text = " ".join(str(a.get(k) or "") for k in ("ev_cmdline", "details"))
         if not text.strip():
             continue
+        text = text[:_EVIDENCE_SCAN_CAP]
+        if text in _ev_seen:
+            continue
+        _ev_seen.add(text)
         for upn in _UPN_RE.findall(text):
             _assign_account(upn)
         for dom, usr in _DOMUSER_RE.findall(text):
@@ -376,7 +422,7 @@ def _build_mask_mapping(graph, mask):
     # preferring the asset-label casing — so case-insensitive masking reverts to the
     # real value cleanly instead of producing two pseudonyms for one machine.
     asset_labels = {e.label for e in graph.entities.values()
-                    if e.type == "asset" and e.label}
+                    if e.type == "asset" and e.label and not _skip(e.label)}
     groups: dict[str, list] = {}
     for orig in list(mask.mapping):
         groups.setdefault(orig.lower(), []).append(orig)
@@ -515,7 +561,9 @@ def generate_report(graph, *, window=None, min_severity="informational",
                 payload["analyst_validations"] = validations
             payload_str = json.dumps(payload)
             if mask:                                  # anonymize the LLM input too
-                _build_mask_mapping(graph, mask)
+                # Bound the mask to what's actually in the payload — building it over a
+                # full multi-thousand-entity graph hangs the report (see _build_mask_mapping).
+                _build_mask_mapping(graph, mask, only_labels=_payload_label_set(payload))
                 _log_mask_audit(run_id, mask)         # audit trail BEFORE the LLM send
                 payload_str = _apply_mask(payload_str, mask)
             system = REPORT_SYSTEM_PROMPT
