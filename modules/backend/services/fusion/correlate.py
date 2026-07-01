@@ -28,6 +28,11 @@ def _assets_of(e) -> list[str]:
     return list(dict.fromkeys(e.attrs.get("_assets") or []))
 
 
+# Structural pivots that are never window/severity-filtered on ingest — they anchor
+# the graph and link everything else, so time-judging them would orphan their edges.
+_STRUCTURAL_TYPES = {"asset", "account", "ioc", "identity", "config"}
+
+
 def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None,
              min_severity="informational", dispositions=None) -> FusionGraph:
     g = FusionGraph(case_id=case_id)
@@ -48,11 +53,14 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
             # Filter ONLY time-stamped rows (the bulk: events / files / hashes) by
             # window + severity. NEVER drop:
             #   - assets (hosts) — the graph's anchors;
-            #   - entities with NO timestamp — accounts, IOCs, identities, config:
-            #     structural pivots we can't time-judge, and the most reusable
-            #     correlation signal. Dropping these would silently lose key info
-            #     (e.g. 36k account + IOC entities on a real case).
-            if e.type != "asset" and e.first_seen:
+            #   - accounts, IOCs, identities, config — structural pivots we can't
+            #     time-judge, and the most reusable correlation signal. Dropping
+            #     these would silently lose key info (e.g. 36k account + IOC entities
+            #     on a real case) AND orphan the events that link to them.
+            # The exemption is BY TYPE, not "has no first_seen": a mapper that stamps
+            # first_seen on a pivot (e.g. the cloud mapper on AWS accounts/IOCs) must
+            # still be exempt, else its accounts/IOCs + all their edges get window-cut.
+            if e.type not in _STRUCTURAL_TYPES and e.first_seen:
                 eff = sev.max_level(e.severity, sev.from_anomaly(e.anomaly))
                 if not (sev.at_least(eff, min_severity) and in_window(e.first_seen, window)):
                     continue

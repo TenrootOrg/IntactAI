@@ -215,6 +215,27 @@ def test_contribution_reads_persisted_run_file():
             os.remove(fp)
 
 
+# ------------------------------------------------ window exemption (links survive)
+
+def test_aws_accounts_iocs_exempt_from_window_filter():
+    # Regression: map_cloud stamps first_seen on accounts/IOCs. correlate.assemble
+    # must still exempt these structural pivots from the window filter (by TYPE) —
+    # otherwise a case time window drops every AWS account + IOC and orphans the
+    # events that link to them (the "AWS links don't work in the case" bug).
+    from services.fusion import correlate
+    ents, rels = map_cloud(S._flatten_cloud_findings(_backdoor_findings_by_source()),
+                           run_id="r", provider="aws", account=_ACCT)
+    # a future window excludes the event timestamps entirely...
+    g = correlate.assemble("c", [(ents, rels)], ["r"],
+                           window={"start": "2030-01-01T00:00:00", "end": None},
+                           min_severity="informational")
+    t = _by_type(list(g.entities.values()))
+    assert len(t.get("account", [])) >= 1, "AWS accounts must survive the window"
+    assert len(t.get("ioc", [])) >= 1, "AWS source-IP IOCs must survive the window"
+    # and their edges are intact (account->event, account->asset, event->ioc)
+    assert len(g.relationships) >= 1, "AWS relationships must not be orphaned away"
+
+
 # ---------------------------------------------------------------- gate/catalog
 
 def test_aws_module_is_selectable_in_catalog():
