@@ -2,7 +2,7 @@
 
 The AWS pipeline is collect-only: it persists SIGMA findings (keyed by
 source/rule) to the run file, and Case Analysis fuses them via the cloud mapper.
-This guards the store-side wiring added with the Prowler->CloudTrail migration:
+This guards the store-side wiring for the native CloudTrail AWS module:
 
   * `_flatten_cloud_findings` normalises the persisted dict-by-source (and the
     findings_by_severity fallback, and an already-flat list) into a flat list;

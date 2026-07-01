@@ -33,12 +33,11 @@ DFIR/SOC pipeline:
 
 | Tool | Stars | Last push | What it does | Fit for our pipeline |
 |---|---:|---|---|---|
-| **Prowler** ([prowler-cloud/prowler](https://github.com/prowler-cloud/prowler)) | **13,750** | **2026-05-07** | 572 AWS posture checks across 83 services, 41 compliance frameworks, OCSF JSON output, Docker image, CLI. Now powers attack-path graph via Cartography integration. | ⚠️ **Evaluated, not shipped.** Strong posture scanner, but adds an external image dependency for coverage beyond DFIR triage. Shipped design derives state/posture natively from boto3 (CloudTrail + SIGMA, AccessAnalyzer, IAM principals) instead. |
 | **Steampipe** ([turbot/steampipe](https://github.com/turbot/steampipe)) | 7,808 | 2026-04-24 | SQL queries over 153 cloud-API plugins, 2,000+ tables. Excellent for ad-hoc IR queries. | Too unstructured for an automated pipeline. Better as an analyst tool. |
-| **ScoutSuite** ([nccgroup/ScoutSuite](https://github.com/nccgroup/ScoutSuite)) | 7,648 | 2025-09-23 | Multi-cloud audit, ~200 checks. | Once a strong choice; cadence has slowed sharply (8+ month gap mid-2025 per public commentary, despite the 2025-09 commit). Prowler has surpassed it on every dimension. |
+| **ScoutSuite** ([nccgroup/ScoutSuite](https://github.com/nccgroup/ScoutSuite)) | 7,648 | 2025-09-23 | Multi-cloud audit, ~200 checks. | Once a strong choice; cadence has slowed sharply (8+ month gap mid-2025 per public commentary, despite the 2025-09 commit). Superseded for our needs by the native boto3 + SIGMA design. |
 | **CloudQuery** ([cloudquery/cloudquery](https://github.com/cloudquery/cloudquery)) | 6,398 | 2026-05-06 | ELT cloud asset normalization → data warehouse. | Designed for SQL-warehouse ingestion. Heavyweight; we'd discard most of its value. |
 | **Pacu** ([RhinoSecurityLabs/pacu](https://github.com/RhinoSecurityLabs/pacu)) | 5,173 | 2026-04-27 | Post-exploitation framework. | Offensive/red-team. Wrong use case. |
-| **Cartography** ([cartography-cncf/cartography](https://github.com/cartography-cncf/cartography)) | 3,875 | 2026-05-07 | Neo4j asset graph; CNCF-incubating. | Already integrated *into* Prowler's Attack Paths feature — we get the graph for free if we wrap Prowler. |
+| **Cartography** ([cartography-cncf/cartography](https://github.com/cartography-cncf/cartography)) | 3,875 | 2026-05-07 | Neo4j asset graph; CNCF-incubating. | Heavyweight external graph store; the native boto3 state model (AccessAnalyzer + IAM principals) covers our IR needs without standing up Neo4j. |
 | **CloudFox** ([BishopFox/cloudfox](https://github.com/BishopFox/cloudfox)) | 2,375 | 2026-04-21 | Per-principal blast-radius enumeration. Go binary, lightweight. | Excellent **complement** for IR scenarios ("what can this compromised key access?"). Add as v2 supplement, not replacement. |
 | **PMapper** ([nccgroup/PMapper](https://github.com/nccgroup/PMapper)) | 1,551 | 2024-08-02 | IAM permission graph. | Aging (no commits in ~2 years). Skip. |
 | **TrailScraper** ([flosell/trailscraper](https://github.com/flosell/trailscraper)) | 834 | 2026-05-07 | CLI for slicing CloudTrail JSON exports. | Niche/complementary; we can replicate its filtering with ~30 lines of boto3. Not worth the wrapper. |
@@ -315,8 +314,8 @@ words of skill markdown + 200 LOC of report prompt.
   performance optimization.
 - **Org-mode hardening checks** (CIS benchmarks against an
   Organizations-level structure). Out of scope; covered by
-  third-party tools (Prowler, ScoutSuite) — add as an "import these
-  reports" feature later if there's demand.
+  third-party CIS-benchmark scanners (e.g. ScoutSuite) — add as an
+  "import these reports" feature later if there's demand.
 - **VPC flow logs / Athena queries**. Volume is enormous; not the
   same shape as the other event sources. Defer.
 
