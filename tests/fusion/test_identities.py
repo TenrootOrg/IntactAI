@@ -138,6 +138,30 @@ def test_operates_short_username_no_prefix_false_positive():
 
 # ----------------------------------------------------------- link ids
 
+def test_resolve_identities_clusters_and_excludes_system():
+    # cloud `nofl` + endpoint `nofl`/`adatumlab\nofl` -> ONE person card; Windows service
+    # accounts are excluded from the people list.
+    g = _g(cloud_users=["nofl"],
+           ep_users=["nofl", "adatumlab\\nofl", "NETWORK SERVICE", "defaultaccount"],
+           ep_hosts=["NofLaptop"])
+    ids = I.resolve_identities(g)
+    keys = {it["key"] for it in ids}
+    assert "nofl" in keys
+    assert "networkservice" not in keys and "network service" not in keys
+    assert "defaultaccount" not in keys
+    nofl = next(it for it in ids if it["key"] == "nofl")
+    assert set(nofl["buckets"]) == {"aws", "endpoint"}          # cloud + endpoint merged
+    assert len(nofl["accounts"]) >= 3
+    assert any(h["label"] == "NofLaptop" for h in nofl["hosts"])  # operates NofLaptop
+
+
+def test_resolve_identities_confirmed_merge_unions_people():
+    g = _g(cloud_users=["nofl"], ep_users=["noflevi"])
+    assert len(I.resolve_identities(g)) == 2                     # different names -> 2 people
+    merged = I.resolve_identities(g, merges=[("nofl", "noflevi")])
+    assert len(merged) == 1                                      # confirmed same-person -> 1
+
+
 def test_link_id_is_order_independent():
     assert I.link_id("a", "b", "same_identity") == I.link_id("b", "a", "same_identity")
     assert I.link_id("a", "b", "same_identity") != I.link_id("a", "b", "operates")

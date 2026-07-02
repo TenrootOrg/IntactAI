@@ -714,75 +714,46 @@ function tlDelete(eid){
    .then(_=>{toast('event deleted');renderTimeline(window._tlCase);});
 }
 
-// ---- Identities tab: cross-infrastructure identity correlation ----
+// ---- Identities tab: unified identity page (one card per resolved person) ----
 function renderIdentities(id){
   window._idCase=id;
-  $('#tabc').innerHTML='<i style="color:var(--muted)">loading identities…</i>';
+  $('#tabc').innerHTML='<i style="color:var(--muted)">resolving identities…</i>';
   api('/api/cases/'+id+'/identities').then(d=>{
     window._idData=d;
-    if(d.error && d.error!=='not found' && !(d.buckets)){ $('#tabc').innerHTML=`<p style="color:#f85149">could not load identities: ${esc(String(d.error))}</p>`; return; }
+    if(d.error && !(d.identities)){ $('#tabc').innerHTML=`<p style="color:#f85149">could not load identities: ${esc(String(d.error))}</p>`; return; }
     const bset=(d.buckets||[]).join(', ')||'none';
-    const num=v=>(typeof v==='number'?v.toFixed(2):(v||'0'));
-    const lc=(l,c)=>`<b>${esc(l||'')}</b>${c?`<span style="color:var(--muted);font-size:11px"> @${esc(c)}</span>`:''}`;
-    const row=(x,actions)=>{
-      const bk=(x.buckets||[]).join(' ⇄ ');
-      const ev=(x.evidence&&x.evidence.length)?` · <span style="color:var(--ok)">${esc(x.evidence.join('; '))}</span>`:'';
-      const amb=x.ambiguous?` · <span style="color:var(--med)">ambiguous</span>`:'';
-      const arrow=x.kind==='operates'?'▸ operates ▸':'≡';
-      const cnt=(x.count&&x.count>1)?` <span style="color:var(--muted);font-size:11px;border:1px solid var(--bd);border-radius:8px;padding:0 5px">${x.count} accounts</span>`:'';
-      return `<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--bd)">
-        <span style="flex:1">${lc(x.a_label,x.a_ctx)}${cnt} <span style="color:var(--muted)">${arrow}</span> ${lc(x.b_label,x.b_ctx)}
-          <span style="color:var(--muted);font-size:11px"> · ${esc(bk)} · ${esc(x.reason||'')} · conf ${num(x.score)}${ev}${amb}</span></span>
-        ${actions}</div>`;
-    };
-    const btn=(lbl,dec,x,col)=>`<button class="ghost" style="border-color:${col}" onclick="idDecide('${id}','${x.id}','${dec}')">${lbl}</button>`;
-    let h=`<p style="color:var(--muted);font-size:12px;margin:0 0 8px">Correlate the same person / user→host across infrastructures. Confirmed links <b>persist across re-fusion</b>. Infrastructures here: <b>${esc(bset)}</b>.</p>`;
-    if(d.stale) h+=`<p style="color:var(--med);font-size:12px;margin:0 0 8px">⚠ ${d.stale} member run(s) not yet fused — new uploads only appear here after a <b>Refusion</b> (Report tab).</p>`;
-    if(!d.multi_infra) h+=`<p style="color:var(--med);font-size:12px">Only one infrastructure present — cross-infra <i>same-identity</i> correlation needs ≥2 (Endpoint / AWS / Azure). Manual linking is still available below.</p>`;
-    h+=`<h4 style="margin:10px 0 4px">Needs review — most conflicts first (${(d.pending||[]).length})</h4>`;
-    h+=(d.pending||[]).length?(d.pending).map(x=>row(x,btn('Confirm','confirmed',x,'var(--ok)')+' '+btn('Decline','declined',x,'var(--med)'))).join(''):'<p style="color:var(--muted);font-size:12px">nothing to review.</p>';
-    h+=`<h4 style="margin:14px 0 4px">Confirmed (${(d.confirmed||[]).length})</h4>`;
-    h+=(d.confirmed||[]).length?(d.confirmed).map(x=>row(x,btn('Undo','declined',x,'var(--med)'))).join(''):'<p style="color:var(--muted);font-size:12px">none yet.</p>';
-    h+=`<h4 style="margin:14px 0 4px">Auto-detected — machine, not human-confirmed (${(d.auto||[]).length})</h4>`;
-    h+=(d.auto||[]).length?(d.auto).map(x=>row(x,btn('Decline','declined',x,'var(--med)'))).join(''):'<p style="color:var(--muted);font-size:12px">none.</p>';
-    // manual link: type-to-search pickers (datalist) — distinguishable duplicates via @host
-    const emap={};
-    (d.entities||[]).forEach(e=>{const disp=`${e.type==='account'?'👤':'💻'} ${e.label}${e.ctx?' @'+e.ctx:''}`; emap[disp]=e.id;});
-    window._idEmap=emap;
-    const optlist=Object.keys(emap).map(k=>`<option value="${esc(k)}">`).join('');
-    h+=`<h4 style="margin:16px 0 4px">Manual link</h4>
-      <p style="color:var(--muted);font-size:12px;margin:0 0 6px">No suggestion for a pair you know is related? Link them yourself — type to search (👤 user · 💻 host).</p>
-      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;background:#0d1117;border:1px solid var(--bd);border-radius:8px;padding:12px">
-        <div style="display:flex;flex-direction:column;gap:3px">
-          <label style="font-size:11px;color:var(--muted)">Identity (user)</label>
-          <input list="ident-ents" id="id-a" placeholder="search a user…" autocomplete="off" style="min-width:230px;padding:6px 8px"></div>
-        <select id="id-kind" title="Relationship type" style="padding:6px 8px">
-          <option value="same_identity">≡ is the same person as</option>
-          <option value="operates">▸ operates (host)</option></select>
-        <div style="display:flex;flex-direction:column;gap:3px">
-          <label style="font-size:11px;color:var(--muted)">User or host</label>
-          <input list="ident-ents" id="id-b" placeholder="search a user or host…" autocomplete="off" style="min-width:230px;padding:6px 8px"></div>
-        <button class="ghost" style="border-color:var(--ok);padding:6px 12px" onclick="idManualLink('${id}')">＋ Link</button>
-      </div>
-      <datalist id="ident-ents">${optlist}</datalist>`;
+    const idents=d.identities||[];
+    let h=`<p style="color:var(--muted);font-size:12px;margin:0 0 8px">People in this case and their footprint across infrastructures (<b>${esc(bset)}</b>). Same-name accounts are merged automatically; uncertain cross-name matches appear as <b>suggestions</b> to confirm. Confirmed links persist across re-fusion.</p>`;
+    if(d.stale) h+=`<p style="color:var(--med);font-size:12px;margin:0 0 8px">⚠ ${d.stale} run(s) not yet fused — new uploads appear here after a <b>Refusion</b> (Report tab).</p>`;
+    h+=`<p style="color:var(--muted);font-size:11px;margin:0 0 10px">${idents.length} identit${idents.length===1?'y':'ies'} · ${d.counts&&d.counts.suggestions||0} suggestion(s)</p>`;
+    h+=idents.map(it=>idCard(id,it)).join('') || '<p style="color:var(--muted)">No identities resolved yet.</p>';
     $('#tabc').innerHTML=h;
   }).catch(_=>{$('#tabc').innerHTML='<p style="color:#f85149">could not load identities</p>';});
 }
-function _idFind(gid){const d=window._idData||{};for(const k of ['pending','confirmed','auto','declined'])for(const x of (d[k]||[]))if(x.id===gid)return x;return {};}
-function idDecide(cid,gid,decision){
-  const g=_idFind(gid);
-  const members=(g.members&&g.members.length)?g.members:[{id:gid,a_id:g.a_id,b_id:g.b_id,kind:g.kind}];
-  api('/api/cases/'+cid+'/identities/group',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({decision:decision,members:members})})
-    .then(_=>{toast('saved — Refusion applies it to the graph');renderIdentities(cid);});
+function idCard(cid,it){
+  const bdg=(t,col)=>`<span style="font-size:10px;border:1px solid ${col||'var(--bd)'};color:${col||'var(--muted)'};border-radius:8px;padding:0 6px;margin-left:4px">${esc(t)}</span>`;
+  const buckets=(it.buckets||[]).map(b=>bdg(b,b==='aws'?'#d29922':b==='azure'?'#3b9eff':'var(--muted)')).join('');
+  const accts=(it.accounts||[]).map(a=>`<div style="padding:1px 0">👤 ${esc(a.label)}<span style="color:var(--muted);font-size:11px">${a.ctx?(' · @'+esc(a.ctx)):(a.bucket?(' · '+esc(a.bucket)):'')}</span></div>`).join('') || '<span style="color:var(--muted)">—</span>';
+  const hosts=(it.hosts||[]).map(hh=>`<div style="padding:1px 0">💻 ${esc(hh.label)} <span style="color:${hh.strong?'var(--ok)':'var(--muted)'};font-size:11px">· ${hh.strong?'active on host':'by name'}</span></div>`).join('') || '<span style="color:var(--muted)">—</span>';
+  const sugg=(it.suggestions||[]).map(s=>`<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;padding:4px 0">
+      <span style="font-size:12px">possibly also <b>${esc(s.other)}</b> <span style="color:var(--muted);font-size:11px">· ${esc(s.reason||'')} · conf ${(typeof s.score==='number'?s.score.toFixed(2):s.score)}${s.ambiguous?' · <span style=\"color:var(--med)\">ambiguous</span>':''}</span></span>
+      <span style="white-space:nowrap"><button class="ghost" style="border-color:var(--ok)" onclick="idSug('${cid}','${s.id}','confirmed')">Same person</button> <button class="ghost" style="border-color:var(--med)" onclick="idSug('${cid}','${s.id}','declined')">Not same</button></span></div>`).join('');
+  return `<div style="border:1px solid var(--bd);border-radius:8px;padding:12px;margin-bottom:10px;background:#0d1117">
+     <div style="display:flex;justify-content:space-between;align-items:center">
+       <div><b style="font-size:14px">👤 ${esc(it.name||it.key)}</b>${buckets}</div>
+       <span style="color:var(--muted);font-size:11px">${(it.accounts||[]).length} account(s) · ${(it.hosts||[]).length} host(s)</span></div>
+     <div style="display:flex;gap:24px;margin-top:8px;flex-wrap:wrap">
+       <div style="flex:1;min-width:240px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Accounts</div>${accts}</div>
+       <div style="flex:1;min-width:200px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Operates hosts</div>${hosts}</div></div>
+     ${sugg?`<div style="margin-top:8px;border-top:1px dashed var(--bd);padding-top:6px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Suggested links (confirm to merge)</div>${sugg}</div>`:''}
+   </div>`;
 }
-function idManualLink(cid){
-  const m=window._idEmap||{};
-  const a=m[$('#id-a').value], b=m[$('#id-b').value], k=$('#id-kind').value;
-  if(!a||!b){toast('pick both entities from the search list');return;}
-  if(a===b){toast('pick two different entities');return;}
-  api('/api/cases/'+cid+'/identities/link',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({a_id:a,b_id:b,kind:k})})
-    .then(r=>{if(r&&r.error){toast(r.error);return;}toast('linked — Refusion applies it to the graph');renderIdentities(cid);});
+function idSug(cid,sid,decision){
+  let members=null;
+  for(const it of ((window._idData||{}).identities||[])) for(const s of (it.suggestions||[])) if(s.id===sid){members=s.members;break;}
+  api('/api/cases/'+cid+'/identities/group',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({decision:decision,members:members||[{id:sid}]})})
+    .then(_=>{toast(decision==='confirmed'?'merged — Refusion applies it to the graph':'kept separate');renderIdentities(cid);});
 }
 
 // ---- Log tab: workflow-style log (monospace, UTC time + level-colored message) ----

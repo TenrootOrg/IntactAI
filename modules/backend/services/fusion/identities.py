@@ -22,11 +22,19 @@ try:
     from .llm_sim import _MASK_STOPWORDS as _STOP     # reuse the generic-word filter
 except Exception:                                     # pragma: no cover - defensive
     _STOP = frozenset()
+try:
+    from services.data_anonymizer import SYSTEM_ACCOUNTS as _SYS
+except Exception:                                     # pragma: no cover - defensive
+    _SYS = set()
 
-# Infrastructure buckets. Velociraptor + Memory + TimeSketch all hang off the same
-# Velociraptor host/client_id, so they are ONE machine bucket ("endpoint"); AWS and
-# Azure are their own. Cross-infra correlation only matters BETWEEN buckets.
-_ENDPOINT_SOURCES = {"agentic", "velociraptor", "memory", "timesketch"}
+# Windows built-in / service accounts that are NOT people — they'd otherwise show up as
+# "identities" and pollute the page (network service, defaultaccount, dwm-1, ...).
+_NON_PERSON = frozenset({
+    "defaultaccount", "wdagutilityaccount", "guest", "administrator", "system",
+    "localsystem", "networkservice", "localservice", "network service", "local service",
+    "anonymous", "anonymous logon", "nt authority", "nt service", "dwm", "umfd",
+    "font driver host", "window manager", "iusr", "healthmailbox",
+})
 
 
 def _norm_user(label) -> str:
@@ -37,6 +45,32 @@ def _norm_user(label) -> str:
     if "@" in s:
         s = s.split("@", 1)[0]
     return s.rstrip("$").strip()
+
+
+def _is_person(label) -> bool:
+    """A real user identity worth clustering — excludes machine accounts (HOST$),
+    generic words, and Windows built-in / service accounts (SYSTEM, DWM-1, …)."""
+    s = (label or "").strip()
+    if not s or s.endswith("$"):
+        return False
+    n = _norm_user(s)
+    if not n or len(n) < 3 or n in _STOP or n in _NON_PERSON:
+        return False
+    up = s.upper()
+    if any(sa.upper() in up for sa in _SYS):          # SYSTEM / NETWORK SERVICE / DWM / UMFD …
+        return False
+    import re as _re
+    if _re.match(r"^(dwm|umfd|cdpuser)-?\d*$", n):     # session pseudo-accounts
+        return False
+    # well-known system SIDs (SYSTEM/LOCAL SERVICE/NETWORK SERVICE/built-in groups/service SIDs)
+    if _re.match(r"^s-1-5-(18|19|20)$", n) or _re.match(r"^s-1-5-(32|80|82|83|90|96)-", n):
+        return False
+    return True
+
+# Infrastructure buckets. Velociraptor + Memory + TimeSketch all hang off the same
+# Velociraptor host/client_id, so they are ONE machine bucket ("endpoint"); AWS and
+# Azure are their own. Cross-infra correlation only matters BETWEEN buckets.
+_ENDPOINT_SOURCES = {"agentic", "velociraptor", "memory", "timesketch"}
 
 
 def _email(label) -> str | None:
@@ -160,15 +194,86 @@ def _match(a_label, b_label):
     return None
 
 
+def resolve_identities(graph, merges=None) -> list:
+    """DETERMINISTIC identity resolution — the unified 'identity page'. Cluster accounts
+    that are the SAME person by normalized username (collapses DOMAIN\\user, user@domain,
+    and the same name seen across many hosts / clouds into ONE person), and attach the
+    hosts they operate + the infra buckets they span. No analyst clicks: exact-name
+    resolution is high-confidence and automatic (mirrors how UEBA/identity platforms
+    present a single entity page per person). Fuzzy/uncertain links are handled
+    separately as per-identity SUGGESTIONS, not here.
+
+    ``merges`` = analyst-confirmed (name_a, name_b) same-person pairs — those clusters are
+    unioned so a confirmed suggestion actually folds the two people into one card.
+
+    Returns one record per person:
+      {key, name, buckets, accounts:[{id,label,ctx,bucket}], hosts:[{id,label,strong}]}
+    """
+    from collections import defaultdict
+    accounts = [e for e in graph.entities.values()
+                if e.type == "account" and _is_person(e.label)]
+    raw = defaultdict(list)
+    for e in accounts:
+        raw[_norm_user(e.label)].append(e)
+    # union analyst-confirmed same-person keys (union-find over normalized names)
+    parent = {k: k for k in raw}
+    def _find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]; x = parent[x]
+        return x
+    for a, b in (merges or []):
+        if a in parent and b in parent:
+            parent[_find(a)] = _find(b)
+    clusters = defaultdict(list)
+    for k, accs in raw.items():
+        clusters[_find(k)].extend(accs)
+
+    # host index by token/name first char (same as compute_candidates) for operated-host lookup
+    hosts = [e for e in graph.entities.values()
+             if e.type == "asset" and "endpoint" in (_entity_buckets(e, graph) or set())
+             and (e.label or "").strip()]
+    hidx = defaultdict(list)
+    for h in hosts:
+        hn = (h.label or "").strip().lower()
+        toks = hn.replace("-", " ").replace("_", " ").replace(".", " ").split()
+        for ch in {hn[0]} | {t[0] for t in toks if t}:
+            hidx[ch].append((h, hn, toks))
+
+    out = []
+    for key, accs in clusters.items():
+        buckets, acct_out, seen_host_ids = set(), [], set()
+        names = sorted({_norm_user(e.label) for e in accs if _norm_user(e.label)})
+        for e in accs:
+            eb = _entity_buckets(e, graph)
+            buckets |= eb
+            acct_out.append({"id": e.id, "label": e.label, "ctx": _context(e, graph),
+                             "bucket": (sorted(eb)[0] if eb else "")})
+            for aid in (e.assets() or []):
+                if _bucket_of_asset(aid) == "endpoint":
+                    seen_host_ids.add(aid)
+        # hosts this person operates: name-embed match (+ strong when the user is seen on it)
+        hosts_out, added = [], set()
+        for nm in names:
+            for h, hn, htok in hidx.get(nm[0], ()):
+                if h.id in added:
+                    continue
+                if (nm in htok or hn.split("-")[0] == nm or hn.split(".")[0] == nm
+                        or (len(nm) >= 4 and hn.startswith(nm) and len(hn) > len(nm) + 1)):
+                    added.add(h.id)
+                    hosts_out.append({"id": h.id, "label": h.label, "strong": h.id in seen_host_ids})
+        out.append({"key": key, "name": (accs[0].label if len(accs) == 1 else " / ".join(names)),
+                    "buckets": sorted(buckets), "accounts": acct_out, "hosts": hosts_out})
+    out.sort(key=lambda x: (-len(x["buckets"]), -len(x["accounts"]), x["key"]))
+    return out
+
+
 def compute_candidates(graph) -> list:
     """Propose identity links from the graph. Pure — returns a list of candidate dicts;
     the caller decides/persists. auto=True only when the match is unambiguous (unique
     for BOTH sides) AND auto-eligible, OR a 100% strong-id; anything else needs a human."""
     buckets = case_buckets(graph)
     accounts = [e for e in graph.entities.values()
-                if e.type == "account" and (e.label or "").strip()
-                and not (e.label or "").strip().endswith("$")   # machine acct (HOST$) = the host, not a person
-                and _norm_user(e.label) not in _STOP and len(_norm_user(e.label)) >= 3]
+                if e.type == "account" and _is_person(e.label)]
     from collections import defaultdict
     adj = _adjacency(graph)
     cands = []

@@ -1699,8 +1699,11 @@ def decide_identity_group(case_id, members, decision) -> dict:
 
 
 def identity_view(case_id) -> dict:
-    """The Identities tab model: candidates merged with stored decisions. Cross-infra
-    same-identity choosing only when >= 2 buckets; operates + inventory always. Best-effort."""
+    """The Identities tab model — a unified IDENTITY PAGE (like UEBA/identity platforms):
+    one card per resolved person (their accounts across AWS/Azure/Endpoint + the hosts
+    they operate), resolved deterministically by name. Fuzzy/uncertain cross-name links
+    surface as small per-identity SUGGESTIONS to confirm — not a candidate queue, and no
+    global manual-link form. Best-effort: any failure returns an empty, non-breaking view."""
     d = get_case(case_id)
     if not d:
         return {"error": "not found"}
@@ -1710,42 +1713,50 @@ def identity_view(case_id) -> dict:
         buckets = _idf.case_buckets(g)
         cands = _idf.compute_candidates(g)
     except Exception as e:  # noqa: BLE001
-        return {"case_id": case_id, "buckets": [], "multi_infra": False,
-                "pending": [], "confirmed": [], "auto": [], "declined": [],
-                "counts": {"pending": 0, "confirmed": 0, "auto": 0}, "error": str(e)}
+        return {"case_id": case_id, "buckets": [], "multi_infra": False, "identities": [],
+                "counts": {"identities": 0, "suggestions": 0}, "error": str(e)}
     decisions = _identity_decisions(d)
-    # collapse to ONE row per logical relationship (see _group_identity_candidates)
-    pending, confirmed, auto, declined = _group_identity_candidates(cands, decisions)
-    seen = {m["id"] for grp in (pending + confirmed + auto + declined)
-            for m in grp["members"]}
-    for r in decisions.values():                      # manual links not re-derived this fuse
-        if r.get("decision") == "confirmed" and r["id"] not in seen and r.get("a_id"):
-            confirmed.append({"id": r["id"], "kind": r.get("kind", "same_identity"),
-                              "status": "confirmed", "a_label": r.get("a_id"),
-                              "b_label": r.get("b_id"), "count": 1, "score": r.get("confidence", 1.0),
-                              "reason": r.get("reason", "manual link"), "evidence": [],
-                              "ambiguous": False, "buckets": [],
-                              "members": [{"id": r["id"], "a_id": r.get("a_id"),
-                                           "b_id": r.get("b_id"), "kind": r.get("kind", "same_identity")}]})
-    # most-conflicts-first: ambiguous groups on top, then by score
-    pending.sort(key=lambda x: (0 if x.get("ambiguous") else 1, -(x.get("score") or 0)))
-    auto.sort(key=lambda x: -(x.get("score") or 0))   # auto sits at the bottom in the UI
-    # linkable entities (accounts + hosts) for the manual-link picker; ctx (host/provider)
-    # so duplicate labels (e.g. 'nofl' on 5 hosts) are distinguishable in the search.
-    try:
-        from . import identities as _idf
-        pick = [{"id": e.id, "label": e.label, "type": e.type, "ctx": _idf._context(e, g)}
-                for e in g.entities.values()
-                if e.type in ("account", "asset") and (e.label or "").strip()][:2000]
-    except Exception:  # noqa: BLE001
-        pick = [{"id": e.id, "label": e.label, "type": e.type, "ctx": ""}
-                for e in g.entities.values()
-                if e.type in ("account", "asset") and (e.label or "").strip()][:2000]
-    pick.sort(key=lambda x: (x["type"], x["label"].lower()))
-    # staleness: FUSEABLE member runs not yet folded into the graph this tab reads (a new
-    # offline-collector upload won't appear here until a Refusion). Count only runs that
-    # pass the gate — a non-fuseable member (e.g. the collector-generation row) isn't
-    # "stale", it just never fuses.
+    _nz = _idf._norm_user
+    # fuzzy cross-name same-identity candidates (exact-name matches are already ONE card)
+    fuzzy = [c for c in cands
+             if c["kind"] == "same_identity" and _nz(c["a_label"]) != _nz(c["b_label"])]
+    # analyst-confirmed fuzzy pairs union two people into one card
+    merges = [(_nz(c["a_label"]), _nz(c["b_label"])) for c in fuzzy
+              if decisions.get(c["id"], {}).get("decision") == "confirmed"]
+    idents = _idf.resolve_identities(g, merges=merges)
+    acct_card = {}
+    for it in idents:
+        it["suggestions"] = []
+        for a in it["accounts"]:
+            acct_card[a["id"]] = it
+    # PENDING fuzzy suggestions, grouped by identity PAIR -> ONE suggestion per other
+    # person (not one per underlying account), carrying all member links so a single
+    # Confirm links them all. (declined hidden; confirmed already folded into a card.)
+    pairs: dict = {}
+    for c in fuzzy:
+        if decisions.get(c["id"], {}).get("decision") in ("declined", "confirmed"):
+            continue
+        ca, cb = acct_card.get(c["a_id"]), acct_card.get(c["b_id"])
+        if not ca or not cb or ca is cb:
+            continue
+        pk = frozenset((ca["key"], cb["key"]))
+        e = pairs.setdefault(pk, {"cards": (ca, cb), "members": [], "reason": c["reason"],
+                                  "score": c["score"], "ambiguous": c.get("ambiguous", False)})
+        e["members"].append({"id": c["id"], "a_id": c["a_id"], "b_id": c["b_id"],
+                             "kind": "same_identity"})
+        e["score"] = max(e["score"], c["score"])
+        e["ambiguous"] = e["ambiguous"] or c.get("ambiguous", False)
+    for e in pairs.values():
+        ca, cb = e["cards"]
+        for src, dst in ((ca, cb), (cb, ca)):
+            src["suggestions"].append({
+                "id": e["members"][0]["id"], "other": dst["name"], "reason": e["reason"],
+                "score": e["score"], "ambiguous": e["ambiguous"], "members": e["members"]})
+    # people with more infrastructures / accounts / a suggestion first
+    idents.sort(key=lambda it: (-len(it.get("suggestions") or []), -len(it["buckets"]),
+                                -len(it["accounts"]), it["key"]))
+    total_sug = sum(len(it["suggestions"]) for it in idents)
+    # staleness: FUSEABLE member runs not yet folded into the graph this tab reads.
     try:
         fused = set(d.get("fused_run_ids") or [])
         stale = sum(1 for r in _ws().get_automation_runs_by_case(case_id)
@@ -1753,9 +1764,8 @@ def identity_view(case_id) -> dict:
     except Exception:  # noqa: BLE001
         stale = 0
     return {"case_id": case_id, "buckets": buckets, "multi_infra": len(buckets) >= 2,
-            "pending": pending, "confirmed": confirmed, "auto": auto, "declined": declined,
-            "entities": pick, "stale": stale,
-            "counts": {"pending": len(pending), "confirmed": len(confirmed), "auto": len(auto)}}
+            "identities": idents, "stale": stale,
+            "counts": {"identities": len(idents), "suggestions": total_sug}}
 
 
 def decide_identity_link(case_id, link_id, decision, *, a_id=None, b_id=None,
