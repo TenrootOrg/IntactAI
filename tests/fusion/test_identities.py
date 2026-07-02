@@ -162,6 +162,31 @@ def test_resolve_identities_confirmed_merge_unions_people():
     assert len(merged) == 1                                      # confirmed same-person -> 1
 
 
+def test_resolve_identities_split_isolates_account():
+    # cloud `nofl` + endpoint `nofl` = one card (2 accounts); splitting the cloud account
+    # ('not this person') gives it its own identity.
+    g = _g(cloud_users=["nofl"], ep_users=["nofl"])
+    assert len(next(it for it in I.resolve_identities(g) if it["key"] == "nofl")["accounts"]) == 2
+    after = I.resolve_identities(g, splits={"account:cloud:nofl"})
+    owning = [it for it in after if any(a["id"] == "account:cloud:nofl" for a in it["accounts"])]
+    assert len(owning) == 1 and len(owning[0]["accounts"]) == 1  # isolated
+
+
+def test_merged_card_confidence_reflects_fuzzy_score():
+    g = _g(cloud_users=["nofl"], ep_users=["noflevi"])
+    card = I.resolve_identities(g, merges=[("nofl", "noflevi", 0.6)])[0]
+    assert card["confidence"] < 1.0                              # a fuzzy merge lowers it
+    assert any(a["conf"] == 0.6 for a in card["accounts"])       # folded-in account carries the score
+
+
+def test_host_exclude_removes_operated_host():
+    g = _g(cloud_users=["nofl"], ep_hosts=["NofLaptop"])
+    assert any(h["label"] == "NofLaptop"
+               for it in I.resolve_identities(g) for h in it["hosts"])
+    after = I.resolve_identities(g, host_excludes={("nofl", "asset:endpoint:C.noflaptop")})
+    assert not any(h["label"] == "NofLaptop" for it in after for h in it["hosts"])
+
+
 def test_link_id_is_order_independent():
     assert I.link_id("a", "b", "same_identity") == I.link_id("b", "a", "same_identity")
     assert I.link_id("a", "b", "same_identity") != I.link_id("a", "b", "operates")

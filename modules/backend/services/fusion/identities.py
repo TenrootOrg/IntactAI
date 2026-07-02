@@ -194,41 +194,46 @@ def _match(a_label, b_label):
     return None
 
 
-def resolve_identities(graph, merges=None) -> list:
+def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> list:
     """DETERMINISTIC identity resolution — the unified 'identity page'. Cluster accounts
     that are the SAME person by normalized username (collapses DOMAIN\\user, user@domain,
     and the same name seen across many hosts / clouds into ONE person), and attach the
-    hosts they operate + the infra buckets they span. No analyst clicks: exact-name
-    resolution is high-confidence and automatic (mirrors how UEBA/identity platforms
-    present a single entity page per person). Fuzzy/uncertain links are handled
-    separately as per-identity SUGGESTIONS, not here.
+    hosts they operate + the infra buckets they span. Exact-name resolution is automatic
+    (mirrors UEBA/identity entity pages); fuzzy/uncertain links are separate SUGGESTIONS.
 
-    ``merges`` = analyst-confirmed (name_a, name_b) same-person pairs — those clusters are
-    unioned so a confirmed suggestion actually folds the two people into one card.
+    Analyst overrides (all persisted, survive re-fusion):
+      merges        = confirmed (name_a, name_b, score) same-person pairs -> union clusters.
+      splits        = account ids the analyst removed ("not this person") -> isolate.
+      host_excludes = (name, host_id) the analyst removed from a person's operated hosts.
 
-    Returns one record per person:
-      {key, name, buckets, accounts:[{id,label,ctx,bucket}], hosts:[{id,label,strong}]}
+    Each account carries a `conf` (1.0 exact-name; the merge score when folded in by a
+    confirmed fuzzy link) so the card can show how sure the clustering is.
     """
     from collections import defaultdict
+    splits = set(splits or [])
+    host_excludes = set(host_excludes or [])
     accounts = [e for e in graph.entities.values()
                 if e.type == "account" and _is_person(e.label)]
     raw = defaultdict(list)
     for e in accounts:
         raw[_norm_user(e.label)].append(e)
-    # union analyst-confirmed same-person keys (union-find over normalized names)
     parent = {k: k for k in raw}
     def _find(x):
         while parent[x] != x:
             parent[x] = parent[parent[x]]; x = parent[x]
         return x
-    for a, b in (merges or []):
+    merge_score: dict = {}                              # non-dominant name -> min merge score
+    for m in (merges or []):
+        a, b = m[0], m[1]
+        sc = m[2] if len(m) > 2 else 1.0
         if a in parent and b in parent:
             parent[_find(a)] = _find(b)
+            merge_score[a] = min(merge_score.get(a, 1.0), sc)
+            merge_score[b] = min(merge_score.get(b, 1.0), sc)
     clusters = defaultdict(list)
     for k, accs in raw.items():
         clusters[_find(k)].extend(accs)
 
-    # host index by token/name first char (same as compute_candidates) for operated-host lookup
     hosts = [e for e in graph.entities.values()
              if e.type == "asset" and "endpoint" in (_entity_buckets(e, graph) or set())
              and (e.label or "").strip()]
@@ -239,30 +244,47 @@ def resolve_identities(graph, merges=None) -> list:
         for ch in {hn[0]} | {t[0] for t in toks if t}:
             hidx[ch].append((h, hn, toks))
 
-    out = []
-    for key, accs in clusters.items():
+    def _build(key, accs):
         buckets, acct_out, seen_host_ids = set(), [], set()
-        names = sorted({_norm_user(e.label) for e in accs if _norm_user(e.label)})
+        cnt = defaultdict(int)
         for e in accs:
+            cnt[_norm_user(e.label)] += 1
+        dominant = max(cnt, key=cnt.get) if cnt else key
+        names = sorted(cnt)
+        for e in accs:
+            nm = _norm_user(e.label)
             eb = _entity_buckets(e, graph)
             buckets |= eb
+            conf = 1.0 if nm == dominant else merge_score.get(nm, 1.0)
             acct_out.append({"id": e.id, "label": e.label, "ctx": _context(e, graph),
-                             "bucket": (sorted(eb)[0] if eb else "")})
+                             "bucket": (sorted(eb)[0] if eb else ""), "conf": round(conf, 2)})
             for aid in (e.assets() or []):
                 if _bucket_of_asset(aid) == "endpoint":
                     seen_host_ids.add(aid)
-        # hosts this person operates: name-embed match (+ strong when the user is seen on it)
         hosts_out, added = [], set()
         for nm in names:
             for h, hn, htok in hidx.get(nm[0], ()):
-                if h.id in added:
+                if h.id in added or (nm, h.id) in host_excludes:
                     continue
                 if (nm in htok or hn.split("-")[0] == nm or hn.split(".")[0] == nm
                         or (len(nm) >= 4 and hn.startswith(nm) and len(hn) > len(nm) + 1)):
                     added.add(h.id)
-                    hosts_out.append({"id": h.id, "label": h.label, "strong": h.id in seen_host_ids})
-        out.append({"key": key, "name": (accs[0].label if len(accs) == 1 else " / ".join(names)),
-                    "buckets": sorted(buckets), "accounts": acct_out, "hosts": hosts_out})
+                    hosts_out.append({"id": h.id, "label": h.label, "strong": h.id in seen_host_ids,
+                                      "name": nm})
+        confs = [a["conf"] for a in acct_out] or [1.0]
+        return {"key": key, "name": (accs[0].label if len(accs) == 1 else dominant),
+                "names": names, "buckets": sorted(buckets), "accounts": acct_out,
+                "hosts": hosts_out, "confidence": round(sum(confs) / len(confs), 2)}
+
+    out = []
+    for key, accs in clusters.items():
+        keep = [e for e in accs if e.id not in splits]
+        if keep:
+            out.append(_build(key, keep))
+        # split-out accounts become their own singleton identities
+        for e in accs:
+            if e.id in splits:
+                out.append(_build("split:" + e.id, [e]))
     out.sort(key=lambda x: (-len(x["buckets"]), -len(x["accounts"]), x["key"]))
     return out
 

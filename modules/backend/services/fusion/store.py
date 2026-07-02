@@ -1698,6 +1698,50 @@ def decide_identity_group(case_id, members, decision) -> dict:
     return {"decision": decision, "count": n}
 
 
+def split_account(case_id, account_id) -> dict:
+    """Analyst removes an account from its resolved person ('not this person') — it
+    becomes its own identity. Persisted; survives re-fusion."""
+    d = get_case(case_id)
+    if not d:
+        return {"error": "not found"}
+    if not account_id:
+        return {"error": "account_id required"}
+    lid = "split:" + account_id
+    links = [r for r in (d.get("identity_links") or []) if r.get("id") != lid]
+    links.append({"id": lid, "kind": "split", "account_id": account_id,
+                  "decision": "split", "origin": "human"})
+    _merge_case_details(case_id, {"identity_links": links})
+    log_case_event(case_id, "Identity · account removed", "info", f"{account_id} split out")
+    return {"id": lid}
+
+
+def exclude_host(case_id, name, host_id) -> dict:
+    """Analyst removes a host from a person's operated-hosts (wrong name match). Persisted."""
+    d = get_case(case_id)
+    if not d:
+        return {"error": "not found"}
+    if not name or not host_id:
+        return {"error": "name and host_id required"}
+    lid = f"hostexcl:{name}:{host_id}"
+    links = [r for r in (d.get("identity_links") or []) if r.get("id") != lid]
+    links.append({"id": lid, "kind": "host_exclude", "name": name, "host_id": host_id,
+                  "decision": "exclude", "origin": "human"})
+    _merge_case_details(case_id, {"identity_links": links})
+    log_case_event(case_id, "Identity · host removed", "info", f"{host_id} removed from {name}")
+    return {"id": lid}
+
+
+def undo_identity_decision(case_id, decision_id) -> dict:
+    """Remove any stored identity decision (merge / split / host-exclude / declined) — undo."""
+    d = get_case(case_id)
+    if not d:
+        return {"error": "not found"}
+    links = [r for r in (d.get("identity_links") or []) if r.get("id") != decision_id]
+    _merge_case_details(case_id, {"identity_links": links})
+    log_case_event(case_id, "Identity · undo", "info", str(decision_id))
+    return {"removed": decision_id}
+
+
 def identity_view(case_id) -> dict:
     """The Identities tab model — a unified IDENTITY PAGE (like UEBA/identity platforms):
     one card per resolved person (their accounts across AWS/Azure/Endpoint + the hosts
@@ -1720,10 +1764,15 @@ def identity_view(case_id) -> dict:
     # fuzzy cross-name same-identity candidates (exact-name matches are already ONE card)
     fuzzy = [c for c in cands
              if c["kind"] == "same_identity" and _nz(c["a_label"]) != _nz(c["b_label"])]
-    # analyst-confirmed fuzzy pairs union two people into one card
-    merges = [(_nz(c["a_label"]), _nz(c["b_label"])) for c in fuzzy
+    # analyst overrides (all persisted): confirmed merges (with score), split-out accounts,
+    # removed hosts
+    merges = [(_nz(c["a_label"]), _nz(c["b_label"]), c.get("score", 1.0)) for c in fuzzy
               if decisions.get(c["id"], {}).get("decision") == "confirmed"]
-    idents = _idf.resolve_identities(g, merges=merges)
+    splits = {r["account_id"] for r in decisions.values()
+              if r.get("kind") == "split" and r.get("account_id")}
+    hexcl = {(r["name"], r["host_id"]) for r in decisions.values()
+             if r.get("kind") == "host_exclude" and r.get("name") and r.get("host_id")}
+    idents = _idf.resolve_identities(g, merges=merges, splits=splits, host_excludes=hexcl)
     acct_card = {}
     for it in idents:
         it["suggestions"] = []

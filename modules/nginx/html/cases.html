@@ -714,46 +714,79 @@ function tlDelete(eid){
    .then(_=>{toast('event deleted');renderTimeline(window._tlCase);});
 }
 
-// ---- Identities tab: unified identity page (one card per resolved person) ----
+// ---- Identities tab: unified identity page (collapsible, searchable, per-account edit) ----
 function renderIdentities(id){
   window._idCase=id;
+  if(!window._idExpand) window._idExpand={};
   $('#tabc').innerHTML='<i style="color:var(--muted)">resolving identities…</i>';
   api('/api/cases/'+id+'/identities').then(d=>{
     window._idData=d;
     if(d.error && !(d.identities)){ $('#tabc').innerHTML=`<p style="color:#f85149">could not load identities: ${esc(String(d.error))}</p>`; return; }
-    const bset=(d.buckets||[]).join(', ')||'none';
-    const idents=d.identities||[];
-    let h=`<p style="color:var(--muted);font-size:12px;margin:0 0 8px">People in this case and their footprint across infrastructures (<b>${esc(bset)}</b>). Same-name accounts are merged automatically; uncertain cross-name matches appear as <b>suggestions</b> to confirm. Confirmed links persist across re-fusion.</p>`;
-    if(d.stale) h+=`<p style="color:var(--med);font-size:12px;margin:0 0 8px">⚠ ${d.stale} run(s) not yet fused — new uploads appear here after a <b>Refusion</b> (Report tab).</p>`;
-    h+=`<p style="color:var(--muted);font-size:11px;margin:0 0 10px">${idents.length} identit${idents.length===1?'y':'ies'} · ${d.counts&&d.counts.suggestions||0} suggestion(s)</p>`;
-    h+=idents.map(it=>idCard(id,it)).join('') || '<p style="color:var(--muted)">No identities resolved yet.</p>';
-    $('#tabc').innerHTML=h;
+    _idRender(id);
   }).catch(_=>{$('#tabc').innerHTML='<p style="color:#f85149">could not load identities</p>';});
 }
+function _idRender(id){
+  const d=window._idData||{}; const idents=d.identities||[];
+  const q=(window._idQuery||'').trim().toLowerCase();
+  const hit=it=> !q || (it.name||'').toLowerCase().includes(q)
+    || (it.accounts||[]).some(a=>(a.label||'').toLowerCase().includes(q))
+    || (it.hosts||[]).some(h=>(h.label||'').toLowerCase().includes(q));
+  const shown=idents.filter(hit);
+  const bset=(d.buckets||[]).join(', ')||'none';
+  let h=`<p style="color:var(--muted);font-size:12px;margin:0 0 6px">People in this case and their footprint across infrastructures (<b>${esc(bset)}</b>). Same-name accounts merge automatically; uncertain matches are <b>suggestions</b>. Click a person to expand; use ✕ to remove a wrong account/host. Everything persists across re-fusion.</p>`;
+  if(d.stale) h+=`<p style="color:var(--med);font-size:12px;margin:0 0 6px">⚠ ${d.stale} run(s) not yet fused — new uploads appear after a <b>Refusion</b>.</p>`;
+  h+=`<div style="display:flex;gap:10px;align-items:center;margin:6px 0 10px">
+      <input id="id-search" placeholder="filter people / accounts / hosts…" value="${esc(window._idQuery||'')}" oninput="idSearch(this.value)" autocomplete="off" style="flex:1;max-width:360px;padding:6px 8px">
+      <span style="color:var(--muted);font-size:11px">${shown.length}${q?(' of '+idents.length):''} identit${shown.length===1?'y':'ies'} · ${d.counts&&d.counts.suggestions||0} suggestion(s)</span>
+      <button class="ghost" style="font-size:11px" onclick="idExpandAll(true)">expand all</button>
+      <button class="ghost" style="font-size:11px" onclick="idExpandAll(false)">collapse all</button></div>`;
+  h+=shown.map(it=>idCard(id,it)).join('') || '<p style="color:var(--muted)">no match.</p>';
+  $('#tabc').innerHTML=h;
+  const s=$('#id-search'); if(s && window._idFocus){ s.focus(); s.setSelectionRange(s.value.length,s.value.length); }
+}
+function idSearch(v){ window._idQuery=v; window._idFocus=true; _idRender(window._idCase); }
+function idToggle(k){ window._idExpand[k]=!window._idExpand[k]; window._idFocus=false; _idRender(window._idCase); }
+function idExpandAll(on){ (((window._idData||{}).identities)||[]).forEach(it=>window._idExpand[it.key]=on); window._idFocus=false; _idRender(window._idCase); }
 function idCard(cid,it){
+  const open=!!window._idExpand[it.key];
   const bdg=(t,col)=>`<span style="font-size:10px;border:1px solid ${col||'var(--bd)'};color:${col||'var(--muted)'};border-radius:8px;padding:0 6px;margin-left:4px">${esc(t)}</span>`;
   const buckets=(it.buckets||[]).map(b=>bdg(b,b==='aws'?'#d29922':b==='azure'?'#3b9eff':'var(--muted)')).join('');
-  const accts=(it.accounts||[]).map(a=>`<div style="padding:1px 0">👤 ${esc(a.label)}<span style="color:var(--muted);font-size:11px">${a.ctx?(' · @'+esc(a.ctx)):(a.bucket?(' · '+esc(a.bucket)):'')}</span></div>`).join('') || '<span style="color:var(--muted)">—</span>';
-  const hosts=(it.hosts||[]).map(hh=>`<div style="padding:1px 0">💻 ${esc(hh.label)} <span style="color:${hh.strong?'var(--ok)':'var(--muted)'};font-size:11px">· ${hh.strong?'active on host':'by name'}</span></div>`).join('') || '<span style="color:var(--muted)">—</span>';
+  const cf=it.confidence; const confb = (typeof cf==='number' && cf<1)?bdg('~'+Math.round(cf*100)+'% match','#d29922'):bdg('exact','#3fb950');
+  const sugN=(it.suggestions||[]).length;
+  const header=`<div onclick="idToggle('${esc(it.key)}')" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center">
+     <div><span style="color:var(--muted)">${open?'▾':'▸'}</span> 👤 <b style="font-size:13px">${esc(it.name||it.key)}</b>${buckets} ${confb}</div>
+     <span style="color:var(--muted);font-size:11px">${(it.accounts||[]).length} acct · ${(it.hosts||[]).length} host${sugN?` · <span style="color:var(--acc)">${sugN} suggestion(s)</span>`:''}</span></div>`;
+  if(!open) return `<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px;margin-bottom:6px;background:#0d1117">${header}</div>`;
+  const xbtn=(fn)=>`<button class="ghost" title="Remove — not this person" style="border:none;color:var(--med);padding:0 4px;font-size:12px" onclick="event.stopPropagation();${fn}">✕</button>`;
+  const accts=(it.accounts||[]).map(a=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0">
+      <span>👤 ${esc(a.label)}<span style="color:var(--muted);font-size:11px">${a.ctx?(' · @'+esc(a.ctx)):(a.bucket?(' · '+esc(a.bucket)):'')}${(typeof a.conf==='number'&&a.conf<1)?(' · '+Math.round(a.conf*100)+'%'):''}</span></span>
+      ${xbtn(`idSplit('${cid}','${esc(a.id)}')`)}</div>`).join('') || '<span style="color:var(--muted)">—</span>';
+  const hosts=(it.hosts||[]).map(hh=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0">
+      <span>💻 ${esc(hh.label)} <span style="color:${hh.strong?'var(--ok)':'var(--muted)'};font-size:11px">· ${hh.strong?'active on host':'by name'}</span></span>
+      ${xbtn(`idExHost('${cid}','${esc(hh.name||'')}','${esc(hh.id)}')`)}</div>`).join('') || '<span style="color:var(--muted)">—</span>';
   const sugg=(it.suggestions||[]).map(s=>`<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;padding:4px 0">
-      <span style="font-size:12px">possibly also <b>${esc(s.other)}</b> <span style="color:var(--muted);font-size:11px">· ${esc(s.reason||'')} · conf ${(typeof s.score==='number'?s.score.toFixed(2):s.score)}${s.ambiguous?' · <span style=\"color:var(--med)\">ambiguous</span>':''}</span></span>
-      <span style="white-space:nowrap"><button class="ghost" style="border-color:var(--ok)" onclick="idSug('${cid}','${s.id}','confirmed')">Same person</button> <button class="ghost" style="border-color:var(--med)" onclick="idSug('${cid}','${s.id}','declined')">Not same</button></span></div>`).join('');
-  return `<div style="border:1px solid var(--bd);border-radius:8px;padding:12px;margin-bottom:10px;background:#0d1117">
-     <div style="display:flex;justify-content:space-between;align-items:center">
-       <div><b style="font-size:14px">👤 ${esc(it.name||it.key)}</b>${buckets}</div>
-       <span style="color:var(--muted);font-size:11px">${(it.accounts||[]).length} account(s) · ${(it.hosts||[]).length} host(s)</span></div>
-     <div style="display:flex;gap:24px;margin-top:8px;flex-wrap:wrap">
+      <span style="font-size:12px">possibly also <b>${esc(s.other)}</b> <span style="color:var(--muted);font-size:11px">· ${esc(s.reason||'')} · conf ${(typeof s.score==='number'?s.score.toFixed(2):s.score)}${s.ambiguous?' · <span style="color:var(--med)">ambiguous</span>':''}</span></span>
+      <span style="white-space:nowrap"><button class="ghost" style="border-color:var(--ok)" onclick="idSug('${cid}','${s.id}','confirmed')">Merge</button> <button class="ghost" style="border-color:var(--med)" onclick="idSug('${cid}','${s.id}','declined')">Dismiss</button></span></div>`).join('');
+  const body=`<div style="display:flex;gap:24px;margin-top:8px;flex-wrap:wrap">
        <div style="flex:1;min-width:240px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Accounts</div>${accts}</div>
        <div style="flex:1;min-width:200px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Operates hosts</div>${hosts}</div></div>
-     ${sugg?`<div style="margin-top:8px;border-top:1px dashed var(--bd);padding-top:6px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Suggested links (confirm to merge)</div>${sugg}</div>`:''}
-   </div>`;
+     ${sugg?`<div style="margin-top:8px;border-top:1px dashed var(--bd);padding-top:6px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Suggested links (Merge folds them into this person)</div>${sugg}</div>`:''}`;
+  return `<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#0d1117">${header}${body}</div>`;
 }
 function idSug(cid,sid,decision){
   let members=null;
   for(const it of ((window._idData||{}).identities||[])) for(const s of (it.suggestions||[])) if(s.id===sid){members=s.members;break;}
   api('/api/cases/'+cid+'/identities/group',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({decision:decision,members:members||[{id:sid}]})})
-    .then(_=>{toast(decision==='confirmed'?'merged — Refusion applies it to the graph':'kept separate');renderIdentities(cid);});
+    .then(_=>{toast(decision==='confirmed'?'merged — Refusion applies it':'kept separate');renderIdentities(cid);});
+}
+function idSplit(cid,aid){
+  api('/api/cases/'+cid+'/identities/account/split',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account_id:aid})})
+    .then(_=>{toast('account removed from this person');renderIdentities(cid);});
+}
+function idExHost(cid,name,hid){
+  api('/api/cases/'+cid+'/identities/host/exclude',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,host_id:hid})})
+    .then(_=>{toast('host removed');renderIdentities(cid);});
 }
 
 // ---- Log tab: workflow-style log (monospace, UTC time + level-colored message) ----

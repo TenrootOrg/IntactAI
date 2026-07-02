@@ -571,6 +571,36 @@ def decide_identity_grp(case_id):
     return (jsonify(res), 404) if res.get("error") else jsonify({"case_id": case_id, **res})
 
 
+@case_bp.route("/api/cases/<case_id>/identities/account/split", methods=["POST"])
+def split_identity_account(case_id):
+    """Remove an account from its resolved person ('not this person')."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    b = request.get_json(silent=True) or {}
+    res = store.split_account(case_id, b.get("account_id"))
+    return (jsonify(res), 400) if res.get("error") else jsonify({"case_id": case_id, **res})
+
+
+@case_bp.route("/api/cases/<case_id>/identities/host/exclude", methods=["POST"])
+def exclude_identity_host(case_id):
+    """Remove a host from a person's operated-hosts."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    b = request.get_json(silent=True) or {}
+    res = store.exclude_host(case_id, b.get("name"), b.get("host_id"))
+    return (jsonify(res), 400) if res.get("error") else jsonify({"case_id": case_id, **res})
+
+
+@case_bp.route("/api/cases/<case_id>/identities/undo", methods=["POST"])
+def undo_identity(case_id):
+    """Undo any stored identity decision (merge / split / host-exclude / declined)."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    b = request.get_json(silent=True) or {}
+    res = store.undo_identity_decision(case_id, b.get("id"))
+    return (jsonify(res), 404) if res.get("error") else jsonify({"case_id": case_id, **res})
+
+
 @case_bp.route("/api/cases/<case_id>/identities/link", methods=["POST"])
 def manual_identity_link(case_id):
     """Manually link two entities (same_identity / operates). Persisted + applied on fuse."""
