@@ -93,7 +93,7 @@ versions:
   iris: v2.4.27
   plaso: '20260512'
   portainer: 2.39.1
-  timesketch: '20260617'
+  timesketch: '20260630'
   velociraptor: '0.77.1'
   # AWS DFIR detection = the SIGMA AWS CloudTrail rule pack (cloned from SigmaHQ).
   # No container image; this pins the rule-pack version that install / upgrade /
