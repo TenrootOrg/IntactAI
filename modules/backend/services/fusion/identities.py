@@ -1,0 +1,220 @@
+"""Cross-infrastructure identity correlation (candidate generation).
+
+The fused graph merges identities only on an EXACT normalized key (domain/UPN forms),
+so the same person under different names across infrastructures — AWS `alon`, endpoint
+`AlonM`, `AlonM@gmail.com` — and user->host ownership (`alon` -> `ALON-PC`) are invisible.
+This module proposes CANDIDATE links for analyst review; nothing here mutates the graph.
+The store layer persists analyst decisions and applies confirmed links as edges on fuse.
+
+Design: docs/PLAN_identity_correlation.md. Two link kinds, never merges:
+  * same_identity  (account <-> account, across infrastructure buckets)
+  * operates       (account <-> asset host whose name embeds the user)
+
+Everything here is best-effort and side-effect-free: a failure must never break a fuse.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from difflib import SequenceMatcher
+
+try:
+    from .llm_sim import _MASK_STOPWORDS as _STOP     # reuse the generic-word filter
+except Exception:                                     # pragma: no cover - defensive
+    _STOP = frozenset()
+
+# Infrastructure buckets. Velociraptor + Memory + TimeSketch all hang off the same
+# Velociraptor host/client_id, so they are ONE machine bucket ("endpoint"); AWS and
+# Azure are their own. Cross-infra correlation only matters BETWEEN buckets.
+_ENDPOINT_SOURCES = {"agentic", "velociraptor", "memory", "timesketch"}
+
+
+def _norm_user(label) -> str:
+    """Bare username stem: strip DOMAIN\\ / @domain / trailing $, lowercase."""
+    s = (label or "").strip().lower()
+    if "\\" in s:
+        s = s.split("\\", 1)[1]
+    if "@" in s:
+        s = s.split("@", 1)[0]
+    return s.rstrip("$").strip()
+
+
+def _email(label) -> str | None:
+    s = (label or "").strip().lower()
+    return s if "@" in s and "." in s.split("@", 1)[1] else None
+
+
+def link_id(a_id: str, b_id: str, kind: str) -> str:
+    """Stable id for a link, independent of endpoint order — so an analyst decision
+    binds across re-fuses no matter which side the candidate pass emits first."""
+    lo, hi = sorted([a_id or "", b_id or ""])
+    return "idl_" + hashlib.sha1(f"{kind}|{lo}|{hi}".encode()).hexdigest()[:14]
+
+
+def _bucket_of_asset(asset_id: str) -> str | None:
+    if not asset_id:
+        return None
+    if "cloud_account:aws" in asset_id:
+        return "aws"
+    if "cloud_account:azure" in asset_id:
+        return "azure"
+    if asset_id.startswith("asset:"):
+        return "endpoint"
+    return None
+
+
+def _entity_buckets(e, graph) -> set:
+    """Which infrastructure bucket(s) an entity belongs to (via its asset anchor +
+    the source module, so a cloud account with no resolved asset still classifies)."""
+    out = set()
+    for aid in (e.assets() or []):
+        b = _bucket_of_asset(aid)
+        if b:
+            out.add(b)
+    srcs = set(getattr(e, "sources", []) or [])
+    if srcs & _ENDPOINT_SOURCES:
+        out.add("endpoint")
+    if "cloud" in srcs and not (out & {"aws", "azure"}):
+        prov = (e.attrs or {}).get("provider")
+        if prov in ("aws", "azure"):
+            out.add(prov)
+    return out
+
+
+def case_buckets(graph) -> list:
+    """Distinct infra buckets present in the graph — drives whether cross-infra
+    correlation is even offered (needs >= 2)."""
+    out = set()
+    for e in graph.entities.values():
+        out |= _entity_buckets(e, graph)
+    return sorted(out)
+
+
+def _adjacency(graph):
+    adj: dict[str, set] = {}
+    for r in graph.relationships:
+        adj.setdefault(r.src, set()).add(r.dst)
+        adj.setdefault(r.dst, set()).add(r.src)
+    return adj
+
+
+def _account_ips(acc_id, graph, adj) -> set:
+    """ioc:ip ids reachable from an account within 2 hops (account->event->ioc, or
+    direct) — the strongest cross-bucket corroboration that two names are one person."""
+    ips = set()
+    seen = {acc_id}
+    frontier = [acc_id]
+    for _hop in range(2):
+        nxt = []
+        for n in frontier:
+            for m in adj.get(n, ()):
+                if m in seen:
+                    continue
+                seen.add(m)
+                e = graph.entities.get(m)
+                if e is not None and e.type == "ioc" and (e.attrs or {}).get("ioc_kind") == "ip":
+                    ips.add(m)
+                else:
+                    nxt.append(m)
+        frontier = nxt
+    return ips
+
+
+def _match(a_label, b_label):
+    """Return (score, reason, auto_eligible) for two usernames, or None if no match.
+    auto_eligible = strong enough to auto-confirm IF the match is also unique."""
+    ea, eb = _email(a_label), _email(b_label)
+    na, nb = _norm_user(a_label), _norm_user(b_label)
+    if not na or not nb or na in _STOP or nb in _STOP or len(na) < 3 or len(nb) < 3:
+        return None
+    # 100% strong identifier: identical email, or one's email local-part == the other's user
+    if ea and eb and ea == eb:
+        return (1.0, "identical email", True)
+    if (ea and _norm_user(ea) == nb) or (eb and _norm_user(eb) == na):
+        return (0.95, "email local-part == username", True)
+    if na == nb:
+        return (0.9, "exact username", True)
+    # prefix / containment at a token boundary (alon vs alonm) — unique-gated auto
+    if (nb.startswith(na) or na.startswith(nb)) and abs(len(na) - len(nb)) <= 4:
+        return (0.6, "username prefix", True)
+    ratio = SequenceMatcher(None, na, nb).ratio()
+    if ratio >= 0.85:
+        return (round(ratio, 2), f"fuzzy {ratio:.2f}", False)   # fuzzy alone never auto
+    return None
+
+
+def compute_candidates(graph) -> list:
+    """Propose identity links from the graph. Pure — returns a list of candidate dicts;
+    the caller decides/persists. auto=True only when the match is unambiguous (unique
+    for BOTH sides) AND auto-eligible, OR a 100% strong-id; anything else needs a human."""
+    buckets = case_buckets(graph)
+    accounts = [e for e in graph.entities.values()
+                if e.type == "account" and (e.label or "").strip()
+                and not (e.label or "").strip().endswith("$")   # machine acct (HOST$) = the host, not a person
+                and _norm_user(e.label) not in _STOP and len(_norm_user(e.label)) >= 3]
+    adj = _adjacency(graph)
+    cands = []
+
+    # ---- same_identity: account <-> account across DIFFERENT buckets ----
+    if len(buckets) >= 2:
+        bmap = [(e, _entity_buckets(e, graph)) for e in accounts]
+        for i in range(len(bmap)):
+            ea, ba = bmap[i]
+            for j in range(i + 1, len(bmap)):
+                eb, bb = bmap[j]
+                if ba and bb and ba == bb:            # same bucket only -> keys already handle it
+                    continue
+                m = _match(ea.label, eb.label)
+                if not m:
+                    continue
+                score, reason, auto_ok = m
+                ev, corr = [], 0.0
+                shared = _account_ips(ea.id, graph, adj) & _account_ips(eb.id, graph, adj)
+                if shared:
+                    lbls = [graph.entities[x].label for x in list(shared)[:3] if x in graph.entities]
+                    ev.append("shares IP " + ", ".join(lbls))
+                    corr = 0.2
+                cands.append({
+                    "kind": "same_identity", "a_id": ea.id, "a_label": ea.label,
+                    "b_id": eb.id, "b_label": eb.label,
+                    "buckets": sorted(ba | bb), "score": min(1.0, score + corr),
+                    "reason": reason, "evidence": ev, "auto_eligible": auto_ok,
+                })
+
+    # ---- operates: account (user) <-> endpoint asset whose HOSTNAME embeds the user ----
+    hosts = [e for e in graph.entities.values()
+             if e.type == "asset" and "endpoint" in (_entity_buckets(e, graph) or set())
+             and (e.label or "").strip()]
+    for acc in accounts:
+        u = _norm_user(acc.label)
+        for h in hosts:
+            hn = (h.label or "").strip().lower()
+            htok = hn.replace("-", " ").replace("_", " ").replace(".", " ").split()
+            # host name embeds the username as a whole token, or host stem == user
+            if u in htok or hn.split("-")[0] == u or hn.split(".")[0] == u:
+                seen_on = h.id in (acc.assets() or [])
+                cands.append({
+                    "kind": "operates", "a_id": acc.id, "a_label": acc.label,
+                    "b_id": h.id, "b_label": h.label,
+                    "buckets": sorted(_entity_buckets(acc, graph) | {"endpoint"}),
+                    "score": 0.9 if seen_on else 0.6,
+                    "reason": "host embeds username" + (" + user seen on host" if seen_on else ""),
+                    "evidence": (["user active on this host"] if seen_on else []),
+                    "auto_eligible": bool(seen_on),
+                })
+
+    # ---- stamp ids + uniqueness (auto only when a source account has exactly ONE
+    #      auto-eligible candidate); everything else is manual/pending ----
+    for c in cands:
+        c["id"] = link_id(c["a_id"], c["b_id"], c["kind"])
+    per_src: dict[str, list] = {}
+    for c in cands:
+        per_src.setdefault((c["a_id"], c["kind"]), []).append(c)
+        per_src.setdefault((c["b_id"], c["kind"]), []).append(c)
+    for c in cands:
+        rivals_a = [x for x in per_src.get((c["a_id"], c["kind"]), []) if x["id"] != c["id"]]
+        rivals_b = [x for x in per_src.get((c["b_id"], c["kind"]), []) if x["id"] != c["id"]]
+        unique = not rivals_a and not rivals_b
+        c["ambiguous"] = not unique
+        c["auto"] = bool(c["auto_eligible"] and unique)
+    return cands

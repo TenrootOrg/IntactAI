@@ -362,6 +362,7 @@ function render(info,md,g){
         <div class="tab ${tab==='risk'?'on':''}" data-tab="risk" onclick="setTab('risk')">🎯 Risk</div>
         <div class="tab ${tab==='timeline'?'on':''}" data-tab="timeline" onclick="setTab('timeline')">Timeline</div>
         <div class="tab ${tab==='chat'?'on':''}" data-tab="chat" onclick="setTab('chat')">Chat</div>
+        <div class="tab ${tab==='identities'?'on':''}" data-tab="identities" onclick="setTab('identities')">Identities</div>
         <div class="tab ${tab==='log'?'on':''}" data-tab="log" onclick="setTab('log')">Log</div>
       </div>
       <div id="tabc"></div>
@@ -381,6 +382,7 @@ function drawTab(md){
   if(window._logTimer && tab!=='log'){clearInterval(window._logTimer);window._logTimer=null;} // stop following when leaving Log
   if(tab==='timeline') renderTimeline(info.case_id);
   else if(tab==='chat') renderChat(info.case_id);
+  else if(tab==='identities') renderIdentities(info.case_id);
   else if(tab==='log') renderLog(info.case_id);
   else if(tab==='config') renderConfig(info);
   else if(tab==='risk') renderRisk(info);
@@ -710,6 +712,59 @@ function tlAddSubmit(){
 function tlDelete(eid){
   api('/api/cases/'+window._tlCase+'/timeline/event/'+encodeURIComponent(eid),{method:'DELETE'})
    .then(_=>{toast('event deleted');renderTimeline(window._tlCase);});
+}
+
+// ---- Identities tab: cross-infrastructure identity correlation ----
+function renderIdentities(id){
+  window._idCase=id;
+  $('#tabc').innerHTML='<i style="color:var(--muted)">loading identities…</i>';
+  api('/api/cases/'+id+'/identities').then(d=>{
+    window._idData=d;
+    if(d.error && d.error!=='not found' && !(d.buckets)){ $('#tabc').innerHTML=`<p style="color:#f85149">could not load identities: ${esc(String(d.error))}</p>`; return; }
+    const bset=(d.buckets||[]).join(', ')||'none';
+    const num=v=>(typeof v==='number'?v.toFixed(2):(v||'0'));
+    const row=(x,actions)=>{
+      const bk=(x.buckets||[]).join(' ⇄ ');
+      const ev=(x.evidence&&x.evidence.length)?` · <span style="color:var(--ok)">${esc(x.evidence.join('; '))}</span>`:'';
+      const amb=x.ambiguous?` · <span style="color:var(--med)">ambiguous</span>`:'';
+      const arrow=x.kind==='operates'?'▸ operates ▸':'≡';
+      return `<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--bd)">
+        <span style="flex:1"><b>${esc(x.a_label||'')}</b> <span style="color:var(--muted)">${arrow}</span> <b>${esc(x.b_label||'')}</b>
+          <span style="color:var(--muted);font-size:11px"> · ${esc(bk)} · ${esc(x.reason||'')} · conf ${num(x.score)}${ev}${amb}</span></span>
+        ${actions}</div>`;
+    };
+    const btn=(lbl,dec,x,col)=>`<button class="ghost" style="border-color:${col}" onclick="idDecide('${id}','${x.id}','${dec}')">${lbl}</button>`;
+    let h=`<p style="color:var(--muted);font-size:12px;margin:0 0 8px">Correlate the same person / user→host across infrastructures. Confirmed links <b>persist across re-fusion</b>. Infrastructures here: <b>${esc(bset)}</b>.</p>`;
+    if(!d.multi_infra) h+=`<p style="color:var(--med);font-size:12px">Only one infrastructure present — cross-infra <i>same-identity</i> correlation needs ≥2 (Endpoint / AWS / Azure). Manual linking is still available below.</p>`;
+    h+=`<h4 style="margin:10px 0 4px">Needs review — most conflicts first (${(d.pending||[]).length})</h4>`;
+    h+=(d.pending||[]).length?(d.pending).map(x=>row(x,btn('Confirm','confirmed',x,'var(--ok)')+' '+btn('Decline','declined',x,'var(--med)'))).join(''):'<p style="color:var(--muted);font-size:12px">nothing to review.</p>';
+    h+=`<h4 style="margin:14px 0 4px">Confirmed (${(d.confirmed||[]).length})</h4>`;
+    h+=(d.confirmed||[]).length?(d.confirmed).map(x=>row(x,btn('Undo','declined',x,'var(--med)'))).join(''):'<p style="color:var(--muted);font-size:12px">none yet.</p>';
+    h+=`<h4 style="margin:14px 0 4px">Auto-detected — machine, not human-confirmed (${(d.auto||[]).length})</h4>`;
+    h+=(d.auto||[]).length?(d.auto).map(x=>row(x,btn('Decline','declined',x,'var(--med)'))).join(''):'<p style="color:var(--muted);font-size:12px">none.</p>';
+    const opts=(d.entities||[]).map(e=>`<option value="${esc(e.id)}">${esc(e.type)}: ${esc(e.label)}</option>`).join('');
+    h+=`<h4 style="margin:14px 0 4px">Manual link</h4>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <select id="id-a" style="max-width:260px">${opts}</select>
+        <select id="id-kind"><option value="same_identity">≡ same identity</option><option value="operates">▸ operates (user→host)</option></select>
+        <select id="id-b" style="max-width:260px">${opts}</select>
+        <button class="ghost" onclick="idManualLink('${id}')">Link</button>
+      </div>`;
+    $('#tabc').innerHTML=h;
+  }).catch(_=>{$('#tabc').innerHTML='<p style="color:#f85149">could not load identities</p>';});
+}
+function _idFind(lid){const d=window._idData||{};for(const k of ['pending','confirmed','auto','declined'])for(const x of (d[k]||[]))if(x.id===lid)return x;return {};}
+function idDecide(cid,lid,decision){
+  const x=_idFind(lid);
+  api('/api/cases/'+cid+'/identities/'+lid,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({decision:decision,a_id:x.a_id,b_id:x.b_id,kind:x.kind,reason:x.reason})})
+    .then(_=>{toast('saved — Refusion applies it to the graph');renderIdentities(cid);});
+}
+function idManualLink(cid){
+  const a=$('#id-a').value,b=$('#id-b').value,k=$('#id-kind').value;
+  if(!a||!b||a===b){toast('pick two different entities');return;}
+  api('/api/cases/'+cid+'/identities/link',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({a_id:a,b_id:b,kind:k})})
+    .then(r=>{if(r&&r.error){toast(r.error);return;}toast('linked — Refusion applies it');renderIdentities(cid);});
 }
 
 // ---- Log tab: workflow-style log (monospace, UTC time + level-colored message) ----

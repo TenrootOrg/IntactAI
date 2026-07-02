@@ -538,6 +538,39 @@ def decide_checklist(case_id, item_id):
     return (jsonify(res), 404) if res.get("error") else jsonify({"case_id": case_id, **res})
 
 
+# ---- Identities: cross-infrastructure identity correlation ----
+@case_bp.route("/api/cases/<case_id>/identities", methods=["GET"])
+def identities(case_id):
+    """Candidate + confirmed identity links for the Identities tab (best-effort)."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    res = store.identity_view(case_id)
+    return (jsonify(res), 404) if res.get("error") == "not found" else jsonify(res)
+
+
+@case_bp.route("/api/cases/<case_id>/identities/<link_id>", methods=["POST"])
+def decide_identity(case_id, link_id):
+    """Confirm / decline a candidate identity link. Persists across re-fusion."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    b = request.get_json(silent=True) or {}
+    res = store.decide_identity_link(case_id, link_id, b.get("decision", "confirmed"),
+                                     a_id=b.get("a_id"), b_id=b.get("b_id"),
+                                     kind=b.get("kind"), reason=b.get("reason"))
+    return (jsonify(res), 404) if res.get("error") else jsonify({"case_id": case_id, **res})
+
+
+@case_bp.route("/api/cases/<case_id>/identities/link", methods=["POST"])
+def manual_identity_link(case_id):
+    """Manually link two entities (same_identity / operates). Persisted + applied on fuse."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    b = request.get_json(silent=True) or {}
+    res = store.add_manual_identity_link(case_id, b.get("a_id"), b.get("b_id"),
+                                         b.get("kind", "same_identity"))
+    return (jsonify(res), 400) if res.get("error") else jsonify({"case_id": case_id, **res})
+
+
 @case_bp.route("/api/cases/<case_id>/timeline/validate", methods=["POST"])
 def timeline_validate(case_id):
     """Triage a timeline entry: real / not_real / known_it / pending. Reversible —

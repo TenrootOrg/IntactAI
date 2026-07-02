@@ -950,6 +950,9 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     baseline = None if d.get("is_baseline") else load_baseline(_env_key_from_members(members))
     g = correlate.assemble(case_id, contributions, members, baseline=baseline, window=window,
                            min_severity=min_sev, dispositions=d.get("dispositions") or None)
+    # Optional cross-infra identity correlation: add analyst-confirmed / auto / manual
+    # identity edges. Best-effort + fully isolated — never breaks the fuse (below).
+    _apply_identity_links(g, d, log=_plog if _record else None)
     _plog("Refusion · graph built", "info",
           f"{len(g.entities):,} entities, {len(g.relationships):,} links, "
           f"{len(g.findings):,} findings")
@@ -1572,6 +1575,141 @@ def rescan(case_id, cfg=None) -> dict:
     return {"entities": len(g.entities), "relationships": len(g.relationships),
             "findings": len(g.findings),
             "cross_host_findings": sum(1 for f in g.findings if f.kind == "cross_host")}
+
+
+# ---- Cross-infrastructure identity correlation (Identities tab) ----
+# Human decisions persist in case details ('identity_links') and are RE-APPLIED on every
+# fuse — never deleted by re-fusion, exactly like timeline_validations/dispositions. Only
+# AUTO (non-human) links are recomputed each fuse; a stored human decision always wins.
+
+def _identity_decisions(d) -> dict:
+    """Stored analyst decisions keyed by stable link id (confirm/decline + manual)."""
+    return {r["id"]: r for r in (d.get("identity_links") or []) if isinstance(r, dict) and r.get("id")}
+
+
+def _apply_identity_links(g, d, log=None) -> None:
+    """Add identity edges (same_identity / operates) to the fused graph: auto candidates
+    (unless the analyst declined them) + human-confirmed + manual. Best-effort — a failure
+    here must NEVER break the fuse (the whole feature is optional)."""
+    try:
+        from . import identities as _idf
+        from .schema import Relationship
+        decisions = _identity_decisions(d)
+
+        def _add(a, b, kind, conf, reason, origin):
+            if a in g.entities and b in g.entities:
+                g.relate(Relationship(a, b, kind, sources=["identity"],
+                                      attrs={"identity_link": True, "origin": origin,
+                                             "confidence": conf, "reason": reason,
+                                             "link_id": _idf.link_id(a, b, kind)}))
+                return 1
+            return 0
+
+        applied, seen = 0, set()
+        for c in (_idf.compute_candidates(g) or []):
+            rec = decisions.get(c["id"])
+            if rec and rec.get("decision") == "declined":
+                continue                              # analyst said no — persists
+            if (rec and rec.get("decision") == "confirmed") or c["auto"]:
+                origin = ("manual" if rec and rec.get("origin") == "manual"
+                          else "human" if rec else "auto")
+                applied += _add(c["a_id"], c["b_id"], c["kind"], c["score"], c["reason"], origin)
+                seen.add(c["id"])
+        # confirmed/manual links the candidate pass didn't surface this fuse
+        for r in decisions.values():
+            if (r.get("decision") == "confirmed" and r["id"] not in seen
+                    and r.get("a_id") and r.get("b_id")):
+                applied += _add(r["a_id"], r["b_id"], r.get("kind", "same_identity"),
+                                r.get("confidence", 1.0), r.get("reason", "analyst-confirmed"),
+                                r.get("origin", "human"))
+        if log and applied:
+            log(f"Identity · applied {applied} link(s)", "info")
+    except Exception as e:  # noqa: BLE001 — optional feature, never break a fuse
+        if log:
+            log(f"Identity correlation skipped: {e}", "warning")
+
+
+def identity_view(case_id) -> dict:
+    """The Identities tab model: candidates merged with stored decisions. Cross-infra
+    same-identity choosing only when >= 2 buckets; operates + inventory always. Best-effort."""
+    d = get_case(case_id)
+    if not d:
+        return {"error": "not found"}
+    try:
+        from . import identities as _idf
+        g = load_graph(case_id)
+        buckets = _idf.case_buckets(g)
+        cands = _idf.compute_candidates(g)
+    except Exception as e:  # noqa: BLE001
+        return {"case_id": case_id, "buckets": [], "multi_infra": False,
+                "pending": [], "confirmed": [], "auto": [], "declined": [],
+                "counts": {"pending": 0, "confirmed": 0, "auto": 0}, "error": str(e)}
+    decisions = _identity_decisions(d)
+    pending, confirmed, auto, declined = [], [], [], []
+    for c in cands:
+        rec = decisions.get(c["id"])
+        item = dict(c)
+        if rec and rec.get("decision") == "declined":
+            item["status"] = "declined"; declined.append(item)
+        elif rec and rec.get("decision") == "confirmed":
+            item["status"] = "confirmed"; confirmed.append(item)
+        elif c["auto"]:
+            item["status"] = "auto"; auto.append(item)
+        else:
+            item["status"] = "pending"; pending.append(item)
+    seen = {c["id"] for c in cands}
+    for r in decisions.values():                      # manual links not re-derived this fuse
+        if r.get("decision") == "confirmed" and r["id"] not in seen:
+            confirmed.append({**r, "status": "confirmed", "evidence": r.get("evidence") or [],
+                              "score": r.get("confidence", 1.0)})
+    # most-conflicts-first: ambiguous groups on top, then by score
+    pending.sort(key=lambda x: (0 if x.get("ambiguous") else 1, -x.get("score", 0)))
+    auto.sort(key=lambda x: -x.get("score", 0))       # auto sits at the bottom in the UI
+    # linkable entities (accounts + hosts) for the manual-link picker
+    pick = [{"id": e.id, "label": e.label, "type": e.type}
+            for e in g.entities.values()
+            if e.type in ("account", "asset") and (e.label or "").strip()][:2000]
+    pick.sort(key=lambda x: (x["type"], x["label"].lower()))
+    return {"case_id": case_id, "buckets": buckets, "multi_infra": len(buckets) >= 2,
+            "pending": pending, "confirmed": confirmed, "auto": auto, "declined": declined,
+            "entities": pick,
+            "counts": {"pending": len(pending), "confirmed": len(confirmed), "auto": len(auto)}}
+
+
+def decide_identity_link(case_id, link_id, decision, *, a_id=None, b_id=None,
+                         kind=None, reason=None) -> dict:
+    """Persist an analyst confirm/decline. Survives re-fusion (stored in case details)."""
+    d = get_case(case_id)
+    if not d:
+        return {"error": "not found"}
+    decision = decision if decision in ("confirmed", "declined") else "confirmed"
+    links = [r for r in (d.get("identity_links") or []) if r.get("id") != link_id]
+    rec = {"id": link_id, "decision": decision, "origin": "human"}
+    for k, v in (("a_id", a_id), ("b_id", b_id), ("kind", kind), ("reason", reason)):
+        if v:
+            rec[k] = v
+    links.append(rec)
+    _merge_case_details(case_id, {"identity_links": links})
+    log_case_event(case_id, "Identity · decision", "info", f"{link_id} → {decision}")
+    return {"id": link_id, "decision": decision}
+
+
+def add_manual_identity_link(case_id, a_id, b_id, kind="same_identity") -> dict:
+    """Analyst manually links two entities. Persisted + applied on every fuse."""
+    d = get_case(case_id)
+    if not d:
+        return {"error": "not found"}
+    if not a_id or not b_id or a_id == b_id:
+        return {"error": "two distinct entities required"}
+    kind = kind if kind in ("same_identity", "operates") else "same_identity"
+    from . import identities as _idf
+    lid = _idf.link_id(a_id, b_id, kind)
+    links = [r for r in (d.get("identity_links") or []) if r.get("id") != lid]
+    links.append({"id": lid, "decision": "confirmed", "origin": "manual",
+                  "a_id": a_id, "b_id": b_id, "kind": kind, "reason": "manual link"})
+    _merge_case_details(case_id, {"identity_links": links})
+    log_case_event(case_id, "Identity · manual link", "info", f"{a_id} ⇄ {b_id} ({kind})")
+    return {"id": lid, "decision": "confirmed"}
 
 
 def case_members(case_id) -> list:

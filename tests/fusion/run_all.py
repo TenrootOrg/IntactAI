@@ -53,6 +53,7 @@ MODULES = [
     "tests.fusion.test_event_dedup",
     "tests.fusion.test_memory_mapper",
     "tests.fusion.test_cloud_fusion",
+    "tests.fusion.test_identities",
     "tests.fusion.test_risk_scoring",
     "tests.fusion.test_timeline",
     "tests.fusion.test_report_detail",
