@@ -1665,14 +1665,29 @@ def identity_view(case_id) -> dict:
     # most-conflicts-first: ambiguous groups on top, then by score
     pending.sort(key=lambda x: (0 if x.get("ambiguous") else 1, -x.get("score", 0)))
     auto.sort(key=lambda x: -x.get("score", 0))       # auto sits at the bottom in the UI
-    # linkable entities (accounts + hosts) for the manual-link picker
-    pick = [{"id": e.id, "label": e.label, "type": e.type}
-            for e in g.entities.values()
-            if e.type in ("account", "asset") and (e.label or "").strip()][:2000]
+    # linkable entities (accounts + hosts) for the manual-link picker; ctx (host/provider)
+    # so duplicate labels (e.g. 'nofl' on 5 hosts) are distinguishable in the search.
+    try:
+        from . import identities as _idf
+        pick = [{"id": e.id, "label": e.label, "type": e.type, "ctx": _idf._context(e, g)}
+                for e in g.entities.values()
+                if e.type in ("account", "asset") and (e.label or "").strip()][:2000]
+    except Exception:  # noqa: BLE001
+        pick = [{"id": e.id, "label": e.label, "type": e.type, "ctx": ""}
+                for e in g.entities.values()
+                if e.type in ("account", "asset") and (e.label or "").strip()][:2000]
     pick.sort(key=lambda x: (x["type"], x["label"].lower()))
+    # staleness: member runs not yet folded into the fused graph this tab reads (a new
+    # offline-collector upload won't appear here until a Refusion — surface that).
+    try:
+        fused = set(d.get("fused_run_ids") or [])
+        mem = set(r.get("run_id") for r in _ws().get_automation_runs_by_case(case_id))
+        stale = len(mem - fused)
+    except Exception:  # noqa: BLE001
+        stale = 0
     return {"case_id": case_id, "buckets": buckets, "multi_infra": len(buckets) >= 2,
             "pending": pending, "confirmed": confirmed, "auto": auto, "declined": declined,
-            "entities": pick,
+            "entities": pick, "stale": stale,
             "counts": {"pending": len(pending), "confirmed": len(confirmed), "auto": len(auto)}}
 
 

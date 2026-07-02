@@ -723,18 +723,20 @@ function renderIdentities(id){
     if(d.error && d.error!=='not found' && !(d.buckets)){ $('#tabc').innerHTML=`<p style="color:#f85149">could not load identities: ${esc(String(d.error))}</p>`; return; }
     const bset=(d.buckets||[]).join(', ')||'none';
     const num=v=>(typeof v==='number'?v.toFixed(2):(v||'0'));
+    const lc=(l,c)=>`<b>${esc(l||'')}</b>${c?`<span style="color:var(--muted);font-size:11px"> @${esc(c)}</span>`:''}`;
     const row=(x,actions)=>{
       const bk=(x.buckets||[]).join(' ⇄ ');
       const ev=(x.evidence&&x.evidence.length)?` · <span style="color:var(--ok)">${esc(x.evidence.join('; '))}</span>`:'';
       const amb=x.ambiguous?` · <span style="color:var(--med)">ambiguous</span>`:'';
       const arrow=x.kind==='operates'?'▸ operates ▸':'≡';
       return `<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--bd)">
-        <span style="flex:1"><b>${esc(x.a_label||'')}</b> <span style="color:var(--muted)">${arrow}</span> <b>${esc(x.b_label||'')}</b>
+        <span style="flex:1">${lc(x.a_label,x.a_ctx)} <span style="color:var(--muted)">${arrow}</span> ${lc(x.b_label,x.b_ctx)}
           <span style="color:var(--muted);font-size:11px"> · ${esc(bk)} · ${esc(x.reason||'')} · conf ${num(x.score)}${ev}${amb}</span></span>
         ${actions}</div>`;
     };
     const btn=(lbl,dec,x,col)=>`<button class="ghost" style="border-color:${col}" onclick="idDecide('${id}','${x.id}','${dec}')">${lbl}</button>`;
     let h=`<p style="color:var(--muted);font-size:12px;margin:0 0 8px">Correlate the same person / user→host across infrastructures. Confirmed links <b>persist across re-fusion</b>. Infrastructures here: <b>${esc(bset)}</b>.</p>`;
+    if(d.stale) h+=`<p style="color:var(--med);font-size:12px;margin:0 0 8px">⚠ ${d.stale} member run(s) not yet fused — new uploads only appear here after a <b>Refusion</b> (Report tab).</p>`;
     if(!d.multi_infra) h+=`<p style="color:var(--med);font-size:12px">Only one infrastructure present — cross-infra <i>same-identity</i> correlation needs ≥2 (Endpoint / AWS / Azure). Manual linking is still available below.</p>`;
     h+=`<h4 style="margin:10px 0 4px">Needs review — most conflicts first (${(d.pending||[]).length})</h4>`;
     h+=(d.pending||[]).length?(d.pending).map(x=>row(x,btn('Confirm','confirmed',x,'var(--ok)')+' '+btn('Decline','declined',x,'var(--med)'))).join(''):'<p style="color:var(--muted);font-size:12px">nothing to review.</p>';
@@ -742,14 +744,26 @@ function renderIdentities(id){
     h+=(d.confirmed||[]).length?(d.confirmed).map(x=>row(x,btn('Undo','declined',x,'var(--med)'))).join(''):'<p style="color:var(--muted);font-size:12px">none yet.</p>';
     h+=`<h4 style="margin:14px 0 4px">Auto-detected — machine, not human-confirmed (${(d.auto||[]).length})</h4>`;
     h+=(d.auto||[]).length?(d.auto).map(x=>row(x,btn('Decline','declined',x,'var(--med)'))).join(''):'<p style="color:var(--muted);font-size:12px">none.</p>';
-    const opts=(d.entities||[]).map(e=>`<option value="${esc(e.id)}">${esc(e.type)}: ${esc(e.label)}</option>`).join('');
-    h+=`<h4 style="margin:14px 0 4px">Manual link</h4>
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <select id="id-a" style="max-width:260px">${opts}</select>
-        <select id="id-kind"><option value="same_identity">≡ same identity</option><option value="operates">▸ operates (user→host)</option></select>
-        <select id="id-b" style="max-width:260px">${opts}</select>
-        <button class="ghost" onclick="idManualLink('${id}')">Link</button>
-      </div>`;
+    // manual link: type-to-search pickers (datalist) — distinguishable duplicates via @host
+    const emap={};
+    (d.entities||[]).forEach(e=>{const disp=`${e.type==='account'?'👤':'💻'} ${e.label}${e.ctx?' @'+e.ctx:''}`; emap[disp]=e.id;});
+    window._idEmap=emap;
+    const optlist=Object.keys(emap).map(k=>`<option value="${esc(k)}">`).join('');
+    h+=`<h4 style="margin:16px 0 4px">Manual link</h4>
+      <p style="color:var(--muted);font-size:12px;margin:0 0 6px">No suggestion for a pair you know is related? Link them yourself — type to search (👤 user · 💻 host).</p>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;background:#0d1117;border:1px solid var(--bd);border-radius:8px;padding:12px">
+        <div style="display:flex;flex-direction:column;gap:3px">
+          <label style="font-size:11px;color:var(--muted)">Identity (user)</label>
+          <input list="ident-ents" id="id-a" placeholder="search a user…" autocomplete="off" style="min-width:230px;padding:6px 8px"></div>
+        <select id="id-kind" title="Relationship type" style="padding:6px 8px">
+          <option value="same_identity">≡ is the same person as</option>
+          <option value="operates">▸ operates (host)</option></select>
+        <div style="display:flex;flex-direction:column;gap:3px">
+          <label style="font-size:11px;color:var(--muted)">User or host</label>
+          <input list="ident-ents" id="id-b" placeholder="search a user or host…" autocomplete="off" style="min-width:230px;padding:6px 8px"></div>
+        <button class="ghost" style="border-color:var(--ok);padding:6px 12px" onclick="idManualLink('${id}')">＋ Link</button>
+      </div>
+      <datalist id="ident-ents">${optlist}</datalist>`;
     $('#tabc').innerHTML=h;
   }).catch(_=>{$('#tabc').innerHTML='<p style="color:#f85149">could not load identities</p>';});
 }
@@ -761,10 +775,12 @@ function idDecide(cid,lid,decision){
     .then(_=>{toast('saved — Refusion applies it to the graph');renderIdentities(cid);});
 }
 function idManualLink(cid){
-  const a=$('#id-a').value,b=$('#id-b').value,k=$('#id-kind').value;
-  if(!a||!b||a===b){toast('pick two different entities');return;}
+  const m=window._idEmap||{};
+  const a=m[$('#id-a').value], b=m[$('#id-b').value], k=$('#id-kind').value;
+  if(!a||!b){toast('pick both entities from the search list');return;}
+  if(a===b){toast('pick two different entities');return;}
   api('/api/cases/'+cid+'/identities/link',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({a_id:a,b_id:b,kind:k})})
-    .then(r=>{if(r&&r.error){toast(r.error);return;}toast('linked — Refusion applies it');renderIdentities(cid);});
+    .then(r=>{if(r&&r.error){toast(r.error);return;}toast('linked — Refusion applies it to the graph');renderIdentities(cid);});
 }
 
 // ---- Log tab: workflow-style log (monospace, UTC time + level-colored message) ----

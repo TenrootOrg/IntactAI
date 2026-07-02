@@ -51,6 +51,23 @@ def link_id(a_id: str, b_id: str, kind: str) -> str:
     return "idl_" + hashlib.sha1(f"{kind}|{lo}|{hi}".encode()).hexdigest()[:14]
 
 
+def _context(e, graph) -> str:
+    """Human context for a candidate side so identical labels are distinguishable in the
+    UI: the endpoint HOST for an endpoint account, the provider for a cloud account."""
+    for aid in (e.assets() or []):
+        b = _bucket_of_asset(aid)
+        if b == "endpoint":
+            a = graph.entities.get(aid)
+            if a is not None and a.label:
+                return a.label
+        elif b in ("aws", "azure"):
+            return b
+    srcs = set(getattr(e, "sources", []) or [])
+    if "cloud" in srcs:
+        return (e.attrs or {}).get("provider") or "cloud"
+    return ""
+
+
 def _bucket_of_asset(asset_id: str) -> str | None:
     if not asset_id:
         return None
@@ -177,6 +194,7 @@ def compute_candidates(graph) -> list:
                 cands.append({
                     "kind": "same_identity", "a_id": ea.id, "a_label": ea.label,
                     "b_id": eb.id, "b_label": eb.label,
+                    "a_ctx": _context(ea, graph), "b_ctx": _context(eb, graph),
                     "buckets": sorted(ba | bb), "score": min(1.0, score + corr),
                     "reason": reason, "evidence": ev, "auto_eligible": auto_ok,
                 })
@@ -196,6 +214,7 @@ def compute_candidates(graph) -> list:
                 cands.append({
                     "kind": "operates", "a_id": acc.id, "a_label": acc.label,
                     "b_id": h.id, "b_label": h.label,
+                    "a_ctx": _context(acc, graph), "b_ctx": h.label,
                     "buckets": sorted(_entity_buckets(acc, graph) | {"endpoint"}),
                     "score": 0.9 if seen_on else 0.6,
                     "reason": "host embeds username" + (" + user seen on host" if seen_on else ""),
@@ -203,18 +222,27 @@ def compute_candidates(graph) -> list:
                     "auto_eligible": bool(seen_on),
                 })
 
-    # ---- stamp ids + uniqueness (auto only when a source account has exactly ONE
-    #      auto-eligible candidate); everything else is manual/pending ----
+    # ---- stamp ids + ambiguity ----
+    # Ambiguity is by DISTINCT partner NAME, not raw candidate count: `alon` matching
+    # AlonM / AlonN / AlonT (3 distinct names) is ambiguous (likely different people ->
+    # manual). The SAME name on several hosts (`nofl` on 5 endpoints) is NOT ambiguous —
+    # it's one identity across machines -> auto. `operates` (one user -> many hosts) is a
+    # legitimate one-to-many, never ambiguous.
     for c in cands:
         c["id"] = link_id(c["a_id"], c["b_id"], c["kind"])
-    per_src: dict[str, list] = {}
+    names_a: dict = {}
+    names_b: dict = {}
     for c in cands:
-        per_src.setdefault((c["a_id"], c["kind"]), []).append(c)
-        per_src.setdefault((c["b_id"], c["kind"]), []).append(c)
+        if c["kind"] != "same_identity":
+            continue
+        names_a.setdefault(c["a_id"], set()).add(_norm_user(c["b_label"]))
+        names_b.setdefault(c["b_id"], set()).add(_norm_user(c["a_label"]))
     for c in cands:
-        rivals_a = [x for x in per_src.get((c["a_id"], c["kind"]), []) if x["id"] != c["id"]]
-        rivals_b = [x for x in per_src.get((c["b_id"], c["kind"]), []) if x["id"] != c["id"]]
-        unique = not rivals_a and not rivals_b
-        c["ambiguous"] = not unique
-        c["auto"] = bool(c["auto_eligible"] and unique)
+        if c["kind"] == "same_identity":
+            amb = (len(names_a.get(c["a_id"], set())) > 1
+                   or len(names_b.get(c["b_id"], set())) > 1)
+        else:
+            amb = False
+        c["ambiguous"] = amb
+        c["auto"] = bool(c["auto_eligible"] and not amb)
     return cands

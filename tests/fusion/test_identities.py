@@ -75,6 +75,24 @@ def test_prefix_unique_is_auto_but_multiple_is_ambiguous():
     assert all(x["ambiguous"] and not x["auto"] for x in amb)
 
 
+def test_same_name_across_hosts_is_not_ambiguous():
+    # `nofl` (cloud) matching `nofl` on 3 endpoints = ONE identity across machines, NOT a
+    # conflict — must be auto (same name), distinguishable by host context, not 3 ambiguous
+    # review rows. (Different NAMES like AlonM/AlonN would be ambiguous — see test above.)
+    g = _g(cloud_users=["nofl"], ep_users=["nofl"], ep_hosts=[])
+    # add the same 'nofl' on two more hosts
+    for h in ("h2", "h3"):
+        aid = f"asset:endpoint:C.{h}"
+        g.upsert(Entity(id=aid, type="asset", label=h.upper(), sources=["velociraptor"]))
+        g.upsert(Entity(id=f"account:asset:endpoint:C.{h}:nofl", type="account", label="nofl",
+                        attrs={"_assets": [aid]}, sources=["velociraptor"]))
+    c = _same(I.compute_candidates(g))
+    assert len(c) == 3
+    assert all(not x["ambiguous"] and x["auto"] for x in c), "same name/many hosts -> auto, not ambiguous"
+    # host context set so the UI can tell the rows apart
+    assert {x["b_ctx"] for x in c} == {"H1", "H2", "H3"}
+
+
 def test_email_localpart_match_is_strong():
     c = _same(I.compute_candidates(_g(cloud_users=["AlonM@gmail.com"], ep_users=["AlonM"])))
     assert len(c) == 1 and c[0]["auto"] is True
