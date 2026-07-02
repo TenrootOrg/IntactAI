@@ -1771,7 +1771,7 @@ def identity_view(case_id) -> dict:
     # MERGE (fold two people into one card) when: analyst CONFIRMED, OR the candidate is
     # evidence-corroborated (auto) and NOT analyst-declined. Name-only candidates are left
     # as suggestions. Everything is persisted / reversible.
-    merges = [(_nz(c["a_label"]), _nz(c["b_label"]), c.get("score", 1.0)) for c in fuzzy
+    merges = [(c["a_id"], c["b_id"], c.get("score", 1.0)) for c in fuzzy
               if _dec(c) == "confirmed" or (c.get("auto") and _dec(c) != "declined")]
     splits = {r["account_id"] for r in decisions.values()
               if r.get("kind") == "split" and r.get("account_id")}

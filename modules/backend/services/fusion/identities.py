@@ -16,6 +16,7 @@ Everything here is best-effort and side-effect-free: a failure must never break 
 from __future__ import annotations
 
 import hashlib
+import re
 from difflib import SequenceMatcher
 
 try:
@@ -45,6 +46,39 @@ def _norm_user(label) -> str:
     if "@" in s:
         s = s.split("@", 1)[0]
     return s.rstrip("$").strip()
+
+
+# Cloud/service domain suffixes that don't identify an org tenant (so azuread\\u@corp
+# and NT corp\\u share root "corp", not "onmicrosoft").
+_DOMAIN_SUFFIX_SKIP = {"onmicrosoft", "com", "net", "org", "io", "local", "internal", "lan"}
+
+
+def _domain_root(label) -> str | None:
+    """Org/AD domain ROOT for an account, or None for a bare/local username. Unifies the
+    forms of ONE org: NT `contoso\\u`, email `u@contoso.com`, UPN
+    `azuread\\u@contoso.onmicrosoft.com` -> all root 'contoso'. This is what keeps two
+    DIFFERENT people who share a username stem in DIFFERENT domains (contoso\\ndahan vs
+    corp\\ndahan) from being merged, while still uniting one person's forms."""
+    s = (label or "").strip().lower()
+    dom = ""
+    if "\\" in s:
+        dom = s.split("\\", 1)[0]                 # NT domain (azuread\ is a placeholder, skip below)
+        rest = s.split("\\", 1)[1]
+    else:
+        rest = s
+    if "@" in rest:                               # email / UPN domain wins over an 'azuread\' placeholder
+        dom = rest.split("@", 1)[1]
+    elif dom in ("azuread", "azure ad", ""):
+        return None
+    if not dom or dom in ("azuread", "azure ad"):
+        return None
+    parts = [p for p in dom.split(".") if p]
+    # take the most-specific label that isn't a generic public suffix (contoso.com->contoso,
+    # contoso.onmicrosoft.com->contoso, corp->corp)
+    for p in parts:
+        if p not in _DOMAIN_SUFFIX_SKIP:
+            return p
+    return parts[0] if parts else None
 
 
 def _is_person(label) -> bool:
@@ -171,6 +205,15 @@ def _account_ips(acc_id, graph, adj) -> set:
     return ips
 
 
+def _initials(n):
+    """'john.smith' / 'john_smith' / 'john smith' -> 'jsmith' (first initial + last).
+    Lets the two commonest org conventions for one person match."""
+    parts = [p for p in re.split(r"[._\- ]+", n or "") if p]
+    if len(parts) >= 2 and parts[0] and parts[-1]:
+        return parts[0][0] + parts[-1]
+    return None
+
+
 def _match(a_label, b_label):
     """Return (score, reason, auto_eligible) for two usernames, or None if no match.
     auto_eligible = strong enough to auto-confirm IF the match is also unique."""
@@ -185,9 +228,14 @@ def _match(a_label, b_label):
         return (0.95, "email local-part == username", True)
     if na == nb:
         return (0.9, "exact username", True)
-    # prefix / containment at a token boundary (alon vs alonm) — unique-gated auto
+    # first.last <-> flast: the two commonest org username conventions for the same person
+    # ("john.smith" <-> "jsmith"). Not auto on its own — needs corroboration (shared host/IP).
+    ia, ib = _initials(na), _initials(nb)
+    if (ia and ia == nb) or (ib and ib == na) or (ia and ib and ia == ib):
+        return (0.65, "first.last / flast form", False)
+    # prefix / containment at a token boundary (alon vs alonm)
     if (nb.startswith(na) or na.startswith(nb)) and abs(len(na) - len(nb)) <= 4:
-        return (0.6, "username prefix", True)
+        return (0.6, "username prefix", False)
     ratio = SequenceMatcher(None, na, nb).ratio()
     if ratio >= 0.85:
         return (round(ratio, 2), f"fuzzy {ratio:.2f}", False)   # fuzzy alone never auto
@@ -214,26 +262,45 @@ def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> l
     host_excludes = set(host_excludes or [])
     accounts = [e for e in graph.entities.values()
                 if e.type == "account" and _is_person(e.label)]
-    raw = defaultdict(list)
-    for e in accounts:
-        raw[_norm_user(e.label)].append(e)
-    parent = {k: k for k in raw}
+    idmap = {e.id: e for e in accounts}
+
+    def _hostset(e):
+        return {aid for aid in (e.assets() or []) if _bucket_of_asset(aid) == "endpoint"}
+
+    # ---- connected-components resolution over SAFE edges (union-find on account ids) ----
+    parent = {e.id: e.id for e in accounts}
     def _find(x):
         while parent[x] != x:
             parent[x] = parent[parent[x]]; x = parent[x]
         return x
-    merge_score: dict = {}                              # non-dominant name -> min merge score
+    def _union(a, b):
+        if a in parent and b in parent:
+            parent[_find(a)] = _find(b)
+
+    merge_conf: dict = {}                               # account id -> score when joined via a fuzzy merge
+    # DEFAULT resolution: the SAME normalized username is one person — this unites every
+    # form (DOMAIN\u, u@domain, azuread\u@tenant, bare local u, cloud u) and the same name
+    # across many hosts/clouds/domains into ONE person. In a single engagement (one org)
+    # a username is one human; the RARE cross-org collision of an identical username is
+    # handled by the analyst's Split action (never a silent, unfixable merge). DIFFERENT
+    # names (alonm/alonn) stay separate and only link via corroborated suggestions below.
+    bynorm = defaultdict(list)
+    for e in accounts:
+        bynorm[_norm_user(e.label)].append(e)
+    for accs in bynorm.values():
+        for e in accs[1:]:
+            _union(e.id, accs[0].id)
+
+    # cross-name corroborated / confirmed merges — SPECIFIC account pairs (a_id, b_id, score)
     for m in (merges or []):
         a, b = m[0], m[1]
         sc = m[2] if len(m) > 2 else 1.0
-        if a in parent and b in parent:
-            parent[_find(a)] = _find(b)
-            merge_score[a] = min(merge_score.get(a, 1.0), sc)
-            merge_score[b] = min(merge_score.get(b, 1.0), sc)
-    clusters = defaultdict(list)
-    for k, accs in raw.items():
-        clusters[_find(k)].extend(accs)
+        if a in idmap and b in idmap:
+            _union(a, b)
+            merge_conf[a] = min(merge_conf.get(a, 1.0), sc)
+            merge_conf[b] = min(merge_conf.get(b, 1.0), sc)
 
+    # host index for operated-host attachment
     hosts = [e for e in graph.entities.values()
              if e.type == "asset" and "endpoint" in (_entity_buckets(e, graph) or set())
              and (e.label or "").strip()]
@@ -252,15 +319,12 @@ def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> l
         dominant = max(cnt, key=cnt.get) if cnt else key
         names = sorted(cnt)
         for e in accs:
-            nm = _norm_user(e.label)
             eb = _entity_buckets(e, graph)
             buckets |= eb
-            conf = 1.0 if nm == dominant else merge_score.get(nm, 1.0)
+            conf = 1.0 if _norm_user(e.label) == dominant else merge_conf.get(e.id, 0.9)
             acct_out.append({"id": e.id, "label": e.label, "ctx": _context(e, graph),
                              "bucket": (sorted(eb)[0] if eb else ""), "conf": round(conf, 2)})
-            for aid in (e.assets() or []):
-                if _bucket_of_asset(aid) == "endpoint":
-                    seen_host_ids.add(aid)
+            seen_host_ids |= _hostset(e)
         hosts_out, added = [], set()
         for nm in names:
             for h, hn, htok in hidx.get(nm[0], ()):
@@ -276,13 +340,15 @@ def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> l
                 "names": names, "buckets": sorted(buckets), "accounts": acct_out,
                 "hosts": hosts_out, "confidence": round(sum(confs) / len(confs), 2)}
 
+    comps = defaultdict(list)
+    for e in accounts:
+        comps[_find(e.id)].append(e)
     out = []
-    for key, accs in clusters.items():
+    for rep, accs in comps.items():
         keep = [e for e in accs if e.id not in splits]
         if keep:
-            out.append(_build(key, keep))
-        # split-out accounts become their own singleton identities
-        for e in accs:
+            out.append(_build(rep, keep))
+        for e in accs:                                 # split-out accounts -> own identity
             if e.id in splits:
                 out.append(_build("split:" + e.id, [e]))
     out.sort(key=lambda x: (-len(x["buckets"]), -len(x["accounts"]), x["key"]))

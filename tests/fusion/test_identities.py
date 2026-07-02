@@ -150,6 +150,10 @@ def test_operates_short_username_no_prefix_false_positive():
 
 # ----------------------------------------------------------- link ids
 
+def _card_named(ids, name):
+    return next(it for it in ids if it["name"] == name)
+
+
 def test_resolve_identities_clusters_and_excludes_system():
     # cloud `nofl` + endpoint `nofl`/`adatumlab\nofl` -> ONE person card; Windows service
     # accounts are excluded from the people list.
@@ -157,20 +161,22 @@ def test_resolve_identities_clusters_and_excludes_system():
            ep_users=["nofl", "adatumlab\\nofl", "NETWORK SERVICE", "defaultaccount"],
            ep_hosts=["NofLaptop"])
     ids = I.resolve_identities(g)
-    keys = {it["key"] for it in ids}
-    assert "nofl" in keys
-    assert "networkservice" not in keys and "network service" not in keys
-    assert "defaultaccount" not in keys
-    nofl = next(it for it in ids if it["key"] == "nofl")
+    names = {it["name"] for it in ids}
+    assert "nofl" in names
+    assert "networkservice" not in names and "network service" not in names
+    assert "defaultaccount" not in names
+    nofl = _card_named(ids, "nofl")
     assert set(nofl["buckets"]) == {"aws", "endpoint"}          # cloud + endpoint merged
     assert len(nofl["accounts"]) >= 3
     assert any(h["label"] == "NofLaptop" for h in nofl["hosts"])  # operates NofLaptop
 
 
 def test_resolve_identities_confirmed_merge_unions_people():
+    # merges are SPECIFIC account-id pairs (norm alone is ambiguous under collisions).
     g = _g(cloud_users=["nofl"], ep_users=["noflevi"])
     assert len(I.resolve_identities(g)) == 2                     # different names -> 2 people
-    merged = I.resolve_identities(g, merges=[("nofl", "noflevi")])
+    merged = I.resolve_identities(g, merges=[
+        ("account:cloud:nofl", "account:asset:endpoint:C.h1:noflevi", 1.0)])
     assert len(merged) == 1                                      # confirmed same-person -> 1
 
 
@@ -178,7 +184,7 @@ def test_resolve_identities_split_isolates_account():
     # cloud `nofl` + endpoint `nofl` = one card (2 accounts); splitting the cloud account
     # ('not this person') gives it its own identity.
     g = _g(cloud_users=["nofl"], ep_users=["nofl"])
-    assert len(next(it for it in I.resolve_identities(g) if it["key"] == "nofl")["accounts"]) == 2
+    assert len(_card_named(I.resolve_identities(g), "nofl")["accounts"]) == 2
     after = I.resolve_identities(g, splits={"account:cloud:nofl"})
     owning = [it for it in after if any(a["id"] == "account:cloud:nofl" for a in it["accounts"])]
     assert len(owning) == 1 and len(owning[0]["accounts"]) == 1  # isolated
@@ -186,7 +192,8 @@ def test_resolve_identities_split_isolates_account():
 
 def test_merged_card_confidence_reflects_fuzzy_score():
     g = _g(cloud_users=["nofl"], ep_users=["noflevi"])
-    card = I.resolve_identities(g, merges=[("nofl", "noflevi", 0.6)])[0]
+    card = I.resolve_identities(g, merges=[
+        ("account:cloud:nofl", "account:asset:endpoint:C.h1:noflevi", 0.6)])[0]
     assert card["confidence"] < 1.0                              # a fuzzy merge lowers it
     assert any(a["conf"] == 0.6 for a in card["accounts"])       # folded-in account carries the score
 
