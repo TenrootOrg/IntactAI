@@ -210,6 +210,12 @@ function toast(m,ms){const t=$('#toast');if(!t)return;t.textContent=m;t.style.di
   window._toastT=setTimeout(()=>{t.classList.remove('show');     // fade out
     setTimeout(()=>{if(!t.classList.contains('show'))t.style.display='none';},400);},ms||2800);}
 function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+// safe value for a single-quoted JS string literal inside a double-quoted HTML on* attribute.
+// esc() only handles &<> — ids can contain backslashes (adatumlab\nofl) which the JS parser
+// reads as escapes (\n -> newline), and quotes; JS-escape first, then HTML-encode for the attr.
+function jsa(s){return String(s==null?'':s)
+  .replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\r?\n/g,'\\n')
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
 function createWorkspace(){
   const name=$('#cname').value.trim();
@@ -753,23 +759,23 @@ function idCard(cid,it){
   const buckets=(it.buckets||[]).map(b=>bdg(b,b==='aws'?'#d29922':b==='azure'?'#3b9eff':'var(--muted)')).join('');
   const cf=it.confidence; const confb = (typeof cf==='number' && cf<1)?bdg('~'+Math.round(cf*100)+'% match','#d29922'):bdg('exact','#3fb950');
   const sugN=(it.suggestions||[]).length;
-  const header=`<div onclick="idToggle('${esc(it.key)}')" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center">
+  const header=`<div onclick="idToggle('${jsa(it.key)}')" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center">
      <div><span style="color:var(--muted)">${open?'▾':'▸'}</span> 👤 <b style="font-size:13px">${esc(it.name||it.key)}</b>${buckets} ${confb}</div>
      <span style="color:var(--muted);font-size:11px">${(it.accounts||[]).length} acct · ${(it.hosts||[]).length} host${sugN?` · <span style="color:var(--acc)">${sugN} suggestion(s)</span>`:''}</span></div>`;
   if(!open) return `<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px;margin-bottom:6px;background:#0d1117">${header}</div>`;
   const xbtn=(fn)=>`<button class="ghost" title="Remove — not this person" style="border:none;color:var(--med);padding:0 4px;font-size:12px" onclick="event.stopPropagation();${fn}">✕</button>`;
   const accts=(it.accounts||[]).map(a=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0">
       <span>👤 ${esc(a.label)}<span style="color:var(--muted);font-size:11px">${a.ctx?(' · @'+esc(a.ctx)):(a.bucket?(' · '+esc(a.bucket)):'')}${(typeof a.conf==='number'&&a.conf<1)?(' · '+Math.round(a.conf*100)+'%'):''}</span></span>
-      ${xbtn(`idSplit('${cid}','${esc(a.id)}')`)}</div>`).join('') || '<span style="color:var(--muted)">—</span>';
+      ${xbtn(`idSplit('${jsa(cid)}','${jsa(a.id)}')`)}</div>`).join('') || '<span style="color:var(--muted)">—</span>';
   const hosts=(it.hosts||[]).map(hh=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0">
       <span>💻 ${esc(hh.label)} <span style="color:${hh.strong?'var(--ok)':'var(--muted)'};font-size:11px">· ${hh.strong?'active on host':'by name'}</span></span>
-      ${xbtn(`idExHost('${cid}','${esc(hh.name||'')}','${esc(hh.id)}')`)}</div>`).join('') || '<span style="color:var(--muted)">—</span>';
+      ${xbtn(`idExHost('${jsa(cid)}','${jsa(hh.name||'')}','${jsa(hh.id)}')`)}</div>`).join('') || '<span style="color:var(--muted)">—</span>';
   const sugg=(it.suggestions||[]).map(s=>`<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;padding:4px 0">
       <span style="font-size:12px">possibly also <b>${esc(s.other)}</b> <span style="color:var(--muted);font-size:11px">· ${esc(s.reason||'')} · conf ${(typeof s.score==='number'?s.score.toFixed(2):s.score)}${s.ambiguous?' · <span style="color:var(--med)">ambiguous</span>':''}</span></span>
-      <span style="white-space:nowrap"><button class="ghost" style="border-color:var(--ok)" onclick="idSug('${cid}','${s.id}','confirmed')">Merge</button> <button class="ghost" style="border-color:var(--med)" onclick="idSug('${cid}','${s.id}','declined')">Dismiss</button></span></div>`).join('');
+      <span style="white-space:nowrap"><button class="ghost" style="border-color:var(--ok)" onclick="idSug('${jsa(cid)}','${jsa(s.id)}','confirmed')">Merge</button> <button class="ghost" style="border-color:var(--med)" onclick="idSug('${jsa(cid)}','${jsa(s.id)}','declined')">Dismiss</button></span></div>`).join('');
   const mfrom=(it.merged_from||[]).map(m=>`<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;padding:3px 0">
       <span style="font-size:11px;color:var(--muted)">${m.auto?'⚙ auto-merged':'✓ merged'}: <b style="color:var(--fg)">${esc((m.names||[]).join(' + '))}</b> · ${esc(m.reason||'')}</span>
-      <button class="ghost" style="border-color:var(--med);font-size:11px;padding:2px 8px" onclick="idSeparate('${cid}','${esc(it.key)}','${esc((m.names||[]).join('|'))}')">Separate</button></div>`).join('');
+      <button class="ghost" style="border-color:var(--med);font-size:11px;padding:2px 8px" onclick="idSeparate('${jsa(cid)}','${jsa(it.key)}','${jsa((m.names||[]).join('|'))}')">Separate</button></div>`).join('');
   const body=`<div style="display:flex;gap:24px;margin-top:8px;flex-wrap:wrap">
        <div style="flex:1;min-width:240px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Accounts</div>${accts}</div>
        <div style="flex:1;min-width:200px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Operates hosts</div>${hosts}</div></div>

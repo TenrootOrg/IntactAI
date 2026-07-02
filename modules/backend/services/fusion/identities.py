@@ -35,6 +35,8 @@ _NON_PERSON = frozenset({
     "localsystem", "networkservice", "localservice", "network service", "local service",
     "anonymous", "anonymous logon", "nt authority", "nt service", "dwm", "umfd",
     "font driver host", "window manager", "iusr", "healthmailbox",
+    "interactive", "batch", "service", "self", "owner rights", "creator owner",
+    "console logon", "restricted", "everyone", "authenticated users",
 })
 
 
@@ -95,6 +97,10 @@ def _is_person(label) -> bool:
         return False
     import re as _re
     if _re.match(r"^(dwm|umfd|cdpuser)-?\d*$", n):     # session pseudo-accounts
+        return False
+    if n.startswith("%") and n.endswith("%"):          # template/WMI placeholders (%wmi-userdatauser%)
+        return False
+    if _re.match(r"^defaultuser\d+$", n):              # Windows OOBE default profiles
         return False
     # well-known system SIDs (SYSTEM/LOCAL SERVICE/NETWORK SERVICE/built-in groups/service SIDs)
     if _re.match(r"^s-1-5-(18|19|20)$", n) or _re.match(r"^s-1-5-(32|80|82|83|90|96)-", n):

@@ -124,6 +124,17 @@ def test_generic_names_excluded():
     assert _same(I.compute_candidates(g)) == []
 
 
+def test_non_person_noise_excluded():
+    # Windows built-in logon identities / OOBE profiles / WMI template placeholders are
+    # not people and must never appear as identity cards.
+    for junk in ["interactive", "batch", "%wmi-userdatauser%", "defaultuser0", "defaultuser100"]:
+        assert not I._is_person(junk), junk
+    # …but a real (unresolved) domain-user SID and real usernames ARE people
+    assert I._is_person("s-1-5-21-729669263-1288300324-3965287566-1114")
+    assert I._is_person("nofl")
+    assert not I._is_person("s-1-5-18")  # SYSTEM well-known SID stays excluded
+
+
 # ------------------------------------------------------ operates (user↔host)
 
 def test_operates_user_to_host_by_name():
