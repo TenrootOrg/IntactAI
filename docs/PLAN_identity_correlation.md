@@ -92,11 +92,25 @@ masking today (wrapped, degrades silently). If the identities pass throws, it's 
 fuse / report / chat continue unaffected. Its data lives in a **separate case-details key**,
 so absence/failure is invisible to the rest of Case Analysis.
 
+## Persistence (hard requirement — like timeline validations)
+Any **human** decision (confirm / decline / manual link) is **saved in the case and is
+NEVER deleted by fusion** — identical to `timeline_validations` and `dispositions` today:
+it lives in a case-details key, and every `fuse_case` **re-applies** it to the freshly
+built graph. Re-fusing, adding a run, or reopening the case must not lose or reset a
+validated link. Declined stays declined (never resurfaces as a pending suggestion);
+confirmed/manual stays confirmed.
+
+Only **auto-detected** links (not human) are recomputed each time: an auto-link is
+re-derived on demand and, if its evidence no longer holds after new data, it drops
+quietly with a log line — but a human decision on it (e.g. the analyst declined an auto
+link) is itself persisted and wins. Every link carries a **stable id** so decisions bind
+across re-fuses.
+
 ## Reuse existing plumbing
-Model on the **disposition / checklist** workflow (`generate_disposition_checklist` →
-`decide_checklist_item` → stored in case details → applied on `fuse_case`): the same
-confirm/decline → persist → re-fuse loop. Audit every auto-link and human decision via
-`log_case_event`.
+Model on the **timeline-validation / disposition** workflow (`validate_timeline`,
+`generate_disposition_checklist` → `decide_checklist_item` → stored in case details →
+re-applied on `fuse_case`): the same validate → persist → survive-refuse loop. Audit
+every auto-link and human decision via `log_case_event`.
 
 ## Edge cases to honour
 - **Service/role/shared accounts** (`svc-*`, `admin`, `DomainAdmins`) — non-personal; exclude
