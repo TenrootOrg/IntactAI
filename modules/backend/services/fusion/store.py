@@ -1761,13 +1761,18 @@ def identity_view(case_id) -> dict:
                 "counts": {"identities": 0, "suggestions": 0}, "error": str(e)}
     decisions = _identity_decisions(d)
     _nz = _idf._norm_user
+
+    def _dec(c):
+        return decisions.get(c["id"], {}).get("decision")
+
     # fuzzy cross-name same-identity candidates (exact-name matches are already ONE card)
     fuzzy = [c for c in cands
              if c["kind"] == "same_identity" and _nz(c["a_label"]) != _nz(c["b_label"])]
-    # analyst overrides (all persisted): confirmed merges (with score), split-out accounts,
-    # removed hosts
+    # MERGE (fold two people into one card) when: analyst CONFIRMED, OR the candidate is
+    # evidence-corroborated (auto) and NOT analyst-declined. Name-only candidates are left
+    # as suggestions. Everything is persisted / reversible.
     merges = [(_nz(c["a_label"]), _nz(c["b_label"]), c.get("score", 1.0)) for c in fuzzy
-              if decisions.get(c["id"], {}).get("decision") == "confirmed"]
+              if _dec(c) == "confirmed" or (c.get("auto") and _dec(c) != "declined")]
     splits = {r["account_id"] for r in decisions.values()
               if r.get("kind") == "split" and r.get("account_id")}
     hexcl = {(r["name"], r["host_id"]) for r in decisions.values()
@@ -1776,14 +1781,32 @@ def identity_view(case_id) -> dict:
     acct_card = {}
     for it in idents:
         it["suggestions"] = []
+        it["merged_from"] = []
         for a in it["accounts"]:
             acct_card[a["id"]] = it
-    # PENDING fuzzy suggestions, grouped by identity PAIR -> ONE suggestion per other
-    # person (not one per underlying account), carrying all member links so a single
-    # Confirm links them all. (declined hidden; confirmed already folded into a card.)
+
+    # record HOW each merged card was formed (transparency + a reversible "Separate")
+    mf: dict = {}
+    for c in fuzzy:
+        dec = _dec(c)
+        if dec == "declined" or not (dec == "confirmed" or c.get("auto")):
+            continue
+        card = acct_card.get(c["a_id"]) or acct_card.get(c["b_id"])
+        if not card:
+            continue
+        pk = (id(card), frozenset((_nz(c["a_label"]), _nz(c["b_label"]))))
+        e = mf.setdefault(pk, {"card": card, "names": sorted({_nz(c["a_label"]), _nz(c["b_label"])}),
+                               "reason": c.get("reason", ""), "score": c.get("score", 1.0),
+                               "auto": bool(c.get("auto") and dec != "confirmed"), "members": []})
+        e["members"].append({"id": c["id"], "a_id": c["a_id"], "b_id": c["b_id"], "kind": "same_identity"})
+    for e in mf.values():
+        e["card"]["merged_from"].append({"names": e["names"], "reason": e["reason"], "score": e["score"],
+                                         "auto": e["auto"], "members": e["members"]})
+
+    # PENDING fuzzy suggestions (NOT corroborated, NOT decided), grouped per identity pair
     pairs: dict = {}
     for c in fuzzy:
-        if decisions.get(c["id"], {}).get("decision") in ("declined", "confirmed"):
+        if c.get("auto") or _dec(c):                    # corroborated -> already merged; decided -> done
             continue
         ca, cb = acct_card.get(c["a_id"]), acct_card.get(c["b_id"])
         if not ca or not cb or ca is cb:
@@ -1801,7 +1824,7 @@ def identity_view(case_id) -> dict:
             src["suggestions"].append({
                 "id": e["members"][0]["id"], "other": dst["name"], "reason": e["reason"],
                 "score": e["score"], "ambiguous": e["ambiguous"], "members": e["members"]})
-    # people with more infrastructures / accounts / a suggestion first
+    # people with a suggestion / more infrastructures / accounts first
     idents.sort(key=lambda it: (-len(it.get("suggestions") or []), -len(it["buckets"]),
                                 -len(it["accounts"]), it["key"]))
     total_sug = sum(len(it["suggestions"]) for it in idents)

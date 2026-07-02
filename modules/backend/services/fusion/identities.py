@@ -307,11 +307,42 @@ def compute_candidates(graph) -> list:
             _ipc[aid] = _account_ips(aid, graph, adj)
         return _ipc[aid]
 
+    # host index (by token/name first char) — used for BOTH host corroboration and the
+    # operates pass; keeps everything near-linear (a user only checks same-first-char hosts).
+    hosts = [e for e in graph.entities.values()
+             if e.type == "asset" and "endpoint" in (_entity_buckets(e, graph) or set())
+             and (e.label or "").strip()]
+    hidx = defaultdict(list)
+    for h in hosts:
+        hn = (h.label or "").strip().lower()
+        toks = hn.replace("-", " ").replace("_", " ").replace(".", " ").split()
+        for ch in {hn[0]} | {t[0] for t in toks if t}:
+            hidx[ch].append((h, hn, toks))
+
+    def _host_match(u, hn, htok):
+        # host name embeds the username: whole token ("alon" in "ALON PC"), host stem
+        # ("alon-pc"/"alon.corp"), or concatenated prefix ("nofl"->"noflaptop"). Prefix
+        # needs a >=4-char username so "srv" doesn't match "srvexchange".
+        return (u in htok or hn.split("-")[0] == u or hn.split(".")[0] == u
+                or (len(u) >= 4 and hn.startswith(u) and len(hn) > len(u) + 1))
+
+    _hc: dict = {}
+    def _hostc(e):                                    # host ids linked to an account (resident + name-operated)
+        if e.id in _hc:
+            return _hc[e.id]
+        hs = {aid for aid in (e.assets() or []) if _bucket_of_asset(aid) == "endpoint"}
+        u = _norm_user(e.label)
+        if len(u) >= 3:
+            for h, hn, htok in hidx.get(u[0], ()):
+                if _host_match(u, hn, htok):
+                    hs.add(h.id)
+        _hc[e.id] = hs
+        return hs
+
     # ---- same_identity: account <-> account across DIFFERENT buckets ----
-    # BLOCKING for scale: only compare accounts whose normalized name shares a first
-    # char (exact/prefix/typo matches always do) — turns O(n^2) over all accounts into
-    # O(sum of block^2), so 1000s of identities stay fast. (A rare first-char typo is
-    # the accepted trade-off vs re-scanning every pair.)
+    # BLOCKING for scale: only compare accounts whose normalized name shares a first char
+    # (exact/prefix/typo matches always do). auto-merge is EVIDENCE-led: a name match plus
+    # a shared HOST/IP (or a strong id: email/SID) is auto; a bare name match is a suggestion.
     if len(buckets) >= 2:
         blocks = defaultdict(list)
         for tup in info:
@@ -327,58 +358,47 @@ def compute_candidates(graph) -> list:
                     m = _match(ea.label, eb.label)
                     if not m:
                         continue
-                    score, reason, auto_ok = m
-                    ev, corr = [], 0.0
-                    shared = _ips(ea.id) & _ips(eb.id)
-                    if shared:
-                        lbls = [graph.entities[x].label for x in list(shared)[:3] if x in graph.entities]
-                        ev.append("shares IP " + ", ".join(lbls))
-                        corr = 0.2
+                    score, reason, _ao = m
+                    ev, corr, corroborated = [], 0.0, False
+                    sh = _hostc(ea) & _hostc(eb)      # shared host = strong corroboration
+                    if sh:
+                        lbls = [graph.entities[x].label for x in list(sh)[:2] if x in graph.entities]
+                        ev.append("shares host " + ", ".join(lbls)); corr = max(corr, 0.3); corroborated = True
+                    sip = _ips(ea.id) & _ips(eb.id)
+                    if sip:
+                        lbls = [graph.entities[x].label for x in list(sip)[:2] if x in graph.entities]
+                        ev.append("shares IP " + ", ".join(lbls)); corr = max(corr, 0.2); corroborated = True
+                    strong = reason in ("identical email", "email local-part == username")
                     cands.append({
                         "kind": "same_identity", "a_id": ea.id, "a_label": ea.label,
                         "b_id": eb.id, "b_label": eb.label,
                         "a_ctx": _context(ea, graph), "b_ctx": _context(eb, graph),
                         "buckets": sorted(ba | bb), "score": min(1.0, score + corr),
-                        "reason": reason, "evidence": ev, "auto_eligible": auto_ok,
+                        "match": reason,
+                        "reason": (reason + ((" · " + "; ".join(ev)) if ev else "")),
+                        "evidence": ev, "corroborated": bool(corroborated or strong), "strong": strong,
                     })
 
     # ---- operates: account (user) <-> endpoint host whose NAME embeds the user ----
-    # Index hosts by the first char of each name token + the whole name, so a user only
-    # checks hosts that could possibly match (prefix/token share a first char) — keeps
-    # this near-linear instead of accounts x hosts.
-    hosts = [e for e in graph.entities.values()
-             if e.type == "asset" and "endpoint" in (_entity_buckets(e, graph) or set())
-             and (e.label or "").strip()]
-    hidx = defaultdict(list)
-    for h in hosts:
-        hn = (h.label or "").strip().lower()
-        toks = hn.replace("-", " ").replace("_", " ").replace(".", " ").split()
-        for ch in {hn[0]} | {t[0] for t in toks if t}:
-            hidx[ch].append((h, hn, toks))
     for acc, ab, u in info:
         if len(u) < 3:
             continue
         seen_hosts = set()
         for h, hn, htok in hidx.get(u[0], ()):
-            if h.id in seen_hosts:
+            if h.id in seen_hosts or not _host_match(u, hn, htok):
                 continue
-            # host name embeds the username: a whole token ("alon" in "ALON PC"), the host
-            # stem ("alon-pc"/"alon.corp"), or a concatenated prefix ("nofl"->"noflaptop").
-            # Prefix rule needs a >=4-char username so "srv" doesn't match "srvexchange".
-            if (u in htok or hn.split("-")[0] == u or hn.split(".")[0] == u
-                    or (len(u) >= 4 and hn.startswith(u) and len(hn) > len(u) + 1)):
-                seen_hosts.add(h.id)
-                seen_on = h.id in (acc.assets() or [])
-                cands.append({
-                    "kind": "operates", "a_id": acc.id, "a_label": acc.label,
-                    "b_id": h.id, "b_label": h.label,
-                    "a_ctx": _context(acc, graph), "b_ctx": h.label,
-                    "buckets": sorted(ab | {"endpoint"}),
-                    "score": 0.9 if seen_on else 0.6,
-                    "reason": "host embeds username" + (" + user seen on host" if seen_on else ""),
-                    "evidence": (["user active on this host"] if seen_on else []),
-                    "auto_eligible": bool(seen_on),
-                })
+            seen_hosts.add(h.id)
+            seen_on = h.id in (acc.assets() or [])
+            cands.append({
+                "kind": "operates", "a_id": acc.id, "a_label": acc.label,
+                "b_id": h.id, "b_label": h.label,
+                "a_ctx": _context(acc, graph), "b_ctx": h.label,
+                "buckets": sorted(ab | {"endpoint"}),
+                "score": 0.9 if seen_on else 0.6,
+                "reason": "host embeds username" + (" + user seen on host" if seen_on else ""),
+                "evidence": (["user active on this host"] if seen_on else []),
+                "auto_eligible": bool(seen_on),
+            })
 
     # ---- stamp ids + ambiguity ----
     # Ambiguity is by DISTINCT partner NAME, not raw candidate count: `alon` matching
@@ -397,10 +417,14 @@ def compute_candidates(graph) -> list:
         names_b.setdefault(c["b_id"], set()).add(_norm_user(c["a_label"]))
     for c in cands:
         if c["kind"] == "same_identity":
-            amb = (len(names_a.get(c["a_id"], set())) > 1
-                   or len(names_b.get(c["b_id"], set())) > 1)
-        else:
-            amb = False
-        c["ambiguous"] = amb
-        c["auto"] = bool(c["auto_eligible"] and not amb)
+            c["ambiguous"] = (len(names_a.get(c["a_id"], set())) > 1
+                              or len(names_b.get(c["b_id"], set())) > 1)
+            # Auto-merge when it's safe: an EXACT same name across infra, a strong id
+            # (email/SID), or a name match backed by a shared host/IP. A bare PREFIX/FUZZY
+            # name match with NO corroboration is only a SUGGESTION, never automatic — that
+            # is where big-org name collisions (AlonM/AlonN/AlonT) live.
+            c["auto"] = bool(c.get("corroborated") or c.get("match") == "exact username")
+        else:                                          # operates: auto when the user is seen on the host
+            c["ambiguous"] = False
+            c["auto"] = bool(c.get("auto_eligible"))
     return cands

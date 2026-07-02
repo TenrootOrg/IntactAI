@@ -65,14 +65,26 @@ def test_exact_cross_infra_unique_is_auto():
     assert c[0]["auto"] is True and c[0]["ambiguous"] is False
 
 
-def test_prefix_unique_is_auto_but_multiple_is_ambiguous():
-    # 'alon' vs one 'alonm' = unique prefix -> auto
+def test_prefix_without_corroboration_is_suggestion_not_auto():
+    # name-only prefix (no shared host/IP) is a SUGGESTION, never auto — this is where
+    # big-org collisions (AlonM/AlonN/AlonT) live.
     uniq = _same(I.compute_candidates(_g(cloud_users=["alon"], ep_users=["alonm"])))
-    assert len(uniq) == 1 and uniq[0]["auto"] is True
-    # 'alon' vs AlonM / AlonN / AlonT = ambiguous -> never auto, all manual
+    assert len(uniq) == 1 and uniq[0]["auto"] is False
     amb = _same(I.compute_candidates(_g(cloud_users=["alon"], ep_users=["AlonM", "AlonN", "AlonT"])))
-    assert len(amb) == 3
-    assert all(x["ambiguous"] and not x["auto"] for x in amb)
+    assert len(amb) == 3 and all(not x["auto"] for x in amb)
+
+
+def test_prefix_with_shared_host_auto_merges():
+    # cloud `nofl` operates NofLaptop by name; endpoint `noflevi` is RESIDENT on NofLaptop
+    # -> shared host corroborates the prefix match -> auto (evidence-led).
+    g = _g(cloud_users=["nofl"], ep_hosts=["NofLaptop"])
+    aid = "asset:endpoint:C.noflaptop"
+    g.upsert(Entity(id="account:asset:endpoint:C.noflaptop:noflevi", type="account",
+                    label="noflevi", attrs={"_assets": [aid]}, sources=["velociraptor"]))
+    c = [x for x in _same(I.compute_candidates(g))
+         if "noflevi" in (x["a_label"] + x["b_label"]).lower()]
+    assert c and c[0]["auto"] is True
+    assert "shares host" in c[0]["reason"]
 
 
 def test_same_name_across_hosts_is_not_ambiguous():
