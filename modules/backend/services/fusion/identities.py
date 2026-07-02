@@ -208,8 +208,12 @@ def compute_candidates(graph) -> list:
         for h in hosts:
             hn = (h.label or "").strip().lower()
             htok = hn.replace("-", " ").replace("_", " ").replace(".", " ").split()
-            # host name embeds the username as a whole token, or host stem == user
-            if u in htok or hn.split("-")[0] == u or hn.split(".")[0] == u:
+            # host name embeds the username: a whole token ("alon" in "ALON PC"), the
+            # host stem ("alon-pc"/"alon.corp"), OR a concatenated prefix with no
+            # separator ("nofl" -> "noflaptop"/"nofldesktop"). The prefix rule needs a
+            # ≥4-char username so short names (srv, adm) don't match "srvexchange" etc.
+            if (u in htok or hn.split("-")[0] == u or hn.split(".")[0] == u
+                    or (len(u) >= 4 and hn.startswith(u) and len(hn) > len(u) + 1)):
                 seen_on = h.id in (acc.assets() or [])
                 cands.append({
                     "kind": "operates", "a_id": acc.id, "a_label": acc.label,

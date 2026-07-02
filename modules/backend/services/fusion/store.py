@@ -150,11 +150,14 @@ def _run_passes_gate(run, d) -> bool:
     atype = run.get("automation_type")
     mods = set(normalize_modules(d.get("fusion_modules")))
     if atype in _VELOCIRAPTOR_TYPES:
-        if "velociraptor_all" in mods:
-            return True
-        if "velociraptor_agentic" in mods or "velociraptor" in mods:
-            return _is_agentic_run(run)
-        return False
+        # Any velociraptor run (collection / offline-collector import / hunt) fuses when a
+        # velociraptor module is enabled — provenance no longer EXCLUDES a whole run. The
+        # agentic ARTIFACT allowlist (_filter_supported, applied in every velo
+        # contribution) keeps only the "agentic-confirmed" artifacts, so a run that did
+        # NOT come from an agentic blueprint still contributes exactly those artifacts
+        # (or nothing). This is what makes offline-collector imports / general hunts /
+        # ad-hoc collections all fuse; `is_agentic` is now a display label, not a gate.
+        return bool(mods & {"velociraptor_all", "velociraptor_agentic", "velociraptor"})
     allowed = set()
     for m in mods:
         if m in ("velociraptor_agentic", "velociraptor_all", "velociraptor"):
@@ -1677,12 +1680,14 @@ def identity_view(case_id) -> dict:
                 for e in g.entities.values()
                 if e.type in ("account", "asset") and (e.label or "").strip()][:2000]
     pick.sort(key=lambda x: (x["type"], x["label"].lower()))
-    # staleness: member runs not yet folded into the fused graph this tab reads (a new
-    # offline-collector upload won't appear here until a Refusion — surface that).
+    # staleness: FUSEABLE member runs not yet folded into the graph this tab reads (a new
+    # offline-collector upload won't appear here until a Refusion). Count only runs that
+    # pass the gate — a non-fuseable member (e.g. the collector-generation row) isn't
+    # "stale", it just never fuses.
     try:
         fused = set(d.get("fused_run_ids") or [])
-        mem = set(r.get("run_id") for r in _ws().get_automation_runs_by_case(case_id))
-        stale = len(mem - fused)
+        stale = sum(1 for r in _ws().get_automation_runs_by_case(case_id)
+                    if r.get("run_id") not in fused and _run_passes_gate(r, d))
     except Exception:  # noqa: BLE001
         stale = 0
     return {"case_id": case_id, "buckets": buckets, "multi_infra": len(buckets) >= 2,

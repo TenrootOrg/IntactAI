@@ -120,6 +120,22 @@ def test_operates_user_to_host_by_name():
     assert any(c["b_label"] == "ALON-PC" and c["a_label"] == "alon" for c in ops)
 
 
+def test_operates_matches_concatenated_hostname():
+    # 'nofl' operates 'NofLaptop' — hostname embeds the username with NO separator
+    # (nofl + laptop). Prefix-concatenation match (needs a >=4-char username).
+    g = _g(cloud_users=["nofl"], ep_hosts=["NofLaptop"])
+    ops = [c for c in I.compute_candidates(g) if c["kind"] == "operates"]
+    assert any(c["b_label"] == "NofLaptop" and c["a_label"] == "nofl" for c in ops)
+
+
+def test_operates_short_username_no_prefix_false_positive():
+    # 'srv' (3 chars) must NOT prefix-match 'srvexchange' — short prefixes over-link.
+    g = _g(ep_users=["srv"], ep_hosts=["srvexchange"])
+    ops = [c for c in I.compute_candidates(g)
+           if c["kind"] == "operates" and c["b_label"] == "srvexchange"]
+    assert ops == []
+
+
 # ----------------------------------------------------------- link ids
 
 def test_link_id_is_order_independent():

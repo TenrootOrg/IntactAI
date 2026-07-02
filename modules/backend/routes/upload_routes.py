@@ -151,6 +151,31 @@ def _fuse_offline_import(import_result, upload_run_id):
         # flag only decides whether it counts toward 'Velociraptor (Agentic)' vs
         # only 'Velociraptor (All)' in the Case Analysis modules picker.
         det["is_agentic"] = "agentic" in (hd or "").lower()
+        # The offline-collector ZIP round-trip loses the '[Agentic]' description (a
+        # collection ZIP is named 'Collection-<host>-<ts>.zip', not the collector), so a
+        # collection generated from an agentic blueprint (e.g. "Velociraptor Agentic:
+        # Quick Wins") gets mis-classified non-agentic and silently excluded from the
+        # 'Velociraptor (Agentic)' fusion module. Fall back to CONTENT: if the imported
+        # artifacts are mostly an agentic blueprint's set, tag it agentic. Best-effort.
+        if not det["is_agentic"]:
+            try:
+                from services.storage.blueprint_store import load_agentic_blueprints
+                imported = {str(a).split("/")[-1].strip().lower() for a in (artifacts or []) if a}
+                best = None
+                for bp in (load_agentic_blueprints() or []):
+                    bparts = {str(x).split("/")[-1].strip().lower() for x in (bp.get("artifacts") or []) if x}
+                    ov = len(imported & bparts)
+                    # majority of what was collected belongs to this agentic blueprint
+                    if imported and ov >= 2 and ov >= (len(imported) + 1) // 2:
+                        if not best or ov > best[1]:
+                            best = (bp.get("name") or "agentic blueprint", ov)
+                if best:
+                    det["is_agentic"] = True
+                    add_log_to_run(upload_run_id,
+                                   f"[Fusion] Classified agentic by artifact match: {best[0]} "
+                                   f"({best[1]}/{len(imported)} imported artifacts)")
+            except Exception:
+                pass
         run["details"] = det
         try:
             save_workflow(run)
