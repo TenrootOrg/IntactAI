@@ -1854,6 +1854,15 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         "file": f"images/cloudtrail-{version}.tar",
                         "rules": n_rules, "size_mb": round(size_mb, 2),
                     })
+                    # Register cloudtrail as a versioned module so the apply
+                    # orchestrator actually installs it. The per-module apply loop
+                    # is version-gated (`version = manifest['versions'].get(module)`
+                    # then `if not version: continue`), so a rule-pack that only
+                    # lives under contents.rule_packs is silently skipped — the
+                    # bundled tar never reaches upgrade_cloudtrail_offline. Pinning
+                    # the version here routes cloudtrail through the same dispatch as
+                    # every other module (offline_upgrade_functions['cloudtrail']).
+                    manifest["versions"]["cloudtrail"] = version
                     log(f"  Bundled SIGMA AWS rule pack: {n_rules} rules "
                         f"({size_mb:.1f} MB)", "success")
                 else:
