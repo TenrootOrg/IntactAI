@@ -406,6 +406,50 @@ def resolve_upgrade_chain(current_ref: Optional[str],
     return step_tags
 
 
+# Modules that appear in config.yaml but are NOT upgraded/bundled through this
+# system — infrastructure managed by install.sh, with no upgrade handler
+# (not in PRIMARY_IMAGES, not in offline_upgrade_functions). Explicit, documented
+# skip so the picker never offers a non-upgradeable row.
+_NON_UPGRADEABLE = {'portainer'}
+
+# Preferred display order for the module picker. Any module NOT listed here —
+# e.g. a brand-new module added to config.yaml — is appended after these
+# (alphabetically), so new modules appear automatically with no code change.
+_MODULE_DISPLAY_ORDER = ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor',
+                         'cloudtrail', 'o365rc', 'volweb', 'cve_scan']
+
+
+def _upstream_module_rows(upstream_cfg: dict, target_ref: str) -> List[Dict]:
+    """Generic module list for the upgrade/prepare picker, derived from the
+    fetched release ``config.yaml`` — NOT a hardcoded map. A new module added to
+    the release's ``modules:`` block automatically appears here (module + target
+    version), so the picker never needs a code edit to gain a row.
+
+    - The ``modules:`` block is the authoritative, operator-facing module set.
+      Transitive sidecar pins (``timesketch_opensearch``, ``iris_rabbitmq``,
+      ``volweb_postgres`` …) live ONLY in ``versions:``, NOT in ``modules:``, so
+      they are naturally excluded as picker rows — they still ride along inside
+      their parent module's bundle/install (TRANSITIVE_IMAGES / env stamping).
+    - ``intact`` is implicit (its config key is ``backend`` and its real
+      "version" is the picked ref), so it is prepended explicitly, target = ref.
+    - Versionless artifact modules (e.g. ``cve_scan``) fall back to ``'latest'``.
+    - ``_NON_UPGRADEABLE`` infra modules are skipped.
+
+    Returns ``[{'module': str, 'target': str}, ...]`` with intact first, then the
+    preferred order, then any new modules alphabetically.
+    """
+    mods = upstream_cfg.get('modules') or {}
+    versions = upstream_cfg.get('versions') or {}
+    names = [m for m in mods if m not in _NON_UPGRADEABLE]
+    ordered = [m for m in _MODULE_DISPLAY_ORDER if m in names]
+    ordered += sorted(m for m in names if m not in _MODULE_DISPLAY_ORDER)
+    rows: List[Dict] = [{'module': 'intact', 'target': target_ref}]
+    for name in ordered:
+        v = versions.get(name)
+        rows.append({'module': name, 'target': str(v) if v is not None else 'latest'})
+    return rows
+
+
 def list_upstream_modules(target_ref: str,
                           user_action: str = 'prepare-list') -> List[Dict]:
     """Return the flat module list for a given target ref.
@@ -433,41 +477,10 @@ def list_upstream_modules(target_ref: str,
     no-cost call on repeat clicks within the cache window.
     """
     upstream_cfg = fetch_upstream_config(target_ref, user_action=user_action)
-    upstream_versions = upstream_cfg.get('versions') or {}
-
-    # Same key map as compute_plan(). intact's "version" is the ref.
-    KEY_MAP = [
-        ('intact',       'backend'),
-        ('elk',          'elk'),
-        ('timesketch',   'timesketch'),
-        ('plaso',        'plaso'),
-        ('iris',         'iris'),
-        ('velociraptor', 'velociraptor'),
-        ('cloudtrail',      'cloudtrail'),
-        ('o365rc',       'o365rc'),
-        ('volweb',       'volweb'),
-    ]
-
-    out: List[Dict] = []
-    for module_id, cfg_key in KEY_MAP:
-        if module_id == 'intact':
-            out.append({'module': 'intact', 'target': target_ref})
-            continue
-        v = upstream_versions.get(cfg_key)
-        if v is None:
-            # Module not in upstream — skip silently. Future-proof: a
-            # release that drops a module shouldn't show it as
-            # bundleable.
-            continue
-        out.append({'module': module_id, 'target': str(v)})
-
-    # CVE Scan is versionless (no image / no pin) but IS bundleable: ticking
-    # it in Prepare Package ships the prebuilt CVE database (cves.db) so an
-    # air-gapped target gets CVE matching without reaching the upstream
-    # feeds. Surfaced with target 'latest' since the corpus is always the
-    # newest feeds at build time.
-    out.append({'module': 'cve_scan', 'target': 'latest'})
-    return out
+    # Generic — derived from the release's modules: block (see
+    # _upstream_module_rows). A new module in config.yaml shows up automatically;
+    # transitive sidecar pins are excluded; cve_scan surfaces as 'latest'.
+    return _upstream_module_rows(upstream_cfg, target_ref)
 
 
 def compute_plan(target_ref: str,
@@ -500,46 +513,36 @@ def compute_plan(target_ref: str,
     # module table. Intermediate steps' configs are pulled at apply
     # time, not here, to keep Compute Plan cheap.
     upstream_cfg = fetch_upstream_config(target_ref, user_action=user_action)
-    upstream_versions = upstream_cfg.get('versions') or {}
-    upstream_modules = upstream_cfg.get('modules') or {}
-
-    # Same key map as base.get_latest_versions(). intact in code →
-    # backend key in config.yaml.
-    KEY_MAP = {
-        'elk':          'elk',
-        'timesketch':   'timesketch',
-        'plaso':        'plaso',
-        'iris':         'iris',
-        'velociraptor': 'velociraptor',
-        'cloudtrail':      'cloudtrail',
-        'o365rc':       'o365rc',
-        'intact':       'backend',
-        'volweb':       'volweb',
-    }
 
     forced: List[Dict] = []
     optional: List[Dict] = []
 
-    for module_id, cfg_key in KEY_MAP.items():
+    # Generic module set from the fetched release config (see
+    # _upstream_module_rows): a new module in the release's modules: block shows
+    # up automatically; transitive sidecar pins are excluded; intact's target is
+    # the picked ref. Classification (forced/optional/noop) is unchanged.
+    for row in _upstream_module_rows(upstream_cfg, target_ref):
+        module_id = row['module']
+        upstream_ver = row['target']
         cur_state = current.get(module_id, {}).get('current', 'Not installed')
-        if module_id == 'intact':
-            # The 'intact' (backend) module's "target version" isn't a
-            # docker-image tag — it's the GitHub ref the operator
-            # picked. config.yaml's versions.backend exists for legacy
-            # reasons but is a fallback constant (1.0.0), not the
-            # shipped tag. Showing 'intact-20260609 → 1.0.0' would
-            # misleadingly suggest the operator is being asked to
-            # downgrade to a year-old release. The right answer:
-            # target == the picked ref (or 'development' for the
-            # rolling branch).
-            upstream_ver = target_ref
-        else:
-            upstream_ver = upstream_versions.get(cfg_key)
-            if upstream_ver is None:
-                # Module no longer in upstream (e.g. removed in a future
-                # release). Don't surface as install-able; leave running.
-                continue
-            upstream_ver = str(upstream_ver)
+
+        # CVE Scan is versionless (corpus is always the latest NVD feeds), so it
+        # can't go through the version-diff below. Surface as a standalone
+        # OPTIONAL row whose "current" is whether the module is enabled; default
+        # unchecked so a routine upgrade never silently re-downloads the feeds.
+        if module_id == 'cve_scan':
+            try:
+                from config import is_module_enabled as _mod_enabled
+                cve_on = bool(_mod_enabled('cve_scan'))
+            except Exception:
+                cve_on = False
+            optional.append({
+                'module': 'cve_scan',
+                'current': 'Installed' if cve_on else 'Not installed',
+                'target': 'latest',
+                'action': 'upgrade' if cve_on else 'install',
+            })
+            continue
 
         if cur_state == 'Not installed':
             # New-to-this-host. Show as optional (default unchecked).
@@ -552,16 +555,12 @@ def compute_plan(target_ref: str,
             continue
 
         # Module is installed. action depends on version delta.
-        # SPECIAL CASE — intact: the platform code itself never gets a
-        # 'noop' even when the ref/version string matches. Rolling refs
-        # like 'development' map the SAME name to DIFFERENT commits over
-        # time, and bumping a pinned numeric version isn't the only way
-        # new module-integration logic ships (a bugfix re-push to the
-        # same ref must still re-copy files + restart). Always running
-        # the intact step also unblocks the "Bug: nothing to upgrade →
-        # button greyed" footgun the operator hit 2026-06-14: even when
-        # every module is at-target, the operator can still click Start
-        # to refresh intact and pick up new commits on the rolling ref.
+        # SPECIAL CASE — intact: the platform code itself never gets a 'noop'
+        # even when the ref/version string matches. Rolling refs like
+        # 'development' map the SAME name to DIFFERENT commits over time, and a
+        # bugfix re-push to the same ref must still re-copy files + restart. Also
+        # unblocks the "nothing to upgrade → button greyed" footgun: the operator
+        # can always click Start to refresh intact on the rolling ref.
         if module_id == 'intact':
             action = 'upgrade'
         elif cur_state == upstream_ver:
@@ -574,24 +573,6 @@ def compute_plan(target_ref: str,
             'target': upstream_ver,
             'action': action,
         })
-
-    # CVE Scan is versionless (no docker image, no version pin) — the corpus
-    # is always the latest upstream NVD feeds, so it can't go through the
-    # version-diff loop above. Surface it as a standalone OPTIONAL row:
-    # ticking it ensures modules.cve_scan is enabled and (re)downloads +
-    # reindexes the local CVE database. Default unchecked so a routine
-    # online upgrade never silently kicks off a large feed re-download.
-    try:
-        from config import is_module_enabled as _mod_enabled
-        cve_on = bool(_mod_enabled('cve_scan'))
-    except Exception:
-        cve_on = False
-    optional.append({
-        'module': 'cve_scan',
-        'current': 'Installed' if cve_on else 'Not installed',
-        'target': 'latest',
-        'action': 'upgrade' if cve_on else 'install',
-    })
 
     return {
         'current_intact_version': intact_current,

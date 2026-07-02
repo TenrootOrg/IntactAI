@@ -831,6 +831,17 @@ def get_latest_versions() -> Dict:
         for module_id, config_key in config_key_map.items():
             val = versions.get(config_key)
             result[module_id] = str(val) if val is not None else fallback[module_id]
+        # Generic: also surface any NEW module in the modules: block that has a
+        # version pin but isn't in the (legacy) key map above — so a new module
+        # in config.yaml appears without editing this map. Infra modules with no
+        # upgrade handler (portainer) are skipped; transitive sidecar pins live
+        # only in versions: (not modules:) so they're naturally excluded.
+        for name in (cfg.get('modules') or {}):
+            if name in result or name in ('portainer',):
+                continue
+            val = versions.get(name)
+            if val is not None:
+                result[name] = str(val)
         return result
     except Exception:
         return fallback
