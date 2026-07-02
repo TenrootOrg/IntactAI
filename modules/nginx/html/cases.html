@@ -729,8 +729,9 @@ function renderIdentities(id){
       const ev=(x.evidence&&x.evidence.length)?` · <span style="color:var(--ok)">${esc(x.evidence.join('; '))}</span>`:'';
       const amb=x.ambiguous?` · <span style="color:var(--med)">ambiguous</span>`:'';
       const arrow=x.kind==='operates'?'▸ operates ▸':'≡';
+      const cnt=(x.count&&x.count>1)?` <span style="color:var(--muted);font-size:11px;border:1px solid var(--bd);border-radius:8px;padding:0 5px">${x.count} accounts</span>`:'';
       return `<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--bd)">
-        <span style="flex:1">${lc(x.a_label,x.a_ctx)} <span style="color:var(--muted)">${arrow}</span> ${lc(x.b_label,x.b_ctx)}
+        <span style="flex:1">${lc(x.a_label,x.a_ctx)}${cnt} <span style="color:var(--muted)">${arrow}</span> ${lc(x.b_label,x.b_ctx)}
           <span style="color:var(--muted);font-size:11px"> · ${esc(bk)} · ${esc(x.reason||'')} · conf ${num(x.score)}${ev}${amb}</span></span>
         ${actions}</div>`;
     };
@@ -767,11 +768,12 @@ function renderIdentities(id){
     $('#tabc').innerHTML=h;
   }).catch(_=>{$('#tabc').innerHTML='<p style="color:#f85149">could not load identities</p>';});
 }
-function _idFind(lid){const d=window._idData||{};for(const k of ['pending','confirmed','auto','declined'])for(const x of (d[k]||[]))if(x.id===lid)return x;return {};}
-function idDecide(cid,lid,decision){
-  const x=_idFind(lid);
-  api('/api/cases/'+cid+'/identities/'+lid,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({decision:decision,a_id:x.a_id,b_id:x.b_id,kind:x.kind,reason:x.reason})})
+function _idFind(gid){const d=window._idData||{};for(const k of ['pending','confirmed','auto','declined'])for(const x of (d[k]||[]))if(x.id===gid)return x;return {};}
+function idDecide(cid,gid,decision){
+  const g=_idFind(gid);
+  const members=(g.members&&g.members.length)?g.members:[{id:gid,a_id:g.a_id,b_id:g.b_id,kind:g.kind}];
+  api('/api/cases/'+cid+'/identities/group',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({decision:decision,members:members})})
     .then(_=>{toast('saved — Refusion applies it to the graph');renderIdentities(cid);});
 }
 function idManualLink(cid){

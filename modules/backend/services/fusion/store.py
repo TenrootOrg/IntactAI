@@ -1632,6 +1632,72 @@ def _apply_identity_links(g, d, log=None) -> None:
             log(f"Identity correlation skipped: {e}", "warning")
 
 
+def _group_identity_candidates(cands, decisions):
+    """Collapse candidates that are the SAME logical relationship into ONE row: every
+    `nofl*` account operating one host, or the `nofl`↔`noflevi` name pair across buckets.
+    One person + one host = one decision, not a dozen. Group status is derived from the
+    members' stored decisions (confirmed if any confirmed; declined if all declined; auto
+    if all-auto and undecided; else pending)."""
+    from . import identities as _idf
+    groups: dict = {}
+    for c in cands:
+        if c["kind"] == "operates":
+            key = ("operates", _idf._norm_user(c["a_label"]), c["b_id"])
+        else:                                          # same identity: unordered name pair
+            names = tuple(sorted([_idf._norm_user(c["a_label"]), _idf._norm_user(c["b_label"])]))
+            key = ("same_identity", names, tuple(c.get("buckets") or []))
+        groups.setdefault(key, []).append(c)
+    pending, confirmed, auto, declined = [], [], [], []
+    for members in groups.values():
+        decs = [decisions.get(m["id"], {}).get("decision") for m in members]
+        rep = max(members, key=lambda x: x.get("score", 0))
+        a = min(members, key=lambda x: len(x.get("a_label", "") or ""))
+        b = min(members, key=lambda x: len(x.get("b_label", "") or ""))
+        item = {
+            "id": rep["id"], "kind": rep["kind"],
+            "a_label": a["a_label"], "b_label": b["b_label"], "b_ctx": rep.get("b_ctx"),
+            "a_ctx": (None if len(members) > 1 else a.get("a_ctx")),
+            "count": len(members), "score": rep.get("score"), "reason": rep.get("reason"),
+            "evidence": rep.get("evidence") or [],
+            "ambiguous": any(m.get("ambiguous") for m in members),
+            "buckets": rep.get("buckets"),
+            "members": [{"id": m["id"], "a_id": m["a_id"], "b_id": m["b_id"], "kind": m["kind"]}
+                        for m in members],
+        }
+        if any(x == "confirmed" for x in decs):
+            item["status"] = "confirmed"; confirmed.append(item)
+        elif decs and all(x == "declined" for x in decs):
+            item["status"] = "declined"; declined.append(item)
+        elif all(m.get("auto") for m in members) and not any(decs):
+            item["status"] = "auto"; auto.append(item)
+        else:
+            item["status"] = "pending"; pending.append(item)
+    return pending, confirmed, auto, declined
+
+
+def decide_identity_group(case_id, members, decision) -> dict:
+    """Confirm/decline a whole grouped relationship (all its member links at once).
+    Persists per-member so it survives re-fusion like any other decision."""
+    d = get_case(case_id)
+    if not d:
+        return {"error": "not found"}
+    decision = decision if decision in ("confirmed", "declined") else "confirmed"
+    existing = {r["id"]: r for r in (d.get("identity_links") or []) if r.get("id")}
+    n = 0
+    for m in (members or []):
+        if not m.get("id"):
+            continue
+        rec = {"id": m["id"], "decision": decision, "origin": "human"}
+        for k in ("a_id", "b_id", "kind"):
+            if m.get(k):
+                rec[k] = m[k]
+        existing[m["id"]] = rec
+        n += 1
+    _merge_case_details(case_id, {"identity_links": list(existing.values())})
+    log_case_event(case_id, "Identity · group decision", "info", f"{n} link(s) → {decision}")
+    return {"decision": decision, "count": n}
+
+
 def identity_view(case_id) -> dict:
     """The Identities tab model: candidates merged with stored decisions. Cross-infra
     same-identity choosing only when >= 2 buckets; operates + inventory always. Best-effort."""
@@ -1648,26 +1714,22 @@ def identity_view(case_id) -> dict:
                 "pending": [], "confirmed": [], "auto": [], "declined": [],
                 "counts": {"pending": 0, "confirmed": 0, "auto": 0}, "error": str(e)}
     decisions = _identity_decisions(d)
-    pending, confirmed, auto, declined = [], [], [], []
-    for c in cands:
-        rec = decisions.get(c["id"])
-        item = dict(c)
-        if rec and rec.get("decision") == "declined":
-            item["status"] = "declined"; declined.append(item)
-        elif rec and rec.get("decision") == "confirmed":
-            item["status"] = "confirmed"; confirmed.append(item)
-        elif c["auto"]:
-            item["status"] = "auto"; auto.append(item)
-        else:
-            item["status"] = "pending"; pending.append(item)
-    seen = {c["id"] for c in cands}
+    # collapse to ONE row per logical relationship (see _group_identity_candidates)
+    pending, confirmed, auto, declined = _group_identity_candidates(cands, decisions)
+    seen = {m["id"] for grp in (pending + confirmed + auto + declined)
+            for m in grp["members"]}
     for r in decisions.values():                      # manual links not re-derived this fuse
-        if r.get("decision") == "confirmed" and r["id"] not in seen:
-            confirmed.append({**r, "status": "confirmed", "evidence": r.get("evidence") or [],
-                              "score": r.get("confidence", 1.0)})
+        if r.get("decision") == "confirmed" and r["id"] not in seen and r.get("a_id"):
+            confirmed.append({"id": r["id"], "kind": r.get("kind", "same_identity"),
+                              "status": "confirmed", "a_label": r.get("a_id"),
+                              "b_label": r.get("b_id"), "count": 1, "score": r.get("confidence", 1.0),
+                              "reason": r.get("reason", "manual link"), "evidence": [],
+                              "ambiguous": False, "buckets": [],
+                              "members": [{"id": r["id"], "a_id": r.get("a_id"),
+                                           "b_id": r.get("b_id"), "kind": r.get("kind", "same_identity")}]})
     # most-conflicts-first: ambiguous groups on top, then by score
-    pending.sort(key=lambda x: (0 if x.get("ambiguous") else 1, -x.get("score", 0)))
-    auto.sort(key=lambda x: -x.get("score", 0))       # auto sits at the bottom in the UI
+    pending.sort(key=lambda x: (0 if x.get("ambiguous") else 1, -(x.get("score") or 0)))
+    auto.sort(key=lambda x: -(x.get("score") or 0))   # auto sits at the bottom in the UI
     # linkable entities (accounts + hosts) for the manual-link picker; ctx (host/provider)
     # so duplicate labels (e.g. 'nofl' on 5 hosts) are distinguishable in the search.
     try:

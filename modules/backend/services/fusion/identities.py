@@ -169,57 +169,84 @@ def compute_candidates(graph) -> list:
                 if e.type == "account" and (e.label or "").strip()
                 and not (e.label or "").strip().endswith("$")   # machine acct (HOST$) = the host, not a person
                 and _norm_user(e.label) not in _STOP and len(_norm_user(e.label)) >= 3]
+    from collections import defaultdict
     adj = _adjacency(graph)
     cands = []
+    # precompute buckets + normalized name once per account (avoid recompute in loops)
+    info = [(e, _entity_buckets(e, graph), _norm_user(e.label)) for e in accounts]
+    _ipc: dict = {}
+    def _ips(aid):                                    # memoised 2-hop IP set per account
+        if aid not in _ipc:
+            _ipc[aid] = _account_ips(aid, graph, adj)
+        return _ipc[aid]
 
     # ---- same_identity: account <-> account across DIFFERENT buckets ----
+    # BLOCKING for scale: only compare accounts whose normalized name shares a first
+    # char (exact/prefix/typo matches always do) — turns O(n^2) over all accounts into
+    # O(sum of block^2), so 1000s of identities stay fast. (A rare first-char typo is
+    # the accepted trade-off vs re-scanning every pair.)
     if len(buckets) >= 2:
-        bmap = [(e, _entity_buckets(e, graph)) for e in accounts]
-        for i in range(len(bmap)):
-            ea, ba = bmap[i]
-            for j in range(i + 1, len(bmap)):
-                eb, bb = bmap[j]
-                if ba and bb and ba == bb:            # same bucket only -> keys already handle it
-                    continue
-                m = _match(ea.label, eb.label)
-                if not m:
-                    continue
-                score, reason, auto_ok = m
-                ev, corr = [], 0.0
-                shared = _account_ips(ea.id, graph, adj) & _account_ips(eb.id, graph, adj)
-                if shared:
-                    lbls = [graph.entities[x].label for x in list(shared)[:3] if x in graph.entities]
-                    ev.append("shares IP " + ", ".join(lbls))
-                    corr = 0.2
-                cands.append({
-                    "kind": "same_identity", "a_id": ea.id, "a_label": ea.label,
-                    "b_id": eb.id, "b_label": eb.label,
-                    "a_ctx": _context(ea, graph), "b_ctx": _context(eb, graph),
-                    "buckets": sorted(ba | bb), "score": min(1.0, score + corr),
-                    "reason": reason, "evidence": ev, "auto_eligible": auto_ok,
-                })
+        blocks = defaultdict(list)
+        for tup in info:
+            if tup[2]:
+                blocks[tup[2][0]].append(tup)
+        for blk in blocks.values():
+            for i in range(len(blk)):
+                ea, ba, _na = blk[i]
+                for j in range(i + 1, len(blk)):
+                    eb, bb, _nb = blk[j]
+                    if ba and bb and ba == bb:        # same bucket -> keys already handle it
+                        continue
+                    m = _match(ea.label, eb.label)
+                    if not m:
+                        continue
+                    score, reason, auto_ok = m
+                    ev, corr = [], 0.0
+                    shared = _ips(ea.id) & _ips(eb.id)
+                    if shared:
+                        lbls = [graph.entities[x].label for x in list(shared)[:3] if x in graph.entities]
+                        ev.append("shares IP " + ", ".join(lbls))
+                        corr = 0.2
+                    cands.append({
+                        "kind": "same_identity", "a_id": ea.id, "a_label": ea.label,
+                        "b_id": eb.id, "b_label": eb.label,
+                        "a_ctx": _context(ea, graph), "b_ctx": _context(eb, graph),
+                        "buckets": sorted(ba | bb), "score": min(1.0, score + corr),
+                        "reason": reason, "evidence": ev, "auto_eligible": auto_ok,
+                    })
 
-    # ---- operates: account (user) <-> endpoint asset whose HOSTNAME embeds the user ----
+    # ---- operates: account (user) <-> endpoint host whose NAME embeds the user ----
+    # Index hosts by the first char of each name token + the whole name, so a user only
+    # checks hosts that could possibly match (prefix/token share a first char) — keeps
+    # this near-linear instead of accounts x hosts.
     hosts = [e for e in graph.entities.values()
              if e.type == "asset" and "endpoint" in (_entity_buckets(e, graph) or set())
              and (e.label or "").strip()]
-    for acc in accounts:
-        u = _norm_user(acc.label)
-        for h in hosts:
-            hn = (h.label or "").strip().lower()
-            htok = hn.replace("-", " ").replace("_", " ").replace(".", " ").split()
-            # host name embeds the username: a whole token ("alon" in "ALON PC"), the
-            # host stem ("alon-pc"/"alon.corp"), OR a concatenated prefix with no
-            # separator ("nofl" -> "noflaptop"/"nofldesktop"). The prefix rule needs a
-            # ≥4-char username so short names (srv, adm) don't match "srvexchange" etc.
+    hidx = defaultdict(list)
+    for h in hosts:
+        hn = (h.label or "").strip().lower()
+        toks = hn.replace("-", " ").replace("_", " ").replace(".", " ").split()
+        for ch in {hn[0]} | {t[0] for t in toks if t}:
+            hidx[ch].append((h, hn, toks))
+    for acc, ab, u in info:
+        if len(u) < 3:
+            continue
+        seen_hosts = set()
+        for h, hn, htok in hidx.get(u[0], ()):
+            if h.id in seen_hosts:
+                continue
+            # host name embeds the username: a whole token ("alon" in "ALON PC"), the host
+            # stem ("alon-pc"/"alon.corp"), or a concatenated prefix ("nofl"->"noflaptop").
+            # Prefix rule needs a >=4-char username so "srv" doesn't match "srvexchange".
             if (u in htok or hn.split("-")[0] == u or hn.split(".")[0] == u
                     or (len(u) >= 4 and hn.startswith(u) and len(hn) > len(u) + 1)):
+                seen_hosts.add(h.id)
                 seen_on = h.id in (acc.assets() or [])
                 cands.append({
                     "kind": "operates", "a_id": acc.id, "a_label": acc.label,
                     "b_id": h.id, "b_label": h.label,
                     "a_ctx": _context(acc, graph), "b_ctx": h.label,
-                    "buckets": sorted(_entity_buckets(acc, graph) | {"endpoint"}),
+                    "buckets": sorted(ab | {"endpoint"}),
                     "score": 0.9 if seen_on else 0.6,
                     "reason": "host embeds username" + (" + user seen on host" if seen_on else ""),
                     "evidence": (["user active on this host"] if seen_on else []),

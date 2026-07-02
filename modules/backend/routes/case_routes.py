@@ -560,6 +560,17 @@ def decide_identity(case_id, link_id):
     return (jsonify(res), 404) if res.get("error") else jsonify({"case_id": case_id, **res})
 
 
+@case_bp.route("/api/cases/<case_id>/identities/group", methods=["POST"])
+def decide_identity_grp(case_id):
+    """Confirm / decline a whole grouped relationship (all its member links)."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    b = request.get_json(silent=True) or {}
+    res = store.decide_identity_group(case_id, b.get("members") or [],
+                                      b.get("decision", "confirmed"))
+    return (jsonify(res), 404) if res.get("error") else jsonify({"case_id": case_id, **res})
+
+
 @case_bp.route("/api/cases/<case_id>/identities/link", methods=["POST"])
 def manual_identity_link(case_id):
     """Manually link two entities (same_identity / operates). Persisted + applied on fuse."""
