@@ -55,13 +55,21 @@ function renderScheduleCard(job) {
     const statusDot = isEnabled ? 'bg-green-400' : 'bg-gray-500';
     const statusText = isEnabled ? 'Active' : 'Paused';
 
-    // Format interval - always days now
-    const intervalText = job.interval_value == 1 ? 'Daily' : `Every ${job.interval_value} days`;
+    // Format interval — every N days/weeks/months/years
+    const unit = job.interval_unit || 'days';
+    const n = parseInt(job.interval_value) || 1;
+    const unitLabel = { days: 'day', weeks: 'week', months: 'month', years: 'year' }[unit] || 'day';
+    const intervalText = n === 1 ? `Every ${unitLabel}` : `Every ${n} ${unitLabel}s`;
 
     // Format run time (already in UTC)
     let runTimeText = '';
     if (job.run_time) {
         runTimeText = ` at ${job.run_time} UTC`;
+    }
+    // Start-date anchor (first run / interval reference)
+    if (job.start_at) {
+        const d = String(job.start_at).slice(0, 10);
+        runTimeText += ` · from ${d}`;
     }
 
     // Helper to format date in UTC
@@ -220,9 +228,11 @@ function showNewScheduleModal() {
     document.getElementById('schedule-name').value = '';
     document.getElementById('schedule-description').value = '';
     document.getElementById('schedule-interval-value').value = 1;
+    document.getElementById('schedule-interval-unit').value = 'days';
     document.getElementById('schedule-blueprint-type').value = 'velociraptor';
 
-    // Set default run time to 02:00 (2 AM)
+    // Default start date = today (UTC); default run time 02:00
+    document.getElementById('schedule-start-date').value = new Date().toISOString().slice(0, 10);
     document.getElementById('schedule-run-time').value = '02:00';
 
     // Start UTC clock
@@ -264,9 +274,12 @@ async function editSchedule(jobId) {
         document.getElementById('schedule-name').value = job.name || '';
         document.getElementById('schedule-description').value = job.description || '';
         document.getElementById('schedule-interval-value').value = job.interval_value || 1;
+        document.getElementById('schedule-interval-unit').value = job.interval_unit || 'days';
         document.getElementById('schedule-blueprint-type').value = job.blueprint_type || 'velociraptor';
 
-        // Set run time
+        // Start date anchor (from stored start_at datetime) + run time
+        document.getElementById('schedule-start-date').value =
+            (job.start_at ? String(job.start_at).slice(0, 10) : new Date().toISOString().slice(0, 10));
         document.getElementById('schedule-run-time').value = job.run_time || '02:00';
 
         // Load blueprints then set selected
@@ -299,6 +312,8 @@ async function saveScheduleFromModal() {
     let description = document.getElementById('schedule-description').value.trim();
     const blueprintType = document.getElementById('schedule-blueprint-type').value;
     const intervalValue = parseInt(document.getElementById('schedule-interval-value').value) || 1;
+    const intervalUnit = document.getElementById('schedule-interval-unit').value || 'days';
+    const startDate = document.getElementById('schedule-start-date').value || new Date().toISOString().slice(0, 10);
     const runTime = document.getElementById('schedule-run-time').value || '02:00';
     const clientIds = getSelectedScheduleClients();
 
@@ -336,7 +351,8 @@ async function saveScheduleFromModal() {
         blueprint_id: blueprintId,
         blueprint_type: blueprintType,
         interval_value: intervalValue,
-        interval_type: 'days',  // Always days
+        interval_unit: intervalUnit,      // days | weeks | months | years
+        start_date: startDate,            // anchor the interval to this date
         run_time: runTime,
         client_ids: clientIds
     };

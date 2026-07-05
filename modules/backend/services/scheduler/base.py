@@ -113,13 +113,26 @@ def init_scheduled_jobs_table():
         ("time_filter_mode", "TEXT DEFAULT 'relative'"),
         ("time_filter_relative_range", "TEXT DEFAULT '7d'"),
         ("time_filter_start", "TEXT"),
-        ("time_filter_end", "TEXT")
+        ("time_filter_end", "TEXT"),
+        # Recurrence: interval unit (days/weeks/months/years) + the start-date
+        # anchor the interval is measured from. Legacy rows default to a daily
+        # cadence anchored at their created date (backfilled below).
+        ("interval_unit", "TEXT DEFAULT 'days'"),
+        ("start_at", "TEXT"),
     ]
     for col_name, col_def in time_filter_columns:
         try:
             cursor.execute(f"ALTER TABLE scheduled_jobs ADD COLUMN {col_name} {col_def}")
         except Exception:
             pass  # Column already exists
+
+    # Backfill an anchor for pre-existing jobs so their interval has a start.
+    try:
+        cursor.execute("UPDATE scheduled_jobs SET interval_unit = 'days' WHERE interval_unit IS NULL")
+        cursor.execute("UPDATE scheduled_jobs SET start_at = COALESCE(created_at, updated_at) "
+                       "WHERE start_at IS NULL")
+    except Exception:
+        pass
 
     conn.commit()
     conn.close()

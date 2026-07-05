@@ -50,6 +50,8 @@ def create_job():
         blueprint_id = data.get('blueprint_id')
         blueprint_type = data.get('blueprint_type', 'velociraptor')
         interval_value = data.get('interval_value', 1)
+        interval_unit = data.get('interval_unit', 'days')
+        start_date = data.get('start_date') or data.get('start_at')
 
         if not name:
             return jsonify({"error": "name is required"}), 400
@@ -59,6 +61,11 @@ def create_job():
         # Validate interval_value
         if interval_value < 1:
             return jsonify({"error": "interval_value must be at least 1"}), 400
+
+        # Validate interval_unit
+        from services.scheduler.jobs import INTERVAL_UNITS
+        if interval_unit not in INTERVAL_UNITS:
+            return jsonify({"error": f"interval_unit must be one of {list(INTERVAL_UNITS)}"}), 400
 
         # Optional fields
         # SHAPE VALIDATION (Mythos #2 extended): scheduled agentic jobs
@@ -100,6 +107,8 @@ def create_job():
             blueprint_id=blueprint_id,
             blueprint_type=blueprint_type,
             interval_value=interval_value,
+            interval_unit=interval_unit,
+            start_date=start_date,
             run_time=run_time,
             client_ids=client_ids,
             report_types=report_types,
@@ -137,6 +146,16 @@ def update_job(job_id):
     """Update a scheduled job."""
     try:
         data = request.get_json()
+
+        # The picker sends the start-date anchor as `start_date`; the store field
+        # is `start_at` (composed with run_time into a datetime downstream).
+        if 'start_date' in data and 'start_at' not in data:
+            data['start_at'] = data.pop('start_date')
+        # Validate interval_unit if the edit changes it.
+        if 'interval_unit' in data:
+            from services.scheduler.jobs import INTERVAL_UNITS
+            if data['interval_unit'] not in INTERVAL_UNITS:
+                return jsonify({"error": f"interval_unit must be one of {list(INTERVAL_UNITS)}"}), 400
 
         job = update_scheduled_job(job_id, data)
         if not job:

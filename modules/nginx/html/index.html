@@ -508,12 +508,26 @@
                                 <label class="block text-sm text-gray-400 mb-1">Run Every</label>
                                 <div class="flex items-center gap-2">
                                     <input type="number" id="schedule-interval-value" min="1" value="1" class="w-20 bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
-                                    <span class="text-gray-400">day(s)</span>
+                                    <select id="schedule-interval-unit" class="flex-1 bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
+                                        <option value="days">Day(s)</option>
+                                        <option value="weeks">Week(s)</option>
+                                        <option value="months">Month(s)</option>
+                                        <option value="years">Year(s)</option>
+                                    </select>
                                 </div>
                             </div>
                             <div>
-                                <label class="block text-sm text-gray-400 mb-1">Run At (daily time)</label>
+                                <label class="block text-sm text-gray-400 mb-1">Starting On</label>
+                                <input type="date" id="schedule-start-date" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">At (time of day)</label>
                                 <input type="time" id="schedule-run-time" value="02:00" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
+                            </div>
+                            <div class="flex items-end">
+                                <p class="text-xs text-gray-500 mb-2">Runs at the start date/time, then repeats every interval.</p>
                             </div>
                         </div>
 

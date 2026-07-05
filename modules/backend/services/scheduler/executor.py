@@ -111,6 +111,13 @@ def run_scheduled_blueprint(job_id: str):
         # Update job metadata
         update_job_run_stats(job_id)
 
+        # Re-arm month/year interval jobs (one-shot DateTrigger); no-op for days/weeks.
+        try:
+            from .jobs import reschedule_after_run
+            reschedule_after_run(job_id)
+        except Exception as _re:
+            print(f"[SCHEDULER] Reschedule after run failed for {job_id}: {_re}", flush=True)
+
     except Exception as e:
         print(f"[SCHEDULER] Error executing job {job_id}: {e}", flush=True)
         import traceback
