@@ -61,7 +61,7 @@ modules:
     id: elastic
     password: '123123'
   iris:
-    enabled: true
+    enabled: false
     id: administrator #Cant be changed
     password: '123123'
   portainer:
