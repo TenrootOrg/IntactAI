@@ -489,9 +489,11 @@
                             <div>
                                 <label class="block text-sm text-gray-400 mb-1">Blueprint Type</label>
                                 <select id="schedule-blueprint-type" onchange="onScheduleBlueprintTypeChange()" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
-                                    <option value="velociraptor">Velociraptor</option>
-                                    <option value="agentic">Agentic (Collection)</option>
+                                    <option value="agentic">Velociraptor Collector</option>
+                                    <option value="velociraptor">Velociraptor Hunt</option>
                                     <option value="timesketch">Timesketch (Triage + Timeline)</option>
+                                    <option value="cve">CVE Management</option>
+                                    <option value="memory">Memory</option>
                                 </select>
                             </div>
                             <div>
@@ -544,8 +546,8 @@
                             </div>
                         </div>
 
-                        <!-- Client Selection -->
-                        <div>
+                        <!-- Client Selection (hidden for env-wide types: Velociraptor Hunt, CVE Management) -->
+                        <div id="schedule-client-section">
                             <div class="flex items-center justify-between mb-2">
                                 <label class="block text-sm font-medium text-gray-300">Target Clients</label>
                                 <div class="flex gap-2">

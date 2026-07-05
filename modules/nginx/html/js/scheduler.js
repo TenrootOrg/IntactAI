@@ -43,13 +43,19 @@ function renderScheduleCard(job) {
     const isEnabled = job.enabled == 1;
     let typeLabel, typeBadgeColor;
     if (job.blueprint_type === 'agentic') {
-        typeLabel = 'Agentic';
+        typeLabel = 'Velociraptor Collector';
         typeBadgeColor = 'bg-purple-900 text-purple-300';
     } else if (job.blueprint_type === 'timesketch') {
         typeLabel = 'Timesketch';
         typeBadgeColor = 'bg-cyan-900 text-cyan-300';
+    } else if (job.blueprint_type === 'cve') {
+        typeLabel = 'CVE Management';
+        typeBadgeColor = 'bg-amber-900 text-amber-300';
+    } else if (job.blueprint_type === 'memory') {
+        typeLabel = 'Memory';
+        typeBadgeColor = 'bg-rose-900 text-rose-300';
     } else {
-        typeLabel = 'Velociraptor';
+        typeLabel = 'Velociraptor Hunt';
         typeBadgeColor = 'bg-blue-900 text-blue-300';
     }
     const statusDot = isEnabled ? 'bg-green-400' : 'bg-gray-500';
@@ -153,23 +159,31 @@ async function onScheduleBlueprintTypeChange() {
     const select = document.getElementById('schedule-blueprint-select');
     const blueprintSelectContainer = select.parentElement;
     const timesketchOptions = document.getElementById('schedule-timesketch-options');
+    const clientSection = document.getElementById('schedule-client-section');
 
-    // Show/hide type-specific options
+    // Client picker: shown for client-targeted types (Collector/Timesketch/Memory),
+    // HIDDEN for env-wide hunt types (Velociraptor Hunt, CVE Management) which run
+    // across every enrolled client.
+    const envWide = (type === 'velociraptor' || type === 'cve');
+    if (clientSection) clientSection.classList.toggle('hidden', envWide);
+
     timesketchOptions.classList.add('hidden');
 
-    if (type === 'agentic') {
-        // Agentic is collection-only now — no per-job LLM options.
-        blueprintSelectContainer.classList.remove('hidden');
-    } else if (type === 'timesketch') {
+    // Timesketch uses a KAPE target (its own options block); CVE uses a fixed
+    // artifact set — neither picks a blueprint from the list.
+    if (type === 'timesketch') {
         timesketchOptions.classList.remove('hidden');
         blueprintSelectContainer.classList.add('hidden');
-        // For timesketch, blueprint_id will be the KAPE target
         return;
-    } else {
-        blueprintSelectContainer.classList.remove('hidden');
     }
+    if (type === 'cve') {
+        blueprintSelectContainer.classList.add('hidden');
+        return;
+    }
+    blueprintSelectContainer.classList.remove('hidden');
 
-    // Load blueprints for selected type (velociraptor or agentic)
+    // Load blueprints for the selected type: agentic (collector) -> /api/blueprints/agentic,
+    // velociraptor (hunt) -> /api/blueprints/velociraptor, memory -> /api/blueprints/memory.
     try {
         const response = await fetch(`/api/blueprints/${type}`);
         if (!response.ok) {
@@ -182,8 +196,9 @@ async function onScheduleBlueprintTypeChange() {
 
         select.innerHTML = '<option value="">-- Select Blueprint --</option>' +
             blueprints.map(bp => {
-                const count = bp.artifacts ? bp.artifacts.length : 0;
-                return `<option value="${bp.id}">${bp.name} (${count} artifacts)</option>`;
+                const n = bp.artifacts ? bp.artifacts.length : 0;
+                const label = n ? `${bp.name} (${n} artifacts)` : bp.name;  // memory bps have no artifacts
+                return `<option value="${bp.id}">${label}</option>`;
             }).join('');
 
     } catch (error) {
@@ -229,7 +244,7 @@ function showNewScheduleModal() {
     document.getElementById('schedule-description').value = '';
     document.getElementById('schedule-interval-value').value = 1;
     document.getElementById('schedule-interval-unit').value = 'days';
-    document.getElementById('schedule-blueprint-type').value = 'velociraptor';
+    document.getElementById('schedule-blueprint-type').value = 'agentic';  // Velociraptor Collector (default)
 
     // Default start date = today (UTC); default run time 02:00
     document.getElementById('schedule-start-date').value = new Date().toISOString().slice(0, 10);
@@ -317,6 +332,10 @@ async function saveScheduleFromModal() {
     const runTime = document.getElementById('schedule-run-time').value || '02:00';
     const clientIds = getSelectedScheduleClients();
 
+    // Env-wide types run across every enrolled client (no picker): Velociraptor
+    // Hunt + CVE Management. CVE uses the fixed cve_management artifact set.
+    const envWide = (blueprintType === 'velociraptor' || blueprintType === 'cve');
+
     // Get blueprint ID based on type
     let blueprintId;
     if (blueprintType === 'timesketch') {
@@ -326,6 +345,8 @@ async function saveScheduleFromModal() {
         if (sketchName) {
             description = sketchName;
         }
+    } else if (blueprintType === 'cve') {
+        blueprintId = 'cve_management';  // fixed CVE artifact set — no per-blueprint pick
     } else {
         blueprintId = document.getElementById('schedule-blueprint-select').value;
     }
@@ -339,7 +360,8 @@ async function saveScheduleFromModal() {
         alert('Please select a blueprint' + (blueprintType === 'timesketch' ? ' (triage target)' : ''));
         return;
     }
-    if (clientIds.length === 0) {
+    // Client selection required only for client-targeted types.
+    if (!envWide && clientIds.length === 0) {
         alert('Please select at least one client');
         return;
     }

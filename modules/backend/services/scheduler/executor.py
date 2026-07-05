@@ -103,10 +103,17 @@ def run_scheduled_blueprint(job_id: str):
             run_memory_scheduled(job_meta, client_ids)
             print(f"[SCHEDULER] Started memory pipeline for {len(client_ids)} clients", flush=True)
 
+        elif blueprint_type == 'cve':
+            # CVE Management — env-wide: dispatch the cve_management hunt to every
+            # client, then auto-run the NVD scan on the results. No client_ids
+            # (hunt model). Runs in its own thread (see run_cve_scan_scheduled).
+            run_cve_scan_scheduled(job_meta['name'])
+            print(f"[SCHEDULER] Started CVE management scan (env-wide)", flush=True)
+
         else:
-            # Velociraptor blueprint - run hunt directly
+            # Velociraptor Hunt (env-wide) — legacy 'velociraptor' + explicit 'hunt'.
             run_velociraptor_hunt(job_meta['name'], blueprint_id, client_ids)
-            print(f"[SCHEDULER] Started velociraptor scan: blueprint={blueprint_id}", flush=True)
+            print(f"[SCHEDULER] Started velociraptor hunt: blueprint={blueprint_id}", flush=True)
 
         # Update job metadata
         update_job_run_stats(job_id)
@@ -241,6 +248,72 @@ SELECT HuntId FROM collection
         add_log_to_run(run_id, f"Error: {str(e)}", "error")
         update_run_status(run_id, "failed")
         print(f"[SCHEDULER] Hunt error: {e}", flush=True)
+
+
+def run_cve_scan_scheduled(job_name: str):
+    """Scheduled CVE Management — env-wide: dispatch the cve_management hunt to
+    every enrolled client, wait for it, then auto-run the NVD scan on the pulled
+    results. Mirrors routes/cve_routes.py `_worker()`; runs in a daemon thread so
+    the APScheduler worker isn't held for the hunt's wait window. No client_ids
+    (hunt model)."""
+    import threading
+    from pathlib import Path
+    from services.workflow_service import (create_automation_run, update_run_status,
+                                           register_cancel_event)
+    from services.cve_scan.hunt import _dispatch_cve_hunt, _wait_for_hunt, _stop_hunt
+    from services.cve_scan import run_cve_scan, pull_from_velociraptor
+
+    # Wait window = the cve_management blueprint's hunt_expiry (minutes), else 120.
+    try:
+        from services.file_storage_service import get_velociraptor_blueprint
+        bp = get_velociraptor_blueprint('cve_management') or {}
+        expiry_min = int((bp.get('settings') or {}).get('hunt_expiry', 120))
+    except Exception:
+        expiry_min = 120
+    max_wait_seconds = max(60, expiry_min * 60)
+
+    run_id = create_automation_run(
+        automation_type='cve_scan',
+        name=f"Scheduled: {job_name}",
+        details={"source": "scheduler", "scan_mode": "vulnerable_only"},
+    )
+    register_cancel_event(run_id)
+
+    def _worker():
+        try:
+            update_run_status(run_id, 'running', progress=5)
+            hunt_id = _dispatch_cve_hunt(run_id, description=f"Intact.AI CVE Scan: {job_name}",
+                                         max_wait_seconds=max_wait_seconds)
+            if not hunt_id:
+                update_run_status(run_id, 'failed', error='Failed to dispatch CVE hunt')
+                return
+            try:
+                from services.file_storage_service import get_workflow, save_workflow
+                w = get_workflow(run_id)
+                if w:
+                    w.setdefault('details', {})['hunt_id'] = hunt_id
+                    save_workflow(w)
+            except Exception:
+                pass
+            finished = _wait_for_hunt(run_id, hunt_id, timeout_seconds=max_wait_seconds)
+            if not finished:
+                _stop_hunt(run_id, hunt_id)
+            run_dir = Path('/tmp/cve_uploads') / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            csvs = pull_from_velociraptor(run_id, None, hunt_id, run_dir)
+            if not csvs:
+                update_run_status(run_id, 'failed', error='CVE hunt produced no data to scan')
+                return
+            run_cve_scan(run_id, csvs, name=job_name, mode='vulnerable_only')
+        except Exception as e:
+            print(f"[SCHEDULER] CVE scheduled run error: {e}", flush=True)
+            try:
+                update_run_status(run_id, 'failed', error=str(e))
+            except Exception:
+                pass
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return run_id
 
 
 def run_timesketch_pipeline(job_meta: dict, client_ids: list):
