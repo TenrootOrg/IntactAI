@@ -690,7 +690,20 @@ stage_velociraptor_client_binaries() {
         log_error "stage_velociraptor_client_binaries: malformed version '$velo_version' — need at least major.minor"
         return 1
     fi
-    local release_tag="v${parts[0]}.${parts[1]}"
+    # Velocidex tagging changed at v0.76.6: newer patches get their OWN full-
+    # version tag (e.g. v0.77.1), while older 0.76.x patches still live under the
+    # minor tag (v0.76). The naive major.minor truncation 404s on v0.77+ — so
+    # probe the full-version tag first and only fall back to the minor tag.
+    # (Mirrors the offline-collector staging above + resolve_velociraptor_release_tag
+    # in the backend upgrade path.)
+    local full_tag="v${velo_version}"
+    local minor_tag="v${parts[0]}.${parts[1]}"
+    local release_tag="$minor_tag"
+    if [[ "$(curl -s -o /dev/null -w '%{http_code}' -IL \
+            "https://github.com/Velocidex/velociraptor/releases/download/${full_tag}/velociraptor-v${velo_version}-windows-amd64.exe" 2>/dev/null)" == "200" ]]; then
+        release_tag="$full_tag"
+    fi
+    log_info "  Resolved Velociraptor release tag: ${release_tag} (for v${velo_version})"
     local base_url="https://github.com/Velocidex/velociraptor/releases/download/${release_tag}"
 
     local linux_dir="${module_dir}/clients/linux"
