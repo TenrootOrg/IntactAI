@@ -137,6 +137,10 @@ function setForensicsDefaultBlueprint(mode, blueprints = null) {
         defaultBp = bps.find(bp => bp.name && bp.name.includes('[Velociraptor] BestPractice'));
     }
 
+    // Fall back to the first blueprint so the dropdown never sits on the empty
+    // placeholder (the preferred-name match above uses legacy [Agentic]/
+    // [Velociraptor] markers that current blueprint names no longer carry).
+    if (!defaultBp && bps.length) defaultBp = bps[0];
     if (defaultBp) {
         select.value = defaultBp.id;
         onForensicsBlueprintChange(defaultBp.id);

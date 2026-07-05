@@ -199,12 +199,13 @@ async function onScheduleBlueprintTypeChange() {
         const data = await response.json();
         const blueprints = data.blueprints || (Array.isArray(data) ? data : []);
 
-        select.innerHTML = '<option value="">-- Select Blueprint --</option>' +
-            blueprints.map(bp => {
+        select.innerHTML = blueprints.map(bp => {
                 const n = bp.artifacts ? bp.artifacts.length : 0;
                 const label = n ? `${bp.name} (${n} artifacts)` : bp.name;  // memory/aws bps have no artifacts
                 return `<option value="${bp.id}">${label}</option>`;
-            }).join('');
+            }).join('') || '<option value="">No blueprints available</option>';
+        // Default to the first blueprint (no "-- Select --" placeholder).
+        if (blueprints.length) select.value = blueprints[0].id;
 
     } catch (error) {
         select.innerHTML = '<option value="">Error loading blueprints</option>';
