@@ -93,6 +93,22 @@ def _handle_workspace_error(e):
     # workspace" (vs string-matching the message) and show one clear alert.
     return jsonify({"error": str(e), "code": "workspace_system_blocked"}), 409
 
+
+@app.after_request
+def _echo_workspace_redirect(resp):
+    """When a module launched from the System workspace is auto-redirected to the
+    Default workspace (workflow_service._resolve_case_id), echo the effective
+    workspace to the browser so its active workspace follows the run — uniformly,
+    regardless of how the module's route reports success/errors."""
+    try:
+        from flask import g
+        rid = getattr(g, "workspace_redirect", None)
+        if rid:
+            resp.headers["X-Active-Case"] = rid
+    except Exception:
+        pass
+    return resp
+
 # Global flag to track initialization status
 initialization_status = {
     "elasticsearch": False,

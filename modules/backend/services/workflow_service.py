@@ -77,6 +77,29 @@ def _active_case_from_request():
     return None
 
 
+def _default_case_id():
+    """Id of the built-in Default workspace (cached). Ensures it exists."""
+    if not _DEFAULT_CASE_CACHE["id"]:
+        try:
+            from services.fusion import store
+            _DEFAULT_CASE_CACHE["id"] = store.ensure_default_case()
+        except Exception:
+            pass
+    return _DEFAULT_CASE_CACHE["id"]
+
+
+def _mark_workspace_redirect(case_id):
+    """Flag on the Flask request that a module run was redirected off the System
+    workspace to `case_id` (Default), so an after_request hook can echo it to the
+    browser (X-Active-Case) and the UI can follow. No-op outside a request."""
+    try:
+        from flask import g, has_request_context
+        if has_request_context() and case_id:
+            g.workspace_redirect = case_id
+    except Exception:
+        pass
+
+
 def _resolve_case_id(automation_type, case_id):
     """Tag every run to a workspace. ONE universal rule so no module/feature can
     silently fall through and become invisible in the workspace-scoped views:
@@ -110,6 +133,17 @@ def _resolve_case_id(automation_type, case_id):
     cid = case_id or _active_case_from_request()
     if cid:
         if cid == _system_case_id():
+            # Modules never run in the System workspace. Instead of blocking the
+            # launch, transparently redirect it to the Default investigation
+            # workspace and flag the request so the UI switches to Default too
+            # (mirrors system ops -> System). This runs uniformly for every
+            # module regardless of how its route reports errors — no dependency
+            # on a WorkspaceError 409 reaching the browser. Only raises if the
+            # Default workspace can't be resolved at all.
+            default_id = _default_case_id()
+            if default_id:
+                _mark_workspace_redirect(default_id)
+                return default_id
             raise WorkspaceError(
                 "Modules run against an investigation workspace, not the System "
                 "workspace. Switch to or create an investigation workspace first."
@@ -117,13 +151,7 @@ def _resolve_case_id(automation_type, case_id):
         return cid
 
     # No active case (scheduler / background, no request context) -> Default.
-    if not _DEFAULT_CASE_CACHE["id"]:
-        try:
-            from services.fusion import store
-            _DEFAULT_CASE_CACHE["id"] = store.ensure_default_case()
-        except Exception:
-            pass
-    return _DEFAULT_CASE_CACHE["id"]
+    return _default_case_id()
 
 # Try to import Elasticsearch service
 try:

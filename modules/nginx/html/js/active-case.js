@@ -56,7 +56,21 @@
     // maintenance / support bundle / purge / settings) run IN System so they
     // never hit this 409.
     return p.then(function (resp) {
-      if (!resp || resp.status !== 409) return resp;
+      if (!resp) return resp;
+      // PRIMARY path: the backend redirects a module launched from the System
+      // workspace to Default and echoes the effective workspace here. Follow it
+      // so the UI + later requests use Default (the run already ran there). This
+      // works for EVERY module uniformly — it doesn't depend on the launch route
+      // surfacing the 409 (some wrap it into a plain 500), which is why the
+      // header exists.
+      try {
+        var sw = resp.headers.get('X-Active-Case');
+        if (sw && get() !== sw) set(sw);
+      } catch (e) { /* header unreadable — ignore */ }
+
+      if (resp.status !== 409) return resp;
+      // FALLBACK: a route that still lets the WorkspaceError 409 through (e.g.
+      // AWS) — switch to Default and retry once.
       return resp.clone().json().then(function (d) {
         if (!d || d.code !== 'workspace_system_blocked') return resp;
         return _ensureDefaultCaseId().then(function (def) {
