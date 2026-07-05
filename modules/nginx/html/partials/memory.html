@@ -148,7 +148,7 @@
                                     class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Refresh</button>
                         </div>
                         <input type="text" x-model="$store.memory.clientFilter"
-                               placeholder="Filter clients by name..."
+                               placeholder="Filter by name, OS, or label..."
                                class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-purple-500 focus:outline-none">
                         <div class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
                             <template x-for="c in $store.memory.filteredClients()" :key="c.client_id">

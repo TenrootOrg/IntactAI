@@ -35,10 +35,20 @@ def get_clients():
         clients = get_clients_from_snapshot(include_offline=include_offline)
         total = len(clients)
 
-        # Filter by hostname search
+        # Smart filter: match the term against hostname, OS (+ version), or any
+        # Velociraptor label — so "windows", "linux", or a label like "servers"
+        # narrows the list, not just the hostname.
         search = request.args.get('search', '').strip().lower()
         if search:
-            clients = [c for c in clients if search in (c.get('hostname') or '').lower()]
+            def _match(c):
+                hay = ' '.join([
+                    str(c.get('hostname') or ''),
+                    str(c.get('os') or ''),
+                    str(c.get('os_version') or ''),
+                    ' '.join(str(l) for l in (c.get('labels') or [])),
+                ]).lower()
+                return search in hay
+            clients = [c for c in clients if _match(c)]
 
         filtered = len(clients)
 

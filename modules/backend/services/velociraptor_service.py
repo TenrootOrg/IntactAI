@@ -52,6 +52,7 @@ def get_clients_from_snapshot(include_offline=False):
                os_info.hostname AS hostname,
                os_info.system AS os,
                os_info.release AS os_version,
+               labels AS labels,
                last_seen_at,
                last_ip,
                timestamp(epoch=now()) AS current_time
@@ -86,11 +87,17 @@ def get_clients_from_snapshot(include_offline=False):
                                         last_seen = last_seen * 1000  # Convert ms to μs
                                     # Otherwise assume seconds or invalid
 
+                                # Velociraptor's built-in labels start with "label:"
+                                # in some columns; here `labels` is the plain list.
+                                _labels = item.get('labels') or []
+                                if not isinstance(_labels, list):
+                                    _labels = [str(_labels)]
                                 clients.append({
                                     "client_id": item.get('client_id', ''),
                                     "hostname": item.get('hostname', 'Unknown'),
                                     "os": item.get('os', 'Unknown'),
                                     "os_version": item.get('os_version', ''),
+                                    "labels": [str(l) for l in _labels if l],
                                     "last_seen_at": last_seen,
                                     "last_ip": item.get('last_ip', '')
                                 })

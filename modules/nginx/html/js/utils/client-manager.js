@@ -131,13 +131,21 @@ class ClientManager {
             const dot = isOnline
                 ? '<span class="inline-block w-2 h-2 bg-green-400 rounded-full"></span>'
                 : '<span class="inline-block w-2 h-2 bg-gray-500 rounded-full"></span>';
+            // Velociraptor labels as small chips (also searchable via the filter box).
+            const labels = Array.isArray(client.labels) ? client.labels : [];
+            const labelChips = labels.map(l =>
+                `<span class="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/50 text-blue-300 border border-blue-800/60">${l}</span>`
+            ).join(' ');
             return `
                 <label class="flex items-center gap-3 p-2 rounded hover:bg-gray-800 cursor-pointer">
                     <input type="checkbox" class="${this.checkboxClass}" value="${client.client_id}" data-hostname="${client.hostname || 'Unknown'}" ${shouldCheck ? 'checked' : ''}>
                     ${dot}
                     <div class="flex-1 min-w-0">
-                        <span class="text-sm text-white">${client.hostname || 'Unknown'}</span>
-                        <span class="text-xs text-gray-500 ml-2">${client.os || ''}</span>
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <span class="text-sm text-white">${client.hostname || 'Unknown'}</span>
+                            <span class="text-xs text-gray-500">${client.os || ''}</span>
+                            ${labelChips}
+                        </div>
                     </div>
                     <span class="text-xs text-gray-600 font-mono truncate">${client.client_id.substring(0, 12)}...</span>
                 </label>
