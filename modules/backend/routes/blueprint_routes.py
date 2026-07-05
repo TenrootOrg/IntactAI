@@ -37,6 +37,26 @@ blueprint_bp = Blueprint('blueprints', __name__)
 # Seeding - Load from YAML files
 # ============================================================================
 
+def _prune_orphaned_defaults(bp_type, yaml_defaults, load_fn, delete_fn):
+    """Remove default (is_default) blueprint rows whose id is no longer shipped
+    in default_blueprints.yaml — i.e. a default that was RENAMED or REMOVED in a
+    new release. Without this, upgrading leaves the OLD default in the DB
+    alongside the NEW one ("both new and old"). User-created blueprints
+    (is_default=false) are NEVER touched.
+
+    Guard: if the YAML produced no defaults for this type (a load failure),
+    prune NOTHING — a broken/empty YAML must never nuke every default.
+    """
+    yaml_ids = {b.get('id') for b in (yaml_defaults or []) if b.get('id')}
+    if not yaml_ids:
+        return
+    for row in load_fn():
+        if row.get('is_default') and row.get('id') not in yaml_ids:
+            delete_fn(row['id'])
+            print(f"[BLUEPRINTS] Pruned orphaned {bp_type} default "
+                  f"(renamed/removed this release): {row['id']}", flush=True)
+
+
 def seed_default_blueprints():
     """Seed default blueprints from YAML configuration files.
 
@@ -206,6 +226,18 @@ def seed_default_blueprints():
             if existing and existing.get('is_default'):
                 delete_memory_blueprint(bp_id)
                 print(f"[BLUEPRINTS] Removed deprecated memory default: {bp_id}", flush=True)
+
+    # Generic orphan prune: drop default (is_default) rows no longer shipped in
+    # the YAML, so upgrading a release that renamed/removed a default doesn't
+    # leave the old copy sitting alongside the new one. The velociraptor table
+    # holds both velociraptor + agentic defaults (agentic saves there too), so
+    # pruning it against the velociraptor YAML ids covers both. Memory is handled
+    # by the explicit list above. Custom (is_default=false) blueprints are never
+    # touched; a broken YAML (no defaults) prunes nothing.
+    _prune_orphaned_defaults('velociraptor', velo_defaults,
+                             load_velociraptor_blueprints, delete_velociraptor_blueprint)
+    _prune_orphaned_defaults('timesketch', ts_defaults,
+                             load_timesketch_blueprints, delete_timesketch_blueprint)
 
 
 # Seed on module load
