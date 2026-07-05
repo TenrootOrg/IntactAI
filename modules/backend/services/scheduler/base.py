@@ -119,6 +119,11 @@ def init_scheduled_jobs_table():
         # cadence anchored at their created date (backfilled below).
         ("interval_unit", "TEXT DEFAULT 'days'"),
         ("start_at", "TEXT"),
+        # Per-type run options as a JSON blob (CVE scan_mode/max_wait, Memory
+        # include_yara/timeouts/case_name, Collection collection_minutes, Hunt
+        # include_labels/per_artifact, AWS regions/scope_mode/…). One column
+        # keeps the schema flat + extensible; each runner reads what it needs.
+        ("options", "TEXT DEFAULT '{}'"),
     ]
     for col_name, col_def in time_filter_columns:
         try:

@@ -54,6 +54,9 @@ function renderScheduleCard(job) {
     } else if (job.blueprint_type === 'memory') {
         typeLabel = 'Memory';
         typeBadgeColor = 'bg-rose-900 text-rose-300';
+    } else if (job.blueprint_type === 'aws') {
+        typeLabel = 'AWS (CloudTrail)';
+        typeBadgeColor = 'bg-orange-900 text-orange-300';
     } else {
         typeLabel = 'Velociraptor Hunt';
         typeBadgeColor = 'bg-blue-900 text-blue-300';
@@ -158,46 +161,48 @@ async function onScheduleBlueprintTypeChange() {
     const type = document.getElementById('schedule-blueprint-type').value;
     const select = document.getElementById('schedule-blueprint-select');
     const blueprintSelectContainer = select.parentElement;
-    const timesketchOptions = document.getElementById('schedule-timesketch-options');
     const clientSection = document.getElementById('schedule-client-section');
 
+    // Hide every per-type options block; the active one is revealed below.
+    ['timesketch', 'cve', 'memory', 'collector', 'hunt', 'aws'].forEach(k => {
+        const el = document.getElementById('schedule-' + k + '-options');
+        if (el) el.classList.add('hidden');
+    });
+
     // Client picker: shown for client-targeted types (Collector/Timesketch/Memory),
-    // HIDDEN for env-wide hunt types (Velociraptor Hunt, CVE Management) which run
-    // across every enrolled client.
-    const envWide = (type === 'velociraptor' || type === 'cve');
+    // HIDDEN for env-wide types (Velociraptor Hunt, CVE Management, AWS).
+    const envWide = (type === 'velociraptor' || type === 'cve' || type === 'aws');
     if (clientSection) clientSection.classList.toggle('hidden', envWide);
 
-    timesketchOptions.classList.add('hidden');
+    // Reveal this type's options block.
+    const optKey = { agentic: 'collector', velociraptor: 'hunt', timesketch: 'timesketch',
+                     cve: 'cve', memory: 'memory', aws: 'aws' }[type];
+    const optEl = optKey && document.getElementById('schedule-' + optKey + '-options');
+    if (optEl) optEl.classList.remove('hidden');
 
-    // Timesketch uses a KAPE target (its own options block); CVE uses a fixed
-    // artifact set — neither picks a blueprint from the list.
-    if (type === 'timesketch') {
-        timesketchOptions.classList.remove('hidden');
-        blueprintSelectContainer.classList.add('hidden');
-        return;
-    }
+    // CVE uses a fixed artifact set (cve_management) — no per-blueprint pick.
     if (type === 'cve') {
         blueprintSelectContainer.classList.add('hidden');
         return;
     }
     blueprintSelectContainer.classList.remove('hidden');
 
-    // Load blueprints for the selected type: agentic (collector) -> /api/blueprints/agentic,
-    // velociraptor (hunt) -> /api/blueprints/velociraptor, memory -> /api/blueprints/memory.
+    // Blueprint list source: AWS has its own endpoint; everything else (agentic
+    // collector / velociraptor hunt / timesketch / memory) is /api/blueprints/<type>.
+    const url = (type === 'aws') ? '/api/aws/blueprints' : `/api/blueprints/${type}`;
     try {
-        const response = await fetch(`/api/blueprints/${type}`);
+        const response = await fetch(url);
         if (!response.ok) {
             select.innerHTML = '<option value="">Failed to load</option>';
             return;
         }
-
         const data = await response.json();
-        const blueprints = data.blueprints || [];
+        const blueprints = data.blueprints || (Array.isArray(data) ? data : []);
 
         select.innerHTML = '<option value="">-- Select Blueprint --</option>' +
             blueprints.map(bp => {
                 const n = bp.artifacts ? bp.artifacts.length : 0;
-                const label = n ? `${bp.name} (${n} artifacts)` : bp.name;  // memory bps have no artifacts
+                const label = n ? `${bp.name} (${n} artifacts)` : bp.name;  // memory/aws bps have no artifacts
                 return `<option value="${bp.id}">${label}</option>`;
             }).join('');
 
@@ -256,9 +261,15 @@ function showNewScheduleModal() {
     // Reset checkboxes
     document.querySelectorAll('.schedule-client-cb').forEach(cb => cb.checked = false);
 
-    // Reset Timesketch options
-    document.getElementById('schedule-kape-target').value = 'KapeTriage';
+    // Reset per-type option fields to their defaults
     document.getElementById('schedule-sketch-name').value = '';
+    const setVal = (id, v) => { const el = document.getElementById(id); if (el) { if (el.type === 'checkbox') el.checked = v; else el.value = v; } };
+    setVal('schedule-cve-scan-mode', 'vulnerable_only'); setVal('schedule-cve-max-wait', '120');
+    setVal('schedule-memory-yara', true); setVal('schedule-memory-case', '');
+    setVal('schedule-memory-acq-timeout', ''); setVal('schedule-memory-plugin-timeout', ''); setVal('schedule-memory-yara-timeout', '');
+    setVal('schedule-collector-minutes', '30');
+    setVal('schedule-hunt-labels', '');
+    setVal('schedule-aws-scope', 'account_wide'); setVal('schedule-aws-regions', ''); setVal('schedule-aws-max-events', '');
 
     onScheduleBlueprintTypeChange();
 }
@@ -309,11 +320,26 @@ async function editSchedule(jobId) {
             });
         } catch (e) {}
 
-        // Set timesketch options
+        // Sketch name for timesketch (the blueprint is set above via blueprint-select)
         if (job.blueprint_type === 'timesketch') {
-            document.getElementById('schedule-kape-target').value = job.blueprint_id || 'KapeTriage';
             document.getElementById('schedule-sketch-name').value = job.description || '';
         }
+
+        // Restore per-type run options
+        let opts = {};
+        try { opts = JSON.parse(job.options || '{}') || {}; } catch (e) {}
+        const setV = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined && v !== null) { if (el.type === 'checkbox') el.checked = !!v; else el.value = v; } };
+        setV('schedule-cve-scan-mode', opts.scan_mode); setV('schedule-cve-max-wait', opts.max_wait_minutes);
+        if ('include_yara' in opts) setV('schedule-memory-yara', opts.include_yara);
+        setV('schedule-memory-case', opts.case_name);
+        setV('schedule-memory-acq-timeout', opts.acquire_flow_timeout_s);
+        setV('schedule-memory-plugin-timeout', opts.plugin_timeout_s);
+        setV('schedule-memory-yara-timeout', opts.yarascan_timeout_s);
+        setV('schedule-collector-minutes', opts.collection_minutes);
+        setV('schedule-hunt-labels', (opts.include_labels || []).join(', '));
+        setV('schedule-aws-scope', opts.scope_mode);
+        setV('schedule-aws-max-events', opts.max_events_per_region);
+        setV('schedule-aws-regions', (opts.regions || []).join(', '));
 
     } catch (error) {
         alert('Error loading job: ' + error.message);
@@ -332,23 +358,45 @@ async function saveScheduleFromModal() {
     const runTime = document.getElementById('schedule-run-time').value || '02:00';
     const clientIds = getSelectedScheduleClients();
 
-    // Env-wide types run across every enrolled client (no picker): Velociraptor
-    // Hunt + CVE Management. CVE uses the fixed cve_management artifact set.
-    const envWide = (blueprintType === 'velociraptor' || blueprintType === 'cve');
+    // Env-wide types run across every enrolled client / account (no picker):
+    // Velociraptor Hunt, CVE Management, AWS.
+    const envWide = (blueprintType === 'velociraptor' || blueprintType === 'cve' || blueprintType === 'aws');
 
     // Get blueprint ID based on type
     let blueprintId;
-    if (blueprintType === 'timesketch') {
-        blueprintId = document.getElementById('schedule-kape-target').value;
-        // For timesketch, use sketch name as description
-        const sketchName = document.getElementById('schedule-sketch-name').value.trim();
-        if (sketchName) {
-            description = sketchName;
-        }
-    } else if (blueprintType === 'cve') {
+    if (blueprintType === 'cve') {
         blueprintId = 'cve_management';  // fixed CVE artifact set — no per-blueprint pick
     } else {
+        // agentic / velociraptor / timesketch (real blueprint) / memory / aws
         blueprintId = document.getElementById('schedule-blueprint-select').value;
+    }
+    if (blueprintType === 'timesketch') {
+        // sketch name -> description (as before); the blueprint carries KAPE settings
+        const sketchName = document.getElementById('schedule-sketch-name').value.trim();
+        if (sketchName) description = sketchName;
+    }
+
+    // Per-type run options (stored as the job's `options` JSON blob).
+    const num = (id) => { const v = parseInt((document.getElementById(id) || {}).value); return isNaN(v) ? null : v; };
+    const csv = (id) => ((document.getElementById(id) || {}).value || '').split(',').map(s => s.trim()).filter(Boolean);
+    let options = {};
+    if (blueprintType === 'cve') {
+        options = { scan_mode: document.getElementById('schedule-cve-scan-mode').value,
+                    max_wait_minutes: num('schedule-cve-max-wait') || 120 };
+    } else if (blueprintType === 'memory') {
+        options = { include_yara: document.getElementById('schedule-memory-yara').checked,
+                    case_name: (document.getElementById('schedule-memory-case').value || '').trim() || null,
+                    acquire_flow_timeout_s: num('schedule-memory-acq-timeout'),
+                    plugin_timeout_s: num('schedule-memory-plugin-timeout'),
+                    yarascan_timeout_s: num('schedule-memory-yara-timeout') };
+    } else if (blueprintType === 'agentic') {
+        options = { collection_minutes: num('schedule-collector-minutes') || 30 };
+    } else if (blueprintType === 'velociraptor') {
+        options = { include_labels: csv('schedule-hunt-labels') };
+    } else if (blueprintType === 'aws') {
+        options = { scope_mode: document.getElementById('schedule-aws-scope').value,
+                    regions: csv('schedule-aws-regions'),
+                    max_events_per_region: num('schedule-aws-max-events') };
     }
 
     // Validation
@@ -357,7 +405,7 @@ async function saveScheduleFromModal() {
         return;
     }
     if (!blueprintId) {
-        alert('Please select a blueprint' + (blueprintType === 'timesketch' ? ' (triage target)' : ''));
+        alert('Please select a blueprint');
         return;
     }
     // Client selection required only for client-targeted types.
@@ -376,7 +424,8 @@ async function saveScheduleFromModal() {
         interval_unit: intervalUnit,      // days | weeks | months | years
         start_date: startDate,            // anchor the interval to this date
         run_time: runTime,
-        client_ids: clientIds
+        client_ids: clientIds,
+        options: options                  // per-type run options
     };
 
     // Agentic runs are collection-only — no LLM report at the module level.

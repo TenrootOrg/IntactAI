@@ -52,6 +52,7 @@ def create_job():
         interval_value = data.get('interval_value', 1)
         interval_unit = data.get('interval_unit', 'days')
         start_date = data.get('start_date') or data.get('start_at')
+        options = data.get('options') if isinstance(data.get('options'), dict) else {}
 
         if not name:
             return jsonify({"error": "name is required"}), 400
@@ -110,6 +111,7 @@ def create_job():
             interval_unit=interval_unit,
             start_date=start_date,
             run_time=run_time,
+            options=options,
             client_ids=client_ids,
             report_types=report_types,
             anonymize_data=anonymize_data,

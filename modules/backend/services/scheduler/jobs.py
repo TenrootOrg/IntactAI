@@ -127,6 +127,7 @@ def create_scheduled_job(
     interval_unit: str = "days",
     start_date: str = None,
     run_time: str = "02:00",
+    options: dict = None,
     client_ids: list = None,
     report_types: list = None,
     anonymize_data: bool = False,
@@ -182,11 +183,11 @@ def create_scheduled_job(
     cursor.execute("""
         INSERT INTO scheduled_jobs
         (id, name, description, blueprint_id, blueprint_type, client_ids,
-         interval_type, interval_value, interval_unit, start_at, run_time, next_run_at, enabled,
+         interval_type, interval_value, interval_unit, start_at, run_time, options, next_run_at, enabled,
          report_types, anonymize_data, custom_patterns,
          time_filter_enabled, time_filter_mode, time_filter_relative_range,
          time_filter_start, time_filter_end, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         job_id,
         name,
@@ -199,6 +200,7 @@ def create_scheduled_job(
         unit,            # interval_unit: days | weeks | months
         start_dt.isoformat(),
         run_time,
+        json.dumps(options or {}),   # per-type run options (JSON)
         next_run.isoformat() if next_run else None,
         1,  # enabled
         json.dumps(report_types or ['technical']),
@@ -278,7 +280,7 @@ def update_scheduled_job(job_id: str, updates: dict) -> Optional[dict]:
     allowed_fields = [
         'name', 'description', 'blueprint_id', 'blueprint_type',
         'client_ids', 'interval_value', 'interval_unit', 'start_at', 'run_time', 'enabled',
-        'report_types', 'anonymize_data', 'custom_patterns'
+        'report_types', 'anonymize_data', 'custom_patterns', 'options'
     ]
 
     conn = get_db_connection()
@@ -291,6 +293,8 @@ def update_scheduled_job(job_id: str, updates: dict) -> Optional[dict]:
             # JSON encode lists
             if field in ['client_ids', 'report_types', 'custom_patterns']:
                 value = json.dumps(value) if isinstance(value, list) else value
+            elif field == 'options':
+                value = json.dumps(value) if isinstance(value, (dict, list)) else (value or '{}')
             elif field == 'anonymize_data':
                 value = 1 if value else 0
 

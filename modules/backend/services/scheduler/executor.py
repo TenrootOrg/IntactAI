@@ -37,6 +37,13 @@ def run_scheduled_blueprint(job_id: str):
     report_types = json.loads(job_meta.get('report_types', '["technical"]'))
     anonymize_data = bool(job_meta.get('anonymize_data', 0))
     custom_patterns = json.loads(job_meta.get('custom_patterns', '[]'))
+    # Per-type run options (JSON blob): CVE scan_mode/max_wait, Memory
+    # include_yara/timeouts/case_name, Collection collection_minutes, Hunt
+    # include_labels/per_artifact, AWS regions/scope_mode/…
+    try:
+        options = json.loads(job_meta.get('options') or '{}') or {}
+    except Exception:
+        options = {}
 
     # Reconstruct time_filter from job metadata
     time_filter = None
@@ -59,6 +66,12 @@ def run_scheduled_blueprint(job_id: str):
             agentic_bp = get_agentic_blueprint(blueprint_id)
             blueprint_name = agentic_bp.get('name', blueprint_id) if agentic_bp else blueprint_id
 
+            # Collection window (minutes) — operator-set per schedule; default 30.
+            try:
+                collection_minutes = max(1, min(1440, int(options.get('collection_minutes', 30))))
+            except Exception:
+                collection_minutes = 30
+
             # Create automation run
             run_id = create_automation_run(
                 automation_type="velociraptor_collection",
@@ -67,7 +80,7 @@ def run_scheduled_blueprint(job_id: str):
                     "blueprint_id": blueprint_id,
                     "blueprint": blueprint_name,
                     "client_ids": client_ids,
-                    "collection_minutes": 30,
+                    "collection_minutes": collection_minutes,
                     "report_types": report_types,
                     "scheduled_job_id": job_id
                 }
@@ -76,7 +89,7 @@ def run_scheduled_blueprint(job_id: str):
             # Run in background thread
             thread = threading.Thread(
                 target=run_agentic_pipeline,
-                args=(run_id, blueprint_id, client_ids, 30, llm_config, report_types,
+                args=(run_id, blueprint_id, client_ids, collection_minutes, llm_config, report_types,
                       anonymize_data, custom_patterns, False, None, time_filter),
                 daemon=True
             )
@@ -96,23 +109,29 @@ def run_scheduled_blueprint(job_id: str):
             print(f"[SCHEDULER] Started timesketch pipeline for {len(client_ids)} clients", flush=True)
 
         elif blueprint_type == 'memory':
-            # Memory-forensics pipeline — single host per run (memory
-            # acquisition is per-target). The scheduler hands the first
-            # client_id; multi-client scheduling for memory is a defer
-            # because of disk-pressure mechanics documented in the plan.
-            run_memory_scheduled(job_meta, client_ids)
+            # Memory-forensics pipeline — per client. YARA toggle / timeouts /
+            # case_name come from the job's options (see run_memory_scheduled).
+            run_memory_scheduled(job_meta, client_ids, options)
             print(f"[SCHEDULER] Started memory pipeline for {len(client_ids)} clients", flush=True)
 
         elif blueprint_type == 'cve':
             # CVE Management — env-wide: dispatch the cve_management hunt to every
-            # client, then auto-run the NVD scan on the results. No client_ids
-            # (hunt model). Runs in its own thread (see run_cve_scan_scheduled).
-            run_cve_scan_scheduled(job_meta['name'])
+            # client, then auto-run the NVD scan. scan_mode + max_wait from options.
+            run_cve_scan_scheduled(job_meta['name'],
+                                   scan_mode=options.get('scan_mode'),
+                                   max_wait_minutes=options.get('max_wait_minutes'))
             print(f"[SCHEDULER] Started CVE management scan (env-wide)", flush=True)
+
+        elif blueprint_type == 'aws':
+            # AWS (CloudTrail) — account-based/env-wide (no clients). blueprint +
+            # regions/scope_mode from options. Runs in its own thread.
+            run_aws_scheduled(job_meta['name'], blueprint_id, options)
+            print(f"[SCHEDULER] Started AWS scan (env-wide)", flush=True)
 
         else:
             # Velociraptor Hunt (env-wide) — legacy 'velociraptor' + explicit 'hunt'.
-            run_velociraptor_hunt(job_meta['name'], blueprint_id, client_ids)
+            # include_labels / per_artifact from options.
+            run_velociraptor_hunt(job_meta['name'], blueprint_id, client_ids, options)
             print(f"[SCHEDULER] Started velociraptor hunt: blueprint={blueprint_id}", flush=True)
 
         # Update job metadata
@@ -131,12 +150,23 @@ def run_scheduled_blueprint(job_id: str):
         traceback.print_exc()
 
 
-def run_velociraptor_hunt(job_name: str, blueprint_id: str, client_ids: list):
-    """Execute a Velociraptor hunt from a blueprint."""
+def run_velociraptor_hunt(job_name: str, blueprint_id: str, client_ids: list, options: dict = None):
+    """Execute a Velociraptor hunt from a blueprint.
+
+    options: {include_labels: [str] (target-label scoping — empty = all clients)}.
+    """
     from services.file_storage_service import get_velociraptor_blueprint
     from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
     from services.velociraptor_service import setup_velociraptor_connection
     import json
+
+    options = options or {}
+    include_labels = options.get('include_labels') or []
+    if isinstance(include_labels, str):
+        include_labels = [x.strip() for x in include_labels.split(',') if x.strip()]
+    # VQL fragment scoping the hunt to specific client labels (mirrors
+    # velociraptor_routes._hunt_labels_clause); empty = every enrolled client.
+    labels_clause = f"    include_labels={json.dumps(include_labels)},\n" if include_labels else ""
 
     # Get blueprint
     blueprint = get_velociraptor_blueprint(blueprint_id)
@@ -200,7 +230,7 @@ LET collection = hunt(
     description='Scheduled: {job_name} ({len(artifacts)} artifacts)',
     artifacts={artifacts_list},
     spec=dict({spec_parts}),
-    expires=now() + {expire_seconds},
+{labels_clause}    expires=now() + {expire_seconds},
     timeout={timeout_seconds},
     max_rows={flow_max_rows},
     max_bytes={flow_max_bytes},
@@ -250,12 +280,15 @@ SELECT HuntId FROM collection
         print(f"[SCHEDULER] Hunt error: {e}", flush=True)
 
 
-def run_cve_scan_scheduled(job_name: str):
+def run_cve_scan_scheduled(job_name: str, scan_mode: str = None, max_wait_minutes: int = None):
     """Scheduled CVE Management — env-wide: dispatch the cve_management hunt to
     every enrolled client, wait for it, then auto-run the NVD scan on the pulled
     results. Mirrors routes/cve_routes.py `_worker()`; runs in a daemon thread so
-    the APScheduler worker isn't held for the hunt's wait window. No client_ids
-    (hunt model)."""
+    the APScheduler worker isn't held for the hunt's wait window. No client_ids.
+
+    scan_mode: 'vulnerable_only' (default) | 'full' (report contents).
+    max_wait_minutes: hunt wait window, clamped [1, 720]; falls back to the
+    cve_management blueprint's hunt_expiry, else 120."""
     import threading
     from pathlib import Path
     from services.workflow_service import (create_automation_run, update_run_status,
@@ -263,19 +296,28 @@ def run_cve_scan_scheduled(job_name: str):
     from services.cve_scan.hunt import _dispatch_cve_hunt, _wait_for_hunt, _stop_hunt
     from services.cve_scan import run_cve_scan, pull_from_velociraptor
 
-    # Wait window = the cve_management blueprint's hunt_expiry (minutes), else 120.
-    try:
-        from services.file_storage_service import get_velociraptor_blueprint
-        bp = get_velociraptor_blueprint('cve_management') or {}
-        expiry_min = int((bp.get('settings') or {}).get('hunt_expiry', 120))
-    except Exception:
-        expiry_min = 120
-    max_wait_seconds = max(60, expiry_min * 60)
+    scan_mode = 'full' if str(scan_mode).lower() == 'full' else 'vulnerable_only'
+    # Wait window: operator value if given, else the cve_management blueprint's
+    # hunt_expiry (minutes), else 120. Clamp to [1, 720] like the CVE route.
+    if max_wait_minutes:
+        try:
+            expiry_min = int(max_wait_minutes)
+        except Exception:
+            expiry_min = 120
+    else:
+        try:
+            from services.file_storage_service import get_velociraptor_blueprint
+            bp = get_velociraptor_blueprint('cve_management') or {}
+            expiry_min = int((bp.get('settings') or {}).get('hunt_expiry', 120))
+        except Exception:
+            expiry_min = 120
+    expiry_min = max(1, min(720, expiry_min))
+    max_wait_seconds = expiry_min * 60
 
     run_id = create_automation_run(
         automation_type='cve_scan',
         name=f"Scheduled: {job_name}",
-        details={"source": "scheduler", "scan_mode": "vulnerable_only"},
+        details={"source": "scheduler", "scan_mode": scan_mode, "max_wait_minutes": expiry_min},
     )
     register_cancel_event(run_id)
 
@@ -304,9 +346,75 @@ def run_cve_scan_scheduled(job_name: str):
             if not csvs:
                 update_run_status(run_id, 'failed', error='CVE hunt produced no data to scan')
                 return
-            run_cve_scan(run_id, csvs, name=job_name, mode='vulnerable_only')
+            run_cve_scan(run_id, csvs, name=job_name, mode=scan_mode)
         except Exception as e:
             print(f"[SCHEDULER] CVE scheduled run error: {e}", flush=True)
+            try:
+                update_run_status(run_id, 'failed', error=str(e))
+            except Exception:
+                pass
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return run_id
+
+
+def run_aws_scheduled(job_name: str, blueprint_id: str, options: dict = None):
+    """Scheduled AWS (CloudTrail) scan — account-based/env-wide (no Velociraptor
+    clients). Resolves the AWS blueprint, loads AWS config, and runs
+    run_aws_pipeline in a daemon thread. Mirrors routes/aws_routes.start_scan.
+
+    options: {scope_mode ('account_wide'|'targeted'), regions [str],
+    max_events_per_region, target_principals, min_severity, cloudtrail_mode}."""
+    import threading
+    from services.workflow_service import create_automation_run, update_run_status
+    from services.aws.pipeline import run_aws_pipeline, get_aws_blueprints
+
+    options = options or {}
+    scope_mode = (options.get('scope_mode') or 'account_wide').lower()
+    if scope_mode not in ('targeted', 'account_wide'):
+        scope_mode = 'account_wide'
+    regions = options.get('regions') or []
+    if isinstance(regions, str):
+        regions = [r.strip() for r in regions.split(',') if r.strip()]
+    try:
+        mepr = int(options.get('max_events_per_region') or 0) or None
+        if mepr is not None and mepr < 1:
+            mepr = None
+    except (TypeError, ValueError):
+        mepr = None
+
+    blueprint = next((b for b in get_aws_blueprints() if b.get('id') == blueprint_id), None)
+
+    run_id = create_automation_run(
+        automation_type='aws_scan',
+        name=f"Scheduled: {job_name}",
+        details={"source": "scheduler", "blueprint": blueprint_id,
+                 "scope_mode": scope_mode, "regions": regions},
+    )
+
+    def _worker():
+        try:
+            update_run_status(run_id, 'running', progress=2)
+            if not blueprint:
+                update_run_status(run_id, 'failed', error=f"AWS blueprint not found: {blueprint_id}")
+                return
+            try:
+                from routes.config_routes import _load_cloud_config
+                aws_config = (_load_cloud_config() or {}).get('aws', {}) or {'region': 'us-east-1'}
+            except Exception:
+                aws_config = {'region': 'us-east-1'}
+            pipe_options = {
+                'scope_mode': scope_mode,
+                'target_principals': options.get('target_principals') or [],
+                'regions': regions or None,
+                'max_events_per_region': mepr,
+                'min_severity': options.get('min_severity', 'medium'),
+                'cloudtrail_mode': options.get('cloudtrail_mode'),
+                'time_filter': None, 'llm_config': None, 'iris_config': None, 'anonymizer': None,
+            }
+            run_aws_pipeline(run_id, aws_config, blueprint, pipe_options)
+        except Exception as e:
+            print(f"[SCHEDULER] AWS scheduled run error: {e}", flush=True)
             try:
                 update_run_status(run_id, 'failed', error=str(e))
             except Exception:
@@ -505,13 +613,17 @@ def update_job_run_stats(job_id: str):
     conn.close()
 
 
-def run_memory_scheduled(job_meta: dict, client_ids: list) -> None:
+def run_memory_scheduled(job_meta: dict, client_ids: list, options: dict = None) -> None:
     """Dispatch a memory-forensics run from a scheduled blueprint.
 
     Memory acquisition is per-host (4-16 GB transient .raw, three
     concurrent copies during pipeline), so the scheduler runs ONE
     client per job firing. If the operator scheduled multi-client,
     we iterate them serially — each becomes its own workflow row.
+
+    options: {include_yara (bool), case_name, acquire_flow_timeout_s,
+    plugin_timeout_s, yarascan_timeout_s} — the same per-run controls the
+    Memory module page exposes.
     """
     import threading
 
@@ -523,11 +635,28 @@ def run_memory_scheduled(job_meta: dict, client_ids: list) -> None:
         print("[SCHEDULER] memory: no client_ids — skipping", flush=True)
         return
 
+    options = options or {}
     blueprint_id = job_meta.get("blueprint_id") or ""
     blueprint = get_memory_blueprint(blueprint_id) if blueprint_id else None
     settings = (blueprint.get("settings") if blueprint else {}) or {}
-    mode = settings.get("mode") or "layered"
-    case_name = job_meta.get("case_name") or job_meta.get("name") or "Memory (scheduled)"
+    # Mode derived exactly like the Memory module page (memory.js): empty plugin
+    # set -> 'yara'; otherwise 'layered' if include-YARA is on, else 'plugin'.
+    plugin_set = settings.get("plugin_set") or settings.get("plugins") or []
+    include_yara = bool(options.get("include_yara", True))
+    if not plugin_set:
+        mode = "yara"
+    else:
+        mode = "layered" if include_yara else "plugin"
+    case_name = options.get("case_name") or job_meta.get("name") or "Memory (scheduled)"
+    # Optional per-run timeout overrides (seconds).
+    timeouts = {}
+    for k in ("acquire_flow_timeout_s", "plugin_timeout_s", "yarascan_timeout_s"):
+        try:
+            v = int(options.get(k) or 0)
+            if v > 0:
+                timeouts[k] = v
+        except (TypeError, ValueError):
+            pass
 
     for cid in client_ids:
         run_id = create_automation_run(
@@ -552,6 +681,7 @@ def run_memory_scheduled(job_meta: dict, client_ids: list) -> None:
                 "mode": mode,
                 "case_name": case_name,
                 "blueprint": blueprint,
+                "timeouts": timeouts or None,
             },
             daemon=True,
         ).start()
