@@ -16,6 +16,11 @@
  * Workflows tab already gets right.
  */
 
+// Shared faceted client picker (single-select). Kept OUTSIDE the Alpine store
+// so its internal Set/state isn't wrapped in Alpine's reactive proxy. Its
+// onChange mirrors the chosen client into $store.memory.selectedClient.
+let memoryClientManager = null;
+
 document.addEventListener('alpine:init', () => {
     Alpine.store('memory', {
         // --------------------------------------------------------------
@@ -30,7 +35,6 @@ document.addEventListener('alpine:init', () => {
         // Default case name: "Memory YYYY-MM-DD" so operators get a
         // sensible group out of the box without having to type one.
         caseName: 'Memory ' + new Date().toISOString().split('T')[0],
-        clientFilter: '',
         selectedClient: '',
         // Advanced-timeouts disclosure (closed by default). Operators
         // bump these for very large dumps or slow hardware. Blank or
@@ -43,8 +47,6 @@ document.addEventListener('alpine:init', () => {
         // --------------------------------------------------------------
         // Caches
         // --------------------------------------------------------------
-        clients: [],
-        clientsLoadedAt: 0,
         blueprints: [],
         blueprintsLoadedAt: 0,
 
@@ -70,16 +72,21 @@ document.addEventListener('alpine:init', () => {
         // Bootstrap
         // --------------------------------------------------------------
         async init() {
+            // Build the shared picker once; mirror its single selection into
+            // this.selectedClient so the Acquire button's :disabled binding and
+            // startRun() keep working unchanged.
+            if (!memoryClientManager) {
+                memoryClientManager = new ClientManager('memory-client-list', 'memory-client-radio', {
+                    singleSelect: true,
+                    onChange: (ids) => { Alpine.store('memory').selectedClient = ids[0] || ''; },
+                });
+                window.memoryClientManager = memoryClientManager;
+            }
             await Promise.all([this.refreshClients(), this.refreshBlueprints()]);
         },
 
         async refreshClients() {
-            try {
-                const r = await fetch('/api/clients');
-                const j = await r.json();
-                this.clients = j.items || [];
-                this.clientsLoadedAt = Date.now();
-            } catch (_) { this.clients = []; }
+            if (memoryClientManager) await memoryClientManager.load();
         },
 
         async refreshBlueprints() {
@@ -114,37 +121,6 @@ document.addEventListener('alpine:init', () => {
         },
 
         // --------------------------------------------------------------
-        // Client picker helpers
-        // --------------------------------------------------------------
-        filteredClients() {
-            const q = (this.clientFilter || '').toLowerCase();
-            const rows = !q
-                ? this.clients
-                : this.clients.filter(c =>
-                    (c.hostname || '').toLowerCase().includes(q) ||
-                    (c.client_id || '').toLowerCase().includes(q));
-            // Surface freshest first — operators want the host they
-            // just logged into at the top.
-            return rows.slice().sort((a, b) => (b.last_seen_at || 0) - (a.last_seen_at || 0));
-        },
-
-        isFresh(c) {
-            if (!c.last_seen_at) return false;
-            // last_seen_at is microseconds-since-epoch (Velociraptor convention).
-            const ageSec = (Date.now() - c.last_seen_at / 1000) / 1000;
-            return ageSec < 300;
-        },
-
-        ageLabel(c) {
-            if (!c.last_seen_at) return '—';
-            const ageSec = Math.max(0, (Date.now() - c.last_seen_at / 1000) / 1000);
-            if (ageSec < 60) return `${ageSec.toFixed(0)}s ago`;
-            if (ageSec < 3600) return `${(ageSec / 60).toFixed(0)}m ago`;
-            if (ageSec < 86400) return `${(ageSec / 3600).toFixed(0)}h ago`;
-            return `${(ageSec / 86400).toFixed(0)}d ago`;
-        },
-
-        // --------------------------------------------------------------
         // Dispatch
         // --------------------------------------------------------------
         async startRun() {
@@ -152,7 +128,7 @@ document.addEventListener('alpine:init', () => {
             this.dispatching = true;
             this.lastStatus = '';
             try {
-                const c = this.clients.find(x => x.client_id === this.selectedClient) || {};
+                const c = (memoryClientManager && memoryClientManager.getClient(this.selectedClient)) || {};
                 const body = {
                     client_id: this.selectedClient,
                     client_name: c.hostname || null,

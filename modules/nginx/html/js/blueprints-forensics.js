@@ -7,8 +7,10 @@
 // Forensics Tab - Unified Velociraptor + Agentic
 // ============================================================================
 
-let forensicsSelectedClients = new Set();
-let forensicsClientsCache = [];
+// Client picker for Collection mode — the shared faceted ClientManager (same
+// component the scheduler/timesketch/memory pickers use). Selection lives in
+// the manager's Set model; read it via getSelected() at submit time.
+const forensicsClientManager = new ClientManager('forensics-client-list', 'forensics-client-cb');
 
 async function initForensicsTab(mode = 'ai') {
     // Load unified blueprints (velociraptor + agentic combined)
@@ -32,8 +34,8 @@ async function initForensicsTab(mode = 'ai') {
         setForensicsDefaultBlueprint(mode, blueprints);
     }
 
-    // Load clients
-    await loadForensicsClients();
+    // Load clients (shared faceted picker)
+    await forensicsClientManager.load();
     // Load the hunt label-target options (raw/hunt mode)
     await loadForensicsHuntLabels();
 }
@@ -147,123 +149,9 @@ function setForensicsDefaultBlueprint(mode, blueprints = null) {
     }
 }
 
-async function loadForensicsClients(search = '', includeOffline = false) {
-    try {
-        // Online-only by default (correct for new-collection mode where
-        // offline endpoints can't receive a hunt). Existing-flow mode
-        // bumps the limit + sends include_offline=true since the data
-        // is already collected and offline endpoints are still valid
-        // analysis targets.
-        const limit = includeOffline ? 200 : 20;
-        let url = `/api/clients?limit=${limit}`;
-        if (search) url += `&search=${encodeURIComponent(search)}`;
-        if (includeOffline) url += '&include_offline=true';
-        const response = await fetch(url);
-        const data = await response.json();
-        const clients = data.items || [];
-        forensicsClientsCache = clients;
-        renderForensicsClients(clients);
-
-        // Show "more results" hint
-        const filtered = data.filtered || clients.length;
-        if (filtered > clients.length) {
-            const container = document.getElementById('forensics-client-list');
-            if (container) {
-                container.innerHTML += `<p class="text-xs text-gray-500 text-center py-2">${filtered - clients.length} more — refine your search</p>`;
-            }
-        }
-    } catch (error) {
-        console.error('[Forensics] Error loading clients:', error);
-        renderForensicsClients([]);
-    }
-}
-
-function renderForensicsClients(clients) {
-    const container = document.getElementById('forensics-client-list');
-    if (!container) return;
-
-    if (!clients || clients.length === 0) {
-        container.innerHTML = '<p class="text-sm text-gray-500">No clients available</p>';
-        return;
-    }
-
-    // Same OS-grouping logic as ClientManager.render() — kept inline here
-    // because this picker has its own rendering pipeline (selection model
-    // is a Set, not derived from DOM checkbox state).
-    const osKey = (os) => {
-        if (!os) return 'Unknown';
-        const s = String(os).trim().toLowerCase();
-        if (!s) return 'Unknown';
-        if (s === 'windows' || s.startsWith('win')) return 'Windows';
-        if (s === 'linux') return 'Linux';
-        if (s === 'darwin' || s === 'macos' || s === 'osx' || s === 'mac') return 'macOS';
-        return s.charAt(0).toUpperCase() + s.slice(1);
-    };
-
-    const groups = {};
-    for (const c of clients) {
-        const k = osKey(c.os);
-        (groups[k] = groups[k] || []).push(c);
-    }
-    const preferred = ['Windows', 'Linux', 'macOS'];
-    const others = Object.keys(groups)
-        .filter(k => !preferred.includes(k) && k !== 'Unknown')
-        .sort();
-    const orderedKeys = [
-        ...preferred.filter(k => groups[k] && groups[k].length),
-        ...others,
-        ...(groups['Unknown'] && groups['Unknown'].length ? ['Unknown'] : []),
-    ];
-
-    const renderClient = (client) => {
-        const lastSeenMs = client.last_seen_at ? client.last_seen_at / 1000 : 0;
-        const isOnline = lastSeenMs && (Date.now() - lastSeenMs) < 300000; // 5 minutes
-        const checked = forensicsSelectedClients.has(client.client_id) ? 'checked' : '';
-        return `
-            <label class="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-gray-800">
-                <input type="checkbox" ${checked}
-                    onchange="toggleForensicsClient('${client.client_id}')"
-                    class="w-4 h-4 rounded border-gray-700 bg-gray-900 text-blue-600">
-                <span class="w-2 h-2 rounded-full ${isOnline ? 'bg-green-400' : 'bg-gray-500'}"></span>
-                <span class="text-sm text-gray-300">${client.hostname || 'Unknown'}</span>
-                <span class="text-xs text-gray-500">${client.os || ''}</span>
-            </label>
-        `;
-    };
-
-    container.innerHTML = orderedKeys.map(key => {
-        const groupClients = groups[key];
-        const heading = `
-            <div class="flex items-center gap-2 px-2 pt-2 pb-1 mt-1 border-t border-gray-800 first:border-t-0 first:mt-0 first:pt-0">
-                <span class="text-xs uppercase tracking-wide text-gray-400 font-semibold">${key}</span>
-                <span class="text-xs text-gray-600">(${groupClients.length})</span>
-            </div>
-        `;
-        return heading + groupClients.map(renderClient).join('');
-    }).join('');
-}
-
-function toggleForensicsClient(clientId) {
-    if (forensicsSelectedClients.has(clientId)) {
-        forensicsSelectedClients.delete(clientId);
-    } else {
-        forensicsSelectedClients.add(clientId);
-    }
-}
-
-function selectAllForensicsClients(select) {
-    forensicsSelectedClients.clear();
-    if (select) {
-        forensicsClientsCache.forEach(c => forensicsSelectedClients.add(c.client_id));
-    }
-    renderForensicsClients(forensicsClientsCache);
-}
-
-let _forensicsSearchTimeout = null;
-function filterForensicsClients(query) {
-    clearTimeout(_forensicsSearchTimeout);
-    _forensicsSearchTimeout = setTimeout(() => loadForensicsClients(query), 300);
-}
+// Backwards-compatible wrappers → shared faceted ClientManager.
+function selectAllForensicsClients(select) { forensicsClientManager.selectAll(select); }
+function filterForensicsClients(query) { forensicsClientManager.filter(query); }
 
 async function onForensicsBlueprintChange(blueprintId) {
     const countEl = document.getElementById('forensics-artifact-count');
@@ -307,7 +195,7 @@ async function startForensicsCollection() {
 
     // Collection mode requires at least one client.
     if (isAiMode) {
-        const selectedClients = Array.from(forensicsSelectedClients);
+        const selectedClients = forensicsClientManager.getSelected();
         if (selectedClients.length === 0) {
             alert('Please select at least one client');
             return;
@@ -330,7 +218,7 @@ async function startForensicsCollection() {
             // Collection mode — agentic endpoint as a pure collector.
             // report_types=[] means the pipeline gathers + persists raw data
             // but skips all LLM/report work; analysis happens at the case level.
-            const selectedClients = Array.from(forensicsSelectedClients);
+            const selectedClients = forensicsClientManager.getSelected();
             const collectionTime = parseInt(document.getElementById('forensics-collection-time')?.value || '30');
 
             const response = await fetch('/api/agentic/run', {

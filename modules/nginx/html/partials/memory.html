@@ -147,27 +147,16 @@
                             <button @click="$store.memory.refreshClients()"
                                     class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Refresh</button>
                         </div>
-                        <input type="text" x-model="$store.memory.clientFilter"
+                        <!-- Shared faceted client picker (ClientManager, single-select mode).
+                             The facet bar (OS/label chips + online toggle) is injected above
+                             the list container by the component; selection mirrors into
+                             $store.memory.selectedClient via its onChange callback. -->
+                        <input type="text" id="memory-client-search"
+                               oninput="window.memoryClientManager && window.memoryClientManager.filter(this.value)"
                                placeholder="Filter by name, OS, or label..."
                                class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2 focus:border-purple-500 focus:outline-none">
-                        <div class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
-                            <template x-for="c in $store.memory.filteredClients()" :key="c.client_id">
-                                <label class="flex items-center justify-between gap-3 cursor-pointer hover:bg-gray-800 rounded px-2 py-1">
-                                    <div class="flex items-center gap-3">
-                                        <input type="radio" :value="c.client_id" x-model="$store.memory.selectedClient"
-                                               class="w-4 h-4 border-gray-700 bg-gray-900 text-purple-600 focus:ring-purple-500">
-                                        <div>
-                                            <div class="text-sm text-gray-200" x-text="c.hostname || '(unknown)'"></div>
-                                            <div class="text-xs text-gray-500 font-mono" x-text="c.client_id"></div>
-                                        </div>
-                                    </div>
-                                    <div class="text-xs" :class="{'text-green-400': $store.memory.isFresh(c), 'text-gray-500': !$store.memory.isFresh(c)}"
-                                         x-text="$store.memory.ageLabel(c)"></div>
-                                </label>
-                            </template>
-                            <p x-show="!$store.memory.filteredClients().length" class="text-sm text-gray-500">
-                                No clients match the filter.
-                            </p>
+                        <div id="memory-client-list" class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
+                            <p class="text-sm text-gray-500">Loading clients...</p>
                         </div>
                     </div>
 

@@ -259,8 +259,8 @@ function showNewScheduleModal() {
     // Start UTC clock
     startUtcClock();
 
-    // Reset checkboxes
-    document.querySelectorAll('.schedule-client-cb').forEach(cb => cb.checked = false);
+    // Reset selection (new job starts with nothing selected)
+    schedulerClientManager.setSelected([]);
 
     // Reset per-type option fields to their defaults
     document.getElementById('schedule-sketch-name').value = '';
@@ -313,12 +313,10 @@ async function editSchedule(jobId) {
         await onScheduleBlueprintTypeChange();
         document.getElementById('schedule-blueprint-select').value = job.blueprint_id || '';
 
-        // Set client checkboxes
+        // Restore the saved client selection (Set model survives facet filtering)
         try {
             const clientIds = JSON.parse(job.client_ids || '[]');
-            document.querySelectorAll('.schedule-client-cb').forEach(cb => {
-                cb.checked = clientIds.includes(cb.value);
-            });
+            schedulerClientManager.setSelected(clientIds);
         } catch (e) {}
 
         // Sketch name for timesketch (the blueprint is set above via blueprint-select)
