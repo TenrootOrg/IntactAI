@@ -115,9 +115,11 @@ def get_all_blueprints() -> Dict[str, List[Dict]]:
                 result[bp_type].append(deepcopy(override_bp))
                 print(f"[BLUEPRINT-LOADER] Override added: {bp_type}/{bp_id}", flush=True)
 
-    # Backwards compatibility: agentic returns velociraptor blueprints
-    # (agentic blueprints are now part of velociraptor list with [Agentic] prefix)
-    result['agentic'] = [bp for bp in result['velociraptor'] if '[Agentic]' in bp.get('name', '')]
+    # Backwards compatibility: agentic returns the velociraptor-stored collection
+    # blueprints. Match the current naming ("Velociraptor Agentic: …" / id
+    # agentic_*) — the old "[Agentic]" bracket marker is no longer used.
+    result['agentic'] = [bp for bp in result['velociraptor']
+                         if 'agentic' in (bp.get('name', '') + ' ' + bp.get('id', '')).lower()]
 
     # Log summary
     for bp_type in result:

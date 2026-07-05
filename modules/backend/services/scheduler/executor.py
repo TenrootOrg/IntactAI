@@ -322,7 +322,8 @@ def run_timesketch_pipeline(job_meta: dict, client_ids: list):
     This runs KAPE collection followed by Plaso processing and TimeSketch import.
     """
     from services.kape_service import run_kape_collection_grpc, monitor_flow_completion
-    from services.velociraptor_service import get_client_info, export_flow_to_zip, cleanup_flow_export
+    from services.velociraptor_service import export_flow_to_zip, cleanup_flow_export
+    from services.agentic.collectors._base import resolve_hostnames
     from services.kape_upload_service import process_kape_upload
     from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
     from services.file_storage_service import get_timesketch_blueprint
@@ -354,8 +355,7 @@ def run_timesketch_pipeline(job_meta: dict, client_ids: list):
     for client_id in client_ids:
         try:
             # Get client hostname
-            client_info = get_client_info(client_id)
-            client_name = client_info.get('hostname', client_id) if client_info else client_id
+            client_name = resolve_hostnames([client_id]).get(client_id, client_id)
 
             # Create automation run
             blueprint_name = blueprint.get('name', blueprint_id) if blueprint else blueprint_id

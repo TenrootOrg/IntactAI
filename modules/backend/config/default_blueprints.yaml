@@ -190,7 +190,7 @@ velociraptor:
       - Generic.Client.Info
 
   - id: agentic_quick_wins
-    name: "Velociraptor Agentic: Quick Wins"
+    name: "Velociraptor Collection: Quick Wins"
     description: "The agentic detection set — program execution, C2, defense-evasion, persistence & identity (19 artifacts)"
     is_default: true
     settings:
@@ -239,7 +239,7 @@ velociraptor:
   # filesystem. These artifacts all exist + collect on a Linux endpoint (verified
   # against the shipped velociraptor binary) and avoid the filesystem-wide scanners.
   - id: agentic_linux_triage
-    name: "Velociraptor Agentic: Linux Triage"
+    name: "Velociraptor Collection: Linux Triage"
     description: "Linux endpoint triage — processes, persistence, accounts, logs (17 artifacts)"
     is_default: true
     os: linux
@@ -278,7 +278,7 @@ velociraptor:
       - Linux.Debian.Packages
 
   - id: agentic_quick_wins_linux
-    name: "Velociraptor Agentic: Quick Wins Linux"
+    name: "Velociraptor Collection: Quick Wins Linux"
     description: "Low-volume, high-signal Linux detections — persistence, priv-esc, defense-evasion, lateral (15 artifacts)"
     is_default: true
     os: linux

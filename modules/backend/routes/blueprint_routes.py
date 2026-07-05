@@ -386,10 +386,14 @@ def delete_velociraptor_blueprint_route(blueprint_id):
 
 @blueprint_bp.route('/api/blueprints/agentic', methods=['GET'])
 def list_agentic_blueprints():
-    """Get agentic blueprints (filtered from velociraptor storage by [Agentic] prefix)"""
+    """Get agentic (Velociraptor Collector) blueprints — the client-targeted
+    collection blueprints, filtered from the shared velociraptor storage. Matches
+    the current naming ("Velociraptor Agentic: …" / id agentic_*); the old
+    "[Agentic]" bracket marker is no longer used, which silently returned 0."""
     try:
         all_bp = load_velociraptor_blueprints()
-        agentic = [bp for bp in all_bp if '[Agentic]' in bp.get('name', '')]
+        agentic = [bp for bp in all_bp
+                   if 'agentic' in (bp.get('name', '') + ' ' + bp.get('id', '')).lower()]
         return jsonify({"blueprints": agentic})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
