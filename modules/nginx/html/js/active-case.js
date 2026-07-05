@@ -45,24 +45,40 @@
 
     const p = _fetch(input, init);
     if (!isApi) return p;
-    // Globally catch the System-workspace block (409 + code) for EVERY module
+    // Globally auto-recover from the System-workspace guard for EVERY module
     // launch — offline-collector import, hunts, timesketch, memory, cve,
-    // blueprints, cloud scans, … — and pop one clear alert. System features
-    // (upgrade / maintenance / support bundle / purge / settings) run IN System
-    // so they never get this 409 and are naturally excluded.
+    // blueprints, cloud scans, … Modules must run in an investigation
+    // workspace, so when a launch is rejected because System is active (409 +
+    // workspace_system_blocked), silently switch to the Default workspace and
+    // RETRY the request once — the run just works, mirroring how system
+    // features switch TO System. Falls back to the old one-shot alert only if
+    // the Default workspace can't be resolved. System features (upgrade /
+    // maintenance / support bundle / purge / settings) run IN System so they
+    // never hit this 409.
     return p.then(function (resp) {
-      try {
-        if (resp && resp.status === 409) {
-          resp.clone().json().then(function (d) {
-            if (d && d.code === 'workspace_system_blocked') {
-              _showWorkspaceBlocked(d.error ||
-                'This action runs against an investigation workspace, not System. ' +
-                'Switch to or create an investigation workspace first.');
-            }
-          }).catch(function () { /* non-JSON 409 — ignore */ });
-        }
-      } catch (e) { /* never break the response chain */ }
-      return resp;
+      if (!resp || resp.status !== 409) return resp;
+      return resp.clone().json().then(function (d) {
+        if (!d || d.code !== 'workspace_system_blocked') return resp;
+        return _ensureDefaultCaseId().then(function (def) {
+          if (def && get() !== def) {
+            set(def);   // move active workspace -> Default
+            // Retry once with X-Case-Id FORCED to Default. The first attempt
+            // already stamped the stale System id onto init.headers, so we must
+            // overwrite it (the hook only sets the header when absent). Use the
+            // raw fetch so we don't re-enter this interceptor / re-retry.
+            var rh = new Headers((init && init.headers) ||
+              (typeof input !== 'string' && input && input.headers) || {});
+            rh.set('X-Case-Id', def);
+            var rinit = Object.assign({}, init, { headers: rh });
+            return _fetch(input, rinit);
+          }
+          // Couldn't resolve Default (or already there) — surface the message.
+          _showWorkspaceBlocked(d.error ||
+            'This action runs against an investigation workspace, not System. ' +
+            'Switch to or create an investigation workspace first.');
+          return resp;
+        });
+      }).catch(function () { return resp; });   // non-JSON 409 — pass through
     });
   };
 
@@ -82,20 +98,35 @@
     return _systemCaseId;
   }
 
+  // Cache the built-in Default workspace id (is_default). This is where module
+  // work auto-lands when the operator tries to run it from the System workspace.
+  let _defaultCaseId = null;
+  async function _ensureDefaultCaseId() {
+    if (_defaultCaseId) return _defaultCaseId;
+    const cases = await listCases();
+    const def = cases.find(c => c.is_default) || cases.find(c => !c.is_system) || null;
+    if (def) _defaultCaseId = def.case_id;
+    return _defaultCaseId;
+  }
+
   /**
-   * PROACTIVE System-workspace guard for module launches that DON'T go through a
-   * fetch the UI can inspect — notably tus uploads (velociraptor offline
-   * collector, timesketch import), where the backend creates the run server-side
-   * AFTER the upload finishes, so its 409 never reaches the browser. Call this
-   * BEFORE starting such work: if the active workspace is System it pops the same
-   * one-shot alert and returns true (caller should abort); otherwise false.
-   * Fetch-based launches don't need this — the window.fetch 409 interceptor above
-   * catches them automatically. System features (settings page) never call it.
+   * PROACTIVE System-workspace redirect for module launches that DON'T go through
+   * a fetch the UI can inspect — notably tus uploads (velociraptor offline
+   * collector, timesketch import) + the memory-dump XHR upload, where the backend
+   * creates the run server-side AFTER the upload finishes, so the window.fetch
+   * 409 interceptor never sees it. Call this BEFORE starting such work: if the
+   * active workspace is System it silently moves to the Default workspace (so the
+   * upload rides in on an investigation workspace) and returns false (proceed).
+   * It only returns true (caller should abort) if Default can't be resolved.
+   * Kept the name/return-shape so existing callers work unchanged.
    */
   async function blockIfSystem(msg) {
     try {
       const sys = await _ensureSystemCaseId();
       if (sys && get() === sys) {
+        const def = await _ensureDefaultCaseId();
+        if (def) { set(def); return false; }   // redirect to Default, then proceed
+        // No Default to fall back to — block with the alert rather than run it in System.
         _showWorkspaceBlocked(msg ||
           'This action runs against an investigation workspace, not System. ' +
           'Switch to or create an investigation workspace first.');

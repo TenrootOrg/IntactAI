@@ -30,6 +30,13 @@ async function renderTopWorkspace(bar) {
             window.addEventListener('storage', function (e) {
                 if (e.key === 'activeCaseId') renderTopWorkspace(bar);
             });
+            // Same-tab changes (e.g. ActiveCase auto-switching a module launch
+            // from System -> Default) don't fire 'storage'; ActiveCase.set()
+            // dispatches this instead. Keep the bar in sync so the operator sees
+            // the workspace they were moved to.
+            window.addEventListener('active-case-changed', function () {
+                renderTopWorkspace(bar);
+            });
         }
     };
     if (document.readyState === 'loading') {

@@ -207,6 +207,16 @@ document.addEventListener('alpine:init', () => {
          *  supported yet in Chromium's Alpine context. */
         startUpload() {
             if (!this.uploadFile) { this.uploadStatus = 'pick a file first'; return; }
+            // This XHR bypasses the window.fetch System->Default auto-recover, so
+            // redirect off the System workspace up front (mirrors the tus-upload
+            // guard). blockIfSystem now switches to Default and resolves false;
+            // re-enter once it's settled so the XHR tags the right workspace.
+            if (window.ActiveCase && window.ActiveCase.blockIfSystem && !this._wsRedirected) {
+                this._wsRedirected = true;
+                window.ActiveCase.blockIfSystem().then(() => this.startUpload());
+                return;
+            }
+            this._wsRedirected = false;
             this.uploading = true;
             this.uploadStatus = '';
             this.uploadProgress = 0;
