@@ -56,6 +56,45 @@ from services.storage.base import (
     clear_upgrade_state,
 )
 
+
+def _upgrade_noop_module(module_name: str) -> bool:
+    """True iff this module needs NOTHING done this upgrade — it's already
+    installed and none of its version pins changed (the primary pin `M` OR any
+    transitive sidecar pin `M_*`, e.g. timesketch_opensearch / iris_rabbitmq /
+    volweb_postgres). Such a module is skipped so we don't pointlessly re-load
+    images + recreate its containers for an identical version.
+
+    How "changed" is decided: the config-merge writes the release's target pins
+    into config.yaml during Phase 1 and leaves the operator's pre-merge pins in
+    config.yaml.pre-upgrade-backup. So comparing the two, per key, is an exact
+    delta — a primary bump OR any sidecar bump for this module counts as a
+    change. `intact` ALWAYS refreshes (rolling refs). Returns False (i.e. DO
+    process) whenever we can't tell — module absent (that's an install, per the
+    operator's package selection) or the backup is missing — so we never skip
+    something that actually needed work.
+    """
+    if module_name == 'intact':
+        return False
+    from .base import _module_container_exists
+    if _module_container_exists(module_name) is False:
+        return False
+    import yaml
+    try:
+        with open(os.path.join(WORKDIR, 'config.yaml')) as f:
+            target = (yaml.safe_load(f) or {}).get('versions') or {}
+        with open(os.path.join(WORKDIR, 'config.yaml.pre-upgrade-backup')) as f:
+            pre_merge = (yaml.safe_load(f) or {}).get('versions') or {}
+    except Exception:
+        return False   # no reliable comparison -> don't skip
+    if not pre_merge:
+        return False
+    for key, tgt in target.items():
+        if key != module_name and not key.startswith(module_name + '_'):
+            continue
+        if str(pre_merge.get(key)).strip() != str(tgt).strip():
+            return False   # primary or a sidecar pin changed / was added
+    return True
+
 # Database volumes that can be reset for fresh install (schema compatibility)
 RESET_VOLUMES = {
     'timesketch': ['timesketch_timesketch_postgres_data', 'timesketch_timesketch_opensearch_data'],
@@ -286,6 +325,16 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
 
             target_version = modules[module_name]
             current = current_versions.get(module_name, {}).get('current', 'unknown')
+
+            # A2: skip a module that needs nothing done — already installed and
+            # neither its primary version nor any sidecar pin changed. intact
+            # always refreshes (see _upgrade_noop_module).
+            if _upgrade_noop_module(module_name):
+                log(f"  {module_name.upper()}: already at {target_version} — no version/sidecar change, skipping", "info")
+                results[module_name] = {"success": True, "skipped": True,
+                                        "reason": "already up to date (no change)"}
+                continue
+
             log("", "info")
             log(f"{'='*50}", "info")
             log(f"UPGRADING: {module_name.upper()}", "info")
@@ -672,6 +721,15 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
 
             target_version = modules[module_name]
             current = current_versions.get(module_name, {}).get('current', 'unknown')
+
+            # A2: skip a module that needs nothing done — already installed and
+            # neither its primary version nor any sidecar pin changed. intact
+            # always refreshes (see _upgrade_noop_module).
+            if _upgrade_noop_module(module_name):
+                log(f"  {module_name.upper()}: already at {target_version} — no version/sidecar change, skipping", "info")
+                results[module_name] = {"success": True, "skipped": True,
+                                        "reason": "already up to date (no change)"}
+                continue
 
             # Install-vs-upgrade dispatch: pick the install function
             # when the module's primary container is absent (fresh-
@@ -1139,6 +1197,16 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                 if not os.path.exists(backend_source) and not os.path.exists(frontend_source):
                     continue
             elif not version:
+                continue
+
+            # A2: skip a module that needs nothing done — already installed and
+            # neither its primary version nor any sidecar pin changed. intact is
+            # handled above and always refreshes; absent modules still install
+            # per the operator's package selection (see _upgrade_noop_module).
+            if _upgrade_noop_module(module_name):
+                log(f"  {module_name.upper()}: already at {version} — no version/sidecar change, skipping", "info")
+                results[module_name] = {"success": True, "skipped": True,
+                                        "reason": "already up to date (no change)"}
                 continue
 
             # Install-or-upgrade detection: pick the install function
