@@ -85,6 +85,29 @@ def _legacy_velo_config_volume():
     return None
 
 
+def _migration_copy_image(log: Callable) -> str:
+    """Pick a locally-present image (with sh + cp) for the legacy-volume copy.
+
+    Prefer `alpine` when it's already local. On an AIR-GAPPED host alpine isn't
+    cached and can't be pulled (`docker run alpine` -> 'Unable to find image ...
+    Temporary failure in name resolution'), which used to skip the whole
+    migration. Fall back to the velociraptor-server image this very upgrade just
+    `docker load`ed — it's ubuntu:22.04-based (has sh + cp) and is guaranteed
+    present by the time the migration runs. Last resort stays 'alpine' so an
+    online host still auto-pulls it.
+    """
+    if run_command("docker image inspect alpine", logger=None).get("success"):
+        return "alpine"
+    r = run_command("docker images --format '{{.Repository}}:{{.Tag}}'", logger=None)
+    if r.get("success"):
+        for ln in (r.get("stdout") or "").splitlines():
+            tag = ln.strip()
+            if tag.startswith("velociraptor-server:") and "<none>" not in tag:
+                log(f"  alpine unavailable (air-gapped) — using {tag} for the config copy", "info")
+                return tag
+    return "alpine"
+
+
 def migrate_velociraptor_config_to_host(logger: Callable = None) -> Dict:
     """One-time migration of the Velociraptor configs from the legacy named
     volume into the host-mounted data/velociraptor/, PRESERVING the CA.
@@ -116,8 +139,9 @@ def migrate_velociraptor_config_to_host(logger: Callable = None) -> Dict:
     os.makedirs(staging, exist_ok=True)
 
     files = " ".join(_VELO_CONFIGS)
+    copy_image = _migration_copy_image(log)
     cp = run_command(
-        f"docker run --rm -v {vol}:/src:ro -v {host_dir}:/dst alpine sh -c "
+        f"docker run --rm -v {vol}:/src:ro -v {host_dir}:/dst {copy_image} sh -c "
         f"'mkdir -p /dst/.migrating; for f in {files}; do "
         f"[ -f /src/$f ] && cp /src/$f /dst/.migrating/$f || true; done'",
         logger=None)
