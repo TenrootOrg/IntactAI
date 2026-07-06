@@ -1013,7 +1013,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
             validations=d.get("timeline_validations") or None,
             prefer_llm=False,   # first scan = fast, free, deterministic; LLM on Rescan
             max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out,
-            detail=d.get("report_detail") or "auto")
+            detail="explicit")
         # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
         # SEPARATELY from the deterministic findings; fed prior operator dispositions.
         analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
@@ -1045,7 +1045,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         # A/B + Rescan price must reflect the SELECTED mode (re-priced on Refusion).
         distilled = render.distilled(g, window=window, min_severity=min_sev,
                                      max_entities=_le, budget_chars=_lc,
-                                     detail=d.get("report_detail") or "auto")
+                                     detail="explicit")
         fusion_approx = budget.approx_tokens(json.dumps(distilled))
         token_ab = {"raw_approx": raw_approx, "fusion_approx": fusion_approx,
                     "reduction_ratio": round(raw_approx / max(fusion_approx, 1), 1)}
@@ -1420,7 +1420,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
             prefer_llm=use_llm, max_entities=llm_ent, budget_chars=llm_chars,
-            max_output_tokens=llm_out, detail=d.get("report_detail") or "auto")
+            max_output_tokens=llm_out, detail="explicit")
         if use_llm and model:
             log_case_event(case_id, "Report · LLM responded", "success",
                            f"narrative generated ({len(report):,} chars)")
@@ -1543,11 +1543,12 @@ def set_analysis_config(case_id, cfg) -> dict:
                 patch["llm_max_output_tokens"] = None   # empty = default to model max
         except (TypeError, ValueError):
             pass
-    if "chat_send_full_context" in cfg:    # COST: bypass chat host-resolution, send
-        patch["chat_send_full_context"] = bool(cfg["chat_send_full_context"])  # full graph/msg
-    if "report_detail" in cfg:             # per-event evidence explicitness in the report
-        v = str(cfg.get("report_detail") or "auto").lower()
-        patch["report_detail"] = v if v in ("auto", "explicit", "summary") else "auto"
+    # LOCKED platform-wide (operator can't change; UI shows them fixed/disabled):
+    #   - chat ALWAYS sends full context — host-resolution mode makes chat robotic.
+    #   - the report is ALWAYS explicit (real cmdline / path / hash per finding).
+    # Enforced here so no request can override, and again at every read site below.
+    patch["chat_send_full_context"] = True
+    patch["report_detail"] = "explicit"
     if "fusion_modules" in cfg:            # which modules fuse (only available ones honored)
         mods = normalize_modules(cfg.get("fusion_modules"))
         patch["fusion_modules"] = [m for m in mods
@@ -2216,7 +2217,7 @@ def chat_case(case_id, question) -> str:
                                min_severity=d.get("min_severity", "informational"),
                                run_id=case_id, dispositions=d.get("dispositions") or None,
                                validations=d.get("timeline_validations") or None,
-                               full_context=d.get("chat_send_full_context"),
+                               full_context=True,   # LOCKED: chat always sends full context
                                max_output_tokens=_effective_output_cap(d))
             log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
         except Exception as e:

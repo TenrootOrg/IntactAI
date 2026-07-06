@@ -14,7 +14,7 @@ velociraptor:
   # --------------------------------------------------------------------------
 
   - id: velociraptor_quick_scan
-    name: "Velociraptor Hunt: Quick Scan"
+    name: "Velociraptor: Quick Scan"
     description: "Fast detection-focused scan for rapid assessment (12 artifacts)"
     is_default: true
     settings:
@@ -42,7 +42,7 @@ velociraptor:
       - Generic.System.Pstree
 
   - id: velociraptor_best_practice
-    name: "Velociraptor Hunt: BestPractice"
+    name: "Velociraptor: BestPractice"
     description: "Curated best-practice artifact collection for thorough IR triage (31 artifacts)"
     is_default: true
     settings:
@@ -87,7 +87,7 @@ velociraptor:
       - DetectRaptor.Windows.Detection.ZoneIdentifier
 
   - id: velociraptor_full_collection
-    name: "Velociraptor Hunt: Full Collection"
+    name: "Velociraptor: Full Collection"
     description: "Maximum artifact collection for deep forensic analysis (53 artifacts)"
     is_default: true
     settings:
@@ -190,7 +190,7 @@ velociraptor:
       - Generic.Client.Info
 
   - id: agentic_quick_wins
-    name: "Velociraptor Collection: Quick Wins"
+    name: "Velociraptor Agentic: Quick Wins"
     description: "The agentic detection set — program execution, C2, defense-evasion, persistence & identity (19 artifacts)"
     is_default: true
     settings:
@@ -239,7 +239,7 @@ velociraptor:
   # filesystem. These artifacts all exist + collect on a Linux endpoint (verified
   # against the shipped velociraptor binary) and avoid the filesystem-wide scanners.
   - id: agentic_linux_triage
-    name: "Velociraptor Collection: Linux Triage"
+    name: "Velociraptor Agentic: Linux Triage"
     description: "Linux endpoint triage — processes, persistence, accounts, logs (17 artifacts)"
     is_default: true
     os: linux
@@ -276,41 +276,6 @@ velociraptor:
       - Linux.Forensics.Journal
       # Packages
       - Linux.Debian.Packages
-
-  - id: agentic_quick_wins_linux
-    name: "Velociraptor Collection: Quick Wins Linux"
-    description: "Low-volume, high-signal Linux detections — persistence, priv-esc, defense-evasion, lateral (15 artifacts)"
-    is_default: true
-    os: linux
-    settings:
-      hunt_expiry: 720
-      timeout: 3600
-      cpu_limit: 90
-      # Flow-level resource limits — see velociraptor_quick_scan for notes.
-      flow_max_rows: 10000000
-      flow_max_logs: 1000000
-      flow_max_upload_mb: 51200
-    artifacts:
-      # Detections (pure signal — ~0 on a clean host)
-      - Linux.Persistence.LdPreload          # T1574.006 LD_PRELOAD persistence
-      - Linux.Detection.MemFD                # T1620 in-memory execution
-      - Linux.Detection.SSHKeyFileCmd        # T1098.004 SSH forced-command backdoor
-      - Linux.Detection.IncorrectPermissions # T1222 permission anomalies
-      - Linux.Forensics.EnvironmentVariables # T1546.004 shell-config / LD_* hijack
-      # Persistence
-      - Linux.Sys.Crontab                    # T1053.006 cron
-      - Linux.Sys.Services                   # T1543.002 systemd
-      - Linux.Ssh.AuthorizedKeys             # T1098.004 ssh keys
-      # Privilege escalation
-      - Linux.Sys.SUID                       # T1548.001 setuid
-      - Linux.Sys.Getcap                     # T1548 file capabilities
-      - Linux.Users.RootUsers                # T1078 rogue uid-0 / sudo
-      # Auth / lateral movement
-      - Linux.Syslog.SSHLogin                # T1021.006 ssh logins
-      # Process / network context
-      - Linux.Sys.Pslist
-      - Generic.System.Pstree
-      - Linux.Network.NetstatEnriched
 
 # ============================================================================
 # Timesketch Blueprints
