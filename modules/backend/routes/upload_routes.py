@@ -101,7 +101,7 @@ def _fuse_offline_import(import_result, upload_run_id):
         from services.agentic.collectors import get_existing_collection_results
         from services.agentic.reports import persist_pipeline_artifacts
 
-        add_log_to_run(upload_run_id, "[Fusion] Reading imported data into the case…")
+        add_log_to_run(upload_run_id, "[Import] Reading imported data into the case…")
         if hunt_id:
             # Hunt: enumerate every imported client's flow and pull their rows.
             all_results, artifacts, client_info = get_existing_collection_results(
@@ -115,7 +115,7 @@ def _fuse_offline_import(import_result, upload_run_id):
         total_rows = sum(len(rows) for rows in (all_results or {}).values())
         if total_rows == 0:
             add_log_to_run(upload_run_id,
-                           "[Fusion] Import had no rows to fuse into the case.", "warning")
+                           "[Import] Import had no rows to fuse into the case.", "warning")
             return
 
         # Seed the run's hostnames map (client_id -> hostname) so the Case host
@@ -141,7 +141,7 @@ def _fuse_offline_import(import_result, upload_run_id):
                 hd = get_hunt_description(hunt_id)
                 if hd:
                     det["hunt_description"] = hd
-                    add_log_to_run(upload_run_id, f"[Fusion] Imported hunt: {hd}")
+                    add_log_to_run(upload_run_id, f"[Import] Imported hunt: {hd}")
             except Exception:
                 hd = ""
         else:
@@ -172,7 +172,7 @@ def _fuse_offline_import(import_result, upload_run_id):
                 if best:
                     det["is_agentic"] = True
                     add_log_to_run(upload_run_id,
-                                   f"[Fusion] Classified agentic by artifact match: {best[0]} "
+                                   f"[Import] Classified agentic by artifact match: {best[0]} "
                                    f"({best[1]}/{len(imported)} imported artifacts)")
             except Exception:
                 pass
@@ -186,25 +186,19 @@ def _fuse_offline_import(import_result, upload_run_id):
         persist_pipeline_artifacts(upload_run_id, {}, all_results)
         add_log_to_run(
             upload_run_id,
-            f"[Fusion] Added {total_rows} rows across {len(artifacts)} artifact(s) "
-            f"from {len(client_info or {})} host(s) to the case.", "success")
+            f"[Import] Added {total_rows} rows across {len(artifacts)} artifact(s) "
+            f"from {len(client_info or {})} host(s) to the workspace.", "success")
         update_run_status(upload_run_id, "completed", progress=100)
 
-        # Build the case graph now so Case Analysis shows the data immediately
-        # (the page reads a cached graph; without this the case looks empty until
-        # something else triggers a fuse).
-        case_id = run.get("case_id")
-        if case_id:
-            try:
-                add_log_to_run(upload_run_id, "[Fusion] Building the case graph…")
-                from services.fusion import store as _fstore
-                _fstore.fuse_case(case_id)
-                add_log_to_run(upload_run_id, "[Fusion] Case graph ready.", "success")
-            except Exception as _fe:
-                add_log_to_run(
-                    upload_run_id,
-                    f"[Fusion] Graph build deferred (open Case Analysis to build it): {_fe}",
-                    "warning")
+        # Do NOT auto-fuse. The imported data is now a member of the workspace;
+        # FUSION (building the case graph — a heavy correlation pass) is an
+        # explicit operator action in Case Analysis (the Fusion button), so it
+        # only runs when the analyst asks for it. Same rule as every other module:
+        # runs are tagged to the workspace on completion; fusion is on demand.
+        add_log_to_run(
+            upload_run_id,
+            "[Import] Data added to the workspace. Open Case Analysis and click "
+            "Fusion to build the case graph.", "info")
     except Exception as e:
         print(f"[OFFLINE IMPORT] fuse of imported data failed: {e}", flush=True)
         import traceback
