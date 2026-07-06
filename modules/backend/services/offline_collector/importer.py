@@ -100,6 +100,56 @@ def _decrypt_container_if_needed(zip_file_path, password, log):
     return out_zip
 
 
+def _wait_import_flow_finished(config, creds, max_message_size, flow_id, run_id,
+                               timeout=900, interval=4):
+    """Poll the server ImportCollection flow until it reaches a terminal state.
+
+    ImportCollection runs ASYNCHRONOUSLY and — for a hunt export — creates the
+    hunt + per-client flows that hold the real data. Reading its results before
+    the flow FINISHES races: the hunt_id isn't registered yet, so the caller
+    fuses the empty orchestration flow ("Import had no rows to fuse"). A fixed
+    sleep(5) lost that race on large imports (hundreds of MB). Block here until
+    FINISHED/ERROR (or timeout) so the downstream results query captures the
+    hunt + rows. Returns the last observed state.
+    """
+    import grpc
+    from pyvelociraptor import api_pb2, api_pb2_grpc
+    from services.workflow_service import add_log_to_run
+
+    deadline = time.time() + timeout
+    last_state = None
+    terminal = {"FINISHED", "ERROR", "CANCELLED", "FAILED"}
+    while time.time() < deadline:
+        state = ""
+        try:
+            ch = grpc.secure_channel(
+                config["api_connection_string"], creds,
+                (("grpc.ssl_target_name_override", "VelociraptorServer"),
+                 ("grpc.max_receive_message_length", max_message_size),
+                 ("grpc.max_send_message_length", max_message_size)))
+            stub = api_pb2_grpc.APIStub(ch)
+            q = f"SELECT state, State FROM flows(client_id='server', flow_id='{flow_id}')"
+            req = api_pb2.VQLCollectorArgs(Query=[api_pb2.VQLRequest(VQL=q)])
+            for response in stub.Query(req, timeout=30):
+                if response.Response:
+                    rows = json.loads(response.Response)
+                    if rows:
+                        state = (rows[0].get("state") or rows[0].get("State") or "").upper()
+            ch.close()
+        except Exception as e:
+            print(f"[OFFLINE] flow-state poll error: {e}", flush=True)
+        if state and state != last_state:
+            add_log_to_run(run_id, f"Import flow state: {state}")
+            last_state = state
+        if state in terminal:
+            return state
+        time.sleep(interval)
+    add_log_to_run(run_id,
+                   f"Import flow still not terminal after {timeout}s — proceeding anyway",
+                   "warning")
+    return last_state or "TIMEOUT"
+
+
 def import_results(zip_file_path, original_filename="import.zip", run_id=None, password=None):
     """Import offline collection results to Velociraptor using Server.Utils.ImportCollection
 
@@ -302,10 +352,18 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
 
         update_run_status(run_id, "running", progress=80)
 
-        # Step 4: Wait for the import to complete and verify
+        # Step 4: Wait for the import flow to reach a terminal state BEFORE
+        # reading results. A fixed sleep raced on large imports (a hunt export
+        # of hundreds of MB is still RUNNING after a few seconds), so the
+        # results query captured no hunt_id and fusion fell back to the empty
+        # orchestration flow ("Import had no rows to fuse" → looks like a
+        # failure). Poll to FINISHED so the hunt + rows are registered first.
         print(f"[OFFLINE] Waiting for import flow to complete...", flush=True)
         add_log_to_run(run_id, "Waiting for import to complete...")
-        time.sleep(5)  # Give more time for the import flow to complete
+        if flow_id:
+            _wait_import_flow_finished(config, creds, max_message_size, flow_id, run_id)
+        else:
+            time.sleep(5)  # no flow id to poll — brief grace wait
 
         # Query for import results to get the ACTUAL imported client info
         # The server flow runs ImportCollection which creates/updates a client
