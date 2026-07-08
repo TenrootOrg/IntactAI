@@ -761,9 +761,66 @@ def generate_disposition_checklist(graph, *, window=None, min_severity="high",
         return _simulated_checklist(high)
 
 
+class LLMUnavailable(Exception):
+    """Raised by chat(require_llm=True) when the case chat cannot get a real model
+    answer. `reason` is a machine code consumed by llm_error_message():
+    missing_key / invalid_key / no_internet / timeout / rate_limited /
+    missing_offline_url / llm_error."""
+    def __init__(self, reason: str):
+        self.reason = str(reason or "llm_error")
+        super().__init__(self.reason)
+
+
+_LLM_ERR_MESSAGES = {
+    "missing_key": "⚠️ No LLM API key is configured. Add a valid key in Settings to use Case Analysis chat.",
+    "invalid_key": "⚠️ The LLM API key was rejected — it looks invalid or outdated. Update it in Settings.",
+    "no_internet": "⚠️ No connection to the LLM. Check the internet connection and try again.",
+    "timeout": "⚠️ The LLM did not respond in time (timeout). Check the connection or the model, then retry.",
+    "rate_limited": "⚠️ The LLM provider rate-limited the request. Wait a moment and try again.",
+    "missing_offline_url": "⚠️ No local LLM (Ollama) URL is configured. Set it in Settings or switch to an online model.",
+    "llm_error": "⚠️ Could not get a response from the LLM. Check the API key and internet connection.",
+}
+
+
+def llm_error_message(reason: str) -> str:
+    """Operator-facing message for an LLMUnavailable reason code."""
+    return _LLM_ERR_MESSAGES.get(reason, _LLM_ERR_MESSAGES["llm_error"])
+
+
+def _llm_unavailable_reason():
+    """Why no LLM transport is usable (config-time), or None if one is configured.
+    Distinguishes an empty key from an unset offline URL so the chat can say which."""
+    try:
+        from services.memory.pipeline import _llm_config_from_runtime
+        ag = (_llm_config_from_runtime() or {}).get("agentic") or {}
+    except Exception:
+        return "missing_key"
+    if str(ag.get("llm_mode", "online")).lower() == "offline":
+        return None if (ag.get("offline_llm") or {}).get("url") else "missing_offline_url"
+    return None if (ag.get("online_llm") or {}).get("api_key") else "missing_key"
+
+
+def _classify_llm_error(exc) -> str:
+    """Map a transport exception to a reason code (auth vs connection vs timeout …)."""
+    s = f"{type(exc).__name__} {exc}".lower()
+    if any(t in s for t in ("401", "403", "unauthor", "user not found", "invalid api",
+                            "authentication", "invalid_api_key", "no api key", "api key")):
+        return "invalid_key"
+    if any(t in s for t in ("timed out", "timeout", "read timed out")):
+        return "timeout"
+    if any(t in s for t in ("429", "rate limit", "ratelimit", "too many requests")):
+        return "rate_limited"
+    if any(t in s for t in ("connection", "connect", "getaddrinfo", "name or service not known",
+                            "temporary failure in name resolution", "network is unreachable",
+                            "max retries", "failed to establish", "unreachable", "refused",
+                            "no route to host", "dns")):
+        return "no_internet"
+    return "llm_error"
+
+
 def chat(graph, question: str, history=None, *, window=None, min_severity="informational",
          run_id=None, dispositions=None, validations=None, full_context=None,
-         max_output_tokens=None) -> str:
+         max_output_tokens=None, require_llm=False) -> str:
     """Grounded Q&A. Real path narrates the distilled graph; simulated = deterministic
     retrieval. Surfaces operator dispositions (what's been triaged as benign/IT)."""
     # --- entity resolution + safety clarify (BEFORE any LLM call, so an ambiguous
@@ -790,7 +847,12 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
     # PRIMARY: whenever a model is configured, this is ONE generic, grounded
     # conversation over the whole infrastructure graph — no prepared intents. Just
     # configuring an LLM (online key or offline Ollama) turns it on; no extra flag.
-    if _use_real() or _llm_available():
+    _configured = _use_real() or _llm_available()
+    if require_llm and not _configured:
+        # The case chat REQUIRES a real model — say exactly why none is usable
+        # (missing/empty key, or no offline URL) instead of a deterministic answer.
+        raise LLMUnavailable(_llm_unavailable_reason() or "missing_key")
+    if _configured:
         try:
             if full_ctx:
                 # Bypass: send the FULL distilled graph every turn (pricier).
@@ -810,8 +872,12 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
             return _real_llm(CHAT_SYSTEM_PROMPT,
                              f"{json.dumps(payload)}\n\n{turns}Q: {question}", run_id=run_id,
                              max_output_tokens=max_output_tokens)
-        except Exception:  # noqa: BLE001 — fall through to deterministic retrieval
-            pass
+        except Exception as e:  # noqa: BLE001
+            if require_llm:
+                # No silent deterministic fallback for the case chat: surface the
+                # SPECIFIC failure (rejected key / no connection / timeout).
+                raise LLMUnavailable(_classify_llm_error(e)) from e
+            # legacy callers (tests / non-chat): fall through to deterministic retrieval.
 
     # FALLBACK (no LLM): if the question resolved to a HOST, answer scoped to it
     # deterministically so the pin works even without a model configured. Account/

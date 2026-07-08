@@ -2210,7 +2210,7 @@ def chat_case(case_id, question) -> str:
     else:
         model, provider, _m = _configured_fusion_model()
         log_case_event(case_id, "Chat · sending to LLM", "info",
-                       f"model {model} ({provider})" if model else "deterministic (no model set)")
+                       f"model {model} ({provider})" if model else "no model configured")
         try:
             ans = llm_sim.chat(g, question, history=d.get("chat_messages") or [],
                                window=d.get("time_window") or None,
@@ -2218,8 +2218,15 @@ def chat_case(case_id, question) -> str:
                                run_id=case_id, dispositions=d.get("dispositions") or None,
                                validations=d.get("timeline_validations") or None,
                                full_context=True,   # LOCKED: chat always sends full context
-                               max_output_tokens=_effective_output_cap(d))
+                               max_output_tokens=_effective_output_cap(d),
+                               require_llm=True)     # no deterministic fallback: surface real errors
             log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
+        except llm_sim.LLMUnavailable as e:
+            # The model couldn't be reached (missing/outdated key, no connection,
+            # timeout). Tell the operator EXACTLY why — never a canned pseudo-answer.
+            # Not persisted to chat history, so a retry after the fix starts clean.
+            log_case_event(case_id, "Chat · LLM unavailable", "error", e.reason)
+            return llm_sim.llm_error_message(e.reason)
         except Exception as e:
             log_case_event(case_id, "Chat", "error", f"LLM failed: {e}")
             raise
