@@ -77,6 +77,35 @@ All services terminate TLS through the main nginx. Detailed port allocations (in
 | **VolWeb** | Memory forensics (Volatility 3 + YARA) | `https://YOUR_IP:8002` |
 | **Portainer** | Container management — inspect, restart, and tail logs of the IntactAI service containers from a web UI | `https://YOUR_IP:9443` |
 
+### Dashboard modules
+
+These run inside the Dashboard (no separate URL — all under `https://YOUR_IP`) and have **no dedicated container** unless noted:
+
+| Module | What it does |
+|--------|--------------|
+| **Case Analysis (Fusion)** | Correlates every host + module into one incident graph → fused **report**, advisory, **timeline**, **Identities**, and grounded **chat** over the whole investigation. |
+| **Memory** | Remote memory acquisition (AVML / WinPmem) → analysis in the **VolWeb** stack (Volatility 3 + YARA). |
+| **Cloud DFIR** | AWS **CloudTrail** and Microsoft 365 / Azure AD **(DFIR-O365RC)** log collection + SIGMA detections, feeding the fusion engine. Runs in the backend. |
+| **CVE Scan** | NVD-backed vulnerability matcher over collected host inventory. Runs in-process in the backend. |
+| **Scheduler / Blueprints / Agentic** | Scheduled collections, reusable collection blueprints, and the agentic quick-wins pipeline. |
+
+### Containers
+
+`install.sh` brings up the following containers (only for enabled modules):
+
+| Group | Containers |
+|-------|-----------|
+| **Core** | `intact_backend` (API + orchestrator), `intact_tusd` (resumable uploads), `intact_nginx` (TLS reverse proxy) |
+| **Velociraptor** | `intact_velociraptor` |
+| **TimeSketch** | `intact_timesketch_web`, `_web_v3`, `_web_legacy`, `_worker`, `_nginx`, `_postgres`, `_redis`, `_opensearch` |
+| **ELK** | `intact_elasticsearch`, `intact_logstash`, `intact_kibana` |
+| **IRIS** | `intact_iris_app`, `_db`, `_worker`, `_rabbitmq`, `_nginx` |
+| **VolWeb (Memory)** | `intact_volweb_frontend`, `_backend`, `_workers`, `_workers_yarascan`, `_postgresdb`, `_redis` |
+| **Portainer** | `intact_portainer`, `intact_portainer_agent` |
+| **On-demand (no long-running container)** | **Plaso** (image pulled per timeline job), **CloudTrail / O365RC DFIR** and **CVE Scan** (run in-process in the backend) |
+
+> The heavy search engines — TimeSketch's OpenSearch, ELK's Elasticsearch/Kibana — are the biggest RAM/CPU consumers. On a small host you can `docker stop` the stacks you're not using to free resources.
+
 ## Configuration
 
 Edit `config.yaml` before installation:
@@ -85,10 +114,7 @@ Edit `config.yaml` before installation:
 domain: 192.168.1.96  # Your server IP or domain
 
 modules:
-  elk:
-    enabled: true
-    id: elastic
-    password: 'your-password'
+  # On-prem forensics (each has its own container + UI)
   velociraptor:
     enabled: true
     id: admin
@@ -97,21 +123,42 @@ modules:
     enabled: true
     id: admin
     password: 'your-password'
-  iris:
+  elk:
     enabled: true
-    id: administrator
+    id: elastic
     password: 'your-password'
-  portainer:
+  iris:                 # id is fixed to 'administrator'
+    enabled: true
+    password: 'your-password'
+  volweb:               # memory forensics (Volatility 3 + YARA)
     enabled: true
     id: admin
     password: 'your-password'
+  portainer:
+    enabled: false
+    id: admin
+    password: 'your-password'
 
-versions:
-  elk: 9.2.3
-  iris: v2.4.24
-  portainer: 2.33.6
-  timesketch: '20260209'
-  velociraptor: '0.75'
+  # Feature modules (run in the backend / on-demand — no dedicated container)
+  plaso:                # log2timeline timeline engine (on-demand image)
+    enabled: true
+  cve_scan:             # NVD vulnerability matcher
+    enabled: true
+  cloudtrail:           # AWS CloudTrail DFIR — ships OFF until validated
+    enabled: false
+  o365rc:               # Microsoft 365 / Azure AD DFIR (DFIR-O365RC)
+    enabled: false
+
+versions:               # main module pins (sub-component pins also live here)
+  velociraptor: 0.77.1
+  velociraptor_legacy: '0.7.1'   # legacy binary for older / Win7 endpoints
+  timesketch: '20260617'
+  elk: 9.4.2
+  iris: 'v2.4.27'
+  volweb: '3.16.0'
+  portainer: 2.39.1
+  plaso: '20260512'
+  cloudtrail: '2026.04'
 ```
 
 ## Network / Firewall Ports
