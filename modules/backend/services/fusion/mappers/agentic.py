@@ -174,7 +174,12 @@ SUPPORTED_ARTIFACTS = frozenset({
     "detectraptor.windows.detection.loldriversmalicious",
     "detectraptor.windows.detection.bootloaders",
     "windows.analysis.suspiciouswmiconsumers",
-    "windows.system.untrustedbinaries",
+    # NOTE: windows.system.untrustedbinaries dropped from fusion — it's a
+    # per-file Authenticode STATE check (no timestamp, no hash), ~95% benign
+    # 'trusted' rows, and its only real signal (an unsigned running image) is
+    # already covered by the pslist branch via _image_untrusted_and_odd. It was
+    # emitting ~80 timeless noise events per case. (The agentic per-run report
+    # still surfaces it via services/agentic/utils/_timeline.py — separate view.)
     "windows.forensics.sam",
     "windows.eventlogs.condensedaccountusage",
     "windows.kerberos.goldentickettriage",
@@ -271,7 +276,6 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
       binaryrename                  => DetectRaptor...Detection.BinaryRename
       bootloader                    => DetectRaptor...Detection.Bootloaders
       wmiconsumer                   => Windows.Analysis.SuspiciousWMIConsumers
-      untrusted                     => Windows.System.UntrustedBinaries
       evtx/eventlog/lnk/detection   => DetectRaptor...Detection.Evtx, ...Lnk, + ANY
         (catch-all)                      artifact whose name contains 'detection'
     Anything else is ignored (no entity). Add an elif branch to support more.
@@ -874,7 +878,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
 
             # ---- other high-signal detections -> event -------------------
             elif any(k in an for k in ("evtx", "eventlog", "binaryrename",
-                                       "untrusted", "lnk", "detection")):
+                                       "lnk", "detection")):
                 msg = F.get(r, "Message", "Description", "Name", *F.PATH, default=artifact)
                 eid = keys.event_id(asset, ts, f"{an}:{msg}")
                 ents.append(_ent(eid, "event", f"{artifact}: {str(msg)[:80]}", asset, run_id,

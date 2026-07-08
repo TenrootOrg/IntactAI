@@ -223,7 +223,6 @@ velociraptor:
       # Persistence
       - Windows.Analysis.SuspiciousWMIConsumers
       # Context
-      - Windows.System.UntrustedBinaries
       - Windows.Forensics.SAM
       # Authentication / lateral movement (domain hosts) + Kerberos abuse
       - Windows.EventLogs.CondensedAccountUsage
