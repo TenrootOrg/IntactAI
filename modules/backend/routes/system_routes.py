@@ -79,26 +79,32 @@ def get_system_actions():
     workspace (does not use the X-Case-Id header)."""
     try:
         from services import workflow_service as ws
+        from routes.dashboard_routes import _transform_run
         sid = ws._system_case_id()
         runs = ws.get_automation_runs_by_case(sid) if sid else []
     except Exception as e:
         return jsonify({"actions": [], "error": str(e)}), 200
-    actions = []
-    for r in runs:
-        # skip bookkeeping rows (the case row itself is case_id=None, but be defensive)
-        if r.get("automation_type") in ("case", "fusion_baseline"):
-            continue
-        actions.append({
-            "run_id": r.get("run_id"),
-            "type": r.get("automation_type"),
-            "name": r.get("name"),
-            "status": r.get("status"),
-            "progress": r.get("progress"),
-            "error_count": r.get("error_count"),
-            "created_at": r.get("created_at"),
-            "updated_at": r.get("updated_at"),
-            "logs": r.get("logs") or [],
-        })
+    # Same shape as /api/dashboard/automations so Settings -> Actions can reuse the
+    # Workflows list markup + the shared log modal / per-run download buttons.
+    actions = [_transform_run(r) for r in runs
+               if r.get("automation_type") not in ("case", "fusion_baseline")]
+    # The server keeps only the LATEST prepared package (fixed filename), so an
+    # older prepare_package run's tarball is gone once a newer prepare ran. Flag the
+    # one run whose package is still on disk so the UI only shows a WORKING
+    # "Package" download button instead of a dead one that 410s.
+    try:
+        import os as _os
+        from routes.upgrade_routes import _get_package_info
+        pkg = _get_package_info() or {}
+        cur = pkg.get("run_id") if _os.path.exists(pkg.get("path", "") or "") else None
+        if cur:
+            for a in actions:
+                if a.get("id") == cur:
+                    if not isinstance(a.get("details"), dict):
+                        a["details"] = {}
+                    a["details"]["package_available"] = True
+    except Exception:
+        pass
     return jsonify({"actions": actions})
 
 @system_bp.route('/api/system/containers', methods=['GET'])

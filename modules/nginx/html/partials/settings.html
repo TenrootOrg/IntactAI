@@ -52,28 +52,68 @@
                             <p class="text-sm text-gray-500">No system actions have run yet.</p>
                         </template>
                         <div class="overflow-x-auto" x-show="($store.settings.actions || []).length > 0">
-                            <table class="w-full text-sm">
-                                <thead>
-                                    <tr class="text-left text-gray-400 border-b border-gray-700">
-                                        <th class="py-2 pr-4">Action</th>
-                                        <th class="py-2 pr-4">Status</th>
-                                        <th class="py-2 pr-4">Started</th>
-                                        <th class="py-2 pr-4">Updated</th>
+                            <table class="w-full text-left">
+                                <thead class="text-xs text-gray-400 uppercase border-b border-gray-700">
+                                    <tr>
+                                        <th class="px-4 py-3 font-medium">Type</th>
+                                        <th class="px-4 py-3 font-medium">Name</th>
+                                        <th class="px-4 py-3 font-medium">Status</th>
+                                        <th class="px-4 py-3 font-medium">Progress</th>
+                                        <th class="px-4 py-3 font-medium">Started</th>
+                                        <th class="px-4 py-3 font-medium">Actions</th>
                                     </tr>
                                 </thead>
-                                <tbody>
-                                    <template x-for="a in ($store.settings.actions || [])" :key="a.run_id">
-                                        <tr class="border-b border-gray-800 align-top">
-                                            <td class="py-2 pr-4">
-                                                <span class="text-gray-200" x-text="a.name || a.type"></span>
-                                                <span class="ml-2 text-xs px-1.5 py-0.5 rounded" :style="'background:'+$store.settings.actionColor(a.type)+'22;color:'+$store.settings.actionColor(a.type)" x-text="a.type"></span>
+                                <tbody class="divide-y divide-gray-700 text-sm">
+                                    <template x-for="a in ($store.settings.actions || [])" :key="a.id">
+                                        <tr class="hover:bg-gray-700/40 transition-colors">
+                                            <td class="px-4 py-3">
+                                                <span :class="$store.workflows.getTypeColor(a.type) + ' px-3 py-1 rounded-full text-xs font-semibold uppercase'" x-text="a.type || 'system'"></span>
                                             </td>
-                                            <td class="py-2 pr-4">
-                                                <span :class="a.status==='completed' ? 'text-green-400' : a.status==='failed' ? 'text-red-400' : a.status==='running' ? 'text-blue-400' : 'text-gray-400'" x-text="a.status"></span>
-                                                <span x-show="a.error_count > 0" class="ml-1 text-xs text-red-400" x-text="'('+a.error_count+' err)'"></span>
+                                            <td class="px-4 py-3">
+                                                <div class="font-medium text-white" x-text="a.name || 'Unnamed'"></div>
+                                                <div class="text-xs text-gray-400 mt-1" x-text="'ID: ' + (a.id || 'N/A')"></div>
                                             </td>
-                                            <td class="py-2 pr-4 text-gray-400" x-text="$store.settings.fmtTime(a.created_at)"></td>
-                                            <td class="py-2 pr-4 text-gray-400" x-text="$store.settings.fmtTime(a.updated_at)"></td>
+                                            <td class="px-4 py-3">
+                                                <span :class="$store.workflows.getStatusColor(a.status) + ' px-3 py-1 rounded-full text-xs font-semibold uppercase'" x-text="a.status || 'unknown'"></span>
+                                                <template x-if="(a.error_count || 0) > 0 && a.status === 'completed'">
+                                                    <span class="ml-1.5 text-[10px] font-medium text-red-400" x-text="'(' + a.error_count + ' err)'"></span>
+                                                </template>
+                                            </td>
+                                            <td class="px-4 py-3">
+                                                <div class="flex items-center gap-2">
+                                                    <div class="flex-1 bg-gray-700 rounded-full h-2 overflow-hidden min-w-[60px]">
+                                                        <div class="bg-blue-500 h-full transition-all" :style="'width: ' + (a.progress || 0) + '%'"></div>
+                                                    </div>
+                                                    <span class="text-xs text-gray-400 w-10 text-right" x-text="(a.progress || 0) + '%'"></span>
+                                                </div>
+                                            </td>
+                                            <td class="px-4 py-3 text-gray-300 text-xs" x-text="$store.workflows.formatTime(a.started_at)"></td>
+                                            <td class="px-4 py-3 whitespace-nowrap">
+                                                <div class="flex items-center gap-2">
+                                                    <template x-if="a.type === 'prepare_package' && a.status === 'completed' && a.details?.package_available">
+                                                        <button @click="$store.workflows.downloadPackage(a.id)" class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download Upgrade Package (only the most recently prepared package is kept)">
+                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                            Package
+                                                        </button>
+                                                    </template>
+                                                    <template x-if="a.type === 'support_bundle' && a.status === 'completed' && a.details?.bundle_path">
+                                                        <a :href="'/api/support-bundle/' + a.id + '/download'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" :title="'Download support bundle (' + (a.details?.bundle_size_mb || '?') + ' MB)'">
+                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                            Bundle (<span x-text="a.details?.bundle_size_mb || '?'"></span> MB)
+                                                        </a>
+                                                    </template>
+                                                    <template x-if="a.status === 'running' || a.status === 'pending'">
+                                                        <button @click="$store.workflows.stopWorkflow(a.id)" class="bg-red-600 hover:bg-red-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Stop this action">
+                                                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"></rect></svg>
+                                                            Stop
+                                                        </button>
+                                                    </template>
+                                                    <button @click.stop="$store.workflows.viewLogs(a.id)" style="color:#fff;background-color:#475569;" class="hover:bg-slate-600 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="View logs">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                                                        Logs
+                                                    </button>
+                                                </div>
+                                            </td>
                                         </tr>
                                     </template>
                                 </tbody>

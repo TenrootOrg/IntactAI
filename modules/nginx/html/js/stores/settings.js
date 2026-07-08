@@ -234,22 +234,6 @@ document.addEventListener('alpine:init', () => {
                 this.actionsLoading = false;
             }
         },
-        actionColor(type) {
-            const m = {
-                maintenance: '#d29922', support_bundle: '#a371f7', system_purge: '#f85149',
-                upgrade: '#58a6ff', online_upgrade: '#58a6ff', prepare_package: '#58a6ff',
-                settings: '#3fb950', case_import: '#8b949e', case_export: '#8b949e'
-            };
-            return m[type] || '#8b949e';
-        },
-        fmtTime(ts) {
-            if (!ts) return '—';
-            try {
-                const d = new Date(ts);
-                if (!isNaN(d.getTime())) return d.toLocaleString();
-            } catch (e) { /* fall through */ }
-            return String(ts);
-        },
 
         async runMaintenance() {
             this.showMessage('Maintenance workflow started...', 'info');
