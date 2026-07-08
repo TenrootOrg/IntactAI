@@ -104,47 +104,18 @@ RESET_VOLUMES = {
 
 
 def reset_module_database(module_name: str, logger: Callable = None) -> bool:
-    """DESTRUCTIVE: delete a module's data volumes for a fresh/empty install.
+    """DISABLED: the 'start fresh' (db_overwrite) feature has been removed.
 
-    This is NOT required for schema upgrades. Schema changes between versions
-    are applied by database migrations (e.g. Timesketch's alembic
-    `tsctl db upgrade`, verified to preserve all sketches + events across a
-    2024 -> 2026 jump) — the normal upgrade keeps every row and index.
+    Upgrades always preserve data via DB migrations (e.g. Timesketch's alembic
+    `tsctl db upgrade`), and downgrades are not supported, so a destructive volume
+    wipe is never needed. This is now a hard no-op so any stale `db_overwrite` flag
+    or persisted upgrade state can NEVER delete a module's data.
 
-    Only call this when the operator has EXPLICITLY asked to start that module
-    from scratch (db_overwrite flag). It permanently removes all data:
-    Timesketch sketches + every timeline event in OpenSearch, IRIS cases,
-    ELK indices, etc. There is no automatic backup of these volumes.
-
-    Args:
-        module_name: Name of the module (timesketch, iris, elk)
-        logger: Logging function
-
-    Returns:
-        True if successful, False otherwise
+    (The Timesketch major-Postgres migration in timesketch.py does its own
+    backup-first dump->wipe->restore and is unaffected by this.)
     """
-    if module_name not in RESET_VOLUMES:
-        return True
-
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    log(f"⚠️ FRESH INSTALL: PERMANENTLY DELETING all {module_name} data "
-        f"(volumes: {', '.join(RESET_VOLUMES[module_name])}). This is not "
-        f"needed for schema upgrades — migrations handle those without data loss.",
-        "warning")
-
-    # Get module directory
-    module_dir = os.path.join(HOST_PATH, 'modules', module_name)
-
-    # Stop containers first
-    log(f"Stopping {module_name} containers...", "info")
-    run_command("docker compose down --remove-orphans", cwd=module_dir, logger=log)
-
-    # Remove volumes
-    for volume in RESET_VOLUMES[module_name]:
-        log(f"Removing volume: {volume}", "info")
-        run_command(f"docker volume rm {volume} 2>/dev/null || true", logger=log)
-
-    log(f"Database volumes removed for {module_name}", "success")
+    log(f"'Start fresh' is disabled — no data wipe performed for {module_name}", "info")
     return True
 
 
