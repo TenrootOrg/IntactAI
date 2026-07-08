@@ -61,7 +61,12 @@ LOGON_PROC = ("LogonProcessName", "LogonProcess")
 EVENT_ID = ("EventID", "EID", "Id", "event_id")
 TIMES = ("CreateTime", "Created", "TimeCreated", "EventTime", "Timestamp",
          "datetime", "Mtime", "LastWriteTime", "Last Updated", "LastUpdated",
-         "Atime", "_ts")
+         "Atime", "_ts",
+         # registry/detection creation-or-write times some artifacts use instead of
+         # the common names above: Amcache KeyMTime (~first-run), DetectRaptor
+         # Applications KeyLastWriteTimestamp (~install), SAM CreatedTime. Appended
+         # last so they only apply when no earlier (more specific) time is present.
+         "KeyMTime", "KeyLastWriteTimestamp", "CreatedTime", "CreationTime")
 
 
 def first_ts(row: dict) -> str | None:

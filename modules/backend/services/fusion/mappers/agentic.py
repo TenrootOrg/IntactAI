@@ -608,10 +608,15 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 if not line or str(line).lstrip().startswith("#"):
                     continue                       # skip comments / blanks
                 an_ps = _ps_anomaly(line)
+                # PSReadline nests the history-file times under FileInfo and has no
+                # per-command time, so anchor on the file's last write (most recent
+                # PowerShell activity), then birth. Without this the events were undated.
+                _fi = r.get("FileInfo") if isinstance(r.get("FileInfo"), dict) else {}
+                ps_ts = keys.norm_ts(_fi.get("Mtime") or _fi.get("Btime") or _fi.get("Ctime")) or ts
                 eid = keys.event_id(asset, f"{asset}:{F.get(r, 'OSPath', default='')}",
                                     f"ps:{line}")
                 ents.append(_ent(eid, "event", f"powershell: {str(line)[:80]}", asset, run_id,
-                                 loc, anomaly=an_ps, first=ts, artifact=artifact,
+                                 loc, anomaly=an_ps, first=ps_ts, artifact=artifact,
                                  command=str(line)[:400],
                                  flags=(["suspicious_powershell"] if an_ps >= 25 else None)))
                 owner = F.get(r, "Username", *F.USER)
@@ -620,7 +625,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     if aeid:
                         ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
                                          run_id, loc, user=u, domain=d))
-                        rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ts))
+                        rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ps_ts))
 
             # ---- network -> netconn + ioc --------------------------------
             elif "netstat" in an or "network" in an:
@@ -796,9 +801,16 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 dll = (info.get("DllName") if isinstance(info, dict) else None) \
                     or F.get(r, "DllName", "OSPath", "Name", *F.PATH, default=artifact)
                 historical = "mft" in an
+                # HijackLibsMFT nests its $SI/$FN MACB times like Detection.MFT, so
+                # first_ts() (top-level) misses them; anchor on $FN Created (local
+                # record creation), then $SI Created, else the generic row time. The
+                # Env variant has no such nesting and safely falls back to ts.
+                _si = r.get("SITimestamps") if isinstance(r.get("SITimestamps"), dict) else {}
+                _fn = r.get("FNTimestamps") if isinstance(r.get("FNTimestamps"), dict) else {}
+                hj_ts = keys.norm_ts(_fn.get("Created0x30") or _si.get("Created0x10")) or ts
                 eid = keys.event_id(asset, f"{asset}:{dll}", f"hijacklib:{dll}")
                 ents.append(_ent(eid, "event", f"DLL sideload: {str(dll)[:50]}", asset, run_id,
-                                 loc, anomaly=15 if historical else 40, first=ts, artifact=artifact,
+                                 loc, anomaly=15 if historical else 40, first=hj_ts, artifact=artifact,
                                  flags=["dll_hijack"], dll=str(dll),
                                  path=F.get(r, "OSPath", "ExecutablePath", default=None),
                                  hijack_type=(info.get("Type") if isinstance(info, dict) else
