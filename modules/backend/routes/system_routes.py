@@ -70,6 +70,37 @@ def get_intact_version():
         pass
     return jsonify({"version": "unknown"})
 
+@system_bp.route('/api/system/actions', methods=['GET'])
+def get_system_actions():
+    """System/admin run history — the runs tagged to the internal System workspace
+    (maintenance, online/prepare/import upgrade, system purge, support bundle,
+    settings saves, case import/export). Surfaced in Settings → Actions now that
+    System is no longer a selectable case. Read-only; independent of the active
+    workspace (does not use the X-Case-Id header)."""
+    try:
+        from services import workflow_service as ws
+        sid = ws._system_case_id()
+        runs = ws.get_automation_runs_by_case(sid) if sid else []
+    except Exception as e:
+        return jsonify({"actions": [], "error": str(e)}), 200
+    actions = []
+    for r in runs:
+        # skip bookkeeping rows (the case row itself is case_id=None, but be defensive)
+        if r.get("automation_type") in ("case", "fusion_baseline"):
+            continue
+        actions.append({
+            "run_id": r.get("run_id"),
+            "type": r.get("automation_type"),
+            "name": r.get("name"),
+            "status": r.get("status"),
+            "progress": r.get("progress"),
+            "error_count": r.get("error_count"),
+            "created_at": r.get("created_at"),
+            "updated_at": r.get("updated_at"),
+            "logs": r.get("logs") or [],
+        })
+    return jsonify({"actions": actions})
+
 @system_bp.route('/api/system/containers', methods=['GET'])
 def get_container_status():
     """Get status of core system containers.

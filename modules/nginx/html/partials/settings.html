@@ -13,7 +13,7 @@
                 </div>
 
                 <!-- Settings Tabs -->
-                <div x-data="{ settingsTab: 'general' }" class="space-y-4">
+                <div x-data="{ settingsTab: 'general' }" @show-system-actions.window="settingsTab = 'actions'; $store.settings.loadActions()" class="space-y-4">
                     <!-- Tab Navigation -->
                     <div class="flex border-b border-gray-700">
                         <button @click="settingsTab = 'general'" :class="settingsTab === 'general' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
@@ -31,6 +31,54 @@
                         <button @click="settingsTab = 'cve_scan'" :class="settingsTab === 'cve_scan' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
                             CVE Scan
                         </button>
+                        <button @click="settingsTab = 'actions'; $store.settings.loadActions()" :class="settingsTab === 'actions' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
+                            Actions
+                        </button>
+                    </div>
+
+                    <!-- Actions Tab — system-operation run history (System is no longer a workspace) -->
+                    <div x-show="settingsTab === 'actions'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <div class="flex items-center justify-between mb-4">
+                            <div>
+                                <h3 class="text-lg font-semibold text-white">System Actions</h3>
+                                <p class="text-sm text-gray-400">History of system operations — maintenance, upgrades, package prepare/import, support bundle, purge, and settings saves.</p>
+                            </div>
+                            <button @click="$store.settings.loadActions()" class="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-gray-200 rounded">↻ Refresh</button>
+                        </div>
+                        <template x-if="$store.settings.actionsLoading">
+                            <p class="text-sm text-gray-400">Loading…</p>
+                        </template>
+                        <template x-if="!$store.settings.actionsLoading && ($store.settings.actions || []).length === 0">
+                            <p class="text-sm text-gray-500">No system actions have run yet.</p>
+                        </template>
+                        <div class="overflow-x-auto" x-show="($store.settings.actions || []).length > 0">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="text-left text-gray-400 border-b border-gray-700">
+                                        <th class="py-2 pr-4">Action</th>
+                                        <th class="py-2 pr-4">Status</th>
+                                        <th class="py-2 pr-4">Started</th>
+                                        <th class="py-2 pr-4">Updated</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="a in ($store.settings.actions || [])" :key="a.run_id">
+                                        <tr class="border-b border-gray-800 align-top">
+                                            <td class="py-2 pr-4">
+                                                <span class="text-gray-200" x-text="a.name || a.type"></span>
+                                                <span class="ml-2 text-xs px-1.5 py-0.5 rounded" :style="'background:'+$store.settings.actionColor(a.type)+'22;color:'+$store.settings.actionColor(a.type)" x-text="a.type"></span>
+                                            </td>
+                                            <td class="py-2 pr-4">
+                                                <span :class="a.status==='completed' ? 'text-green-400' : a.status==='failed' ? 'text-red-400' : a.status==='running' ? 'text-blue-400' : 'text-gray-400'" x-text="a.status"></span>
+                                                <span x-show="a.error_count > 0" class="ml-1 text-xs text-red-400" x-text="'('+a.error_count+' err)'"></span>
+                                            </td>
+                                            <td class="py-2 pr-4 text-gray-400" x-text="$store.settings.fmtTime(a.created_at)"></td>
+                                            <td class="py-2 pr-4 text-gray-400" x-text="$store.settings.fmtTime(a.updated_at)"></td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
 
                     <!-- General Tab -->

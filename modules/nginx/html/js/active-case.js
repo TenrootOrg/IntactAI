@@ -225,31 +225,23 @@
    * If System is already active, just switch the tab (no reload).
    */
   async function gotoSystemWorkflows() {
-    // Resolve the System workspace. Some system features (online upgrade, apply)
-    // restart the backend right after starting, so /api/cases can momentarily
-    // fail — retry once rather than silently skipping the switch and leaving the
-    // run hidden in a workspace the operator isn't looking at.
-    let sys = null;
-    for (let attempt = 0; attempt < 2 && !sys; attempt++) {
-      try {
-        const cases = await listCases();
-        sys = (cases || []).find(c => c.is_system) || null;
-      } catch (e) { /* retry */ }
-      if (!sys && attempt === 0) await new Promise(r => setTimeout(r, 800));
-    }
-    if (sys) {
-      if (get() !== sys.case_id) {
-        set(sys.case_id);
-        window.location.hash = 'workflows';   // restored after the reload below
-        window.location.reload();             // refresh case-scoped views under System
-        return;
+    // System is no longer a selectable workspace — system-operation run history now
+    // lives in Settings → Actions. Navigate there and open the Actions tab. (Kept
+    // the old name + shape so the ~7 settings.js callers work unchanged.) The
+    // settings panel listens for the 'show-system-actions' window event; fire it
+    // twice to cover the case where the settings partial is still lazy-loading.
+    try {
+      if (window.Alpine && Alpine.store('app') && Alpine.store('app').switchTab) {
+        Alpine.store('app').switchTab('settings');
+      } else {
+        window.location.hash = 'settings';
       }
-    } else {
-      console.warn('[workspace] Could not resolve the System workspace — the run is ' +
-                   'in System; switch workspaces manually to see it.');
+    } catch (e) {
+      try { window.location.hash = 'settings'; } catch (_) { /* headless */ }
     }
-    try { window.Alpine && Alpine.store('app').switchTab('workflows'); }
-    catch (e) { window.location.hash = 'workflows'; }
+    const fire = () => { try { window.dispatchEvent(new CustomEvent('show-system-actions')); } catch (e) {} };
+    fire();
+    setTimeout(fire, 400);
   }
 
   window.ActiveCase = { get, set, listCases, createCase, deleteCase, ensureActiveCase,

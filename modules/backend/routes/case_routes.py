@@ -227,6 +227,12 @@ def list_cases():
         cid = r.get("run_id")
         is_default = bool(det.get("is_default") or det.get("name") == store.DEFAULT_CASE_NAME)
         is_system = bool(det.get("is_system") or det.get("name") == store.SYSTEM_CASE_NAME)
+        if is_system:
+            # System is no longer a selectable case/workspace — it's dropped from the
+            # case list + workspace picker. Its run history is served separately by
+            # GET /api/system/actions (Settings → Actions). Attribution/redirect for
+            # system runs still uses the internal System case_id (unchanged).
+            continue
         # member count = runs tagged to this workspace (+ legacy explicit members)
         members = ws.get_automation_runs_by_case(cid) if hasattr(ws, "get_automation_runs_by_case") else []
         cases.append({"case_id": cid, "name": det.get("name"),
