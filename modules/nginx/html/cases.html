@@ -331,12 +331,12 @@ function tokenBadge(ab){
 function _usd(v){ v=v||0; return '$'+(v>=1?v.toFixed(2):(v>=0.01?v.toFixed(3):v.toFixed(4))); }
 function costBadge(ce){
   if(!ce) return '';
-  if(!ce.model) return `<span class="stat" title="No fusion LLM model configured — set Settings ▸ Agentic ▸ model to price this"><b style="color:var(--muted)">—</b> cost/rescan <span style="color:var(--muted)">(no model)</span></span>`;
+  if(!ce.model) return `<span class="stat" title="No fusion LLM model configured — set Settings ▸ Agentic ▸ model to price this"><b style="color:var(--muted)">—</b> cost/report <span style="color:var(--muted)">(no model)</span></span>`;
   const after=(ce.after&&ce.after.usd)||0, before=(ce.before&&ce.before.usd)||0;
-  if(!(before>0||after>0)) return `<span class="stat" title="No pricing for ${esc(ce.model)} in the model catalog"><b style="color:var(--muted)">—</b> cost/rescan <span style="color:var(--muted)">(${esc(ce.model)})</span></span>`;
+  if(!(before>0||after>0)) return `<span class="stat" title="No pricing for ${esc(ce.model)} in the model catalog"><b style="color:var(--muted)">—</b> cost/report <span style="color:var(--muted)">(${esc(ce.model)})</span></span>`;
   const sim = (ce.mode!=='real') ? ' if live' : '';
-  return `<span class="stat" title="Cost of one Rescan (LLM) with ${esc(ce.model)} — report + advisory (2 passes), ~${(ce.output_tokens||0).toLocaleString()} output tokens. BEFORE = feeding raw rows (${((ce.before&&ce.before.input_tokens)||0).toLocaleString()} in); AFTER = the distilled fusion payload (${((ce.after&&ce.after.input_tokens)||0).toLocaleString()} in). Tune 'LLM payload' + 'Output token cap'.">
-    <span style="color:var(--muted)">${_usd(before)}</span> → <b style="color:var(--warn,#d29922)">${_usd(after)}</b> /rescan${sim} <span style="color:var(--muted)">(${esc(ce.model)})</span></span>`;
+  return `<span class="stat" title="Cost of one report generation (LLM) with ${esc(ce.model)} — report + advisory (2 passes), driven almost entirely by the INPUT context (raw vs distilled); output tokens are the same either way. ~${(ce.output_tokens||0).toLocaleString()} output tokens. BEFORE = feeding raw rows (${((ce.before&&ce.before.input_tokens)||0).toLocaleString()} in); AFTER = the distilled fusion payload (${((ce.after&&ce.after.input_tokens)||0).toLocaleString()} in). Tune 'LLM payload' + 'Output token cap'.">
+    <span style="color:var(--muted)">${_usd(before)}</span> → <b style="color:var(--warn,#d29922)">${_usd(after)}</b> /report${sim} <span style="color:var(--muted)">(${esc(ce.model)})</span></span>`;
 }
 function render(info,md,g){
   curInfo=info; curGraph=g;
@@ -484,7 +484,6 @@ function renderConfig(info){
     </div>
     <div class="cfgactions">
       <button onclick="doRefusion('${info.case_id}')" style="background:var(--info);border-color:var(--info);color:#0d1117" title="Saves your configuration first, then re-fuses the deterministic graph (hosts, entities, links, findings, risk &amp; timeline). Fast — no LLM, no tokens.">🔄 Refusion</button>
-      <button onclick="doRescanLLM('${info.case_id}')" style="background:var(--acc);border-color:var(--acc)" title="Saves your configuration, re-fuses, then regenerates the report &amp; chat narrative with the LLM. Spends tokens.">✨ Rescan (LLM)</button>
     </div>`;
   loadHosts(info.case_id);
   // friendly single-field date+time picker — choosing a date pops the hour inline
