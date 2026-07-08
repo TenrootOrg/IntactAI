@@ -656,12 +656,20 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 detn = F.get(r, "Detection", default=None)
                 cat = F.get(r, "Category", default=None)
                 dom = F.get(r, "Domain", "Host", default=None)
+                # Webhistory nests the visit time in ArtifactData (Visit_Date /
+                # Last_Visit_Date). Use it when sane; guard corrupt pre-epoch values
+                # (some collections emit year 1601/1810 for unconverted WebKit/Chrome
+                # timestamps) so the timeline is never polluted with false dates.
+                _ad = r.get("ArtifactData") if isinstance(r.get("ArtifactData"), dict) else {}
+                web_ts = keys.norm_ts(_ad.get("Visit_Date") or _ad.get("Last_Visit_Date")) or ts
+                if web_ts and web_ts < "2000":
+                    web_ts = None
                 if detn or cat:
                     dname = (detn.get("Category") if isinstance(detn, dict) else detn) or cat or "web"
                     title = f"Web: {str(dname)[:30]} — {str(dom)[:40]}" if dom else f"Web: {str(dname)[:40]}"
                     eid = keys.event_id(asset, f"{asset}:{dom}", f"webdet:{dname}:{dom}")
                     ents.append(_ent(eid, "event", title, asset, run_id, loc,
-                                     anomaly=40, first=ts, artifact=artifact,
+                                     anomaly=40, first=web_ts, artifact=artifact,
                                      flags=["detection", "web"], title=title,
                                      category=str(cat) if cat else None,
                                      domain=str(dom) if dom else None,
@@ -729,9 +737,21 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 dname = (det.get("Name") if isinstance(det, dict) else det) or artifact
                 crit = (det.get("Criticality") if isinstance(det, dict) else None) or "low"
                 path = F.get(r, "OSPath", *F.PATH, default="")
+                # DetectRaptor MFT rows nest the $SI/$FN MACB times inside the
+                # SITimestamps / FNTimestamps objects, so the generic first_ts() spec
+                # (top-level keys only) misses them and the event used to land with NO
+                # timestamp (blank on the timeline). Anchor on $FN Created — it's set at
+                # local MFT-record creation, so it reflects when the file appeared on
+                # THIS host and resists $SI copy-preservation / timestomping (a tool
+                # built in 2022 but dropped in 2025 shows 2025 via $FN, not its inherited
+                # $SI 2022). Fall back to $SI Created, then the modified times.
+                _si = r.get("SITimestamps") if isinstance(r.get("SITimestamps"), dict) else {}
+                _fn = r.get("FNTimestamps") if isinstance(r.get("FNTimestamps"), dict) else {}
+                mft_ts = keys.norm_ts(_fn.get("Created0x30") or _si.get("Created0x10")
+                                      or _si.get("LastModified0x10") or _fn.get("LastModified0x30") or ts)
                 ev = _ent(keys.event_id(asset, f"{asset}:{path}", f"mft:{dname}"),
                           "event", f"MFT: {str(dname)[:70]}", asset, run_id, loc,
-                          anomaly=_level_anomaly(crit), first=ts, artifact=artifact,
+                          anomaly=_level_anomaly(crit), first=mft_ts, artifact=artifact,
                           flags=["mft_detection", "detection"],
                           title=f"MFT: {str(dname)[:60]}", detection=str(dname),
                           criticality=str(crit).lower(), path=str(path)[:200])
