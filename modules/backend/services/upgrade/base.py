@@ -1072,6 +1072,51 @@ def rename_version_key_in_config(old_key: str, new_key: str, logger=None,
         return False
 
 
+def delete_version_key_in_config(key: str, logger=None,
+                                  config_path: str = None) -> bool:
+    """Remove ``versions.<key>`` from the ``versions:`` block. Line-scan,
+    ``:``-anchored (deleting ``prowler`` never touches a ``prowler_x``).
+    Idempotent: False if the key is absent. Used to drop a retired module's
+    version pin whose meaning doesn't carry to its replacement (e.g. the dead
+    Prowler image version when the AWS slot became the aws_sigma rule pack)."""
+    import re
+    log = logger or (lambda msg, level="info": None)
+    path = config_path or os.path.join(WORKDIR, 'config.yaml')
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path) as f:
+            lines = f.read().splitlines(keepends=True)
+    except Exception as e:
+        log(f"Could not read config.yaml: {e}", "warning")
+        return False
+
+    key_re = re.compile(rf'^\s+{re.escape(key)}:\s')
+    out = []
+    in_v = False
+    removed = False
+    for line in lines:
+        body = line.rstrip('\n')
+        if re.match(r'^versions:\s*(#.*)?$', body):
+            in_v = True
+        elif in_v and body and not body[:1].isspace():
+            in_v = False
+        if in_v and not removed and key_re.match(body):
+            removed = True
+            continue  # drop the line
+        out.append(line)
+    if not removed:
+        return False
+    try:
+        with open(path, 'w') as f:
+            f.write(''.join(out))
+        log(f"Removed versions.{key} from config.yaml", "info")
+        return True
+    except Exception as e:
+        log(f"Could not write config.yaml: {e}", "warning")
+        return False
+
+
 def get_current_versions() -> Dict:
     """Get current versions for all modules.
 

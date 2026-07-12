@@ -32,6 +32,7 @@ from .base import (
     rename_module_in_config,          # noqa: F401 — available to migrations
     rename_version_key_in_config,     # noqa: F401
     delete_module_block_in_config,    # noqa: F401
+    delete_version_key_in_config,     # noqa: F401
 )
 
 MIGRATION_BACKUP_SUFFIX = ".pre-migration-backup"
@@ -131,34 +132,49 @@ def _write_lines(path: str, lines: List[str], log: Callable) -> bool:
 # and bump nothing else — CURRENT_SCHEMA_VERSION derives from the last entry,
 # and install.sh ships that value in the fresh config.yaml.
 #
-def _m2_rename_cloudtrail_to_aws_sigma(config_path, logger=None):
-    """schema 1 -> 2: rename the AWS module's config keys.
+def _m2_consolidate_aws_module_id(config_path, logger=None):
+    """schema 1 -> 2: consolidate the AWS module's config id to 'aws_sigma'.
 
-    'cloudtrail' was overloaded — it is both the platform module id AND the
-    real AWS service name (cloudtrail_console, cloudtrail_mode,
-    cloudtrail_runner stay untouched in code). The module id is now
-    'aws_sigma'; this renames the operator's config keys in lockstep with the
-    code rename (UPGRADE_ORDER, dispatch dicts, base.py maps, system_routes,
-    frontend status keys, lib/*.sh readers, all shipped in the same release,
-    plus LEGACY_MODULE_ALIASES for old persisted state / old packages).
+    The AWS module slot was renamed TWICE across releases:
+        prowler  (posture, Prowler image)
+          -> cloudtrail  (native SIGMA CloudTrail detection)
+          -> aws_sigma   (current id)
+    'cloudtrail' is also the real AWS service name, but the code rename only
+    touched the MODULE ID (UPGRADE_ORDER, dispatch dicts, base.py maps,
+    system_routes, frontend status keys, lib/*.sh readers), leaving every
+    cloudtrail_* AWS-service name alone.
 
-    Idempotent by construction: both helpers no-op when the old key is gone,
-    and when BOTH keys exist (the Phase-1 versions-merge ADDS versions.
-    aws_sigma from the new release while the operator still has
-    versions.cloudtrail) the duplicate old line is dropped.
-    Note: modules/backend/.env's CLOUDTRAIL_VERSION env var and the
-    cloudtrail-<v>.tar package artifact name are deliberately NOT renamed
-    (on-host / in-package compatibility contracts).
+    This migration folds ANY legacy AWS-module id in the operator's config
+    into 'aws_sigma', CARRYING the enabled flag forward so the operator's
+    on/off choice survives (a prowler-era config with the AWS module OFF must
+    not silently flip ON just because the block name changed — this is the gap
+    the e2e upgrade from intact-20260615 surfaced).
+
+    modules block: rename modules.cloudtrail AND modules.prowler -> aws_sigma
+    (rename_module carries child lines verbatim; idempotent; if aws_sigma
+    already exists the stale legacy block is dropped).
+
+    versions block: cloudtrail's pin IS the rule-pack version → rename it to
+    aws_sigma. prowler's pin is the dead Prowler IMAGE version (different
+    meaning) → DROP it. The Phase-1 versions-merge already added the new
+    versions.aws_sigma, so the cloudtrail rename usually just drops the dup.
+
+    NOT renamed (compat contracts): the CLOUDTRAIL_VERSION env var in every
+    installed host's backend .env, and the cloudtrail-<v>.tar package artifact.
     """
     rename_module_in_config('cloudtrail', 'aws_sigma', logger=logger,
                             config_path=config_path)
+    rename_module_in_config('prowler', 'aws_sigma', logger=logger,
+                            config_path=config_path)
     rename_version_key_in_config('cloudtrail', 'aws_sigma', logger=logger,
+                                 config_path=config_path)
+    delete_version_key_in_config('prowler', logger=logger,
                                  config_path=config_path)
 
 
 CONFIG_MIGRATIONS: List[Tuple[int, str, Callable]] = [
-    (2, "rename AWS module keys: cloudtrail -> aws_sigma",
-     _m2_rename_cloudtrail_to_aws_sigma),
+    (2, "consolidate AWS module id: prowler/cloudtrail -> aws_sigma",
+     _m2_consolidate_aws_module_id),
 ]
 
 CURRENT_SCHEMA_VERSION = CONFIG_MIGRATIONS[-1][0] if CONFIG_MIGRATIONS else 1
