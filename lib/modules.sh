@@ -1309,6 +1309,18 @@ enforce_iris_admin_password() {
     # applied at first-init (e.g. an unreadable secret file -> IRIS fell back to
     # a RANDOM password), the documented config.yaml creds never work. Re-assert
     # them here using IRIS's own bcrypt hashing (flask-bcrypt), idempotently.
+
+    # IRIS-disabled guard — mirrors bootstrap_iris_api_key. Without this, a
+    # deselected IRIS still reached the app/db running-check below and logged a
+    # misleading "IRIS app/db not running" WARNING on every install where IRIS
+    # is off. Nothing to enforce when the module isn't installed.
+    local iris_enabled
+    iris_enabled=$(read_config "['modules']['iris']['enabled']")
+    if ! is_enabled "$iris_enabled"; then
+        log_info "  IRIS disabled — skipping admin-password enforcement"
+        return 0
+    fi
+
     local iris_user iris_pass
     iris_user=$(read_config "['modules']['iris']['id']"); [[ -z "$iris_user" ]] && iris_user="administrator"
     iris_pass=$(read_config "['modules']['iris']['password']")
