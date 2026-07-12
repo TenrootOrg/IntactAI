@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Pre-commit secret guard — blocks a commit whose STAGED content contains a
+# credential that must never enter git history. CI's gitleaks run
+# (.github/workflows/secret-scan.yml) is the last line of defense, but it
+# fires AFTER push — by then the secret is public and must be revoked. This
+# hook stops it locally, before it ever becomes a commit.
+#
+# Install (one-time per clone):
+#     git config core.hooksPath scripts/git-hooks
+#
+# Deliberate-bypass escape hatch (e.g. committing a doc that EXPLAINS a token
+# format): git commit --no-verify
+set -euo pipefail
+
+fail=0
+
+# 1) Known high-confidence token formats, checked against the staged DIFF
+#    (added lines only) of every file. GitHub PATs: classic (ghp_) and
+#    fine-grained (github_pat_), OAuth/app tokens (gho_/ghu_/ghs_/ghr_),
+#    plus AWS access keys and private-key headers for good measure.
+PATTERNS=(
+    'ghp_[A-Za-z0-9]{36}'
+    'github_pat_[A-Za-z0-9_]{22,}'
+    'gh[ousr]_[A-Za-z0-9]{36}'
+    'AKIA[0-9A-Z]{16}'
+    '-----BEGIN (RSA|EC|OPENSSH|DSA|PGP) PRIVATE KEY-----'
+)
+staged_added=$(git diff --cached --no-color --unified=0 | grep '^+' | grep -v '^+++' || true)
+for pat in "${PATTERNS[@]}"; do
+    if hits=$(printf '%s\n' "$staged_added" | grep -nE -e "$pat" | head -3); [[ -n "$hits" ]]; then
+        echo "✗ pre-commit: staged content matches secret pattern: $pat" >&2
+        printf '%s\n' "$hits" | sed 's/^/    /' >&2
+        fail=1
+    fi
+done
+
+# 2) config.yaml-specific guard: the SHIPPED default must never carry operator
+#    values. If config.yaml is staged, its staged blob must have an EMPTY
+#    github_token and no obvious real-token value anywhere. (The operator's
+#    local file is skip-worktree'd; this catches the mistake of clearing that
+#    flag and `git add config.yaml` with live values.)
+if git diff --cached --name-only | grep -qx 'config.yaml'; then
+    staged_cfg=$(git show :config.yaml)
+    tok=$(printf '%s\n' "$staged_cfg" | sed -n "s/^[[:space:]]*github_token:[[:space:]]*['\"]\?\([^'\"]*\)['\"]\?.*$/\1/p" | head -1)
+    if [[ -n "$tok" ]]; then
+        echo "✗ pre-commit: staged config.yaml has a NON-EMPTY github_token ('${tok:0:8}…')." >&2
+        echo "  The shipped default must stay github_token: '' — your real token" >&2
+        echo "  lives only in your local (skip-worktree) copy / backend .env." >&2
+        fail=1
+    fi
+fi
+
+if [[ $fail -ne 0 ]]; then
+    echo "" >&2
+    echo "Commit blocked. If this is a deliberate false positive:" >&2
+    echo "    git commit --no-verify" >&2
+    exit 1
+fi
+exit 0
