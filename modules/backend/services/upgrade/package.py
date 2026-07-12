@@ -765,9 +765,20 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     f"https://api.github.com/repos/{repo}/branches/{version}"
                 )
                 try:
+                    # Authenticate when a token is configured (env or
+                    # config.yaml options.github_token) — this api.github.com
+                    # call counts against the 60/hr anonymous per-IP cap.
+                    _gh_headers = {"Accept": "application/vnd.github+json"}
+                    try:
+                        from .resolver import _github_token
+                        _tok = _github_token()
+                        if _tok:
+                            _gh_headers["Authorization"] = f"token {_tok}"
+                    except Exception:
+                        pass
                     req = urllib.request.Request(
                         branch_api_url,
-                        headers={"Accept": "application/vnd.github+json"},
+                        headers=_gh_headers,
                     )
                     with urllib.request.urlopen(req, timeout=30) as resp:
                         branch_data = _json.load(resp)

@@ -225,6 +225,14 @@ update_env_files() {
         # by the AWS/Azure detection pipelines + the module upgraders.
         [[ -n "$cloudtrail_version" ]] && update_env_var "$backend_env" "CLOUDTRAIL_VERSION" "$cloudtrail_version"
         [[ -n "$o365rc_version" ]] && update_env_var "$backend_env" "DFIR_O365RC_VERSION" "$o365rc_version"
+        # GitHub token (options.github_token): authenticates the backend's
+        # Online Upgrade / Prepare GitHub calls — 60/hr anonymous -> 5,000/hr.
+        # Read-only-public token; see the full comment in config.yaml.
+        local github_token=$(read_config "['options']['github_token']")
+        if [[ -n "$github_token" && "$github_token" != "None" ]]; then
+            update_env_var "$backend_env" "GITHUB_TOKEN" "$github_token"
+            log_success "  GITHUB_TOKEN set in backend .env (authenticated GitHub API: 5,000 req/hr)"
+        fi
         log_success "Updated Backend .env"
     else
         log_warn "Backend .env not found, skipping"

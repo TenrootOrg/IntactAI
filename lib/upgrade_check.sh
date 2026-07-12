@@ -121,8 +121,9 @@ _upstream_latest_release() {
     # piped curl's output to stdin, the script would see an empty
     # string. Argv is fine for /releases/latest responses (a few KB).
     local raw
+    local -a _auth=(); [[ -n "${GITHUB_TOKEN:-}" ]] && _auth=(-H "Authorization: token $GITHUB_TOKEN")
     raw=$(curl -sLi --max-time 15 \
-        -H "Accept: application/vnd.github+json" \
+        -H "Accept: application/vnd.github+json" "${_auth[@]}" \
         "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)
     [[ -z "$raw" ]] && return 0   # network failure → empty (handled by caller)
 
@@ -171,8 +172,9 @@ except Exception:
 # optimistically — better to attempt the per-module check than skip
 # preemptively on a transient network glitch).
 _upstream_rate_limit_remaining() {
+    local -a _auth=(); [[ -n "${GITHUB_TOKEN:-}" ]] && _auth=(-H "Authorization: token $GITHUB_TOKEN")
     curl -sL --max-time 10 \
-        -H "Accept: application/vnd.github+json" \
+        -H "Accept: application/vnd.github+json" "${_auth[@]}" \
         "https://api.github.com/rate_limit" 2>/dev/null \
         | python3 -c "
 import json, sys
@@ -189,8 +191,9 @@ except Exception:
 # can't parse it for some reason.
 _upstream_rate_limit_reset_at() {
     local epoch
+    local -a _auth=(); [[ -n "${GITHUB_TOKEN:-}" ]] && _auth=(-H "Authorization: token $GITHUB_TOKEN")
     epoch=$(curl -sL --max-time 10 \
-        -H "Accept: application/vnd.github+json" \
+        -H "Accept: application/vnd.github+json" "${_auth[@]}" \
         "https://api.github.com/rate_limit" 2>/dev/null \
         | python3 -c "
 import json, sys

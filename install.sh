@@ -55,6 +55,19 @@ main() {
     check_initialization_marker
     check_ubuntu
     check_config
+    # Authenticate this install's GitHub API calls (module-update polling,
+    # quota pre-flights, release lookups) when the operator set
+    # options.github_token in config.yaml — raises the shared anonymous
+    # 60 req/hr per-IP cap to 5,000 req/hr. Read-only-public token; see the
+    # comment on github_token in config.yaml. Env var (if already exported)
+    # wins so CI can override.
+    if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+        _cfg_gh_token=$(read_config "['options']['github_token']")
+        if [[ -n "$_cfg_gh_token" && "$_cfg_gh_token" != "None" ]]; then
+            export GITHUB_TOKEN="$_cfg_gh_token"
+            log_info "GitHub API: authenticated via options.github_token (5,000 req/hr)"
+        fi
+    fi
     print_installation_config_summary
     if ! check_network_connectivity; then
         log_error "Network connectivity check failed - aborting installation"

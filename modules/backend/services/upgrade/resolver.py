@@ -61,6 +61,27 @@ CACHE_TTL_SECONDS = 30 * 60
 _cache: Dict[str, Tuple[float, object]] = {}
 
 
+
+def _github_token():
+    """GitHub API token: GITHUB_TOKEN env (set into the backend .env at install
+    from config.yaml options.github_token) first, falling back to a fresh read
+    of config.yaml itself — so an operator can add the token to config.yaml and
+    it takes effect WITHOUT editing .env or restarting the backend. Raises the
+    anonymous 60 req/hr per-IP cap to 5,000 req/hr. Needs a READ-ONLY-PUBLIC
+    token (classic PAT with no scopes, or fine-grained public-repos read-only)
+    — see the github_token comment in config.yaml.
+    """
+    token = os.environ.get('GITHUB_TOKEN')
+    if token:
+        return token
+    try:
+        from config import load_main_config
+        cfg = load_main_config() or {}
+        token = (cfg.get('options') or {}).get('github_token')
+        return token if isinstance(token, str) and token.strip() else None
+    except Exception:
+        return None
+
 def _cache_get(key: str):
     """Return cached value or None if missing/stale."""
     entry = _cache.get(key)
@@ -105,7 +126,7 @@ def get_github_rate_limit() -> Optional[Dict]:
     """
     import time as _time
     headers = {'Accept': 'application/vnd.github.v3+json'}
-    token = os.environ.get('GITHUB_TOKEN')
+    token = _github_token()
     if token:
         headers['Authorization'] = f'token {token}'
     try:
@@ -213,11 +234,12 @@ def check_quota_or_raise(needed: int, action_name: str,
                 "\n\nTo raise the cap from 60 → 5000/hr:\n"
                 "  1) Get a token: github.com/settings/tokens "
                 "→ Generate new token (classic). Leave all scopes UNCHECKED "
-                "(public-repo reads only, smaller blast radius if it leaks).\n"
-                "  2) On the IntactAI host:\n"
-                "       echo 'GITHUB_TOKEN=ghp_YOUR_TOKEN' | sudo tee -a "
-                "/home/tenroot/intact/modules/backend/.env\n"
-                "       docker restart intact_backend\n"
+                "(the platform only READS a public repo — a no-scope token "
+                "authenticates fine and is harmless if it leaks).\n"
+                "  2) Put it in config.yaml under options:\n"
+                "       github_token: 'ghp_YOUR_TOKEN'\n"
+                "     (picked up immediately — no restart needed; install.sh "
+                "also persists it to the backend .env on the next run)\n"
                 "  3) Confirm — open this modal again; the [GH-QUOTA] log "
                 "should now show have N/5000 instead of N/60.\n"
                 "Otherwise, wait until reset."
@@ -253,7 +275,7 @@ def list_github_refs(user_action: str = 'fetch') -> List[Dict]:
 
     _gh_call_log(f'/repos/{GITHUB_REPO}/releases', user_action)
     headers = {'Accept': 'application/vnd.github.v3+json'}
-    token = os.environ.get('GITHUB_TOKEN')
+    token = _github_token()
     if token:
         headers['Authorization'] = f'token {token}'
     try:

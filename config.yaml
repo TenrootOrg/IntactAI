@@ -35,6 +35,29 @@ options:
   # continues normally using whatever versions are pinned below.
   check_module_updates: false
 
+  # GitHub API token used by the installer AND the backend's Online Upgrade /
+  # Prepare Package flows (release lookups, target config.yaml fetches, module
+  # update checks, source downloads).
+  #
+  # WHY: without a token, every api.github.com call is ANONYMOUS and shares a
+  # 60-requests/hour PER-IP cap. Installs + upgrades burn several calls each,
+  # so shared/NAT'd networks or repeated test runs hit the cap and the upgrade
+  # UI shows "rate limited — try again later". A token raises the cap to
+  # 5,000 requests/hour for this machine.
+  #
+  # MINIMAL PERMISSION: the platform only READS a public repository, so the
+  # token needs NO write access of any kind:
+  #   - Fine-grained PAT: Repository access = "Public repositories (read-only)",
+  #     zero additional permissions.
+  #   - Classic PAT: create it with NO scopes ticked at all (an empty-scope
+  #     classic token still authenticates and gets the 5,000/hr limit).
+  # Never use a token with repo-write/admin scopes here.
+  #
+  # Applied at install into modules/backend/.env (GITHUB_TOKEN=...); the
+  # backend also reads it from this file directly, so adding it later works
+  # without reinstalling. Leave empty to stay anonymous.
+  github_token: ''
+
 modules:
   # CloudTrail — native AWS DFIR detection (CloudTrail events + SIGMA rules,
   # feeding the fusion engine). No container image; the versioned artifact is the
