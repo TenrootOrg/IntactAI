@@ -1142,6 +1142,16 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
         # Final nginx restart
         restart_nginx(log)
 
+        # Phase 2 is running ON the new code — reaching this finalizer is the
+        # proof it boots. The anti-brick rollback snapshot has served its
+        # purpose; reclaim the space. (A FAILED intact gate never reaches
+        # Phase 2 — its snapshot is kept for recovery, swept after 168h.)
+        try:
+            from .intact import cleanup_rollback_snapshots
+            cleanup_rollback_snapshots(logger=log)
+        except Exception as _rs:
+            log(f"  rollback-snapshot cleanup skipped ({_rs})", "warning")
+
         # Mark complete and clear state
         update_upgrade_phase(run_id, 'completed')
         clear_upgrade_state(run_id)

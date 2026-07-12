@@ -206,22 +206,36 @@ _UPGRADE_STAGING_GLOBS = ("/app/data/tmp/intact-upgrade-*", "/tmp/intact-upgrade
 def sweep_stale_upgrade_staging(logger: Callable = None, max_age_hours: float = 2.0) -> int:
     """Remove leftover intact-upgrade-* staging dirs older than ``max_age_hours``.
     Returns the number removed. Safe: only dirs, only older than the cutoff (the
-    current run's dir is seconds old), errors swallowed per-dir."""
+    current run's dir is seconds old), errors swallowed per-dir.
+
+    Anti-brick rollback snapshots (intact-rollback-*) use a SEPARATE, much
+    longer retention (168h): a snapshot left behind by a FAILED upgrade is the
+    manual-recovery path and may be needed days later — the 2h staging cutoff
+    must never apply to it. Successful upgrades delete their snapshot
+    explicitly (intact.cleanup_rollback_snapshots)."""
     import glob
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    cutoff = time.time() - max_age_hours * 3600
     removed = 0
-    for pattern in _UPGRADE_STAGING_GLOBS:
+    sweep_sets = (
+        [(p, max_age_hours) for p in _UPGRADE_STAGING_GLOBS]
+        + [("/app/data/tmp/intact-rollback-*", 168.0),
+           ("/app/data/tmp/restart-*.log", 168.0)]
+    )
+    for pattern, age_h in sweep_sets:
+        cutoff = time.time() - age_h * 3600
         for d in glob.glob(pattern):
             try:
-                if os.path.isdir(d) and os.path.getmtime(d) < cutoff:
-                    shutil.rmtree(d, ignore_errors=True)
+                if os.path.getmtime(d) < cutoff:
+                    if os.path.isdir(d):
+                        shutil.rmtree(d, ignore_errors=True)
+                    else:
+                        os.remove(d)
                     removed += 1
-                    log(f"  Swept stale upgrade staging: {d}", "info")
+                    log(f"  Swept stale upgrade artifact: {d}", "info")
             except OSError as e:
                 log(f"  Could not sweep {d}: {e}", "warning")
     if removed:
-        log(f"Reclaimed {removed} stale upgrade staging dir(s) from prior runs", "info")
+        log(f"Reclaimed {removed} stale upgrade artifact(s) from prior runs", "info")
     return removed
 
 

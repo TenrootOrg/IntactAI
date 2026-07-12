@@ -92,6 +92,150 @@ def _mirror_tree(src: str, dst: str, protect=(), logger=None) -> Dict:
     return {"copied": copied, "deleted": deleted}
 
 
+# ---------------------------------------------------------------------------
+# Anti-brick: source snapshot + importability gate.
+#
+# _mirror_tree replaces the LIVE backend source in place. Before these
+# helpers, a release with a syntax error meant the backend crash-looped on
+# import after the restart — whole platform down, manual recovery only,
+# because no copy of the old tree existed and nothing verified the new tree
+# before restarting into it.
+# ---------------------------------------------------------------------------
+
+ROLLBACK_ROOT = "/app/data/tmp"          # host bind mount — survives restarts
+ROLLBACK_PREFIX = "intact-rollback-"
+
+
+def snapshot_intact_tree(run_id, backend_dir, nginx_html, logger=None):
+    """Snapshot the CURRENT install to ROLLBACK_ROOT/intact-rollback-<run_id>/
+    ({backend/, frontend/}) so a bad release can be rolled back. Keeps exactly
+    one snapshot (deletes previous intact-rollback-*). Excludes backend/.env
+    (the mirror never touches it either) and frontend/downloads/ (large,
+    regenerated); __pycache__ is skipped by _mirror_tree itself. Source-only
+    tree is tens of MB — deps live in the image, not the tree.
+
+    Returns the snapshot path, or None on failure (caller proceeds LOUDLY
+    unprotected — a full disk shouldn't block upgrades, but must be visible).
+    """
+    log = logger or (lambda m, l="info": None)
+    try:
+        import glob as _glob
+        tag = (run_id or 'manual').replace('/', '_')
+        snap = os.path.join(ROLLBACK_ROOT, f"{ROLLBACK_PREFIX}{tag}")
+        for old in _glob.glob(os.path.join(ROLLBACK_ROOT, f"{ROLLBACK_PREFIX}*")):
+            if old != snap:
+                shutil.rmtree(old, ignore_errors=True)
+        shutil.rmtree(snap, ignore_errors=True)
+        os.makedirs(os.path.join(snap, 'backend'), exist_ok=True)
+        os.makedirs(os.path.join(snap, 'frontend'), exist_ok=True)
+        _mirror_tree(backend_dir, os.path.join(snap, 'backend'),
+                     protect=('.env',), logger=None)
+        _mirror_tree(nginx_html, os.path.join(snap, 'frontend'),
+                     protect=('downloads',), logger=None)
+        log(f"  Rollback snapshot of the current install saved to {snap}", "info")
+        return snap
+    except Exception as e:
+        log(f"  ⚠ NO ROLLBACK SNAPSHOT ({type(e).__name__}: {e}) — proceeding "
+            f"UNPROTECTED: a broken release cannot be auto-rolled-back", "warning")
+        return None
+
+
+def restore_intact_tree(snapshot_dir, backend_dir, nginx_html, logger=None) -> bool:
+    """Exact restore of the pre-upgrade install from a snapshot_intact_tree
+    snapshot — including DELETING files the bad release added (mirror
+    semantics both ways). Spares the same operator paths (.env, downloads/).
+    """
+    log = logger or (lambda m, l="info": None)
+    try:
+        _mirror_tree(os.path.join(snapshot_dir, 'backend'), backend_dir,
+                     protect=('.env',), logger=log)
+        _mirror_tree(os.path.join(snapshot_dir, 'frontend'), nginx_html,
+                     protect=('downloads',), logger=log)
+        run_command(f"chown -R 1000:1000 {backend_dir}/", logger=None)
+        run_command(f"chown -R 1000:1000 {nginx_html}/", logger=None)
+        log("  Previous install restored from rollback snapshot", "success")
+        return True
+    except Exception as e:
+        log(f"  RESTORE FAILED ({type(e).__name__}: {e}) — snapshot kept at "
+            f"{snapshot_dir} for manual recovery", "error")
+        return False
+
+
+def cleanup_rollback_snapshots(logger=None):
+    """Remove all intact-rollback-* snapshots. Called when an upgrade finishes
+    on code that has proven it boots (Phase 2 runs ON the new code, so reaching
+    its finalizer is the proof). Failed upgrades keep their snapshot for manual
+    recovery; the 168h sweep in base.sweep_stale_upgrade_staging reaps leftovers.
+    """
+    log = logger or (lambda m, l="info": None)
+    import glob as _glob
+    for snap in _glob.glob(os.path.join(ROLLBACK_ROOT, f"{ROLLBACK_PREFIX}*")):
+        shutil.rmtree(snap, ignore_errors=True)
+        log(f"  Removed rollback snapshot {os.path.basename(snap)} (upgrade "
+            f"finished on the new code)", "info")
+
+
+def verify_backend_compiles(backend_dir, old_requirements=None, logger=None) -> Dict:
+    """Importability gate for a just-mirrored backend tree, run BEFORE the
+    restart so a broken release can never take the platform down.
+
+    1. `python3 -m compileall` over every shipped .py — catches the
+       SyntaxError/IndentationError class (the container-can-never-boot bug).
+    2. requirements diff: a dependency the NEW tree requires that is not
+       installed in the CURRENT image would crash at import time despite
+       compiling — hard-fail the gate for those too (importing app.py live to
+       probe would run Flask/DB side effects, so this diff is the safe proxy).
+
+    Returns {"success": bool, "error": str}.
+    """
+    log = logger or (lambda m, l="info": None)
+    # -f forces recompilation: without it, compileall trusts a .pyc whose
+    # recorded source mtime+size still match — a same-second overwrite (or a
+    # pathological mirror timing) could slip a broken file past the gate.
+    r = run_command(
+        f"python3 -m compileall -q -f -x '(__pycache__|downloads)' {backend_dir}",
+        logger=None, timeout=300)
+    if not r.get('success'):
+        detail = ((r.get('stdout') or '') + '\n' + (r.get('stderr') or '')).strip()
+        return {"success": False,
+                "error": f"new backend fails to compile:\n{detail[-1500:]}"}
+
+    # New deps the running image doesn't have -> import-time crash post-restart.
+    try:
+        def _req_names(path):
+            names = set()
+            if path and os.path.isfile(path):
+                for line in open(path):
+                    line = line.strip()
+                    if not line or line.startswith(('#', '-')):
+                        continue
+                    name = re.split(r'[<>=!~\[; ]', line, 1)[0].strip().lower()
+                    if name:
+                        names.add(name)
+            return names
+        new_req = _req_names(os.path.join(backend_dir, 'requirements.txt'))
+        old_req = _req_names(old_requirements)
+        added = new_req - old_req
+        if added:
+            import importlib.metadata as _md
+            missing = []
+            for name in sorted(added):
+                try:
+                    _md.distribution(name)
+                except _md.PackageNotFoundError:
+                    missing.append(name)
+            if missing:
+                return {"success": False,
+                        "error": (f"new backend requires package(s) not installed "
+                                  f"in the current image: {', '.join(missing)} — "
+                                  f"restarting would crash at import. This release "
+                                  f"needs a new backend IMAGE, not just source.")}
+    except Exception as e:
+        log(f"  requirements-diff check skipped ({e})", "warning")
+
+    return {"success": True, "error": ""}
+
+
 def merge_versions_from_new_config(
     new_config_path: str,
     operator_config_path: str,
@@ -704,6 +848,12 @@ def upgrade_intact(version: str = None, logger: Callable = None) -> Dict:
 
     log("Starting Intact.AI Platform upgrade...", "info")
 
+    # Anti-brick snapshot (legacy online path — kept for old-release resume
+    # compatibility): capture the current trees before git mutates them.
+    _backend_dir = os.path.join(WORKDIR, 'modules', 'backend')
+    _nginx_html = os.path.join(WORKDIR, 'modules', 'nginx', 'html')
+    snapshot = snapshot_intact_tree('online', _backend_dir, _nginx_html, logger=log)
+
     # Git pull latest code
     log("Pulling latest code from repository...", "info")
     result = run_command("git pull origin main", cwd=repo_dir, logger=log)
@@ -711,6 +861,23 @@ def upgrade_intact(version: str = None, logger: Callable = None) -> Dict:
         result = run_command("git pull origin development", cwd=repo_dir, logger=log)
         if not result['success']:
             log("Warning: Could not pull latest code", "warning")
+
+    # Importability gate — same anti-brick contract as the offline path.
+    gate = verify_backend_compiles(
+        _backend_dir,
+        old_requirements=(os.path.join(snapshot, 'backend', 'requirements.txt')
+                          if snapshot else None),
+        logger=log)
+    if not gate["success"]:
+        log("NEW BACKEND FAILED THE COMPILE GATE — restoring the previous "
+            "install; the backend will NOT restart into broken code.", "error")
+        if snapshot and restore_intact_tree(snapshot, _backend_dir, _nginx_html, logger=log):
+            return {"success": False, "rolled_back": True,
+                    "error": f"new backend failed the compile gate; previous "
+                             f"version restored: {gate['error']}"}
+        return {"success": False, "rolled_back": False,
+                "error": f"new backend failed the compile gate AND no snapshot "
+                         f"restore was possible: {gate['error']}"}
 
     # Fix file permissions (files pulled by root need correct ownership for future upgrades)
     log("Fixing file permissions...", "info")
@@ -849,6 +1016,12 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
                 f"({type(e).__name__}: {e}); proceeding with existing "
                 f"config.yaml — pins may be stale", "warning")
 
+    # Anti-brick snapshot: capture the CURRENT install before the mirror
+    # replaces it in place, so a broken release can be rolled back instead of
+    # crash-looping the platform. Lives on the /app/data bind mount (survives
+    # restarts); deleted at Phase-2 success, swept after 168h otherwise.
+    snapshot = snapshot_intact_tree(run_id, backend_dir, nginx_html, logger=log)
+
     # Mirror backend + frontend so the install becomes an EXACT copy of the new
     # release (overwrite everything AND delete files the release retired) — a
     # plain `cp -a src/*` only ever adds, leaving stale modules to shadow their
@@ -897,9 +1070,32 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
         except Exception as e:
             log(f"  Could not refresh velociraptor build files: {e}", "warning")
 
+    # Importability gate — BEFORE stamping VERSION and before the orchestrator
+    # can schedule the restart. The orchestrator only saves awaiting_restart +
+    # restarts inside its success branch, so returning success:False here
+    # guarantees the platform keeps running the OLD code.
+    if has_backend:
+        log("Verifying the new backend compiles (anti-brick gate)...", "info")
+        old_reqs = (os.path.join(snapshot, 'backend', 'requirements.txt')
+                    if snapshot else None)
+        gate = verify_backend_compiles(backend_dir, old_requirements=old_reqs, logger=log)
+        if not gate["success"]:
+            log("NEW BACKEND FAILED THE COMPILE GATE — restoring the previous "
+                "install; the backend will NOT restart into broken code.", "error")
+            if snapshot and restore_intact_tree(snapshot, backend_dir, nginx_html, logger=log):
+                return {"success": False, "rolled_back": True,
+                        "error": f"new backend failed the compile gate; previous "
+                                 f"version restored: {gate['error']}"}
+            return {"success": False, "rolled_back": False,
+                    "error": f"new backend failed the compile gate AND no snapshot "
+                             f"restore was possible — DO NOT RESTART the backend "
+                             f"manually until fixed: {gate['error']}"}
+        log("  ✓ New backend compiles; no missing image dependencies", "success")
+
     # Stamp WORKDIR/VERSION so the sidebar + Settings reflect the new release.
-    # Shared with the Phase-2 resume finalizer (services/upgrade.__init__) so
-    # whichever code is NEWEST governs the stamp — see stamp_intact_version.
+    # AFTER the gate on purpose: a failed gate must not leave the UI claiming
+    # the new version while old code runs. Shared with the Phase-2 resume
+    # finalizer (services/upgrade.__init__) — see stamp_intact_version.
     stamp_intact_version(package_dir, version, logger=log, run_id=run_id)
 
     # Fix file permissions (files copied by root need correct ownership for future upgrades)
