@@ -1,3 +1,4 @@
+schema_version: 2
 domain: 192.168.120.10
 
 # Installation options
@@ -37,8 +38,8 @@ options:
 modules:
   # CloudTrail — native AWS DFIR detection (CloudTrail events + SIGMA rules,
   # feeding the fusion engine). No container image; the versioned artifact is the
-  # AWS SIGMA rule pack (see versions.cloudtrail). Ships OFF until validated.
-  cloudtrail:
+  # AWS SIGMA rule pack (see versions.aws_sigma). Ships OFF until validated.
+  aws_sigma:
     enabled: false
   o365rc:
     enabled: false
@@ -98,7 +99,7 @@ versions:
   # AWS DFIR detection = the SIGMA AWS CloudTrail rule pack (cloned from SigmaHQ).
   # No container image; this pins the rule-pack version that install / upgrade /
   # prepare-package bundle + update. Bump to refresh the AWS detection rules.
-  cloudtrail: '2026.04'
+  aws_sigma: '2026.04'
   # Azure Unified Audit Log collection runs the DFIR-O365RC image
   # (anssi/dfir-o365rc). Upstream only publishes ':latest' (no version tags),
   # so we track latest — "upgrade" re-pulls the newest latest.

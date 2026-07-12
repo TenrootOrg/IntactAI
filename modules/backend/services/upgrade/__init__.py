@@ -63,7 +63,30 @@ from services.storage.base import (
 # drift incident — a module present in one copy but missing from another — is
 # why it now lives in exactly one place, referenced everywhere.
 UPGRADE_ORDER = ['intact', 'elk', 'timesketch', 'plaso', 'iris',
-                 'velociraptor', 'cloudtrail', 'o365rc', 'volweb', 'cve_scan']
+                 'velociraptor', 'aws_sigma', 'o365rc', 'volweb', 'cve_scan']
+
+# Module ids renamed across releases. Old-code Phase-1 resume state, manifests
+# inside packages prepared by OLD releases, and legacy API callers still carry
+# the old id — normalize wherever a persisted/foreign module key meets
+# UPGRADE_ORDER, or the module silently never dispatches (the 2026-06-16
+# volweb-drift bug class). Drop an alias one release after its rename ships.
+LEGACY_MODULE_ALIASES = {'cloudtrail': 'aws_sigma'}
+
+
+def _normalize_legacy_module_keys(modules):
+    """Return `modules` (a {module_id: version} dict) with legacy ids renamed
+    to their current ones. If both old and new keys are present, the NEW key's
+    value wins (old data already migrated)."""
+    if not isinstance(modules, dict) or not any(k in modules for k in LEGACY_MODULE_ALIASES):
+        return modules
+    out = {}
+    for k, v in modules.items():
+        out[LEGACY_MODULE_ALIASES.get(k, k)] = v
+    # New-key-wins on collision: re-apply values whose key was already current.
+    for k, v in modules.items():
+        if k not in LEGACY_MODULE_ALIASES:
+            out[k] = v
+    return out
 
 # Run types that hold the single-writer upgrade lock. NOTE: the prepare route
 # creates 'prepare_package' runs — prepare mutates staging + the config.yaml
@@ -423,7 +446,7 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
         'plaso': upgrade_plaso,
         'iris': upgrade_iris,
         'velociraptor': upgrade_velociraptor,
-        'cloudtrail': upgrade_aws,
+        'aws_sigma': upgrade_aws,
         'o365rc': upgrade_azure,
         'volweb': upgrade_volweb,
         'intact': upgrade_intact,
@@ -730,7 +753,8 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     # Mark as phase 2 in progress
     update_upgrade_phase(run_id, 'phase2')
 
-    modules = state['target_modules']
+    # Old-code Phase 1 may have saved legacy module ids (e.g. 'cloudtrail')
+    modules = _normalize_legacy_module_keys(state['target_modules'])
     completed_modules = set(state['completed_modules'])
     mode = state.get('mode', 'online')
     db_overwrite = state.get('db_overwrite', {})  # Per-module fresh install flags
@@ -854,7 +878,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'plaso': lambda v, **kw: upgrade_plaso_offline(package_dir, v, **kw),
             'iris': lambda v, **kw: upgrade_iris_offline(package_dir, v, **kw),
             'velociraptor': lambda v, **kw: upgrade_velociraptor_offline(package_dir, v, **kw),
-            'cloudtrail': lambda v, **kw: upgrade_aws_offline(package_dir, v, **kw),
+            'aws_sigma': lambda v, **kw: upgrade_aws_offline(package_dir, v, **kw),
             'o365rc': lambda v, **kw: upgrade_azure_offline(package_dir, v, **kw),
             'volweb': lambda v, **kw: upgrade_volweb_offline(package_dir, v, **kw),
             'intact': lambda **kw: upgrade_intact_offline(package_dir, **kw),
@@ -1328,7 +1352,9 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         package_dir = verify_result['package_dir']
         manifest = verify_result['manifest']
 
-    versions = manifest.get('versions', {})
+    # Packages prepared by OLD releases carry legacy module ids in their
+    # manifest (e.g. 'cloudtrail') — normalize before matching UPGRADE_ORDER.
+    versions = _normalize_legacy_module_keys(manifest.get('versions', {}))
 
     # Forward-compat guard: a manifest module this installer doesn't know is
     # NEVER iterated by the module loop (it walks UPGRADE_ORDER), so without
@@ -1369,7 +1395,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         'plaso': upgrade_plaso_offline,
         'iris': upgrade_iris_offline,
         'velociraptor': upgrade_velociraptor_offline,
-        'cloudtrail': upgrade_aws_offline,
+        'aws_sigma': upgrade_aws_offline,
         'o365rc': upgrade_azure_offline,
         'intact': upgrade_intact_offline,
         'volweb': upgrade_volweb_offline,
@@ -1393,7 +1419,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         # fresh deploys and "UPGRADING" on version bumps. _module_container_exists
         # now reads the .env pin for these so the False-vs-True branch
         # actually fires.
-        'cloudtrail':      upgrade_aws_offline,
+        'aws_sigma':       upgrade_aws_offline,
         'o365rc':       upgrade_azure_offline,
     }
 
@@ -1872,7 +1898,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
             # Iterate over a stable, predictable order that matches the
             # VERSION SUMMARY at run start.
             row_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris',
-                         'velociraptor', 'cloudtrail', 'o365rc', 'volweb']
+                         'velociraptor', 'aws_sigma', 'o365rc', 'volweb']
             for mod in row_order:
                 before = current_versions.get(mod, {}).get('current', '?') if isinstance(current_versions, dict) else '?'
                 after = after_versions.get(mod, {}).get('current', '?') if isinstance(after_versions, dict) else '?'

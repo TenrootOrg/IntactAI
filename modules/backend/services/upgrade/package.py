@@ -1845,7 +1845,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             "the air-gap target. Operator can run "
                             "Maintenance → Refresh YARA Rulesets later if "
                             "the target gets internet.", "warning")
-            elif module == 'cloudtrail':
+            elif module == 'aws_sigma':
                 # CloudTrail ships no docker image — the versioned artifact is the
                 # SIGMA AWS CloudTrail rule pack (cloned from SigmaHQ into
                 # /opt/sigma-rules). Bundle it as images/cloudtrail-<version>.tar so an
@@ -1864,23 +1864,23 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                                   for f in fs if f.endswith(('.yml', '.yaml')))
                     size_mb = os.path.getsize(out_tar) / (1024 * 1024)
                     manifest["contents"].setdefault("rule_packs", []).append({
-                        "module": "cloudtrail",
+                        "module": "aws_sigma",
                         "file": f"images/cloudtrail-{version}.tar",
                         "rules": n_rules, "size_mb": round(size_mb, 2),
                     })
-                    # Register cloudtrail as a versioned module so the apply
+                    # Register aws_sigma as a versioned module so the apply
                     # orchestrator actually installs it. The per-module apply loop
                     # is version-gated (`version = manifest['versions'].get(module)`
                     # then `if not version: continue`), so a rule-pack that only
                     # lives under contents.rule_packs is silently skipped — the
                     # bundled tar never reaches upgrade_cloudtrail_offline. Pinning
-                    # the version here routes cloudtrail through the same dispatch as
-                    # every other module (offline_upgrade_functions['cloudtrail']).
-                    manifest["versions"]["cloudtrail"] = version
+                    # the version here routes aws_sigma through the same dispatch as
+                    # every other module (offline_upgrade_functions['aws_sigma']).
+                    manifest["versions"]["aws_sigma"] = version
                     log(f"  Bundled SIGMA AWS rule pack: {n_rules} rules "
                         f"({size_mb:.1f} MB)", "success")
                 else:
-                    log(f"  WARNING: no SIGMA AWS rules at {aws_rules} — cloudtrail was "
+                    log(f"  WARNING: no SIGMA AWS rules at {aws_rules} — aws_sigma was "
                         "selected but this build host has no rule pack to bundle. Run the "
                         "installer's download_sigma_rules first, otherwise the air-gap "
                         "target starts with no AWS detection rules.", "warning")

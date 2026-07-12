@@ -963,7 +963,7 @@ download_sigma_rules() {
     # SIGMA rules power BOTH Azure (o365rc) and AWS (cloudtrail) detection.
     # Download when EITHER is enabled; skip only when both are off.
     local azure_enabled=$(read_config "['modules']['o365rc']['enabled']")
-    local cloudtrail_enabled=$(read_config "['modules']['cloudtrail']['enabled']")
+    local cloudtrail_enabled=$(read_config "['modules']['aws_sigma']['enabled']")
     if ! is_enabled "$azure_enabled" && ! is_enabled "$cloudtrail_enabled"; then
         log_info "Azure + CloudTrail modules disabled, skipping SIGMA rules download"
         return 0

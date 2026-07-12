@@ -131,22 +131,34 @@ def _write_lines(path: str, lines: List[str], log: Callable) -> bool:
 # and bump nothing else — CURRENT_SCHEMA_VERSION derives from the last entry,
 # and install.sh ships that value in the fresh config.yaml.
 #
-# STAGED (not yet live): the cloudtrail -> aws_sigma rename. It is intentionally
-# NOT in the registry yet because the word "cloudtrail" is overloaded — it is
-# both the upgrade *module identifier* (modules.cloudtrail / versions.cloudtrail
-# / upgrade_functions['cloudtrail']) AND the real AWS-service/data-source name
-# (cloudtrail_console, cloudtrail_mode, cloudtrail_runner, collect_cloudtrail).
-# The config-key migration below is trivial:
-#     def _m2_rename_cloudtrail_to_aws_sigma(config_path, logger=None):
-#         rename_module_in_config('cloudtrail', 'aws_sigma', logger, config_path)
-#         rename_version_key_in_config('cloudtrail', 'aws_sigma', logger, config_path)
-# but activating it REQUIRES the coordinated (surgical) rename of only the
-# module-identifier sites in code — UPGRADE_ORDER, the upgrade/install function
-# dicts, aws.py, base.py:_ondemand_enabled/versions, package.py, upgrade_routes,
-# the frontend module id, and LEGACY_MODULE_ALIASES — while leaving every
-# AWS-service "cloudtrail_*" name untouched. Land those together, then add the
-# entry here as (2, "rename cloudtrail module+version key to aws_sigma", fn).
+def _m2_rename_cloudtrail_to_aws_sigma(config_path, logger=None):
+    """schema 1 -> 2: rename the AWS module's config keys.
+
+    'cloudtrail' was overloaded — it is both the platform module id AND the
+    real AWS service name (cloudtrail_console, cloudtrail_mode,
+    cloudtrail_runner stay untouched in code). The module id is now
+    'aws_sigma'; this renames the operator's config keys in lockstep with the
+    code rename (UPGRADE_ORDER, dispatch dicts, base.py maps, system_routes,
+    frontend status keys, lib/*.sh readers, all shipped in the same release,
+    plus LEGACY_MODULE_ALIASES for old persisted state / old packages).
+
+    Idempotent by construction: both helpers no-op when the old key is gone,
+    and when BOTH keys exist (the Phase-1 versions-merge ADDS versions.
+    aws_sigma from the new release while the operator still has
+    versions.cloudtrail) the duplicate old line is dropped.
+    Note: modules/backend/.env's CLOUDTRAIL_VERSION env var and the
+    cloudtrail-<v>.tar package artifact name are deliberately NOT renamed
+    (on-host / in-package compatibility contracts).
+    """
+    rename_module_in_config('cloudtrail', 'aws_sigma', logger=logger,
+                            config_path=config_path)
+    rename_version_key_in_config('cloudtrail', 'aws_sigma', logger=logger,
+                                 config_path=config_path)
+
+
 CONFIG_MIGRATIONS: List[Tuple[int, str, Callable]] = [
+    (2, "rename AWS module keys: cloudtrail -> aws_sigma",
+     _m2_rename_cloudtrail_to_aws_sigma),
 ]
 
 CURRENT_SCHEMA_VERSION = CONFIG_MIGRATIONS[-1][0] if CONFIG_MIGRATIONS else 1

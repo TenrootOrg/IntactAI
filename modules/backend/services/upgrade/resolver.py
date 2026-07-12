@@ -416,7 +416,7 @@ _NON_UPGRADEABLE = {'portainer'}
 # e.g. a brand-new module added to config.yaml — is appended after these
 # (alphabetically), so new modules appear automatically with no code change.
 _MODULE_DISPLAY_ORDER = ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor',
-                         'cloudtrail', 'o365rc', 'volweb', 'cve_scan']
+                         'aws_sigma', 'o365rc', 'volweb', 'cve_scan']
 
 
 def _upstream_module_rows(upstream_cfg: dict, target_ref: str) -> List[Dict]:

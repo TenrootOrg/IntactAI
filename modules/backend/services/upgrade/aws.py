@@ -14,7 +14,7 @@ Every rule operation is best-effort: a rule refresh must never fail the upgrade.
 
 Internal function names `upgrade_aws` / `upgrade_aws_offline` are kept as aliases so
 the dispatcher tables in __init__.py continue to resolve; the public module key is
-now 'cloudtrail'.
+now 'aws_sigma' (module id; the AWS service itself is CloudTrail).
 """
 
 import os
@@ -55,7 +55,7 @@ def upgrade_cloudtrail(version: str, logger: Callable = None) -> Dict:
             log("  Rule-pack git pull skipped (non-fatal) — keeping current rules", "warning")
 
         update_env_file(backend_env, 'CLOUDTRAIL_VERSION', version, logger=log)
-        set_module_enabled_in_config('cloudtrail', logger=log)
+        set_module_enabled_in_config('aws_sigma', logger=log)
 
         cleanup_backup(backup_file, logger=log)
         log(f"CloudTrail rule-pack upgrade completed: {current_version} -> {version}", "success")
@@ -101,7 +101,7 @@ def upgrade_cloudtrail_offline(package_dir: str, version: str, logger: Callable 
                 f"skipping (rules ship with the SigmaHQ clone)", "warning")
 
         update_env_file(backend_env, 'CLOUDTRAIL_VERSION', version, logger=log)
-        set_module_enabled_in_config('cloudtrail', logger=log)
+        set_module_enabled_in_config('aws_sigma', logger=log)
 
         cleanup_backup(backup_file, logger=log)
         log(f"CloudTrail offline upgrade completed: {current_version} -> {version}", "success")

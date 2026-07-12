@@ -1167,9 +1167,9 @@ def get_current_versions() -> Dict:
     # otherwise a backend-only install incorrectly classifies these as
     # "installed → upgrade automatically".
     cloudtrail_version = backend_vars.get('CLOUDTRAIL_VERSION', '').strip()
-    if not _ondemand_enabled('cloudtrail'):
+    if not _ondemand_enabled('aws_sigma'):
         cloudtrail_version = ''
-    versions['cloudtrail'] = {
+    versions['aws_sigma'] = {
         'current': cloudtrail_version if cloudtrail_version else 'Not installed',
         'env_file': backend_env,
     }
@@ -1239,7 +1239,7 @@ def get_latest_versions() -> Dict:
         'plaso':        'plaso',
         'iris':         'iris',
         'velociraptor': 'velociraptor',
-        'cloudtrail':   'cloudtrail',
+        'aws_sigma':    'aws_sigma',
         'o365rc':       'o365rc',
         'intact':       'backend',
         # VolWeb (memory-forensics analysis stack). Single
@@ -1256,7 +1256,7 @@ def get_latest_versions() -> Dict:
         'plaso': '20260119',
         'iris': 'v2.4.27',
         'velociraptor': '0.76.5',
-        'cloudtrail': '2026.04',
+        'aws_sigma': '2026.04',
         'o365rc': 'latest',
         'intact': '1.0.0',
         'volweb': '3.16.0',
@@ -1664,7 +1664,7 @@ def _module_container_exists(module_id: str) -> Optional[bool]:
     # On-demand/native modules: read the matching .env pin. Both cloudtrail and
     # DFIR-O365RC keep their version in the backend .env.
     on_demand_env_keys = {
-        'cloudtrail': 'CLOUDTRAIL_VERSION',
+        'aws_sigma': 'CLOUDTRAIL_VERSION',
         'o365rc':  'DFIR_O365RC_VERSION',
     }
     env_key = on_demand_env_keys.get(module_id)

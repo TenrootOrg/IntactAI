@@ -34,7 +34,7 @@ SERVICE_CONTAINERS = {
 # explicit opt-in in config.yaml (modules.<name>.enabled). Used by the
 # sidebar to hide Cloud > AWS / Microsoft 365 / CVE Scan when the
 # customer didn't enable them.
-ON_DEMAND_MODULES = ('cloudtrail', 'o365rc', 'cve_scan')
+ON_DEMAND_MODULES = ('aws_sigma', 'o365rc', 'cve_scan')
 
 @system_bp.route('/api/test', methods=['GET', 'POST'])
 def test_endpoint():

@@ -173,7 +173,8 @@ def _modules_from_track(target: str, opted_in_optional: list):
             continue
         modules[row['module']] = row['target']
 
-    opted_in_set = set(opted_in_optional or [])
+    from services.upgrade import LEGACY_MODULE_ALIASES
+    opted_in_set = {LEGACY_MODULE_ALIASES.get(m, m) for m in (opted_in_optional or [])}
     if opted_in_set:
         # Cache hit ~all the time — compute_plan above already cached
         # this fetch for 30 min. Safe to call again.
@@ -602,7 +603,7 @@ def get_upgrade_status():
         latest = get_latest_versions()
 
         versions = {}
-        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'cloudtrail', 'o365rc', 'volweb', 'intact']:
+        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws_sigma', 'o365rc', 'volweb', 'intact']:
             versions[module] = {
                 'latest': latest.get(module, 'unknown')
             }
@@ -666,6 +667,10 @@ def start_offline_upgrade():
         package_path = data.get('package_path')
         db_overwrite = data.get('db_overwrite', {})  # Per-module fresh install flags
         selected_modules = data.get('selected_modules')  # None = no filter (apply all)
+        if selected_modules:
+            # Accept legacy module ids from external automation (e.g. 'cloudtrail')
+            from services.upgrade import LEGACY_MODULE_ALIASES
+            selected_modules = [LEGACY_MODULE_ALIASES.get(m, m) for m in selected_modules]
 
         if not package_path:
             return jsonify({"error": "No package_path provided"}), 400
@@ -838,7 +843,7 @@ def prepare_upgrade_package():
 
     2. LEGACY SHAPE A (online-style — diff against local state)::
 
-           {"target": "<ref>", "opted_in_optional": ["cloudtrail", ...]}
+           {"target": "<ref>", "opted_in_optional": ["aws_sigma", ...]} (legacy "cloudtrail" accepted)
 
        Backed by :func:`_modules_from_track`. Was the original Prepare
        behavior but it leaked local state into the bundle decision —
@@ -935,7 +940,7 @@ def prepare_upgrade_package():
             'plaso': 1,
             'iris': 2,
             'velociraptor': 1,
-            'cloudtrail': 1,
+            'aws_sigma': 1,
             'o365rc': 1,
             'intact': 2
         }
@@ -1061,7 +1066,8 @@ def start_online_upgrade():
             except ResolverError as e:
                 return jsonify({"error": str(e)}), 502
         else:
-            modules = data.get('modules', {})
+            from services.upgrade import _normalize_legacy_module_keys
+            modules = _normalize_legacy_module_keys(data.get('modules', {}))
 
         if not modules:
             return jsonify({"error": "No modules selected for online upgrade"}), 400
@@ -1094,7 +1100,7 @@ def start_online_upgrade():
         # prepare-side image saves + apply-side per-module completions.
         steps_per_module_prepare = {
             'elk': 3, 'timesketch': 1, 'plaso': 1, 'iris': 2,
-            'velociraptor': 1, 'cloudtrail': 1, 'o365rc': 1,
+            'velociraptor': 1, 'aws_sigma': 1, 'o365rc': 1,
             'volweb': 2, 'intact': 2,
         }
         prepare_steps_total = sum(steps_per_module_prepare.get(m, 1) for m in modules) + 1
