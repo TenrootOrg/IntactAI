@@ -348,6 +348,8 @@ def _build_extraction_only_report(
             scan_id = (hist[0] or {}).get("scan_id") or "?"
             parts.append(f"- Scan id: `{scan_id}`")
             parts.append(f"- Total matches: **{count}**")
+        elif mode == "plugin":
+            parts.append("_YARA scan not run for this collection (plugin-only mode)._")
         else:
             parts.append("_No yarascan history found yet — task may still be running._")
     except Exception as e:
@@ -506,6 +508,15 @@ def run_memory_pipeline(
             raise ValueError(f"invalid mode {mode!r}")
         log(f"pipeline: mode={mode} client={client_id} case={case_name!r}")
 
+        # Whether to run the VolWeb yarascan at all. The "Include YARA" checkbox
+        # in the UI maps to the analysis mode: plugin = plugins only (NO yara),
+        # layered = plugins + yara, yara = yara-focused. The extract phase used
+        # to trigger yarascan UNCONDITIONALLY, so a plugin-only run still fired a
+        # full 600+-rule scan (operator-reported 2026-07). Gate it on the mode.
+        run_yara = mode in ("yara", "layered")
+        if not run_yara:
+            log("pipeline: yarascan disabled for this run (plugin-only mode)", "info")
+
         # ----------------------------------------------------------------
         # Phase 1 — Preflight
         # ----------------------------------------------------------------
@@ -555,14 +566,19 @@ def run_memory_pipeline(
             # ------------------------------------------------------------
             # Phase 4 (offline-upload branch) — Extract + yarascan
             # ------------------------------------------------------------
-            log("pipeline: extract — selective-extraction + yarascan", "info")
+            log("pipeline: extract — selective-extraction"
+            + (" + yarascan" if run_yara else " (plugin-only, no yara)"), "info")
             client.stage_media_dir(evidence_id)
             plugins_to_run = _resolve_plugin_set(blueprint, client, evidence_id, log)
-            _yara_rulesets, _yara_rules = _resolve_yara_scan_targets(blueprint, client, log)
+            _yara_rulesets, _yara_rules = (None, None)
+            if run_yara:
+                _yara_rulesets, _yara_rules = _resolve_yara_scan_targets(blueprint, client, log)
             client.trigger_extraction(evidence_id, plugins_to_run)
-            client.trigger_yarascan(evidence_id, rulesets=_yara_rulesets, rules=_yara_rules)
+            if run_yara:
+                client.trigger_yarascan(evidence_id, rulesets=_yara_rulesets, rules=_yara_rules)
             log(
-                f"pipeline: extract — {len(plugins_to_run)} plugins queued + yarascan queued",
+                f"pipeline: extract — {len(plugins_to_run)} plugins queued"
+                + (" + yarascan queued" if run_yara else " (yarascan skipped — plugin-only mode)"),
                 "info",
             )
             ext_started = time.time()
@@ -583,22 +599,27 @@ def run_memory_pipeline(
             )
             if cancel():
                 raise RuntimeError("cancelled after plugin extract")
-            yara_started = time.time()
-            _eff_yara_to = _effective_yarascan_timeout(
-                yarascan_timeout_s, host_path, yarascan_timeout_operator_set, log,
-            )
-            hit_count, _yara_done = client.wait_for_yarascan(
-                evidence_id,
-                timeout_s=_eff_yara_to,
-                cancel_check=cancel,
-            )
-            yarascan_incomplete = not _yara_done
-            cumulative += _PHASE_WEIGHTS["yarascan"]
-            log(
-                f"pipeline: yarascan — complete in {int(time.time() - yara_started)}s  hits={hit_count}",
-                "success",
-            )
-            _bump(run_id, cumulative, f"extract: ready (yara hits={hit_count})")
+            if run_yara:
+                yara_started = time.time()
+                _eff_yara_to = _effective_yarascan_timeout(
+                    yarascan_timeout_s, host_path, yarascan_timeout_operator_set, log,
+                )
+                hit_count, _yara_done = client.wait_for_yarascan(
+                    evidence_id,
+                    timeout_s=_eff_yara_to,
+                    cancel_check=cancel,
+                )
+                yarascan_incomplete = not _yara_done
+                cumulative += _PHASE_WEIGHTS["yarascan"]
+                log(
+                    f"pipeline: yarascan — complete in {int(time.time() - yara_started)}s  hits={hit_count}",
+                    "success",
+                )
+                _bump(run_id, cumulative, f"extract: ready (yara hits={hit_count})")
+            else:
+                hit_count = 0
+                cumulative += _PHASE_WEIGHTS["yarascan"]   # credit the skipped phase so progress completes
+                _bump(run_id, cumulative, "extract: ready (yarascan skipped — plugin-only mode)")
             if cancel():
                 raise RuntimeError("cancelled after yarascan")
         else:
@@ -681,7 +702,8 @@ def run_memory_pipeline(
             # ------------------------------------------------------------
             # Phase 4 — Extraction (plugins + yarascan)
             # ------------------------------------------------------------
-            log("pipeline: extract — selective-extraction + yarascan", "info")
+            log("pipeline: extract — selective-extraction"
+            + (" + yarascan" if run_yara else " (plugin-only, no yara)"), "info")
 
             # Pre-stage media/<id>/ FIRST so the yarascan worker doesn't
             # hit the empty-dir race from the PoC.
@@ -691,15 +713,19 @@ def run_memory_pipeline(
             plugins_to_run = _resolve_plugin_set(blueprint, client, evidence_id, log)
             # Determine YARA scope (blueprint yara_categories → rule subset,
             # or full corpus). None,None == scan everything.
-            _yara_rulesets, _yara_rules = _resolve_yara_scan_targets(blueprint, client, log)
+            _yara_rulesets, _yara_rules = (None, None)
+            if run_yara:
+                _yara_rulesets, _yara_rules = _resolve_yara_scan_targets(blueprint, client, log)
 
             # Trigger BOTH tasks before waiting on either — they run on
             # separate Celery queues and execute concurrently.
             client.trigger_extraction(evidence_id, plugins_to_run)
-            client.trigger_yarascan(evidence_id, rulesets=_yara_rulesets, rules=_yara_rules)
+            if run_yara:
+                client.trigger_yarascan(evidence_id, rulesets=_yara_rulesets, rules=_yara_rules)
 
             log(
-                f"pipeline: extract — {len(plugins_to_run)} plugins queued + yarascan queued",
+                f"pipeline: extract — {len(plugins_to_run)} plugins queued"
+                + (" + yarascan queued" if run_yara else " (yarascan skipped — plugin-only mode)"),
                 "info",
             )
 
@@ -724,22 +750,27 @@ def run_memory_pipeline(
                 raise RuntimeError("cancelled after plugin extract")
 
             # Phase 4b — wait for yarascan history record.
-            yara_started = time.time()
-            _eff_yara_to = _effective_yarascan_timeout(
-                yarascan_timeout_s, host_path, yarascan_timeout_operator_set, log,
-            )
-            hit_count, _yara_done = client.wait_for_yarascan(
-                evidence_id,
-                timeout_s=_eff_yara_to,
-                cancel_check=cancel,
-            )
-            yarascan_incomplete = not _yara_done
-            cumulative += _PHASE_WEIGHTS["yarascan"]
-            log(
-                f"pipeline: yarascan — complete in {int(time.time() - yara_started)}s  hits={hit_count}",
-                "success",
-            )
-            _bump(run_id, cumulative, f"extract: ready (yara hits={hit_count})")
+            if run_yara:
+                yara_started = time.time()
+                _eff_yara_to = _effective_yarascan_timeout(
+                    yarascan_timeout_s, host_path, yarascan_timeout_operator_set, log,
+                )
+                hit_count, _yara_done = client.wait_for_yarascan(
+                    evidence_id,
+                    timeout_s=_eff_yara_to,
+                    cancel_check=cancel,
+                )
+                yarascan_incomplete = not _yara_done
+                cumulative += _PHASE_WEIGHTS["yarascan"]
+                log(
+                    f"pipeline: yarascan — complete in {int(time.time() - yara_started)}s  hits={hit_count}",
+                    "success",
+                )
+                _bump(run_id, cumulative, f"extract: ready (yara hits={hit_count})")
+            else:
+                hit_count = 0
+                cumulative += _PHASE_WEIGHTS["yarascan"]   # credit the skipped phase so progress completes
+                _bump(run_id, cumulative, "extract: ready (yarascan skipped — plugin-only mode)")
             if cancel():
                 raise RuntimeError("cancelled after yarascan")
 
