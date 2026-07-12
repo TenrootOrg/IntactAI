@@ -46,12 +46,28 @@ options:
   # 5,000 requests/hour for this machine.
   #
   # MINIMAL PERMISSION: the platform only READS a public repository, so the
-  # token needs NO write access of any kind:
-  #   - Fine-grained PAT: Repository access = "Public repositories (read-only)",
-  #     zero additional permissions.
-  #   - Classic PAT: create it with NO scopes ticked at all (an empty-scope
-  #     classic token still authenticates and gets the 5,000/hr limit).
-  # Never use a token with repo-write/admin scopes here.
+  # token needs NO write access of any kind. Never use a token with
+  # repo-write/admin scopes here.
+  #
+  # HOW TO GET ONE (2 minutes, either kind works):
+  #
+  #   Classic token (simplest):
+  #     1. Open  https://github.com/settings/tokens/new
+  #        (GitHub → your avatar → Settings → Developer settings →
+  #         Personal access tokens → Tokens (classic) → Generate new token)
+  #     2. Note: "IntactAI upgrades" · Expiration: your policy (e.g. 90 days)
+  #     3. Leave EVERY scope checkbox UNCHECKED — an empty-scope token still
+  #        authenticates and gets the 5,000/hr limit.
+  #     4. Generate token → copy the ghp_... value below. GitHub shows it
+  #        only once; if lost, just generate a new one.
+  #
+  #   Fine-grained token (stricter orgs):
+  #     1. Open  https://github.com/settings/personal-access-tokens/new
+  #     2. Repository access: "Public repositories (read-only)"
+  #     3. Grant NO additional permissions → Generate → copy github_pat_...
+  #
+  # When it expires, upgrade dialogs fall back to the anonymous 60/hr cap —
+  # nothing breaks; generate a new token and paste it here.
   #
   # Applied at install into modules/backend/.env (GITHUB_TOKEN=...); the
   # backend also reads it from this file directly, so adding it later works

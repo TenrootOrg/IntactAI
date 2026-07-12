@@ -232,10 +232,12 @@ def check_quota_or_raise(needed: int, action_name: str,
         else:
             fix_block = (
                 "\n\nTo raise the cap from 60 → 5000/hr:\n"
-                "  1) Get a token: github.com/settings/tokens "
-                "→ Generate new token (classic). Leave all scopes UNCHECKED "
-                "(the platform only READS a public repo — a no-scope token "
-                "authenticates fine and is harmless if it leaks).\n"
+                "  1) Get a token: https://github.com/settings/tokens/new "
+                "(classic). Leave ALL scopes UNCHECKED — the platform only "
+                "READS a public repo, so an empty-scope token authenticates "
+                "fine and is harmless if it leaks. (Fine-grained alt: "
+                "https://github.com/settings/personal-access-tokens/new with "
+                "'Public repositories (read-only)' and no permissions.)\n"
                 "  2) Put it in config.yaml under options:\n"
                 "       github_token: 'ghp_YOUR_TOKEN'\n"
                 "     (picked up immediately — no restart needed; install.sh "
