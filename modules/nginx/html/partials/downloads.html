@@ -153,14 +153,20 @@
                                         <p class="text-blue-300 text-xs font-semibold">Install (MSI, recommended)</p>
                                         <p class="text-gray-400 text-xs truncate font-mono">msiexec /i velociraptor_client.msi /qn</p>
                                     </div>
-                                    <button onclick="copyWinCmd(this, 'win-cmd-install-msi')" class="shrink-0 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
+                                    <div class="shrink-0 flex items-center gap-1.5">
+                                        <button onclick="toggleCmd(this, 'win-cmd-install-msi')" title="Show full command" aria-expanded="false" class="bg-gray-700 hover:bg-gray-600 text-gray-200 w-7 py-1.5 rounded text-xs leading-none">&#9662;</button>
+                                        <button onclick="copyWinCmd(this, 'win-cmd-install-msi')" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
+                                    </div>
                                 </div>
                                 <div class="flex items-center justify-between gap-3">
                                     <div class="min-w-0">
                                         <p class="text-blue-300 text-xs font-semibold">Uninstall</p>
                                         <p class="text-gray-400 text-xs truncate font-mono">msiexec /x velociraptor_client.msi /qn</p>
                                     </div>
-                                    <button onclick="copyWinCmd(this, 'win-cmd-uninstall')" class="shrink-0 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
+                                    <div class="shrink-0 flex items-center gap-1.5">
+                                        <button onclick="toggleCmd(this, 'win-cmd-uninstall')" title="Show full command" aria-expanded="false" class="bg-gray-700 hover:bg-gray-600 text-gray-200 w-7 py-1.5 rounded text-xs leading-none">&#9662;</button>
+                                        <button onclick="copyWinCmd(this, 'win-cmd-uninstall')" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
+                                    </div>
                                 </div>
                             </div>
                             <!-- Hidden command bodies. Run from an *elevated* PowerShell
@@ -178,21 +184,30 @@
                                         <p class="text-orange-300 text-xs font-semibold">Foreground test</p>
                                         <p class="text-gray-400 text-xs truncate font-mono">chmod +x velociraptor &amp;&amp; sudo ./velociraptor client -v</p>
                                     </div>
-                                    <button onclick="copyLinuxCmd(this, 'lx-cmd-test')" class="shrink-0 bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
+                                    <div class="shrink-0 flex items-center gap-1.5">
+                                        <button onclick="toggleCmd(this, 'lx-cmd-test')" title="Show full command" aria-expanded="false" class="bg-gray-700 hover:bg-gray-600 text-gray-200 w-7 py-1.5 rounded text-xs leading-none">&#9662;</button>
+                                        <button onclick="copyLinuxCmd(this, 'lx-cmd-test')" class="bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
+                                    </div>
                                 </div>
                                 <div class="flex items-center justify-between gap-3">
                                     <div class="min-w-0">
                                         <p class="text-orange-300 text-xs font-semibold">Permanent install (systemd)</p>
                                         <p class="text-gray-400 text-xs truncate font-mono">install + write unit + enable --now</p>
                                     </div>
-                                    <button onclick="copyLinuxCmd(this, 'lx-cmd-install')" class="shrink-0 bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
+                                    <div class="shrink-0 flex items-center gap-1.5">
+                                        <button onclick="toggleCmd(this, 'lx-cmd-install')" title="Show full command" aria-expanded="false" class="bg-gray-700 hover:bg-gray-600 text-gray-200 w-7 py-1.5 rounded text-xs leading-none">&#9662;</button>
+                                        <button onclick="copyLinuxCmd(this, 'lx-cmd-install')" class="bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
+                                    </div>
                                 </div>
                                 <div class="flex items-center justify-between gap-3">
                                     <div class="min-w-0">
                                         <p class="text-orange-300 text-xs font-semibold">Uninstall</p>
                                         <p class="text-gray-400 text-xs truncate font-mono">disable + remove unit + remove binary</p>
                                     </div>
-                                    <button onclick="copyLinuxCmd(this, 'lx-cmd-uninstall')" class="shrink-0 bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
+                                    <div class="shrink-0 flex items-center gap-1.5">
+                                        <button onclick="toggleCmd(this, 'lx-cmd-uninstall')" title="Show full command" aria-expanded="false" class="bg-gray-700 hover:bg-gray-600 text-gray-200 w-7 py-1.5 rounded text-xs leading-none">&#9662;</button>
+                                        <button onclick="copyLinuxCmd(this, 'lx-cmd-uninstall')" class="bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-xs font-medium">Copy</button>
+                                    </div>
                                 </div>
                             </div>
                             <!-- Hidden command bodies. Verified working on Ubuntu host
