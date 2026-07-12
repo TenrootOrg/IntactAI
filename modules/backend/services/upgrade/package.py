@@ -647,11 +647,19 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 f"{target_ref} ({len(target_versions)} entries) as the "
                 f"source of truth for transitive sidecar pins.", "info")
         except Exception as e:
-            log(f"Could not fetch target release config.yaml for "
-                f"{target_ref}: {e}. Falling back to operator's local "
-                f"config.yaml for transitive pins — this may produce a "
-                f"mismatched bundle if local pins are out of date.",
+            # LOUD on purpose: a silently-stale fallback can bundle mismatched
+            # sidecar pins. The banner + manifest marker (pins_source below)
+            # make the degraded provenance visible in the run log AND in
+            # package info, instead of one easily-missed line.
+            log("=" * 50, "warning")
+            log(f"WARNING: could not fetch target release config.yaml for "
+                f"{target_ref}: {e}", "warning")
+            log("Falling back to the OPERATOR'S LOCAL config.yaml for "
+                "transitive sidecar pins. If local pins are out of date, this "
+                "package may bundle MISMATCHED sidecar versions. Re-run the "
+                "prepare when GitHub is reachable to get release-true pins.",
                 "warning")
+            log("=" * 50, "warning")
             target_versions = None
 
     try:
@@ -669,7 +677,13 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
             "contents": {
                 "images": [],
                 "binaries": [],
-                "include_source": False
+                "include_source": False,
+                # Provenance of the transitive sidecar pins bundled below:
+                # 'target-release' = fetched from the target ref's config.yaml
+                # (correct); 'local-fallback' = GitHub fetch failed and the
+                # operator's local pins were used — possibly stale/mismatched.
+                "pins_source": ("target-release" if target_versions is not None
+                                 else "local-fallback"),
             }
         }
 

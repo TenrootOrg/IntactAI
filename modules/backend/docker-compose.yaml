@@ -90,7 +90,9 @@ services:
   # tusd - Resumable upload server (tus protocol)
   tusd:
     container_name: intact_tusd
-    image: tusproject/tusd:latest
+    # Pinned (was :latest) so the upload server is reproducible across
+    # installs/upgrades. Bump deliberately when upgrading tus support.
+    image: tusproject/tusd:v2.9.2
     restart: unless-stopped
     user: root  # Run as root to write to shared volume
     command:

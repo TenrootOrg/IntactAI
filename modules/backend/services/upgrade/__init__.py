@@ -736,10 +736,38 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                 f"({type(_e).__name__}: {_e}); per-module load "
                 f"fallbacks will still run.", "warning")
 
+    # Per-module progress for the UI: Phase 1 parked the run at 50%; walk
+    # 50 -> 95% across Phase 2's remaining modules so the operator isn't
+    # staring at a frozen bar for the whole resume (G7).
+    _p2_total = len([m for m in upgrade_order
+                     if m in modules and m not in completed_modules]) or 1
+    _p2_done = 0
+
+    def _p2_progress():
+        try:
+            from services.workflow_service import update_run_status
+            update_run_status(run_id, "running",
+                              progress=min(95, 50 + int(45 * _p2_done / _p2_total)))
+        except Exception:
+            pass
+
     try:
         for module_name in upgrade_order:
             if module_name not in modules or module_name in completed_modules:
                 continue
+
+            # Check Stop before each module — mirrors the offline loop's
+            # check; gives a quick exit even when the per-module function
+            # isn't fully cancellation-aware (cancel event is registered by
+            # app.py's resume thread).
+            try:
+                from services.workflow_service import is_cancelled
+                if run_id and is_cancelled(run_id):
+                    log("Phase 2 cancelled by user before module dispatch", "warning")
+                    overall_status = "cancelled"
+                    break
+            except Exception:
+                pass
 
             target_version = modules[module_name]
             current = current_versions.get(module_name, {}).get('current', 'unknown')
@@ -907,6 +935,10 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                         f"({type(_re).__name__}: {_re}); pins left as-is",
                         "warning")
 
+            # One module finished (success OR failure) — advance the bar.
+            _p2_done += 1
+            _p2_progress()
+
     except Exception as unexpected_error:
         log(f"UNEXPECTED WORKFLOW ERROR: {unexpected_error}", "error")
         overall_status = "failed"
@@ -1015,14 +1047,15 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     # only (require_pins=False): the apply side sources sidecar tags from the
     # bundled manifest, not config.yaml, so pin-completeness isn't the failure
     # mode here and a merge/manifest-supplied pin must not false-positive.
-    from .config_validate import validate_config
+    from .config_validate import validate_config, preflight_environment, APPLY_MIN_FREE_GB
     _cfg_ok, _cfg_errs = validate_config(logger=log, require_pins=False)
-    if not _cfg_ok:
-        log("config.yaml failed pre-upgrade validation:", "error")
-        for _e in _cfg_errs:
+    _env_ok, _env_errs = preflight_environment(logger=log, min_free_gb=APPLY_MIN_FREE_GB)
+    if not (_cfg_ok and _env_ok):
+        log("Pre-upgrade validation failed:", "error")
+        for _e in _cfg_errs + _env_errs:
             log(f"  - {_e}", "error")
         return {"success": False,
-                "error": "config.yaml validation failed: " + "; ".join(_cfg_errs)}
+                "error": "pre-upgrade validation failed: " + "; ".join(_cfg_errs + _env_errs)}
 
     # Two-mode entry: tar.gz extraction (offline, legacy) OR pre-built
     # package_dir from the online flow.
@@ -1062,6 +1095,17 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         manifest = verify_result['manifest']
 
     versions = manifest.get('versions', {})
+
+    # Forward-compat guard: a manifest module this installer doesn't know is
+    # NEVER iterated by the module loop (it walks UPGRADE_ORDER), so without
+    # this line it would be silently skipped — the operator would believe it
+    # was applied. Warn loudly instead.
+    _unknown_manifest_modules = [m for m in versions if m not in UPGRADE_ORDER]
+    if _unknown_manifest_modules:
+        log(f"WARNING: package contains module(s) this installer does not "
+            f"know and will NOT apply: {', '.join(sorted(_unknown_manifest_modules))}. "
+            f"Upgrade 'intact' first (or use a newer installer), then re-apply "
+            f"the package for these modules.", "warning")
 
     # Get current versions for comparison
     current_versions = get_current_versions()
@@ -1713,10 +1757,14 @@ def run_online_upgrade_workflow(modules: Dict[str, str], run_id: str = None,
     # This pre-empts the operator-facing get_transitive_tag KeyError
     # (package.py) that prepare would otherwise raise mid-run. require_pins=True
     # is safe here: any pin the merge would supply is already present.
-    from .config_validate import validate_config
+    # Environment preflight uses the PREPARE floor: this flow pulls + saves
+    # multi-GB images before applying.
+    from .config_validate import validate_config, preflight_environment, PREPARE_MIN_FREE_GB
     _cfg_ok, _cfg_errs = validate_config(logger=log, require_pins=True)
-    if not _cfg_ok:
-        log("config.yaml failed pre-prepare validation:", "error")
+    _env_ok, _env_errs = preflight_environment(logger=log, min_free_gb=PREPARE_MIN_FREE_GB)
+    _cfg_errs = _cfg_errs + _env_errs
+    if not (_cfg_ok and _env_ok):
+        log("Pre-prepare validation failed:", "error")
         for _e in _cfg_errs:
             log(f"  - {_e}", "error")
         if os.path.exists(persistent_work_dir):

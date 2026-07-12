@@ -1127,6 +1127,50 @@ def load_docker_image(image_tar: str, logger: Callable = None,
     return result
 
 
+def preflight_offline_images(module: str, version: str, images_dir: str,
+                              logger: Callable = None,
+                              run_id: Optional[str] = None) -> Dict:
+    """Make a module's PRIMARY images available BEFORE its stack is stopped.
+
+    Fixes the down-then-discover ordering: offline upgraders used to
+    `docker compose down` first and only then find that an image tar was
+    missing/corrupt — leaving the module DOWN until the compose-up failure
+    finally triggered rollback. `docker load` is safe while the old stack
+    runs, so do it (and verify) up front:
+
+      for each (image_ref, tar) in package.PRIMARY_IMAGES[module]:
+        1. load the tar if present in `images_dir` (idempotent),
+        2. `docker image inspect <ref>` — already-present images satisfy
+           the check even when the tar wasn't bundled.
+
+    Sidecar/transitive images are NOT checked here — they're stamped from
+    the manifest and pre-loaded by load_all_bundled_images, and an absent
+    sidecar may legitimately already exist locally.
+
+    Returns {"success": bool, "missing": [image_refs]}. On success the
+    caller may safely take the stack down.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    from .package import PRIMARY_IMAGES  # local import — package.py imports base
+    missing = []
+    for image_pat, tar_pat in PRIMARY_IMAGES.get(module, []):
+        image_ref = image_pat.format(version=version)
+        tar_path = os.path.join(images_dir, tar_pat.format(version=version))
+        if os.path.exists(tar_path):
+            load_docker_image(tar_path, logger=log, run_id=run_id)
+        check = run_command(f"docker image inspect {image_ref}",
+                            logger=None, timeout=60, run_id=run_id)
+        if not check.get('success'):
+            missing.append(image_ref)
+    if missing:
+        log(f"  PRE-CHECK FAILED for {module}: required image(s) not available "
+            f"and not loadable from the package: {', '.join(missing)}. "
+            f"The running stack was NOT touched.", "error")
+        return {"success": False, "missing": missing}
+    log(f"  Pre-check OK: all {module} primary images available before stopping the stack", "info")
+    return {"success": True, "missing": []}
+
+
 def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
     """Extract and verify an upgrade package.
 

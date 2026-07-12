@@ -29,9 +29,12 @@ from typing import Callable, Dict
 from .base import (
     HOST_PATH,
     WORKDIR,
+    backup_env_file,
+    cleanup_backup,
     load_docker_image,
     read_env_file,
     remove_old_module_image,
+    restore_env_file,
     run_command,
     update_env_file,
 )
@@ -483,7 +486,10 @@ def upgrade_volweb(version: str, logger: Callable = None, run_id: str | None = N
         if not pull.get("success"):
             return {"success": False, "error": f"pull {image} failed: {pull.get('error')}"}
 
-    # 2. Bump both pins
+    # 2. Bump both pins — with a .env backup first so a failed recreate can
+    # roll back instead of leaving the pins bumped over a broken stack
+    # (VolWeb previously had NO rollback; this mirrors the elk.py pattern).
+    backup_file = backup_env_file(_VOLWEB_ENV, logger=log)
     update_env_file(_VOLWEB_ENV, "VOLWEB_BACKEND_VERSION", version, logger=log)
     update_env_file(_VOLWEB_ENV, "VOLWEB_FRONTEND_VERSION", version, logger=log)
 
@@ -491,7 +497,17 @@ def upgrade_volweb(version: str, logger: Callable = None, run_id: str | None = N
     log("Recreating VolWeb backend + frontend + worker containers...", "info")
     up = _compose_up(log, run_id=run_id)
     if not up.get("success"):
-        return {"success": False, "error": f"compose up failed: {up.get('error')}"}
+        log("Compose up failed — rolling back VolWeb pins to the previous version...", "error")
+        if backup_file and restore_env_file(_VOLWEB_ENV, backup_file, logger=log):
+            rb = _compose_up(log, run_id=run_id)
+            if rb.get("success"):
+                log(f"Rollback complete — VolWeb back on {cur}", "success")
+            else:
+                log(f"Rollback compose up also failed: {rb.get('error')}", "error")
+        return {"success": False, "rolled_back": True,
+                "error": f"compose up failed: {up.get('error')}"}
+    if backup_file:
+        cleanup_backup(backup_file, logger=log)
 
     # Seed YARA rulesets from GitHub — online parity with the offline bundle
     # seeding, so rules are present after an upgrade without the operator
@@ -557,12 +573,25 @@ def upgrade_volweb_offline(
     if not os.path.exists(frontend_tar):
         log(f"frontend image bundle absent ({frontend_tar}) — frontend stays on current pin", "warning")
 
-    # 2. Bump both pins + recreate
+    # 2. Bump both pins + recreate — with a .env backup so a failed recreate
+    # rolls back instead of leaving bumped pins over a broken stack (mirrors
+    # the elk.py pattern; VolWeb previously had NO rollback).
+    backup_file = backup_env_file(_VOLWEB_ENV, logger=log)
     update_env_file(_VOLWEB_ENV, "VOLWEB_BACKEND_VERSION", version, logger=log)
     update_env_file(_VOLWEB_ENV, "VOLWEB_FRONTEND_VERSION", version, logger=log)
     up = _compose_up(log, run_id=run_id)
     if not up.get("success"):
-        return {"success": False, "error": f"compose up failed: {up.get('error')}"}
+        log("Compose up failed — rolling back VolWeb pins to the previous version...", "error")
+        if backup_file and restore_env_file(_VOLWEB_ENV, backup_file, logger=log):
+            rb = _compose_up(log, run_id=run_id)
+            if rb.get("success"):
+                log(f"Rollback complete — VolWeb back on {cur}", "success")
+            else:
+                log(f"Rollback compose up also failed: {rb.get('error')}", "error")
+        return {"success": False, "rolled_back": True,
+                "error": f"compose up failed: {up.get('error')}"}
+    if backup_file:
+        cleanup_backup(backup_file, logger=log)
 
     # Re-seed YARA rules from the bundled rule sources. Idempotent
     # via etag-based de-duplication in the in-container script — safe

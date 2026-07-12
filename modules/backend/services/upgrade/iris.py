@@ -262,6 +262,15 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
     current_vars = read_env_file(env_file)
     current_version = current_vars.get('IRIS_VERSION', 'unknown')
 
+    # Pre-check: load + verify the target images BEFORE stopping the running
+    # stack, so a missing/corrupt tar fails here with IRIS still up instead of
+    # after `compose down` (downtime + rollback churn).
+    from .base import preflight_offline_images
+    pre = preflight_offline_images('iris', version, images_dir, logger=log, run_id=run_id)
+    if not pre['success']:
+        return {"success": False,
+                "error": f"required IRIS images unavailable (stack left running): {', '.join(pre['missing'])}"}
+
     # Create backup before making any changes
     log(f"Backing up current config (version {current_version})...", "info")
     backup_file = backup_env_file(env_file, logger=log)

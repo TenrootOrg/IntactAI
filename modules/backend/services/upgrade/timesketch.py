@@ -955,6 +955,15 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
     backend_vars = read_env_file(backend_env)
     current_plaso_version = backend_vars.get('PLASO_VERSION', 'unknown')
 
+    # Pre-check: load + verify the target images BEFORE stopping the running
+    # stack, so a missing/corrupt tar fails here with Timesketch still up
+    # instead of after `compose down` (downtime + rollback churn).
+    from .base import preflight_offline_images
+    pre = preflight_offline_images('timesketch', version, images_dir, logger=log, run_id=run_id)
+    if not pre['success']:
+        return {"success": False,
+                "error": f"required Timesketch images unavailable (stack left running): {', '.join(pre['missing'])}"}
+
     # Create backups before making any changes
     log(f"Backing up current config (version {current_version})...", "info")
     ts_backup = backup_env_file(env_file, logger=log)

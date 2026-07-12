@@ -144,6 +144,16 @@ def run_startup_initialization():
                     # Small delay to let the backend fully start
                     time.sleep(5)
 
+                    # Register a cancel event so Stop actually interrupts
+                    # Phase-2 run_commands. Without this, request_stop()
+                    # found no event: the UI showed "cancelled" while Phase 2
+                    # kept running to completion in the background.
+                    try:
+                        from services.workflow_service import register_cancel_event
+                        register_cancel_event(run_id)
+                    except Exception as _e:
+                        print(f"[STARTUP] Could not register cancel event: {_e}", flush=True)
+
                     # Create workflow logger to update the workflow record
                     wf_logger = WorkflowLogger(run_id, "UPGRADE-RESUME")
                     wf_logger.info("=== PHASE 2 - RESUMING UPGRADE AFTER RESTART ===")
@@ -173,6 +183,14 @@ def run_startup_initialization():
                         from services.workflow_service import update_run_status, add_log_to_run
                         add_log_to_run(run_id, f"Phase 2 error: {str(e)}", "error")
                         update_run_status(run_id, "failed")
+                    except Exception:
+                        pass
+                finally:
+                    # Mirror the routes' cleanup so the cancel-event registry
+                    # doesn't leak entries across resumes.
+                    try:
+                        from services.workflow_service import unregister_cancel
+                        unregister_cancel(run_id)
                     except Exception:
                         pass
 

@@ -135,3 +135,84 @@ def validate_config(config_path: str = None, logger: Callable = None,
     else:
         log(f"  [config-validate] config.yaml has {len(errors)} problem(s)", "warning")
     return ok, errors
+
+
+# ---------------------------------------------------------------------------
+# Environment + disk preflight — fail fast with actionable messages instead of
+# cryptic mid-upgrade failures (docker missing, compose v1-only host, disk
+# filling up under a multi-GB pull/extract).
+# ---------------------------------------------------------------------------
+
+# Free-space floors (GiB). Prepare pulls + saves multi-GB images; apply
+# extracts a package ~3x its size (see verify_upgrade_package's own check).
+# These are conservative entry-gates, not exact accounting — the per-image
+# and extraction checks downstream stay authoritative.
+PREPARE_MIN_FREE_GB = 25
+APPLY_MIN_FREE_GB = 10
+
+
+def preflight_environment(logger: Callable = None,
+                          min_free_gb: int = APPLY_MIN_FREE_GB) -> Tuple[bool, List[str]]:
+    """Pre-upgrade environment check. Never raises. Returns (ok, errors).
+
+    Verifies, with operator-actionable messages:
+      - the docker CLI is reachable (daemon responding),
+      - docker compose v2 exists (the upgrade code emits `docker compose ...`
+        exclusively — a compose-v1-only host fails cryptically without this),
+      - the workdir (INTACT_PATH mount) is present and writable,
+      - the data staging volume has at least `min_free_gb` GiB free.
+    """
+    import shutil as _shutil
+    import subprocess as _sp
+    log = logger or (lambda m, l="info": None)
+    errors: List[str] = []
+
+    def _run(cmd):
+        try:
+            r = _sp.run(cmd, capture_output=True, text=True, timeout=30)
+            return r.returncode == 0, (r.stdout or r.stderr or '').strip()
+        except FileNotFoundError:
+            return False, f"{cmd[0]}: not found"
+        except Exception as e:
+            return False, str(e)
+
+    ok_docker, out = _run(["docker", "version", "--format", "{{.Server.Version}}"])
+    if not ok_docker:
+        errors.append(
+            f"docker daemon is not reachable ({out[:120]}). The upgrade drives "
+            f"everything through the docker socket — check the /var/run/docker.sock "
+            f"mount and permissions.")
+    else:
+        ok_compose, cout = _run(["docker", "compose", "version", "--short"])
+        if not ok_compose:
+            errors.append(
+                f"`docker compose` (v2 plugin) is not available ({cout[:120]}). "
+                f"IntactAI requires Docker Compose v2 — the legacy `docker-compose` "
+                f"v1 binary is not supported. Install the compose plugin.")
+
+    workdir = WORKDIR
+    if not os.path.isdir(workdir):
+        errors.append(f"workdir {workdir} does not exist — is the INTACT_PATH "
+                      f"volume mounted?")
+    elif not os.access(workdir, os.W_OK):
+        errors.append(f"workdir {workdir} is not writable — upgrade must edit "
+                      f"config.yaml and module .env files there.")
+
+    # Staging lives on the /app/data bind mount (falls back to workdir when
+    # absent, e.g. running outside the container in dev).
+    staging = '/app/data' if os.path.isdir('/app/data') else workdir
+    try:
+        free_gb = _shutil.disk_usage(staging).free / (1024 ** 3)
+        if free_gb < min_free_gb:
+            errors.append(
+                f"only {free_gb:.1f} GiB free on {staging} — at least "
+                f"{min_free_gb} GiB is required for upgrade staging. Free disk "
+                f"space (old packages/images) and retry.")
+    except Exception as e:
+        log(f"  [preflight] disk check skipped ({e})", "warning")
+
+    ok = len(errors) == 0
+    if ok:
+        log("  [preflight] environment checks passed (docker, compose v2, "
+            "workdir, disk)", "info")
+    return ok, errors
