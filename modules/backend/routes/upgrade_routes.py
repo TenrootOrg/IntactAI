@@ -732,6 +732,14 @@ def start_offline_upgrade():
                 elif result.get('success'):
                     add_log_to_run(run_id, f"Offline upgrade completed: {result.get('completed', 0)}/{result.get('total', 0)} modules", "success")
                     update_run_status(run_id, "completed", progress=100)
+                elif result.get('error') and not result.get('results'):
+                    # Workflow aborted BEFORE any module ran (config.yaml
+                    # validation, package verification, ...). Previously this
+                    # fell into the branch below and was mislabeled
+                    # "completed, 100%" — the operator saw a successful run
+                    # that did nothing. Surface it as the failure it is.
+                    add_log_to_run(run_id, f"Offline upgrade aborted: {result['error']}", "error")
+                    update_run_status(run_id, "failed", progress=0, error=result['error'])
                 else:
                     failed = [m for m, r in result.get('results', {}).items() if not r.get('success')]
                     if failed:

@@ -57,6 +57,15 @@ from services.storage.base import (
 )
 
 
+# Single source of truth for module upgrade order. Intact (the backend) MUST be
+# first so backend code is updated before the modules it drives. This list was
+# previously duplicated in three functions (run/resume/offline); a 2026-06-16
+# drift incident — a module present in one copy but missing from another — is
+# why it now lives in exactly one place, referenced everywhere.
+UPGRADE_ORDER = ['intact', 'elk', 'timesketch', 'plaso', 'iris',
+                 'velociraptor', 'cloudtrail', 'o365rc', 'volweb', 'cve_scan']
+
+
 def _upgrade_noop_module(module_name: str) -> bool:
     """True iff this module needs NOTHING done this upgrade — it's already
     installed and none of its version pins changed (the primary pin `M` OR any
@@ -254,7 +263,7 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
     db_overwrite = db_overwrite or {}
 
     # Intact.AI must be first so backend code is updated before modules
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'cloudtrail', 'o365rc', 'volweb', 'cve_scan']
+    upgrade_order = list(UPGRADE_ORDER)
     upgrade_functions = {
         'elk': upgrade_elk,
         'timesketch': upgrade_timesketch,
@@ -592,6 +601,48 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             except Exception as e:
                 log(f"  Phase-2 backend config writeback raised ({type(e).__name__}: {e})", "warning")
 
+    # Config schema migrations — run HERE (Phase 2, new code, post-restart) and
+    # BEFORE the module loop, so any structural config change (renames, retired
+    # keys) is applied before an upgrader reads a migrated key. This is a
+    # separate step from the versions-merge (which ran in Phase 1, pre-restart)
+    # with its own backup/rollback, so the two never observe each other's
+    # writes. Idempotent: a re-resume finds schema already bumped and no-ops.
+    # With an empty registry this is a clean no-op; it exists so future
+    # migrations have a wired, tested home.
+    def _fail_phase2(reason):
+        """Mark the run failed and clear the pending state before returning."""
+        try:
+            from services.workflow_service import update_run_status
+            update_run_status(run_id, "failed", error=reason)
+        except Exception:
+            pass
+        try:
+            clear_upgrade_state(run_id)
+        except Exception:
+            pass
+        return {"success": False, "error": reason}
+
+    try:
+        from .config_migrations import apply_config_migrations
+        _cfg_path = os.path.join(WORKDIR, 'config.yaml')
+        _mig = apply_config_migrations(_cfg_path, logger=log)
+        if not _mig.get('success'):
+            log(f"Config migration failed ({_mig.get('error')}); aborting Phase 2 "
+                f"before any module upgrade. config.yaml was restored from backup.",
+                "error")
+            return _fail_phase2(f"config migration failed: {_mig.get('error')}")
+        # Re-validate the (possibly migrated) config before the loop reads it.
+        from .config_validate import validate_config
+        _ok, _errs = validate_config(_cfg_path, logger=log, require_pins=False)
+        if not _ok:
+            log("Post-migration config.yaml validation failed:", "error")
+            for _e in _errs:
+                log(f"  - {_e}", "error")
+            return _fail_phase2("post-migration validation failed: " + "; ".join(_errs))
+    except Exception as e:
+        log(f"  Config migration step raised ({type(e).__name__}: {e}); "
+            f"continuing without migrations", "warning")
+
     # 2026-06-16 incident: volweb was silently dropped from Phase 2
     # because resume_upgrade_workflow's upgrade_order didn't include it,
     # even though run_offline_upgrade_workflow and run_online_upgrade
@@ -600,7 +651,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     # in the list, never got dispatched, never appeared in the summary.
     # All three copies of upgrade_order must include the same modules;
     # this one drifted. Keep them in sync.
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'cloudtrail', 'o365rc', 'volweb', 'cve_scan']
+    upgrade_order = list(UPGRADE_ORDER)
 
     # Pick functions by the mode SAVED IN THE STATE — which matters for
     # BACKWARD COMPATIBILITY: when upgrading FROM an older release, Phase 1 runs
@@ -958,6 +1009,21 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     log(workflow_label, "info")
     log("=" * 50, "info")
 
+    # Pre-flight: fail fast on a structurally-broken operator config.yaml
+    # BEFORE any extraction/mutation, so a corrupt/incomplete config surfaces
+    # as a clear message rather than a cryptic crash mid-apply. Structural
+    # only (require_pins=False): the apply side sources sidecar tags from the
+    # bundled manifest, not config.yaml, so pin-completeness isn't the failure
+    # mode here and a merge/manifest-supplied pin must not false-positive.
+    from .config_validate import validate_config
+    _cfg_ok, _cfg_errs = validate_config(logger=log, require_pins=False)
+    if not _cfg_ok:
+        log("config.yaml failed pre-upgrade validation:", "error")
+        for _e in _cfg_errs:
+            log(f"  - {_e}", "error")
+        return {"success": False,
+                "error": "config.yaml validation failed: " + "; ".join(_cfg_errs)}
+
     # Two-mode entry: tar.gz extraction (offline, legacy) OR pre-built
     # package_dir from the online flow.
     if prebuilt_package_dir and prebuilt_manifest:
@@ -1061,7 +1127,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     # Intact.AI must be first so backend code is updated before modules.
     # VolWeb is at the end so its install (a multi-container compose) runs
     # last when the operator is adding VolWeb to an existing install.
-    upgrade_order = ['intact', 'elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'cloudtrail', 'o365rc', 'volweb', 'cve_scan']
+    upgrade_order = list(UPGRADE_ORDER)
 
     results = {}
     total = 0
@@ -1640,6 +1706,33 @@ def run_online_upgrade_workflow(modules: Dict[str, str], run_id: str = None,
                 f"({type(e).__name__}: {e}); prepare will use the "
                 f"operator's existing versions — pins may be stale",
                 "warning")
+
+    # Pre-flight: now that the target's version pins are merged into the
+    # operator's config.yaml (pre-prepare merge above), validate it fully —
+    # including primary + sidecar pin completeness — BEFORE prepare reads it.
+    # This pre-empts the operator-facing get_transitive_tag KeyError
+    # (package.py) that prepare would otherwise raise mid-run. require_pins=True
+    # is safe here: any pin the merge would supply is already present.
+    from .config_validate import validate_config
+    _cfg_ok, _cfg_errs = validate_config(logger=log, require_pins=True)
+    if not _cfg_ok:
+        log("config.yaml failed pre-prepare validation:", "error")
+        for _e in _cfg_errs:
+            log(f"  - {_e}", "error")
+        if os.path.exists(persistent_work_dir):
+            try:
+                shutil.rmtree(persistent_work_dir)
+            except Exception:
+                pass
+        return {
+            "success": False,
+            "status": "failed",
+            "error": "config.yaml validation failed: " + "; ".join(_cfg_errs),
+            "results": {},
+            "completed": 0,
+            "total": 0,
+            "versions": {},
+        }
 
     prepare_result = prepare_upgrade_package(
         modules=modules,

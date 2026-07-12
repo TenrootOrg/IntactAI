@@ -626,6 +626,234 @@ def set_module_version_in_config(module_key: str, new_version: str,
         return False
 
 
+# ---------------------------------------------------------------------------
+# Structural rename / delete helpers for config-schema migrations.
+#
+# Same discipline as the setters above: LINE-SCAN over the YAML text (never a
+# whole-file regex — see the catastrophic-backtracking note in
+# set_module_version_in_config — and never a yaml load+dump, which would strip
+# comments/ordering/operator creds). Each is idempotent so a migration can
+# re-run safely. All accept an optional `config_path` override so the migration
+# runner (and unit tests) can point them at an explicit file; default is
+# WORKDIR/config.yaml like the other helpers.
+# ---------------------------------------------------------------------------
+
+def _module_header_present(content: str, name: str) -> bool:
+    import re
+    return re.search(rf'^[ \t]+{re.escape(name)}:\s*(?:#.*)?$', content,
+                     re.MULTILINE) is not None
+
+
+def delete_module_block_in_config(module_name: str, logger=None,
+                                   config_path: str = None) -> bool:
+    """Remove the entire ``modules.<module_name>`` block (header + child lines).
+
+    Idempotent: returns False if the block is absent. Line-scan; the block runs
+    from its ``  <name>:`` header to the next line at the same-or-lower indent
+    that isn't blank (a sibling module, or the next top-level key). Trailing
+    blank lines inside that span are removed with it.
+    """
+    import re
+    log = logger or (lambda msg, level="info": None)
+    path = config_path or os.path.join(WORKDIR, 'config.yaml')
+    if not os.path.exists(path):
+        log(f"config.yaml not found at {path}; skipping module delete", "warning")
+        return False
+    try:
+        with open(path) as f:
+            content = f.read()
+    except Exception as e:
+        log(f"Could not read config.yaml: {e}", "warning")
+        return False
+
+    lines = content.split('\n')
+    in_modules = False
+    start = None
+    header_indent = None
+    end = len(lines)
+    for i, line in enumerate(lines):
+        if not in_modules:
+            if re.match(r'^modules:\s*$', line):
+                in_modules = True
+            continue
+        stripped = line.strip()
+        # left the modules: block entirely (top-level, non-blank, non-comment)?
+        if stripped and not line[:1].isspace() and not stripped.startswith('#'):
+            if start is not None:
+                end = i
+            break
+        if start is None:
+            m = re.match(rf'^(\s+){re.escape(module_name)}:\s*(?:#.*)?$', line)
+            if m:
+                start = i
+                header_indent = len(m.group(1))
+            continue
+        # inside the target block: boundary is next non-blank line whose indent
+        # is <= the header's (a sibling module or a module-indent comment).
+        if not stripped:
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent <= header_indent:
+            end = i
+            break
+
+    if start is None:
+        return False
+
+    del lines[start:end]
+    try:
+        with open(path, 'w') as f:
+            f.write('\n'.join(lines))
+        log(f"Removed modules.{module_name} block from config.yaml", "info")
+        return True
+    except Exception as e:
+        log(f"Could not write config.yaml: {e}", "warning")
+        return False
+
+
+def rename_module_in_config(old_name: str, new_name: str, logger=None,
+                             config_path: str = None) -> bool:
+    """Rename ``modules.<old_name>`` -> ``modules.<new_name>``, carrying ALL
+    child lines (enabled/id/password/...) verbatim — only the header key token
+    is rewritten, so children, comments and ordering stay byte-identical.
+
+    Idempotent:
+      * ``modules.<new_name>`` already present -> drop a stale ``<old_name>``
+        block if one remains, else no-op.
+      * ``<old_name>`` absent -> no-op (False).
+    """
+    import re
+    log = logger or (lambda msg, level="info": None)
+    path = config_path or os.path.join(WORKDIR, 'config.yaml')
+    if not os.path.exists(path):
+        log(f"config.yaml not found at {path}; skipping module rename", "warning")
+        return False
+    try:
+        with open(path) as f:
+            content = f.read()
+    except Exception as e:
+        log(f"Could not read config.yaml: {e}", "warning")
+        return False
+
+    has_new = _module_header_present(content, new_name)
+    has_old = _module_header_present(content, old_name)
+    if has_new:
+        if has_old:  # stale duplicate — clean it up so the rename is idempotent
+            return delete_module_block_in_config(old_name, logger=logger, config_path=path)
+        return False
+    if not has_old:
+        log(f"modules.{old_name} not found; nothing to rename", "info")
+        return False
+
+    lines = content.split('\n')
+    in_modules = False
+    changed = False
+    header_re = re.compile(rf'^(\s+){re.escape(old_name)}:(\s*(?:#.*)?)$')
+    for i, line in enumerate(lines):
+        if not in_modules:
+            if re.match(r'^modules:\s*$', line):
+                in_modules = True
+            continue
+        stripped = line.strip()
+        if stripped and not line[:1].isspace() and not stripped.startswith('#'):
+            break  # left the modules: block
+        m = header_re.match(line)
+        if m:
+            lines[i] = f'{m.group(1)}{new_name}:{m.group(2)}'
+            changed = True
+            break
+    if not changed:
+        return False
+    try:
+        with open(path, 'w') as f:
+            f.write('\n'.join(lines))
+        log(f"Renamed modules.{old_name} -> modules.{new_name} in config.yaml", "info")
+        return True
+    except Exception as e:
+        log(f"Could not write config.yaml: {e}", "warning")
+        return False
+
+
+def rename_version_key_in_config(old_key: str, new_key: str, logger=None,
+                                  config_path: str = None) -> bool:
+    """Rename ``versions.<old_key>`` -> ``versions.<new_key>`` inside the
+    ``versions:`` block, preserving the value and any inline comment. Only the
+    key token is rewritten. The trailing ``:`` anchor prevents a prefix collision
+    (renaming ``volweb`` never touches ``volweb_postgres``).
+
+    Idempotent:
+      * ``<old_key>`` absent -> no-op (False).
+      * both present -> drop the old line (new already exists).
+    """
+    import re
+    log = logger or (lambda msg, level="info": None)
+    path = config_path or os.path.join(WORKDIR, 'config.yaml')
+    if not os.path.exists(path):
+        log(f"config.yaml not found at {path}; skipping version-key rename", "warning")
+        return False
+    try:
+        with open(path) as f:
+            content = f.read()
+    except Exception as e:
+        log(f"Could not read config.yaml: {e}", "warning")
+        return False
+
+    lines = content.splitlines(keepends=True)
+    old_re = re.compile(rf'^(\s+){re.escape(old_key)}(:\s*.*)$')
+    new_re = re.compile(rf'^\s+{re.escape(new_key)}:\s')
+
+    # Pass 1: presence of old/new INSIDE the versions: block.
+    in_v = False
+    has_old = has_new = False
+    for line in lines:
+        body = line.rstrip('\n')
+        if re.match(r'^versions:\s*(#.*)?$', body):
+            in_v = True
+            continue
+        if in_v and body and not body[:1].isspace():
+            in_v = False
+        if in_v:
+            if old_re.match(body):
+                has_old = True
+            if new_re.match(body):
+                has_new = True
+    if not has_old:
+        log(f"versions.{old_key} not found; nothing to rename", "info")
+        return False
+
+    # Pass 2: rewrite the key token (or drop the old line if new already exists).
+    out = []
+    in_v = False
+    done = False
+    for line in lines:
+        body = line.rstrip('\n')
+        emit = True
+        if not done:
+            if re.match(r'^versions:\s*(#.*)?$', body):
+                in_v = True
+            elif in_v and body and not body[:1].isspace():
+                in_v = False
+            elif in_v:
+                m = old_re.match(body)
+                if m:
+                    if has_new:
+                        emit = False  # duplicate — new already present
+                    else:
+                        nl = '\n' if line.endswith('\n') else ''
+                        line = f'{m.group(1)}{new_key}{m.group(2)}{nl}'
+                    done = True
+        if emit:
+            out.append(line)
+    try:
+        with open(path, 'w') as f:
+            f.write(''.join(out))
+        log(f"Renamed versions.{old_key} -> versions.{new_key} in config.yaml", "info")
+        return True
+    except Exception as e:
+        log(f"Could not write config.yaml: {e}", "warning")
+        return False
+
+
 def get_current_versions() -> Dict:
     """Get current versions for all modules.
 
