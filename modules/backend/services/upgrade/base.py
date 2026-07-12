@@ -1296,6 +1296,40 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
         log(f"  Package created: {manifest.get('created', 'unknown')}", "info")
         log(f"  Versions: {json.dumps(manifest.get('versions', {}))}", "info")
 
+        # Per-file sha256 verification. gzip -t above only proves the OUTER
+        # archive isn't corrupt — this catches a truncated/corrupt file
+        # INSIDE a gzip-valid archive BEFORE any module is taken down.
+        # Older packages have no sha256 block — skip (back-compat).
+        sha_map = (manifest.get('contents') or {}).get('sha256') or {}
+        if sha_map:
+            import hashlib as _hashlib
+            log(f"  Verifying {len(sha_map)} file checksum(s)...", "info")
+            bad = []
+            for rel, expected in sha_map.items():
+                fpath = os.path.join(package_dir, rel)
+                if not os.path.isfile(fpath):
+                    bad.append(f"{rel} (missing)")
+                    continue
+                h = _hashlib.sha256()
+                with open(fpath, 'rb') as fh:
+                    for chunk in iter(lambda: fh.read(4 * 1024 * 1024), b''):
+                        h.update(chunk)
+                if h.hexdigest() != expected:
+                    bad.append(f"{rel} (checksum mismatch)")
+            if bad:
+                err = (f"Package integrity check failed for {len(bad)} file(s): "
+                       f"{'; '.join(bad[:5])}"
+                       + (f" (+{len(bad)-5} more)" if len(bad) > 5 else "")
+                       + ". The package is corrupt — re-prepare/re-upload it. "
+                         "No module was touched.")
+                log(f"  {err}", "error")
+                shutil.rmtree(extract_dir, ignore_errors=True)
+                return {"success": False, "error": err}
+            log(f"  All {len(sha_map)} checksums verified", "success")
+        else:
+            log("  Package has no sha256 map (older prepare) — integrity is "
+                "archive-level only", "info")
+
         return {
             "success": True,
             "extract_dir": extract_dir,

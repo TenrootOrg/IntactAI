@@ -17,6 +17,35 @@ from services import (
 
 upgrade_bp = Blueprint('upgrade', __name__)
 
+# Closes the check→create TOCTOU on a double-click: the DB-based
+# check_upgrade_lock is the real (restart-surviving) lock, but two
+# simultaneous requests could both pass it before either creates its run.
+# Callers hold this across gate + create_automation_run.
+_UPGRADE_START_MUTEX = threading.Lock()
+
+
+def _upgrade_gate(force: bool = False):
+    """Single-writer gate for upgrade/prepare entry routes.
+
+    Returns None when clear to start, else a (jsonify, 409) response naming
+    the blocking run. Caller must hold _UPGRADE_START_MUTEX across this call
+    AND its create_automation_run so a concurrent request can't slip between.
+    """
+    try:
+        from services.upgrade import check_upgrade_lock
+        gate = check_upgrade_lock(force=force)
+        if gate.get("ok"):
+            return None
+        return jsonify({
+            "error": gate.get("reason", "An upgrade is already in progress"),
+            "blocking_run_id": gate.get("blocking_run_id"),
+            "stale": gate.get("stale", False),
+        }), 409
+    except Exception as e:
+        # Never brick the upgrade button on a gate bug — fail open, log.
+        print(f"[UPGRADE] gate check errored ({e}); allowing", flush=True)
+        return None
+
 
 # Allowlist for operator-supplied `package_path` (Mythos finding #7).
 # Both `/api/upgrade/package-info` and `/api/upgrade/offline` accept
@@ -648,43 +677,52 @@ def start_offline_upgrade():
         if not os.path.exists(package_path):
             return jsonify({"error": f"Package not found: {package_path}"}), 400
 
-        # Continue the UPLOAD's workflow when this package came from a TUS
-        # upload — its run_id was persisted in a `<package>.run` sidecar by
-        # the upload hook. Reusing it keeps the import (upload) and the apply
-        # in ONE workflow/log instead of two. Prepare-built packages
-        # (/data/upgrade_packages/) have no sidecar and get a fresh run.
-        run_id = None
-        sidecar = f"{package_path}.run"
-        if os.path.exists(sidecar):
-            try:
-                with open(sidecar) as _rf:
-                    candidate = (_rf.read() or "").strip()
-                from services.file_storage_service import get_workflow as _get_wf
-                if candidate and _get_wf(candidate):
-                    run_id = candidate
-            except Exception:
-                run_id = None
+        # Single-writer gate + run acquisition under one mutex: refuse when
+        # another upgrade/prepare owns the system (concurrent upgrades mirror
+        # the same live source tree — install corruption). The mutex closes
+        # the double-click TOCTOU between the DB check and run creation.
+        with _UPGRADE_START_MUTEX:
+            blocked = _upgrade_gate(force=bool(data.get('force')))
+            if blocked:
+                return blocked
 
-        if run_id:
-            # Consume the sidecar so a later RE-apply of the same package gets
-            # its own run (honest audit trail) instead of re-opening this one.
-            try:
-                os.remove(sidecar)
-            except Exception:
-                pass
-            add_log_to_run(run_id, "─" * 40, "info")
-            add_log_to_run(run_id, "Applying uploaded package — continuing this workflow.", "info")
-        else:
-            run_id = create_automation_run(
-                automation_type="upgrade",
-                name="System Upgrade (Offline)",
-                details={
-                    "trigger": "manual",
-                    "mode": "offline",
-                    "package_path": package_path
-                }
-            )
-            add_log_to_run(run_id, "Starting offline upgrade from package", "info")
+            # Continue the UPLOAD's workflow when this package came from a TUS
+            # upload — its run_id was persisted in a `<package>.run` sidecar by
+            # the upload hook. Reusing it keeps the import (upload) and the apply
+            # in ONE workflow/log instead of two. Prepare-built packages
+            # (/data/upgrade_packages/) have no sidecar and get a fresh run.
+            run_id = None
+            sidecar = f"{package_path}.run"
+            if os.path.exists(sidecar):
+                try:
+                    with open(sidecar) as _rf:
+                        candidate = (_rf.read() or "").strip()
+                    from services.file_storage_service import get_workflow as _get_wf
+                    if candidate and _get_wf(candidate):
+                        run_id = candidate
+                except Exception:
+                    run_id = None
+
+            if run_id:
+                # Consume the sidecar so a later RE-apply of the same package gets
+                # its own run (honest audit trail) instead of re-opening this one.
+                try:
+                    os.remove(sidecar)
+                except Exception:
+                    pass
+                add_log_to_run(run_id, "─" * 40, "info")
+                add_log_to_run(run_id, "Applying uploaded package — continuing this workflow.", "info")
+            else:
+                run_id = create_automation_run(
+                    automation_type="upgrade",
+                    name="System Upgrade (Offline)",
+                    details={
+                        "trigger": "manual",
+                        "mode": "offline",
+                        "package_path": package_path
+                    }
+                )
+                add_log_to_run(run_id, "Starting offline upgrade from package", "info")
         add_log_to_run(run_id, f"Package: {package_path}", "info")
         for line in _quota_audit_lines(0):
             add_log_to_run(run_id, line, "info")
@@ -730,8 +768,13 @@ def start_offline_upgrade():
                     update_run_status(run_id, "running", progress=50)
                     # Don't mark complete - Phase 2 will continue after restart
                 elif result.get('success'):
+                    # force=True: the per-module results are the authoritative
+                    # success signal for an upgrade. Without it, any error-level
+                    # log line during the run (e.g. a step that failed and was
+                    # retried/rolled back inside a module that ultimately
+                    # SUCCEEDED) auto-demotes the whole run to 'failed' (G8).
                     add_log_to_run(run_id, f"Offline upgrade completed: {result.get('completed', 0)}/{result.get('total', 0)} modules", "success")
-                    update_run_status(run_id, "completed", progress=100)
+                    update_run_status(run_id, "completed", progress=100, force=True)
                 elif result.get('error') and not result.get('results'):
                     # Workflow aborted BEFORE any module ran (config.yaml
                     # validation, package verification, ...). Previously this
@@ -741,10 +784,21 @@ def start_offline_upgrade():
                     add_log_to_run(run_id, f"Offline upgrade aborted: {result['error']}", "error")
                     update_run_status(run_id, "failed", progress=0, error=result['error'])
                 else:
+                    # Partial success: some modules failed, others upgraded
+                    # fine. Mark 'completed' WITH the failure list in the
+                    # error field (visible in the UI) instead of letting the
+                    # error-count auto-flip label a 5/6 success as a flat
+                    # 'failed' — which read as "the upgrade did nothing" and
+                    # caused unnecessary full re-runs (G8). Failed modules'
+                    # version pins were already reverted per-module, so a
+                    # re-run retries exactly the right thing.
                     failed = [m for m, r in result.get('results', {}).items() if not r.get('success')]
                     if failed:
                         add_log_to_run(run_id, f"Offline upgrade completed with failures: {', '.join(failed)}", "warning")
-                    update_run_status(run_id, "completed", progress=100)
+                        update_run_status(run_id, "completed", progress=100, force=True,
+                                          error=f"completed with failed module(s): {', '.join(failed)}")
+                    else:
+                        update_run_status(run_id, "completed", progress=100, force=True)
 
             except Exception as e:
                 add_log_to_run(run_id, f"Offline upgrade failed: {str(e)}", "error")
@@ -841,15 +895,21 @@ def prepare_upgrade_package():
         # the TARGET's .env at apply time, which is the only point
         # where "current vs requested" has a meaningful answer.
 
-        # Create workflow run
-        run_id = create_automation_run(
-            automation_type="prepare_package",
-            name="Prepare Upgrade Package",
-            details={
-                "trigger": "manual",
-                "modules": modules
-            }
-        )
+        # Create workflow run — behind the single-writer gate (prepare mutates
+        # staging + the config.yaml versions block, so it serializes with
+        # upgrades). Mutex closes the double-click TOCTOU.
+        with _UPGRADE_START_MUTEX:
+            blocked = _upgrade_gate(force=bool((data or {}).get('force')))
+            if blocked:
+                return blocked
+            run_id = create_automation_run(
+                automation_type="prepare_package",
+                name="Prepare Upgrade Package",
+                details={
+                    "trigger": "manual",
+                    "modules": modules
+                }
+            )
         add_log_to_run(run_id, "Starting package preparation", "info")
         add_log_to_run(run_id, f"Modules: {', '.join(modules.keys())}", "info")
         for line in _quota_audit_lines(2):
@@ -1008,15 +1068,20 @@ def start_online_upgrade():
 
         db_overwrite = data.get('db_overwrite') or {}
 
-        run_id = create_automation_run(
-            automation_type="online_upgrade",
-            name="Online Upgrade",
-            details={
-                "trigger": "manual",
-                "modules": modules,
-                "db_overwrite": db_overwrite,
-            },
-        )
+        # Single-writer gate + run creation under one mutex (see offline route).
+        with _UPGRADE_START_MUTEX:
+            blocked = _upgrade_gate(force=bool(data.get('force')))
+            if blocked:
+                return blocked
+            run_id = create_automation_run(
+                automation_type="online_upgrade",
+                name="Online Upgrade",
+                details={
+                    "trigger": "manual",
+                    "modules": modules,
+                    "db_overwrite": db_overwrite,
+                },
+            )
         add_log_to_run(run_id, "Starting online upgrade (prepare + apply in one run)", "info")
         add_log_to_run(run_id, f"Modules: {', '.join(modules.keys())}", "info")
         for line in _quota_audit_lines(2):

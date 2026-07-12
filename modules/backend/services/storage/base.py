@@ -506,6 +506,24 @@ def get_pending_upgrade() -> Optional[Dict]:
         return None
 
 
+def get_active_upgrade_state() -> Optional[Dict]:
+    """Any upgrade_state row, regardless of phase (phase1 | awaiting_restart |
+    phase2). Presence means an upgrade currently OWNS the system — rows are
+    created at workflow start and deleted in its finally/finalizer — so this
+    is the single-writer lock predicate. Newest first."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM upgrade_state ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            return row_to_dict(row, ['target_modules', 'completed_modules', 'db_overwrite'])
+        return None
+    except Exception as e:
+        print(f"[STORAGE] Error getting active upgrade state: {e}", flush=True)
+        return None
+
+
 def get_upgrade_state(run_id: str) -> Optional[Dict]:
     """Get upgrade state for a specific run_id."""
     conn = get_connection()

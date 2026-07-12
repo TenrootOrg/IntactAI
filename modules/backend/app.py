@@ -133,6 +133,17 @@ def run_startup_initialization():
         from services.workflow_logger import WorkflowLogger
 
         pending = get_pending_upgrade()
+
+        # Reclaim multi-GB staging orphaned by a crashed/killed upgrade.
+        # Previously swept only when a NEW upgrade started — if none was ever
+        # run again, orphans sat forever. Skipped while an upgrade is pending:
+        # its extract dir must survive the restart for Phase 2.
+        if not pending:
+            try:
+                from services.upgrade.base import sweep_stale_upgrade_staging
+                sweep_stale_upgrade_staging()
+            except Exception as _se:
+                print(f"[STARTUP] staging sweep skipped: {_se}", flush=True)
         if pending:
             run_id = pending['run_id']
             print(f"[STARTUP] Found pending upgrade: {run_id}", flush=True)
@@ -170,9 +181,25 @@ def run_startup_initialization():
                             wf_logger.info(msg)
 
                     result = resume_upgrade_workflow(run_id, logger=upgrade_logger)
+                    from services.workflow_service import update_run_status as _urs
+                    _results = result.get('results') or {}
+                    _failed = [m for m, r in _results.items()
+                               if isinstance(r, dict) and not r.get('success')]
                     if result.get('success'):
-                        wf_logger.complete("Upgrade completed successfully")
+                        # force=True: per-module results are authoritative — an
+                        # error-level line from a step that recovered must not
+                        # auto-demote a fully-successful Phase 2 (G8).
+                        wf_logger.success("Upgrade completed successfully")
+                        _urs(run_id, "completed", progress=100, force=True)
                         print(f"[STARTUP] Upgrade Phase 2 completed successfully", flush=True)
+                    elif _failed and len(_failed) < len(_results):
+                        # Partial success: surface the failed modules in the
+                        # error field instead of flat-failing a 5/6 success.
+                        wf_logger.warning(
+                            f"Phase 2 completed with failed module(s): {', '.join(_failed)}")
+                        _urs(run_id, "completed", progress=100, force=True,
+                             error=f"completed with failed module(s): {', '.join(_failed)}")
+                        print(f"[STARTUP] Upgrade Phase 2 partial: failed={_failed}", flush=True)
                     else:
                         wf_logger.fail(f"Upgrade failed: {result.get('error', 'unknown')}")
                         print(f"[STARTUP] Upgrade Phase 2 failed: {result.get('error')}", flush=True)

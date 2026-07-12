@@ -175,7 +175,16 @@ def migrate_velociraptor_config_to_host(logger: Callable = None) -> Dict:
 def _verify_velo_ca_unchanged(before_fp, logger: Callable = None) -> None:
     """After compose-up, confirm the running server still uses the migrated CA
     (the entrypoint must NOT have regenerated server.config.yaml). A changed
-    fingerprint means enrolled clients would need re-enrollment."""
+    fingerprint means EVERY enrolled client silently stops reconnecting.
+
+    Escalation (was warning-only): a VERIFIED CA change now RAISES so the
+    caller's rollback restores the old server — a failed upgrade is strictly
+    better than a fleet that looks fine but never reports again. Operator
+    override for a deliberate CA rotation:
+        INTACT_ALLOW_VELO_CA_CHANGE=1
+    A fingerprint that can't be READ (after_fp None) stays a warning — an
+    unverifiable state must not false-positive into a rollback.
+    """
     log = logger or (lambda m, l="info": None)
     if not before_fp:
         return  # fresh install — no prior CA to preserve
@@ -183,10 +192,24 @@ def _verify_velo_ca_unchanged(before_fp, logger: Callable = None) -> None:
     after_fp = _velo_host_ca_fingerprint()
     if after_fp and after_fp == before_fp:
         log(f"  ✓ Velociraptor CA preserved across upgrade (fp {before_fp})", "success")
+    elif after_fp is None:
+        log(f"  ⚠ Could not re-read the Velociraptor CA fingerprint after upgrade — "
+            f"CA preservation UNVERIFIED (was {before_fp}). Check client "
+            f"reconnection manually.", "warning")
+    elif os.environ.get('INTACT_ALLOW_VELO_CA_CHANGE'):
+        log(f"  ⚠ Velociraptor CA CHANGED ({before_fp} → {after_fp}) — allowed by "
+            f"INTACT_ALLOW_VELO_CA_CHANGE. Enrolled clients need re-enrollment.",
+            "warning")
     else:
-        log(f"  ⚠ Velociraptor CA CHANGED ({before_fp} → {after_fp})! Enrolled clients "
-            f"may need re-enrollment. The legacy named volume still holds the "
-            f"original config as a fallback.", "error")
+        log(f"  ✗ Velociraptor CA CHANGED ({before_fp} → {after_fp})! Every enrolled "
+            f"client would silently stop reconnecting — failing the upgrade so "
+            f"rollback restores the old server. The legacy named volume still "
+            f"holds the original config. To rotate the CA deliberately, set "
+            f"INTACT_ALLOW_VELO_CA_CHANGE=1 and re-run.", "error")
+        raise Exception(
+            f"Velociraptor CA changed across upgrade ({before_fp} -> {after_fp}); "
+            f"failing to protect the enrolled fleet (set "
+            f"INTACT_ALLOW_VELO_CA_CHANGE=1 to permit a deliberate rotation)")
 
 
 def _existing_artifact_names(logger: Callable = None) -> Optional[set]:

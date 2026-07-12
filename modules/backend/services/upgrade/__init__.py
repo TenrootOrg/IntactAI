@@ -65,6 +65,100 @@ from services.storage.base import (
 UPGRADE_ORDER = ['intact', 'elk', 'timesketch', 'plaso', 'iris',
                  'velociraptor', 'cloudtrail', 'o365rc', 'volweb', 'cve_scan']
 
+# Run types that hold the single-writer upgrade lock. NOTE: the prepare route
+# creates 'prepare_package' runs — prepare mutates staging + the config.yaml
+# versions block, so it must be serialized with upgrades too.
+UPGRADE_LOCK_RUN_TYPES = ("upgrade", "online_upgrade", "prepare_package")
+# A lone running RUN (no upgrade_state row) older than this is presumed dead
+# (crashed thread / dead prepare) and is auto-cleared at request time.
+UPGRADE_STALE_RUN_HOURS = 4
+
+
+def check_upgrade_lock(force: bool = False, logger: Callable = None) -> Dict:
+    """Single-writer gate for the upgrade/prepare entry routes.
+
+    Two upgrades running concurrently _mirror_tree the SAME live backend
+    source tree and both rewrite config.yaml — install corruption. Blocked
+    when:
+      (a) any automation run of type UPGRADE_LOCK_RUN_TYPES is running/pending, OR
+      (b) an upgrade_state row exists in ANY phase (get_active_upgrade_state) —
+          rows exist for the whole workflow and survive the Phase-1 restart,
+          which a threading lock would not.
+
+    Returns {"ok": True} or {"ok": False, "reason", "blocking_run_id", "stale"}.
+
+    Staleness escape: when the ONLY blocker is a run with NO state row and it
+    hasn't been updated for UPGRADE_STALE_RUN_HOURS, it is presumed dead —
+    auto-cleared (marked failed) and the gate opens. A blocker WITH a state
+    row is never auto-cleared here (a legit awaiting_restart/phase2 may be
+    mid-flight); only force=True clears it, loudly.
+
+    The boot resume path never calls this (it continues an existing run).
+    """
+    log = logger or (lambda m, l="info": print(f"[{l}] {m}", flush=True))
+    try:
+        from services.workflow_service import get_all_automation_runs, update_run_status
+        from services.storage.base import get_active_upgrade_state
+        from datetime import datetime as _dt
+
+        state = get_active_upgrade_state()
+        blocking_run = None
+        for run in (get_all_automation_runs() or []):
+            if (run.get('automation_type') in UPGRADE_LOCK_RUN_TYPES
+                    and run.get('status') in ('running', 'pending')):
+                blocking_run = run
+                break
+
+        if not state and not blocking_run:
+            return {"ok": True}
+
+        if force:
+            # Explicit operator override — clear both blockers, loudly.
+            if blocking_run:
+                log(f"FORCE-CLEARING in-progress upgrade run "
+                    f"{blocking_run.get('run_id')} at operator request", "warning")
+                update_run_status(blocking_run.get('run_id'), "failed",
+                                  error="Force-cleared by a new upgrade request")
+            if state:
+                log(f"FORCE-CLEARING upgrade state for run {state.get('run_id')} "
+                    f"(phase={state.get('phase')}) at operator request", "warning")
+                clear_upgrade_state(state.get('run_id'))
+            return {"ok": True}
+
+        # Staleness escape — run-only blocker (no state row) presumed dead.
+        if blocking_run and not state:
+            try:
+                updated = blocking_run.get('updated_at') or blocking_run.get('created_at')
+                age_h = ((_dt.now() - _dt.fromisoformat(updated)).total_seconds() / 3600
+                         if updated else 0)
+            except Exception:
+                age_h = 0
+            if age_h >= UPGRADE_STALE_RUN_HOURS:
+                log(f"Auto-clearing stale upgrade run {blocking_run.get('run_id')} "
+                    f"(running {age_h:.1f}h with no upgrade state — presumed dead)",
+                    "warning")
+                update_run_status(blocking_run.get('run_id'), "failed",
+                                  error=f"Stale upgrade run auto-cleared after "
+                                        f"{age_h:.1f}h by a new upgrade request")
+                return {"ok": True}
+
+        blocker_id = ((blocking_run or {}).get('run_id')
+                      or (state or {}).get('run_id'))
+        phase = (state or {}).get('phase')
+        return {
+            "ok": False,
+            "blocking_run_id": blocker_id,
+            "stale": False,
+            "reason": (f"An upgrade is already in progress (run {blocker_id}"
+                       + (f", phase {phase}" if phase else "")
+                       + "). Wait for it to finish, or pass force:true to clear it."),
+        }
+    except Exception as e:
+        # The lock must never make upgrades impossible — fail open with a log.
+        log(f"check_upgrade_lock errored ({type(e).__name__}: {e}); "
+            f"allowing the request", "warning")
+        return {"ok": True}
+
 
 def _upgrade_noop_module(module_name: str) -> bool:
     """True iff this module needs NOTHING done this upgrade — it's already
@@ -186,14 +280,73 @@ def recreate_timesketch_user(logger: Callable = None) -> bool:
     return True
 
 
-def schedule_backend_restart():
-    """Schedule backend restart after short delay using detached process."""
-    subprocess.Popen(
-        ['sh', '-c', 'sleep 3 && docker restart intact_backend intact_tusd'],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True
-    )
+def schedule_backend_restart(run_id: str = None, logger: Callable = None) -> bool:
+    """Schedule backend restart after a short delay using a detached process.
+
+    Hardened (G4): previously fire-and-forget with output DEVNULL'd — a failed
+    `docker restart` (socket busy/denied) left the OLD code running with the
+    run parked at 50% forever, silently. Now:
+      - restart output is appended to /app/data/tmp/restart-<run_id|ts>.log
+        so a failed restart is diagnosable post-mortem;
+      - a 90s self-check watchdog fires if THIS process is still alive (the
+        restart never happened): logs to the run, retries `docker restart`
+        once synchronously, and if a second 90s window also passes, marks the
+        run failed with manual-recovery guidance. The upgrade_state row is
+        deliberately KEPT so a manual `docker restart intact_backend` still
+        resumes Phase 2.
+    Returns False if the restart could not even be spawned.
+    """
+    import threading as _threading
+    log = logger or (lambda m, l="info": print(f"[{l}] {m}", flush=True))
+    tag = run_id or datetime_now_tag()
+    log_path = f"/app/data/tmp/restart-{tag}.log"
+
+    def _spawn() -> bool:
+        try:
+            os.makedirs("/app/data/tmp", exist_ok=True)
+            with open(log_path, 'a') as lf:
+                subprocess.Popen(
+                    ['sh', '-c', 'sleep 3 && docker restart intact_backend intact_tusd'],
+                    stdout=lf, stderr=lf, start_new_session=True,
+                )
+            return True
+        except Exception as e:
+            log(f"Could not spawn backend restart ({type(e).__name__}: {e})", "error")
+            return False
+
+    def _still_alive_check(attempt: int):
+        # If we're executing this, docker restart did NOT kill us.
+        try:
+            from services.workflow_service import add_log_to_run, update_run_status
+            if attempt == 1:
+                add_log_to_run(run_id, "Backend restart did not occur within 90s — "
+                                        "retrying docker restart once", "error")
+                run_command("docker restart intact_backend intact_tusd",
+                            logger=None, timeout=120)
+                t = _threading.Timer(90, _still_alive_check, args=(2,))
+                t.daemon = True
+                t.start()
+            else:
+                update_run_status(
+                    run_id, "failed",
+                    error="Backend restart could not be performed — check the "
+                          "docker socket mount/permissions (see "
+                          f"{log_path}). Upgrade state is preserved: restart "
+                          "intact_backend manually and Phase 2 will resume.")
+        except Exception as e:
+            print(f"[UPGRADE] restart watchdog error: {e}", flush=True)
+
+    ok = _spawn()
+    if ok and run_id:
+        t = _threading.Timer(90, _still_alive_check, args=(1,))
+        t.daemon = True
+        t.start()
+    return ok
+
+
+def datetime_now_tag() -> str:
+    from datetime import datetime as _dt
+    return _dt.now().strftime('%Y%m%d_%H%M%S')
 
 
 def restart_nginx(log: Callable) -> bool:
@@ -377,10 +530,25 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                             log(f"Remaining modules for Phase 2: {', '.join(remaining)}", "info")
                             log(f"{'='*50}", "info")
 
-                            save_upgrade_state(run_id, 'awaiting_restart', modules, completed_modules, mode,
-                                               db_overwrite=db_overwrite)
+                            # The resume state MUST be persisted before we
+                            # restart — a restart without it means Phase 2
+                            # silently never runs (remaining modules vanish).
+                            _saved = save_upgrade_state(run_id, 'awaiting_restart', modules, completed_modules, mode,
+                                                        db_overwrite=db_overwrite)
+                            if not _saved:
+                                log("Retrying resume-state persist...", "warning")
+                                _saved = save_upgrade_state(run_id, 'awaiting_restart', modules, completed_modules, mode,
+                                                            db_overwrite=db_overwrite)
+                            if not _saved:
+                                log("Could not persist Phase-2 resume state — ABORTING "
+                                    "before restart (a restart now would silently drop "
+                                    "the remaining modules). Check data/intact.db "
+                                    "writability and re-run the upgrade.", "error")
+                                return {"success": False,
+                                        "error": "failed to persist Phase-2 resume state; "
+                                                 "restart aborted"}
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
-                            schedule_backend_restart()
+                            schedule_backend_restart(run_id=run_id, logger=log)
 
                             return {
                                 "success": True,
@@ -402,7 +570,7 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                                 "next upgrade picks up new module-integration "
                                 "logic. (Sleep-3 delay lets this workflow "
                                 "finish + return first.)", "info")
-                            schedule_backend_restart()
+                            schedule_backend_restart(logger=log)
 
                     # Update state after each module
                     if run_id:
@@ -962,6 +1130,14 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                 log(f"Removed uploaded package: {os.path.basename(package_path)}", "info")
             except Exception as e:
                 log(f"Warning: Could not remove package file: {e}", "warning")
+        # tusd sidecars (<upload>.info / .run) — small, but accumulate
+        # forever in the upload_data volume if never reaped.
+        for _side in (f"{package_path}.info", f"{package_path}.run"):
+            try:
+                if _side and os.path.exists(_side):
+                    os.remove(_side)
+            except Exception:
+                pass
 
         # Final nginx restart
         restart_nginx(log)
@@ -1430,10 +1606,25 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                             log(f"Remaining modules for Phase 2: {', '.join(remaining)}", "info")
                             log(f"{'='*50}", "info")
 
-                            save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline',
-                                               extract_dir, package_path, db_overwrite=db_overwrite)
+                            # The resume state MUST be persisted before we
+                            # restart — a restart without it means Phase 2
+                            # silently never runs (remaining modules vanish).
+                            _saved = save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline',
+                                                        extract_dir, package_path, db_overwrite=db_overwrite)
+                            if not _saved:
+                                log("Retrying resume-state persist...", "warning")
+                                _saved = save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline',
+                                                            extract_dir, package_path, db_overwrite=db_overwrite)
+                            if not _saved:
+                                log("Could not persist Phase-2 resume state — ABORTING "
+                                    "before restart (a restart now would silently drop "
+                                    "the remaining modules). Check data/intact.db "
+                                    "writability and re-run the upgrade.", "error")
+                                return {"success": False,
+                                        "error": "failed to persist Phase-2 resume state; "
+                                                 "restart aborted"}
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
-                            schedule_backend_restart()
+                            schedule_backend_restart(run_id=run_id, logger=log)
 
                             # Set flag to prevent cleanup in finally block
                             awaiting_restart = True
@@ -1460,7 +1651,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                                 "next upgrade picks up new module-integration "
                                 "logic. (Sleep-3 delay lets this workflow "
                                 "finish + return first.)", "info")
-                            schedule_backend_restart()
+                            schedule_backend_restart(logger=log)
 
                     # Update state after each module
                     if run_id:
@@ -1540,6 +1731,14 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                     log(f"Removed uploaded package: {os.path.basename(package_path)}", "info")
                 except Exception as e:
                     log(f"Warning: Could not remove package file: {e}", "warning")
+            # tusd sidecars (<upload>.info / .run) — small, but accumulate
+            # forever in the upload_data volume if never reaped.
+            for _side in (f"{package_path}.info", f"{package_path}.run"):
+                try:
+                    if _side and os.path.exists(_side):
+                        os.remove(_side)
+                except Exception:
+                    pass
 
             # Restart nginx
             restart_nginx(log)

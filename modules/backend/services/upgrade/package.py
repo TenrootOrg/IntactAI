@@ -1925,6 +1925,30 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         if not has_content:
             raise Exception("No modules were packaged successfully. Check your internet connection and try again.")
 
+        # Per-file sha256 integrity map. `gzip -t` at apply time only proves
+        # the OUTER archive isn't corrupt — a truncated/corrupt image tar
+        # INSIDE a gzip-valid archive used to surface mid-apply, after the
+        # module was already down. verify_upgrade_package re-hashes each file
+        # against this map before any module runs (and skips the check for
+        # older packages whose manifest has no sha256 block — back-compat).
+        log("", "info")
+        log("=== Hashing package contents (sha256) ===", "info")
+        import hashlib as _hashlib
+        _sha_map = {}
+        for _root, _dirs, _files in os.walk(package_dir):
+            for _fn in _files:
+                _abs = os.path.join(_root, _fn)
+                _rel = os.path.relpath(_abs, package_dir)
+                if _rel == 'manifest.json':
+                    continue  # the manifest can't contain its own hash
+                _h = _hashlib.sha256()
+                with open(_abs, 'rb') as _fh:
+                    for _chunk in iter(lambda: _fh.read(4 * 1024 * 1024), b''):
+                        _h.update(_chunk)
+                _sha_map[_rel] = _h.hexdigest()
+        manifest["contents"]["sha256"] = _sha_map
+        log(f"  Hashed {len(_sha_map)} file(s)", "success")
+
         # Write manifest
         log("", "info")
         log("=== Creating Manifest ===", "info")
