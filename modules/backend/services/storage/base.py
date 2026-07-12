@@ -195,6 +195,12 @@ def create_tables():
     _ensure_column(conn, "workflows", "error_count", "INTEGER DEFAULT 0")
     # Workspace model: every analysis run is tagged to a case (workspace).
     _ensure_column(conn, "workflows", "case_id", "TEXT")
+    # Two-phase upgrade resilience: bounded resume retries + the module that
+    # was mid-dispatch when a crash hit (so its noop shortcut is bypassed on
+    # resume). save_upgrade_state's upsert doesn't SET these, so Phase-1
+    # re-saves never clobber them.
+    _ensure_column(conn, "upgrade_state", "resume_count", "INTEGER DEFAULT 0")
+    _ensure_column(conn, "upgrade_state", "in_flight", "TEXT")
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_workflows_case_id ON workflows(case_id)")
         conn.commit()
@@ -491,12 +497,17 @@ def save_upgrade_state(run_id: str, phase: str, target_modules: Dict,
 def get_pending_upgrade() -> Optional[Dict]:
     """Get pending upgrade that needs to be resumed after restart.
 
-    Returns the upgrade state if phase is 'awaiting_restart', None otherwise.
+    Matches 'awaiting_restart' (the expected Phase-1 -> Phase-2 handoff) AND
+    'phase2' — a phase2 row at boot means the previous process DIED mid-Phase-2
+    (crash/OOM/manual restart); it used to be stranded forever because only
+    awaiting_restart was matched. The boot resume-guard bounds retries via
+    resume_count so a crash-looping upgrade can't restart-storm.
     """
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT * FROM upgrade_state WHERE phase = 'awaiting_restart' ORDER BY created_at DESC LIMIT 1"
+            "SELECT * FROM upgrade_state WHERE phase IN ('awaiting_restart', 'phase2') "
+            "ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
         if row:
             return row_to_dict(row, ['target_modules', 'completed_modules', 'db_overwrite'])
@@ -504,6 +515,40 @@ def get_pending_upgrade() -> Optional[Dict]:
     except Exception as e:
         print(f"[STORAGE] Error getting pending upgrade: {e}", flush=True)
         return None
+
+
+def increment_upgrade_resume_count(run_id: str) -> int:
+    """Atomically bump upgrade_state.resume_count for a boot-time resume
+    attempt; returns the NEW count, or -1 on error."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE upgrade_state SET resume_count = COALESCE(resume_count, 0) + 1 "
+            "WHERE run_id = ?", (run_id,))
+        conn.commit()
+        row = conn.execute(
+            "SELECT resume_count FROM upgrade_state WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return int(row[0]) if row else -1
+    except Exception as e:
+        print(f"[STORAGE] Error incrementing resume_count: {e}", flush=True)
+        return -1
+
+
+def set_upgrade_in_flight(run_id: str, module: Optional[str]) -> bool:
+    """Record (or clear, with None) the module currently being dispatched in
+    Phase 2. On resume, this module bypasses the already-at-version noop
+    shortcut: a crash AFTER its .env pin bump but BEFORE compose-up otherwise
+    makes it LOOK done while containers still run the old image."""
+    conn = get_connection()
+    try:
+        conn.execute("UPDATE upgrade_state SET in_flight = ? WHERE run_id = ?",
+                     (module, run_id))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"[STORAGE] Error setting in_flight: {e}", flush=True)
+        return False
 
 
 def get_active_upgrade_state() -> Optional[Dict]:

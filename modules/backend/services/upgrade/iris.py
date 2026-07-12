@@ -184,37 +184,12 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
 
         # Health check - wait for IRIS to respond
         # Use docker exec since we're inside a container and can't reach localhost:8443
-        log("Waiting for IRIS container to be up...", "info")
-        healthy = False
-        for i in range(30):  # 30 * 5s = 150s max
-            log(f"  Checking IRIS container... ({i*5}s)", "info")
-            # Check IRIS nginx container - it proxies to the app
-            check_result = run_command(
-                "docker exec intact_iris_nginx curl -sk --max-time 5 https://localhost:8443/ -o /dev/null -w '%{http_code}'",
-                logger=None
-            )
-            if check_result['success']:
-                http_code = check_result.get('stdout', '').strip()
-                # Accept 200, redirects, or 401 (auth required = service is up)
-                if http_code in ['200', '301', '302', '303', '307', '308', '401']:
-                    log(f"  Container healthy - HTTP {http_code}", "success")
-                    healthy = True
-                    break
-                else:
-                    log(f"  Container not ready yet (HTTP {http_code})...", "info")
-            else:
-                log(f"  Container not ready yet...", "info")
-            time.sleep(5)
-
-        if healthy:
-            log("IRIS health check: PASSED", "success")
-        else:
-            # Check if containers are crash-looping
-            check_result = run_command("docker ps -a --filter name=intact_iris --format '{{.Status}}'", logger=log)
-            container_status = check_result.get('stdout', '').strip()
-            if 'Restarting' in container_status or 'Exited' in container_status:
-                raise Exception(f"IRIS failed to start - container status: {container_status}")
-            log("IRIS health check: TIMEOUT (containers may still be starting)", "warning")
+        # Honest health gate (G5): same nginx HTTPS probe, but a TIMEOUT is
+        # now a real 'down' verdict (rollback policy) instead of the old
+        # pending-success. Degraded (app up, odd nginx code) never rolls back.
+        log("Waiting for IRIS to become healthy...", "info")
+        from .base import enforce_module_health
+        health = enforce_module_health('iris', timeout=150, logger=log)
 
         # Re-assert the IRIS admin password from config.yaml (config is the
         # source of truth; IRIS itself only applies it at first-init).
@@ -227,7 +202,7 @@ def upgrade_iris(version: str, logger: Callable = None) -> Dict:
         # Safe by design: skipped on no-op upgrade, Docker refuses on
         # in-use, errors swallowed (helper logs at info level).
         remove_old_module_image('iris', current_version, version, logger=log)
-        return {"success": True, "version": version, "health": "green" if healthy else "pending"}
+        return {"success": True, "version": version, "health": health["health"], "health_detail": health["detail"]}
 
     except Exception as e:
         # ROLLBACK: Restore previous version
@@ -315,36 +290,12 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
 
         # Health check - wait for IRIS to respond
         # Use docker exec since we're inside a container and can't reach localhost:8443
-        log("Waiting for IRIS container to be up...", "info")
-        healthy = False
-        for i in range(30):  # 30 * 5s = 150s max
-            log(f"  Checking IRIS container... ({i*5}s)", "info")
-            # Check IRIS nginx container - it proxies to the app
-            check_result = run_command(
-                "docker exec intact_iris_nginx curl -sk --max-time 5 https://localhost:8443/ -o /dev/null -w '%{http_code}'",
-                logger=None
-            )
-            if check_result['success']:
-                http_code = check_result.get('stdout', '').strip()
-                # Accept 200, redirects, or 401 (auth required = service is up)
-                if http_code in ['200', '301', '302', '303', '307', '308', '401']:
-                    log(f"  Container healthy - HTTP {http_code}", "success")
-                    healthy = True
-                    break
-                else:
-                    log(f"  Container not ready yet (HTTP {http_code})...", "info")
-            else:
-                log(f"  Container not ready yet...", "info")
-            time.sleep(5)
-
-        if healthy:
-            log("IRIS health check: PASSED", "success")
-        else:
-            check_result = run_command("docker ps -a --filter name=intact_iris --format '{{.Status}}'", logger=log)
-            container_status = check_result.get('stdout', '').strip()
-            if 'Restarting' in container_status or 'Exited' in container_status:
-                raise Exception(f"IRIS failed to start - container status: {container_status}")
-            log("IRIS health check: TIMEOUT (containers may still be starting)", "warning")
+        # Honest health gate (G5): same nginx HTTPS probe, but a TIMEOUT is
+        # now a real 'down' verdict (rollback policy) instead of the old
+        # pending-success. Degraded (app up, odd nginx code) never rolls back.
+        log("Waiting for IRIS to become healthy...", "info")
+        from .base import enforce_module_health
+        health = enforce_module_health('iris', timeout=150, logger=log)
 
         # Re-assert the IRIS admin password from config.yaml (config is the
         # source of truth; IRIS itself only applies it at first-init).
@@ -354,7 +305,7 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
         cleanup_backup(backup_file, logger=log)
         log(f"IRIS offline upgrade completed: {current_version} -> {version}", "success")
         remove_old_module_image('iris', current_version, version, logger=log)
-        return {"success": True, "version": version, "health": "green" if healthy else "pending"}
+        return {"success": True, "version": version, "health": health["health"], "health_detail": health["detail"]}
 
     except Exception as e:
         # ROLLBACK: Restore previous version

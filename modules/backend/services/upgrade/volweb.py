@@ -519,7 +519,14 @@ def upgrade_volweb(version: str, logger: Callable = None, run_id: str | None = N
 
     log(f"VolWeb upgrade completed: {cur} → {version}", "success")
     remove_old_module_image('volweb', cur, version, logger=log)
-    return {"success": True, "version": version}
+    # Honest health verdict (G5). VolWeb runs 'report' policy (never
+    # auto-rollback on timeout) until its new rollback path is field-proven —
+    # but the verdict is carried in the result so the run summary can flag a
+    # degraded/down stack instead of the old silent success.
+    from .base import enforce_module_health
+    health = enforce_module_health('volweb', timeout=120, logger=log)
+    return {"success": True, "version": version,
+            "health": health["health"], "health_detail": health["detail"]}
 
 
 def upgrade_volweb_offline(
@@ -608,7 +615,14 @@ def upgrade_volweb_offline(
 
     log(f"VolWeb offline upgrade completed: {cur} → {version}", "success")
     remove_old_module_image('volweb', cur, version, logger=log)
-    return {"success": True, "version": version}
+    # Honest health verdict (G5). VolWeb runs 'report' policy (never
+    # auto-rollback on timeout) until its new rollback path is field-proven —
+    # but the verdict is carried in the result so the run summary can flag a
+    # degraded/down stack instead of the old silent success.
+    from .base import enforce_module_health
+    health = enforce_module_health('volweb', timeout=120, logger=log)
+    return {"success": True, "version": version,
+            "health": health["health"], "health_detail": health["detail"]}
 
 
 # ---------------------------------------------------------------------------

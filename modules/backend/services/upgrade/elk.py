@@ -74,34 +74,13 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
         if not result['success']:
             raise Exception(f"Failed to start ELK: {result['error']}")
 
-        # Health check - wait for Elasticsearch to respond
-        # Use docker exec since we're inside a container and can't reach localhost:9200
-        log("Waiting for Elasticsearch container to be up...", "info")
-        healthy = False
-        for i in range(24):  # 24 * 5s = 120s max
-            log(f"  Checking Elasticsearch container... ({i*5}s)", "info")
-            check_result = run_command(
-                "docker exec intact_elasticsearch curl -sf --max-time 5 http://localhost:9200/_cluster/health",
-                logger=None
-            )
-            if check_result['success']:
-                health_info = check_result.get('stdout', '').strip()[:100]
-                log(f"  Container healthy - API responding: {health_info}", "success")
-                healthy = True
-                break
-            else:
-                log(f"  Container not ready yet...", "info")
-            time.sleep(5)
-
-        if healthy:
-            log("Elasticsearch health check: PASSED", "success")
-        else:
-            # Check if containers are crash-looping
-            check_result = run_command("docker ps -a --filter name=intact_elasticsearch --format '{{.Status}}'", logger=log)
-            container_status = check_result.get('stdout', '').strip()
-            if 'Restarting' in container_status or 'Exited' in container_status:
-                raise Exception(f"Elasticsearch failed to start - container status: {container_status}")
-            log("Elasticsearch health check: TIMEOUT (containers may still be starting)", "warning")
+        # Honest health gate (G5): cluster-status-aware probe with rollback on
+        # 'down' — replaces the old any-HTTP-200 loop whose TIMEOUT still
+        # returned success ("pending"), hiding a broken module. ES yellow is
+        # 'degraded' (normal single-node state) and never rolls back.
+        log("Waiting for Elasticsearch to become healthy...", "info")
+        from .base import enforce_module_health
+        health = enforce_module_health('elk', timeout=150, logger=log)
 
         # Re-ensure the Kibana 'artifact_*' data view — it can be lost when
         # Kibana migrates/recreates saved objects across an upgrade. Idempotent;
@@ -117,7 +96,8 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
         cleanup_backup(backup_file, logger=log)
         log(f"ELK upgrade completed: {current_version} -> {version}", "success")
         remove_old_module_image('elk', current_version, version, logger=log)
-        return {"success": True, "version": version, "health": "green" if healthy else "pending"}
+        return {"success": True, "version": version,
+                "health": health["health"], "health_detail": health["detail"]}
 
     except Exception as e:
         # ROLLBACK: Restore previous version
@@ -196,34 +176,13 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None,
         if not result['success']:
             raise Exception(f"Failed to start ELK: {result['error']}")
 
-        # Health check - wait for Elasticsearch to respond
-        # Use docker exec since we're inside a container and can't reach localhost:9200
-        log("Waiting for Elasticsearch container to be up...", "info")
-        healthy = False
-        for i in range(24):  # 24 * 5s = 120s max
-            log(f"  Checking Elasticsearch container... ({i*5}s)", "info")
-            check_result = run_command(
-                "docker exec intact_elasticsearch curl -sf --max-time 5 http://localhost:9200/_cluster/health",
-                logger=None
-            )
-            if check_result['success']:
-                health_info = check_result.get('stdout', '').strip()[:100]
-                log(f"  Container healthy - API responding: {health_info}", "success")
-                healthy = True
-                break
-            else:
-                log(f"  Container not ready yet...", "info")
-            time.sleep(5)
-
-        if healthy:
-            log("Elasticsearch health check: PASSED", "success")
-        else:
-            # Check if containers are crash-looping
-            check_result = run_command("docker ps -a --filter name=intact_elasticsearch --format '{{.Status}}'", logger=log)
-            container_status = check_result.get('stdout', '').strip()
-            if 'Restarting' in container_status or 'Exited' in container_status:
-                raise Exception(f"Elasticsearch failed to start - container status: {container_status}")
-            log("Elasticsearch health check: TIMEOUT (containers may still be starting)", "warning")
+        # Honest health gate (G5): cluster-status-aware probe with rollback on
+        # 'down' — replaces the old any-HTTP-200 loop whose TIMEOUT still
+        # returned success ("pending"), hiding a broken module. ES yellow is
+        # 'degraded' (normal single-node state) and never rolls back.
+        log("Waiting for Elasticsearch to become healthy...", "info")
+        from .base import enforce_module_health
+        health = enforce_module_health('elk', timeout=150, logger=log)
 
         # Re-ensure the Kibana 'artifact_*' data view (see online path).
         log("Re-ensuring Kibana data view (post-upgrade init)...", "info")
@@ -237,7 +196,8 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None,
         cleanup_backup(backup_file, logger=log)
         log(f"ELK offline upgrade completed: {current_version} -> {version}", "success")
         remove_old_module_image('elk', current_version, version, logger=log)
-        return {"success": True, "version": version, "health": "green" if healthy else "pending"}
+        return {"success": True, "version": version,
+                "health": health["health"], "health_detail": health["detail"]}
 
     except Exception as e:
         # ROLLBACK: Restore previous version

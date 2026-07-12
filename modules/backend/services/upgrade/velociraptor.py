@@ -1607,33 +1607,19 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
         _verify_velo_ca_unchanged(_ca_before, logger=log)
 
         # Health check
-        log("Waiting for Velociraptor container to be up...", "info")
-        healthy = False
-        for i in range(30):  # 30 * 2s = 60s max
-            try:
-                from services.workflow_service import is_cancelled
-                if run_id and is_cancelled(run_id):
-                    raise Exception("Cancelled during health check wait")
-            except ImportError:
-                pass
-            log(f"  Checking Velociraptor container... ({i*2}s)", "info")
-            result = run_command(f"docker exec {container_name} pgrep -f velociraptor", logger=None, timeout=10)
-            if result['success']:
-                pids = result.get('stdout', '').strip().replace('\n', ', ')
-                log(f"  Container healthy - velociraptor running (PIDs: {pids})", "success")
-                log("Velociraptor health check: PASSED", "success")
-                healthy = True
-                break
-            else:
-                log("  Container not ready yet...", "info")
-            time.sleep(2)
-
-        if not healthy:
-            check_result = run_command("docker ps -a --filter name=intact_velociraptor --format '{{.Status}}'", logger=None)
-            container_status = check_result.get('stdout', '').strip()
-            if 'Restarting' in container_status or 'Exited' in container_status:
-                raise Exception(f"Velociraptor failed to start - container status: {container_status}")
-            log("Velociraptor health check: TIMEOUT (container may still be starting)", "warning")
+        # Honest health gate (G5): GUI HTTP probe (pgrep demoted to the
+        # 'degraded' tier — a running process with a dead GUI is not healthy),
+        # window widened 60s -> 120s, rollback on 'down' instead of the old
+        # pending-success on timeout.
+        try:
+            from services.workflow_service import is_cancelled
+            if run_id and is_cancelled(run_id):
+                raise Exception("Cancelled during health check wait")
+        except ImportError:
+            pass
+        log("Waiting for Velociraptor to become healthy...", "info")
+        from .base import enforce_module_health
+        health = enforce_module_health('velociraptor', timeout=120, logger=log)
 
         # Success - cleanup backups
         time.sleep(15)  # Wait for full startup
@@ -1668,7 +1654,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
             log(f"Offline-collector downloads refresh raised: {e}", "warning")
 
         remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
-        return {"success": True, "version": actual_version, "health": "green" if healthy else "pending"}
+        return {"success": True, "version": actual_version, "health": health["health"], "health_detail": health["detail"]}
 
     except Exception as e:
         # ROLLBACK: Restore previous version
@@ -1919,33 +1905,19 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         _verify_velo_ca_unchanged(_ca_before, logger=log)
 
         # Health check
-        log("Waiting for Velociraptor container to be up...", "info")
-        healthy = False
-        for i in range(30):  # 30 * 2s = 60s max
-            try:
-                from services.workflow_service import is_cancelled
-                if run_id and is_cancelled(run_id):
-                    raise Exception("Cancelled during health check wait")
-            except ImportError:
-                pass
-            log(f"  Checking Velociraptor container... ({i*2}s)", "info")
-            result = run_command(f"docker exec {container_name} pgrep -f velociraptor", logger=None, timeout=10)
-            if result['success']:
-                pids = result.get('stdout', '').strip().replace('\n', ', ')
-                log(f"  Container healthy - velociraptor running (PIDs: {pids})", "success")
-                log("Velociraptor health check: PASSED", "success")
-                healthy = True
-                break
-            else:
-                log("  Container not ready yet...", "info")
-            time.sleep(2)
-
-        if not healthy:
-            check_result = run_command("docker ps -a --filter name=intact_velociraptor --format '{{.Status}}'", logger=None)
-            container_status = check_result.get('stdout', '').strip()
-            if 'Restarting' in container_status or 'Exited' in container_status:
-                raise Exception(f"Velociraptor failed to start - container status: {container_status}")
-            log("Velociraptor health check: TIMEOUT (container may still be starting)", "warning")
+        # Honest health gate (G5): GUI HTTP probe (pgrep demoted to the
+        # 'degraded' tier — a running process with a dead GUI is not healthy),
+        # window widened 60s -> 120s, rollback on 'down' instead of the old
+        # pending-success on timeout.
+        try:
+            from services.workflow_service import is_cancelled
+            if run_id and is_cancelled(run_id):
+                raise Exception("Cancelled during health check wait")
+        except ImportError:
+            pass
+        log("Waiting for Velociraptor to become healthy...", "info")
+        from .base import enforce_module_health
+        health = enforce_module_health('velociraptor', timeout=120, logger=log)
 
         # Success - cleanup backups
         time.sleep(15)
@@ -2048,7 +2020,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
             log(f"velociraptor tool restore raised: {e}", "warning")
 
         remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
-        return {"success": True, "version": actual_version, "health": "green" if healthy else "pending"}
+        return {"success": True, "version": actual_version, "health": health["health"], "health_detail": health["detail"]}
 
     except Exception as e:
         # ROLLBACK: Restore previous version

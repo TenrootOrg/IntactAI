@@ -239,6 +239,210 @@ def sweep_stale_upgrade_staging(logger: Callable = None, max_age_hours: float = 
     return removed
 
 
+# ---------------------------------------------------------------------------
+# Honest health-gating (G5). Every container module used to declare SUCCESS
+# when its health poll TIMED OUT ("pending success") — a broken module never
+# triggered rollback and analysts discovered it mid-IR. This layer gives each
+# module a real probe and three honest outcomes:
+#   healthy  — the module answers its primary probe
+#   degraded — partially up (e.g. ES yellow, web up on pgrep but HTTP failing)
+#   down     — primary probe dead / container crash-looping
+# Policy per module: 'rollback' (a 'down' verdict raises into the module's
+# existing .env-restore rollback) or 'report' (never auto-rollback; the result
+# carries health for the run summary). ES yellow is DEGRADED on purpose —
+# single-node clusters with replicated indices sit yellow forever; rolling
+# back on yellow would flap every upgrade.
+# ---------------------------------------------------------------------------
+
+HEALTH_POLICY: Dict[str, str] = {
+    'elk': 'rollback',
+    'iris': 'rollback',
+    'timesketch': 'rollback',
+    'velociraptor': 'rollback',   # these four have proven .env-restore rollback
+    'volweb': 'report',           # report-only until its new rollback is field-proven
+}
+
+
+def _http_code(container: str, url: str, insecure: bool = False) -> Optional[int]:
+    """HTTP status via curl inside `container`, or None if unreachable.
+    Only for containers that SHIP curl (iris-nginx, volweb-backend) — the
+    timesketch/velociraptor images don't, which is why their probes use
+    _net_http_code instead."""
+    flag = "-sk" if insecure else "-s"
+    r = run_command(
+        f"docker exec {container} curl {flag} -o /dev/null -w '%{{http_code}}' "
+        f"--max-time 8 {url}", logger=None, timeout=30)
+    try:
+        code = int((r.get('stdout') or '').strip().splitlines()[-1])
+        return code if code > 0 else None
+    except Exception:
+        return None
+
+
+def _net_http_code(url: str) -> Optional[int]:
+    """HTTP status by requesting `url` directly over the docker network from
+    THIS backend process (same compose network — container names resolve).
+    Needed for modules whose images ship no curl (timesketch, velociraptor);
+    self-signed certs accepted (health, not authenticity, is the question)."""
+    import urllib.request, ssl
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        req = urllib.request.Request(url, method='GET')
+        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
+            return resp.status
+    except urllib.error.HTTPError as e:
+        return e.code          # got an HTTP answer — the service is up
+    except Exception:
+        return None
+
+
+def _container_state(name: str) -> str:
+    """'running' | 'restarting' | 'exited' | 'absent' (fast crash-loop signal)."""
+    r = run_command(
+        f"docker ps -a --filter name=^{name}$ --format '{{{{.Status}}}}'",
+        logger=None, timeout=30)
+    s = (r.get('stdout') or '').strip().lower()
+    if not s:
+        return 'absent'
+    if s.startswith('restarting'):
+        return 'restarting'
+    if s.startswith('up'):
+        return 'running'
+    return 'exited'
+
+
+def _probe_elk():
+    r = run_command(
+        "docker exec intact_elasticsearch curl -sf --max-time 8 "
+        "http://localhost:9200/_cluster/health", logger=None, timeout=30)
+    if not r.get('success'):
+        return ('down', 'elasticsearch _cluster/health unreachable')
+    try:
+        status = json.loads((r.get('stdout') or '').strip().splitlines()[-1]).get('status')
+    except Exception:
+        return ('down', 'elasticsearch health response unparseable')
+    if status == 'green':
+        # ES green; kibana lagging is a degraded verdict, not a failure.
+        if _container_state('intact_kibana') != 'running':
+            return ('degraded', 'elasticsearch green but kibana container not running')
+        return ('healthy', 'elasticsearch green')
+    if status == 'yellow':
+        return ('degraded', 'elasticsearch yellow (normal on single-node clusters)')
+    return ('down', f'elasticsearch cluster status {status}')
+
+
+def _probe_timesketch():
+    # Direct to the web container over the docker network — the timesketch
+    # images ship no curl (why the old check was pgrep-only).
+    code = _net_http_code('http://intact_timesketch_web:5000/')
+    if code is not None and code < 500:
+        return ('healthy', f'web answers HTTP {code}')
+    r = run_command("docker exec intact_timesketch_web pgrep -f gunicorn",
+                    logger=None, timeout=30)
+    if r.get('success'):
+        return ('degraded', 'gunicorn running but web HTTP probe failing')
+    return ('down', 'no HTTP response and no gunicorn process')
+
+
+def _probe_iris():
+    code = _http_code('intact_iris_nginx', 'https://localhost:8443/', insecure=True)
+    if code in (200, 301, 302, 303, 307, 308, 401):
+        return ('healthy', f'iris nginx answers HTTP {code}')
+    if _container_state('intact_iris_app') == 'running':
+        return ('degraded', f'iris app running but nginx probe got {code}')
+    return ('down', 'iris app not running / nginx unreachable')
+
+
+def _probe_velociraptor():
+    # Over the docker network — the velociraptor image ships no curl. The GUI
+    # port (8889) is plain HTTP in the in-tree compose; try https as a
+    # fallback in case an operator enabled GUI TLS.
+    code = _net_http_code('http://intact_velociraptor:8889/')
+    if code is None:
+        code = _net_http_code('https://intact_velociraptor:8889/')
+    if code is not None:
+        return ('healthy', f'GUI answers HTTP {code}')
+    r = run_command("docker exec intact_velociraptor pgrep -f velociraptor",
+                    logger=None, timeout=30)
+    if r.get('success'):
+        return ('degraded', 'server process up but GUI HTTP probe failing')
+    return ('down', 'no GUI response and no velociraptor process')
+
+
+def _probe_volweb():
+    code = _http_code('intact_volweb_backend', 'http://localhost:8000/')
+    if code is not None and code < 500:
+        return ('healthy', f'volweb backend answers HTTP {code}')
+    if _container_state('intact_volweb_backend') == 'running':
+        return ('degraded', 'backend container up but HTTP probe failing')
+    return ('down', 'volweb backend not running')
+
+
+_MODULE_HEALTH_PROBES = {
+    'elk': (_probe_elk, 'intact_elasticsearch'),
+    'timesketch': (_probe_timesketch, 'intact_timesketch_web'),
+    'iris': (_probe_iris, 'intact_iris_app'),
+    'velociraptor': (_probe_velociraptor, 'intact_velociraptor'),
+    'volweb': (_probe_volweb, 'intact_volweb_backend'),
+}
+
+
+def wait_module_healthy(module: str, timeout: int = 150, interval: int = 5,
+                         logger: Callable = None) -> Dict:
+    """Poll the module's probe until 'healthy' or `timeout` seconds.
+
+    Fast-fail: a Restarting/Exited primary container returns 'down' without
+    burning the full window. On timeout the BEST status observed is returned
+    ('degraded' if any poll said so, else 'down') — never a silent 'healthy'.
+    Returns {"health": 'healthy'|'degraded'|'down', "detail": str, "waited_s": int}.
+    """
+    log = logger or (lambda m, l="info": None)
+    probe, primary = _MODULE_HEALTH_PROBES.get(module, (None, None))
+    if probe is None:
+        return {"health": "healthy", "detail": "no probe defined", "waited_s": 0}
+    best = 'down'
+    detail = 'never probed'
+    start = time.time()
+    while time.time() - start < timeout:
+        state = _container_state(primary)
+        if state in ('restarting', 'exited'):
+            # Crash loop — no point waiting the full window.
+            return {"health": "down",
+                    "detail": f"{primary} is {state} (crash loop)",
+                    "waited_s": int(time.time() - start)}
+        status, detail = probe()
+        if status == 'healthy':
+            log(f"  {module} health: healthy — {detail} "
+                f"({int(time.time() - start)}s)", "success")
+            return {"health": "healthy", "detail": detail,
+                    "waited_s": int(time.time() - start)}
+        if status == 'degraded':
+            best = 'degraded'
+        time.sleep(interval)
+    log(f"  {module} health after {timeout}s: {best} — {detail}", "warning")
+    return {"health": best, "detail": detail, "waited_s": timeout}
+
+
+def enforce_module_health(module: str, timeout: int = 150,
+                           logger: Callable = None) -> Dict:
+    """wait_module_healthy + HEALTH_POLICY in one call for module upgraders.
+
+    policy 'rollback': a 'down' verdict RAISES so the caller's existing
+    except-rollback restores the previous version — converting the old
+    "TIMEOUT (may still be starting)" pending-success into a real failure.
+    'degraded' NEVER raises in either policy (see ES-yellow note above).
+    Returns the wait_module_healthy dict for embedding in the result.
+    """
+    res = wait_module_healthy(module, timeout=timeout, logger=logger)
+    if res['health'] == 'down' and HEALTH_POLICY.get(module) == 'rollback':
+        raise Exception(
+            f"{module} health check DOWN after {res['waited_s']}s: "
+            f"{res['detail']} — rolling back to the previous version")
+    return res
+
+
 # Per-module image repos used by remove_old_module_image() below.
 # When a module's upgrade succeeds, the helper removes
 # `<repo>:<old_version>` for each repo listed here. Add an entry

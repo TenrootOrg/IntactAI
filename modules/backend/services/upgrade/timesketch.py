@@ -900,7 +900,8 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
 
         log(f"Timesketch upgrade completed: {current_version} -> {version}", "success")
         remove_old_module_image('timesketch', current_version, version, logger=log)
-        result = {"success": True, "version": version, "health": "green" if healthy else "pending"}
+        result = {"success": True, "version": version,
+                  "health": health["health"], "health_detail": health["detail"]}
         if plaso_version:
             result["plaso_version"] = plaso_version
         if db_backup_path:
@@ -1065,35 +1066,10 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
         if not result['success']:
             raise Exception(f"Failed to start Timesketch: {result['error']}")
 
-        # Health check - wait for Timesketch container to be ready
-        # Use pgrep to check if gunicorn is running (like online version)
-        log("Waiting for Timesketch container to be up...", "info")
-        healthy = False
-        for i in range(30):  # 30 * 5s = 150s max
-            log(f"  Checking Timesketch container... ({i*5}s)", "info")
-            # Check if gunicorn process is running in the container
-            check_result = run_command(
-                "docker exec intact_timesketch_web pgrep -f gunicorn",
-                logger=None
-            )
-            if check_result['success']:
-                pids = check_result.get('stdout', '').strip()
-                log(f"  Container healthy - gunicorn running (PIDs: {pids.replace(chr(10), ', ')})", "success")
-                healthy = True
-                break
-            else:
-                log(f"  Container not ready yet...", "info")
-            time.sleep(5)
-
-        if healthy:
-            log("Timesketch health check: PASSED", "success")
-        else:
-            # Check if containers are crash-looping
-            check_result = run_command("docker ps -a --filter name=intact_timesketch --format '{{.Status}}'", logger=log)
-            container_status = check_result.get('stdout', '').strip()
-            if 'Restarting' in container_status or 'Exited' in container_status:
-                raise Exception(f"Timesketch failed to start - container status: {container_status}")
-            log("Timesketch health check: TIMEOUT (containers may still be starting)", "warning")
+        # Honest health gate (G5) — see the online variant for rationale.
+        log("Waiting for Timesketch to become healthy...", "info")
+        from .base import enforce_module_health
+        health = enforce_module_health('timesketch', timeout=150, logger=log)
 
         # Apply alembic schema migration. Offline upgrades use the migrations
         # bundled in the package (no internet) — `offline=True` makes the
@@ -1133,7 +1109,8 @@ def upgrade_timesketch_offline(package_dir: str, version: str, plaso_version: st
 
         log(f"Timesketch offline upgrade completed: {current_version} -> {version}", "success")
         remove_old_module_image('timesketch', current_version, version, logger=log)
-        result = {"success": True, "version": version, "health": "green" if healthy else "pending"}
+        result = {"success": True, "version": version,
+                  "health": health["health"], "health_detail": health["detail"]}
         if plaso_version:
             result["plaso_version"] = plaso_version
         if db_backup_path:

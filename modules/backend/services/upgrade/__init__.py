@@ -503,6 +503,15 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                     completed_modules.append(module_name)
                     log(f"{module_name.upper()} upgrade completed: {current} -> {target_version}", "success")
 
+                    # Surface an honest health verdict (G5): success with a
+                    # degraded/down module is visible, never silent. WARNING
+                    # level on purpose — an error-level line would auto-flip
+                    # the completed run to failed (workflow_service:428).
+                    if result.get('health') in ('degraded', 'down'):
+                        log(f"MODULE_DEGRADED: {module_name.upper()} — "
+                            f"{result.get('health')}: {result.get('health_detail', '')}",
+                            "warning")
+
                     # Recreate Timesketch user after fresh install
                     if module_name == 'timesketch' and db_overwrite.get('timesketch', False):
                         recreate_timesketch_user(logger=log)
@@ -702,8 +711,12 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     if not state:
         return {"success": False, "error": f"No upgrade state found for {run_id}"}
 
-    if state['phase'] != 'awaiting_restart':
-        return {"success": False, "error": f"Upgrade not in awaiting_restart phase: {state['phase']}"}
+    if state['phase'] not in ('awaiting_restart', 'phase2'):
+        # 'phase2' is accepted: it means the previous backend process died
+        # MID-Phase-2 and this boot is re-entering the loop. completed_modules
+        # is re-read from state so finished modules are skipped; the in_flight
+        # module (if any) bypasses its noop shortcut below.
+        return {"success": False, "error": f"Upgrade not resumable from phase: {state['phase']}"}
 
     log("", "info")
     log(f"{'='*50}", "info")
@@ -721,6 +734,10 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     completed_modules = set(state['completed_modules'])
     mode = state.get('mode', 'online')
     db_overwrite = state.get('db_overwrite', {})  # Per-module fresh install flags
+    # Module that was mid-dispatch when the previous process died (crash
+    # between .env pin bump and compose-up makes it LOOK already-upgraded);
+    # it must bypass the noop shortcut and re-run its down->up (idempotent).
+    in_flight_module = state.get('in_flight')
 
     # Parse package paths from state (stored as JSON with extract_dir and package_path)
     package_dir_raw = state.get('package_dir')
@@ -942,12 +959,19 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
 
             # A2: skip a module that needs nothing done — already installed and
             # neither its primary version nor any sidecar pin changed. intact
-            # always refreshes (see _upgrade_noop_module).
-            if _upgrade_noop_module(module_name):
+            # always refreshes (see _upgrade_noop_module). EXCEPTION: the
+            # module that was in_flight when the previous process died must
+            # NOT take this shortcut — a crash after its pin bump makes it
+            # look done while the old containers still run; its down->up is
+            # idempotent, so re-running is always safe.
+            if _upgrade_noop_module(module_name) and module_name != in_flight_module:
                 log(f"  {module_name.upper()}: already at {target_version} — no version/sidecar change, skipping", "info")
                 results[module_name] = {"success": True, "skipped": True,
                                         "reason": "already up to date (no change)"}
                 continue
+            if module_name == in_flight_module:
+                log(f"  {module_name.upper()}: was mid-dispatch when the previous "
+                    f"process died — re-running its upgrade (noop shortcut bypassed)", "warning")
 
             # Install-vs-upgrade dispatch: pick the install function
             # when the module's primary container is absent (fresh-
@@ -1006,6 +1030,14 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                         f"({type(_e).__name__}: {_e}); proceeding with "
                         f"existing .env values", "warning")
 
+            # Mark this module in_flight so a process death mid-dispatch is
+            # detectable on resume (see the noop-shortcut bypass above).
+            try:
+                from services.storage.base import set_upgrade_in_flight
+                set_upgrade_in_flight(run_id, module_name)
+            except Exception:
+                pass
+
             try:
                 if module_name == 'intact':
                     # Pass the target version (kwarg — the offline intact handler
@@ -1021,6 +1053,15 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                 if result.get('success'):
                     completed_modules.add(module_name)
                     log(f"{module_name.upper()} upgrade completed: {current} -> {target_version}", "success")
+
+                    # Surface an honest health verdict (G5): success with a
+                    # degraded/down module is visible, never silent. WARNING
+                    # level on purpose — an error-level line would auto-flip
+                    # the completed run to failed (workflow_service:428).
+                    if result.get('health') in ('degraded', 'down'):
+                        log(f"MODULE_DEGRADED: {module_name.upper()} — "
+                            f"{result.get('health')}: {result.get('health_detail', '')}",
+                            "warning")
 
                     # Write back version + flip enabled flag in config.yaml.
                     # Mirrors run_offline_upgrade_workflow's main loop
@@ -1103,7 +1144,14 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                         f"({type(_re).__name__}: {_re}); pins left as-is",
                         "warning")
 
-            # One module finished (success OR failure) — advance the bar.
+            # One module finished (success OR handled failure) — clear the
+            # in_flight marker (only a real process death leaves it set) and
+            # advance the bar.
+            try:
+                from services.storage.base import set_upgrade_in_flight
+                set_upgrade_in_flight(run_id, None)
+            except Exception:
+                pass
             _p2_done += 1
             _p2_progress()
 
@@ -1560,6 +1608,15 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
 
                 if result.get('success'):
                     log(f"{module_name.upper()} upgrade completed", "success")
+
+                    # Surface an honest health verdict (G5): success with a
+                    # degraded/down module is visible, never silent. WARNING
+                    # level on purpose — an error-level line would auto-flip
+                    # the completed run to failed (workflow_service:428).
+                    if result.get('health') in ('degraded', 'down'):
+                        log(f"MODULE_DEGRADED: {module_name.upper()} — "
+                            f"{result.get('health')}: {result.get('health_detail', '')}",
+                            "warning")
 
                     # Bump versions.<key> in config.yaml so the next
                     # track-based upgrade's diff is correct. Partial

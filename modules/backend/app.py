@@ -133,6 +133,65 @@ def run_startup_initialization():
         from services.workflow_logger import WorkflowLogger
 
         pending = get_pending_upgrade()
+        protected_run_id = pending['run_id'] if pending else None
+
+        # 1) UPGRADE WATCHDOG — runs SYNCHRONOUSLY before the resume spawn so
+        # it can never race a legit resume (the pending run is excluded by
+        # run_id). Reaps:
+        #   - upgrade/online_upgrade/prepare_package runs stuck running/pending
+        #     with no resumable state (crashed Phase-1 thread, dead prepare,
+        #     leaked run) -> failed "orphaned by restart";
+        #   - upgrade_state rows whose run isn't the protected one (duplicate/
+        #     leaked rows — e.g. the phase2 row of a long-cancelled run found
+        #     on this very system).
+        try:
+            from services.storage.base import get_active_upgrade_state, clear_upgrade_state
+            from services.workflow_service import get_all_automation_runs, update_run_status
+            _UPG_TYPES = ("upgrade", "online_upgrade", "prepare_package")
+            for _run in (get_all_automation_runs() or []):
+                if (_run.get('automation_type') in _UPG_TYPES
+                        and _run.get('status') in ('running', 'pending')
+                        and _run.get('run_id') != protected_run_id):
+                    print(f"[STARTUP] Watchdog: reaping orphaned {_run.get('automation_type')} "
+                          f"run {_run.get('run_id')}", flush=True)
+                    update_run_status(_run.get('run_id'), "failed",
+                                      error="Orphaned by a backend restart — no "
+                                            "resumable upgrade state was found.")
+                    clear_upgrade_state(_run.get('run_id'))
+            _leak = get_active_upgrade_state()
+            if _leak and _leak.get('run_id') != protected_run_id:
+                print(f"[STARTUP] Watchdog: clearing leaked upgrade_state row "
+                      f"{_leak.get('run_id')} (phase={_leak.get('phase')})", flush=True)
+                clear_upgrade_state(_leak.get('run_id'))
+        except Exception as _we:
+            print(f"[STARTUP] Upgrade watchdog error: {_we}", flush=True)
+
+        # 2) RESUME GUARD — bounded retries. awaiting_restart boot = attempt 1
+        # (the expected handoff); one unexpected mid-Phase-2 crash = attempt 2;
+        # a second crash = abandoned (run failed with a per-module summary,
+        # state cleared) so a crash-looping upgrade can't restart-storm and
+        # the single-writer lock is freed.
+        MAX_PHASE2_RESUMES = 2
+        if pending:
+            try:
+                from services.storage.base import increment_upgrade_resume_count, clear_upgrade_state
+                from services.workflow_service import update_run_status, add_log_to_run
+                _n = increment_upgrade_resume_count(pending['run_id'])
+                if _n > MAX_PHASE2_RESUMES:
+                    _done = ', '.join(pending.get('completed_modules') or []) or 'none'
+                    print(f"[STARTUP] Resume abandoned for {pending['run_id']} "
+                          f"(attempt {_n} > {MAX_PHASE2_RESUMES})", flush=True)
+                    add_log_to_run(pending['run_id'],
+                                   f"Upgrade resume abandoned after {MAX_PHASE2_RESUMES} attempts — "
+                                   f"the backend restarted repeatedly during Phase 2. "
+                                   f"Completed modules: {_done}. Re-run the upgrade for "
+                                   f"the remaining modules.", "error")
+                    update_run_status(pending['run_id'], "failed",
+                                      error=f"resume abandoned after {MAX_PHASE2_RESUMES} attempts")
+                    clear_upgrade_state(pending['run_id'])
+                    pending = None
+            except Exception as _ge:
+                print(f"[STARTUP] Resume guard error: {_ge}", flush=True)
 
         # Reclaim multi-GB staging orphaned by a crashed/killed upgrade.
         # Previously swept only when a NEW upgrade started — if none was ever
