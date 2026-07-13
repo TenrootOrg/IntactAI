@@ -230,6 +230,7 @@ update_env_files() {
         local cloudtrail_version=$(read_config "['versions']['aws_sigma']")
         local o365rc_version=$(read_config "['versions']['o365rc']")
         local tusd_version=$(read_config "['versions']['backend_tusd']")
+        local backend_version=$(read_config "['versions']['backend']")
 
         update_env_var "$backend_env" "TIMESKETCH_USER" "$ts_user"
         update_env_var "$backend_env" "TIMESKETCH_PASS" "$ts_pass"
@@ -237,6 +238,17 @@ update_env_files() {
         # tusd sidecar pin (versions.backend_tusd) -> TUSD_VERSION in the backend
         # compose. Guarded so an older config without the key keeps the compose default.
         [[ -n "$tusd_version" && "$tusd_version" != "None" ]] && update_env_var "$backend_env" "TUSD_VERSION" "$tusd_version"
+        # Wave F: backend image tag (versions.backend, e.g. a release id or
+        # 'development') -> BACKEND_VERSION, so a fresh install BUILDS and tags
+        # intact-backend:<that value> instead of relying on the compose :-1.0.0
+        # default. Guarded so an old config without the key keeps the default.
+        [[ -n "$backend_version" && "$backend_version" != "None" ]] && update_env_var "$backend_env" "BACKEND_VERSION" "$backend_version"
+        # Wave F trap fix: INTACT_HOST_PATH was historically only a shell env var
+        # exported by install.sh (never in .env) — `docker restart` preserves
+        # mounts so it never mattered, but any container RECREATE resolves the
+        # compose `:-` default, breaking non-default install paths silently.
+        # Stamp it into .env so it survives every recreate, on every surface.
+        update_env_var "$backend_env" "INTACT_HOST_PATH" "$SCRIPT_DIR"
         # AWS (CloudTrail SIGMA rule-pack) + Azure (DFIR-O365RC) versions — consumed
         # by the AWS/Azure detection pipelines + the module upgraders.
         [[ -n "$cloudtrail_version" ]] && update_env_var "$backend_env" "CLOUDTRAIL_VERSION" "$cloudtrail_version"

@@ -6,7 +6,7 @@ import re
 import shutil
 from typing import Dict, Callable, Optional
 
-from .base import WORKDIR, run_command, update_env_file
+from .base import WORKDIR, run_command, update_env_file, load_docker_image
 
 
 def _mirror_tree(src: str, dst: str, protect=(), logger=None) -> Dict:
@@ -175,16 +175,23 @@ def cleanup_rollback_snapshots(logger=None):
             f"finished on the new code)", "info")
 
 
-def verify_backend_compiles(backend_dir, old_requirements=None, logger=None) -> Dict:
+def verify_backend_compiles(backend_dir, old_requirements=None, logger=None,
+                            swap_ready: bool = False) -> Dict:
     """Importability gate for a just-mirrored backend tree, run BEFORE the
     restart so a broken release can never take the platform down.
 
     1. `python3 -m compileall` over every shipped .py — catches the
        SyntaxError/IndentationError class (the container-can-never-boot bug).
+       ALWAYS a hard gate — the image is baked from this same source, so broken
+       source means a broken image too.
     2. requirements diff: a dependency the NEW tree requires that is not
        installed in the CURRENT image would crash at import time despite
        compiling — hard-fail the gate for those too (importing app.py live to
        probe would run Flask/DB side effects, so this diff is the safe proxy).
+       SOFTENED when ``swap_ready`` (Wave F Full-mode): the container is about to
+       be recreated from a NEW image that HAS the deps, so a missing package is
+       expected, not a brick — log it and pass. Legacy restart path (swap_ready
+       False) keeps the hard block: restarting the old image WOULD crash.
 
     Returns {"success": bool, "error": str}.
     """
@@ -225,11 +232,16 @@ def verify_backend_compiles(backend_dir, old_requirements=None, logger=None) -> 
                 except _md.PackageNotFoundError:
                     missing.append(name)
             if missing:
-                return {"success": False,
-                        "error": (f"new backend requires package(s) not installed "
-                                  f"in the current image: {', '.join(missing)} — "
-                                  f"restarting would crash at import. This release "
-                                  f"needs a new backend IMAGE, not just source.")}
+                if swap_ready:
+                    log(f"  New deps {', '.join(missing)} not in the current image "
+                        f"— provided by the incoming backend image (Full-mode swap)",
+                        "info")
+                else:
+                    return {"success": False,
+                            "error": (f"new backend requires package(s) not installed "
+                                      f"in the current image: {', '.join(missing)} — "
+                                      f"restarting would crash at import. This release "
+                                      f"needs a new backend IMAGE, not just source.")}
     except Exception as e:
         log(f"  requirements-diff check skipped ({e})", "warning")
 
@@ -1005,6 +1017,103 @@ def stamp_intact_version(package_dir, version=None, logger=None, run_id=None):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Wave F — Full image-per-release backend (image swap + container recreate)
+# ---------------------------------------------------------------------------
+# The backend historically ran its code from HOST BIND-MOUNTS (./services etc.),
+# so upgrades mirrored source + `docker restart` and never touched the image —
+# which meant a release adding a pip dep was hard-blocked and base/pip CVEs never
+# patched. Wave F makes the image the unit of release: when the target release's
+# compose no longer bind-mounts the code (the "flip" — Full mode), the image
+# carries engine+code and the upgrade SWAPS the image and RECREATES the
+# container. Legacy source-mounted releases keep the byte-identical restart path.
+#
+# MASTER SWITCH: the target release's own backend docker-compose.yaml. If it
+# still bind-mounts `./services:/app/services`, it's a legacy (restart) release;
+# if that mount is gone, it's a Full (recreate) release. Single source of truth,
+# derivable from the compose file alone — no extra config key, no drift.
+
+_BACKEND_CODE_MOUNT_SENTINEL = re.compile(r'\./services:/app/services')
+
+
+def backend_full_mode(compose_path: str) -> bool:
+    """True when the backend compose runs code from the IMAGE (the Full,
+    post-flip model — no ./services code bind-mount). False = legacy
+    source-mounted (restart path). Missing/unreadable file → False (safe:
+    default to the proven restart path)."""
+    try:
+        with open(compose_path) as f:
+            return not _BACKEND_CODE_MOUNT_SENTINEL.search(f.read())
+    except OSError:
+        return False
+
+
+def backend_target_tag() -> str:
+    """Image tag the target release wants = versions.backend (the release id),
+    read from the (post-merge) operator config.yaml. Falls back to '1.0.0' — the
+    compose default and the literal install-day tag — so an absent/garbled key
+    can never point at a bogus image."""
+    try:
+        import yaml
+        with open(os.path.join(WORKDIR, 'config.yaml')) as f:
+            cfg = yaml.safe_load(f) or {}
+        tag = (cfg.get('versions') or {}).get('backend')
+        tag = str(tag).strip() if tag not in (None, '') else ''
+        return tag or '1.0.0'
+    except Exception:
+        return '1.0.0'
+
+
+def running_backend_image() -> Optional[str]:
+    """The image ref the LIVE intact_backend container was created from
+    (ground truth for the old tag / swap detection). None if not resolvable."""
+    r = run_command("docker inspect -f '{{.Config.Image}}' intact_backend",
+                    logger=None, timeout=15)
+    out = (r.get('stdout') or '').strip() if r.get('success') else ''
+    return out or None
+
+
+def ensure_backend_runtime_image(package_dir: str, target_tag: str,
+                                 run_id: Optional[str] = None,
+                                 logger: Callable = None) -> Dict:
+    """Make `intact-backend:<target_tag>` present locally BEFORE any recreate.
+
+    Order (idempotent — safe on crash-resume): already-present → refresh from the
+    bundled tar if one ships (loads a moved dev tag's new bits) → load the bundled
+    tar → FAIL. Runs in Phase 1 before the snapshot/mirror, so a FAIL leaves the
+    platform fully up and untouched.
+
+    Returns {"available": bool, "error": str}.
+    """
+    log = logger or (lambda m, l="info": None)
+    image = f"intact-backend:{target_tag}"
+    tar = (os.path.join(package_dir, 'images', f'intact-backend-{target_tag}.tar')
+           if package_dir else None)
+
+    present = run_command(f"docker image inspect {image}",
+                          logger=None, timeout=30).get('success')
+    if present:
+        # Full mode always ships a freshly-baked image; refresh from the tar so a
+        # moved tag (dev 'development') picks up new bits. Offline already loaded
+        # it via load_all_bundled_images — this is a cheap no-op there.
+        if tar and os.path.isfile(tar):
+            load_docker_image(tar, logger=log, run_id=run_id)
+        return {"available": True, "error": ""}
+
+    if tar and os.path.isfile(tar):
+        log(f"  Loading bundled backend image {os.path.basename(tar)}...", "info")
+        res = load_docker_image(tar, logger=log, run_id=run_id)
+        if res.get('success') and run_command(
+                f"docker image inspect {image}", logger=None, timeout=30).get('success'):
+            return {"available": True, "error": ""}
+
+    return {"available": False,
+            "error": (f"backend runtime image {image} is neither present nor "
+                      f"bundled in the package — this Full-mode release cannot be "
+                      f"applied. Re-prepare the package with a Wave-F-capable "
+                      f"release (the prepare step bakes + bundles the image).")}
+
+
 def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callable = None,
                             run_id: Optional[str] = None) -> Dict:
     """Upgrade Intact.AI Platform from offline package source files.
@@ -1060,6 +1169,28 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
             log(f"  config.yaml merge raised "
                 f"({type(e).__name__}: {e}); proceeding with existing "
                 f"config.yaml — pins may be stale", "warning")
+
+    # ── Wave F: Full-mode image-swap detection (BEFORE snapshot/mirror) ──────
+    # Decide from the TARGET release's own backend compose whether this is a
+    # Full-mode release (image carries the code → swap + recreate) or a legacy
+    # source-mounted release (mirror + restart). Runs before anything is touched
+    # so a missing image FAILS the module with the platform still fully up.
+    needs_swap = False
+    target_tag = backend_target_tag()          # = versions.backend (post-merge)
+    old_image = running_backend_image()
+    if has_backend:
+        target_compose = os.path.join(backend_source, 'docker-compose.yaml')
+        if backend_full_mode(target_compose):
+            needs_swap = True
+            log(f"Full-mode release detected — backend runs from image "
+                f"intact-backend:{target_tag} (swap + recreate)", "info")
+            _ens = ensure_backend_runtime_image(package_dir, target_tag,
+                                                run_id=run_id, logger=log)
+            if not _ens["available"]:
+                log(f"BACKEND RUNTIME IMAGE UNAVAILABLE — aborting the intact "
+                    f"upgrade with the platform untouched. {_ens['error']}", "error")
+                return {"success": False, "rolled_back": False,
+                        "needs_swap": True, "error": _ens["error"]}
 
     # Anti-brick snapshot: capture the CURRENT install before the mirror
     # replaces it in place, so a broken release can be rolled back instead of
@@ -1123,7 +1254,8 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
         log("Verifying the new backend compiles (anti-brick gate)...", "info")
         old_reqs = (os.path.join(snapshot, 'backend', 'requirements.txt')
                     if snapshot else None)
-        gate = verify_backend_compiles(backend_dir, old_requirements=old_reqs, logger=log)
+        gate = verify_backend_compiles(backend_dir, old_requirements=old_reqs,
+                                       logger=log, swap_ready=needs_swap)
         if not gate["success"]:
             log("NEW BACKEND FAILED THE COMPILE GATE — restoring the previous "
                 "install; the backend will NOT restart into broken code.", "error")
@@ -1157,4 +1289,10 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
 
     log("Intact.AI Platform files updated", "success")
 
-    return {"success": True, "message": "Files updated"}
+    # Wave F: hand the swap decision + rollback coordinates to the orchestrator,
+    # which dispatches recreate-vs-restart in the Phase-1 success branch.
+    return {"success": True, "message": "Files updated",
+            "needs_swap": needs_swap,
+            "target_tag": target_tag,
+            "old_image": old_image,
+            "snapshot": snapshot}

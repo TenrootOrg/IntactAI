@@ -571,6 +571,76 @@ def _intact_first(modules: Dict):
     return sorted(modules.items(), key=lambda kv: kv[0] != 'intact')
 
 
+def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dict,
+                            logger: Callable = None, run_id: str = None) -> Dict:
+    """Wave F: bake + bundle the backend runtime image + tusd sidecar.
+
+    Reads the TARGET release tree at ``package_dir/source/intact``. The docker
+    build context is packed CLI-side (verified on the live box), so the
+    container-local package path works — no host-path mapping needed.
+
+    * tusd image: best-effort (closes the Wave B offline gap — a bundled
+      backend_tusd bump then loads without a pull). A miss is a warning, not fatal.
+    * backend image: baked ONLY when the target is Full-mode (its backend compose
+      no longer bind-mounts code). A Full-mode package without its image would
+      brick the apply, so a build/save failure FAILS the whole prepare.
+
+    Returns {"success": bool, ["error"], ["cancelled"]}.
+    """
+    log = logger or (lambda m, l="info": None)
+    src_root = os.path.join(package_dir, 'source', 'intact')
+    if not os.path.isdir(src_root):
+        return {"success": True}                 # narrow-layout / pre-Wave-F package
+    os.makedirs(os.path.join(package_dir, 'images'), exist_ok=True)
+
+    try:
+        import yaml as _yaml
+        with open(os.path.join(src_root, 'config.yaml')) as _cf:
+            _versions = (_yaml.safe_load(_cf) or {}).get('versions') or {}
+    except Exception as _e:
+        log(f"  (backend-image prep: could not read target config.yaml: {_e})", "warning")
+        _versions = {}
+    tusd_tag = _versions.get('backend_tusd')
+    be_tag = _versions.get('backend') or target_version
+
+    # tusd sidecar image — best-effort
+    if tusd_tag:
+        _out = f"{package_dir}/images/tusd-{tusd_tag}.tar"
+        if _pull_and_save_image(f"tusproject/tusd:{tusd_tag}", _out, log, run_id=run_id):
+            manifest["contents"]["images"].append(f"tusd-{tusd_tag}.tar")
+
+    # backend runtime image — Full-mode releases only
+    from .intact import backend_full_mode
+    target_compose = os.path.join(src_root, 'modules', 'backend', 'docker-compose.yaml')
+    if not backend_full_mode(target_compose):
+        log("  Backend is legacy source-mounted mode — no backend image bake "
+            "needed (restart path)", "info")
+        return {"success": True}
+
+    image = f"intact-backend:{be_tag}"
+    log(f"Baking backend runtime image {image} (Full-mode release)...", "info")
+    dockerfile = os.path.join(src_root, 'modules', 'backend', 'Dockerfile')
+    build = run_command(f"docker build -f {dockerfile} -t {image} {src_root}",
+                        timeout=1800, logger=None, run_id=run_id)
+    if build.get("cancelled"):
+        return {"success": False, "cancelled": True, "error": "cancelled"}
+    if not build.get("success"):
+        return {"success": False,
+                "error": (f"backend runtime image build failed — a Full-mode release "
+                          f"CANNOT ship without its image: {build.get('error', '')[:200]}")}
+    _out = f"{package_dir}/images/intact-backend-{be_tag}.tar"
+    save = run_command(f"docker save -o {_out} {image}",
+                       timeout=600, logger=None, run_id=run_id)
+    if save.get("cancelled"):
+        return {"success": False, "cancelled": True, "error": "cancelled"}
+    if not save.get("success"):
+        return {"success": False,
+                "error": f"backend image save failed: {save.get('error', '')[:200]}"}
+    manifest["contents"]["images"].append(f"intact-backend-{be_tag}.tar")
+    log(f"  Backend image exported ({_format_size(os.path.getsize(_out))})", "success")
+    return {"success": True}
+
+
 def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             compress: bool = True,
                             work_dir: Optional[str] = None) -> Dict:
@@ -954,6 +1024,16 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         log(f"  Stamped source/intact/VERSION -> {version}", "info")
                 except Exception as e:
                     log(f"  Could not stamp VERSION file: {e}", "warning")
+
+                # Wave F: bake + bundle the backend runtime image (Full-mode
+                # releases only) + the tusd sidecar image. A Full-mode package
+                # without its image is a brick-kit — a build failure FAILS prepare.
+                _bimg = _prepare_backend_images(package_dir, version, manifest,
+                                                logger=log, run_id=run_id)
+                if not _bimg.get("success"):
+                    if _bimg.get("cancelled"):
+                        return {"success": False, "error": "cancelled", "cancelled": True}
+                    return {"success": False, "error": _bimg["error"]}
 
             elif module == 'velociraptor':
                 # Velociraptor packaging — internet REQUIRED here on the

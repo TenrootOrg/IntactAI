@@ -219,7 +219,14 @@ def sweep_stale_upgrade_staging(logger: Callable = None, max_age_hours: float = 
     sweep_sets = (
         [(p, max_age_hours) for p in _UPGRADE_STAGING_GLOBS]
         + [("/app/data/tmp/intact-rollback-*", 168.0),
-           ("/app/data/tmp/restart-*.log", 168.0)]
+           ("/app/data/tmp/restart-*.log", 168.0),
+           # Wave F recreate-handoff artifacts — same 168h retention as the
+           # restart-*.log precedent (manual recovery may be needed days later).
+           ("/app/data/tmp/recreate-*.log", 168.0),
+           ("/app/data/tmp/recreate-failed-*.json", 168.0),
+           ("/app/data/tmp/recreate-recover-*.sh", 168.0),
+           ("/app/data/tmp/recreate-helper-*.sh", 168.0),
+           ("/app/data/tmp/recreate-spawn-*.log", 168.0)]
     )
     for pattern, age_h in sweep_sets:
         cutoff = time.time() - age_h * 3600

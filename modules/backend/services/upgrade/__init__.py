@@ -367,6 +367,209 @@ def schedule_backend_restart(run_id: str = None, logger: Callable = None) -> boo
     return ok
 
 
+# ── Wave F: recreate handoff (Full-mode image swap) ─────────────────────────
+# The swap counterpart of schedule_backend_restart. `docker restart` cannot apply
+# a new image, and a compose-up issued from inside the backend dies mid-stop with
+# its own container (platform stuck DOWN). So a DETACHED HELPER CONTAINER, run
+# from the OLD image (guaranteed present, ships docker + compose v2), recreates
+# backend+tusd from the new image, health-polls the container's own healthcheck,
+# and on failure rolls the source tree + image back. All resume state is on host
+# binds, so the recreated container's boot resumes Phase 2 exactly like a restart.
+
+# Helper/recover scripts are templated with sentinel tokens (sh uses $ and {}
+# heavily, which would fight f-strings / .format()).
+_RECREATE_HELPER_TEMPLATE = r'''#!/bin/sh
+H="__H__"; BD="$H/modules/backend"; RUN="__RUN__"
+NEW="__NEW__"; OLD="__OLD__"; SNAP="__SNAP__"; PROJ="__PROJ__"
+LOG="$H/data/tmp/recreate-$RUN.log"
+exec >> "$LOG" 2>&1
+echo "== helper start recreate -> intact-backend:$NEW =="
+C() { docker compose -p "$PROJ" -f "$BD/docker-compose.yaml" --project-directory "$BD" "$@"; }
+fail_marker() { printf '{"run_id":"%s","reason":"%s"}' "$RUN" "$1" > "$H/data/tmp/recreate-failed-$RUN.json"; }
+wait_healthy() {
+  i=0
+  while [ $i -lt 60 ]; do
+    s=$(docker inspect -f "{{.State.Health.Status}}" intact_backend 2>/dev/null)
+    [ "$s" = "healthy" ] && return 0
+    i=$((i+1)); sleep 5
+  done
+  return 1
+}
+sleep 3
+if ! docker image inspect "intact-backend:$NEW" >/dev/null 2>&1; then
+  echo "target image intact-backend:$NEW MISSING at recreate"; fail_marker "target image missing at recreate"; exit 1
+fi
+echo "== up -d --no-build --pull never backend tusd =="
+C up -d --no-build --pull never backend tusd
+if wait_healthy; then echo "== healthy on $NEW =="; exit 0; fi
+echo "== UNHEALTHY on $NEW after 300s — rolling back to $OLD =="
+docker logs --tail 120 intact_backend 2>&1 || true
+if [ -n "$SNAP" ] && [ -d "$SNAP/backend" ]; then cp -a "$SNAP/backend/." "$BD/"; echo "restored snapshot tree (old compose+code)"; fi
+if [ -f "$BD/.env.pre-upgrade-backup" ]; then cp "$BD/.env.pre-upgrade-backup" "$BD/.env"; echo "restored .env"; fi
+fail_marker "new image unhealthy after 300s; rolled back to $OLD"
+C up -d --no-build --pull never --force-recreate backend tusd || { docker rm -f intact_backend intact_tusd 2>/dev/null; C up -d --no-build --pull never backend tusd; }
+if wait_healthy; then echo "== rollback healthy on $OLD =="; exit 1; fi
+echo "== ROLLBACK ALSO UNHEALTHY — manual: $H/data/tmp/recreate-recover-$RUN.sh =="
+exit 2
+'''
+
+_RECREATE_RECOVER_TEMPLATE = r'''#!/bin/sh
+# Manual recovery for an interrupted backend recreate (run_id __RUN__).
+# Run this on the HOST. Option A rolls FORWARD (retry the new image);
+# option B rolls BACK to the previous image.
+set -e
+BD="__H__/modules/backend"
+cd "$BD"
+
+# --- A) roll forward to the new image (intact-backend:__NEW__) ---
+BACKEND_VERSION=__NEW__ docker compose -p __PROJ__ -f "$BD/docker-compose.yaml" --project-directory "$BD" up -d --no-build backend tusd
+
+# --- B) roll back to the previous image (__OLD__) — uncomment to use ---
+# [ -f "$BD/.env.pre-upgrade-backup" ] && cp "$BD/.env.pre-upgrade-backup" "$BD/.env"
+# [ -d "__SNAP__/backend" ] && cp -a "__SNAP__/backend/." "$BD/"
+# docker compose -p __PROJ__ -f "$BD/docker-compose.yaml" --project-directory "$BD" up -d --no-build --force-recreate backend tusd
+'''
+
+
+def _render_recreate_script(template: str, subs: Dict) -> str:
+    out = template
+    for k, v in subs.items():
+        out = out.replace(k, str(v))
+    return out
+
+
+def prepare_recreate_handoff(run_id: str, swap_info: Dict, logger: Callable = None) -> bool:
+    """Recreate the backend container from a new image (Full-mode swap).
+
+    Mirrors schedule_backend_restart: stamps .env, writes an operator recovery
+    script + logs it FIRST, spawns the detached helper, and arms a 120s×2
+    still-alive watchdog (fires only if the helper failed to stop us — a
+    successful recreate kills this process, so the timer dies harmlessly).
+    Returns True if the helper was spawned.
+    """
+    import threading as _threading
+    from .base import HOST_PATH, backup_env_file, update_env_file
+    log = logger or (lambda m, l="info": print(f"[{l}] {m}", flush=True))
+
+    H = HOST_PATH
+    backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')   # container-visible
+    backend_dir_host = os.path.join(H, 'modules', 'backend')
+    new_tag = swap_info.get('target_tag') or '1.0.0'
+    old_image = swap_info.get('old_image') or 'intact-backend:1.0.0'
+    snap = swap_info.get('snapshot') or ''
+    snap_host = snap.replace('/app/data', os.path.join(H, 'data')) if snap else ''
+
+    tmp_c = '/app/data/tmp'                        # container view of the data-bind tmp
+    os.makedirs(tmp_c, exist_ok=True)
+    helper_c = os.path.join(tmp_c, f'recreate-helper-{run_id}.sh')
+    recover_c = os.path.join(tmp_c, f'recreate-recover-{run_id}.sh')
+    helper_host = os.path.join(H, 'data', 'tmp', f'recreate-helper-{run_id}.sh')
+    recover_host = os.path.join(H, 'data', 'tmp', f'recreate-recover-{run_id}.sh')
+
+    # 1. backup .env, stamp new tag + the INTACT_HOST_PATH trap fix (missing from
+    #    .env historically — a recreate would otherwise resolve the wrong default).
+    backup_env_file(backend_env, logger=log)
+    update_env_file(backend_env, 'BACKEND_VERSION', new_tag, logger=log)
+    update_env_file(backend_env, 'INTACT_HOST_PATH', H, logger=log)
+
+    # 2. compose project name from the running container's label (fallback 'backend')
+    pr = run_command(
+        "docker inspect -f '{{index .Config.Labels \"com.docker.compose.project\"}}' intact_backend",
+        logger=None, timeout=15)
+    project = (pr.get('stdout') or '').strip() if pr.get('success') else ''
+    project = project or 'backend'
+
+    # Record the outgoing tag (boot-time image-retention prune reads it) + the
+    # compose hash we're about to apply (needs_swap's compose-hash safety term).
+    try:
+        import hashlib as _hl
+        with open('/app/data/backend-image.previous', 'w') as _pf:
+            _pf.write((old_image or '') + '\n')
+        with open(os.path.join(WORKDIR, 'modules', 'backend', 'docker-compose.yaml'), 'rb') as _cf:
+            _hash = _hl.sha256(_cf.read()).hexdigest()
+        with open('/app/data/backend-compose.applied.sha256', 'w') as _hf:
+            _hf.write(_hash + '\n')
+    except Exception as _re:
+        log(f"  (retention/compose-hash record skipped: {_re})", "warning")
+
+    subs = {'__H__': H, '__RUN__': run_id, '__NEW__': new_tag, '__OLD__': old_image,
+            '__SNAP__': snap_host, '__PROJ__': project}
+
+    # 3. write recover script + log its path BEFORE the handoff (rows 7/8 recovery)
+    try:
+        with open(recover_c, 'w') as f:
+            f.write(_render_recreate_script(_RECREATE_RECOVER_TEMPLATE, subs))
+        os.chmod(recover_c, 0o755)
+    except Exception as e:
+        log(f"  Could not write recovery script ({e})", "warning")
+    log(f"Recreating backend -> intact-backend:{new_tag}. If the box is left "
+        f"down, recover with: {recover_host}", "info")
+
+    # 4. write the helper script to the shared data bind, then spawn the helper
+    #    container FROM THE OLD IMAGE (has docker + compose; survives our death).
+    try:
+        with open(helper_c, 'w') as f:
+            f.write(_render_recreate_script(_RECREATE_HELPER_TEMPLATE, subs))
+        os.chmod(helper_c, 0o755)
+    except Exception as e:
+        log(f"Could not write recreate helper script ({e}) — ABORTING handoff, "
+            f"platform untouched", "error")
+        return False
+
+    helper_name = f"intact-upgrade-helper-{run_id}"
+    spawn = (f"docker rm -f {helper_name} >/dev/null 2>&1; "
+             f"docker run -d --rm --name {helper_name} "
+             f"-v /var/run/docker.sock:/var/run/docker.sock -v {H}:{H} "
+             f"-e INTACT_HOST_PATH={H} --entrypoint sh {old_image} {helper_host}")
+    try:
+        log_path = f"/app/data/tmp/recreate-spawn-{run_id}.log"
+        with open(log_path, 'a') as lf:
+            subprocess.Popen(['sh', '-c', spawn], stdout=lf, stderr=lf,
+                             start_new_session=True)
+    except Exception as e:
+        log(f"Could not spawn recreate helper ({type(e).__name__}: {e})", "error")
+        return False
+
+    # 5. still-alive watchdog — fires ONLY if the helper never stopped us.
+    def _recreate_watchdog(attempt: int):
+        try:
+            from services.workflow_service import add_log_to_run, update_run_status
+            tail = ''
+            try:
+                with open(f"/app/data/tmp/recreate-{run_id}.log") as lf:
+                    tail = ''.join(lf.readlines()[-15:])
+            except Exception:
+                pass
+            if attempt == 1:
+                add_log_to_run(run_id, "Backend recreate did not occur within 120s — "
+                                       f"respawning helper once. Recent helper log:\n{tail}", "error")
+                run_command(f"sh -c {shlex_quote(spawn)}", logger=None, timeout=60)
+                t = _threading.Timer(120, _recreate_watchdog, args=(2,))
+                t.daemon = True
+                t.start()
+            else:
+                from .base import restore_env_file
+                restore_env_file(backend_env, backend_env + '.pre-upgrade-backup', logger=None)
+                update_run_status(
+                    run_id, "failed",
+                    error=("Backend recreate could not be performed — the platform is "
+                           "still on the OLD image, .env restored. Upgrade state is "
+                           f"preserved: run {recover_host} to retry, then Phase 2 "
+                           f"resumes. Helper log tail:\n{tail}"))
+        except Exception as e:
+            print(f"[UPGRADE] recreate watchdog error: {e}", flush=True)
+
+    t = _threading.Timer(120, _recreate_watchdog, args=(1,))
+    t.daemon = True
+    t.start()
+    return True
+
+
+def shlex_quote(s: str) -> str:
+    import shlex as _shlex
+    return _shlex.quote(s)
+
+
 def datetime_now_tag() -> str:
     from datetime import datetime as _dt
     return _dt.now().strftime('%Y%m%d_%H%M%S')
@@ -1224,6 +1427,35 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
         except Exception as _rs:
             log(f"  rollback-snapshot cleanup skipped ({_rs})", "warning")
 
+        # Wave F: reaching this finalizer on a swap run proves the new image boots.
+        # Drop the .env pre-upgrade backup (success), and CONVERGENCE SAFETY-NET —
+        # if an OLD Phase 1 applied a Full-mode release (mirror+restart, no swap),
+        # the box is on the old image with the new full-mode compose on disk and
+        # code running from the (now-removed-in-compose) mounts. That's functional
+        # but not converged; guide the operator to re-run (the machinery is now in
+        # place, so the re-run takes the swap path). We do NOT auto-recreate here to
+        # avoid a finalizer→recreate→finalizer cycle.
+        try:
+            from .base import cleanup_backup
+            _be_bak = os.path.join(WORKDIR, 'modules', 'backend', '.env.pre-upgrade-backup')
+            if os.path.exists(_be_bak):
+                cleanup_backup(_be_bak, logger=log)
+        except Exception as _cb:
+            log(f"  .env backup cleanup skipped ({_cb})", "warning")
+        try:
+            from .intact import backend_full_mode, backend_target_tag, running_backend_image
+            _cp = os.path.join(WORKDIR, 'modules', 'backend', 'docker-compose.yaml')
+            if backend_full_mode(_cp):
+                _tt = backend_target_tag()
+                _run_img = running_backend_image() or ''
+                if _run_img != f"intact-backend:{_tt}":
+                    log("Full-mode release applied by an older upgrader — backend is "
+                        "running the previous image via code mounts. Re-run this "
+                        "upgrade to converge onto intact-backend:" + _tt +
+                        " (the image swap now runs automatically).", "warning")
+        except Exception as _cv:
+            log(f"  Full-mode convergence check skipped ({_cv})", "warning")
+
         # Mark complete and clear state
         update_upgrade_phase(run_id, 'completed')
         clear_upgrade_state(run_id)
@@ -1691,6 +1923,42 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                     # in-memory TRANSITIVE_DEFAULTS.
                     if module_name == 'intact' and run_id and not result.get('skipped'):
                         remaining = [m for m in upgrade_order if m in modules_dict and m not in completed_modules]
+                        if result.get('needs_swap'):
+                            # ── Wave F: Full-mode image swap → RECREATE (not restart).
+                            # Persist resume state even with NO remaining modules, so
+                            # the recreated container's boot runs the Phase-2 finalizer
+                            # (records the swap, marks the run complete/failed via the
+                            # helper's health marker) rather than leaving it "running".
+                            log("", "info"); log(f"{'='*50}", "info")
+                            log("PHASE 1 COMPLETE - Intact.AI upgraded (Full-mode image swap)", "info")
+                            if remaining:
+                                log(f"Remaining modules for Phase 2: {', '.join(remaining)}", "info")
+                            log(f"{'='*50}", "info")
+                            _saved = save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline',
+                                                        extract_dir, package_path, db_overwrite=db_overwrite)
+                            if not _saved:
+                                _saved = save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline',
+                                                            extract_dir, package_path, db_overwrite=db_overwrite)
+                            if not _saved:
+                                return {"success": False,
+                                        "error": "failed to persist Phase-2 resume state; recreate aborted"}
+                            log(f"Backend will RECREATE from intact-backend:{result.get('target_tag')}. "
+                                f"Upgrade will resume automatically after the new image boots.", "info")
+                            if not prepare_recreate_handoff(run_id, result, logger=log):
+                                # Spawn failed — undo the .env stamp + resume state; the
+                                # OLD container is still running untouched.
+                                from .base import restore_env_file
+                                _be = os.path.join(WORKDIR, 'modules', 'backend', '.env')
+                                restore_env_file(_be, _be + '.pre-upgrade-backup', logger=log)
+                                clear_upgrade_state(run_id)
+                                return {"success": False,
+                                        "error": "recreate handoff could not be spawned; platform untouched — retry the upgrade"}
+                            awaiting_restart = True
+                            return {
+                                "success": True, "phase": "awaiting_restart", "status": "awaiting_restart",
+                                "message": "Phase 1 complete. Backend recreating from new image. Phase 2 will resume automatically.",
+                                "results": results, "completed": completed, "total": total, "versions": versions,
+                            }
                         if remaining:
                             # In-run Phase 2: save state, restart, resume after boot.
                             log("", "info")
