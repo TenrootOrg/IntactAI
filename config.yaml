@@ -139,6 +139,12 @@ versions:
   # No container image; this pins the rule-pack version that install / upgrade /
   # prepare-package bundle + update. Bump to refresh the AWS detection rules.
   aws_sigma: '2026.04'
+  # Git ref for the FULL SigmaHQ clone at /opt/sigma-rules (powers BOTH AWS and
+  # Azure detection). Previously install cloned HEAD (unreproducible — two
+  # installs got different rules). SigmaHQ publishes monthly release tags
+  # (rYYYY-MM-01); pin to one so detection content is reproducible + updatable.
+  # Bump this to refresh the rules (aws_sigma above is the AWS-pack bundle label).
+  sigma_rules: 'r2026-07-01'
   # Azure Unified Audit Log collection runs the DFIR-O365RC image
   # (anssi/dfir-o365rc). Upstream only publishes ':latest' (no version tags),
   # so we track latest — "upgrade" re-pulls the newest latest.

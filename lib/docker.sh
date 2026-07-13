@@ -978,7 +978,15 @@ download_sigma_rules() {
 
     local sigma_dir="/opt/sigma-rules"
 
+    # Pin the SIGMA clone to a specific SigmaHQ RELEASE TAG (versions.sigma_rules)
+    # so AWS/Azure detection is reproducible — previously this cloned HEAD, so two
+    # installs got different rules and the aws_sigma pin was cosmetic. SigmaHQ
+    # publishes monthly tags (rYYYY-MM-01). Empty/missing pin -> default branch.
+    local sigma_ref=$(read_config "['versions']['sigma_rules']")
+    [[ "$sigma_ref" == "None" ]] && sigma_ref=""
+
     log_info "Setting up SIGMA detection rules for Azure automation..."
+    [[ -n "$sigma_ref" ]] && log_info "  Pinned SIGMA release: $sigma_ref"
 
     # Check if already exists and is valid
     if [[ -d "$sigma_dir/rules/cloud/azure" ]]; then
@@ -993,12 +1001,25 @@ download_sigma_rules() {
     if [[ -d "$sigma_dir/.git" ]]; then
         log_info "Updating existing SIGMA rules..."
         cd "$sigma_dir"
-        git pull --depth 1 2>> "$LOG_FILE" || true
+        if [[ -n "$sigma_ref" ]]; then
+            # Fetch + checkout the pinned tag (shallow). Falls through to the
+            # existing tree on failure so a bad pin never wipes working rules.
+            git fetch --depth 1 origin "refs/tags/${sigma_ref}:refs/tags/${sigma_ref}" 2>> "$LOG_FILE" \
+                && git checkout -f "$sigma_ref" 2>> "$LOG_FILE" || true
+        else
+            git pull --depth 1 2>> "$LOG_FILE" || true
+        fi
         cd - > /dev/null
     else
         log_info "Cloning SIGMA rules repository..."
         rm -rf "$sigma_dir" 2>/dev/null || true
-        if git clone --depth 1 https://github.com/SigmaHQ/sigma.git "$sigma_dir" 2>> "$LOG_FILE"; then
+        # --branch accepts a tag; pinned clone is shallow to that release. Fall
+        # back to a default-branch clone if the pinned tag can't be fetched.
+        if [[ -n "$sigma_ref" ]] && git clone --depth 1 --branch "$sigma_ref" \
+                https://github.com/SigmaHQ/sigma.git "$sigma_dir" 2>> "$LOG_FILE"; then
+            log_success "SIGMA rules cloned at pinned release $sigma_ref"
+        elif git clone --depth 1 https://github.com/SigmaHQ/sigma.git "$sigma_dir" 2>> "$LOG_FILE"; then
+            [[ -n "$sigma_ref" ]] && log_warn "  Pinned tag $sigma_ref unavailable — cloned default branch instead"
             log_success "SIGMA rules cloned successfully"
         else
             log_warn "Failed to clone SIGMA rules - Azure/AWS detection will have limited rules"
