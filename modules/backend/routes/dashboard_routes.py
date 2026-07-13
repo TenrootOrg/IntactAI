@@ -57,6 +57,8 @@ def get_all_automations():
     case_id = getattr(g, "case_id", None)
     if case_id:
         automation_runs = [r for r in automation_runs if r.get("case_id") == case_id]
+    for run in automation_runs:
+        _reconcile_velociraptor_hunt(run)
     transformed = [_transform_run(run) for run in automation_runs]
     return jsonify({
         "runs": transformed,
@@ -68,9 +70,30 @@ def get_automation_details(run_id):
     """Get detailed information about a specific automation run"""
     run = get_automation_run(run_id)
     if run:
+        _reconcile_velociraptor_hunt(run)
         return jsonify(_transform_run(run))
 
     return jsonify({"error": f"Automation run {run_id} not found"}), 404
+
+
+def _reconcile_velociraptor_hunt(run):
+    """A velociraptor_hunt run is marked 'running' at dispatch time (the hunt
+    object itself stays RUNNING for its whole expire window, so Velociraptor
+    never tells us "done" the way a single flow does). On each poll of this
+    endpoint, check whether every scheduled client has actually finished and
+    flip the run to 'completed' — this is what makes the dashboard converge
+    to an accurate status without a background poller."""
+    if run.get("status") != "running" or run.get("automation_type") != "velociraptor_hunt":
+        return
+    hunt_id = (run.get("details") or {}).get("hunt_id")
+    if not hunt_id:
+        return
+    from services.velociraptor_service import is_hunt_collection_complete
+    from services.workflow_service import update_run_status
+    if is_hunt_collection_complete(hunt_id):
+        update_run_status(run.get("run_id", run.get("id")), "completed", progress=100)
+        run["status"] = "completed"
+        run["progress"] = 100
 
 @dashboard_bp.route('/api/dashboard/automation/<run_id>/stop', methods=['POST'])
 def stop_automation(run_id):

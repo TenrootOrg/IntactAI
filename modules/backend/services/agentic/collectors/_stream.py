@@ -16,18 +16,13 @@ from services.velociraptor_service import setup_velociraptor_connection
 from services.workflow_service import add_log_to_run
 from services.agentic.collectors._base import *  # noqa: F401,F403
 
-def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes, llm_config, anonymizer=None, update_phase_func=None, min_severity='informational', time_filter=None, cancel_event=None, master_prompt=None):
-    """Monitor a collection: poll artifact sources, retrieve/merge/filter rows as
-    flows complete. Returns (all_results, summaries, timed_out, total_rows_before_filter).
+def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes, update_phase_func=None, cancel_event=None):
+    """Monitor a collection: poll artifact sources, retrieve/merge rows as flows
+    complete. Returns (all_results, timed_out).
 
-    Collection-only — rows are persisted for Case-level fusion; no analysis runs
-    here. `summaries` is always an empty dict (kept for the return-tuple contract).
-    If `anonymizer` is provided data is masked; `min_severity` filters rows by
-    severity (informational..critical); `time_filter` filters by timestamp fields
-    (StartTime, EventTime, …) post-collection; `timed_out` is True if collection
-    ended due to timeout, False if all flows completed naturally."""
-    from services.agentic.utils import filter_row_by_time
-
+    Pure collection — rows are persisted as-is for Case-level fusion, which owns
+    all filtering (time window, severity) and analysis. `timed_out` is True if
+    collection ended due to timeout, False if all flows completed naturally."""
     total_seconds = collection_minutes * 60
     elapsed = 0
     interval = 30  # Check every 30 seconds
@@ -37,21 +32,13 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
     retrieved_artifacts = {}  # (client_id, artifact) -> row_count (to detect new data)
     stable_artifacts = {}  # artifact -> polls_stable (how many polls with no change)
     all_results = {}  # artifact -> [rows] (combined from all clients)
-    summaries = {}  # always empty in collection-only; kept for the return contract
     analyzed_artifacts = set()  # source names already retrieved + marked stable
-    total_rows_before_filter = 0  # Track raw row count before any filtering
-
-    # Create time filter function (if enabled)
-    time_filter_func = None
-    if time_filter and time_filter.get('enabled'):
-        from services.agentic.utils import create_time_filter_func
-        time_filter_func = create_time_filter_func(time_filter)
 
     # Get active flows
     active_flows = [c for c in collection_results if c.get('flow_id')]
     if not active_flows:
         add_log_to_run(run_id, "[Velociraptor] No active flows to monitor", "warning")
-        return all_results, summaries, False, 0
+        return all_results, False
 
     # Per-flow hostname lookup so the per-client log lines below can show
     # readable names instead of opaque client_ids. Each collection_results
@@ -70,7 +57,7 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
 
     if not stub:
         add_log_to_run(run_id, "[Velociraptor] Could not establish connection", "warning")
-        return all_results, summaries, False, 0
+        return all_results, False
 
     add_log_to_run(run_id, f"[Velociraptor] Streaming mode: polling {len(artifacts)} artifacts across {len(active_flows)} clients", "info")
     add_log_to_run(run_id, f"[Velociraptor] Streaming collection — results retrieved as artifacts complete", "info")
@@ -78,13 +65,6 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
     # Register cleanup callbacks for stop support
     from services.workflow_service import register_cleanup
     register_cleanup(run_id, lambda: cancel_collections(run_id, active_flows))
-
-    def _wf_log(msg, level="info"):
-        """Workflow-log callback passed into the per-artifact analyzer so the
-        atomic [Skill] / "no match" line shows up in this run's log too —
-        the existing-flow path already does this; the streaming path was
-        missing it."""
-        add_log_to_run(run_id, msg, level)
 
     def mark_collected(source_name):
         """Mark a source as retrieved + stable — its rows already live in
@@ -127,9 +107,6 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                     discovered_sources[flow_id].update(new_sources)
 
                 # Query all discovered sources for this flow
-                # client_hostname is used to tag rows (see below) so the
-                # per-client filter in reports.py can attribute each row
-                # back to its source host.
                 client_hostname = _name(client_id)
                 for source_name in discovered_sources[flow_id]:
                     artifact_key = (client_id, source_name)
@@ -142,67 +119,34 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                         if len(rows) > prev_count:
                             # New data available!
                             retrieved_artifacts[artifact_key] = len(rows)
-                            total_rows_before_filter += len(rows) - prev_count  # Track raw rows
                             stable_artifacts[source_name] = 0  # Reset stability counter
 
-                            # Tag every row with _client_id + _hostname so
-                            # the per-client report filter
-                            # (reports.py:filter_results_by_client) can
-                            # attribute rows back to their source host.
-                            # WITHOUT this tagging, multi-client runs lose
-                            # all per-client structure and the per-host
-                            # reports come out empty even when 100s of rows
-                            # are collected.
+                            # Tag every row with _client_id + _hostname —
+                            # the multi-client merge below (existing_other_clients)
+                            # relies on this to keep each client's rows distinct.
+                            # WITHOUT this tagging, one client's poll would wipe
+                            # out another client's rows for the same artifact.
                             for r in rows:
                                 if isinstance(r, dict):
                                     r.setdefault('_client_id', client_id)
                                     r.setdefault('_hostname', client_hostname)
 
-                            # Apply time filter first (if enabled)
-                            filtered_rows = rows
-                            rows_after_time = len(rows)
-                            if time_filter_func:
-                                filtered_rows = [r for r in filtered_rows if filter_row_by_time(r, time_filter_func)]
-                                rows_after_time = len(filtered_rows)
-
-                            # Then apply severity filter
-                            rows_after_severity = rows_after_time
-                            if min_severity != 'informational':
-                                filtered_rows = filter_by_severity(filtered_rows, min_severity)
-                                rows_after_severity = len(filtered_rows)
-
-                            # Update all_results with filtered data
+                            # Update all_results with the new rows
                             if source_name not in all_results:
                                 all_results[source_name] = []
-                            # Build informative log message — always include
-                            # the hostname tag so multi-client runs are
-                            # readable. The "first time this source is seen"
-                            # branch used to be the only one that logged;
-                            # now we log for every per-client increment so
-                            # an operator can see e.g. NofLaptop adding 50
-                            # new MFT rows after DESKTOP-566AT85 already
-                            # delivered its 100.
-                            if rows_after_time < len(rows) or rows_after_severity < rows_after_time:
-                                filter_parts = []
-                                if rows_after_time < len(rows):
-                                    filter_parts.append(f"{rows_after_time} after time filter")
-                                if rows_after_severity < rows_after_time:
-                                    filter_parts.append(f"{rows_after_severity} after {min_severity}+ filter")
-                                add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Found: {source_name} ({len(rows)} rows, {', '.join(filter_parts)})", "info")
-                            else:
-                                add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Found: {source_name} ({len(rows)} rows)", "info")
+                            add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Found: {source_name} ({len(rows)} rows)", "info")
 
                             # Multi-client merge: keep rows from OTHER
                             # clients, replace this client's rows with the
-                            # latest filtered set. Without this, a poll on
-                            # client B would wipe out client A's rows for
-                            # the same source, leaving all_results with only
-                            # one client's data per artifact.
+                            # latest set. Without this, a poll on client B
+                            # would wipe out client A's rows for the same
+                            # source, leaving all_results with only one
+                            # client's data per artifact.
                             existing_other_clients = [
                                 r for r in all_results[source_name]
                                 if isinstance(r, dict) and r.get('_client_id') != client_id
                             ]
-                            all_results[source_name] = existing_other_clients + filtered_rows
+                            all_results[source_name] = existing_other_clients + rows
                         else:
                             # Data unchanged - increment stability counter
                             if source_name in all_results and source_name not in analyzed_artifacts:
@@ -232,7 +176,6 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                         completed = error_info['artifacts_completed']
                         requested = error_info.get('artifacts_requested', 0)
                         failed = error_info.get('failed_artifacts', [])
-                        reason = error_info.get('error_reason', 'unknown reason')
 
                         # Build informative message - make clear it's warning, not error
                         if failed:
@@ -337,30 +280,18 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                             r.setdefault('_client_id', client_id)
                             r.setdefault('_hostname', client_hostname)
 
-                    # Apply time filter first (same as polling loop)
-                    filtered_rows = rows
-                    if time_filter_func:
-                        filtered_rows = [r for r in filtered_rows if filter_row_by_time(r, time_filter_func)]
-
-                    # Then apply severity filter
-                    if min_severity != 'informational':
-                        filtered_rows = filter_by_severity(filtered_rows, min_severity)
-
                     if source_name not in all_results:
-                        all_results[source_name] = filtered_rows
-                        if min_severity != 'informational' and len(filtered_rows) < len(rows):
-                            add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Final: {source_name} ({len(rows)} rows, {len(filtered_rows)} after {min_severity}+ filter)", "info")
-                        else:
-                            add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Final: {source_name} ({len(rows)} rows)", "info")
+                        all_results[source_name] = rows
+                        add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Final: {source_name} ({len(rows)} rows)", "info")
                     else:
                         # Multi-client merge: keep other clients' rows,
-                        # replace this client's with the latest filtered set.
+                        # replace this client's with the latest set.
                         existing_other_clients = [
                             r for r in all_results[source_name]
                             if isinstance(r, dict) and r.get('_client_id') != client_id
                         ]
-                        all_results[source_name] = existing_other_clients + filtered_rows
-                        add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Final: {source_name} ({len(filtered_rows)} rows added — total now {len(all_results[source_name])})", "info")
+                        all_results[source_name] = existing_other_clients + rows
+                        add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Final: {source_name} ({len(rows)} rows added — total now {len(all_results[source_name])})", "info")
 
         # Mark any remaining collected sources
         for source_name in all_results.keys():
@@ -377,6 +308,4 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
 
     # Return whether we timed out (vs completed naturally)
     timed_out = elapsed >= total_seconds
-    return all_results, summaries, timed_out, total_rows_before_filter
-
-
+    return all_results, timed_out

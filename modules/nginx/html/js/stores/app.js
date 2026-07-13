@@ -61,7 +61,6 @@ document.addEventListener('alpine:init', () => {
             }
             // Module-specific initializations
             if (tab === 'modules-timesketch') { populateTimeSketchClients(); loadTimesketchBlueprintsDropdown(); }
-            if (tab === 'modules-agentic') initAgentic();
             if (tab === 'blueprints') initBlueprints();
             if (tab === 'workflows') Alpine.store('workflows').load();
             if (tab === 'settings') Alpine.store('settings').load();

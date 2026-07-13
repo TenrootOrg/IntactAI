@@ -139,9 +139,7 @@ def start_scan():
     Request body:
     {
         "blueprint": "azure_quick_scan" | "azure_full_investigation" | {...custom...},
-        "time_filter": {"type": "relative", "value": "7d"} | {"type": "between", "start": "...", "end": "..."},
-        "enable_llm": true/false,
-        "iris_config": {...}
+        "time_filter": {"type": "relative", "value": "7d"} | {"type": "between", "start": "...", "end": "..."}
     }
     """
     # Always create workflow first so everything is visible in logs
@@ -240,22 +238,15 @@ def start_scan():
             # Update workflow name with resolved blueprint
             add_log_to_run(run_id, f"[AZURE] Starting scan with blueprint: {blueprint.get('name', 'Custom')}", "info")
 
-            # Load LLM config
-            from services.file_storage_service import load_frontend_config
-            llm_config = load_frontend_config() or {}
-
             # Build options with identity filters
             options = {
-                'llm_config': llm_config,
                 'time_filter': data.get('time_filter'),
                 'min_severity': data.get('min_severity', 'medium'),
-                'iris_config': data.get('iris_config'),
                 'scope_mode': scope_mode,
                 'target_users': target_users,
                 'target_ips': target_ips,
                 'pivot_mode': data.get('pivot_mode', False),
                 'ual_mode': ual_mode,
-                'anonymizer': None
             }
             add_log_to_run(
                 run_id,
@@ -496,13 +487,12 @@ def upload_logs():
 @azure_bp.route('/api/azure/analyze-offline', methods=['POST'])
 def analyze_offline():
     """
-    Run SIGMA detection and LLM analysis on uploaded logs.
+    Run SIGMA detection on uploaded logs.
 
     Request body:
     {
         "run_id": "azure_offline_xxx",
         "time_filter": {...},
-        "enable_llm": true/false,
         "min_severity": "low"
     }
     """
@@ -521,28 +511,9 @@ def analyze_offline():
         if not uploaded_data:
             return jsonify({'error': 'No data found for this run_id'}), 400
 
-        # LLM config: prefer the body, fall back to the saved frontend
-        # config — same source the online scan uses, so the analyst
-        # doesn't need to repeat it on every request.
-        llm_config = data.get('llm_config') or {}
-        if not llm_config:
-            try:
-                from services.file_storage_service import load_frontend_config
-                llm_config = load_frontend_config() or {}
-            except Exception:
-                llm_config = {}
-
-        # LLM is always on for offline analysis: the whole point of
-        # uploading collected data into this endpoint is to get the
-        # forensic narrative — without LLM the user already has
-        # everything they uploaded. We hard-pin enable_llm here so a
-        # stray `false` from the client doesn't produce a useless run.
         options = {
-            'llm_config': llm_config,
             'time_filter': data.get('time_filter'),
             'min_severity': data.get('min_severity', 'low'),
-            'iris_config': data.get('iris_config'),
-            'anonymizer': None,
         }
 
         add_log_to_run(run_id, "[AZURE] Starting offline analysis", "info")

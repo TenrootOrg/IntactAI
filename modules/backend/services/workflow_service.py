@@ -158,7 +158,7 @@ try:
     from services.elasticsearch_service import (
         get_all_workflow_runs as es_get_all_workflows,
         get_workflow_run as es_get_workflow,
-        es_update_workflow_status
+        update_workflow_status as es_update_workflow_status
     )
     ES_AVAILABLE = True
 except ImportError:

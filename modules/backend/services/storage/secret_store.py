@@ -6,9 +6,10 @@ backup files. This one is deliberately separate so secrets never leak
 into a backup or the import/export round-trip.
 
 Used by:
-- config.py:_load_iris_api_key() at backend startup
-- install.sh:bootstrap_iris_api_key (writes via `docker exec backend
-  python3 -c "from services.storage.secret_store import set_secret; ..."`)
+- services/upgrade/iris.py at IRIS module install/upgrade — bootstraps and
+  verifies the IRIS administrator's api_key so it's available for direct/
+  manual use later (IRIS has no other module wired to it; it's an
+  install-and-upgrade-only stack — see services/upgrade/iris.py).
 """
 
 from datetime import datetime

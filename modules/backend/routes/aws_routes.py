@@ -141,9 +141,7 @@ def start_scan():
             "scope_mode": "targeted" | "account_wide",
             "target_principals": ["arn:aws:iam::...:user/X"],
             "cloudtrail_mode": "light" | "full",
-            "enable_llm": true,
-            "min_severity": "medium",
-            "iris_config": {...}
+            "min_severity": "medium"
         }
     """
     from services.workflow_service import (
@@ -226,9 +224,6 @@ def start_scan():
 
             add_log_to_run(run_id, f"[AWS] Starting scan with blueprint: {blueprint.get('name', 'Custom')}", "info")
 
-            from services.file_storage_service import load_frontend_config
-            llm_config = load_frontend_config() or {}
-
             # Age-based DFIR filters — null disables; the defaults
             # below approximate "what looks suspicious right now":
             #   30 days for users  (any admin user created in last month)
@@ -246,10 +241,8 @@ def start_scan():
                 mepr = None
 
             options = {
-                'llm_config': llm_config,
                 'time_filter': data.get('time_filter'),
                 'min_severity': data.get('min_severity', 'medium'),
-                'iris_config': data.get('iris_config'),
                 'scope_mode': scope_mode,
                 'target_principals': target_principals,
                 'regions': data.get('regions'),
@@ -264,7 +257,6 @@ def start_scan():
                 # created in that 1 day, and a 30-day Full Investigation
                 # flags anything created in those 30 days. One concept,
                 # scales automatically with investigation scope.
-                'anonymizer': None,
             }
             add_log_to_run(
                 run_id,
@@ -425,23 +417,13 @@ def analyze_offline():
         if not uploaded_data:
             return jsonify({'error': 'No data found for this run_id'}), 400
 
-        llm_config = data.get('llm_config') or {}
-        if not llm_config:
-            try:
-                from services.file_storage_service import load_frontend_config
-                llm_config = load_frontend_config() or {}
-            except Exception:
-                llm_config = {}
-
         blueprint_id = data.get('blueprint', 'aws_quick_triage')
         blueprints = get_aws_blueprints()
         blueprint = next((b for b in blueprints if b['id'] == blueprint_id), blueprints[0])
 
         options = {
-            'llm_config': llm_config,
             'time_filter': data.get('time_filter'),
             'min_severity': data.get('min_severity', 'medium'),
-            'iris_config': data.get('iris_config'),
             'blueprint': blueprint,
             'aws_config': data.get('aws_config') or {},
         }

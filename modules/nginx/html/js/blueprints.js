@@ -807,45 +807,6 @@ async function onVelociraptorBlueprintChange(blueprintId) {
 }
 
 // ============================================================================
-// Agentic Tab - Blueprint Preview
-// ============================================================================
-
-async function onAgenticBlueprintChange(blueprintId) {
-    const previewContainer = 'agentic-artifact-preview';
-    const countEl = document.getElementById('agentic-artifact-count');
-
-    if (!blueprintId) {
-        renderAgenticArtifactPreview(previewContainer, []);
-        if (countEl) countEl.textContent = '0';
-        return;
-    }
-
-    const blueprint = await getBlueprintById(blueprintId, 'agentic');
-    if (blueprint) {
-        renderAgenticArtifactPreview(previewContainer, blueprint.artifacts);
-        if (countEl) countEl.textContent = blueprint.artifacts.length;
-    }
-}
-
-function renderAgenticArtifactPreview(containerId, artifacts) {
-    const container = document.getElementById(containerId);
-    if (!container) return;
-
-    if (!artifacts || artifacts.length === 0) {
-        container.innerHTML = '<p class="text-sm text-gray-500">No artifacts selected</p>';
-        return;
-    }
-
-    container.innerHTML = artifacts.map(artifact =>
-        `<div class="flex items-center gap-2 px-2 py-1 text-xs text-gray-300 bg-gray-900 rounded">
-            <svg class="w-3 h-3 text-green-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path>
-            </svg>
-            ${artifact}
-        </div>`
-    ).join('');
-}
-// ============================================================================
 // Offline Collectors Tab
 // ============================================================================
 

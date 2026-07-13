@@ -14,7 +14,7 @@ from services.file_storage_service import _get_connection as get_db_connection
 def run_scheduled_blueprint(job_id: str):
     """Execute a scheduled blueprint run. This is the main APScheduler callback."""
     from services.agentic import run_agentic_pipeline
-    from services.file_storage_service import load_frontend_config, get_velociraptor_blueprint, get_agentic_blueprint
+    from services.file_storage_service import get_velociraptor_blueprint, get_agentic_blueprint
     from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
     from .jobs import get_scheduled_job
     import json
@@ -34,9 +34,6 @@ def run_scheduled_blueprint(job_id: str):
     blueprint_id = job_meta['blueprint_id']
     blueprint_type = job_meta.get('blueprint_type', 'velociraptor')
     client_ids = json.loads(job_meta.get('client_ids', '[]'))
-    report_types = json.loads(job_meta.get('report_types', '["technical"]'))
-    anonymize_data = bool(job_meta.get('anonymize_data', 0))
-    custom_patterns = json.loads(job_meta.get('custom_patterns', '[]'))
     # Per-type run options (JSON blob): CVE scan_mode/max_wait, Memory
     # include_yara/timeouts/case_name, Collection collection_minutes, Hunt
     # include_labels/per_artifact, AWS regions/scope_mode/…
@@ -45,23 +42,8 @@ def run_scheduled_blueprint(job_id: str):
     except Exception:
         options = {}
 
-    # Reconstruct time_filter from job metadata
-    time_filter = None
-    if job_meta.get('time_filter_enabled'):
-        time_filter = {
-            'enabled': True,
-            'mode': job_meta.get('time_filter_mode', 'relative'),
-            'relative_range': job_meta.get('time_filter_relative_range', '7d'),
-            'start_datetime': job_meta.get('time_filter_start'),
-            'end_datetime': job_meta.get('time_filter_end')
-        }
-
     try:
         if blueprint_type == 'agentic':
-            # Load LLM config
-            config = load_frontend_config() or {}
-            llm_config = config.get('agentic', {})
-
             # Get blueprint name
             agentic_bp = get_agentic_blueprint(blueprint_id)
             blueprint_name = agentic_bp.get('name', blueprint_id) if agentic_bp else blueprint_id
@@ -81,7 +63,6 @@ def run_scheduled_blueprint(job_id: str):
                     "blueprint": blueprint_name,
                     "client_ids": client_ids,
                     "collection_minutes": collection_minutes,
-                    "report_types": report_types,
                     "scheduled_job_id": job_id
                 }
             )
@@ -89,19 +70,11 @@ def run_scheduled_blueprint(job_id: str):
             # Run in background thread
             thread = threading.Thread(
                 target=run_agentic_pipeline,
-                args=(run_id, blueprint_id, client_ids, collection_minutes, llm_config, report_types,
-                      anonymize_data, custom_patterns, False, None, time_filter),
+                args=(run_id, blueprint_id, client_ids, collection_minutes),
                 daemon=True
             )
             thread.start()
-            time_filter_info = ""
-            if time_filter:
-                mode = time_filter.get('mode', 'relative')
-                if mode == 'relative':
-                    time_filter_info = f", time_filter=relative({time_filter.get('relative_range', '7d')})"
-                else:
-                    time_filter_info = f", time_filter=between"
-            print(f"[SCHEDULER] Started agentic pipeline: run_id={run_id}{time_filter_info}", flush=True)
+            print(f"[SCHEDULER] Started agentic pipeline: run_id={run_id}", flush=True)
 
         elif blueprint_type == 'timesketch':
             # Timesketch automation - KAPE collection + Plaso + TimeSketch import
@@ -410,7 +383,7 @@ def run_aws_scheduled(job_name: str, blueprint_id: str, options: dict = None):
                 'max_events_per_region': mepr,
                 'min_severity': options.get('min_severity', 'medium'),
                 'cloudtrail_mode': options.get('cloudtrail_mode'),
-                'time_filter': None, 'llm_config': None, 'iris_config': None, 'anonymizer': None,
+                'time_filter': None,
             }
             run_aws_pipeline(run_id, aws_config, blueprint, pipe_options)
         except Exception as e:

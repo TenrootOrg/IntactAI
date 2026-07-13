@@ -98,8 +98,7 @@ def _fuse_offline_import(import_result, upload_run_id):
         from services.workflow_service import (
             get_automation_run, add_log_to_run, update_run_status)
         from services.file_storage_service import save_workflow
-        from services.agentic.collectors import get_existing_collection_results
-        from services.agentic.reports import persist_pipeline_artifacts
+        from services.agentic.collectors import get_existing_collection_results, persist_pipeline_artifacts
 
         add_log_to_run(upload_run_id, "[Import] Reading imported data into the case…")
         if hunt_id:
@@ -183,7 +182,7 @@ def _fuse_offline_import(import_result, upload_run_id):
             pass
 
         # Persist rows where the fusion graph reads them (/data/downloads/<rid>).
-        persist_pipeline_artifacts(upload_run_id, {}, all_results)
+        persist_pipeline_artifacts(upload_run_id, all_results)
         add_log_to_run(
             upload_run_id,
             f"[Import] Added {total_rows} rows across {len(artifacts)} artifact(s) "

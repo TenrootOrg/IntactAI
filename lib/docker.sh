@@ -988,11 +988,23 @@ download_sigma_rules() {
     log_info "Setting up SIGMA detection rules for Azure automation..."
     [[ -n "$sigma_ref" ]] && log_info "  Pinned SIGMA release: $sigma_ref"
 
-    # Check if already exists and is valid
-    if [[ -d "$sigma_dir/rules/cloud/azure" ]]; then
+    # Stamp file records which ref is ACTUALLY checked out on disk — a shallow
+    # `--branch <tag>` clone doesn't reliably leave a queryable local tag ref
+    # to compare against later, so this is the source of truth for "is the
+    # clone already at the currently-pinned version". Without this, bumping
+    # `versions.sigma_rules` in config.yaml on an install/box that already had
+    # SOME clone (from an earlier pin, or an earlier ad-hoc run) was silently
+    # ignored forever — the old "already installed, rule_count > 10" check
+    # short-circuited before ever looking at whether the pin had changed.
+    local stamp_file="$sigma_dir/.sigma_pinned_ref"
+    local current_stamp=""
+    [[ -f "$stamp_file" ]] && current_stamp=$(cat "$stamp_file" 2>/dev/null)
+
+    # Check if already exists, valid, AND at the currently-pinned ref
+    if [[ -d "$sigma_dir/rules/cloud/azure" && "$current_stamp" == "$sigma_ref" ]]; then
         local rule_count=$(find "$sigma_dir/rules/cloud/azure" -name "*.yml" | wc -l)
         if [[ $rule_count -gt 10 ]]; then
-            log_info "SIGMA rules already installed: $rule_count Azure rules found"
+            log_info "SIGMA rules already installed at pinned ref '$sigma_ref': $rule_count Azure rules found"
             return 0
         fi
     fi
@@ -1004,10 +1016,14 @@ download_sigma_rules() {
         if [[ -n "$sigma_ref" ]]; then
             # Fetch + checkout the pinned tag (shallow). Falls through to the
             # existing tree on failure so a bad pin never wipes working rules.
-            git fetch --depth 1 origin "refs/tags/${sigma_ref}:refs/tags/${sigma_ref}" 2>> "$LOG_FILE" \
-                && git checkout -f "$sigma_ref" 2>> "$LOG_FILE" || true
+            if git fetch --depth 1 origin "refs/tags/${sigma_ref}:refs/tags/${sigma_ref}" 2>> "$LOG_FILE" \
+                    && git checkout -f "$sigma_ref" 2>> "$LOG_FILE"; then
+                echo "$sigma_ref" > "$stamp_file"
+            else
+                log_warn "  Pinned tag $sigma_ref unavailable — keeping existing checkout ($current_stamp)"
+            fi
         else
-            git pull --depth 1 2>> "$LOG_FILE" || true
+            git pull --depth 1 2>> "$LOG_FILE" && rm -f "$stamp_file" || true
         fi
         cd - > /dev/null
     else
@@ -1017,6 +1033,7 @@ download_sigma_rules() {
         # back to a default-branch clone if the pinned tag can't be fetched.
         if [[ -n "$sigma_ref" ]] && git clone --depth 1 --branch "$sigma_ref" \
                 https://github.com/SigmaHQ/sigma.git "$sigma_dir" 2>> "$LOG_FILE"; then
+            echo "$sigma_ref" > "$stamp_file"
             log_success "SIGMA rules cloned at pinned release $sigma_ref"
         elif git clone --depth 1 https://github.com/SigmaHQ/sigma.git "$sigma_dir" 2>> "$LOG_FILE"; then
             [[ -n "$sigma_ref" ]] && log_warn "  Pinned tag $sigma_ref unavailable — cloned default branch instead"

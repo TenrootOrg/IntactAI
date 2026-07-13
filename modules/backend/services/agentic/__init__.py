@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Agentic Service Module - Full forensics pipeline: hunts -> collect -> LLM analysis -> report
+Agentic Service Module - Forensics collection pipeline: hunts -> collect -> persist for fusion
 
-This module provides the main agentic forensics pipeline functionality.
-Re-exports all public functions for backward compatibility.
+Collect-only: this module gathers artifacts via Velociraptor and persists the
+rows for Case Analysis (services/fusion) to read. No per-run LLM analysis or
+reporting happens here.
 """
 
 # Load the STATIC macro-skill index once at module import. The fusion analyst
@@ -22,19 +23,6 @@ except Exception as _skill_load_err:  # noqa: BLE001
 
 # Main pipeline functions
 from services.agentic.pipeline import run_agentic_pipeline
-
-# For backward compatibility - legacy function name aliases
-_extract_timeline_events = None  # Lazy import to avoid circular imports
-
-
-def get_extract_timeline_events():
-    """Get the extract_timeline_events function (lazy import)"""
-    global _extract_timeline_events
-    if _extract_timeline_events is None:
-        from services.agentic.utils import extract_timeline_events
-        _extract_timeline_events = extract_timeline_events
-    return _extract_timeline_events
-
 
 # Export all public symbols
 __all__ = [

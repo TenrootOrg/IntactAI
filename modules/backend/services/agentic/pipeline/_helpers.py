@@ -3,37 +3,9 @@
 Agentic Pipeline - Main orchestration for forensics analysis pipeline
 """
 import threading
-import traceback
-from datetime import datetime
 
-from services.workflow_service import (
-    add_log_to_run,
-    update_run_status,
-    is_cancelled,
-    unregister_cancel,
-    request_stop,
-)
-
-
-# Outer watchdog grace period: how long after the collection window the
-# pipeline may keep running for synthesis / report generation / IRIS
-# import before we force-kill it. The QA hang sat at "running" for
-# nearly an hour with no upper bound — this is the absolute backstop
-# even if every other safety check misses.
-from services.file_storage_service import get_agentic_blueprint, get_workflow, save_workflow
-from services.data_anonymizer import DataAnonymizer
-
-from services.agentic.collectors import (
-    create_collections,
-    stream_collect_and_analyze,
-    cancel_collections
-)
-from services.agentic.reports import (
-    generate_empty_report,
-    save_report_content,
-    persist_pipeline_artifacts,
-)
-from services.agentic.utils import extract_timeline_events, filter_malicious_events
+from services.workflow_service import add_log_to_run, request_stop
+from services.file_storage_service import get_workflow, save_workflow
 
 _PIPELINE_SYNTHESIS_GRACE_SECONDS = 15 * 60  # 15 minutes
 

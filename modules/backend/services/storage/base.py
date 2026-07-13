@@ -179,8 +179,8 @@ def create_tables():
 
         -- Runtime secrets (api keys, passwords). Deliberately separate from
         -- frontend_config so export_db() never dumps these into a backup
-        -- file. install.sh's bootstrap_iris_api_key writes here; backend
-        -- reads here at startup.
+        -- file. install.sh's bootstrap_iris_api_key writes here (IRIS is
+        -- install/upgrade-only; nothing currently reads this back at runtime).
         CREATE TABLE IF NOT EXISTS secrets (
             key TEXT PRIMARY KEY,
             value TEXT,

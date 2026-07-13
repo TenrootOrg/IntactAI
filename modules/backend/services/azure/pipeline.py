@@ -2,7 +2,7 @@
 Azure Security Pipeline
 
 Orchestrates the full Azure security automation workflow:
-Collection → SIGMA Detection → LLM Analysis → Report → IRIS
+Collection → SIGMA Detection → LLM Analysis → Report
 
 Supports both online (live API) and offline (uploaded logs) modes.
 """
@@ -20,12 +20,10 @@ from .sigma_runner import run_sigma_rules, load_azure_rules, validate_rules_dire
 
 # Reuse existing agentic components
 from services.agentic.utils import (
-    extract_timeline_events,
     filter_results_by_time,
     create_time_filter_func,
     normalize_all_results,
 )
-from services.iris_service import import_to_iris
 from services.workflow_logger import add_log_to_run
 from services.workflow_service import update_run_status as _update_run_status
 
@@ -80,7 +78,7 @@ def _run_post_collection_phases(
     phase_end,
     result: Dict,
 ) -> Dict:
-    """Phases 3 through 7 of the Azure pipeline.
+    """Phases 3 and 4 of the Azure pipeline (collect-only).
 
     Single source of truth shared by the online (`run_azure_pipeline`)
     and offline (`run_azure_on_existing`) entry points. The caller is
@@ -93,9 +91,9 @@ def _run_post_collection_phases(
       * Phase 4 — SIGMA detection (with `scope_mode`)
       * Phase 4b — UAL operation-string pre-detection
       * Phase 4c — state-snapshot wrapping (CA policies, federation)
-      * Phase 5 — LLM analysis (with `pipeline_kind="azure"`)
-      * Phase 6 — Azure-formatted report (`generate_azure_report`)
-      * Phase 7 — optional IRIS import
+
+    Phases 5-6 (per-run LLM analysis + report) were removed — analysis
+    and reporting happen at Case Analysis (fusion) instead.
 
     `result` is mutated in place: phases dict, findings, analysis,
     reports, has_report, status. Returned for callers that want to
@@ -255,50 +253,6 @@ def _run_post_collection_phases(
     # Azure is collect-only; analysis + reporting happen at Case Analysis (fusion).
     # No per-run report/LLM state — the SIGMA findings feed the fused case.
     _set_progress(run_id, 90)
-    if is_cancelled(run_id):
-        return result
-
-    # ---- Phase 7: IRIS import ----
-    iris_config = options.get('iris_config')
-    if not iris_config:
-        iris_skip_reason = "iris_config not provided in scan payload"
-    elif not iris_config.get('enabled'):
-        iris_skip_reason = "iris_config.enabled is false"
-    elif not iris_config.get('url'):
-        iris_skip_reason = "iris_config.url missing"
-    elif not iris_config.get('api_key'):
-        iris_skip_reason = "iris_config.api_key missing"
-    else:
-        iris_skip_reason = None
-
-    if iris_skip_reason is None:
-        add_log_to_run(run_id, "[AZURE] Phase 7: Importing to IRIS...", "info")
-        phase_start("iris")
-        try:
-            timeline_events = extract_timeline_events(findings, include_no_timestamp=True)
-            iris_result = import_to_iris(
-                iris_config=iris_config,
-                all_results=findings,
-                timeline_events=timeline_events,
-                report_content=result.get('reports', {}).get('technical', ''),
-                case_name=f"Azure Investigation - {datetime.utcnow().strftime('%Y-%m-%d')}",
-                case_description=f"Azure security analysis from {blueprint.get('name', 'Unknown')} blueprint",
-            )
-            result['phases']['iris'] = {
-                'status': 'complete',
-                'case_id': iris_result.get('case_id'),
-                'case_url': iris_result.get('case_url'),
-                'events_imported': iris_result.get('events_imported', 0),
-            }
-            add_log_to_run(run_id, f"[AZURE] IRIS import complete: {iris_result.get('case_url', 'N/A')}", "info")
-        except Exception as e:
-            add_log_to_run(run_id, f"[AZURE] IRIS import failed: {e}", "error")
-            result['phases']['iris'] = {'status': 'error', 'error': str(e)}
-        phase_end("iris")
-    else:
-        result['phases']['iris'] = {'status': 'skipped', 'reason': iris_skip_reason}
-        add_log_to_run(run_id, f"[AZURE] IRIS import skipped: {iris_skip_reason}", "warning")
-
     return result
 
 
@@ -319,7 +273,7 @@ def run_azure_pipeline(
         run_id: Workflow run ID for logging
         azure_config: Azure credentials (tenant_id, client_id, client_secret)
         blueprint: Blueprint configuration with sources and settings
-        options: Pipeline options (enable_llm, time_filter, iris_config, etc.)
+        options: Pipeline options (time_filter, min_severity, scope_mode, etc.)
 
     Returns:
         Pipeline result dict with collected data, findings, analysis, and report
@@ -531,13 +485,13 @@ def run_azure_on_existing(
     runs collection-only on their machine, hands us a ZIP of the raw
     `Azure.<source>.json` files, and the analyst's server picks up here:
     timestamp normalisation → time filter → SIGMA → UAL pre-detection →
-    state-snapshot wrapping → LLM analysis → Azure report → IRIS.
+    state-snapshot wrapping. Collect-only — analysis + reporting happen
+    at Case Analysis (fusion).
 
     Args:
         run_id: Workflow run ID for logging
         uploaded_data: Dict of source_name → log records (already parsed)
-        options: Pipeline options (enable_llm, time_filter, llm_config,
-                 min_severity, scope_mode, iris_config, ...)
+        options: Pipeline options (time_filter, min_severity, scope_mode, ...)
 
     Returns:
         Pipeline result dict

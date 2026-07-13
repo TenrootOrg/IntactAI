@@ -767,14 +767,13 @@ def _velo_hunt_contribution(rid, det, log=None):
     # unreachable.
     cd = {}
     try:
-        from services.agentic.collectors import get_existing_collection_results
-        from services.agentic.reports import persist_pipeline_artifacts
+        from services.agentic.collectors import get_existing_collection_results, persist_pipeline_artifacts
         cd, _arts, client_info = get_existing_collection_results(
             rid, flow_id=(None if hunt_id else flow_id),
             hunt_id=hunt_id, client_ids=(None if hunt_id else [client_id]))
         if cd:
             try:
-                persist_pipeline_artifacts(rid, {}, cd)      # fallback snapshot
+                persist_pipeline_artifacts(rid, cd)      # fallback snapshot
             except Exception:
                 pass
             hostnames = {str(c): (i or {}).get("hostname")

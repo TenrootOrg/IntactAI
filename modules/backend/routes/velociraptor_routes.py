@@ -413,7 +413,11 @@ def run_bestpractice_hunts():
                     )
                     if hunt_id:
                         add_log_to_run(rid, f"Hunt created: {hunt_id}")
-                        update_run_status(rid, "completed", progress=100,
+                        # 'running', not 'completed' — the hunt was only just
+                        # dispatched. dashboard_routes.get_automation_details()
+                        # flips this to 'completed' once Velociraptor reports
+                        # every scheduled client's flow actually finished.
+                        update_run_status(rid, "running", progress=90,
                                           details={"hunt_id": hunt_id, "artifacts": [a]})
                         results.append({"artifact": a, "run_id": rid, "hunt_id": hunt_id, "status": "success"})
                     else:
@@ -530,8 +534,9 @@ SELECT HuntId FROM collection
         if hunt_id:
             print(f"[HUNT] Bulk hunt created: {hunt_id} ({len(artifacts)} artifacts)", flush=True)
             add_log_to_run(run_id, f"Bulk hunt created: {hunt_id} with {len(artifacts)} artifacts")
-            # persist the hunt_id so Case Analysis can pull + fuse the hunt's rows
-            update_run_status(run_id, "completed", progress=100,
+            # persist the hunt_id so Case Analysis can pull + fuse the hunt's rows.
+            # 'running', not 'completed' — see the per-artifact branch above for why.
+            update_run_status(run_id, "running", progress=90,
                               details={"hunt_id": hunt_id, "artifacts": artifacts})
             results = [{"artifact": "all", "hunt_id": hunt_id, "status": "success"}]
         else:

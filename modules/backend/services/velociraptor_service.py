@@ -318,6 +318,47 @@ def get_hunt_description(hunt_id):
         return ""
 
 
+def is_hunt_collection_complete(hunt_id):
+    """Return True once every client Velociraptor scheduled for this hunt has
+    actually finished its flow (real data collected), not just when the hunt
+    object itself was created.
+
+    A hunt stays in VQL state 'RUNNING' for its whole expire window (it keeps
+    listening for new clients to join), so 'state' alone can't signal
+    completion for the common case here — one or a few known clients. The
+    real signal is the hunt's own stats: every scheduled client has finished.
+    Returns False (not complete) on any lookup failure — callers should leave
+    the run's status untouched rather than flip it on an unknown result."""
+    if not hunt_id:
+        return False
+    try:
+        channel = setup_velociraptor_connection()
+        if not channel:
+            return False
+        stub = api_pb2_grpc.APIStub(channel)
+        vql = ("SELECT stats FROM hunts() "
+               f"WHERE hunt_id = '{hunt_id}' LIMIT 1")
+        req = api_pb2.VQLCollectorArgs(
+            max_wait=10, max_row=1,
+            Query=[api_pb2.VQLRequest(VQL=vql)],
+        )
+        for resp in stub.Query(req, timeout=15):
+            if resp.Response:
+                try:
+                    rows = json.loads(resp.Response)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(rows, list) and rows:
+                    stats = rows[0].get("stats") or {}
+                    scheduled = stats.get("total_clients_scheduled") or 0
+                    finished = stats.get("total_finished_clients") or 0
+                    return scheduled > 0 and finished >= scheduled
+        return False
+    except Exception as e:
+        print(f"[GRPC] is_hunt_collection_complete({hunt_id}) failed: {e}", flush=True)
+        return False
+
+
 def create_velociraptor_hunt(
     artifact_name,
     description="",

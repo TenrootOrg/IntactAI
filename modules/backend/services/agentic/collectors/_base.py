@@ -19,9 +19,11 @@ from services.workflow_service import add_log_to_run
 logger = logging.getLogger(__name__)
 
 
-# Note: VQL-level time filtering was removed - each artifact uses different timestamp fields
-# (EventTime, Timestamp, Created, etc.) making a universal VQL filter impractical.
-# Time filtering is done post-query in Python using find_field_recursive() and TIMESTAMP_FIELDS.
+# Note: a blueprint may still bake its own `settings['time_filter']` default
+# (used by calculate_time_range() below to build per-artifact DateAfter/
+# DateBefore VQL for artifacts like Hayabusa). There is no runtime/per-request
+# time filter anymore — collection is otherwise unbounded and unfiltered;
+# Case Analysis (fusion) owns all time-window and severity filtering.
 
 # Maximum rows fetched per artifact result query. Replaces a hard-coded
 # 5000-row VQL LIMIT that was silently truncating any artifact whose
@@ -532,58 +534,6 @@ def query_artifact_results(stub, client_id, flow_id, artifact, start_iso=None, e
         return []
 
 
-def filter_by_severity(rows, severity_level):
-    """Filter rows by minimum severity level with recursive field detection.
-    Severity order: informational < low < medium < high < critical
-    Searches nested objects for severity fields (e.g., Detection.Criticality)."""
-    if severity_level == 'informational':
-        return rows  # No filtering - show all
-
-    if not rows:
-        return rows
-
-    from services.agentic.utils import find_field_recursive, get_nested_value, SEVERITY_FIELDS
-
-    severity_order = ['informational', 'low', 'medium', 'high', 'critical']
-    min_level_idx = severity_order.index(severity_level) if severity_level in severity_order else 2
-
-    # Find severity field recursively from first row (handles nested objects)
-    field_path, _ = find_field_recursive(rows[0], SEVERITY_FIELDS)
-    if not field_path:
-        return rows  # No severity field - keep all rows
-
-    def normalize_level(value):
-        """Normalize severity level string to standard names."""
-        level_value = str(value or '').lower().strip()
-        if level_value in ('info', 'informational', '0', 'none'):
-            return 'informational'
-        elif level_value in ('lo', '1'):
-            return 'low'
-        elif level_value in ('med', 'moderate', '2'):
-            return 'medium'
-        elif level_value in ('hi', '3'):
-            return 'high'
-        elif level_value in ('crit', '4', 'emergency', 'alert'):
-            return 'critical'
-        return level_value
-
-    filtered = []
-    for row in rows:
-        # Get value from nested path
-        value = get_nested_value(row, field_path)
-        level_value = normalize_level(value)
-
-        if level_value in severity_order:
-            if severity_order.index(level_value) >= min_level_idx:
-                filtered.append(row)
-        else:
-            # Unknown severity - keep by default
-            filtered.append(row)
-
-    return filtered
-
-
-
 def cancel_collections(run_id, collection_results):
     """Cancel running collections after time limit"""
     channel = setup_velociraptor_connection()
@@ -814,11 +764,11 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                     if not rows:
                         continue
 
-                    # Tag every row with `_client_id` + `_hostname`. The
-                    # per-client report filter (services/agentic/reports.py
-                    # filter_results_by_client) and the IRIS timeline
-                    # extractor (utils.extract_timeline_events) both rely on
-                    # these to slice + link events to the right host.
+                    # Tag every row with `_client_id` + `_hostname` — the
+                    # multi-client merge logic in collectors/_stream.py relies
+                    # on these to keep each client's rows distinct instead of
+                    # one client's poll overwriting another's for the same
+                    # artifact.
                     for r in rows:
                         r.setdefault('_client_id', located_client_id)
                         r.setdefault('_hostname', located_hostname)
@@ -988,3 +938,28 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
         channel.close()
 
     return all_results, artifacts, client_info
+
+
+def persist_pipeline_artifacts(run_id, all_results):
+    """Save the raw row data for the fusion layer.
+
+    Case Analysis (fusion) reads `raw_results.json` to build the cross-module
+    / cross-host case graph — this is the bridge from a collection run into
+    the case.
+
+    File written to /data/downloads/<run_id>/raw_results.json:
+    dict[artifact_name -> [row, ...]]
+
+    Best-effort — a failure to persist this doesn't break the main pipeline.
+    """
+    downloads_dir = f"/data/downloads/{run_id}"
+    try:
+        os.makedirs(downloads_dir, exist_ok=True)
+        with open(f"{downloads_dir}/raw_results.json", "w") as f:
+            # Use default=str so any non-serialisable values (datetimes,
+            # bytes, etc.) degrade to a string rather than crashing the
+            # whole save.
+            json.dump(all_results or {}, f, default=str)
+    except Exception as e:
+        # Telemetry only — fusion will detect missing files and degrade.
+        print(f"[PIPELINE] Failed to persist artifacts for {run_id}: {e}", flush=True)

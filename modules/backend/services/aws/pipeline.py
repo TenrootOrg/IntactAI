@@ -2,7 +2,7 @@
 AWS Security Pipeline
 
 Orchestrates the AWS automation workflow:
-Collection (stub fixtures for now) → SIGMA Detection → LLM Analysis → Report → IRIS.
+Collection (stub fixtures for now) → SIGMA Detection → LLM Analysis → Report.
 
 Mirrors `services.azure.pipeline`. In this scaffold the collection
 layer returns fake data; everything from SIGMA onward is the same
@@ -22,11 +22,9 @@ from .sigma_runner import load_aws_rules, run_sigma_rules, validate_rules_direct
 
 from services.agentic.utils import (
     create_time_filter_func,
-    extract_timeline_events,
     filter_results_by_time,
     normalize_all_results,
 )
-from services.iris_service import import_to_iris
 from services.workflow_logger import add_log_to_run
 from services.workflow_service import (
     is_cancelled,
@@ -91,7 +89,7 @@ def _make_phase_timer(run_id: str):
 
 
 # =============================================================================
-# Shared post-collection phases (SIGMA → state-wrap → LLM → report → IRIS)
+# Shared post-collection phases (SIGMA → state-wrap → LLM → report)
 # =============================================================================
 
 
@@ -107,7 +105,7 @@ def _run_post_collection_phases(
     phase_end,
     result: Dict,
 ) -> Dict:
-    """Phases 3–7 (collect-only): normalize, detect, IRIS import. LLM analysis +
+    """Phases 3-5 (collect-only): normalize, detect. LLM analysis +
     reporting happen at Case Analysis (fusion)."""
 
     # Phase 3 — normalize + time filter
@@ -233,39 +231,6 @@ def _run_post_collection_phases(
     # analysis + reporting happen at Case Analysis (fusion). No per-run report/LLM
     # state — the SIGMA findings feed the fused case via the cloud mapper.
     _set_progress(run_id, 90)
-    if is_cancelled(run_id):
-        return result
-
-    # Phase 7 — IRIS import (optional)
-    iris_config = options.get('iris_config')
-    if not iris_config or not iris_config.get('enabled'):
-        result['phases']['iris'] = {'status': 'skipped', 'reason': 'iris not enabled in scan payload'}
-    elif not iris_config.get('url') or not iris_config.get('api_key'):
-        result['phases']['iris'] = {'status': 'skipped', 'reason': 'iris url/api_key missing'}
-    else:
-        add_log_to_run(run_id, "[AWS] Phase 7: Importing to IRIS...", "info")
-        phase_start("iris")
-        try:
-            timeline_events = extract_timeline_events(findings, include_no_timestamp=True)
-            iris_result = import_to_iris(
-                iris_config=iris_config,
-                all_results=findings,
-                timeline_events=timeline_events,
-                report_content=result.get('reports', {}).get('technical', ''),
-                case_name=f"AWS Investigation - {datetime.utcnow().strftime('%Y-%m-%d')}",
-                case_description=f"AWS security analysis from {blueprint.get('name', 'Unknown')} blueprint",
-            )
-            result['phases']['iris'] = {
-                'status': 'complete',
-                'case_id': iris_result.get('case_id'),
-                'case_url': iris_result.get('case_url'),
-                'events_imported': iris_result.get('events_imported', 0),
-            }
-            add_log_to_run(run_id, f"[AWS] IRIS import complete: {iris_result.get('case_url', 'N/A')}", "info")
-        except Exception as e:
-            add_log_to_run(run_id, f"[AWS] IRIS import failed: {e}", "error")
-            result['phases']['iris'] = {'status': 'error', 'error': str(e)}
-        phase_end("iris")
     return result
 
 
@@ -280,7 +245,7 @@ def run_aws_pipeline(
     blueprint: Dict[str, Any],
     options: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Online pipeline: collect (fake) → SIGMA → LLM → report → IRIS."""
+    """Online pipeline: collect (fake) → SIGMA → LLM → report."""
     result: Dict[str, Any] = {
         'run_id': run_id,
         'mode': 'online',
