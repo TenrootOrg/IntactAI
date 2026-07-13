@@ -91,8 +91,10 @@ services:
   tusd:
     container_name: intact_tusd
     # Pinned (was :latest) so the upload server is reproducible across
-    # installs/upgrades. Bump deliberately when upgrading tus support.
-    image: tusproject/tusd:v2.9.2
+    # installs/upgrades. Bump deliberately via versions.backend_tusd in
+    # config.yaml (stamped into TUSD_VERSION); the :-default keeps a bare
+    # `docker compose up` working when .env has no pin.
+    image: tusproject/tusd:${TUSD_VERSION:-v2.9.2}
     restart: unless-stopped
     user: root  # Run as root to write to shared volume
     command:

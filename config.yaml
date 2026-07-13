@@ -202,5 +202,10 @@ versions:
   timesketch_redis:      '7.2.11-alpine'
   timesketch_nginx:      '1.25.5-alpine-slim'
   iris_rabbitmq:         '3-management-alpine'
+  # tusd resumable-upload sidecar (intact_tusd in the backend compose). Pinned
+  # here so install/upgrade drive one reproducible tag; a bump recreates the
+  # container (docker restart alone keeps the old image). Docker Hub:
+  # tusproject/tusd — v2.9.2 current.
+  backend_tusd:          'v2.9.2'
   volweb_postgres:       '14.1'
   volweb_redis:          '7'

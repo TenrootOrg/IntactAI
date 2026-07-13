@@ -122,6 +122,13 @@ TRANSITIVE_ENV_KEYS = {
         'postgres': 'VOLWEB_POSTGRES_VERSION',
         'redis':    'VOLWEB_REDIS_VERSION',
     },
+    # tusd is the backend backbone's upload sidecar. It rides the same
+    # `<module>_<sidecar>` convention (versions.backend_tusd -> TUSD_VERSION),
+    # but the intact backbone is upgraded outside the generic per-module loop,
+    # so recreate_tusd() in intact.py is what stamps + recreates it.
+    'backend': {
+        'tusd': 'TUSD_VERSION',
+    },
 }
 
 

@@ -6,7 +6,7 @@ import re
 import shutil
 from typing import Dict, Callable, Optional
 
-from .base import WORKDIR, run_command
+from .base import WORKDIR, run_command, update_env_file
 
 
 def _mirror_tree(src: str, dst: str, protect=(), logger=None) -> Dict:
@@ -836,6 +836,47 @@ def _format_value(v: str) -> str:
     return f"'{s}'"
 
 
+def recreate_tusd(logger: Callable = None) -> bool:
+    """Apply the pinned tusd tag to the intact_tusd sidecar.
+
+    tusd lives in the backend (intact-backbone) compose but is upgraded OUTSIDE
+    the generic per-module transitive loop (the loop is keyed on 'intact', which
+    has no modules/intact/.env). The restart handoff does `docker restart
+    intact_tusd`, which keeps the OLD image — so a versions.backend_tusd bump
+    would never take effect. This stamps TUSD_VERSION from config.yaml into the
+    backend .env and `docker compose up -d tusd`, which recreates the container
+    ONLY when the tag actually changed (idempotent no-op otherwise).
+
+    Non-fatal by design: tusd is an upload sidecar, so a recreate hiccup must
+    never roll back the whole intact upgrade — it logs a warning and returns
+    False. Safe to call on every intact upgrade (online + offline).
+    """
+    log = logger or (lambda m, l="info": None)
+    backend_dir = os.path.join(WORKDIR, 'modules', 'backend')
+    try:
+        tag = None
+        cfg_path = os.path.join(WORKDIR, 'config.yaml')
+        if os.path.isfile(cfg_path):
+            import yaml
+            with open(cfg_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            tag = (cfg.get('versions') or {}).get('backend_tusd')
+        if tag:
+            update_env_file(os.path.join(backend_dir, '.env'), 'TUSD_VERSION',
+                            str(tag), logger=log)
+        r = run_command("docker compose up -d tusd", cwd=backend_dir,
+                        logger=None, timeout=120)
+        if not r.get('success'):
+            log(f"tusd recreate returned nonzero (sidecar — continuing): "
+                f"{(r.get('stderr') or r.get('stdout') or '')[:200]}", "warning")
+            return False
+        log(f"tusd sidecar recreated at {tag or 'pinned default'}", "success")
+        return True
+    except Exception as e:
+        log(f"tusd recreate skipped ({type(e).__name__}: {e})", "warning")
+        return False
+
+
 def upgrade_intact(version: str = None, logger: Callable = None) -> Dict:
     """Upgrade Intact.AI Platform (backend + frontend) by pulling latest code.
 
@@ -900,6 +941,10 @@ def upgrade_intact(version: str = None, logger: Callable = None) -> Dict:
                 _vf.write(str(version).strip() + "\n")
         except Exception as e:
             log(f"  Could not stamp VERSION ({e})", "warning")
+
+    # Apply any tusd pin bump (versions.backend_tusd) — recreate, since the
+    # restart handoff only `docker restart`s tusd (keeps the old image).
+    recreate_tusd(logger=log)
 
     # NOTE: Nginx and backend restarts are handled by the upgrade orchestrator
     # to support two-phase upgrades
@@ -1102,6 +1147,10 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
     log("Fixing file permissions...", "info")
     run_command("chown -R 1000:1000 /app/workdir/modules/backend/", logger=None)
     run_command("chown -R 1000:1000 /app/workdir/modules/nginx/html/", logger=None)
+
+    # Apply any tusd pin bump (versions.backend_tusd) — recreate, since the
+    # restart handoff only `docker restart`s tusd (keeps the old image).
+    recreate_tusd(logger=log)
 
     # NOTE: Nginx and backend restarts are handled by the upgrade orchestrator
     # to support two-phase upgrades

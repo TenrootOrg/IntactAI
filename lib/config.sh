@@ -217,10 +217,14 @@ update_env_files() {
         local plaso_version=$(read_config "['versions']['plaso']")
         local cloudtrail_version=$(read_config "['versions']['aws_sigma']")
         local o365rc_version=$(read_config "['versions']['o365rc']")
+        local tusd_version=$(read_config "['versions']['backend_tusd']")
 
         update_env_var "$backend_env" "TIMESKETCH_USER" "$ts_user"
         update_env_var "$backend_env" "TIMESKETCH_PASS" "$ts_pass"
         update_env_var "$backend_env" "PLASO_VERSION" "$plaso_version"
+        # tusd sidecar pin (versions.backend_tusd) -> TUSD_VERSION in the backend
+        # compose. Guarded so an older config without the key keeps the compose default.
+        [[ -n "$tusd_version" && "$tusd_version" != "None" ]] && update_env_var "$backend_env" "TUSD_VERSION" "$tusd_version"
         # AWS (CloudTrail SIGMA rule-pack) + Azure (DFIR-O365RC) versions — consumed
         # by the AWS/Azure detection pipelines + the module upgraders.
         [[ -n "$cloudtrail_version" ]] && update_env_var "$backend_env" "CLOUDTRAIL_VERSION" "$cloudtrail_version"
