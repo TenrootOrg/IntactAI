@@ -4,7 +4,10 @@
 services:
   nginx:
     container_name: intact_nginx
-    image: nginx:${NGINX_VERSION:-alpine}
+    # Pinned default (was floating :-alpine) so a bare `docker compose up` or an
+    # older config without the pin is still reproducible. install/upgrade stamp
+    # NGINX_VERSION from versions.nginx in config.yaml.
+    image: nginx:${NGINX_VERSION:-1.31.2-alpine}
     volumes:
       - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./html:/usr/share/nginx/html:ro

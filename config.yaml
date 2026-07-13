@@ -202,10 +202,17 @@ versions:
   timesketch_redis:      '7.2.11-alpine'
   timesketch_nginx:      '1.25.5-alpine-slim'
   iris_rabbitmq:         '3-management-alpine'
+  # Main reverse-proxy nginx (modules/nginx/, the intact_nginx container). Was a
+  # floating `nginx:alpine` default — pinned so install/upgrade are reproducible.
+  # Independent from timesketch_nginx above (separate container + .env); pin each
+  # to the version IT was tested with, not a shared one. Stock nginx alpine tag.
+  nginx:                 '1.31.2-alpine'
   # tusd resumable-upload sidecar (intact_tusd in the backend compose). Pinned
   # here so install/upgrade drive one reproducible tag; a bump recreates the
   # container (docker restart alone keeps the old image). Docker Hub:
   # tusproject/tusd — v2.9.2 current.
   backend_tusd:          'v2.9.2'
   volweb_postgres:       '14.1'
-  volweb_redis:          '7'
+  # Was floating '7' — pinned to the exact patch (debian variant, matches the
+  # currently-deployed redis:7). Reproducible; bump deliberately.
+  volweb_redis:          '7.4.9'

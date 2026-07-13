@@ -209,6 +209,18 @@ update_env_files() {
         fi
     fi
 
+    # Nginx reverse proxy - pin NGINX_VERSION (versions.nginx) into its .env so
+    # the compose default (:-1.31.2-alpine) is overridden by the tracked pin. The
+    # module ships no .env, so create it. Independent of timesketch's NGINX_VERSION
+    # (different file / compose project).
+    local nginx_env="${SCRIPT_DIR}/modules/nginx/.env"
+    local nginx_version=$(read_config "['versions']['nginx']")
+    if [[ -n "$nginx_version" && "$nginx_version" != "None" ]]; then
+        [[ -f "$nginx_env" ]] || touch "$nginx_env"
+        update_env_var "$nginx_env" "NGINX_VERSION" "$nginx_version"
+        log_success "Updated Nginx .env (NGINX_VERSION=$nginx_version)"
+    fi
+
     # Backend - update credentials and Plaso version
     local backend_env="${SCRIPT_DIR}/modules/backend/.env"
     if [[ -f "$backend_env" ]]; then

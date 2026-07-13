@@ -496,7 +496,9 @@ pull_python_alpine_image() {
     # Python Alpine image is used by Plaso decompression (plaso_service.py)
     # Pre-pull to avoid network access at runtime in air-gap environments
 
-    local image="python:3-alpine"
+    # Pinned (was floating python:3-alpine) so the pre-pull is reproducible.
+    # Matches the currently-shipped Python 3.14 alpine line.
+    local image="python:3.14-alpine"
 
     log_info "Pulling Python Alpine image for Plaso decompression..."
 
