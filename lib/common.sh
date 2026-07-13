@@ -9,6 +9,21 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# ---------------------------------------------------------------------------
+# Supported-platform matrix (host layer). IntactAI does NOT upgrade Docker or
+# the host OS from inside the product (restarting dockerd mid-upgrade would
+# kill the upgrader itself) — host patching is the operator's responsibility.
+# Instead we PREFLIGHT the host and warn loudly with remediation, so a too-old
+# Docker surfaces as a clear early message instead of a cryptic failure later.
+# These checks are advisory (warn-only) — they never block install/upgrade;
+# the functional checks (daemon reachable, compose v2 present) do the blocking.
+# Keep in sync with the Python copy in
+# modules/backend/services/upgrade/config_validate.py and docs/SUPPORTED_PLATFORMS.md.
+# ---------------------------------------------------------------------------
+INTACT_MIN_DOCKER_VERSION="${INTACT_MIN_DOCKER_VERSION:-20.10}"   # hard floor: compose v2 plugin era
+INTACT_REC_DOCKER_VERSION="${INTACT_REC_DOCKER_VERSION:-24.0}"    # recommended
+INTACT_SUPPORTED_UBUNTU="${INTACT_SUPPORTED_UBUNTU:-20.04 22.04 24.04}"
+
 # Module tracking arrays
 FAILED_MODULES=()
 SUCCEEDED_MODULES=()
@@ -379,6 +394,34 @@ run_with_heartbeat() {
 # ============================================================================
 # Network Connectivity Check
 # ============================================================================
+
+# Return 0 if version $1 >= version $2 (dotted numeric compare via sort -V).
+_ver_ge() {
+    [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" = "$2" ]
+}
+
+# Advisory Docker Engine version preflight. Warns (never blocks) when the
+# running daemon is below the supported floor / recommended version, with a
+# clear remediation hint. Call AFTER docker is present (post-install_docker on
+# the fresh path; the already-installed branch has it too). No-op if the docker
+# CLI or daemon is unavailable — install_docker / the functional checks own that.
+check_docker_min_version() {
+    command -v docker &> /dev/null || return 0
+    local ver
+    ver=$(docker version --format '{{.Server.Version}}' 2>/dev/null)
+    [[ -z "$ver" ]] && return 0   # daemon not responding — not this check's job
+    local core="${ver%%-*}"       # strip any -ce/-ee suffix
+    if ! _ver_ge "$core" "$INTACT_MIN_DOCKER_VERSION"; then
+        log_warn "Docker $ver is below the supported floor ($INTACT_MIN_DOCKER_VERSION+)."
+        log_warn "  IntactAI drives everything through Docker Compose v2 — upgrade Docker:"
+        log_warn "  https://docs.docker.com/engine/install/ubuntu/  (see docs/SUPPORTED_PLATFORMS.md)"
+    elif ! _ver_ge "$core" "$INTACT_REC_DOCKER_VERSION"; then
+        log_warn "Docker $ver works but $INTACT_REC_DOCKER_VERSION+ is recommended (see docs/SUPPORTED_PLATFORMS.md)."
+    else
+        log_success "Docker version: $ver (>= $INTACT_REC_DOCKER_VERSION recommended)"
+    fi
+    return 0
+}
 
 check_network_connectivity() {
     log_info "Checking network connectivity..."

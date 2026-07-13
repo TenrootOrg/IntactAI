@@ -20,6 +20,11 @@ check_ubuntu() {
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             exit 1
         fi
+    elif [[ " $INTACT_SUPPORTED_UBUNTU " != *" ${VERSION_ID:-} "* ]]; then
+        # Advisory only — non-LTS / untested Ubuntu releases usually work, but
+        # the supported matrix is 20.04 / 22.04 / 24.04. Warn, don't block.
+        log_warn "Ubuntu ${VERSION_ID:-?} is outside the tested matrix ($INTACT_SUPPORTED_UBUNTU)."
+        log_warn "  Install will continue; see docs/SUPPORTED_PLATFORMS.md for supported releases."
     fi
 
     log_success "OS Check: $PRETTY_NAME"

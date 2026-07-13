@@ -36,6 +36,23 @@ PRIMARY_PIN_KEY = {
 _ENABLED_TRUE = ('true', 'enable', 'enabled', 'yes', 'on')
 _ENABLED_FALSE = ('false', 'disable', 'disabled', 'no', 'off')
 
+# Advisory host-layer Docker floor (warn-only in preflight_environment). Keep in
+# sync with lib/common.sh (INTACT_MIN/REC_DOCKER_VERSION) + docs/SUPPORTED_PLATFORMS.md.
+MIN_DOCKER_VERSION = "20.10"   # hard floor: compose v2 plugin era
+REC_DOCKER_VERSION = "24.0"    # recommended
+
+
+def _docker_version_ge(have: str, floor: str) -> bool:
+    """True when Docker Server.Version string `have` (e.g. '27.3.1', '24.0.7-ce')
+    is >= dotted `floor`. Lenient: unparseable input returns True so a parsing
+    quirk never produces a spurious warning."""
+    try:
+        h = [int(x) for x in have.split('-', 1)[0].split('.')[:3]]
+        f = [int(x) for x in floor.split('.')[:3]]
+        return h >= f
+    except (ValueError, AttributeError):
+        return True
+
 
 def _is_enabled(block) -> bool:
     """True when a module block's `enabled` is truthy (bool True or one of
@@ -183,6 +200,16 @@ def preflight_environment(logger: Callable = None,
             f"everything through the docker socket — check the /var/run/docker.sock "
             f"mount and permissions.")
     else:
+        # Advisory host-layer floor (warn-only, never blocks — the compose-v2
+        # check below is the functional gate). Keep in sync with lib/common.sh
+        # INTACT_MIN/REC_DOCKER_VERSION and docs/SUPPORTED_PLATFORMS.md.
+        if not _docker_version_ge(out, MIN_DOCKER_VERSION):
+            log(f"  [preflight] Docker {out} is below the supported floor "
+                f"({MIN_DOCKER_VERSION}+) — upgrade Docker; see "
+                f"docs/SUPPORTED_PLATFORMS.md", "warning")
+        elif not _docker_version_ge(out, REC_DOCKER_VERSION):
+            log(f"  [preflight] Docker {out} works but {REC_DOCKER_VERSION}+ is "
+                f"recommended (docs/SUPPORTED_PLATFORMS.md)", "warning")
         ok_compose, cout = _run(["docker", "compose", "version", "--short"])
         if not ok_compose:
             errors.append(

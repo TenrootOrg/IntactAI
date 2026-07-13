@@ -121,6 +121,10 @@ main() {
         log_error "Docker reports installed but 'docker version' fails — aborting"
         exit 1
     fi
+    # Advisory: warn (never block) if the daemon is below the supported floor.
+    # Matters mainly when Docker was pre-installed (a fresh install pulls the
+    # current release from download.docker.com, which is always new enough).
+    check_docker_min_version
     configure_docker_resolver
     create_network
 
