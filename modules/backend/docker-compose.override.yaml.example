@@ -1,0 +1,22 @@
+# Wave F "the flip" made intact-backend a FULL image-per-release: the image
+# bakes engine + code, and modules/backend/docker-compose.yaml no longer
+# bind-mounts app.py / config.py / services/ / routes/ / config/default_blueprints.yaml.
+# That's correct for a real install (upgrades swap the image + recreate the
+# container), but it means `docker compose build` is required after every
+# code edit on a dev box — no more live-reload.
+#
+# To get live-reload back for LOCAL DEVELOPMENT ONLY:
+#   cp modules/backend/docker-compose.override.yaml.example \
+#      modules/backend/docker-compose.override.yaml
+# (the real filename is gitignored — never commit your local override)
+#
+# Compose merges docker-compose.override.yaml automatically when present.
+
+services:
+  backend:
+    volumes:
+      - ./app.py:/app/app.py:ro
+      - ./config.py:/app/config.py:ro
+      - ./services:/app/services:ro
+      - ./routes:/app/routes:ro
+      - ./config/default_blueprints.yaml:/app/config/default_blueprints.yaml:ro

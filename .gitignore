@@ -178,3 +178,8 @@ data/*.db-wal
 
 # Fused-graph sidecar files (runtime, per-case)
 data/fusion_graphs/
+
+# Wave F "the flip" (Full-mode backend image): operator-local dev override that
+# re-adds live-reload code bind-mounts on a dev box. See
+# modules/backend/docker-compose.override.yaml.example for the template.
+/modules/backend/docker-compose.override.yaml

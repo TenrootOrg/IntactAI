@@ -164,17 +164,24 @@ versions:
   # release in lockstep so a SINGLE pin drives both (same pattern as
   # IRIS, where `iris: v2.4.27` drives 4 containers).
   volweb: '3.16.0'
-  # The intact/backend version IS the released git tag (surfaced via the VERSION
-  # file the release action stamps), so this pin is informational, not a real
-  # source of truth. It is kept ONLY as a SAFETY KEY: the intact upgrade's
-  # version-writeback runs in the OLD (pre-restart) process during Phase 1, and
-  # an older release's writeback regex spins forever (100% CPU, wedges the whole
-  # backend) if it can't find this key in the `versions:` block. The pre-prepare
-  # merge injects this key before that writeback runs, so the key being present
-  # keeps every release's writeback safe. (The current regex also fails fast on a
-  # missing key — services/upgrade/base.set_module_version_in_config — but this
-  # protects the OLD code we can't change in an already-deployed release.)
-  backend: '1.0.0'
+  # Backend runtime image tag (Wave F: intact-backend:<this value>). Set this
+  # to match the RELEASE NAME when cutting a release (e.g. 'intact-20260713'),
+  # same convention as every other module pin above; 'development' on dev
+  # branches/boxes. install/upgrade stamp it into BACKEND_VERSION (backend/.env)
+  # and the intact upgrade uses it to detect + apply an image swap on a
+  # Full-mode release (services/upgrade/intact.py: backend_target_tag,
+  # backend_full_mode, ensure_backend_runtime_image).
+  #
+  # It ALSO still serves its original role as a SAFETY KEY: the intact
+  # upgrade's version-writeback runs in the OLD (pre-restart) process during
+  # Phase 1, and an older release's writeback regex spins forever (100% CPU,
+  # wedges the whole backend) if it can't find this key in the `versions:`
+  # block. The pre-prepare merge injects this key before that writeback runs,
+  # so the key being present keeps every release's writeback safe. (The
+  # current regex also fails fast on a missing key —
+  # services/upgrade/base.set_module_version_in_config — but this protects
+  # the OLD code we can't change in an already-deployed release.)
+  backend: 'development'
 
   # ── External sidecar pins (postgres / opensearch / redis / nginx / rabbitmq) ──
   # 2026-06-14 refactor: these used to be scraped live from each

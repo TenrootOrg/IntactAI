@@ -34,12 +34,16 @@ services:
       - ../../client_installers:/app/client_installers:rw  # Client installers (writable for MSI generation)
       - ../../data:/app/data  # SQLite database (intact.db) for workflows, configs, and reports
       - ../nginx/html/downloads:/app/downloads:rw  # Velociraptor binaries for offline collectors
-      - ./app.py:/app/app.py:ro  # Mount app.py for live code updates
-      - ./config.py:/app/config.py:ro  # Mount config.py for live code updates
-      - ./services:/app/services:ro  # Mount services for live code updates
-      - ./routes:/app/routes:ro  # Mount routes for live code updates
-      - ./config/default_blueprints.yaml:/app/config/default_blueprints.yaml:ro  # Live blueprint updates
-      - /app/logs  # Logs directory
+      # Wave F "the flip": code (app.py, config.py, services/, routes/,
+      # config/default_blueprints.yaml) and /app/logs used to be bind-mounted
+      # here for live-reload during upgrades. As of this release the image is
+      # the unit of release (intact-backend:<release> bakes engine+code — see
+      # the Dockerfile COPYs) and upgrades SWAP the image + recreate the
+      # container instead of mirroring source over a running one. Removing
+      # these mounts is what makes services/upgrade/intact.py's
+      # backend_full_mode() detect this release as Full-mode. For a live-reload
+      # DEV setup, add the same lines to an operator-local (gitignored)
+      # modules/backend/docker-compose.override.yaml instead of restoring them here.
       - upload_data:/data/uploads  # Shared volume for tus uploads
       # Shared memory-dump staging — same `intact_memory_dumps` docker
       # volume mounted into Velociraptor + VolWeb. Lets the backend's
