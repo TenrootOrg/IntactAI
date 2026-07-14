@@ -11,6 +11,7 @@ import subprocess
 import time
 import json
 import tarfile
+import filecmp
 from typing import Dict, Callable, Optional
 
 # Base paths
@@ -190,6 +191,48 @@ def cleanup_backup(backup_file: str, logger: Callable = None):
             log(f"  Cleaned up backup: {backup_file}", "info")
     except Exception as e:
         log(f"  Warning: Could not remove backup: {e}", "warning")
+
+
+# Sidecar modules (elk, iris, timesketch, velociraptor, volweb, portainer,
+# nginx) each version-upgrade via their own upgrade_<module>() function,
+# which only bumps version pins in that module's .env and reuses whatever
+# docker-compose.yaml is ALREADY on disk. Only the backend/frontend trees get
+# a full mirror from the new release (intact.py's snapshot_intact_tree); no
+# path ever refreshed a sidecar module's docker-compose.yaml itself — a box
+# installed before a compose-structure change (a mount, a healthcheck, a
+# capability) ships with it FROZEN forever, through any number of upgrades.
+# This closes that gap the same way refresh_velociraptor_build_files already
+# does for Velociraptor's Dockerfile/entrypoint/artifacts: called once from
+# intact.py's upgrade path (release-scoped, not sidecar-version-scoped, since
+# the compose template only ever changes alongside an intact release), it
+# refreshes the FILE so the next time that module's compose comes up (its own
+# version bump, or an operator-triggered restart) it runs the current
+# template. Single-file copy on purpose — never directory-mirrors the module
+# dir, which also holds real per-install state (config/, secrets/, data).
+def refresh_module_compose_file(module_name: str, intact_root: str,
+                                 logger: Callable = None) -> bool:
+    """Refresh modules/<module_name>/docker-compose.yaml from the new
+    release's source tree. No-op (returns False) if the source lacks the
+    file or its content already matches — never deletes a working compose
+    file over an incomplete package, never touches anything else in the
+    module directory."""
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    src = os.path.join(intact_root, 'modules', module_name, 'docker-compose.yaml')
+    if not os.path.isfile(src):
+        return False
+    dst_dir = os.path.join(WORKDIR, 'modules', module_name)
+    dst = os.path.join(dst_dir, 'docker-compose.yaml')
+    try:
+        if os.path.isfile(dst) and filecmp.cmp(src, dst, shallow=False):
+            return False
+        os.makedirs(dst_dir, exist_ok=True)
+        shutil.copy2(src, dst)
+        log(f"  Refreshed {module_name}/docker-compose.yaml from the new release", "success")
+        return True
+    except Exception as e:
+        log(f"  Could not refresh {module_name}/docker-compose.yaml "
+            f"({type(e).__name__}: {e})", "warning")
+        return False
 
 
 # Upgrade staging dirs (data/tmp/intact-upgrade-<ts>) are created by BOTH the

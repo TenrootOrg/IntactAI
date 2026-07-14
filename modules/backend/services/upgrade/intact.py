@@ -6,7 +6,10 @@ import re
 import shutil
 from typing import Dict, Callable, Optional
 
-from .base import WORKDIR, run_command, update_env_file, load_docker_image
+from .base import (
+    WORKDIR, run_command, update_env_file, load_docker_image,
+    refresh_module_compose_file,
+)
 
 
 def _mirror_tree(src: str, dst: str, protect=(), logger=None) -> Dict:
@@ -1245,6 +1248,24 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
                 logger=log)
         except Exception as e:
             log(f"  Could not refresh velociraptor build files: {e}", "warning")
+
+        # Refresh every sidecar module's docker-compose.yaml from the new
+        # release source. These modules each version-upgrade independently
+        # (their own upgrade_<module>() only bumps .env pins and reuses
+        # whatever compose file is already on disk) — nothing else ever
+        # refreshes the compose file itself, so a box installed before a
+        # structural compose change (a mount, a healthcheck, a capability)
+        # would otherwise run it FOREVER, through any number of upgrades.
+        # File-only refresh: never touches config/, secrets/, or data under
+        # the module dir. Takes effect the next time that module's compose
+        # comes up (its own version bump, or an operator restart) — this
+        # step alone does not recreate any container.
+        for _sidecar in ('velociraptor', 'iris', 'timesketch', 'elk',
+                          'portainer', 'volweb', 'nginx'):
+            try:
+                refresh_module_compose_file(_sidecar, intact_root, logger=log)
+            except Exception as e:
+                log(f"  Could not refresh {_sidecar} compose file: {e}", "warning")
 
     # Importability gate — BEFORE stamping VERSION and before the orchestrator
     # can schedule the restart. The orchestrator only saves awaiting_restart +
