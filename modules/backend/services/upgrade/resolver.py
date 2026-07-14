@@ -434,13 +434,13 @@ def resolve_upgrade_chain(current_ref: Optional[str],
 # system — infrastructure managed by install.sh, with no upgrade handler
 # (not in PRIMARY_IMAGES, not in offline_upgrade_functions). Explicit, documented
 # skip so the picker never offers a non-upgradeable row.
-_NON_UPGRADEABLE = {'portainer'}
+_NON_UPGRADEABLE = set()
 
 # Preferred display order for the module picker. Any module NOT listed here —
 # e.g. a brand-new module added to config.yaml — is appended after these
 # (alphabetically), so new modules appear automatically with no code change.
 _MODULE_DISPLAY_ORDER = ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor',
-                         'aws_sigma', 'o365rc', 'volweb', 'cve_scan']
+                         'aws_sigma', 'o365rc', 'volweb', 'cve_scan', 'portainer']
 
 
 def _upstream_module_rows(upstream_cfg: dict, target_ref: str) -> List[Dict]:

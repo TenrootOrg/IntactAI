@@ -11,6 +11,12 @@ services:
     # 2026-06-14 dropped the `:-3-management-alpine` fallback.
     image: rabbitmq:${RABBITMQ_VERSION:?must be set via modules/iris/.env — see versions.iris_rabbitmq in config.yaml}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 20s
     networks:
       - iris_internal
 
@@ -29,6 +35,12 @@ services:
       - ./scripts/postgres_start_with_secrets.sh:/postgres_start_with_secrets.sh:ro
       - iris_db_data:/var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
     networks:
       - iris_internal
 
@@ -56,8 +68,10 @@ services:
       - iris_server_data:/home/iris/server_data
     restart: unless-stopped
     depends_on:
-      - iris-rabbitmq
-      - iris-db
+      iris-rabbitmq:
+        condition: service_healthy
+      iris-db:
+        condition: service_healthy
     networks:
       - iris_internal
       - intact_network
@@ -85,9 +99,12 @@ services:
       - iris_server_data:/home/iris/server_data
     restart: unless-stopped
     depends_on:
-      - iris-rabbitmq
-      - iris-db
-      - iris-app
+      iris-rabbitmq:
+        condition: service_healthy
+      iris-db:
+        condition: service_healthy
+      iris-app:
+        condition: service_started
     networks:
       - iris_internal
 

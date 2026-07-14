@@ -4,10 +4,23 @@
 services:
   portainer-agent:
     container_name: intact_portainer_agent
-    image: portainer/agent:${PORTAINER_AGENT_VERSION:-2.27.0}
+    image: portainer/agent:${PORTAINER_AGENT_VERSION:-2.39.5}
+    # Only the real docker.sock mount is needed for the agent to manage
+    # containers/images/networks/volumes via the Docker API. The
+    # /var/lib/docker/volumes host mount (dropped here) only powers
+    # Portainer's optional "browse volume contents by host path" file
+    # browser feature, which isn't used — it was pure extra host
+    # filesystem exposure for a feature we don't need.
+    #
+    # NOT fronted by a docker-socket-proxy: the agent already implements
+    # its own protocol-level restriction between itself and the Portainer
+    # server (it isn't a raw docker.sock passthrough), and real-world
+    # reports (Tecnativa/docker-socket-proxy#57) show wrapping the agent's
+    # own socket in a second generic proxy breaks agent<->server
+    # connectivity with no documented fix — not worth the risk for a
+    # narrower, already-partially-covered threat model.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /var/lib/docker/volumes:/var/lib/docker/volumes
     restart: unless-stopped
     networks:
       - portainer_internal
@@ -15,7 +28,7 @@ services:
 
   portainer:
     container_name: intact_portainer
-    image: portainer/portainer-ce:${PORTAINER_VERSION:-2.27.0}
+    image: portainer/portainer-ce:${PORTAINER_VERSION:-2.39.5}
     # Serve the UI with the shared Nginx TLS cert so Portainer presents the
     # same certificate as the rest of the stack on :443, instead of the
     # self-signed cert Portainer generates internally on first run.

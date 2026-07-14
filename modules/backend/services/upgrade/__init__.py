@@ -42,6 +42,7 @@ from .plaso import upgrade_plaso, upgrade_plaso_offline
 from .aws import upgrade_aws, upgrade_aws_offline
 from .azure import upgrade_azure, upgrade_azure_offline
 from .volweb import upgrade_volweb, upgrade_volweb_offline, install_volweb_offline
+from .portainer import upgrade_portainer, upgrade_portainer_offline, install_portainer_offline
 from .elk import install_elk_offline
 from .timesketch import install_timesketch_offline
 from .velociraptor import install_velociraptor_offline
@@ -63,7 +64,8 @@ from services.storage.base import (
 # drift incident — a module present in one copy but missing from another — is
 # why it now lives in exactly one place, referenced everywhere.
 UPGRADE_ORDER = ['intact', 'elk', 'timesketch', 'plaso', 'iris',
-                 'velociraptor', 'aws_sigma', 'o365rc', 'volweb', 'cve_scan']
+                 'velociraptor', 'aws_sigma', 'o365rc', 'volweb', 'cve_scan',
+                 'portainer']
 
 # Module ids renamed across releases. Old-code Phase-1 resume state, manifests
 # inside packages prepared by OLD releases, and legacy API callers still carry
@@ -654,6 +656,7 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
         'volweb': upgrade_volweb,
         'intact': upgrade_intact,
         'cve_scan': upgrade_cve,
+        'portainer': upgrade_portainer,
     }
 
     results = {}
@@ -1086,6 +1089,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'volweb': lambda v, **kw: upgrade_volweb_offline(package_dir, v, **kw),
             'intact': lambda **kw: upgrade_intact_offline(package_dir, **kw),
             'cve_scan': lambda v, **kw: upgrade_cve_offline(package_dir, v, **kw),
+            'portainer': lambda v, **kw: upgrade_portainer_offline(package_dir, v, **kw),
         }
         # Install-vs-upgrade dispatch: when a module's container doesn't exist
         # yet (fresh install via the upgrade flow) Phase-2 must run the INSTALL
@@ -1098,6 +1102,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'iris':         lambda v, **kw: install_iris_offline(package_dir, v, **kw),
             'velociraptor': lambda v, **kw: install_velociraptor_offline(package_dir, v, **kw),
             'volweb':       lambda v, **kw: install_volweb_offline(package_dir, v, **kw),
+            'portainer':    lambda v, **kw: install_portainer_offline(package_dir, v, **kw),
         }
     else:
         # Backward-compat path for older-release states saved as mode='online'
@@ -1632,6 +1637,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         'intact': upgrade_intact_offline,
         'volweb': upgrade_volweb_offline,
         'cve_scan': upgrade_cve_offline,
+        'portainer': upgrade_portainer_offline,
     }
 
     # Fresh-install functions — picked by the dispatcher when the module's
@@ -1644,6 +1650,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         'iris':         install_iris_offline,
         'velociraptor': install_velociraptor_offline,
         'volweb':       install_volweb_offline,
+        'portainer':    install_portainer_offline,
         # On-demand modules — same function handles both install and
         # upgrade (the only difference is whether CLOUDTRAIL_VERSION /
         # DFIR_O365RC_VERSION was already pinned). Registering them here

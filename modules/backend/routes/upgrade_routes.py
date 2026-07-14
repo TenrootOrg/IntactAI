@@ -603,7 +603,7 @@ def get_upgrade_status():
         latest = get_latest_versions()
 
         versions = {}
-        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws_sigma', 'o365rc', 'volweb', 'intact']:
+        for module in ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor', 'aws_sigma', 'o365rc', 'volweb', 'intact', 'portainer']:
             versions[module] = {
                 'latest': latest.get(module, 'unknown')
             }
@@ -942,7 +942,9 @@ def prepare_upgrade_package():
             'velociraptor': 1,
             'aws_sigma': 1,
             'o365rc': 1,
-            'intact': 2
+            'intact': 2,
+            'volweb': 2,
+            'portainer': 2,
         }
         total_steps = sum(steps_per_module.get(m, 1) for m in modules.keys()) + 2  # +2 for manifest and archive
         completed_steps = [0]
@@ -1101,7 +1103,7 @@ def start_online_upgrade():
         steps_per_module_prepare = {
             'elk': 3, 'timesketch': 1, 'plaso': 1, 'iris': 2,
             'velociraptor': 1, 'aws_sigma': 1, 'o365rc': 1,
-            'volweb': 2, 'intact': 2,
+            'volweb': 2, 'intact': 2, 'portainer': 2,
         }
         prepare_steps_total = sum(steps_per_module_prepare.get(m, 1) for m in modules) + 1
         apply_steps_total = len(modules)

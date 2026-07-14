@@ -203,6 +203,12 @@ update_env_files() {
         if [[ -f "$portainer_env" ]]; then
             local portainer_version=$(read_config "['versions']['portainer']")
             update_env_var "$portainer_env" "PORTAINER_VERSION" "$portainer_version"
+            # Portainer's own docs require the agent to run the SAME version
+            # as the server — one config.yaml pin drives both (this was
+            # previously only stamping the server's version, leaving the
+            # agent permanently floating on the compose file's hardcoded
+            # fallback regardless of what was pinned here).
+            update_env_var "$portainer_env" "PORTAINER_AGENT_VERSION" "$portainer_version"
             log_success "Updated Portainer .env"
         else
             log_warn "Portainer .env not found, skipping"

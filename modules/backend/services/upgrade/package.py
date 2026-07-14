@@ -56,6 +56,12 @@ PRIMARY_IMAGES = {
         ('forensicxlab/volweb-frontend:{version}',
          'volweb-frontend-{version}.tar'),
     ],
+    'portainer': [
+        # Portainer's own docs require the agent to match the server's
+        # version exactly — one `versions.portainer` pin drives both.
+        ('portainer/portainer-ce:{version}', 'portainer-ce-{version}.tar'),
+        ('portainer/agent:{version}', 'portainer-agent-{version}.tar'),
+    ],
 }
 
 

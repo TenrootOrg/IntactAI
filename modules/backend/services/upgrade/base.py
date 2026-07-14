@@ -387,12 +387,25 @@ def _probe_volweb():
     return ('down', 'volweb backend not running')
 
 
+def _probe_portainer():
+    # Portainer's official image ships no curl (minimal/distroless-style
+    # base) — probe over the docker network from this backend process
+    # instead of docker-exec'ing curl inside the container.
+    code = _net_http_code('https://intact_portainer:9443/')
+    if code is not None:
+        return ('healthy', f'UI answers HTTP {code}')
+    if _container_state('intact_portainer') == 'running':
+        return ('degraded', 'container up but HTTPS probe failing')
+    return ('down', 'portainer container not running')
+
+
 _MODULE_HEALTH_PROBES = {
     'elk': (_probe_elk, 'intact_elasticsearch'),
     'timesketch': (_probe_timesketch, 'intact_timesketch_web'),
     'iris': (_probe_iris, 'intact_iris_app'),
     'velociraptor': (_probe_velociraptor, 'intact_velociraptor'),
     'volweb': (_probe_volweb, 'intact_volweb_backend'),
+    'portainer': (_probe_portainer, 'intact_portainer'),
 }
 
 
@@ -482,6 +495,10 @@ _MODULE_IMAGE_REPOS = {
     ],
     'o365rc': [
         'anssi/dfir-o365rc',
+    ],
+    'portainer': [
+        'portainer/portainer-ce',
+        'portainer/agent',
     ],
 }
 
@@ -1211,6 +1228,14 @@ def get_current_versions() -> Dict:
         'env_file': volweb_env,
     }
 
+    # Portainer — optional infra, ships enabled: false. Reports 'Not
+    # installed' when the operator never enabled/deployed it.
+    portainer_env = os.path.join(WORKDIR, 'modules', 'portainer', '.env')
+    versions['portainer'] = {
+        'current': _read_module_version('portainer', portainer_env, 'PORTAINER_VERSION'),
+        'env_file': portainer_env,
+    }
+
     # On-demand/native modules (CloudTrail / DFIR-O365RC) have no long-running
     # container — the install signal is the .env pin AND the
     # modules.<name>.enabled flag in config.yaml. install.sh seeds the
@@ -1301,6 +1326,9 @@ def get_latest_versions() -> Dict:
         # — not pinned in config.yaml; the compose file defaults them
         # via ${VAR:-x}.
         'volweb':       'volweb',
+        # Optional infra (ships enabled: false). One config.yaml pin drives
+        # both server + agent images.
+        'portainer':    'portainer',
     }
     fallback = {
         'elk': '9.3.3',
@@ -1312,6 +1340,7 @@ def get_latest_versions() -> Dict:
         'o365rc': 'latest',
         'intact': '1.0.0',
         'volweb': '3.16.0',
+        'portainer': '2.39.5',
     }
 
     # config.yaml lives at the repo root, which is mounted at WORKDIR

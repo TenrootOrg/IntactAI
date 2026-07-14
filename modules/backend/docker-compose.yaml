@@ -66,7 +66,11 @@ services:
       - ${INTACT_HOST_PATH:-/home/tenroot/intact}:${INTACT_HOST_PATH:-/home/tenroot/intact}:rw
       - /opt/sigma-rules:/opt/sigma-rules:ro  # SIGMA detection rules for Azure automation
     ports:
-      - "5001:5001"
+      # Localhost-only: nginx already reaches this over the internal Docker
+      # network (intact_network, service name `intact_backend`) — the host
+      # port is only for local debugging (curl/docker exec from the box
+      # itself), never needed from outside.
+      - "127.0.0.1:5001:5001"
     restart: unless-stopped
     # Flask + celery workers cache one SQLite connection per worker
     # thread in threading.local() (services/storage/base.py,
