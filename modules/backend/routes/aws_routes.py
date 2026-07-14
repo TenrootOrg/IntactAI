@@ -137,7 +137,7 @@ def start_scan():
         {
             "blueprint": "aws_quick_triage" | {custom dict},
             "regions": ["us-east-1", ...],
-            "time_filter": {"type":"relative","value":"24h"} | {"type":"between","start":"...","end":"..."},
+            "time_filter": {"enabled":true,"mode":"relative","relative_range":"24h"} | {"enabled":true,"mode":"between","start_datetime":"...","end_datetime":"..."},
             "scope_mode": "targeted" | "account_wide",
             "target_principals": ["arn:aws:iam::...:user/X"],
             "cloudtrail_mode": "light" | "full",

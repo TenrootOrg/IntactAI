@@ -21,7 +21,6 @@ from .sigma_runner import run_sigma_rules, load_azure_rules, validate_rules_dire
 # Reuse existing agentic components
 from services.agentic.utils import (
     filter_results_by_time,
-    create_time_filter_func,
     normalize_all_results,
 )
 from services.workflow_logger import add_log_to_run
@@ -115,13 +114,11 @@ def _run_post_collection_phases(
 
     # ---- Phase 3: Time filter ----
     time_filter = options.get('time_filter')
-    if time_filter:
+    if time_filter and time_filter.get('enabled'):
         add_log_to_run(run_id, f"[AZURE] Applying time filter: {time_filter}", "info")
-        time_filter_func = create_time_filter_func(time_filter)
-        if time_filter_func:
-            collected_data = filter_results_by_time(collected_data, time_filter_func)
-            filtered_count = sum(len(v) for v in collected_data.values())
-            add_log_to_run(run_id, f"[AZURE] After time filter: {filtered_count} records", "info")
+        collected_data = filter_results_by_time(collected_data, time_filter, run_id=run_id)
+        filtered_count = sum(len(v) for v in collected_data.values())
+        add_log_to_run(run_id, f"[AZURE] After time filter: {filtered_count} records", "info")
 
     result['collected_data'] = collected_data
     _set_progress(run_id, 60)

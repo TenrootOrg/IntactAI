@@ -493,7 +493,14 @@ def run_cve_hunt():
                 save_workflow(wf)
 
                 if not chain:
-                    update_run_status(run_id, 'completed', progress=100)
+                    # 'running', not 'completed' — the hunt was only just
+                    # dispatched. dashboard_routes.get_automation_details()
+                    # flips this to 'completed' once Velociraptor reports
+                    # every scheduled client's flow actually finished (same
+                    # reconciliation the velociraptor_hunt dispatch route uses;
+                    # this run already carries automation_type='velociraptor_hunt'
+                    # and details['hunt_id'], which is all that logic needs).
+                    update_run_status(run_id, 'running', progress=90)
                     add_log_to_run(run_id, f"[CVE] Hunt dispatched. To run the CVE scan later, paste "
                                           f"hunt id '{hunt_id}' into the 'Use existing hunt / flow' tab.", "info")
                     return

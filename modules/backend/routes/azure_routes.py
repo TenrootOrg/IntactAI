@@ -139,7 +139,7 @@ def start_scan():
     Request body:
     {
         "blueprint": "azure_quick_scan" | "azure_full_investigation" | {...custom...},
-        "time_filter": {"type": "relative", "value": "7d"} | {"type": "between", "start": "...", "end": "..."}
+        "time_filter": {"enabled": true, "mode": "relative", "relative_range": "7d"} | {"enabled": true, "mode": "between", "start_datetime": "...", "end_datetime": "..."}
     }
     """
     # Always create workflow first so everything is visible in logs

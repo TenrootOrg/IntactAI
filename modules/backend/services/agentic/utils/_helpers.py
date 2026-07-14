@@ -221,64 +221,6 @@ def normalize_all_results(all_results):
 
 
 
-def create_time_filter_func(time_filter):
-    """Create a row-level time filter function from time_filter config.
-
-    Returns a function that takes a row and returns True if it passes the filter.
-    Returns None if time filtering is not enabled.
-    """
-    if not time_filter or not time_filter.get('enabled'):
-        return None
-
-    from datetime import timedelta
-
-    mode = time_filter.get('mode', 'relative')
-    now = datetime.utcnow()
-
-    if mode == 'between':
-        start_str = time_filter.get('start_datetime')
-        end_str = time_filter.get('end_datetime')
-        try:
-            start_time = datetime.fromisoformat(start_str.replace('Z', '+00:00').replace('+00:00', '')) if start_str else None
-            end_time = datetime.fromisoformat(end_str.replace('Z', '+00:00').replace('+00:00', '')) if end_str else now
-        except Exception:
-            return None
-    else:
-        # Relative mode
-        range_str = time_filter.get('relative_range') or time_filter.get('default_range', '7d')
-        end_time = now
-        if range_str.endswith('h'):
-            hours = int(range_str[:-1])
-            start_time = now - timedelta(hours=hours)
-        elif range_str.endswith('d'):
-            days = int(range_str[:-1])
-            start_time = now - timedelta(days=days)
-        else:
-            start_time = now - timedelta(days=7)
-
-    def is_row_in_range(row):
-        """Check if row's timestamp falls within the time range."""
-        field_path, value = find_field_recursive(row, TIMESTAMP_FIELDS)
-        if not field_path:
-            return True  # No timestamp field - include by default
-
-        ts = parse_timestamp(value)
-        if not ts:
-            return True  # Unparseable - include
-
-        # Make timezone-naive for comparison
-        if hasattr(ts, 'tzinfo') and ts.tzinfo is not None:
-            ts = ts.replace(tzinfo=None)
-
-        if start_time and ts < start_time:
-            return False
-        if end_time and ts > end_time:
-            return False
-        return True
-
-    return is_row_in_range
-
-
 def filter_results_by_time(all_results, time_filter, run_id=None):
     """Filter artifact results by timestamp for post-collection filtering.
 

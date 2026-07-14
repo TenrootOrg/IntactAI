@@ -21,7 +21,6 @@ from .collectors import LOG_SOURCES, collect_aws_logs, parse_uploaded_logs
 from .sigma_runner import load_aws_rules, run_sigma_rules, validate_rules_directory
 
 from services.agentic.utils import (
-    create_time_filter_func,
     filter_results_by_time,
     normalize_all_results,
 )
@@ -119,13 +118,11 @@ def _run_post_collection_phases(
         return result
 
     time_filter = options.get('time_filter')
-    if time_filter:
+    if time_filter and time_filter.get('enabled'):
         add_log_to_run(run_id, f"[AWS] Applying time filter: {time_filter}", "info")
-        time_filter_func = create_time_filter_func(time_filter)
-        if time_filter_func:
-            collected_data = filter_results_by_time(collected_data, time_filter_func)
-            filtered_count = sum(len(v) for v in collected_data.values())
-            add_log_to_run(run_id, f"[AWS] After time filter: {filtered_count} records", "info")
+        collected_data = filter_results_by_time(collected_data, time_filter, run_id=run_id)
+        filtered_count = sum(len(v) for v in collected_data.values())
+        add_log_to_run(run_id, f"[AWS] After time filter: {filtered_count} records", "info")
 
     result['collected_data'] = collected_data
     _set_progress(run_id, 60)
