@@ -163,7 +163,12 @@ sources:
          condition=metadata_preparation,
          then=array(a=metadata_preparation.metadata[0].IRIS_AssetId),
          else=if(condition=syncAsset.Result[0]="SUCCESS",
-                 then=array(a=metadata_preparation.metadata[0].IRIS_AssetId),else=[]))
+                 # First-sync case: metadata_preparation is empty here (that's
+                 # WHY we're in this branch — no existing IRIS_AssetId), so
+                 # re-reading it (the old code) always yielded null and every
+                 # first-sync timeline event shipped with no asset link. The
+                 # newly-created asset id comes back on syncAsset itself.
+                 then=array(a=syncAsset.IRIS_AssetId[0]),else=[]))
 
       LET eventAsset2 = if(condition=AdditionalAssetId,then=split(string=AdditionalAssetId,sep=",|;"),else=[])
 

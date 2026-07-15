@@ -397,9 +397,18 @@ def nvd_query(keyword, use_cpe=False, log: Optional[Callable] = None):
         return None
     all_vulns = []
     idx = 0
+    truncated = False
     while True:
         data = nvd_query_page(keyword, idx, use_cpe=use_cpe, log=log)
         if data is None:
+            # A page failed after exhausting nvd_query_page's own retries —
+            # including page 0 (a transient failure on the very first page
+            # would otherwise look identical to "genuinely zero CVEs").
+            # Returning what we have so far (like before) makes a transient
+            # mid-scan outage indistinguishable from "this is the complete
+            # result" once it's cached — mark it so the caller knows NOT to
+            # treat/cache this as a final answer.
+            truncated = True
             break
         vulns = data.get("vulnerabilities", [])
         all_vulns.extend(vulns)
@@ -407,7 +416,7 @@ def nvd_query(keyword, use_cpe=False, log: Optional[Callable] = None):
         idx += len(vulns)
         if idx >= total or not vulns:
             break
-    return {"vulnerabilities": all_vulns, "totalResults": len(all_vulns)}
+    return {"vulnerabilities": all_vulns, "totalResults": len(all_vulns), "truncated": truncated}
 
 
 # ---------------------------------------------------------------------------
@@ -585,7 +594,18 @@ def cpe_matches_version(cpe_match, version):
             ev = parse_version(end)
             if iv and ev:
                 imaj, emaj = iv[0], ev[0]
-                if emaj > 0 and imaj * 2 < emaj:
+                # Guard against comparing two genuinely different version
+                # SCHEMES (e.g. a small semver major like "3" vs a
+                # date-encoded version like "20260615"), not a real
+                # old-vs-new gap. The previous linear "imaj*2 < emaj"
+                # threshold rejected exactly the highest-risk case for a
+                # vuln scanner: very outdated (but same-scheme) software —
+                # e.g. installed "1.2" vs versionEndExcluding "10.0"
+                # (1*2=2 < 10) silently hid a genuine, severe match. Compare
+                # digit COUNT (order of magnitude) instead: only a scheme
+                # mismatch produces a 3+ order-of-magnitude gap; a normal
+                # "very old version" gap never does.
+                if emaj > 0 and len(str(emaj)) - len(str(imaj)) >= 3:
                     return False
     return True
 
@@ -670,6 +690,17 @@ def _fetch(query, use_cpe, cache, cache_path: Path, log: Optional[Callable] = No
                 "vulnerabilities": data.get("vulnerabilities", []),
                 "totalResults": data.get("totalResults", 0),
             }
+        # A truncated fetch (NVD outage/timeout mid-pagination) must NEVER be
+        # cached as if it were the complete, authoritative result — that
+        # previously poisoned this product's CVE list permanently (every
+        # future scan would reuse the incomplete cache and silently miss
+        # real CVEs) until an operator manually deleted the cache file.
+        # Skip the write entirely so the next scan retries a fresh fetch.
+        if data is not None and data.get("truncated"):
+            if log:
+                log(f"[CVE] NVD fetch for {query!r} was truncated by an error — "
+                    f"not caching partial results", "warning")
+            return blob
         with _cache_lock:
             cache[cache_key] = blob
             save_cache(cache, cache_path)
@@ -949,7 +980,13 @@ def _fetch_cve_detail(cve_id, cache, cache_path: Path, log: Optional[Callable] =
                 if log:
                     log(f"[CVE] CVE-detail error {cve_id}: {e} (retry in {wait}s)", "warning")
                 time.sleep(wait)
-        cache[cve_id] = None
+        # Don't cache a transient-failure None as if it were a confirmed
+        # "no detail exists" answer — that previously made a single flaky
+        # request permanently hide this CVE's detail (e.g. its real CVSS
+        # score) from every future scan. Leave it uncached so the next
+        # lookup retries instead.
+        if log:
+            log(f"[CVE] CVE-detail gave up after 3 attempts on {cve_id} — not caching", "warning")
         return None
 
 

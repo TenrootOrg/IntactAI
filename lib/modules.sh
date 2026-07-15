@@ -99,9 +99,15 @@ generate_portainer_secrets() {
         # admin user to never be created and the UI falls back to the
         # timed-out "initial setup" state — exactly what we're trying to avoid.
         if [[ -z "$portainer_password" || "$portainer_password" == "None" || ${#portainer_password} -lt 12 ]]; then
-            log_warn "  Portainer password missing or < 12 chars in config.yaml; using built-in default '1234qwer!@#\$'"
+            # A hardcoded fallback here would ship the same publicly-known
+            # password to every default install (the exact string is visible
+            # in this open-source file) — generate a random one instead, the
+            # same way every other auto-provisioned secret in this codebase
+            # is handled (see IRIS_SECRET_KEY / POSTGRES_*_PASSWORD above).
+            portainer_password=$(openssl rand -hex 16)
+            log_warn "  Portainer password missing or < 12 chars in config.yaml; generated a random one instead"
+            log_warn "  Retrieve it with: cat ${secrets_dir}/admin_password"
             log_warn "  Change it from the Portainer UI after first login (Settings -> Users)"
-            portainer_password='1234qwer!@#$'
         fi
         printf '%s' "$portainer_password" > "$secrets_dir/admin_password"
         chmod 600 "$secrets_dir/admin_password"

@@ -497,6 +497,18 @@ class DataAnonymizer:
 
         return path
 
+    # Matches a common "flag introducing a credential" shape immediately
+    # followed by its value — /user:DOMAIN\name PASSWORD, -Credential X Y,
+    # password=X, --password X, pwd=X, /p:X — used by _mask_commandline to
+    # catch plaintext secrets that _mask_value's whole-field _is_credential
+    # check never sees (it only runs on an entire field value, never on
+    # substrings of a longer CommandLine string).
+    _CMDLINE_CRED_FLAG_RE = re.compile(
+        r'(?P<flag>/user:\S+\s+|-credential\s+\S+[\s,]+|--?p(?:assword|wd|ass)?[:=\s]+)'
+        r'(?P<secret>[^\s\'",)]+)',
+        re.IGNORECASE
+    )
+
     def _mask_commandline(self, cmd: str) -> str:
         """Mask sensitive data within a command line while preserving structure."""
         if not cmd:
@@ -520,6 +532,25 @@ class DataAnonymizer:
             username = match.group(2)
             masked_user = self._safe_user_pseudo(username)
             masked = masked.replace(full_match, f"{match.group(1)}{masked_user}")
+
+        # Mask plaintext credentials following a known flag
+        # (net use ... /user:CORP\jdoe P@ssw0rd123!, -Credential ('u','pw'), etc.)
+        for match in self._CMDLINE_CRED_FLAG_RE.finditer(cmd):
+            secret = match.group('secret')
+            if not secret or secret.lower() in _TRIVIAL_VALUES:
+                continue
+            pseudo = self._get_or_create_pseudo(secret, "credential")
+            masked = masked.replace(secret, pseudo)
+
+        # Mask any whitespace/quote-delimited token that itself matches a
+        # known credential format (API key/token/hash) — _is_credential only
+        # runs against a WHOLE field value elsewhere, so a key embedded
+        # inside a longer command line (e.g. an API key passed as a CLI arg)
+        # was never checked at all until now.
+        for token in re.split(r'[\s\'",()]+', cmd):
+            if token and self._is_credential(token):
+                pseudo = self._get_or_create_pseudo(token, "credential")
+                masked = masked.replace(token, pseudo)
 
         # Store the full command mapping if changed
         if masked != cmd:

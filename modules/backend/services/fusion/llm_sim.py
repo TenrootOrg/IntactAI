@@ -674,11 +674,14 @@ def _simulated_analysis(graph, findings) -> dict:
 
 def analyze(graph, *, window=None, min_severity="informational", run_id=None,
             dispositions=None, max_entities=None, budget_chars=None,
-            max_output_tokens=None) -> dict:
+            max_output_tokens=None, mask=None) -> dict:
     """ADVISORY analyst pass over the distilled graph: incident-grouping + grounded
     hypotheses. Reuses the agentic skills corpus for expertise. Never mutates
     graph.findings. Real path is grounding-gated; simulated path is deterministic.
-    `max_entities`/`budget_chars` size the LLM payload (the case 'LLM payload' knob)."""
+    `max_entities`/`budget_chars` size the LLM payload (the case 'LLM payload' knob).
+    `mask` (optional DataAnonymizer) anonymizes the LLM payload the same way
+    generate_report() does — previously this pass sent the graph to the LLM
+    unmasked even when the case had masking enabled."""
     me = max_entities or budget.REPORT_MAX_ENTITIES
     bc = budget_chars or budget.REPORT_BUDGET_CHARS
     _, findings = render.scope(graph, window=window, min_severity=min_severity)
@@ -706,7 +709,13 @@ def analyze(graph, *, window=None, min_severity="informational", run_id=None,
         if dispositions:
             user += ("\n\nOPERATOR DISPOSITIONS (already triaged — do not re-flag): "
                      + json.dumps(dispositions))
+        if mask:                                  # anonymize the LLM input too
+            _build_mask_mapping(graph, mask)
+            _log_mask_audit(run_id, mask, user)
+            user = _apply_mask(user, mask)
+            system = _MASK_IDENTITY_LEGEND + system
         raw = _real_llm(system, user, run_id=run_id, max_output_tokens=max_output_tokens)
+        raw = _revert_mask(raw, mask)
         return _ground(_parse_json(raw), graph)
     except Exception:  # noqa: BLE001 — advisory only; never break a case
         return _simulated_analysis(graph, findings)
@@ -734,10 +743,13 @@ def _simulated_checklist(findings) -> list:
 
 
 def generate_disposition_checklist(graph, *, window=None, min_severity="high",
-                                   run_id=None) -> list:
+                                   run_id=None, mask=None) -> list:
     """Customer-confirmation checklist: per high finding, a likely-benign yes/no question
     the customer accepts (=> dispositioned benign) or declines (=> kept). Grounded to real
-    finding_ids; deterministic fallback when no real LLM. Never raises."""
+    finding_ids; deterministic fallback when no real LLM. Never raises.
+    `mask` (optional DataAnonymizer) anonymizes the LLM payload the same way
+    generate_report() does — previously this pass sent the graph to the LLM
+    unmasked even when the case had masking enabled."""
     _, findings = render.scope(graph, window=window, min_severity=min_severity)
     high = [f for f in findings if sev.at_least(f.severity, "high")] or findings
     if not _use_real():
@@ -746,7 +758,15 @@ def generate_disposition_checklist(graph, *, window=None, min_severity="high",
         payload = render.distilled(graph, window=window, min_severity=min_severity,
                                    max_entities=budget.REPORT_MAX_ENTITIES,
                                    budget_chars=budget.REPORT_BUDGET_CHARS)
-        raw = _real_llm(CHECKLIST_SYSTEM_PROMPT, json.dumps(payload), run_id=run_id)
+        payload_str = json.dumps(payload)
+        system = CHECKLIST_SYSTEM_PROMPT
+        if mask:                                  # anonymize the LLM input too
+            _build_mask_mapping(graph, mask)
+            _log_mask_audit(run_id, mask, payload_str)
+            payload_str = _apply_mask(payload_str, mask)
+            system = _MASK_IDENTITY_LEGEND + system
+        raw = _real_llm(system, payload_str, run_id=run_id)
+        raw = _revert_mask(raw, mask)
         data = _parse_json(raw)
         valid = {f.id for f in graph.findings}
         out = []
@@ -820,9 +840,13 @@ def _classify_llm_error(exc) -> str:
 
 def chat(graph, question: str, history=None, *, window=None, min_severity="informational",
          run_id=None, dispositions=None, validations=None, full_context=None,
-         max_output_tokens=None, require_llm=False) -> str:
+         max_output_tokens=None, require_llm=False, mask=None) -> str:
     """Grounded Q&A. Real path narrates the distilled graph; simulated = deterministic
-    retrieval. Surfaces operator dispositions (what's been triaged as benign/IT)."""
+    retrieval. Surfaces operator dispositions (what's been triaged as benign/IT).
+    `mask` (optional DataAnonymizer) anonymizes the LLM payload the same way
+    generate_report() does — previously chat ALWAYS sent the full, real graph
+    (hostnames/usernames/IPs/cmdlines) to the LLM regardless of the case's
+    masking setting, since chat_case() hardcodes full_context=True."""
     # --- entity resolution + safety clarify (BEFORE any LLM call, so an ambiguous
     # or typo'd host name is never silently answered on the wrong machine). The
     # clarify reply reads as the assistant asking back; it costs no LLM tokens.
@@ -869,9 +893,15 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
             if validations:
                 payload["analyst_validations"] = validations      # Timeline real/not-real/known
             turns = "".join(f"{m.get('role')}: {m.get('content')}\n" for m in (history or []))
-            return _real_llm(CHAT_SYSTEM_PROMPT,
-                             f"{json.dumps(payload)}\n\n{turns}Q: {question}", run_id=run_id,
-                             max_output_tokens=max_output_tokens)
+            user = f"{json.dumps(payload)}\n\n{turns}Q: {question}"
+            system = CHAT_SYSTEM_PROMPT
+            if mask:                                  # anonymize the LLM input too
+                _build_mask_mapping(graph, mask)
+                _log_mask_audit(run_id, mask, user)
+                user = _apply_mask(user, mask)
+                system = _MASK_IDENTITY_LEGEND + system
+            ans = _real_llm(system, user, run_id=run_id, max_output_tokens=max_output_tokens)
+            return _revert_mask(ans, mask)
         except Exception as e:  # noqa: BLE001
             if require_llm:
                 # No silent deterministic fallback for the case chat: surface the

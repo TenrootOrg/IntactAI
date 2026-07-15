@@ -15,6 +15,18 @@ from pyvelociraptor import api_pb2_grpc
 
 from services.velociraptor_service import setup_velociraptor_connection
 from services.workflow_service import add_log_to_run
+from services.vql_safety import is_valid_client_id, is_valid_flow_id, is_valid_hunt_id
+
+
+def _is_valid_hunt_or_derived_flow_id(value: str) -> bool:
+    """True for a real hunt id (H.xxx) OR the hunt-derived flow-id shape
+    (F.xxx.H) that get_existing_collection_results also accepts and
+    normalizes into an H.xxx id before querying hunt_flows()."""
+    if is_valid_hunt_id(value):
+        return True
+    if value.startswith('F.') and value.endswith('.H') and len(value) > 4:
+        return is_valid_hunt_id('H.' + value[2:-2])
+    return False
 
 logger = logging.getLogger(__name__)
 
@@ -589,6 +601,20 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
     artifacts = []
     client_info = {}
 
+    # Defense-in-depth: flow_id/hunt_id/client_ids are interpolated directly
+    # into VQL string literals throughout this function with no escaping.
+    # This is reachable from an operator-supplied POST body (e.g.
+    # routes/cve_routes.py's /api/cve/scan/from-flow), so reject anything
+    # that isn't shaped like a real Velociraptor id before any query runs.
+    if hunt_id and not _is_valid_hunt_or_derived_flow_id(hunt_id):
+        add_log_to_run(run_id, f"[Velociraptor] Rejecting invalid hunt_id: {hunt_id!r}", "error")
+        return all_results, artifacts, client_info
+    if client_ids:
+        bad = [c for c in client_ids if not is_valid_client_id(c)]
+        if bad:
+            add_log_to_run(run_id, f"[Velociraptor] Rejecting invalid client_ids: {bad!r}", "error")
+            return all_results, artifacts, client_info
+
     # Calculate time range (used for post-processing filter, not VQL)
     start_iso, end_iso = calculate_time_range(time_filter)
 
@@ -612,6 +638,11 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                 flow_ids = [str(f).strip() for f in flow_id if str(f).strip()]
             elif isinstance(flow_id, str) and flow_id.strip():
                 flow_ids = [f.strip() for f in flow_id.split(',') if f.strip()]
+
+        bad_flow_ids = [f for f in flow_ids if not is_valid_flow_id(f)]
+        if bad_flow_ids:
+            add_log_to_run(run_id, f"[Velociraptor] Rejecting invalid flow_id(s): {bad_flow_ids!r}", "error")
+            return all_results, artifacts, client_info
 
         if flow_ids:
             # Pretty log for one-vs-many cases

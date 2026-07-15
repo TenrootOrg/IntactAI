@@ -445,8 +445,14 @@ def attach(case_id):
     rids = d.get("run_ids") or ([d["run_id"]] if d.get("run_id") else [])
     if not rids:
         return jsonify({"error": "run_ids required"}), 400
-    members = store.attach_runs(case_id, rids)
+    members, rejected = store.attach_runs(case_id, rids)
     resp = {"case_id": case_id, "member_run_ids": members}
+    if rejected:
+        resp["rejected"] = rejected
+        resp["warning"] = (
+            f"{len(rejected)} run(s) already belong to a different case and were "
+            f"NOT attached (a run may only belong to one case at a time)."
+        )
     if d.get("watch"):                                  # auto-fuse when in-flight runs land
         import threading
         for rid in rids:

@@ -107,7 +107,7 @@ modules:
   portainer:
     enabled: true
     id: admin
-    password: '1234qwer!@#$' # Portainer requires >=12 chars; shorter values fall back to the same built-in default
+    password: '1234qwer!@#$' # Portainer requires >=12 chars; shorter values get a randomly-generated one instead (see lib/modules.sh)
   timesketch:
     enabled: true
     id: tenroot

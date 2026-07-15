@@ -580,11 +580,25 @@ def analyze_offline():
 # Results Endpoints (Shared)
 # =============================================================================
 
+def _run_visible_in_active_workspace(run_id: str) -> bool:
+    """Mirror dashboard_routes.py's _run_visible_in_active_workspace / list_runs()'s
+    own workspace check: _azure_runs entries carry no case_id, so without this
+    an operator in one case could read/download/delete another case's Azure
+    run just by guessing/reusing a run_id. No active case_id means no
+    filtering (admin/no-workspace-concept context)."""
+    from flask import g
+    case_id = getattr(g, "case_id", None)
+    if not case_id:
+        return True
+    wf = get_automation_run(run_id)
+    return bool(wf) and wf.get("case_id") == case_id
+
+
 @azure_bp.route('/api/azure/status/<run_id>', methods=['GET'])
 def get_run_status(run_id):
     """Get status of a specific run."""
     try:
-        if run_id not in _azure_runs:
+        if run_id not in _azure_runs or not _run_visible_in_active_workspace(run_id):
             return jsonify({'error': 'Run not found'}), 404
 
         run_data = _azure_runs[run_id]
@@ -625,7 +639,7 @@ def get_run_status(run_id):
 def get_run_results(run_id):
     """Get collected/uploaded data for a run."""
     try:
-        if run_id not in _azure_runs:
+        if run_id not in _azure_runs or not _run_visible_in_active_workspace(run_id):
             return jsonify({'error': 'Run not found'}), 404
 
         run_data = _azure_runs[run_id]
@@ -681,7 +695,7 @@ def get_run_results(run_id):
 def get_run_findings(run_id):
     """Get SIGMA detection findings for a run."""
     try:
-        if run_id not in _azure_runs:
+        if run_id not in _azure_runs or not _run_visible_in_active_workspace(run_id):
             return jsonify({'error': 'Run not found'}), 404
 
         run_data = _azure_runs[run_id]
@@ -716,7 +730,7 @@ def get_run_findings(run_id):
 def get_run_analysis(run_id):
     """Get LLM analysis results for a run."""
     try:
-        if run_id not in _azure_runs:
+        if run_id not in _azure_runs or not _run_visible_in_active_workspace(run_id):
             return jsonify({'error': 'Run not found'}), 404
 
         run_data = _azure_runs[run_id]
@@ -769,6 +783,8 @@ def download_azure_raw_data(run_id):
     import io
 
     try:
+        if not _run_visible_in_active_workspace(run_id):
+            return jsonify({'error': 'Raw data not found. Data is only available for scans run after this update.'}), 404
         # Try in-memory first, then persisted data
         run_data = _azure_runs.get(run_id)
         if not run_data:
@@ -844,7 +860,7 @@ def download_azure_raw_data(run_id):
 def delete_run(run_id):
     """Delete a run and its data."""
     try:
-        if run_id not in _azure_runs:
+        if run_id not in _azure_runs or not _run_visible_in_active_workspace(run_id):
             return jsonify({'error': 'Run not found'}), 404
 
         del _azure_runs[run_id]

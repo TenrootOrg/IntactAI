@@ -6,6 +6,7 @@ All upload progress is tracked in the Workflows tab via workflow runs.
 """
 
 from flask import Blueprint, request, jsonify
+from werkzeug.utils import secure_filename
 import os
 import json
 import threading
@@ -371,7 +372,14 @@ def handle_tus_hook():
             upload_id = upload_info.get('ID', '')
             file_path = f"/data/uploads/{upload_id}"
             purpose = metadata.get('purpose', '')
-            original_filename = metadata.get('filename', 'upload.zip')
+            # secure_filename() strips path-traversal sequences and unsafe
+            # characters — this value is client-supplied (TUS upload
+            # metadata) and flows into host filesystem paths downstream
+            # (e.g. process_kape_upload -> plaso_service derives
+            # PLASO_OUTPUT_DIR/<name>_Artifacts.plaso from it), unlike the
+            # sibling upload routes (aws/azure/velociraptor_offline) which
+            # already sanitize their uploaded filenames.
+            original_filename = secure_filename(metadata.get('filename', '')) or 'upload.zip'
             # Optional decryption password for an encrypted offline collection
             # (password scheme, or the recovered session password for X509/PGP).
             import_password = metadata.get('password') or None

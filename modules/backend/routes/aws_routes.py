@@ -165,10 +165,15 @@ def start_scan():
     if scope_mode not in ('targeted', 'account_wide'):
         return jsonify({"error": f"Invalid scope_mode: {scope_mode!r}. Use 'targeted' or 'account_wide'."}), 400
     if scope_mode == 'targeted' and not target_principals:
-        # In scaffold mode this is just a warning, not an error — we still
-        # have fixture data to run against. Once real boto3 lands this
-        # becomes a 400 like Azure.
-        pass
+        # boto3 collectors are live now (this used to be scaffold/fixture-only,
+        # when scope_mode was decorative — see routes/azure_routes.py's matching
+        # check). Without this, a "targeted" scan with no principals silently
+        # ran as a full unscoped account sweep: the analyst believes they're
+        # looking at a scoped investigation but gets everything.
+        return jsonify({
+            "error": "scope_mode='targeted' requires at least one target_principal. "
+                     "Pass scope_mode='account_wide' to hunt across the whole account."
+        }), 400
 
     cloudtrail_mode = (data.get('cloudtrail_mode') or 'light').lower()
     if cloudtrail_mode not in ('light', 'full'):
@@ -476,11 +481,25 @@ def _load_run(run_id: str) -> dict | None:
     return None
 
 
+def _run_visible_in_active_workspace(run_id: str) -> bool:
+    """Mirror dashboard_routes.py's _run_visible_in_active_workspace / list_runs()'s
+    own workspace check: the raw scan blob returned by _load_run() carries no
+    case_id, so without this an operator in one case could read/download/delete
+    another case's AWS run just by guessing/reusing a run_id. No active case_id
+    means no filtering (admin/no-workspace-concept context)."""
+    from flask import g
+    case_id = getattr(g, "case_id", None)
+    if not case_id:
+        return True
+    wf = get_automation_run(run_id)
+    return bool(wf) and wf.get("case_id") == case_id
+
+
 @aws_bp.route('/api/aws/status/<run_id>', methods=['GET'])
 def get_run_status(run_id):
     try:
         run_data = _load_run(run_id)
-        if not run_data:
+        if not run_data or not _run_visible_in_active_workspace(run_id):
             return jsonify({'error': 'Run not found'}), 404
         phase_timings = llm_metrics = sigma_rule_tally = None
         try:
@@ -512,7 +531,7 @@ def get_run_status(run_id):
 def get_run_results(run_id):
     try:
         run_data = _load_run(run_id)
-        if not run_data:
+        if not run_data or not _run_visible_in_active_workspace(run_id):
             return jsonify({'error': 'Run not found'}), 404
         collected = run_data.get('collected_data', {})
         page = request.args.get('page', 1, type=int)
@@ -552,7 +571,7 @@ def get_run_results(run_id):
 def get_run_findings(run_id):
     try:
         run_data = _load_run(run_id)
-        if not run_data:
+        if not run_data or not _run_visible_in_active_workspace(run_id):
             return jsonify({'error': 'Run not found'}), 404
         findings = run_data.get('findings', {})
         min_severity = request.args.get('min_severity', 'informational')
@@ -580,7 +599,7 @@ def get_run_findings(run_id):
 def get_run_analysis(run_id):
     try:
         run_data = _load_run(run_id)
-        if not run_data:
+        if not run_data or not _run_visible_in_active_workspace(run_id):
             return jsonify({'error': 'Run not found'}), 404
         return jsonify({
             'run_id': run_id,
@@ -622,7 +641,7 @@ def download_aws_raw_data(run_id):
     """Bundle collected data + findings + analysis as a ZIP."""
     try:
         run_data = _load_run(run_id)
-        if not run_data:
+        if not run_data or not _run_visible_in_active_workspace(run_id):
             return jsonify({'error': 'Raw data not found'}), 404
         collected = run_data.get('collected_data', {})
         findings = run_data.get('findings', {})
@@ -664,6 +683,8 @@ def download_aws_raw_data(run_id):
 @aws_bp.route('/api/aws/runs/<run_id>', methods=['DELETE'])
 def delete_run(run_id):
     try:
+        if not _run_visible_in_active_workspace(run_id):
+            return jsonify({'error': 'Run not found'}), 404
         if run_id in _aws_runs:
             del _aws_runs[run_id]
         run_dir = os.path.join(UPLOAD_FOLDER, run_id)

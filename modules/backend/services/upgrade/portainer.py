@@ -38,11 +38,18 @@ def _ensure_portainer_admin_secret(logger: Callable = None) -> None:
     cfg = load_main_config() or {}
     password = ((cfg.get('modules') or {}).get('portainer') or {}).get('password')
     if not password or len(password) < 12:
+        # A hardcoded fallback here would ship the same publicly-known
+        # password to every install that hits this path — generate a random
+        # one instead, same as every other auto-provisioned secret in this
+        # codebase (see iris.py's IRIS_SECRET_KEY / POSTGRES_*_PASSWORD via
+        # secrets.token_hex). Must match lib/modules.sh's bash version.
+        import secrets as _secrets
+        password = _secrets.token_hex(16)
         log("  Portainer password missing or < 12 chars in config.yaml; "
-            "using built-in default '1234qwer!@#$'", "warning")
+            "generated a random one instead", "warning")
+        log(f"  Retrieve it with: cat {secret_path}", "warning")
         log("  Change it from the Portainer UI after first login "
             "(Settings -> Users)", "warning")
-        password = '1234qwer!@#$'
     with open(secret_path, 'w') as f:
         f.write(password)
     os.chmod(secret_path, 0o600)

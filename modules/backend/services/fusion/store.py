@@ -318,13 +318,22 @@ def set_disposition(case_id, target, *, verdict="benign", attribution="it_admin"
     suppression is treated as stale and the finding re-opens (correlate._apply_dispositions).
     None = no watermark (e.g. chat entity dispositions), which stay broad as before."""
     ws = _ws()
-    d = get_case(case_id)
     disp = {"target": target, "verdict": verdict, "attribution": attribution,
             "reason": reason, "scope": scope, "by": by}
     if watermark:
         disp["watermark"] = watermark
-    existing = [x for x in (d.get("dispositions") or []) if x.get("target") != target]
-    ws.update_run_status(case_id, "pending", details={"dispositions": existing + [disp]})
+
+    def _mutate(details):
+        existing = [x for x in (details.get("dispositions") or []) if x.get("target") != target]
+        details["dispositions"] = existing + [disp]
+
+    # Atomic read-modify-write under the run lock — a plain get_case() +
+    # update_run_status() (the old pattern) reads a snapshot, computes the
+    # new list from it, then blind-overwrites: a concurrent writer (another
+    # operator, or the watch_and_fuse background re-fuse thread) whose write
+    # landed in between is silently lost.
+    ws.mutate_run_details(case_id, _mutate)
+    ws.update_run_status(case_id, "pending")
     log_case_event(case_id, "Risk · disposition applied", "info",
                    f"{target} → {verdict} ({attribution}, scope={scope}); re-fusing")
     if scope == "environment" and verdict == "benign":
@@ -338,9 +347,13 @@ def clear_disposition(case_id, target) -> dict:
     finding marked not-real / known-IT comes back to its real severity. The
     counterpart to set_disposition — makes validation reversible."""
     ws = _ws()
-    d = get_case(case_id)
-    remaining = [x for x in (d.get("dispositions") or []) if x.get("target") != target]
-    ws.update_run_status(case_id, "pending", details={"dispositions": remaining})
+
+    def _mutate(details):
+        details["dispositions"] = [x for x in (details.get("dispositions") or [])
+                                   if x.get("target") != target]
+
+    ws.mutate_run_details(case_id, _mutate)
+    ws.update_run_status(case_id, "pending")
     log_case_event(case_id, "Risk · disposition cleared", "info", f"{target}; re-fusing")
     fuse_case(case_id)
     return {"target": target, "cleared": True}
@@ -436,21 +449,41 @@ def _members_for_case(case_id, d=None) -> list:
     return tagged + legacy
 
 
-def attach_runs(case_id, run_ids) -> list:
+def attach_runs(case_id, run_ids) -> tuple[list, list]:
     """Legacy explicit attach (kept for back-compat / the API). In the workspace
     model runs auto-belong via their case_id tag; this also stamps the tag so a
-    manually-attached run shows up under the case everywhere."""
+    manually-attached run shows up under the case everywhere.
+
+    A run already tagged to a DIFFERENT existing case is REJECTED rather than
+    silently added to this case's legacy member_run_ids — previously it kept
+    its old case_id tag but also joined this case's member list, so it fused
+    into (and leaked evidence across) BOTH cases permanently with no error.
+    Re-attaching a run to the SAME case, or a run with no case_id yet, is
+    unaffected.
+
+    Returns (members, rejected) where `rejected` is a list of
+    {"run_id": ..., "owner_case_id": ...} for skipped runs.
+    """
     from services.file_storage_service import get_workflow
     d = get_case(case_id)
-    members = list(dict.fromkeys((d.get("member_run_ids") or []) + list(run_ids)))
+    rejected = []
+    accepted = []
+    for rid in run_ids:
+        run = get_workflow(rid)
+        owner = run.get("case_id") if run else None
+        if owner and owner != case_id:
+            rejected.append({"run_id": rid, "owner_case_id": owner})
+            continue
+        accepted.append(rid)
+    members = list(dict.fromkeys((d.get("member_run_ids") or []) + accepted))
     _ws().update_run_status(case_id, "pending", details={"member_run_ids": members})
-    for rid in run_ids:                       # tag the run into this workspace too
+    for rid in accepted:                       # tag the run into this workspace too
         run = get_workflow(rid)
         if run and not run.get("case_id"):
             run["case_id"] = case_id
             from services.file_storage_service import save_workflow
             save_workflow(run)
-    return members
+    return members, rejected
 
 
 EXPORT_KIND = "intact_case_export"
@@ -1018,7 +1051,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
                                    dispositions=d.get("dispositions") or None,
                                    max_entities=llm_ent, budget_chars=llm_chars,
-                                   max_output_tokens=llm_out)
+                                   max_output_tokens=llm_out, mask=mask)
         report_members = list(members)   # report now reflects exactly these members
         report_dirty = False             # report freshly generated → up to date
     # customer-confirmation checklist — generate once (preserve operator decisions on re-fuse)
@@ -1026,7 +1059,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     if not checklist:
         try:
             checklist = llm_sim.generate_disposition_checklist(
-                gv, window=window, min_severity=min_sev, run_id=case_id)
+                gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask)
         except Exception:
             checklist = []
 
@@ -1260,6 +1293,25 @@ def _merge_case_details(case_id, patch) -> None:
     ws.update_run_status(case_id, cur, details=patch)
 
 
+def _mutate_list_field(case_id, field, mutator) -> None:
+    """Atomically read-modify-write a single list-valued details field:
+    `mutator(current_list) -> new_list`.
+
+    Fixes the lost-update race in every identity-link / checklist /
+    timeline-validation / manual-timeline-event decision: the old pattern
+    was `d = get_case(case_id)` (unlocked read) -> compute a new list from
+    that snapshot -> `_merge_case_details(case_id, {field: new_list})`
+    (blind overwrite). Two concurrent writers — two operators triaging at
+    once, or the watch_and_fuse background re-fuse thread saving in
+    between — silently clobber each other because the second writer's
+    "new list" was computed from a snapshot that didn't include the
+    first writer's change yet. mutate_run_details() does the read +
+    mutate + write under ONE lock, so this can't happen."""
+    def _apply(details):
+        details[field] = mutator(details.get(field) or [])
+    _ws().mutate_run_details(case_id, _apply)
+
+
 def _now_iso() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
@@ -1426,7 +1478,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
         analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
                                    dispositions=d.get("dispositions") or None,
                                    max_entities=llm_ent, budget_chars=llm_chars,
-                                   max_output_tokens=llm_out)
+                                   max_output_tokens=llm_out, mask=mask)
     except Exception as e:
         log_case_event(case_id, "Report generation", "error", f"LLM/render failed: {e}")
         raise
@@ -1682,18 +1734,23 @@ def decide_identity_group(case_id, members, decision) -> dict:
     if not d:
         return {"error": "not found"}
     decision = decision if decision in ("confirmed", "declined") else "confirmed"
-    existing = {r["id"]: r for r in (d.get("identity_links") or []) if r.get("id")}
     n = 0
-    for m in (members or []):
-        if not m.get("id"):
-            continue
-        rec = {"id": m["id"], "decision": decision, "origin": "human"}
-        for k in ("a_id", "b_id", "kind"):
-            if m.get(k):
-                rec[k] = m[k]
-        existing[m["id"]] = rec
-        n += 1
-    _merge_case_details(case_id, {"identity_links": list(existing.values())})
+
+    def _mutate(links):
+        existing = {r["id"]: r for r in links if r.get("id")}
+        nonlocal n
+        for m in (members or []):
+            if not m.get("id"):
+                continue
+            rec = {"id": m["id"], "decision": decision, "origin": "human"}
+            for k in ("a_id", "b_id", "kind"):
+                if m.get(k):
+                    rec[k] = m[k]
+            existing[m["id"]] = rec
+            n += 1
+        return list(existing.values())
+
+    _mutate_list_field(case_id, "identity_links", _mutate)
     log_case_event(case_id, "Identity · group decision", "info", f"{n} link(s) → {decision}")
     return {"decision": decision, "count": n}
 
@@ -1707,10 +1764,14 @@ def split_account(case_id, account_id) -> dict:
     if not account_id:
         return {"error": "account_id required"}
     lid = "split:" + account_id
-    links = [r for r in (d.get("identity_links") or []) if r.get("id") != lid]
-    links.append({"id": lid, "kind": "split", "account_id": account_id,
-                  "decision": "split", "origin": "human"})
-    _merge_case_details(case_id, {"identity_links": links})
+
+    def _mutate(links):
+        kept = [r for r in links if r.get("id") != lid]
+        kept.append({"id": lid, "kind": "split", "account_id": account_id,
+                     "decision": "split", "origin": "human"})
+        return kept
+
+    _mutate_list_field(case_id, "identity_links", _mutate)
     log_case_event(case_id, "Identity · account removed", "info", f"{account_id} split out")
     return {"id": lid}
 
@@ -1723,10 +1784,14 @@ def exclude_host(case_id, name, host_id) -> dict:
     if not name or not host_id:
         return {"error": "name and host_id required"}
     lid = f"hostexcl:{name}:{host_id}"
-    links = [r for r in (d.get("identity_links") or []) if r.get("id") != lid]
-    links.append({"id": lid, "kind": "host_exclude", "name": name, "host_id": host_id,
-                  "decision": "exclude", "origin": "human"})
-    _merge_case_details(case_id, {"identity_links": links})
+
+    def _mutate(links):
+        kept = [r for r in links if r.get("id") != lid]
+        kept.append({"id": lid, "kind": "host_exclude", "name": name, "host_id": host_id,
+                     "decision": "exclude", "origin": "human"})
+        return kept
+
+    _mutate_list_field(case_id, "identity_links", _mutate)
     log_case_event(case_id, "Identity · host removed", "info", f"{host_id} removed from {name}")
     return {"id": lid}
 
@@ -1736,8 +1801,8 @@ def undo_identity_decision(case_id, decision_id) -> dict:
     d = get_case(case_id)
     if not d:
         return {"error": "not found"}
-    links = [r for r in (d.get("identity_links") or []) if r.get("id") != decision_id]
-    _merge_case_details(case_id, {"identity_links": links})
+    _mutate_list_field(case_id, "identity_links",
+                       lambda links: [r for r in links if r.get("id") != decision_id])
     log_case_event(case_id, "Identity · undo", "info", str(decision_id))
     return {"removed": decision_id}
 
@@ -1847,13 +1912,17 @@ def decide_identity_link(case_id, link_id, decision, *, a_id=None, b_id=None,
     if not d:
         return {"error": "not found"}
     decision = decision if decision in ("confirmed", "declined") else "confirmed"
-    links = [r for r in (d.get("identity_links") or []) if r.get("id") != link_id]
     rec = {"id": link_id, "decision": decision, "origin": "human"}
     for k, v in (("a_id", a_id), ("b_id", b_id), ("kind", kind), ("reason", reason)):
         if v:
             rec[k] = v
-    links.append(rec)
-    _merge_case_details(case_id, {"identity_links": links})
+
+    def _mutate(links):
+        kept = [r for r in links if r.get("id") != link_id]
+        kept.append(rec)
+        return kept
+
+    _mutate_list_field(case_id, "identity_links", _mutate)
     log_case_event(case_id, "Identity · decision", "info", f"{link_id} → {decision}")
     return {"id": link_id, "decision": decision}
 
@@ -1868,10 +1937,14 @@ def add_manual_identity_link(case_id, a_id, b_id, kind="same_identity") -> dict:
     kind = kind if kind in ("same_identity", "operates") else "same_identity"
     from . import identities as _idf
     lid = _idf.link_id(a_id, b_id, kind)
-    links = [r for r in (d.get("identity_links") or []) if r.get("id") != lid]
-    links.append({"id": lid, "decision": "confirmed", "origin": "manual",
-                  "a_id": a_id, "b_id": b_id, "kind": kind, "reason": "manual link"})
-    _merge_case_details(case_id, {"identity_links": links})
+
+    def _mutate(links):
+        kept = [r for r in links if r.get("id") != lid]
+        kept.append({"id": lid, "decision": "confirmed", "origin": "manual",
+                    "a_id": a_id, "b_id": b_id, "kind": kind, "reason": "manual link"})
+        return kept
+
+    _mutate_list_field(case_id, "identity_links", _mutate)
     log_case_event(case_id, "Identity · manual link", "info", f"{a_id} ⇄ {b_id} ({kind})")
     return {"id": lid, "decision": "confirmed"}
 
@@ -1934,14 +2007,21 @@ def case_members(case_id) -> list:
 def decide_checklist_item(case_id, item_id, decision) -> dict:
     """Customer confirms a checklist item. accept => the finding is benign (dispositioned
     + re-fused, suppressed); decline => kept as a real finding."""
-    d = get_case(case_id)
-    items = d.get("disposition_checklist") or []
-    item = next((x for x in items if x.get("id") == item_id), None)
+    decision = "accept" if decision == "accept" else "decline"
+    new_status = "accepted" if decision == "accept" else "declined"
+    found = {}
+
+    def _mutate(items):
+        item = next((x for x in items if x.get("id") == item_id), None)
+        if item:
+            item["status"] = new_status
+            found["item"] = item
+        return items
+
+    _mutate_list_field(case_id, "disposition_checklist", _mutate)
+    item = found.get("item")
     if not item:
         return {"error": "checklist item not found"}
-    decision = "accept" if decision == "accept" else "decline"
-    item["status"] = "accepted" if decision == "accept" else "declined"
-    _merge_case_details(case_id, {"disposition_checklist": items})
     if decision == "accept" and item.get("finding_id"):
         # benign confirmation -> disposition + re-fuse (this re-persists the checklist too)
         set_disposition(case_id, item["finding_id"], verdict="benign",
@@ -1983,12 +2063,14 @@ def validate_timeline(case_id, finding_id, status, notes="") -> dict:
     except Exception:
         wm = None
 
-    d = get_case(case_id)
-    vals = [v for v in (d.get("timeline_validations") or []) if v.get("finding_id") != finding_id]
-    if status != "pending":
-        vals.append({"finding_id": finding_id, "status": status, "notes": notes,
-                     "watermark": wm})
-    _merge_case_details(case_id, {"timeline_validations": vals})
+    def _mutate(vals):
+        kept = [v for v in vals if v.get("finding_id") != finding_id]
+        if status != "pending":
+            kept.append({"finding_id": finding_id, "status": status, "notes": notes,
+                        "watermark": wm})
+        return kept
+
+    _mutate_list_field(case_id, "timeline_validations", _mutate)
 
     if status == "not_real":
         set_disposition(case_id, finding_id, verdict="benign", attribution="operator",
@@ -2021,32 +2103,34 @@ def add_manual_timeline_event(case_id, event) -> dict:
            "status": (event.get("status") if event.get("status") in _TL_STATES else "real"),
            "notes": (event.get("notes") or event.get("description") or "").strip(),
            "created_at": _now_iso()}
-    d = get_case(case_id)
-    evs = list(d.get("manual_timeline_events") or []) + [row]
-    _merge_case_details(case_id, {"manual_timeline_events": evs})
+    _mutate_list_field(case_id, "manual_timeline_events", lambda evs: list(evs) + [row])
     log_case_event(case_id, "Timeline · manual event added", "info",
                    f"{row['title']} @ {row['ts'] or 'no ts'} on {row['host']}")
     return row
 
 
 def delete_manual_timeline_event(case_id, event_id) -> dict:
-    d = get_case(case_id)
-    evs = [e for e in (d.get("manual_timeline_events") or []) if e.get("finding_id") != event_id]
-    _merge_case_details(case_id, {"manual_timeline_events": evs})
+    _mutate_list_field(case_id, "manual_timeline_events",
+                       lambda evs: [e for e in evs if e.get("finding_id") != event_id])
     log_case_event(case_id, "Timeline · manual event deleted", "info", event_id)
     return {"event_id": event_id, "deleted": True}
 
 
 def _set_manual_event_status(case_id, event_id, status, notes="") -> dict:
-    d = get_case(case_id)
-    evs = list(d.get("manual_timeline_events") or [])
-    hit = next((e for e in evs if e.get("finding_id") == event_id), None)
-    if not hit:
+    found = {}
+
+    def _mutate(evs):
+        hit = next((e for e in evs if e.get("finding_id") == event_id), None)
+        if hit:
+            hit["status"] = status
+            if notes:
+                hit["notes"] = notes
+            found["hit"] = hit
+        return evs
+
+    _mutate_list_field(case_id, "manual_timeline_events", _mutate)
+    if not found.get("hit"):
         return {"error": "manual event not found"}
-    hit["status"] = status
-    if notes:
-        hit["notes"] = notes
-    _merge_case_details(case_id, {"manual_timeline_events": evs})
     return {"finding_id": event_id, "status": status}
 
 
@@ -2210,6 +2294,18 @@ def chat_case(case_id, question) -> str:
         model, provider, _m = _configured_fusion_model()
         log_case_event(case_id, "Chat · sending to LLM", "info",
                        f"model {model} ({provider})" if model else "no model configured")
+        # masking (customer-facing): same anonymization generate_report()/analyze()
+        # apply — chat sends the FULL graph every turn (full_context=True below),
+        # so without this it bypassed masking entirely even when the case had it
+        # enabled, leaking real hostnames/usernames/IPs to the LLM.
+        mask = None
+        mk = d.get("masking") or {}
+        if mk.get("enabled"):
+            try:
+                from services.data_anonymizer import DataAnonymizer
+                mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
+            except Exception:
+                mask = None
         try:
             ans = llm_sim.chat(g, question, history=d.get("chat_messages") or [],
                                window=d.get("time_window") or None,
@@ -2218,7 +2314,8 @@ def chat_case(case_id, question) -> str:
                                validations=d.get("timeline_validations") or None,
                                full_context=True,   # LOCKED: chat always sends full context
                                max_output_tokens=_effective_output_cap(d),
-                               require_llm=True)     # no deterministic fallback: surface real errors
+                               require_llm=True,    # no deterministic fallback: surface real errors
+                               mask=mask)
             log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
         except llm_sim.LLMUnavailable as e:
             # The model couldn't be reached (missing/outdated key, no connection,
