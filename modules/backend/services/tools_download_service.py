@@ -280,6 +280,19 @@ def get_github_release_url(repo: str, pattern: str, logger: Callable = None) -> 
         return None
 
 
+def _ensure_executable(path: str) -> None:
+    """Every tool this downloads (Velociraptor binaries, KAPE, etc.) is
+    eventually run directly (subprocess.run / docker cp + exec) — but this
+    function never set the execute bit, so freshly downloaded files landed
+    as plain 0644 and failed with PermissionError the first time something
+    tried to run them. Best-effort; a download that can't be chmod'd (e.g.
+    a read-only mount) shouldn't fail the download itself."""
+    try:
+        os.chmod(path, 0o755)
+    except OSError:
+        pass
+
+
 def download_file(url: str, dest_path: str, filename: Optional[str] = None,
                   logger: Callable = None, timeout: int = 300,
                   run_id: Optional[str] = None) -> Optional[str]:
@@ -319,6 +332,7 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
         # Check if already exists
         if os.path.exists(full_path):
             log(f"  Already exists: {filename}")
+            _ensure_executable(full_path)  # heal a file downloaded before this fix existed
             return (filename, True)  # Return tuple: (filename, was_cached)
 
         log(f"  Downloading: {filename}")
@@ -351,6 +365,7 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
                 if chunk:
                     f.write(chunk)
 
+        _ensure_executable(full_path)
         log(f"  ✓ Downloaded: {filename}")
         return (filename, False)  # Return tuple: (filename, was_cached)
 

@@ -69,15 +69,34 @@ def test_module_with_no_active_case_falls_back_to_default():
         assert ws._resolve_case_id("velociraptor_offline_collector", None) == DEFAULT
 
 
-def test_module_in_system_workspace_is_rejected():
-    # Active workspace IS the System workspace -> a module must not run there.
-    raised = False
+def test_module_in_system_workspace_redirects_to_default():
+    # Active workspace IS the System workspace -> a module transparently
+    # redirects to Default instead of hard-failing (a later UX change from
+    # the original "raise WorkspaceError" behavior — see _resolve_case_id's
+    # docstring/comment). It only raises if Default itself can't be resolved
+    # (covered by test_module_in_system_workspace_raises_when_default_unresolvable).
     with _env(active=SYS):
-        try:
-            ws._resolve_case_id("velociraptor_offline_collector", None)
-        except ws.WorkspaceError:
-            raised = True
-    assert raised, "expected WorkspaceError when a module runs in the System workspace"
+        assert ws._resolve_case_id("velociraptor_offline_collector", None) == DEFAULT
+
+
+def test_module_in_system_workspace_raises_when_default_unresolvable():
+    # Redirect target itself can't be resolved -> this is the one remaining
+    # case that still raises WorkspaceError. _default_case_id() falls back to
+    # store.ensure_default_case() (a real DB lookup/create) when its cache is
+    # empty, so setting the cache to None alone isn't enough here — patch the
+    # resolver function itself to simulate a genuinely unresolvable Default.
+    raised = False
+    saved_default_fn = ws._default_case_id
+    ws._default_case_id = lambda: None
+    try:
+        with _env(active=SYS):
+            try:
+                ws._resolve_case_id("velociraptor_offline_collector", None)
+            except ws.WorkspaceError:
+                raised = True
+    finally:
+        ws._default_case_id = saved_default_fn
+    assert raised, "expected WorkspaceError when the Default workspace can't be resolved either"
 
 
 def test_offline_collector_no_longer_becomes_untagged():

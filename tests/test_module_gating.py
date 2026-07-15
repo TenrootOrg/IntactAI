@@ -50,9 +50,13 @@ def test_catalog_available_and_default_flags():
     cat = {c["name"]: c for c in S.fusion_modules_catalog()}
     assert cat["velociraptor_agentic"]["default"] is True
     assert cat["velociraptor_agentic"]["available"] is True
-    assert cat["velociraptor_all"]["available"] is True
-    assert cat["velociraptor_all"]["default"] is False
+    # 'velociraptor_all' was removed from the picker (only agentic blueprints
+    # are fusable now) — it stays in FUSION_MODULE_TYPES purely as a legacy
+    # alias target for cases saved before the split, but is never shown here.
+    assert "velociraptor_all" not in cat
     assert cat["memory"]["available"] is True
+    assert cat["memory"]["default"] is True
+    assert cat["aws"]["available"] is True
     # the rest are shown but disabled
     assert cat["timesketch"]["available"] is False
     assert cat["cve"]["available"] is False
@@ -67,14 +71,19 @@ def test_catalog_has_labels():
 # --------------------------------------------------------------------------
 # _enabled_run_types
 # --------------------------------------------------------------------------
-def test_enabled_types_default_is_agentic():
-    assert S._enabled_run_types({}) == {"velociraptor_collection", "velociraptor_upload"}
+def test_enabled_types_default_is_agentic_plus_memory():
+    # FUSION_MODULES_DEFAULT = ["velociraptor_agentic", "memory"] — both fuse
+    # by default on a case with no explicit fusion_modules set.
+    assert S._enabled_run_types({}) == {"velociraptor_collection", "velociraptor_upload", "memory"}
 
 
-def test_enabled_types_all_includes_hunts():
+def test_enabled_types_all_alias_maps_to_agentic_no_hunts():
+    # 'velociraptor_all' is a legacy alias now — normalize_modules() collapses
+    # it to 'velociraptor_agentic', so hunts are intentionally NOT included
+    # (only agentic-blueprint runs are fusable; see store.py's module docstring).
     got = S._enabled_run_types({"fusion_modules": ["velociraptor_all"]})
-    assert got == {"velociraptor_collection", "velociraptor_upload", "velociraptor_hunt"}
-    assert "velociraptor_hunt" in got
+    assert got == {"velociraptor_collection", "velociraptor_upload"}
+    assert "velociraptor_hunt" not in got
 
 
 def test_enabled_types_agentic_excludes_hunts():
