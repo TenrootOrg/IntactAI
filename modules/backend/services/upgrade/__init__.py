@@ -37,7 +37,10 @@ from .cve import upgrade_cve, upgrade_cve_offline
 from .timesketch import upgrade_timesketch, upgrade_timesketch_offline
 from .iris import upgrade_iris, upgrade_iris_offline
 from .velociraptor import upgrade_velociraptor, upgrade_velociraptor_offline
-from .intact import upgrade_intact, upgrade_intact_offline
+from .intact import (
+    upgrade_intact, upgrade_intact_offline,
+    backend_target_tag, backend_full_mode, running_backend_image,
+)
 from .plaso import upgrade_plaso, upgrade_plaso_offline
 from .aws import upgrade_aws, upgrade_aws_offline
 from .azure import upgrade_azure, upgrade_azure_offline
@@ -565,6 +568,89 @@ def prepare_recreate_handoff(run_id: str, swap_info: Dict, logger: Callable = No
     t.daemon = True
     t.start()
     return True
+
+
+# ── Boot-time self-heal for a stranded Full-mode swap ───────────────────────
+# A box upgraded by OLD (pre-Wave-F) code — e.g. an 'intact'-alone run with no
+# other sidecar module in the same batch — mirrors the new release's files and
+# restarts the SAME container, because that old code predates the whole
+# image-swap concept and has no way to know one is needed. VERSION and
+# config.yaml end up correctly stamped to the new release, but the running
+# container never changes image. Nothing else ever notices: the 'intact'-alone
+# code path (old AND new) never persists Phase-2 resume state, so there is no
+# later point where anything re-checks whether a swap is still owed. This
+# check closes that gap: it runs unconditionally on every boot with no pending
+# upgrade (see app.py) and is a no-op unless the running image genuinely
+# doesn't match what config.yaml says the release should be.
+def self_heal_backend_swap(logger: Callable = None) -> Dict:
+    """Detect + fix a backend stuck on the wrong image for a Full-mode
+    release. Builds the target image from the already-mirrored live tree if
+    it isn't present locally (no package exists at boot time), then reuses
+    the same recreate-handoff machinery a real upgrade uses. Bounded to one
+    automatic attempt per target tag — a repeat mismatch after that means
+    something is genuinely broken and needs a human, not a retry-loop."""
+    log = logger or (lambda m, l="info": print(f"[{l}] {m}", flush=True))
+    compose_path = os.path.join(WORKDIR, 'modules', 'backend', 'docker-compose.yaml')
+    if not backend_full_mode(compose_path):
+        return {"healed": False, "reason": "legacy (mount-based) release — no swap needed"}
+
+    target_tag = backend_target_tag()
+    target_image = f"intact-backend:{target_tag}"
+    running_image = running_backend_image()
+    if not running_image or running_image == target_image:
+        return {"healed": False, "reason": "already on target image"}
+
+    marker = f"/app/data/tmp/backend-selfheal-{target_tag}.attempted"
+    if os.path.exists(marker):
+        log(f"Backend image mismatch (running {running_image}, target {target_image}) "
+            f"was already auto-healed once for this target and is STILL mismatched — "
+            f"not retrying automatically. This needs manual investigation "
+            f"(remove {marker} to allow one more attempt).", "error")
+        return {"healed": False, "reason": "already attempted; needs manual investigation"}
+
+    log(f"Backend image mismatch detected at boot: running {running_image}, "
+        f"config.yaml target {target_image} — self-healing (this box likely "
+        f"came through an old, pre-Wave-F 'intact'-alone upgrade that mirrored "
+        f"code but never swapped the image)", "warning")
+    try:
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        with open(marker, 'w') as f:
+            f.write(f"self-heal attempted for target {target_tag}\n")
+    except Exception as e:
+        log(f"  (could not write self-heal marker: {e})", "warning")
+
+    if not run_command(f"docker image inspect {target_image}",
+                       logger=None, timeout=30).get('success'):
+        backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
+        update_env_file(backend_env, 'BACKEND_VERSION', target_tag, logger=log)
+        log(f"Baking {target_image} from the live source tree (no package "
+            f"available at boot — building from what's already on disk)...", "info")
+        build = run_command("docker compose build backend",
+                            cwd=os.path.join(WORKDIR, 'modules', 'backend'),
+                            timeout=900, logger=log)
+        if not build.get('success'):
+            log(f"Self-heal image build FAILED: {(build.get('error') or '')[:300]} — "
+                f"platform stays on the old image; investigate manually", "error")
+            return {"healed": False, "reason": "image build failed"}
+
+    from services.workflow_service import create_automation_run, add_log_to_run
+    run_id = create_automation_run(
+        automation_type="online_upgrade",
+        name="Backend self-heal (image swap)",
+        details={"trigger": "boot-self-heal", "target_tag": target_tag,
+                 "old_image": running_image},
+    )
+    add_log_to_run(run_id, f"Self-healing stranded backend: {running_image} -> "
+                            f"{target_image}", "warning")
+    ok = prepare_recreate_handoff(
+        run_id,
+        {"target_tag": target_tag, "old_image": running_image, "snapshot": None},
+        logger=lambda m, l="info": add_log_to_run(run_id, m, l),
+    )
+    if not ok:
+        log("Self-heal recreate handoff could not be spawned", "error")
+        return {"healed": False, "reason": "recreate handoff failed to spawn", "run_id": run_id}
+    return {"healed": True, "run_id": run_id}
 
 
 def shlex_quote(s: str) -> str:

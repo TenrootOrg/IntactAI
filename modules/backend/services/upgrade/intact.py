@@ -1053,18 +1053,29 @@ def backend_full_mode(compose_path: str) -> bool:
 
 def backend_target_tag() -> str:
     """Image tag the target release wants = versions.backend (the release id),
-    read from the (post-merge) operator config.yaml. Falls back to '1.0.0' — the
-    compose default and the literal install-day tag — so an absent/garbled key
-    can never point at a bogus image."""
+    read from the (post-merge) operator config.yaml. The backend image is
+    always named after the actual release — never a static placeholder like
+    the old '1.0.0' — so an absent/garbled config key falls back to the
+    release's own VERSION file (the same source of truth every other release
+    identifier comes from), and only as a last resort to 'development'."""
     try:
         import yaml
         with open(os.path.join(WORKDIR, 'config.yaml')) as f:
             cfg = yaml.safe_load(f) or {}
         tag = (cfg.get('versions') or {}).get('backend')
         tag = str(tag).strip() if tag not in (None, '') else ''
-        return tag or '1.0.0'
+        if tag:
+            return tag
     except Exception:
-        return '1.0.0'
+        pass
+    try:
+        with open(os.path.join(WORKDIR, 'VERSION')) as f:
+            v = f.read().strip()
+        if v:
+            return v
+    except Exception:
+        pass
+    return 'development'
 
 
 def running_backend_image() -> Optional[str]:

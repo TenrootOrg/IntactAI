@@ -4,7 +4,12 @@
 services:
   backend:
     container_name: intact_backend
-    image: intact-backend:${BACKEND_VERSION:-1.0.0}
+    # No silent default — a meaningless placeholder tag (the old ':-1.0.0')
+    # let a box silently run on a stale image forever with no signal anything
+    # was wrong. The image tag always tracks the actual release (VERSION file
+    # / versions.backend in config.yaml); install/upgrade always stamp this,
+    # so a missing value means something upstream is actually broken.
+    image: intact-backend:${BACKEND_VERSION:?must be set via modules/backend/.env — see versions.backend in config.yaml}
     # `intact-backend` is a private local image name. See the matching
     # comment in modules/velociraptor/docker-compose.yaml for why we
     # need pull_policy: build — same reason here.

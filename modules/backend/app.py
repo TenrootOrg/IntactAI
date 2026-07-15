@@ -276,6 +276,25 @@ def run_startup_initialization():
                         print(f"[STARTUP] Pruned old backend image {_img}", flush=True)
             except Exception as _pe:
                 print(f"[STARTUP] backend-image retention prune skipped: {_pe}", flush=True)
+
+            # Self-heal a backend stranded on the wrong image for a Full-mode
+            # release (e.g. an 'intact'-alone upgrade run by OLD, pre-Wave-F
+            # code — that code mirrors files + restarts the SAME container
+            # since it has no concept of image swapping; VERSION/config.yaml
+            # end up correct but the running image never changes, and nothing
+            # else ever re-checks since that code path never persists Phase-2
+            # resume state). Runs on every boot with no pending upgrade; a
+            # no-op unless a real mismatch is found.
+            try:
+                from services.upgrade import self_heal_backend_swap
+                _heal = self_heal_backend_swap(
+                    logger=lambda m, l="info": print(f"[STARTUP][self-heal] {m}", flush=True))
+                if _heal.get("healed"):
+                    print(f"[STARTUP] Backend self-heal triggered "
+                          f"(run {_heal.get('run_id')}) — recreating onto the "
+                          f"correct image", flush=True)
+            except Exception as _she:
+                print(f"[STARTUP] Backend self-heal check skipped: {_she}", flush=True)
         if pending:
             run_id = pending['run_id']
             print(f"[STARTUP] Found pending upgrade: {run_id}", flush=True)

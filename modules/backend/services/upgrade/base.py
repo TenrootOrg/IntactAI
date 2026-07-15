@@ -269,7 +269,11 @@ def sweep_stale_upgrade_staging(logger: Callable = None, max_age_hours: float = 
            ("/app/data/tmp/recreate-failed-*.json", 168.0),
            ("/app/data/tmp/recreate-recover-*.sh", 168.0),
            ("/app/data/tmp/recreate-helper-*.sh", 168.0),
-           ("/app/data/tmp/recreate-spawn-*.log", 168.0)]
+           ("/app/data/tmp/recreate-spawn-*.log", 168.0),
+           # Self-heal attempt marker — same 168h grace window: give an
+           # operator a week to investigate a failed self-heal before the
+           # bounded-retry guard resets and another automatic attempt fires.
+           ("/app/data/tmp/backend-selfheal-*.attempted", 168.0)]
     )
     for pattern, age_h in sweep_sets:
         cutoff = time.time() - age_h * 3600
