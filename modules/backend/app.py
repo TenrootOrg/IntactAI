@@ -165,6 +165,52 @@ def run_startup_initialization():
         from services.upgrade import resume_upgrade_workflow
         from services.workflow_logger import WorkflowLogger
 
+        # Self-heal run finalizer — MUST run before the generic upgrade
+        # watchdog below, which would otherwise reap a successful self-heal's
+        # tracked run as "orphaned by restart". self_heal_backend_swap()
+        # can't mark its own run completed synchronously: the actual image
+        # swap happens asynchronously via a detached helper AFTER the
+        # function returns and this container gets recreated. If the
+        # marker's run_id is still "running" and the backend is now actually
+        # on the target image, the swap worked — mark it completed and clear
+        # the marker so a future genuine drift gets its own fresh attempt.
+        try:
+            import glob as _sfglob
+            from services.upgrade.intact import backend_target_tag, backend_full_mode, running_backend_image
+            from services.workflow_service import get_automation_run, update_run_status as _sf_urs
+            _sf_compose = os.path.join(
+                os.environ.get('INTACT_PATH', '/app/workdir'), 'modules', 'backend', 'docker-compose.yaml')
+            if backend_full_mode(_sf_compose):
+                _sf_target = backend_target_tag()
+                _sf_running = running_backend_image() or ''
+                for _sf_marker in _sfglob.glob('/app/data/tmp/backend-selfheal-*.attempted'):
+                    try:
+                        _sf_info = {}
+                        with open(_sf_marker) as _sf_mf:
+                            for _sf_line in _sf_mf:
+                                if '=' in _sf_line:
+                                    _sk, _sv = _sf_line.strip().split('=', 1)
+                                    _sf_info[_sk] = _sv
+                        _sf_run_id = _sf_info.get('run_id')
+                        _sf_marker_tag = _sf_info.get('target_tag')
+                        if (_sf_run_id and _sf_marker_tag == _sf_target
+                                and _sf_running == f"intact-backend:{_sf_target}"):
+                            _sf_run = get_automation_run(_sf_run_id)
+                            if _sf_run and _sf_run.get('status') in ('pending', 'running'):
+                                print(f"[STARTUP] Self-heal for {_sf_target} confirmed "
+                                      f"successful (run {_sf_run_id}) — marking completed",
+                                      flush=True)
+                                _sf_urs(_sf_run_id, "completed", progress=100, force=True)
+                                try:
+                                    os.remove(_sf_marker)
+                                except OSError:
+                                    pass
+                    except Exception as _sf_me:
+                        print(f"[STARTUP] Self-heal marker check error ({_sf_marker}): {_sf_me}",
+                              flush=True)
+        except Exception as _sfe:
+            print(f"[STARTUP] Self-heal run finalizer skipped: {_sfe}", flush=True)
+
         pending = get_pending_upgrade()
         protected_run_id = pending['run_id'] if pending else None
 

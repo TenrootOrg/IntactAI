@@ -637,24 +637,44 @@ def self_heal_backend_swap(logger: Callable = None) -> Dict:
             f"This needs manual investigation (remove {marker} to allow one more attempt).",
             "error")
         return {"healed": False, "reason": "already attempted; needs manual investigation"}
+
+    # Create the tracked run BEFORE the marker so its ID can be embedded —
+    # the recreate is asynchronous (a detached helper does the actual swap
+    # after this function returns), so this run can't be marked "completed"
+    # synchronously here. It's finalized on the NEXT boot by app.py checking
+    # this same marker: if the running image matches by then, the swap
+    # worked and the run is marked completed instead of being reaped as a
+    # generic "orphaned by restart" by the unrelated upgrade-watchdog.
+    from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
+    run_id = create_automation_run(
+        automation_type="online_upgrade",
+        name="Backend self-heal (image swap)",
+        details={"trigger": "boot-self-heal", "target_tag": target_tag,
+                 "old_image": running_ref, "content_drift": content_drift},
+    )
+    update_run_status(run_id, "running", progress=5)
     try:
         os.makedirs(os.path.dirname(marker), exist_ok=True)
         with open(marker, 'w') as f:
-            f.write(f"self-heal attempted for target {target_tag}\n")
+            f.write(f"run_id={run_id}\ntarget_tag={target_tag}\n")
     except Exception as e:
         log(f"  (could not write self-heal marker: {e})", "warning")
 
+    def _dual_log(m, l="info"):
+        log(m, l)
+        add_log_to_run(run_id, m, l)
+
     if content_drift:
-        log(f"Backend content drift detected at boot: running {target_image} is stale "
-            f"— the branch moved forward since this image was baked (likely a deliberate "
-            f"same-tag re-upgrade, e.g. after a partial failure or to pick up a forgotten "
-            f"module, or a 'development' box that pulled newer commits) — self-healing",
-            "warning")
+        _dual_log(f"Backend content drift detected at boot: running {target_image} is "
+                   f"stale — the branch moved forward since this image was baked (likely "
+                   f"a deliberate same-tag re-upgrade, e.g. after a partial failure or to "
+                   f"pick up a forgotten module, or a 'development' box that pulled newer "
+                   f"commits) — self-healing", "warning")
     else:
-        log(f"Backend image mismatch detected at boot: running {running_ref}, "
-            f"config.yaml target {target_image} — self-healing (this box likely "
-            f"came through an old, pre-Wave-F 'intact'-alone upgrade that mirrored "
-            f"code but never swapped the image)", "warning")
+        _dual_log(f"Backend image mismatch detected at boot: running {running_ref}, "
+                   f"config.yaml target {target_image} — self-healing (this box likely "
+                   f"came through an old, pre-Wave-F 'intact'-alone upgrade that mirrored "
+                   f"code but never swapped the image)", "warning")
 
     # Build if the target tag isn't present locally, OR if content drifted —
     # an existing same-tagged image is exactly what's stale in that case.
@@ -662,33 +682,28 @@ def self_heal_backend_swap(logger: Callable = None) -> Dict:
         f"docker image inspect {target_image}", logger=None, timeout=30).get('success')
     if need_build:
         backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
-        update_env_file(backend_env, 'BACKEND_VERSION', target_tag, logger=log)
-        log(f"Baking {target_image} from the live source tree (no package "
-            f"available at boot — building from what's already on disk)...", "info")
+        update_env_file(backend_env, 'BACKEND_VERSION', target_tag, logger=None)
+        _dual_log(f"Baking {target_image} from the live source tree (no package "
+                   f"available at boot — building from what's already on disk)...", "info")
         build = run_command("docker compose build backend",
                             cwd=os.path.join(WORKDIR, 'modules', 'backend'),
-                            timeout=900, logger=log)
+                            timeout=900, logger=lambda m, l="info": _dual_log(m, l))
         if not build.get('success'):
-            log(f"Self-heal image build FAILED: {(build.get('error') or '')[:300]} — "
-                f"platform stays on the old image; investigate manually", "error")
-            return {"healed": False, "reason": "image build failed"}
+            _err = (f"Self-heal image build FAILED: {(build.get('error') or '')[:300]} — "
+                    f"platform stays on the old image; investigate manually")
+            _dual_log(_err, "error")
+            update_run_status(run_id, "failed", error=_err)
+            return {"healed": False, "reason": "image build failed", "run_id": run_id}
 
-    from services.workflow_service import create_automation_run, add_log_to_run
-    run_id = create_automation_run(
-        automation_type="online_upgrade",
-        name="Backend self-heal (image swap)",
-        details={"trigger": "boot-self-heal", "target_tag": target_tag,
-                 "old_image": running_ref, "content_drift": content_drift},
-    )
-    add_log_to_run(run_id, f"Self-healing stranded backend: {running_ref} -> "
-                            f"{target_image}", "warning")
     ok = prepare_recreate_handoff(
         run_id,
         {"target_tag": target_tag, "old_image": running_ref, "snapshot": None},
         logger=lambda m, l="info": add_log_to_run(run_id, m, l),
     )
     if not ok:
-        log("Self-heal recreate handoff could not be spawned", "error")
+        _err = "Self-heal recreate handoff could not be spawned"
+        _dual_log(_err, "error")
+        update_run_status(run_id, "failed", error=_err)
         return {"healed": False, "reason": "recreate handoff failed to spawn", "run_id": run_id}
     return {"healed": True, "run_id": run_id}
 
