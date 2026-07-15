@@ -1087,6 +1087,69 @@ def running_backend_image() -> Optional[str]:
     return out or None
 
 
+_BACKEND_FINGERPRINT_SKIP_DIRS = {'__pycache__', 'downloads', 'report_downloads',
+                                  'upgrade_packages', 'upload_data'}
+_BACKEND_FINGERPRINT_SKIP_FILES = {'.env'}
+
+
+def backend_source_fingerprint(backend_dir: Optional[str] = None) -> str:
+    """SHA-256 over every file's actual bytes under modules/backend/ (sorted
+    by relative path), skipping .env/runtime-only dirs. Deliberately NOT a
+    comparison of built Docker image IDs — those are sensitive to file mtimes
+    in the build context (routine git checkouts/chown touch mtimes with zero
+    content change) and are not guaranteed reproducible across separate
+    `docker build` invocations even for byte-identical source. This is a pure
+    content hash: the only thing that can move it is an actual code change."""
+    import hashlib
+    root = backend_dir or os.path.join(WORKDIR, 'modules', 'backend')
+    h = hashlib.sha256()
+    try:
+        paths = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in sorted(dirnames) if d not in _BACKEND_FINGERPRINT_SKIP_DIRS]
+            for fn in sorted(filenames):
+                if fn in _BACKEND_FINGERPRINT_SKIP_FILES:
+                    continue
+                paths.append(os.path.join(dirpath, fn))
+        for p in sorted(paths):
+            rel = os.path.relpath(p, root).encode('utf-8', 'replace')
+            h.update(rel)
+            try:
+                with open(p, 'rb') as f:
+                    h.update(f.read())
+            except OSError:
+                pass
+    except Exception:
+        return ''
+    return h.hexdigest()
+
+
+_BACKEND_FINGERPRINT_FILE = '/app/data/backend-source.applied.sha256'
+
+
+def record_backend_source_fingerprint(logger: Callable = None) -> None:
+    """Save the CURRENT live tree's fingerprint as 'what's actually running'
+    — called right after a successful swap so the next boot's drift check has
+    a baseline to compare against."""
+    log = logger or (lambda m, l="info": None)
+    try:
+        fp = backend_source_fingerprint()
+        if fp:
+            with open(_BACKEND_FINGERPRINT_FILE, 'w') as f:
+                f.write(fp + '\n')
+    except Exception as e:
+        log(f"  (could not record backend source fingerprint: {e})", "warning")
+
+
+def read_recorded_backend_source_fingerprint() -> Optional[str]:
+    try:
+        with open(_BACKEND_FINGERPRINT_FILE) as f:
+            v = f.read().strip()
+        return v or None
+    except OSError:
+        return None
+
+
 def ensure_backend_runtime_image(package_dir: str, target_tag: str,
                                  run_id: Optional[str] = None,
                                  logger: Callable = None) -> Dict:

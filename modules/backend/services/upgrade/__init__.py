@@ -494,6 +494,8 @@ def prepare_recreate_handoff(run_id: str, swap_info: Dict, logger: Callable = No
             _hash = _hl.sha256(_cf.read()).hexdigest()
         with open('/app/data/backend-compose.applied.sha256', 'w') as _hf:
             _hf.write(_hash + '\n')
+        from .intact import record_backend_source_fingerprint
+        record_backend_source_fingerprint(logger=log)
     except Exception as _re:
         log(f"  (retention/compose-hash record skipped: {_re})", "warning")
 
@@ -584,11 +586,26 @@ def prepare_recreate_handoff(run_id: str, swap_info: Dict, logger: Callable = No
 # doesn't match what config.yaml says the release should be.
 def self_heal_backend_swap(logger: Callable = None) -> Dict:
     """Detect + fix a backend stuck on the wrong image for a Full-mode
-    release. Builds the target image from the already-mirrored live tree if
-    it isn't present locally (no package exists at boot time), then reuses
-    the same recreate-handoff machinery a real upgrade uses. Bounded to one
-    automatic attempt per target tag — a repeat mismatch after that means
-    something is genuinely broken and needs a human, not a retry-loop."""
+    release — covers BOTH the tag-mismatch case (e.g. still on 1.0.0 when
+    config.yaml wants 'development') AND the same-tag-but-stale-content case
+    ('development' is a documented MUTABLE tag: a box can already show
+    'intact-backend:development' while the branch has moved forward since
+    that image was baked — an operator deliberately re-running an upgrade to
+    the same tag, e.g. after a partial failure or to pick up a forgotten
+    module, needs this to actually refresh, not silently no-op).
+
+    Drift detection deliberately does NOT compare built Docker image IDs —
+    those are sensitive to file mtimes in the build context (a routine git
+    checkout or chown touches mtimes with zero content change) and are not
+    guaranteed reproducible across separate `docker build` invocations even
+    for byte-identical source; comparing them produced false positives on
+    every boot in testing. Instead: a cheap tag-string comparison catches the
+    original bug for free, and a content fingerprint (sha256 over the actual
+    backend source bytes, recorded at every successful swap) catches
+    same-tag drift — only computed when tags already match, so the common
+    case costs nothing extra. Bounded to one automatic attempt per target tag
+    via a marker file — a repeat mismatch after that means something is
+    genuinely broken and needs a human, not a retry-loop."""
     log = logger or (lambda m, l="info": print(f"[{l}] {m}", flush=True))
     compose_path = os.path.join(WORKDIR, 'modules', 'backend', 'docker-compose.yaml')
     if not backend_full_mode(compose_path):
@@ -596,22 +613,30 @@ def self_heal_backend_swap(logger: Callable = None) -> Dict:
 
     target_tag = backend_target_tag()
     target_image = f"intact-backend:{target_tag}"
-    running_image = running_backend_image()
-    if not running_image or running_image == target_image:
-        return {"healed": False, "reason": "already on target image"}
+    running_ref = running_backend_image()
+    if not running_ref:
+        return {"healed": False, "reason": "could not determine the running backend image"}
+
+    tag_mismatch = running_ref != target_image
+    content_drift = False
+    if not tag_mismatch:
+        from .intact import backend_source_fingerprint, read_recorded_backend_source_fingerprint
+        recorded_fp = read_recorded_backend_source_fingerprint()
+        if recorded_fp:
+            current_fp = backend_source_fingerprint()
+            content_drift = bool(current_fp) and current_fp != recorded_fp
+
+    if not tag_mismatch and not content_drift:
+        return {"healed": False, "reason": "already on target image (content current)"}
 
     marker = f"/app/data/tmp/backend-selfheal-{target_tag}.attempted"
     if os.path.exists(marker):
-        log(f"Backend image mismatch (running {running_image}, target {target_image}) "
-            f"was already auto-healed once for this target and is STILL mismatched — "
-            f"not retrying automatically. This needs manual investigation "
-            f"(remove {marker} to allow one more attempt).", "error")
+        log(f"Backend {'content drift' if content_drift else 'image mismatch'} "
+            f"(running {running_ref}, target {target_image}) was already auto-healed "
+            f"once for this target and is STILL mismatched — not retrying automatically. "
+            f"This needs manual investigation (remove {marker} to allow one more attempt).",
+            "error")
         return {"healed": False, "reason": "already attempted; needs manual investigation"}
-
-    log(f"Backend image mismatch detected at boot: running {running_image}, "
-        f"config.yaml target {target_image} — self-healing (this box likely "
-        f"came through an old, pre-Wave-F 'intact'-alone upgrade that mirrored "
-        f"code but never swapped the image)", "warning")
     try:
         os.makedirs(os.path.dirname(marker), exist_ok=True)
         with open(marker, 'w') as f:
@@ -619,8 +644,23 @@ def self_heal_backend_swap(logger: Callable = None) -> Dict:
     except Exception as e:
         log(f"  (could not write self-heal marker: {e})", "warning")
 
-    if not run_command(f"docker image inspect {target_image}",
-                       logger=None, timeout=30).get('success'):
+    if content_drift:
+        log(f"Backend content drift detected at boot: running {target_image} is stale "
+            f"— the branch moved forward since this image was baked (likely a deliberate "
+            f"same-tag re-upgrade, e.g. after a partial failure or to pick up a forgotten "
+            f"module, or a 'development' box that pulled newer commits) — self-healing",
+            "warning")
+    else:
+        log(f"Backend image mismatch detected at boot: running {running_ref}, "
+            f"config.yaml target {target_image} — self-healing (this box likely "
+            f"came through an old, pre-Wave-F 'intact'-alone upgrade that mirrored "
+            f"code but never swapped the image)", "warning")
+
+    # Build if the target tag isn't present locally, OR if content drifted —
+    # an existing same-tagged image is exactly what's stale in that case.
+    need_build = content_drift or not run_command(
+        f"docker image inspect {target_image}", logger=None, timeout=30).get('success')
+    if need_build:
         backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
         update_env_file(backend_env, 'BACKEND_VERSION', target_tag, logger=log)
         log(f"Baking {target_image} from the live source tree (no package "
@@ -638,13 +678,13 @@ def self_heal_backend_swap(logger: Callable = None) -> Dict:
         automation_type="online_upgrade",
         name="Backend self-heal (image swap)",
         details={"trigger": "boot-self-heal", "target_tag": target_tag,
-                 "old_image": running_image},
+                 "old_image": running_ref, "content_drift": content_drift},
     )
-    add_log_to_run(run_id, f"Self-healing stranded backend: {running_image} -> "
+    add_log_to_run(run_id, f"Self-healing stranded backend: {running_ref} -> "
                             f"{target_image}", "warning")
     ok = prepare_recreate_handoff(
         run_id,
-        {"target_tag": target_tag, "old_image": running_image, "snapshot": None},
+        {"target_tag": target_tag, "old_image": running_ref, "snapshot": None},
         logger=lambda m, l="info": add_log_to_run(run_id, m, l),
     )
     if not ok:
