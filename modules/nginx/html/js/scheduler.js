@@ -117,11 +117,11 @@ function renderScheduleCard(job) {
             <div class="flex-1">
                 <div class="flex items-center gap-2 mb-1">
                     <span class="inline-block w-2 h-2 ${statusDot} rounded-full"></span>
-                    <h4 class="text-lg font-semibold text-white">${job.name}</h4>
+                    <h4 class="text-lg font-semibold text-white">${escapeHtml(job.name)}</h4>
                     <span class="text-xs ${typeBadgeColor} px-2 py-0.5 rounded">${typeLabel}</span>
                     <span class="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded">${statusText}</span>
                 </div>
-                ${job.description ? `<p class="text-sm text-gray-400 mb-2">${job.description}</p>` : ''}
+                ${job.description ? `<p class="text-sm text-gray-400 mb-2">${escapeHtml(job.description)}</p>` : ''}
                 <div class="flex flex-wrap gap-4 text-xs text-gray-500">
                     <span title="Interval">${intervalText}${runTimeText}</span>
                     <span title="Next Run">Next: ${nextRunText}</span>

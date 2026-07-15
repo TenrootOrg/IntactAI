@@ -13,6 +13,7 @@ from pyvelociraptor import api_pb2_grpc
 
 from services.velociraptor_service import setup_velociraptor_connection, cancel_flow
 from services.workflow_service import get_cancel_event, register_cleanup
+from services.vql_safety import is_valid_client_id, is_valid_flow_id
 
 def run_kape_collection_grpc(
     client_id,
@@ -59,6 +60,12 @@ def run_kape_collection_grpc(
           f"MaxHashSize={max_hash_size}, CollectionPolicy={collection_policy}",
           flush=True)
     print("=" * 80, flush=True)
+
+    # Defense-in-depth: client_id is interpolated directly into a VQL string
+    # literal below with no escaping.
+    if not is_valid_client_id(client_id):
+        print(f"[KAPE] ✗ Rejecting invalid client_id: {client_id!r}", flush=True)
+        return None
 
     try:
         # Setup gRPC connection
@@ -185,6 +192,12 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
             and returns within ~5s instead of polling for hours.
     """
 
+    # Defense-in-depth: both values are interpolated directly into a VQL
+    # string literal in the polling query below with no escaping.
+    if not is_valid_client_id(client_id) or not is_valid_flow_id(flow_id):
+        print(f"[FLOW] ✗ Rejecting invalid client_id/flow_id: {client_id!r}/{flow_id!r}", flush=True)
+        return None
+
     def log(message, level="info"):
         """Log to both stdout and optional callback"""
         print(f"[FLOW] {message}", flush=True)
@@ -214,6 +227,7 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
             lambda: cancel_flow(client_id, flow_id, logger=logger),
         )
 
+    channel = None
     try:
         # Setup gRPC connection
         log("Setting up gRPC connection...")
@@ -239,7 +253,6 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
             # promptly without waiting up to 30s for the next sleep cycle.
             if cancel_event is not None and cancel_event.is_set():
                 log("Stop requested by user — abandoning flow monitor", "warning")
-                channel.close()
                 return "CANCELLED"
 
             # Query flow state — use the LIGHT flows() projection, NOT
@@ -283,6 +296,13 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
                 channel = setup_velociraptor_connection()
                 if channel:
                     stub = api_pb2_grpc.APIStub(channel)
+            except json.JSONDecodeError as e:
+                # Previously uncaught here — fell through to the outer except,
+                # which ended the whole monitor loop (and leaked the channel)
+                # on what is usually just one malformed/partial poll response.
+                # Treat like a transient miss: keep last known state and retry
+                # on the next poll instead of aborting the run.
+                log(f"⚠ Could not parse flow state response: {e}", "warning")
 
             # Log progress every 5 checks or when rows change significantly
             if check_count % 5 == 1 or total_rows != last_rows:
@@ -294,21 +314,18 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
                 log(f"✓ Flow completed successfully!", "success")
                 log(f"Total time: {elapsed}s ({elapsed//60}m {elapsed%60}s)", "success")
                 log(f"Total rows collected: {total_rows}", "success")
-                channel.close()
                 return "FINISHED"
 
             elif state in ("ERROR", "FAILED", "CANCELLED"):
                 log(f"✗ Flow failed/cancelled with state: {state}", "error")
                 if error_msg:
                     log(f"Error details: {error_msg}", "error")
-                channel.close()
                 return state  # Return actual state so caller knows what happened
 
             # Check timeout
             if time.time() - start_time > timeout_seconds:
                 log(f"✗ Timeout reached after {timeout_seconds}s", "error")
                 log(f"Last known state: {state}, Rows collected: {total_rows}", "error")
-                channel.close()
                 return None
 
             # Wait before next check (progressively longer waits)
@@ -324,7 +341,6 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
             if cancel_event is not None:
                 if cancel_event.wait(wait_time):
                     log("Stop requested by user — abandoning flow monitor", "warning")
-                    channel.close()
                     return "CANCELLED"
             else:
                 time.sleep(wait_time)
@@ -335,3 +351,13 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
         log(f"Stack trace: {error_detail}", "error")
         traceback.print_exc()
         return None
+    finally:
+        # Every return path above used to close the channel individually
+        # (and a couple didn't — e.g. an uncaught JSONDecodeError falling
+        # through to this outer except used to skip closing entirely).
+        # Close exactly once here regardless of which path was taken.
+        if channel:
+            try:
+                channel.close()
+            except Exception:
+                pass

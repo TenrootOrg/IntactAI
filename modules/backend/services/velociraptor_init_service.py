@@ -70,6 +70,7 @@ def run_server_artifact(artifact_name, parameters=None, logger_func=None):
             except:
                 pass
 
+    channel = None
     try:
         log(f"Running server artifact: {artifact_name}")
 
@@ -118,13 +119,17 @@ def run_server_artifact(artifact_name, parameters=None, logger_func=None):
                 except (json.JSONDecodeError, KeyError, IndexError) as e:
                     log(f"Could not parse response: {e}", "warning")
 
-        channel.close()
         return flow_id
 
     except Exception as e:
         log(f"Error running artifact {artifact_name}: {e}", "error")
         traceback.print_exc()
         return None
+    finally:
+        # Only closed on the success path before — any exception above leaked
+        # the gRPC channel.
+        if channel:
+            channel.close()
 
 
 def start_server_event_artifact(artifact_name, logger_func=None):
@@ -145,6 +150,7 @@ def start_server_event_artifact(artifact_name, logger_func=None):
             except:
                 pass
 
+    channel = None
     try:
         log(f"Starting server event artifact: {artifact_name}")
 
@@ -182,7 +188,6 @@ def start_server_event_artifact(artifact_name, logger_func=None):
                 except (json.JSONDecodeError, KeyError) as e:
                     log(f"Could not parse response: {e}", "warning")
 
-        channel.close()
         return success
 
     except Exception as e:
@@ -192,6 +197,9 @@ def start_server_event_artifact(artifact_name, logger_func=None):
             "warning" if _is_transient_grpc(e) else "error")
         traceback.print_exc()
         return False
+    finally:
+        if channel:
+            channel.close()
 
 
 def _is_transient_grpc(exc) -> bool:
@@ -373,6 +381,7 @@ def check_artifact_exists(artifact_name, logger_func=None):
             except:
                 pass
 
+    channel = None
     try:
         channel = setup_velociraptor_connection()
         if not channel:
@@ -394,12 +403,14 @@ def check_artifact_exists(artifact_name, logger_func=None):
                     exists = True
                     break
 
-        channel.close()
         return exists
 
     except Exception as e:
         log(f"Error checking artifact {artifact_name}: {e}", "error")
         return False
+    finally:
+        if channel:
+            channel.close()
 
 
 def import_custom_artifact(yaml_content, logger_func=None):
@@ -420,6 +431,7 @@ def import_custom_artifact(yaml_content, logger_func=None):
             except:
                 pass
 
+    channel = None
     try:
         channel = setup_velociraptor_connection()
         if not channel:
@@ -463,7 +475,6 @@ def import_custom_artifact(yaml_content, logger_func=None):
                 if m:
                     already_builtin = m.group(1)
 
-        channel.close()
         return artifact_name or already_builtin
 
     except Exception as e:
@@ -472,6 +483,11 @@ def import_custom_artifact(yaml_content, logger_func=None):
         log(f"Error importing artifact: {e}",
             "warning" if _is_transient_grpc(e) else "error")
         return None
+    finally:
+        # Called in per-file import loops — a leaked channel per file adds up
+        # fast across a bulk artifact import.
+        if channel:
+            channel.close()
 
 
 def import_tenroot_artifacts(logger_func=None):

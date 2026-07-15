@@ -4,6 +4,7 @@ Velociraptor Offline Collector Routes - Offline collector configuration and gene
 """
 
 from flask import Blueprint, jsonify, request, send_file
+from werkzeug.utils import secure_filename
 import os
 import threading
 import traceback
@@ -20,7 +21,8 @@ from services.offline_collector import (
     delete_config,
     generate_collector,
     get_collector_file,
-    import_results
+    import_results,
+    cleanup_old_collectors
 )
 from services.file_storage_service import get_agentic_blueprint, get_velociraptor_blueprint
 from services.storage.blueprint_store import get_timesketch_blueprint
@@ -290,6 +292,18 @@ def generate_offline_collector():
 
                     add_log_to_run(run_id, f"Collector generated successfully", "success")
                     add_log_to_run(run_id, f"File: {file_name}", "info")
+
+                    # Never wired up before — COLLECTOR_OUTPUT_DIR otherwise
+                    # accumulates every generated ZIP/bundle dir forever.
+                    # Best-effort, off the request thread so it never delays
+                    # the response.
+                    def _sweep_old_collectors():
+                        try:
+                            cleanup_old_collectors(days=7)
+                        except Exception as _sw_e:
+                            print(f"[OFFLINE] collector sweep error: {_sw_e}", flush=True)
+                    threading.Thread(target=_sweep_old_collectors, daemon=True).start()
+
                     add_log_to_run(run_id, f"Size: {file_size / (1024*1024):.2f} MB", "info")
                     _enc_label = {
                         'password': "PASSWORD (supply the same password at import)",
@@ -394,19 +408,22 @@ def import_offline_results():
         if file_size > 500 * 1024 * 1024:
             return jsonify({"error": "File too large (max 500MB)"}), 413
 
-        # Save uploaded file temporarily
+        # Save uploaded file temporarily. secure_filename() strips path
+        # separators and traversal sequences — an absolute or "../"-laden
+        # filename would otherwise let os.path.join() write outside temp_dir.
         import tempfile
+        safe_filename = secure_filename(file.filename) or "upload.zip"
         temp_dir = tempfile.mkdtemp()
-        temp_path = os.path.join(temp_dir, file.filename)
+        temp_path = os.path.join(temp_dir, safe_filename)
         file.save(temp_path)
 
-        print(f"[OFFLINE] Importing: {file.filename} ({file_size} bytes)", flush=True)
+        print(f"[OFFLINE] Importing: {safe_filename} ({file_size} bytes)", flush=True)
 
         # Optional decryption password for encrypted containers (password scheme,
         # or the recovered session password for X509/PGP).
         import_password = request.form.get('password') or None
 
-        result = import_results(temp_path, file.filename, password=import_password)
+        result = import_results(temp_path, safe_filename, password=import_password)
 
         return jsonify(result)
     except Exception as e:

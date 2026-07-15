@@ -435,6 +435,12 @@ def import_case():
 
 @case_bp.route("/api/cases/<case_id>/attach", methods=["POST"])
 def attach(case_id):
+    # Every sibling <case_id>-scoped route checks this; attach() didn't —
+    # store.attach_runs() doesn't raise on a bogus id, so a typo'd/stale
+    # case_id would silently tag runs to a phantom case (they'd vanish from
+    # every real case with no error), an evidence-contamination risk.
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
     d = request.get_json(silent=True) or {}
     rids = d.get("run_ids") or ([d["run_id"]] if d.get("run_id") else [])
     if not rids:

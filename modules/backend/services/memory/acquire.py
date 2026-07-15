@@ -42,6 +42,7 @@ from config import VELOCIRAPTOR_CONTAINER
 from services.kape_service import monitor_flow_completion
 from services.velociraptor_service import cancel_flow
 
+from services.vql_safety import is_valid_client_id, is_valid_flow_id
 from .defaults import ACQUISITION_DEFAULTS
 
 
@@ -397,6 +398,13 @@ def acquire_memory_dump(
     """
     log = logger or (lambda msg, level="info": None)
 
+    # client_id is interpolated directly into VQL string literals throughout
+    # this module (hostname/RAM lookups, collect_client, source lookups) with
+    # no escaping — reject anything that isn't a well-formed Velociraptor ID
+    # before it reaches any of them.
+    if not is_valid_client_id(client_id):
+        raise AcquisitionError(f"invalid client_id: {client_id!r}")
+
     cfg = {**ACQUISITION_DEFAULTS, **overrides}
     Path(dumps_dir).mkdir(parents=True, exist_ok=True)
 
@@ -533,6 +541,10 @@ def cleanup_velociraptor_flow(
     Best-effort — never raises.
     """
     log = logger or (lambda msg, level="info": None)
+    if not is_valid_client_id(client_id) or not is_valid_flow_id(flow_id):
+        log(f"acquire-cleanup: rejecting invalid client_id/flow_id: "
+            f"{client_id!r}/{flow_id!r}", "warning")
+        return
     try:
         rows = _velo_query(
             "SELECT count() AS n FROM Artifact.Server.Utils.DeleteFlow("

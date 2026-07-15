@@ -162,6 +162,15 @@ def _upload_plaso_direct(api, sketch, plaso_file_path, timeline_name, logger=Non
             celery_task_id = getattr(streamer, 'celery_task_id', None)
             index_name = getattr(streamer, '_index', None)
 
+        if not timeline_id:
+            # add_file() can return without raising even when Timesketch never
+            # actually registered a timeline (e.g. a rejected/empty upload) —
+            # the caller's `if not upload_result:` check can't catch this
+            # because a dict with all-None values is still truthy. Surface it
+            # as a real failure instead of reporting a phantom success.
+            log("✗ Upload did not produce a timeline_id — treating as failed", "error")
+            return None
+
         log(f"✓ Upload complete!")
         log(f"Timeline ID: {timeline_id}")
         log(f"Celery Task ID: {celery_task_id}")

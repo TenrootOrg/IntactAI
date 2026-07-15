@@ -11,6 +11,28 @@ from .base import get_connection, row_to_dict
 from .config_store import save_frontend_config, load_frontend_config
 
 
+def _redact_frontend_config_secrets(config: Dict[str, Any]) -> Dict[str, Any]:
+    """frontend_config holds real credentials (AWS secret_access_key/session_token,
+    Azure client_secret under the 'cloud' key; the LLM api_key under
+    'agentic') that must never leave this box in a plain export/backup file —
+    matching the same masking already applied to GET /api/config/cloud.
+    Redacts a deep copy; never mutates the caller's dict."""
+    import copy
+    redacted = copy.deepcopy(config or {})
+    cloud = redacted.get("cloud")
+    if isinstance(cloud, dict):
+        if cloud.get("aws", {}).get("secret_access_key"):
+            cloud["aws"]["secret_access_key"] = "[REDACTED]"
+        if cloud.get("aws", {}).get("session_token"):
+            cloud["aws"]["session_token"] = "[REDACTED]"
+        if cloud.get("azure", {}).get("client_secret"):
+            cloud["azure"]["client_secret"] = "[REDACTED]"
+    agentic = redacted.get("agentic")
+    if isinstance(agentic, dict) and agentic.get("online_llm", {}).get("api_key"):
+        agentic["online_llm"]["api_key"] = "[REDACTED]"
+    return redacted
+
+
 def export_db() -> Dict[str, Any]:
     """Export all tables to a JSON-serializable dict"""
     conn = get_connection()
@@ -43,8 +65,8 @@ def export_db() -> Dict[str, Any]:
     for row in conn.execute("SELECT * FROM reports").fetchall():
         data["reports"].append(dict(row))
 
-    # Frontend config
-    data["frontend_config"] = load_frontend_config()
+    # Frontend config — redact real credentials before they leave the box.
+    data["frontend_config"] = _redact_frontend_config_secrets(load_frontend_config())
 
     return data
 

@@ -6,6 +6,7 @@ Offline Collector Generator - Generate and package offline collectors
 import os
 import json
 import time
+import shlex
 import shutil
 import subprocess
 import zipfile
@@ -24,6 +25,19 @@ from services.offline_collector.constants import (
     TOOL_DEPENDENT_ARTIFACTS
 )
 from services.offline_collector.config import get_config
+
+import re as _re
+
+
+def _sanitize_config_name(config_name: str, fallback: str = "Collection") -> str:
+    """A config/blueprint name-derived value flows into VQL string literals
+    AND shell commands (some unquoted) below — restrict to a safe allowlist
+    (letters, digits, underscore, hyphen) rather than trying to escape for
+    every different context. Anything else is dropped; an empty/unsafe
+    result falls back to a safe default."""
+    safe = _re.sub(r'[^A-Za-z0-9_-]', '_', config_name or '')
+    safe = safe.strip('_') or fallback
+    return safe[:80]
 
 
 def _encryption_spec(scheme, password):
@@ -216,7 +230,7 @@ def generate_collector(config_id, os_type="windows",
         os.makedirs(COLLECTOR_OUTPUT_DIR, exist_ok=True)
 
         config_name = config.get("config_name", "Collection")
-        safe_name = config_name.replace(" ", "_").replace("/", "-").replace("[", "").replace("]", "").replace("(", "").replace(")", "")
+        safe_name = _sanitize_config_name(config_name)
 
         # Get artifacts and parameters — pick the set appropriate for the TARGET OS.
         # The blueprints are Windows-centric; feeding Windows artifacts to a Linux/
@@ -541,7 +555,7 @@ def generate_collector(config_id, os_type="windows",
 
         # Copy the generic collector file
         collector_local = os.path.join(bundle_dir, "collector_config")
-        copy_cmd = f"docker cp '{VELOCIRAPTOR_CONTAINER}:{collector_path_in_container}' '{collector_local}'"
+        copy_cmd = f"docker cp {VELOCIRAPTOR_CONTAINER}:{shlex.quote(collector_path_in_container)} {shlex.quote(collector_local)}"
         copy_result = subprocess.run(copy_cmd, shell=True, capture_output=True, text=True, timeout=60)
 
         if copy_result.returncode != 0:
@@ -844,7 +858,7 @@ def create_collection_script(config, file_id, os_type, output_path):
         binary_found = False
 
         # Try 1: Copy from nginx container
-        copy_cmd = f"docker cp intact_nginx:{velo_src} {velo_dest}"
+        copy_cmd = f"docker cp intact_nginx:{shlex.quote(velo_src)} {shlex.quote(velo_dest)}"
         result = subprocess.run(copy_cmd, shell=True, capture_output=True, text=True)
         if result.returncode == 0 and os.path.exists(velo_dest) and os.path.getsize(velo_dest) > 1000000:
             binary_found = True
@@ -859,7 +873,7 @@ def create_collection_script(config, file_id, os_type, output_path):
 
         # Try 3: Copy from Velociraptor container (Linux only)
         if not binary_found and os_type == "linux":
-            copy_cmd = f"docker cp {VELOCIRAPTOR_CONTAINER}:/velociraptor/velociraptor {velo_dest}"
+            copy_cmd = f"docker cp {VELOCIRAPTOR_CONTAINER}:/velociraptor/velociraptor {shlex.quote(velo_dest)}"
             result = subprocess.run(copy_cmd, shell=True, capture_output=True, text=True)
             if result.returncode == 0 and os.path.exists(velo_dest) and os.path.getsize(velo_dest) > 1000000:
                 binary_found = True
@@ -877,7 +891,7 @@ def create_collection_script(config, file_id, os_type, output_path):
             script_path = os.path.join(bundle_dir, script_name)
 
             # Safe name for files
-            safe_blueprint = config_name.replace(" ", "_").replace("[", "").replace("]", "").replace("/", "-")
+            safe_blueprint = _sanitize_config_name(config_name)
 
             # Build skipped artifacts note
             skipped_note = ""
@@ -1040,7 +1054,7 @@ fi
             os.chmod(script_path, 0o755)
 
         # Create ZIP bundle with binary and script (use consistent name to overwrite previous)
-        safe_name = config_name.replace(" ", "_").replace("/", "-").replace("[", "").replace("]", "").replace("(", "").replace(")", "")
+        safe_name = _sanitize_config_name(config_name)
         zip_filename = f"OfflineCollector_{safe_name}_{os_type}.zip"
         zip_path = os.path.join(COLLECTOR_OUTPUT_DIR, zip_filename)
 

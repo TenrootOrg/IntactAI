@@ -535,7 +535,10 @@ def handle_tus_hook():
 @upload_bp.route('/api/uploads/status/<upload_id>', methods=['GET'])
 def get_upload_status(upload_id):
     """Check if an upload file exists and get its size"""
-    file_path = f"/data/uploads/{upload_id}"
+    # Defense-in-depth: Flask's default converter blocks literal '/' in this
+    # segment, but a bare ".." would still resolve to the parent dir — pin to
+    # just the basename so this can never escape /data/uploads.
+    file_path = os.path.join("/data/uploads", os.path.basename(upload_id))
 
     if os.path.exists(file_path):
         size = os.path.getsize(file_path)

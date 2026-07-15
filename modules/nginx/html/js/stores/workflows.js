@@ -206,18 +206,30 @@ document.addEventListener('alpine:init', () => {
         },
 
         formatLogMessage(message) {
-            // Make download URLs clickable
-            if (message && message.includes('/api/velociraptor/offline/download/')) {
-                const urlMatch = message.match(/(\/api\/velociraptor\/offline\/download\/[^\s]+)/);
-                if (urlMatch) {
-                    const url = urlMatch[1];
-                    return message.replace(url, `<a href="${url}" class="text-purple-400 hover:text-purple-300 underline" download>Download Collector</a>`);
+            // Escape FIRST, unconditionally — the URL branch below used to
+            // return the raw message with only the URL substring replaced,
+            // skipping escaping for the rest of the line whenever a download
+            // URL was present (anything else HTML-significant in that same
+            // log line rendered unescaped).
+            const escapeHtml = (s) => {
+                const div = document.createElement('div');
+                div.textContent = s == null ? '' : String(s);
+                return div.innerHTML;
+            };
+            const escaped = escapeHtml(message);
+
+            // Make download URLs clickable — extract from the original
+            // message (the regex needs the real characters), then escape
+            // the extracted URL the same way so the substring lookup below
+            // matches the already-escaped full message.
+            const urlMatch = (message || '').match(/(\/api\/velociraptor\/offline\/download\/[^\s]+)/);
+            if (urlMatch) {
+                const escapedUrl = escapeHtml(urlMatch[1]);
+                if (escaped.includes(escapedUrl)) {
+                    return escaped.replace(escapedUrl, `<a href="${escapedUrl}" class="text-purple-400 hover:text-purple-300 underline" download>Download Collector</a>`);
                 }
             }
-            // Escape HTML for safety
-            const div = document.createElement('div');
-            div.textContent = message;
-            return div.innerHTML;
+            return escaped;
         },
 
         formatTime(timestamp) {

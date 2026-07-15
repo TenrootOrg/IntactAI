@@ -65,11 +65,25 @@ def get_all_automations():
         "total": len(transformed)
     })
 
+def _run_visible_in_active_workspace(run):
+    """Mirror get_all_automations()' workspace scoping for single-resource
+    lookups by run_id: run_id is a predictable id ({type}_{millis}), so
+    without this check an operator in one case could read/stop/read-logs-of
+    another case's (or the System workspace's) runs just by guessing/trying
+    ids. Same rule as the list route: no active case_id means no filtering
+    (admin/no-workspace-concept context)."""
+    from flask import g
+    case_id = getattr(g, "case_id", None)
+    if not case_id:
+        return True
+    return run.get("case_id") == case_id
+
+
 @dashboard_bp.route('/api/dashboard/automation/<run_id>')
 def get_automation_details(run_id):
     """Get detailed information about a specific automation run"""
     run = get_automation_run(run_id)
-    if run:
+    if run and _run_visible_in_active_workspace(run):
         _reconcile_velociraptor_hunt(run)
         return jsonify(_transform_run(run))
 
@@ -100,7 +114,7 @@ def stop_automation(run_id):
     """Stop a running workflow and clean up its resources"""
     from services.workflow_service import request_stop
     run = get_automation_run(run_id)
-    if not run:
+    if not run or not _run_visible_in_active_workspace(run):
         return jsonify({"error": f"Automation run {run_id} not found"}), 404
     if run.get('status') not in ('running', 'pending'):
         return jsonify({"error": f"Cannot stop workflow in '{run.get('status')}' state"}), 400
@@ -113,7 +127,7 @@ def stop_automation(run_id):
 def get_automation_logs(run_id):
     """Get logs for a specific automation run"""
     run = get_automation_run(run_id)
-    if run:
+    if run and _run_visible_in_active_workspace(run):
         return jsonify({
             "id": run_id,
             "logs": run["logs"]

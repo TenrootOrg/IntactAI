@@ -24,6 +24,13 @@ _restore_lock = threading.Lock()
 # Path to scheduler jobs database
 SCHEDULER_DB_PATH = '/app/data/scheduler_jobs.db'
 
+# APScheduler's own default misfire_grace_time is 1 second — any scheduled
+# fire missed by more than that (e.g. the backend was down for an upgrade
+# or restart, which routinely takes well over a second) is silently
+# SKIPPED rather than run. DFIR scans are typically daily/weekly, so a
+# generous grace window matters far more than firing exactly on time.
+_JOB_DEFAULTS = {'misfire_grace_time': 3600, 'coalesce': True}
+
 
 def _safe_init_scheduler() -> Optional[BackgroundScheduler]:
     """Safely initialize the scheduler with error handling."""
@@ -39,7 +46,8 @@ def _safe_init_scheduler() -> Optional[BackgroundScheduler]:
         }
         scheduler = BackgroundScheduler(
             jobstores=jobstores,
-            timezone='UTC'
+            timezone='UTC',
+            job_defaults=_JOB_DEFAULTS
         )
         scheduler.start()
         print("[SCHEDULER] Scheduler started", flush=True)
@@ -56,7 +64,8 @@ def _safe_init_scheduler() -> Optional[BackgroundScheduler]:
                 }
                 scheduler = BackgroundScheduler(
                     jobstores=jobstores,
-                    timezone='UTC'
+                    timezone='UTC',
+                    job_defaults=_JOB_DEFAULTS
                 )
                 scheduler.start()
                 print("[SCHEDULER] Scheduler started after recovery", flush=True)
@@ -124,6 +133,12 @@ def init_scheduled_jobs_table():
         # include_labels/per_artifact, AWS regions/scope_mode/…). One column
         # keeps the schema flat + extensible; each runner reads what it needs.
         ("options", "TEXT DEFAULT '{}'"),
+        # Set when reschedule_after_run() fails to re-arm a month/year job's
+        # one-shot DateTrigger — without this, a job silently stops firing
+        # forever with no operator-visible signal (the old failure path only
+        # printed to the backend log). Cleared on the next successful
+        # reschedule.
+        ("last_reschedule_error", "TEXT"),
     ]
     for col_name, col_def in time_filter_columns:
         try:

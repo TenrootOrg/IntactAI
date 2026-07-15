@@ -3,6 +3,7 @@
 Config Routes - Configuration endpoints (frontend config, cloud config)
 """
 
+import json
 from flask import Blueprint, jsonify, request
 from services.file_storage_service import load_frontend_config, save_frontend_config
 
@@ -389,6 +390,12 @@ def get_config():
     """Get frontend configuration."""
     try:
         config = _load_config()
+        # Mask the LLM key the same way GET /api/config/cloud already masks
+        # its cloud secrets — this endpoint previously returned it unmasked.
+        if config.get('agentic', {}).get('online_llm', {}).get('api_key'):
+            config = json.loads(json.dumps(config))  # cheap deep copy
+            key = config['agentic']['online_llm']['api_key']
+            config['agentic']['online_llm']['api_key'] = '••••••••' + key[-4:] if len(key) > 4 else '••••••••'
         return jsonify(config)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -401,6 +408,14 @@ def save_config():
         config = request.json
         if not config:
             return jsonify({"error": "No configuration provided"}), 400
+
+        # Don't overwrite the real key with the masked placeholder GET
+        # returns — same protection /api/config/cloud's PUT already has.
+        key = config.get('agentic', {}).get('online_llm', {}).get('api_key', '')
+        if key.startswith('••••'):
+            existing = _load_config()
+            config['agentic']['online_llm']['api_key'] = \
+                existing.get('agentic', {}).get('online_llm', {}).get('api_key', '')
 
         _save_config(config)
         return jsonify({"status": "saved", "message": "Configuration saved successfully"})

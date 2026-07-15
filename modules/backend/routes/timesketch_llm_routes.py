@@ -191,23 +191,29 @@ def _run_timesketch_settings_workflow(run_id, config_data):
         # aistudio provider + key as summarize/synthesize — the previous
         # vertexai default with an empty project_id leaves the "AI
         # generated queries" toggle greyed out as "requires LLM provider".
+        # repr() — not raw '{var}' interpolation — for every operator-supplied
+        # value: this gets written verbatim into a .py file Timesketch imports
+        # as code. A value containing a single quote would previously break
+        # the generated syntax, or a deliberately crafted value could inject
+        # arbitrary Python that executes on import. repr() always produces a
+        # correctly-escaped, syntactically valid Python string literal.
         new_llm_config = f'''LLM_PROVIDER_CONFIGS = {{
     'nl2q': {{
         'aistudio': {{
-            'model': '{google_ai_model}',
-            'api_key': '{google_ai_key}',
+            'model': {repr(google_ai_model)},
+            'api_key': {repr(google_ai_key)},
         }},
     }},
     'llm_summarize': {{
         'aistudio': {{
-            'model': '{google_ai_model}',
-            'api_key': '{google_ai_key}',
+            'model': {repr(google_ai_model)},
+            'api_key': {repr(google_ai_key)},
         }},
     }},
     'llm_synthesize': {{
         'aistudio': {{
-            'model': '{google_ai_model}',
-            'api_key': '{google_ai_key}',
+            'model': {repr(google_ai_model)},
+            'api_key': {repr(google_ai_key)},
         }},
     }},
     'log_analyzer': {{
@@ -222,8 +228,8 @@ def _run_timesketch_settings_workflow(run_id, config_data):
     }},
     'default': {{
         'ollama': {{
-            'server_url': '{ollama_url}',
-            'model': '{ollama_model}',
+            'server_url': {repr(ollama_url)},
+            'model': {repr(ollama_model)},
         }},
     }}
 }}'''

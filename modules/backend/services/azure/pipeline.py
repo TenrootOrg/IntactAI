@@ -300,10 +300,10 @@ def run_azure_pipeline(
         add_log_to_run(run_id, "=" * 50, "info")
         add_log_to_run(run_id, f"Blueprint: {blueprint.get('name', 'Custom')}", "info")
         if isinstance(time_filter, dict):
-            if time_filter.get('type') == 'between':
-                add_log_to_run(run_id, f"Time Range: {time_filter.get('start', '?')} → {time_filter.get('end', 'now')}", "info")
+            if time_filter.get('mode') == 'between':
+                add_log_to_run(run_id, f"Time Range: {time_filter.get('start_datetime', '?')} → {time_filter.get('end_datetime', 'now')}", "info")
             else:
-                add_log_to_run(run_id, f"Time Range: Last {time_filter.get('value', '7d')}", "info")
+                add_log_to_run(run_id, f"Time Range: Last {time_filter.get('relative_range', '7d')}", "info")
         add_log_to_run(run_id, f"Sources: {', '.join(bp_settings.get('sources', ['all']))}", "info")
         if target_users:
             add_log_to_run(run_id, f"Target Users: {', '.join(target_users)}", "info")
@@ -337,11 +337,11 @@ def run_azure_pipeline(
         start_date_str = None
         end_date_str = None
         if isinstance(time_filter, dict):
-            if time_filter.get('type') == 'between':
-                start_date_str = time_filter.get('start')
-                end_date_str = time_filter.get('end')
-            elif time_filter.get('type') == 'relative':
-                val = time_filter.get('value', '7d')
+            if time_filter.get('mode') == 'between':
+                start_date_str = time_filter.get('start_datetime')
+                end_date_str = time_filter.get('end_datetime')
+            elif time_filter.get('mode', 'relative') == 'relative':
+                val = time_filter.get('relative_range', '7d')
                 try:
                     if 'h' in val:
                         hours = int(val.replace('h', ''))

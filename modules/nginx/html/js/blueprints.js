@@ -292,11 +292,11 @@ function renderBlueprintCard(bp) {
         <div class="flex items-start justify-between">
             <div class="flex-1">
                 <div class="flex items-center gap-2 mb-1">
-                    <h4 class="text-lg font-semibold text-white">${bp.name}</h4>
+                    <h4 class="text-lg font-semibold text-white">${escapeHtml(bp.name)}</h4>
                     <span class="text-xs ${badgeColor} px-2 py-0.5 rounded">${badgeLabel}</span>
                     ${isDefault ? '<span class="text-xs bg-green-900 text-green-300 px-2 py-0.5 rounded">Default</span>' : ''}
                 </div>
-                <p class="text-sm text-gray-400 mb-3">${bp.description || 'No description'}</p>
+                <p class="text-sm text-gray-400 mb-3">${escapeHtml(bp.description || 'No description')}</p>
                 <div class="flex gap-4 text-xs text-gray-500">
                     ${settingsHtml}
                 </div>

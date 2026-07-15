@@ -241,6 +241,19 @@ def version_lt(a, b):
     return pa < pb
 
 
+def version_eq(a, b):
+    """Same zero-padding as version_le/version_lt — without it, "1.2" and
+    "1.2.0" compare as different tuples ((1,2) != (1,2,0)) even though
+    they're the same version, causing an exact-match CPE entry to miss a
+    real hit whenever the detected version string has fewer segments than
+    NVD's."""
+    pa, pb = parse_version(a), parse_version(b)
+    n = max(len(pa), len(pb))
+    pa = pa + (0,) * (n - len(pa))
+    pb = pb + (0,) * (n - len(pb))
+    return pa == pb
+
+
 def severity_bucket(score):
     if score is None:
         return ""
@@ -543,7 +556,7 @@ def cpe_matches_version(cpe_match, version):
     cpe_version = parts[5] if len(parts) > 5 else "*"
 
     if cpe_version not in ("*", "-", ""):
-        return parse_version(cpe_version) == parse_version(version)
+        return version_eq(cpe_version, version)
 
     has_range = False
     ok = True

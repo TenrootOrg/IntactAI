@@ -36,6 +36,7 @@ from typing import Any, Callable
 from services.workflow_service import (
     add_log_to_run,
     is_cancelled,
+    mutate_run_details,
     register_cancel_event,
     register_cleanup,
     unregister_cancel,
@@ -253,6 +254,26 @@ def _bump(run_id: str, percent: int, log_msg: str | None = None) -> None:
         add_log_to_run(run_id, log_msg, "info")
 
 
+def _persist_cleanup_state(run_id: str, **fields) -> None:
+    """Mirror the in-flight acquisition's identifiers (client_id, flow_id,
+    host_path, evidence_id/filename) into the workflow row's `details` as
+    soon as each becomes known.
+
+    register_cleanup()'s callback closure is IN-MEMORY ONLY — if the
+    backend process crashes or restarts mid-run, that closure is lost and
+    cleanup_after_run() never fires, leaking the Velociraptor flow (still
+    running on the endpoint) and the multi-GB .raw dump on disk. Boot-time
+    orphan reaping (app.py's restart reaper) reads this persisted state
+    back to run the same cleanup after a crash — see cleanup_orphaned_memory_acquisition().
+    """
+    try:
+        mutate_run_details(run_id, lambda d: d.setdefault("_cleanup_state", {}).update(
+            {k: v for k, v in fields.items() if v is not None}
+        ))
+    except Exception:
+        pass
+
+
 def _disk_preflight(
     run_id: str, dumps_dir: str, mem_bytes_estimate: int | None
 ) -> None:
@@ -265,7 +286,13 @@ def _disk_preflight(
     when unknown — preflight is a safety net, not a hard SLA.
     """
     try:
-        free_bytes = shutil.disk_usage("/").free
+        # Must check dumps_dir's own filesystem, not "/" — dumps_dir is
+        # typically a separate bind-mounted data volume, and "/" being
+        # roomy tells us nothing about whether the actual destination has
+        # room for a multi-GB dump (see acquire.py's _preflight_capacity
+        # for the same pattern already done correctly).
+        os.makedirs(dumps_dir, exist_ok=True)
+        free_bytes = shutil.disk_usage(dumps_dir).free
     except OSError as e:
         add_log_to_run(run_id, f"preflight: disk_usage failed: {e}", "warning")
         return
@@ -530,6 +557,7 @@ def run_memory_pipeline(
         if mode not in ("yara", "plugin", "layered"):
             raise ValueError(f"invalid mode {mode!r}")
         log(f"pipeline: mode={mode} client={client_id} case={case_name!r}")
+        _persist_cleanup_state(run_id, client_id=client_id or None)
 
         # Whether to run the VolWeb yarascan at all. The "Include YARA" checkbox
         # in the UI maps to the analysis mode: plugin = plugins only (NO yara),
@@ -566,6 +594,7 @@ def run_memory_pipeline(
             size_b = os.path.getsize(from_upload_path)
             host_path = from_upload_path
             flow_id = None   # no Velociraptor flow when uploaded offline
+            _persist_cleanup_state(run_id, host_path=host_path)
             log(
                 f"pipeline: offline-upload — using {host_path} ({size_b // 1024 // 1024} MB)",
                 "info",
@@ -592,6 +621,7 @@ def run_memory_pipeline(
                 ),
             )
             evidence_filename = client.get_evidence(evidence_id).get("name")
+            _persist_cleanup_state(run_id, evidence_id=evidence_id, evidence_filename=evidence_filename)
             cumulative += _PHASE_WEIGHTS["upload"]
             _bump(run_id, cumulative, f"upload: evidence_id={evidence_id}")
             if cancel():
@@ -689,6 +719,7 @@ def run_memory_pipeline(
             flow_id = acq["flow_id"]
             host_path = acq["host_path"]
             client_name = client_name or acq.get("hostname")
+            _persist_cleanup_state(run_id, flow_id=flow_id, host_path=host_path)
             cumulative += _PHASE_WEIGHTS["acquire"]
             _bump(
                 run_id, cumulative,
@@ -716,6 +747,7 @@ def run_memory_pipeline(
                     os_name="windows",
                 )
                 evidence_filename = acq["shared_basename"]
+                _persist_cleanup_state(run_id, evidence_id=evidence_id, evidence_filename=evidence_filename)
             else:
                 log(f"pipeline: upload — chunked to VolWeb case={case_name!r}", "info")
                 evidence_id = client.upload_evidence(
@@ -730,6 +762,7 @@ def run_memory_pipeline(
                     ),
                 )
                 evidence_filename = client.get_evidence(evidence_id).get("name")
+                _persist_cleanup_state(run_id, evidence_id=evidence_id, evidence_filename=evidence_filename)
             cumulative += _PHASE_WEIGHTS["upload"]
             _bump(run_id, cumulative, f"upload: evidence_id={evidence_id}")
             if cancel():

@@ -166,21 +166,28 @@ class ClientManager {
                 ? '<span class="inline-block w-2 h-2 bg-green-400 rounded-full"></span>'
                 : '<span class="inline-block w-2 h-2 bg-gray-500 rounded-full"></span>';
             const labels = Array.isArray(client.labels) ? client.labels : [];
+            // hostname/os/labels are Velociraptor-reported endpoint metadata —
+            // an attacker-renamed/compromised host round-trips this into the
+            // UI, so it must be escaped before going into innerHTML (was
+            // previously interpolated raw).
+            const safeClientId = escapeHtml(client.client_id || '');
+            const safeHostname = escapeHtml(client.hostname || 'Unknown');
+            const safeOs = escapeHtml(client.os || '');
             const labelChips = labels.map(l =>
-                `<span class="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/50 text-blue-300 border border-blue-800/60">${l}</span>`
+                `<span class="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/50 text-blue-300 border border-blue-800/60">${escapeHtml(l)}</span>`
             ).join(' ');
             return `
                 <label class="flex items-center gap-3 p-2 rounded hover:bg-gray-800 cursor-pointer">
-                    <input type="${inputType}"${nameAttr} class="${this.checkboxClass} w-4 h-4 ${inputShape} border-gray-700 bg-gray-900 text-blue-600" value="${client.client_id}" data-hostname="${client.hostname || 'Unknown'}" ${checked}>
+                    <input type="${inputType}"${nameAttr} class="${this.checkboxClass} w-4 h-4 ${inputShape} border-gray-700 bg-gray-900 text-blue-600" value="${safeClientId}" data-hostname="${safeHostname}" ${checked}>
                     ${dot}
                     <div class="flex-1 min-w-0">
                         <div class="flex items-center gap-2 flex-wrap">
-                            <span class="text-sm text-white">${client.hostname || 'Unknown'}</span>
-                            <span class="text-xs text-gray-500">${client.os || ''}</span>
+                            <span class="text-sm text-white">${safeHostname}</span>
+                            <span class="text-xs text-gray-500">${safeOs}</span>
                             ${labelChips}
                         </div>
                     </div>
-                    <span class="text-xs text-gray-600 font-mono truncate">${(client.client_id || '').substring(0, 12)}...</span>
+                    <span class="text-xs text-gray-600 font-mono truncate">${safeClientId.substring(0, 12)}...</span>
                 </label>
             `;
         };

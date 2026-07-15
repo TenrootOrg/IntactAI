@@ -86,14 +86,23 @@ def is_available(aws_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
 
 def _resolve_time_window(time_filter: Optional[Dict[str, Any]]) -> tuple:
-    """Convert pipeline time_filter into (start_dt, end_dt) tuple."""
+    """Convert pipeline time_filter into (start_dt, end_dt) tuple.
+
+    Field names must match the schema the frontend/pipeline actually sends
+    (`mode` / `relative_range` / `start_datetime` / `end_datetime` — see
+    `services/agentic/utils/_helpers.py`'s `filter_results_by_time` and
+    `services/scheduler/jobs.py`), NOT `type` / `value` / `start` / `end`,
+    which this used to read — those keys are never present, so every call
+    silently fell through to the DEFAULT_LOOKBACK_HOURS default regardless
+    of what the operator configured.
+    """
     now = datetime.now(timezone.utc)
-    if not time_filter or not isinstance(time_filter, dict):
+    if not time_filter or not isinstance(time_filter, dict) or not time_filter.get("enabled", True):
         return now - timedelta(hours=DEFAULT_LOOKBACK_HOURS), now
-    t = time_filter.get("type")
-    if t == "between":
-        start_raw = time_filter.get("start") or ""
-        end_raw = time_filter.get("end") or ""
+    mode = time_filter.get("mode", "relative")
+    if mode == "between":
+        start_raw = time_filter.get("start_datetime") or ""
+        end_raw = time_filter.get("end_datetime") or ""
         try:
             start_dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
             if start_dt.tzinfo is None:
@@ -107,8 +116,8 @@ def _resolve_time_window(time_filter: Optional[Dict[str, Any]]) -> tuple:
         except Exception:
             end_dt = now
         return start_dt, end_dt
-    # 'relative' or anything else falls through to value parsing
-    val = (time_filter.get("value") or "24h").lower()
+    # 'relative' or anything else falls through to relative_range parsing
+    val = (time_filter.get("relative_range") or "24h").lower()
     try:
         if val.endswith("h"):
             hours = int(val[:-1])
@@ -247,8 +256,14 @@ def _collect_for_region(
             page += 1
             if not next_token:
                 break
-            if page > 20:  # safety on absurdly chatty accounts
-                log(f"[cloudtrail] region={region} hit page cap 20", "warning")
+            # Safety cap on absurdly chatty accounts — derived from max_events
+            # (50/page is AWS's hard per-page cap) rather than a fixed 20, so
+            # a full-mode scan with a raised max_events_per_region isn't
+            # silently truncated at 1000 events before it ever reaches its
+            # own (higher) cap.
+            max_pages = (max_events // 50) + 2
+            if page > max_pages:
+                log(f"[cloudtrail] region={region} hit page cap {max_pages}", "warning")
                 break
     return out
 

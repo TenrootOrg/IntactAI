@@ -437,13 +437,39 @@ def run_startup_initialization():
         for _w in (load_workflows() or []):
             if (_w.get("automation_type") in _REAP_TYPES
                     and _w.get("status") in ("running", "pending")):
+                _run_id = _w["run_id"]
                 try:
-                    update_run_status(_w["run_id"], "failed", error=(
+                    update_run_status(_run_id, "failed", error=(
                         "Interrupted by a backend restart — the task's worker did "
                         "not survive. Please re-run/re-upload."))
                     _reaped += 1
                 except Exception:
                     pass
+                # Memory acquisitions leak real side effects on a crash: a
+                # multi-GB .raw dump left on disk and a Velociraptor flow
+                # still running on the endpoint. register_cleanup()'s
+                # callback is in-memory only and died with the old process,
+                # so replay it here from the state the pipeline persisted
+                # into details._cleanup_state as it went (see
+                # services/memory/pipeline.py's _persist_cleanup_state).
+                if _w.get("automation_type") == "memory":
+                    try:
+                        _state = (_w.get("details") or {}).get("_cleanup_state") or {}
+                        if _state:
+                            from services.memory.cleanup import cleanup_after_run
+                            cleanup_after_run(
+                                client_id=_state.get("client_id"),
+                                flow_id=_state.get("flow_id"),
+                                host_path=_state.get("host_path"),
+                                evidence_id=_state.get("evidence_id"),
+                                evidence_filename=_state.get("evidence_filename"),
+                                volweb_client=None,
+                                delete_evidence_row=False,
+                                logger=lambda m, level="info": print(
+                                    f"[STARTUP] [memory-cleanup {_run_id}] {m}", flush=True),
+                            )
+                    except Exception as e:
+                        print(f"[STARTUP] memory-cleanup replay failed for {_run_id}: {e}", flush=True)
         if _reaped:
             print(f"[STARTUP] Reaped {_reaped} run(s) orphaned by the restart", flush=True)
     except Exception as e:

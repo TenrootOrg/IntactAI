@@ -16,6 +16,7 @@ from pyvelociraptor import api_pb2
 from pyvelociraptor import api_pb2_grpc
 
 from config import VELOCIRAPTOR_CONTAINER, VELOCIRAPTOR_API_CONFIG_PATH, VELOCIRAPTOR_SNAPSHOT_PATH
+from services.vql_safety import is_valid_client_id, is_valid_flow_id
 
 # Cached API configuration
 velociraptor_api_config = None
@@ -31,6 +32,7 @@ def get_clients_from_snapshot(include_offline=False):
             existing-flow analysis where the data is already collected and
             client liveness is irrelevant.
     """
+    channel = None
     try:
         print(f"[CLIENT-LIST] Querying clients via VQL API (real-time, include_offline={include_offline})...", flush=True)
 
@@ -105,7 +107,6 @@ def get_clients_from_snapshot(include_offline=False):
                     print(f"[CLIENT-LIST] Error parsing VQL response: {e}", flush=True)
                     continue
 
-        channel.close()
         print(f"[CLIENT-LIST] ✓ Found {len(clients)} clients via VQL API", flush=True)
         return clients
 
@@ -114,6 +115,12 @@ def get_clients_from_snapshot(include_offline=False):
         traceback.print_exc()
         # Fallback to snapshot file method
         return get_clients_from_snapshot_file()
+    finally:
+        # Previously only closed on the success path — any exception above
+        # (or the pre-existing early return via the `if not channel` branch,
+        # where channel is falsy anyway) leaked the gRPC channel.
+        if channel:
+            channel.close()
 
 
 def get_clients_from_snapshot_file():
@@ -293,6 +300,7 @@ def get_hunt_description(hunt_id):
     so fusion reads it back here to decide whether the import is an agentic run."""
     if not hunt_id:
         return ""
+    channel = None
     try:
         channel = setup_velociraptor_connection()
         if not channel:
@@ -316,6 +324,10 @@ def get_hunt_description(hunt_id):
     except Exception as e:
         print(f"[GRPC] get_hunt_description({hunt_id}) failed: {e}", flush=True)
         return ""
+    finally:
+        # Never closed before — every call (this is polled) leaked a channel.
+        if channel:
+            channel.close()
 
 
 def is_hunt_collection_complete(hunt_id):
@@ -331,6 +343,7 @@ def is_hunt_collection_complete(hunt_id):
     the run's status untouched rather than flip it on an unknown result."""
     if not hunt_id:
         return False
+    channel = None
     try:
         channel = setup_velociraptor_connection()
         if not channel:
@@ -357,6 +370,11 @@ def is_hunt_collection_complete(hunt_id):
     except Exception as e:
         print(f"[GRPC] is_hunt_collection_complete({hunt_id}) failed: {e}", flush=True)
         return False
+    finally:
+        # This is polled by _reconcile_velociraptor_hunt on every dashboard
+        # fetch — never closing before leaked one channel per poll.
+        if channel:
+            channel.close()
 
 
 def create_velociraptor_hunt(
@@ -393,6 +411,7 @@ def create_velociraptor_hunt(
           f"max_bytes={max_bytes}", flush=True)
     print("=" * 80, flush=True)
 
+    channel = None
     try:
         # Setup gRPC connection
         channel = setup_velociraptor_connection()
@@ -452,8 +471,6 @@ LET collection = hunt(
                     print(f"[HUNT] ⚠ Could not parse HuntId: {e}")
                     continue
 
-        channel.close()
-
         if hunt_id:
             print("=" * 80)
             return hunt_id
@@ -475,6 +492,11 @@ LET collection = hunt(
         traceback.print_exc()
         print("=" * 80)
         return None
+    finally:
+        # Both except branches previously returned without closing —
+        # any gRPC error while creating a hunt leaked the channel.
+        if channel:
+            channel.close()
 
 
 def load_tools_config():
@@ -582,7 +604,6 @@ def download_tools_to_inventory(logger=None):
 
         if not available_files:
             log("No files found in tools directory - skipping tool configuration", "warning")
-            channel.close()
             return {
                 "success": True,
                 "results": results,
@@ -671,8 +692,6 @@ def download_tools_to_inventory(logger=None):
         except Exception as e:
             log(f"Could not query inventory: {str(e)[:50]}", "warning")
 
-        channel.close()
-
         configured = len(results['configured'])
         already = len(results['already_served'])
         not_found = len(results['file_not_found'])
@@ -689,12 +708,17 @@ def download_tools_to_inventory(logger=None):
         }
 
     except Exception as e:
-        try:
-            channel.close()
-        except:
-            pass
         log(f"Tool configuration failed: {str(e)}", "error")
         return {"success": False, "error": str(e)}
+    finally:
+        # Previously only closed on two of three exit paths (both success
+        # branches + the except block) — any path that isn't one of those
+        # (there wasn't one, but the duplicated close() calls were fragile
+        # against future edits) now closes exactly once here instead.
+        try:
+            channel.close()
+        except Exception:
+            pass
 
 
 def get_artifact_definitions():
@@ -703,6 +727,7 @@ def get_artifact_definitions():
     Returns a list of artifact names that are available in the server.
     This is used to dynamically populate blueprint artifact selectors.
     """
+    channel = None
     try:
         print("[ARTIFACTS] Querying artifact definitions from Velociraptor...", flush=True)
 
@@ -750,7 +775,6 @@ def get_artifact_definitions():
                     print(f"[ARTIFACTS] Error parsing response: {e}", flush=True)
                     continue
 
-        channel.close()
         print(f"[ARTIFACTS] ✓ Found {len(artifacts)} artifacts", flush=True)
         return artifacts
 
@@ -758,6 +782,9 @@ def get_artifact_definitions():
         print(f"[ARTIFACTS] Error querying artifacts: {e}", flush=True)
         traceback.print_exc()
         return None
+    finally:
+        if channel:
+            channel.close()
 
 
 def get_tools_inventory_config():
@@ -815,6 +842,13 @@ def export_flow_to_zip(client_id: str, flow_id: str, out_path: str, logger=None,
             logger(msg, level)
         else:
             print(f"[VELO-EXPORT] [{level}] {msg}", flush=True)
+
+    # Defense-in-depth: these values are interpolated directly into a VQL
+    # string literal below with no escaping. Callers should already only
+    # pass server-generated IDs, but reject anything else here too.
+    if not is_valid_client_id(client_id) or not is_valid_flow_id(flow_id):
+        log(f"Rejecting invalid client_id/flow_id: {client_id!r}/{flow_id!r}", "error")
+        return False
 
     channel = setup_velociraptor_connection()
     if not channel:
@@ -974,7 +1008,10 @@ def cancel_flow(client_id: str, flow_id: str, logger=None) -> bool:
         else:
             print(f"[VELO-CANCEL] [{level}] {msg}", flush=True)
 
-    if not client_id or not flow_id:
+    # Defense-in-depth: client_id/flow_id are interpolated directly into a
+    # VQL string literal below with no escaping.
+    if not is_valid_client_id(client_id) or not is_valid_flow_id(flow_id):
+        log(f"Rejecting invalid client_id/flow_id: {client_id!r}/{flow_id!r}", "warning")
         return False
 
     channel = setup_velociraptor_connection()

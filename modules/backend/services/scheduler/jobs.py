@@ -98,25 +98,60 @@ def _schedule_trigger(scheduler, job_id, name, interval_value, interval_unit, st
 def reschedule_after_run(job_id):
     """Re-arm a MONTH/YEAR-interval job after it fires (its DateTrigger is one-shot).
     Days/weeks self-perpetuate via IntervalTrigger, so this is a no-op for them.
-    Called by the executor at the end of a run."""
+    Called by the executor at the end of a run.
+
+    Re-arming is retried once (a transient scheduler hiccup shouldn't
+    permanently kill a month/year job's only chance to fire again), and any
+    ultimate failure is persisted to `last_reschedule_error` so the job
+    doesn't just silently stop — the old behavior only printed to the
+    backend log, which nobody watches, and the job then never ran again."""
     job = get_scheduled_job(job_id)
     if not job or job.get('interval_unit') not in _CALENDAR_UNITS or not job.get('enabled', True):
         return
     scheduler = get_scheduler()
     if not scheduler:
+        _record_reschedule_error(job_id, "scheduler unavailable")
         return
     start_dt = _compose_start_dt(job.get('start_at'), job.get('run_time', '02:00'))
-    next_run = _schedule_trigger(scheduler, job_id, job['name'],
-                                 job.get('interval_value', 1), job.get('interval_unit'), start_dt)
+
+    next_run = None
+    last_err = None
+    for attempt in range(2):
+        try:
+            next_run = _schedule_trigger(scheduler, job_id, job['name'],
+                                         job.get('interval_value', 1), job.get('interval_unit'), start_dt)
+            if next_run:
+                break
+        except Exception as e:
+            last_err = str(e)
+            print(f"[SCHEDULER] reschedule_after_run attempt {attempt + 1} failed for {job_id}: {e}", flush=True)
+
     if next_run:
         try:
             conn = get_db_connection()
-            conn.execute("UPDATE scheduled_jobs SET next_run_at = ? WHERE id = ?",
-                         (next_run.isoformat(), job_id))
+            conn.execute(
+                "UPDATE scheduled_jobs SET next_run_at = ?, last_reschedule_error = NULL WHERE id = ?",
+                (next_run.isoformat(), job_id))
             conn.commit()
             conn.close()
         except Exception:
             pass
+    else:
+        _record_reschedule_error(job_id, last_err or "re-arm produced no next run time")
+
+
+def _record_reschedule_error(job_id, message):
+    """Persist a reschedule failure so the operator sees it (job list /
+    detail) instead of the job just quietly never firing again."""
+    print(f"[SCHEDULER] Job {job_id} failed to reschedule: {message}", flush=True)
+    try:
+        conn = get_db_connection()
+        conn.execute("UPDATE scheduled_jobs SET last_reschedule_error = ? WHERE id = ?",
+                     (message, job_id))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 def create_scheduled_job(

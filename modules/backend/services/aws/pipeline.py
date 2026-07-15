@@ -260,10 +260,10 @@ def run_aws_pipeline(
         add_log_to_run(run_id, "=" * 50, "info")
         add_log_to_run(run_id, f"Blueprint: {blueprint.get('name', 'Custom')}", "info")
         if isinstance(time_filter, dict):
-            if time_filter.get('type') == 'between':
-                add_log_to_run(run_id, f"Time Range: {time_filter.get('start', '?')} → {time_filter.get('end', 'now')}", "info")
+            if time_filter.get('mode') == 'between':
+                add_log_to_run(run_id, f"Time Range: {time_filter.get('start_datetime', '?')} → {time_filter.get('end_datetime', 'now')}", "info")
             else:
-                add_log_to_run(run_id, f"Time Range: Last {time_filter.get('value', '7d')}", "info")
+                add_log_to_run(run_id, f"Time Range: Last {time_filter.get('relative_range', '7d')}", "info")
         add_log_to_run(run_id, f"Sources: {', '.join(bp_settings.get('sources', ['all']))}", "info")
         add_log_to_run(run_id, f"Regions: {', '.join(options.get('regions') or [aws_config.get('region', 'us-east-1')])}", "info")
         if options.get('target_principals'):

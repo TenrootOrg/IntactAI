@@ -4,6 +4,7 @@ Offline Collector Constants - Shared constants and utilities
 """
 
 import os
+import shutil
 import time
 
 # Constants
@@ -407,22 +408,33 @@ def get_collector_file(file_id):
 
 
 def cleanup_old_collectors(days=7):
-    """Clean up collector files and bundle directories older than specified days"""
-    try:
-        if not os.path.exists(COLLECTOR_OUTPUT_DIR):
-            return 0
+    """Clean up collector files and bundle directories older than specified days.
 
-        cutoff = time.time() - (days * 24 * 60 * 60)
-        cleaned = 0
-
-        for filename in os.listdir(COLLECTOR_OUTPUT_DIR):
-            filepath = os.path.join(COLLECTOR_OUTPUT_DIR, filename)
-            if os.path.getmtime(filepath) < cutoff:
-                os.remove(filepath)
-                cleaned += 1
-
-        print(f"[OFFLINE] Cleaned up {cleaned} old collector files", flush=True)
-        return cleaned
-    except Exception as e:
-        print(f"[OFFLINE] Cleanup error: {e}", flush=True)
+    Never wired up before this — generator.py leaves `bundle_*` temp
+    directories (and the generated ZIPs/binaries) in COLLECTOR_OUTPUT_DIR
+    forever otherwise. Also previously would have crashed on the first
+    bundle directory it hit (os.remove() raises IsADirectoryError), silently
+    aborting the whole sweep via the outer except — each item is now handled
+    independently so one bad entry doesn't stop the rest from being swept.
+    """
+    if not os.path.exists(COLLECTOR_OUTPUT_DIR):
         return 0
+
+    cutoff = time.time() - (days * 24 * 60 * 60)
+    cleaned = 0
+
+    for filename in os.listdir(COLLECTOR_OUTPUT_DIR):
+        filepath = os.path.join(COLLECTOR_OUTPUT_DIR, filename)
+        try:
+            if os.path.getmtime(filepath) >= cutoff:
+                continue
+            if os.path.isdir(filepath):
+                shutil.rmtree(filepath, ignore_errors=True)
+            else:
+                os.remove(filepath)
+            cleaned += 1
+        except Exception as e:
+            print(f"[OFFLINE] Cleanup error on {filename}: {e}", flush=True)
+
+    print(f"[OFFLINE] Cleaned up {cleaned} old collector file(s)/dir(s)", flush=True)
+    return cleaned

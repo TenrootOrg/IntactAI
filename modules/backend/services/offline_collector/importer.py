@@ -186,6 +186,14 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
         # Extract hostname from filename (Collection-HOSTNAME-timestamp.zip)
         hostname_match = re.search(r'Collection-([^-]+)-', original_filename)
         hostname = hostname_match.group(1) if hostname_match else "OfflineClient"
+        # Sanitize: this value gets interpolated directly into a VQL string
+        # literal below (and into a VQL search filter) with no escaping.
+        # Rather than trying to escape VQL/query syntax correctly, restrict
+        # to a safe allowlist — anything else (quotes, backticks, parens,
+        # etc. from a maliciously-crafted upload filename) falls back to a
+        # safe default instead of reaching the query.
+        if not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', hostname):
+            hostname = "OfflineClient"
         add_log_to_run(run_id, f"Client hostname: {hostname}")
         print(f"[OFFLINE] Importing collection for hostname: {hostname}", flush=True)
 
@@ -272,17 +280,44 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
 
         update_run_status(run_id, "running", progress=50)
 
+        # ClientId="auto" always mints a BRAND NEW Velociraptor client, so
+        # re-importing the same host's offline collection more than once (a
+        # common re-run/retry, or a periodic offline-collector workflow)
+        # silently duplicated client entries for what is really one host —
+        # splitting its data across multiple client_ids and polluting the
+        # client list. Look up whether a client for this hostname already
+        # exists and reuse it instead of always minting a new one.
+        existing_client_id = None
+        try:
+            lookup_query = f"SELECT client_id FROM clients(search='host:{hostname}')"
+            lookup_request = api_pb2.VQLCollectorArgs(Query=[api_pb2.VQLRequest(VQL=lookup_query)])
+            for response in stub.Query(lookup_request, timeout=30):
+                if response.Response:
+                    rows = json.loads(response.Response)
+                    if rows and rows[0].get("client_id"):
+                        existing_client_id = rows[0]["client_id"]
+                        break
+        except Exception as e:
+            print(f"[OFFLINE] existing-client lookup failed (will import as new): {e}", flush=True)
+
+        import_client_id_spec = existing_client_id or "auto"
+        if existing_client_id:
+            add_log_to_run(run_id, f"Found existing client {existing_client_id} for hostname "
+                                    f"{hostname} — reusing it instead of creating a duplicate")
+
         # Step 3: Run Server.Utils.ImportCollection artifact
         add_log_to_run(run_id, "Running Velociraptor import artifact...")
 
         # Build VQL to run the import using collect_client for server artifact
-        # ClientId="auto" creates a new client, Hostname is required for new clients
+        # ClientId is "auto" (creates a new client) unless a matching client
+        # was found above, in which case its id is reused. Hostname is
+        # required for new clients.
         vql_query = f'''SELECT collect_client(
             client_id="server",
             artifacts="Server.Utils.ImportCollection",
             spec=dict(
                 `Server.Utils.ImportCollection`=dict(
-                    ClientId="auto",
+                    ClientId="{import_client_id_spec}",
                     Hostname="{hostname}",
                     Path="{container_path}"
                 )

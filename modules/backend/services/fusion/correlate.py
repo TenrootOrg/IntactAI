@@ -522,6 +522,12 @@ def _parent(g: FusionGraph, proc_id: str):
 
 def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
     base_titles = _baseline_sigma_titles(baseline)
+    # baseline_fingerprint() also captures known-clean service binary paths,
+    # but until now nothing ever read them back — every environment's normal
+    # (signed, expected) services with a nonzero anomaly score re-flagged as
+    # "suspicious" on every single run instead of being subtracted like the
+    # SIGMA-title baseline already is.
+    base_service_paths = set((baseline or {}).get("service_paths") or [])
     for e in list(g.entities.values()):
         if e.type != "process":
             continue
@@ -600,6 +606,9 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
     # so this no longer flags every svchost/Defender service)
     for e in g.by_type("service"):
         if e.anomaly >= 20:
+            binary_path = (e.attrs.get("binary") or "").lower()
+            if binary_path and binary_path in base_service_paths:
+                continue        # baseline noise — this exact binary already fired clean
             asset = _assets_of(e)
             host = _host_label(g, asset[0]) if asset else "?"
             g.add_finding(Finding(
@@ -850,8 +859,15 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
         if len(titles) < COORD_MIN_TITLES or len(tactics) < COORD_MIN_TACTICS:
             continue
         host = _host_label(g, asset_id)
+        # Fingerprint on the actual composition (titles), not just the host —
+        # otherwise an operator dispositioning ONE burst as benign silently
+        # mutes every future coordinated-activity finding on that host, even
+        # one composed of a completely different set of detections (the
+        # watermark re-open check only catches MORE/LATER occurrences, not a
+        # differently-composed burst with an equal-or-lower count).
+        composition_fp = hashlib.sha1("|".join(sorted(titles)).encode()).hexdigest()[:8]
         g.add_finding(Finding(
-            id=_fid("coord", asset_id), title=f"Coordinated suspicious activity on {host}",
+            id=_fid("coord", asset_id, composition_fp), title=f"Coordinated suspicious activity on {host}",
             severity="high", confidence="high",
             summary=f"{len(titles)} distinct non-baseline SIGMA detections spanning "
                     f"{len(tactics)} ATT&CK tactics ({', '.join(sorted(tactics))}) fired on "
