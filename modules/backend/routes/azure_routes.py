@@ -21,7 +21,13 @@ from services.azure.pipeline import (
     get_available_sources,
 )
 from services.azure.collectors import parse_uploaded_logs
-from services.azure.sigma_runner import validate_rules_directory, get_available_rules_count
+from services.azure.sigma_runner import (
+    validate_rules_directory,
+    get_available_rules_count,
+    list_custom_rules,
+    save_custom_rule,
+    delete_custom_rule,
+)
 from services.workflow_logger import add_log_to_run
 from routes.config_routes import _load_cloud_config
 from config import is_module_enabled
@@ -111,18 +117,65 @@ def get_rules_info():
     """Get information about available SIGMA rules."""
     try:
         rules_valid, rules_msg = validate_rules_directory()
+        custom_count = len(list_custom_rules('azure'))
         if rules_valid:
             counts = get_available_rules_count()
             return jsonify({
                 'available': True,
                 'message': rules_msg,
-                'counts': counts
+                'counts': counts,
+                'custom_rules_count': custom_count,
             })
         else:
             return jsonify({
                 'available': False,
-                'message': rules_msg
+                'message': rules_msg,
+                'custom_rules_count': custom_count,
             })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@azure_bp.route('/api/azure/rules/custom', methods=['GET'])
+def list_custom_azure_rules():
+    """List operator-added custom SIGMA rules for Azure."""
+    try:
+        return jsonify({'rules': list_custom_rules('azure')})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@azure_bp.route('/api/azure/rules/custom', methods=['POST'])
+def upload_custom_azure_rule():
+    """Upload a custom SIGMA rule for Azure. Accepts either a multipart file
+    upload (field 'file') or a JSON body {"filename": ..., "content": ...}."""
+    try:
+        if 'file' in request.files:
+            f = request.files['file']
+            filename = f.filename or 'custom_rule.yml'
+            content = f.read().decode('utf-8', errors='replace')
+        else:
+            data = request.get_json(silent=True) or {}
+            filename = data.get('filename') or 'custom_rule.yml'
+            content = data.get('content') or ''
+        if not content.strip():
+            return jsonify({'error': 'No rule content provided'}), 400
+        success, msg = save_custom_rule('azure', filename, content)
+        if not success:
+            return jsonify({'error': msg}), 400
+        return jsonify({'success': True, 'filename': msg})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@azure_bp.route('/api/azure/rules/custom/<filename>', methods=['DELETE'])
+def delete_custom_azure_rule(filename):
+    """Delete an operator-added custom SIGMA rule for Azure."""
+    try:
+        success, msg = delete_custom_rule('azure', filename)
+        if not success:
+            return jsonify({'error': msg}), 404
+        return jsonify({'success': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

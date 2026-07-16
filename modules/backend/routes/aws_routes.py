@@ -29,7 +29,12 @@ from services.aws.pipeline import (
     run_aws_pipeline,
 )
 from services.aws.collectors import parse_uploaded_logs
-from services.aws.sigma_runner import validate_rules_directory
+from services.aws.sigma_runner import (
+    validate_rules_directory,
+    list_custom_rules,
+    save_custom_rule,
+    delete_custom_rule,
+)
 from services.workflow_logger import add_log_to_run
 from services.workflow_service import update_run_status, get_automation_run
 import threading
@@ -115,11 +120,57 @@ def get_rules_info():
                 for fn in files:
                     if fn.endswith(('.yml', '.yaml')):
                         count += 1
+        custom_count = len(list_custom_rules('aws'))
         return jsonify({
             'available': rules_valid,
             'message': rules_msg,
             'aws_rules_count': count,
+            'custom_rules_count': custom_count,
         })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@aws_bp.route('/api/aws/rules/custom', methods=['GET'])
+def list_custom_aws_rules():
+    """List operator-added custom SIGMA rules for AWS."""
+    try:
+        return jsonify({'rules': list_custom_rules('aws')})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@aws_bp.route('/api/aws/rules/custom', methods=['POST'])
+def upload_custom_aws_rule():
+    """Upload a custom SIGMA rule for AWS. Accepts either a multipart file
+    upload (field 'file') or a JSON body {"filename": ..., "content": ...}."""
+    try:
+        if 'file' in request.files:
+            f = request.files['file']
+            filename = f.filename or 'custom_rule.yml'
+            content = f.read().decode('utf-8', errors='replace')
+        else:
+            data = request.get_json(silent=True) or {}
+            filename = data.get('filename') or 'custom_rule.yml'
+            content = data.get('content') or ''
+        if not content.strip():
+            return jsonify({'error': 'No rule content provided'}), 400
+        success, msg = save_custom_rule('aws', filename, content)
+        if not success:
+            return jsonify({'error': msg}), 400
+        return jsonify({'success': True, 'filename': msg})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@aws_bp.route('/api/aws/rules/custom/<filename>', methods=['DELETE'])
+def delete_custom_aws_rule(filename):
+    """Delete an operator-added custom SIGMA rule for AWS."""
+    try:
+        success, msg = delete_custom_rule('aws', filename)
+        if not success:
+            return jsonify({'error': msg}), 404
+        return jsonify({'success': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

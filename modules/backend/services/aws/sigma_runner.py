@@ -11,6 +11,9 @@ from services.azure.sigma_runner import (
     load_aws_rules,
     run_sigma_rules,
     validate_rules_directory,
+    list_custom_rules,
+    save_custom_rule,
+    delete_custom_rule,
 )
 
 __all__ = [
@@ -18,4 +21,7 @@ __all__ = [
     'load_aws_rules',
     'run_sigma_rules',
     'validate_rules_directory',
+    'list_custom_rules',
+    'save_custom_rule',
+    'delete_custom_rule',
 ]

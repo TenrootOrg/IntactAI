@@ -11,6 +11,7 @@ import re
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
+from werkzeug.utils import secure_filename
 
 # SIGMA rules directory (cloned from SigmaHQ)
 SIGMA_RULES_DIR = os.getenv('SIGMA_RULES_DIR', '/opt/sigma-rules')
@@ -23,6 +24,14 @@ CLOUD_RULE_DIRS = {
     'azure': [AZURE_RULES_PATH, M365_RULES_PATH],
     'aws':   [AWS_RULES_PATH],
 }
+
+# Operator-added custom rules live under /app/data (the persistent, backend-
+# writable data volume) rather than SIGMA_RULES_DIR — that path is mounted
+# read-only from the host and gets re-synced from SigmaHQ by install/
+# upgrade, so anything written there would be both unwritable and at risk
+# of being wiped by the next rule-pack update.
+CUSTOM_RULES_DIR = os.getenv('CUSTOM_SIGMA_RULES_DIR', '/app/data/custom_sigma_rules')
+CUSTOM_RULE_CATEGORIES = ('aws', 'azure')
 
 
 # =============================================================================
@@ -51,19 +60,27 @@ def load_cloud_rules(
         List of parsed SIGMA rules as dicts. Each rule has `_file_path` +
         `_file_name` added for downstream provenance.
     """
+    custom_dir = None
     if rule_dirs is None:
-        rule_dirs = CLOUD_RULE_DIRS.get(category)
-        if rule_dirs is None:
+        base_dirs = CLOUD_RULE_DIRS.get(category)
+        if base_dirs is None:
             raise ValueError(
                 f"Unknown SIGMA cloud category: {category!r}. "
                 f"Supported: {list(CLOUD_RULE_DIRS)}"
             )
+        rule_dirs = list(base_dirs)
+        # Operator-added custom rules fold into the SAME load/match pipeline
+        # as the bundled pack — no changes needed anywhere else.
+        if category in CUSTOM_RULE_CATEGORIES:
+            custom_dir = _custom_rules_path(category)
+            rule_dirs.append(custom_dir)
 
     rules: List[Dict] = []
 
     for rule_dir in rule_dirs:
         if not os.path.exists(rule_dir):
-            print(f"[SIGMA] Warning: Rule directory not found: {rule_dir}")
+            if rule_dir != custom_dir:  # custom dir legitimately doesn't exist until first upload
+                print(f"[SIGMA] Warning: Rule directory not found: {rule_dir}")
             continue
 
         # Walk directory and load .yml/.yaml files
@@ -79,12 +96,15 @@ def load_cloud_rules(
                                 rule_tags = rule.get('tags', [])
                                 if not any(cat in str(rule_tags).lower() for cat in categories):
                                     continue
+                            rule['_is_custom'] = (rule_dir == custom_dir)
                             rules.append(rule)
                     except Exception as e:
                         print(f"[SIGMA] Warning: Failed to load {rule_path}: {e}")
 
     label = {'azure': 'Azure/M365', 'aws': 'AWS'}.get(category, category)
-    print(f"[SIGMA] Loaded {len(rules)} {label} detection rules")
+    n_custom = sum(1 for r in rules if r.get('_is_custom'))
+    suffix = f" ({n_custom} custom)" if n_custom else ""
+    print(f"[SIGMA] Loaded {len(rules)} {label} detection rules{suffix}")
     return rules
 
 
@@ -561,6 +581,121 @@ def extract_mitre_tags(tags: List[str]) -> List[Dict]:
 # =============================================================================
 # Utility Functions
 # =============================================================================
+
+# =============================================================================
+# Custom (operator-added) rule management
+# =============================================================================
+
+def _custom_rules_path(category: str) -> str:
+    if category not in CUSTOM_RULE_CATEGORIES:
+        raise ValueError(f"Unknown custom rule category: {category!r}. Supported: {list(CUSTOM_RULE_CATEGORIES)}")
+    return os.path.join(CUSTOM_RULES_DIR, category)
+
+
+def validate_sigma_rule_yaml(yaml_text: str) -> Tuple[bool, str, Optional[Dict]]:
+    """Parse + sanity-check that `yaml_text` is a well-formed SIGMA rule.
+
+    Checks the fields the matching engine (run_sigma_rules) and the rest of
+    this module actually read: title, detection (with a condition + at
+    least one selection), logsource. Doesn't validate against the full
+    SIGMA spec — just enough to reject garbage before it reaches disk and
+    silently produces zero detections.
+
+    Returns (valid, message, parsed_rule_or_None).
+    """
+    import yaml as _yaml
+    try:
+        rule = _yaml.safe_load(yaml_text)
+    except Exception as e:
+        return False, f"Invalid YAML: {e}", None
+    if not isinstance(rule, dict):
+        return False, "Rule must be a YAML mapping (top-level key: value pairs)", None
+    if not rule.get('title'):
+        return False, "Rule is missing required field: title", None
+    detection = rule.get('detection')
+    if not isinstance(detection, dict) or not detection.get('condition'):
+        return False, "Rule is missing required field: detection.condition", None
+    selections = {k: v for k, v in detection.items() if k != 'condition'}
+    if not selections:
+        return False, "Rule's detection block has no selection criteria (only a condition)", None
+    if not isinstance(rule.get('logsource'), dict):
+        return False, "Rule is missing required field: logsource", None
+    return True, "OK", rule
+
+
+def list_custom_rules(category: str) -> List[Dict]:
+    """List operator-added custom rules for a category (aws/azure), with
+    basic metadata for the management UI. Best-effort: a rule file that
+    fails to parse is still listed (so it can be seen/deleted) with an
+    `error` field instead of being silently skipped."""
+    rule_dir = _custom_rules_path(category)
+    out: List[Dict] = []
+    if not os.path.isdir(rule_dir):
+        return out
+    for filename in sorted(os.listdir(rule_dir)):
+        if not filename.endswith(('.yml', '.yaml')):
+            continue
+        path = os.path.join(rule_dir, filename)
+        entry = {'filename': filename}
+        try:
+            rule = load_single_rule(path)
+            entry.update({
+                'title': (rule or {}).get('title', filename),
+                'id': (rule or {}).get('id', ''),
+                'level': (rule or {}).get('level', 'medium'),
+                'status': (rule or {}).get('status', 'experimental'),
+            })
+        except Exception as e:
+            entry['error'] = str(e)
+        try:
+            entry['size_bytes'] = os.path.getsize(path)
+        except OSError:
+            pass
+        out.append(entry)
+    return out
+
+
+def save_custom_rule(category: str, filename: str, yaml_text: str) -> Tuple[bool, str]:
+    """Validate and persist an operator-uploaded custom SIGMA rule.
+
+    Returns (success, message). Rejects anything that doesn't parse as a
+    minimally-valid SIGMA rule rather than silently accepting a file that
+    will just never match anything."""
+    valid, msg, _rule = validate_sigma_rule_yaml(yaml_text)
+    if not valid:
+        return False, msg
+    safe_name = secure_filename(filename) or ''
+    if not safe_name.endswith(('.yml', '.yaml')):
+        safe_name = (safe_name or 'custom_rule') + '.yml'
+    rule_dir = _custom_rules_path(category)
+    os.makedirs(rule_dir, exist_ok=True)
+    try:
+        with open(os.path.join(rule_dir, safe_name), 'w', encoding='utf-8') as f:
+            f.write(yaml_text)
+    except OSError as e:
+        return False, f"Failed to save rule: {e}"
+    return True, safe_name
+
+
+def delete_custom_rule(category: str, filename: str) -> Tuple[bool, str]:
+    """Delete an operator-added custom rule. Path-traversal safe: resolves
+    the target and refuses to delete anything outside the category's
+    custom-rules directory."""
+    rule_dir = os.path.realpath(_custom_rules_path(category))
+    safe_name = secure_filename(filename) or ''
+    if not safe_name:
+        return False, "Invalid filename"
+    target = os.path.realpath(os.path.join(rule_dir, safe_name))
+    if os.path.dirname(target) != rule_dir:
+        return False, "Invalid filename"
+    if not os.path.isfile(target):
+        return False, "Rule not found"
+    try:
+        os.remove(target)
+    except OSError as e:
+        return False, f"Failed to delete rule: {e}"
+    return True, "Deleted"
+
 
 def get_available_rules_count() -> Dict[str, int]:
     """Get count of available rules by category."""

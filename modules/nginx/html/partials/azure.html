@@ -37,6 +37,48 @@
                              this.azureBlueprints = data.blueprints || [];
                          } catch(e) { console.error('Failed to load blueprints:', e); }
                      },
+                     customRules: [],
+                     customRulesOpen: false,
+                     customRulesUploading: false,
+                     async loadCustomRules() {
+                         try {
+                             const r = await fetch('/api/azure/rules/custom');
+                             const d = await r.json();
+                             this.customRules = d.rules || [];
+                         } catch(e) { console.error(e); }
+                     },
+                     async uploadCustomRule(event) {
+                         const file = event.target.files[0];
+                         if (!file) return;
+                         this.customRulesUploading = true;
+                         const formData = new FormData();
+                         formData.append('file', file);
+                         try {
+                             const r = await fetch('/api/azure/rules/custom', { method: 'POST', body: formData });
+                             const d = await r.json();
+                             if (!r.ok) {
+                                 alert('Rule upload failed: ' + (d.error || 'unknown error'));
+                             } else {
+                                 await this.loadCustomRules();
+                                 this.checkAzureStatus();
+                             }
+                         } catch(e) { console.error(e); alert('Rule upload failed: ' + e.message); }
+                         this.customRulesUploading = false;
+                         event.target.value = '';
+                     },
+                     async deleteCustomRule(filename) {
+                         if (!confirm(`Delete custom rule "${filename}"?`)) return;
+                         try {
+                             const r = await fetch(`/api/azure/rules/custom/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+                             const d = await r.json();
+                             if (!r.ok) {
+                                 alert('Delete failed: ' + (d.error || 'unknown error'));
+                             } else {
+                                 await this.loadCustomRules();
+                                 this.checkAzureStatus();
+                             }
+                         } catch(e) { console.error(e); alert('Delete failed: ' + e.message); }
+                     },
                      get selectedBlueprint() {
                          return this.azureBlueprints.find(b => b.id === this.azureBlueprint) || null;
                      },
@@ -141,7 +183,7 @@
                          } catch(e) { console.error(e); }
                      }
                  }"
-                 x-init="checkAzureStatus()">
+                 x-init="checkAzureStatus(); loadCustomRules()">
 
                 <h2 class="text-3xl font-bold text-white mb-2">Microsoft 365 Security Automation</h2>
                 <p class="text-gray-400 mb-6">Collect Microsoft 365 logs and run SIGMA detection rules. Findings feed the case for analysis.</p>
@@ -156,6 +198,45 @@
                         <span class="text-gray-400">SIGMA Rules: <span :class="azureStatus?.sigma_rules?.available ? 'text-green-400' : 'text-red-400'" x-text="azureStatus?.sigma_rules?.available ? 'Available' : 'Not Found'"></span></span>
                         <span class="text-gray-400">|</span>
                         <span class="text-gray-400">Microsoft 365 Credentials: <span :class="azureStatus?.azure_credentials?.configured ? 'text-green-400' : 'text-yellow-400'" x-text="azureStatus?.azure_credentials?.configured ? 'Configured' : 'Not Set'"></span></span>
+                    </div>
+                </div>
+
+                <!-- Custom SIGMA Rules -->
+                <div class="bg-gray-800 rounded-lg border border-gray-700 mb-6">
+                    <button type="button" @click="customRulesOpen = !customRulesOpen"
+                            class="w-full flex items-center justify-between p-4 text-left">
+                        <span class="text-white font-medium">
+                            Custom SIGMA Rules
+                            <span class="text-xs text-gray-400 font-normal" x-text="`(${customRules.length} uploaded)`"></span>
+                        </span>
+                        <span class="text-gray-400" x-text="customRulesOpen ? '▲' : '▼'"></span>
+                    </button>
+                    <div x-show="customRulesOpen" x-transition class="p-4 pt-0 border-t border-gray-700">
+                        <p class="text-sm text-gray-400 mb-3">
+                            Add your own SIGMA detection rules for Azure/M365 (YAML). These run alongside the bundled
+                            rule pack and are never overwritten by rule-pack updates.
+                        </p>
+                        <label class="inline-flex items-center gap-2 mb-4 px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg cursor-pointer hover:border-blue-500 transition-colors">
+                            <span class="text-sm text-white" x-text="customRulesUploading ? 'Uploading…' : 'Upload rule (.yml/.yaml)'"></span>
+                            <input type="file" accept=".yml,.yaml" class="hidden" @change="uploadCustomRule($event)" :disabled="customRulesUploading">
+                        </label>
+                        <div x-show="!customRules.length" class="text-sm text-gray-500">No custom rules uploaded yet.</div>
+                        <div class="space-y-2">
+                            <template x-for="rule in customRules" :key="rule.filename">
+                                <div class="flex items-center justify-between bg-gray-900/60 rounded-lg px-3 py-2 border border-gray-700">
+                                    <div class="min-w-0">
+                                        <div class="text-sm text-white truncate" x-text="rule.title || rule.filename"></div>
+                                        <div class="text-xs text-gray-500 font-mono truncate">
+                                            <span x-text="rule.filename"></span>
+                                            <span x-show="rule.level"> · </span><span x-text="rule.level"></span>
+                                            <span x-show="rule.error" class="text-red-400"> · parse error: </span><span x-show="rule.error" class="text-red-400" x-text="rule.error"></span>
+                                        </div>
+                                    </div>
+                                    <button @click="deleteCustomRule(rule.filename)"
+                                            class="text-red-400 hover:text-red-300 text-sm ml-3 flex-shrink-0">Delete</button>
+                                </div>
+                            </template>
+                        </div>
                     </div>
                 </div>
 
