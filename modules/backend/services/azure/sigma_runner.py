@@ -450,6 +450,14 @@ def evaluate_condition(condition: str, selection_results: Dict[str, bool]) -> bo
         return all(selection_results.values())
 
     condition = condition.strip().lower()
+    # The condition string is lowercased above, but selection_results keys
+    # come straight from the rule's detection dict (e.g. "Selection1") and
+    # keep whatever case the rule author used. Every lookup/regex match below
+    # compared the lowercased condition against un-lowercased keys with a
+    # case-SENSITIVE match, so any mixed-case selection name silently never
+    # matched — that rule then never fired, with no error. Normalize once
+    # here so matching is case-insensitive throughout.
+    selection_results = {k.lower(): v for k, v in selection_results.items()}
 
     # Handle "all of selection*" pattern
     if condition.startswith('all of '):

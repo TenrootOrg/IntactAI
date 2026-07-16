@@ -188,7 +188,7 @@ def _upload_plaso_direct(api, sketch, plaso_file_path, timeline_name, logger=Non
         return None
 
 
-def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=10000, poll_interval=30, logger=None, timesketch_config=None, cancel_event=None):
+def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=10000, poll_interval=30, logger=None, timesketch_config=None, cancel_event=None, api_holder=None):
     """Wait for timeline processing to complete with progress updates.
 
     Args:
@@ -205,10 +205,19 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
         cancel_event: Optional threading.Event from workflow_service. When
             set (user clicked Stop), the loop exits within one poll interval
             with status='cancelled' instead of continuing to poll for hours.
+        api_holder: Optional single-element list; kept in sync with whichever
+            `api` client is CURRENTLY live (updated on every re-auth swap) so
+            the caller can close the right session afterward. Without this,
+            a caller holding its own original `api` reference closes a
+            session that was already replaced (and whose replacement is then
+            never closed at all) whenever this function re-authenticates
+            mid-wait.
 
     Returns:
         tuple (success: bool, final_status: str, timeline_id: int or None)
     """
+    if api_holder is not None:
+        api_holder[0] = api
     def log(message, level="info"):
         print(f"[TIMESKETCH] {message}", flush=True)
         if logger:
@@ -297,7 +306,18 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
                 log("Session likely expired — re-authenticating to TimeSketch...", "warning")
                 new_api = _connect_timesketch_api(timesketch_config, logger=logger)
                 if new_api:
+                    old_api = api
                     api = new_api
+                    if api_holder is not None:
+                        api_holder[0] = api
+                    # The stale session's HTTP connection was never closed
+                    # here before — it was just dropped and left for GC,
+                    # leaking one open session/connection per re-auth on any
+                    # import that crosses a session-lifetime boundary.
+                    try:
+                        old_api.session.close()
+                    except Exception:
+                        pass
                     try:
                         sketch = api.get_sketch(sketch_id)  # rebind to new session
                         consecutive_errors = 0
@@ -528,6 +548,10 @@ def import_to_timesketch(plaso_file, sketch_name, timeline_name, timesketch_conf
         # that don't pass run_id — wait then behaves as before.
         cancel_event = get_cancel_event(run_id) if run_id else None
 
+        # api_holder tracks whichever client is CURRENTLY live inside the wait
+        # loop (it may re-auth and swap sessions mid-wait) — closing our own
+        # stale `api` reference afterward would leak the actual live session.
+        api_holder = [api]
         success, final_status, timeline_id = _wait_for_timeline_ready(
             api=api,
             sketch_id=sketch_id,
@@ -540,7 +564,9 @@ def import_to_timesketch(plaso_file, sketch_name, timeline_name, timesketch_conf
             # PERMANENT_SESSION_LIFETIME).
             timesketch_config=timesketch_config,
             cancel_event=cancel_event,
+            api_holder=api_holder,
         )
+        api = api_holder[0]
 
         if not success:
             log(f"✗ Timeline processing failed with status: {final_status}", "error")

@@ -24,7 +24,7 @@ async function loadTimesketchBlueprintsDropdown() {
         }
 
         select.innerHTML = window.timesketchBlueprintsCache.map(bp =>
-            `<option value="${bp.id}">${bp.name}</option>`
+            `<option value="${escapeHtml(bp.id)}">${escapeHtml(bp.name)}</option>`
         ).join('');
 
         // Select first blueprint and show its info
@@ -131,7 +131,7 @@ async function loadExistingSketches() {
         if (data.sketches && data.sketches.length > 0) {
             select.innerHTML = '<option value="">-- Select a sketch --</option>' +
                 data.sketches.map(s =>
-                    `<option value="${s.id}">${s.name} (ID: ${s.id})</option>`
+                    `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)} (ID: ${escapeHtml(s.id)})</option>`
                 ).join('');
         } else {
             select.innerHTML = '<option value="">No sketches found</option>';

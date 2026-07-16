@@ -211,22 +211,34 @@ sources:
           format="json")
 
       LET apiRequestIrisUpdate(currentAsset,assetId) =
-          SELECT *,
-                 if(condition= Response=200,
-                 then={ SELECT addMetadata(assetIdValue=format(format="%v",args=parse_json(data=Content).data.asset_id)),
-                              label(client_id=clientId,op="set",labels="IRIS"),
-                              label(client_id=clientId,op="remove",labels="IRIS-ERROR")
-                        FROM scope()},
-                 else={ SELECT label(client_id=clientId,op="set",labels="IRIS-ERROR") FROM scope()}) as applyLabels
-                        FROM http_client(data=assetPropertiesUpdate,
-                                         headers=dict(
-                                           `Content-Type`="application/json", `Authorization`=format(format="Bearer %v",
-                                             args=[IrisKey])),
-                                         skip_verify=DisableSSLVerify,
-                                         root_ca=IrisRootCA,
-                                         method="POST",
-                                         url=format(format="%v/case/assets/update/%v?cid=%v",
-                                                           args=[IrisURL,assetId,IrisCaseId]))
+          SELECT * FROM if(
+            # currentAsset comes from apiRequestIrisGet() with no success check
+            # before this — if that GET failed (asset deleted server-side,
+            # transient error, etc.) currentAsset's fields are null, and the
+            # update below would previously still POST them, blanking the
+            # existing asset's real name/type in IRIS instead of failing loudly.
+            condition=currentAsset.asset_name[0],
+            then={
+              SELECT *,
+                     if(condition= Response=200,
+                     then={ SELECT addMetadata(assetIdValue=format(format="%v",args=parse_json(data=Content).data.asset_id)),
+                                  label(client_id=clientId,op="set",labels="IRIS"),
+                                  label(client_id=clientId,op="remove",labels="IRIS-ERROR")
+                            FROM scope()},
+                     else={ SELECT label(client_id=clientId,op="set",labels="IRIS-ERROR") FROM scope()}) as applyLabels
+                            FROM http_client(data=assetPropertiesUpdate,
+                                             headers=dict(
+                                               `Content-Type`="application/json", `Authorization`=format(format="Bearer %v",
+                                                 args=[IrisKey])),
+                                             skip_verify=DisableSSLVerify,
+                                             root_ca=IrisRootCA,
+                                             method="POST",
+                                             url=format(format="%v/case/assets/update/%v?cid=%v",
+                                                               args=[IrisURL,assetId,IrisCaseId]))
+            },
+            else={
+              SELECT label(client_id=clientId,op="set",labels="IRIS-ERROR") FROM scope()
+            })
 
       LET addAsset =
           SELECT { SELECT * FROM apiRequestIrisAdd } as apiRequestIrisAdd FROM clients(client_id=clientId)

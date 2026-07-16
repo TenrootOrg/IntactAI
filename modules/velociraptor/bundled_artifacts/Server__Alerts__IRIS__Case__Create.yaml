@@ -22,7 +22,7 @@ parameters:
     type: regex
   - name: DisableSSLVerify
     type: bool
-    default: true
+    default: false
   - name: Customer
     default: 1
   - name: SOCId
@@ -48,7 +48,7 @@ sources:
        query={
           SELECT ClientId, FlowId, FQDN, parse_json(data=Content).data.case_id AS CaseID FROM http_client(
           data=serialize(item=dict(
-                case_name=format(format="Hit on %v for %v", args=[FlowResults, FQDN]), case_soc_id="soc_id_demo", case_customer=1, case_description=format(format="ClientId: %v\n\nFlowID: %v\n\nURL: %v//app/index.html?#/collected/%v/%v", args=[ClientId, FlowId, config.server_urls[0], ClientId, FlowId,])), format="json"),
+                case_name=format(format="Hit on %v for %v", args=[FlowResults, FQDN]), case_soc_id=SOCId, case_customer=Customer, case_description=format(format="ClientId: %v\n\nFlowID: %v\n\nURL: %v//app/index.html?#/collected/%v/%v", args=[ClientId, FlowId, config.server_urls[0], ClientId, FlowId,])), format="json"),
           headers=dict(`Content-Type`="application/json", `Authorization`=format(format="Bearer %v", args=[Creds])),
           disable_ssl_security=DisableSSLVerify,
           method="POST",

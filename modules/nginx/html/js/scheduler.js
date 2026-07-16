@@ -201,8 +201,9 @@ async function onScheduleBlueprintTypeChange() {
 
         select.innerHTML = blueprints.map(bp => {
                 const n = bp.artifacts ? bp.artifacts.length : 0;
-                const label = n ? `${bp.name} (${n} artifacts)` : bp.name;  // memory/aws bps have no artifacts
-                return `<option value="${bp.id}">${label}</option>`;
+                const name = escapeHtml(bp.name);
+                const label = n ? `${name} (${n} artifacts)` : name;  // memory/aws bps have no artifacts
+                return `<option value="${escapeHtml(bp.id)}">${label}</option>`;
             }).join('') || '<option value="">No blueprints available</option>';
         // Default to the first blueprint (no "-- Select --" placeholder).
         if (blueprints.length) select.value = blueprints[0].id;

@@ -621,6 +621,14 @@ def delete_case(case_id) -> dict:
             removed_baselines += 1
     delete_workflow(case_id)
     _delete_graph_sidecar(case_id)   # remove the fused-graph sidecar file too
+    # Also purge this case's entries from the cross-case KB — otherwise its
+    # IOC/account/hash entities stay indexed forever and keep resurfacing as
+    # "prior sightings" in unrelated future cases even after deletion.
+    try:
+        from . import kb
+        kb.delete_case_entities(case_id)
+    except Exception:
+        pass
     return {"deleted": True, "runs_deleted": len(run_ids),
             "baselines_deleted": removed_baselines}
 
@@ -2272,6 +2280,10 @@ def get_finding_detail(case_id, finding_id) -> dict | None:
             "occurrences": occ}
 
 
+# 50 exchanges (user + assistant per exchange) — see _append_msgs below.
+_CHAT_HISTORY_CAP = 100
+
+
 def chat_case(case_id, question) -> str:
     d = get_case(case_id)
     g = load_graph(case_id)
@@ -2330,7 +2342,14 @@ def chat_case(case_id, question) -> str:
         msgs = list(details.get("chat_messages") or [])
         msgs += [{"role": "user", "content": question},
                  {"role": "assistant", "content": ans}]
-        details["chat_messages"] = msgs
+        # Cap retained history: llm_sim.chat() resends the ENTIRE history
+        # verbatim on every turn (no budget/truncation there, unlike the
+        # graph payload) — an unbounded conversation eventually pushes the
+        # prompt past the model's context window and linearly increases
+        # cost/latency per turn with no warning. Keep the most recent
+        # exchanges; older turns are dropped from what gets resent (the
+        # trimmed history is what's persisted, matching activity_log's cap).
+        details["chat_messages"] = msgs[-_CHAT_HISTORY_CAP:] if len(msgs) > _CHAT_HISTORY_CAP else msgs
     _ws().mutate_run_details(case_id, _append_msgs)
     return ans
 

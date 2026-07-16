@@ -131,15 +131,15 @@ async function populateBlueprintDropdown(selectId, defaultValue, type) {
         select.innerHTML = '<option value="">-- Select Blueprint --</option>' +
             blueprints.map(bp => {
                 const badge = bp.is_default ? '' : ' (Custom)';
-                const kape = bp.settings?.kape_target || 'N/A';
-                return `<option value="${bp.id}" ${defaultValue === bp.id ? 'selected' : ''}>${bp.name}${badge} [${kape}]</option>`;
+                const kape = escapeHtml(bp.settings?.kape_target || 'N/A');
+                return `<option value="${escapeHtml(bp.id)}" ${defaultValue === bp.id ? 'selected' : ''}>${escapeHtml(bp.name)}${badge} [${kape}]</option>`;
             }).join('');
     } else {
         select.innerHTML = '<option value="">-- Select Blueprint --</option>' +
             blueprints.map(bp => {
                 const badge = bp.is_default ? '' : ' (Custom)';
                 const count = bp.artifacts ? bp.artifacts.length : 0;
-                return `<option value="${bp.id}" ${defaultValue === bp.id ? 'selected' : ''}>${bp.name}${badge} (${count} artifacts)</option>`;
+                return `<option value="${escapeHtml(bp.id)}" ${defaultValue === bp.id ? 'selected' : ''}>${escapeHtml(bp.name)}${badge} (${count} artifacts)</option>`;
             }).join('');
     }
 }
@@ -504,17 +504,18 @@ async function populateMemoryPluginCheckboxes(selectedPlugins) {
 
     container.innerHTML = groups.map(g => `
         <div class="memory-plugin-group">
-            <div class="text-xs font-semibold text-purple-300 uppercase tracking-wide mt-2 mb-1">${g.label}</div>
+            <div class="text-xs font-semibold text-purple-300 uppercase tracking-wide mt-2 mb-1">${escapeHtml(g.label)}</div>
             ${g.plugins.map(p => {
-                const shortName = p.split('.').slice(-1)[0];  // last segment, e.g. "PsList"
+                const shortName = escapeHtml(p.split('.').slice(-1)[0]);  // last segment, e.g. "PsList"
+                const safeP = escapeHtml(p);
                 return `
                 <label class="memory-plugin-row flex items-center gap-2 text-xs text-white hover:bg-gray-800 px-2 py-1 rounded cursor-pointer"
-                       data-name="${p.toLowerCase()}">
-                    <input type="checkbox" class="blueprint-memory-plugin-cb" value="${p}"
+                       data-name="${escapeHtml(p.toLowerCase())}">
+                    <input type="checkbox" class="blueprint-memory-plugin-cb" value="${safeP}"
                            ${selected.has(p) ? 'checked' : ''}
                            onchange="updateMemoryPluginCount()">
                     <span class="text-purple-200 font-mono">${shortName}</span>
-                    <span class="text-gray-500 truncate">${p}</span>
+                    <span class="text-gray-500 truncate">${safeP}</span>
                 </label>
                 `;
             }).join('')}
@@ -588,9 +589,9 @@ async function populateModalArtifacts(selectedArtifacts) {
 
     container.innerHTML = artifacts.map(artifact =>
         `<label class="flex items-center gap-2 text-xs text-white hover:bg-gray-800 px-2 py-1 rounded cursor-pointer">
-            <input type="checkbox" class="blueprint-artifact-cb" value="${artifact}" ${selectedSet.has(artifact) ? 'checked' : ''}
+            <input type="checkbox" class="blueprint-artifact-cb" value="${escapeHtml(artifact)}" ${selectedSet.has(artifact) ? 'checked' : ''}
                 onchange="updateBlueprintArtifactCount()">
-            ${artifact}
+            ${escapeHtml(artifact)}
         </label>`
     ).join('');
 

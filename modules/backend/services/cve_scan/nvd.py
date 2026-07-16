@@ -643,7 +643,12 @@ def cve_applies_to(cve_obj, name, version):
 
 def best_cvss(cve_obj):
     metrics = cve_obj.get("metrics", {})
-    for key in ("cvssMetricV31", "cvssMetricV30"):
+    # cvssMetricV40 (NVD has published v4-only records since 2024) was never
+    # checked here — a CVE with only a v4 score fell through to 0.0/"",
+    # sorting to the bottom of every ranked list and bucketing as "Other"
+    # instead of its real severity. Checked first (newest/most authoritative
+    # scheme, same precedence NVD itself gives v3.1 over v3.0 below).
+    for key in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30"):
         arr = metrics.get(key)
         if arr:
             data = arr[0].get("cvssData", {})

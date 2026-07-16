@@ -99,6 +99,7 @@ def run_pinfo(plaso_file, logger=None, run_id=None):
         # We sum those lines to get the total event count.
         event_count = 0
         in_parser_section = False
+        saw_parser_section = False
         output_lines = []
         start_time = time.time()
         PINFO_TIMEOUT = 300  # 5 minutes
@@ -114,11 +115,12 @@ def run_pinfo(plaso_file, logger=None, run_id=None):
             return 0
 
         def _consume(line_text: str) -> None:
-            nonlocal event_count, in_parser_section
+            nonlocal event_count, in_parser_section, saw_parser_section
             # Section boundary detection. Plaso prints a header line then a
             # dashed separator, and marks the end with another dashed line.
             if 'Events generated per parser' in line_text:
                 in_parser_section = True
+                saw_parser_section = True
                 return
             if in_parser_section:
                 # End of section is an empty line or another section header
@@ -172,9 +174,20 @@ def run_pinfo(plaso_file, logger=None, run_id=None):
 
         if event_count > 0:
             log(f"✓ Events extracted: {event_count}", "success")
+        elif not saw_parser_section:
+            # pinfo's "Events generated per parser" section was never found at
+            # all — this text-scraping parser is fragile against a pinfo/Plaso
+            # output-format change (across an image upgrade) or truncated
+            # output, and event_count=0 in that case is NOT a reliable signal
+            # that the .plaso file is actually empty. The caller uses this to
+            # decide whether to discard the file — flag it so a format change
+            # can't be silently mistaken for "no events" and lose real data.
+            log("Could not find the per-parser event breakdown in pinfo output "
+                "— event count is unreliable, not necessarily zero", "warning")
 
         return {
             'event_count': event_count,
+            'count_reliable': saw_parser_section,
             'output': '\n'.join(output_lines[-50:])  # last 50 lines for debugging
         }
 

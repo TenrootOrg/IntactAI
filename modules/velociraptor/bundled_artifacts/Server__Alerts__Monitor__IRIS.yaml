@@ -25,7 +25,7 @@ parameters:
     type: regex
   - name: DisableSSLVerify
     type: bool
-    default: true
+    default: false
   - name: Customer
     default: 1
   - name: Severity 

@@ -141,8 +141,8 @@ def _log(logger: Optional[Callable], msg: str, level: str = "info") -> None:
 
 def _extract_cvss(metrics: Dict[str, Any]) -> Tuple[float, str]:
     """Pick the best available CVSS triple (score, severity) following
-    the same v3.1 > v3.0 > v2 priority used by services/cve_scan/nvd.py."""
-    for key in ("cvssMetricV31", "cvssMetricV30"):
+    the same v4 > v3.1 > v3.0 > v2 priority used by services/cve_scan/nvd.py."""
+    for key in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30"):
         arr = metrics.get(key) or []
         if arr:
             d = arr[0].get("cvssData") or {}

@@ -524,11 +524,22 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
 
         if pinfo_result:
             event_count = pinfo_result.get('event_count', 0)
-            if event_count == 0:
+            count_reliable = pinfo_result.get('count_reliable', True)
+            if event_count == 0 and count_reliable:
+                # Only trust a zero count when pinfo's own per-parser section
+                # was actually found and summed — otherwise this is a parsing
+                # failure (pinfo/Plaso output format changed, truncated
+                # output, etc.), NOT proof the file is empty. Discarding a
+                # genuinely non-empty .plaso file here (via the cleanup below)
+                # would silently lose real forensic data.
                 add_log_to_run(run_id, "No events extracted - check parser settings", "warning")
                 add_log_to_run(run_id, "Tip: Try using 'Auto (All Parsers)' or 'win7' for broader coverage", "info")
                 _status("completed", progress=100)
                 return {"run_id": run_id, "status": "no_events"}
+            elif event_count == 0:
+                add_log_to_run(run_id, "pinfo event count is unreliable (parser breakdown not found) — "
+                                       "proceeding to import anyway rather than risk discarding real data",
+                               "warning")
             else:
                 add_log_to_run(run_id, f"Plaso extracted {event_count} events", "success")
 

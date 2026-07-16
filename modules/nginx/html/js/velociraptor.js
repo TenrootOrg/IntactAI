@@ -38,10 +38,10 @@ async function showArtifactStatus(artifactId) {
             statusEl.innerHTML = '<span class="text-gray-400">No active jobs</span>';
         } else {
             const job = relevantJobs[0];
-            statusEl.innerHTML = `<span class="text-blue-400">Hunt ${job.hunt_id}: ${job.status}</span><br><span class="text-gray-400">Started: ${new Date(job.started_at * 1000).toLocaleString()}</span>`;
+            statusEl.innerHTML = `<span class="text-blue-400">Hunt ${escapeHtml(job.hunt_id)}: ${escapeHtml(job.status)}</span><br><span class="text-gray-400">Started: ${new Date(job.started_at * 1000).toLocaleString()}</span>`;
         }
     } catch (error) {
-        statusEl.innerHTML = `<span class="text-red-400">✗ Error: ${error.message}</span>`;
+        statusEl.innerHTML = `<span class="text-red-400">✗ Error: ${escapeHtml(error.message)}</span>`;
     }
 }
 
@@ -97,7 +97,7 @@ async function runBestPracticeHunts() {
 
         const data = await response.json();
         if (response.ok) {
-            const huntId = data.hunt_id || '';
+            const huntId = escapeHtml(data.hunt_id || '');
             statusDiv.innerHTML = `<span class="text-green-400">Bulk hunt created${huntId ? ': ' + huntId : ''} (${artifacts.length} artifacts). Redirecting to workflows...</span>`;
 
             setTimeout(() => {
@@ -106,10 +106,10 @@ async function runBestPracticeHunts() {
                 statusDiv.classList.add('hidden');
             }, 1500);
         } else {
-            statusDiv.innerHTML = `<span class="text-red-400">Error: ${data.error}</span>`;
+            statusDiv.innerHTML = `<span class="text-red-400">Error: ${escapeHtml(data.error)}</span>`;
         }
     } catch (error) {
-        statusDiv.innerHTML = `<span class="text-red-400">Error: ${error.message}</span>`;
+        statusDiv.innerHTML = `<span class="text-red-400">Error: ${escapeHtml(error.message)}</span>`;
     }
 }
 
@@ -123,14 +123,14 @@ async function showBestPracticeStatus() {
         const data = await response.json();
         if (response.ok && data.hunts) {
             const huntList = data.hunts.slice(0, 5).map(h =>
-                `${h.description || h.hunt_id}: ${h.state || 'unknown'}`
+                `${escapeHtml(h.description || h.hunt_id)}: ${escapeHtml(h.state || 'unknown')}`
             ).join('<br>');
             statusDiv.innerHTML = huntList || '<span class="text-gray-400">No recent hunts</span>';
         } else {
             statusDiv.innerHTML = '<span class="text-gray-400">No hunt status available</span>';
         }
     } catch (error) {
-        statusDiv.innerHTML = `<span class="text-red-400">Error: ${error.message}</span>`;
+        statusDiv.innerHTML = `<span class="text-red-400">Error: ${escapeHtml(error.message)}</span>`;
     }
 }
 
@@ -229,7 +229,7 @@ function populateConfigDropdown() {
     select.innerHTML = '<option value="">Select a configuration...</option>' +
         offlineConfigs.map(c => {
             const selected = c.config_id === defaultId ? ' selected' : '';
-            return `<option value="${c.config_id}"${selected}>${c.config_name || c.config_id}</option>`;
+            return `<option value="${escapeHtml(c.config_id)}"${selected}>${escapeHtml(c.config_name || c.config_id)}</option>`;
         }).join('');
 }
 
@@ -424,10 +424,10 @@ async function generateOfflineCollector() {
                 Alpine.store('app').switchTab('workflows');
             }, 2500);
         } else {
-            statusEl.innerHTML = `<span class="text-red-400">Error: ${data.error || 'Generation failed'}</span>`;
+            statusEl.innerHTML = `<span class="text-red-400">Error: ${escapeHtml(data.error || 'Generation failed')}</span>`;
         }
     } catch (error) {
-        statusEl.innerHTML = `<span class="text-red-400">Error: ${error.message}</span>`;
+        statusEl.innerHTML = `<span class="text-red-400">Error: ${escapeHtml(error.message)}</span>`;
     }
 }
 
@@ -442,7 +442,7 @@ function handleOfflineFileSelect(event) {
         selectedImportFile = file;
         const dropzoneText = document.getElementById('offline-dropzone-text');
         const sizeStr = formatBytes(file.size);
-        dropzoneText.innerHTML = `<span class="text-blue-400 font-medium">${file.name}</span><br><span class="text-xs">${sizeStr}</span>`;
+        dropzoneText.innerHTML = `<span class="text-blue-400 font-medium">${escapeHtml(file.name)}</span><br><span class="text-xs">${sizeStr}</span>`;
         document.getElementById('offline-import-btn').disabled = false;
     }
 }

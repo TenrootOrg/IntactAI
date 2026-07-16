@@ -86,6 +86,24 @@ def index_case_entities(case_id, graph) -> int:
     return n
 
 
+def delete_case_entities(case_id) -> int:
+    """Remove this case's indexed IOC/account/yarahit documents from the
+    cross-case KB. Best-effort; returns 0 if ES down.
+
+    Previously delete_case() never called this — a deleted case's entities
+    stayed in the KB forever and kept resurfacing as "prior sightings" in
+    unrelated future cases via enrich(), even though the operator believed
+    deleting the case purged its data."""
+    es = _es()
+    if not es:
+        return 0
+    try:
+        resp = es.delete_by_query(index=INDEX, query={"term": {"case_id": case_id}})
+        return resp.get("deleted", 0)
+    except Exception:
+        return 0
+
+
 def lookup_sightings(labels) -> dict:
     """{label: [prior-sighting docs]} for labels present in the KB. Empty if ES down."""
     es = _es()
