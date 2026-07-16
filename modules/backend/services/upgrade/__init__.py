@@ -391,6 +391,18 @@ exec >> "$LOG" 2>&1
 echo "== helper start recreate -> intact-backend:$NEW =="
 C() { docker compose -p "$PROJ" -f "$BD/docker-compose.yaml" --project-directory "$BD" "$@"; }
 fail_marker() { printf '{"run_id":"%s","reason":"%s"}' "$RUN" "$1" > "$H/data/tmp/recreate-failed-$RUN.json"; }
+# tusd's pinned image tag can lag what's actually present locally (e.g. an
+# older box still running tusd:latest while the release pins a newer tag,
+# and --pull never blocks fetching it) — a missing tusd image must never
+# block the backend swap itself, since recreating tusd here is a bonus, not
+# the thing being fixed. Try both together; if that fails, retry backend
+# alone and leave tusd exactly as it is.
+up_backend() {
+  if ! C up -d --no-build --pull never "$@" backend tusd; then
+    echo "combined backend+tusd recreate failed (tusd image likely missing locally under --pull never) -- retrying backend alone; tusd left on its current image"
+    C up -d --no-build --pull never "$@" backend
+  fi
+}
 wait_healthy() {
   i=0
   while [ $i -lt 60 ]; do
@@ -405,14 +417,14 @@ if ! docker image inspect "intact-backend:$NEW" >/dev/null 2>&1; then
   echo "target image intact-backend:$NEW MISSING at recreate"; fail_marker "target image missing at recreate"; exit 1
 fi
 echo "== up -d --no-build --pull never backend tusd =="
-C up -d --no-build --pull never backend tusd
+up_backend
 if wait_healthy; then echo "== healthy on $NEW =="; exit 0; fi
 echo "== UNHEALTHY on $NEW after 300s — rolling back to $OLD =="
 docker logs --tail 120 intact_backend 2>&1 || true
 if [ -n "$SNAP" ] && [ -d "$SNAP/backend" ]; then cp -a "$SNAP/backend/." "$BD/"; echo "restored snapshot tree (old compose+code)"; fi
 if [ -f "$BD/.env.pre-upgrade-backup" ]; then cp "$BD/.env.pre-upgrade-backup" "$BD/.env"; echo "restored .env"; fi
 fail_marker "new image unhealthy after 300s; rolled back to $OLD"
-C up -d --no-build --pull never --force-recreate backend tusd || { docker rm -f intact_backend intact_tusd 2>/dev/null; C up -d --no-build --pull never backend tusd; }
+if ! up_backend --force-recreate; then docker rm -f intact_backend intact_tusd 2>/dev/null; up_backend; fi
 if wait_healthy; then echo "== rollback healthy on $OLD =="; exit 1; fi
 echo "== ROLLBACK ALSO UNHEALTHY — manual: $H/data/tmp/recreate-recover-$RUN.sh =="
 exit 2
@@ -427,12 +439,17 @@ BD="__H__/modules/backend"
 cd "$BD"
 
 # --- A) roll forward to the new image (intact-backend:__NEW__) ---
-BACKEND_VERSION=__NEW__ docker compose -p __PROJ__ -f "$BD/docker-compose.yaml" --project-directory "$BD" up -d --no-build backend tusd
+# (tusd's pinned tag may not be present locally under this project's normal
+# --pull never policy; if the combined recreate fails, retry backend alone
+# and leave tusd untouched rather than blocking the backend roll-forward.)
+BACKEND_VERSION=__NEW__ docker compose -p __PROJ__ -f "$BD/docker-compose.yaml" --project-directory "$BD" up -d --no-build backend tusd || \
+BACKEND_VERSION=__NEW__ docker compose -p __PROJ__ -f "$BD/docker-compose.yaml" --project-directory "$BD" up -d --no-build backend
 
 # --- B) roll back to the previous image (__OLD__) — uncomment to use ---
 # [ -f "$BD/.env.pre-upgrade-backup" ] && cp "$BD/.env.pre-upgrade-backup" "$BD/.env"
 # [ -d "__SNAP__/backend" ] && cp -a "__SNAP__/backend/." "$BD/"
-# docker compose -p __PROJ__ -f "$BD/docker-compose.yaml" --project-directory "$BD" up -d --no-build --force-recreate backend tusd
+# docker compose -p __PROJ__ -f "$BD/docker-compose.yaml" --project-directory "$BD" up -d --no-build --force-recreate backend tusd || \
+# docker compose -p __PROJ__ -f "$BD/docker-compose.yaml" --project-directory "$BD" up -d --no-build --force-recreate backend
 '''
 
 
@@ -584,7 +601,7 @@ def prepare_recreate_handoff(run_id: str, swap_info: Dict, logger: Callable = No
 # check closes that gap: it runs unconditionally on every boot with no pending
 # upgrade (see app.py) and is a no-op unless the running image genuinely
 # doesn't match what config.yaml says the release should be.
-def self_heal_backend_swap(logger: Callable = None) -> Dict:
+def self_heal_backend_swap(logger: Callable = None, parent_run_id: str = None) -> Dict:
     """Detect + fix a backend stuck on the wrong image for a Full-mode
     release — covers BOTH the tag-mismatch case (e.g. still on 1.0.0 when
     config.yaml wants 'development') AND the same-tag-but-stale-content case
@@ -593,6 +610,13 @@ def self_heal_backend_swap(logger: Callable = None) -> Dict:
     that image was baked — an operator deliberately re-running an upgrade to
     the same tag, e.g. after a partial failure or to pick up a forgotten
     module, needs this to actually refresh, not silently no-op).
+
+    `parent_run_id`: when this fires from INSIDE an already-tracked workflow
+    (e.g. the Phase-2 finalizer's convergence check), pass that run's ID so
+    the swap continues logging into the SAME tracked run instead of minting
+    a second, disconnected "Backend self-heal (image swap)" entry next to
+    the "Online Upgrade" the operator is already watching. Only a genuine
+    cold-boot self-heal (no caller run to attach to) creates a fresh run.
 
     Drift detection deliberately does NOT compare built Docker image IDs —
     those are sensitive to file mtimes in the build context (a routine git
@@ -645,14 +669,21 @@ def self_heal_backend_swap(logger: Callable = None) -> Dict:
     # this same marker: if the running image matches by then, the swap
     # worked and the run is marked completed instead of being reaped as a
     # generic "orphaned by restart" by the unrelated upgrade-watchdog.
+    #
+    # (That boot-time finalize step is a no-op when parent_run_id was used
+    # and the parent already finished — it only flips a still-pending/running
+    # run to completed, which a caller-owned run already isn't by then.)
     from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
-    run_id = create_automation_run(
-        automation_type="online_upgrade",
-        name="Backend self-heal (image swap)",
-        details={"trigger": "boot-self-heal", "target_tag": target_tag,
-                 "old_image": running_ref, "content_drift": content_drift},
-    )
-    update_run_status(run_id, "running", progress=5)
+    if parent_run_id:
+        run_id = parent_run_id
+    else:
+        run_id = create_automation_run(
+            automation_type="online_upgrade",
+            name="Backend self-heal (image swap)",
+            details={"trigger": "boot-self-heal", "target_tag": target_tag,
+                     "old_image": running_ref, "content_drift": content_drift},
+        )
+        update_run_status(run_id, "running", progress=5)
     try:
         os.makedirs(os.path.dirname(marker), exist_ok=True)
         with open(marker, 'w') as f:
@@ -692,7 +723,14 @@ def self_heal_backend_swap(logger: Callable = None) -> Dict:
             _err = (f"Self-heal image build FAILED: {(build.get('error') or '')[:300]} — "
                     f"platform stays on the old image; investigate manually")
             _dual_log(_err, "error")
-            update_run_status(run_id, "failed", error=_err)
+            # Only flip status here for a standalone (cold-boot) self-heal run.
+            # A parent_run_id belongs to the caller (e.g. the Online Upgrade
+            # finalizer), which force-completes it right after this returns —
+            # that would silently clobber a "failed" set here. The caller
+            # reflects this failure in its own outcome instead (see
+            # resume_upgrade_workflow's finalizer).
+            if not parent_run_id:
+                update_run_status(run_id, "failed", error=_err)
             return {"healed": False, "reason": "image build failed", "run_id": run_id}
 
     ok = prepare_recreate_handoff(
@@ -703,7 +741,8 @@ def self_heal_backend_swap(logger: Callable = None) -> Dict:
     if not ok:
         _err = "Self-heal recreate handoff could not be spawned"
         _dual_log(_err, "error")
-        update_run_status(run_id, "failed", error=_err)
+        if not parent_run_id:
+            update_run_status(run_id, "failed", error=_err)
         return {"healed": False, "reason": "recreate handoff failed to spawn", "run_id": run_id}
     return {"healed": True, "run_id": run_id}
 
@@ -1612,16 +1651,34 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                         "mounts. Triggering the same self-heal image swap boot-time "
                         "uses, to converge onto intact-backend:" + _tt +
                         " automatically instead of requiring a manual re-run.", "warning")
-                    _heal = self_heal_backend_swap(logger=log)
+                    # parent_run_id=run_id: keep this as ONE workflow from the
+                    # operator's perspective — continue logging into this same
+                    # "Online Upgrade" run instead of spawning a second,
+                    # disconnected "Backend self-heal (image swap)" entry.
+                    _heal = self_heal_backend_swap(logger=log, parent_run_id=run_id)
                     if _heal.get("healed"):
-                        log("  Self-heal swap triggered (run "
-                            + str(_heal.get("run_id")) + ") — backend will recreate "
-                            "onto the new image within the next ~10-60s.", "success")
+                        log("  Self-heal swap triggered — backend will recreate onto "
+                            "the new image within the next ~10-60s (this same "
+                            "workflow's log will continue to show its progress).",
+                            "success")
                     else:
                         log(f"  Self-heal swap could not be triggered automatically "
                             f"({_heal.get('reason')}) — re-run this upgrade, or "
                             f"restart the backend, to converge onto intact-backend:"
                             + _tt + ".", "warning")
+                        # Since this run's outcome no longer gets its own separate
+                        # workflow entry, fold the failure into `results` so the
+                        # shared run's final status reflects it (app.py's caller
+                        # force-completes on `result['success']`, computed from
+                        # `results` — without this, a synchronous self-heal
+                        # failure would be logged but the run would still show a
+                        # plain green "completed").
+                        results['_backend_selfheal'] = {
+                            'success': False,
+                            'error': f"Backend did not converge onto intact-backend:"
+                                     f"{_tt} ({_heal.get('reason')}) — still running "
+                                     f"{_run_img}",
+                        }
         except Exception as _cv:
             log(f"  Full-mode convergence check skipped ({_cv})", "warning")
 
