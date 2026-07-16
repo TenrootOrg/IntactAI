@@ -1578,9 +1578,21 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
         # if an OLD Phase 1 applied a Full-mode release (mirror+restart, no swap),
         # the box is on the old image with the new full-mode compose on disk and
         # code running from the (now-removed-in-compose) mounts. That's functional
-        # but not converged; guide the operator to re-run (the machinery is now in
-        # place, so the re-run takes the swap path). We do NOT auto-recreate here to
-        # avoid a finalizer→recreate→finalizer cycle.
+        # but not converged.
+        #
+        # Previously this only WARNED the operator to manually re-run the whole
+        # upgrade to converge — a real gap: the warning is easy to miss (buried in
+        # a long log), and until the operator notices and acts, the box silently
+        # stays on the old install-day image indefinitely (nothing else triggers a
+        # backend restart on its own). Now triggers self_heal_backend_swap()
+        # directly instead: it's the exact same mechanism boot-time self-heal
+        # already uses successfully, is bounded to one automatic attempt per
+        # target tag via its own marker file (so this can never loop), and only
+        # SPAWNS a detached helper container that does the actual recreate a few
+        # seconds later — it does not recreate the currently-running container
+        # synchronously from within itself. This whole finalizer already runs in
+        # a background thread (Phase 2 resume is launched via threading.Thread in
+        # app.py), so blocking here for the image build is safe.
         try:
             from .base import cleanup_backup
             _be_bak = os.path.join(WORKDIR, 'modules', 'backend', '.env.pre-upgrade-backup')
@@ -1596,9 +1608,20 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                 _run_img = running_backend_image() or ''
                 if _run_img != f"intact-backend:{_tt}":
                     log("Full-mode release applied by an older upgrader — backend is "
-                        "running the previous image via code mounts. Re-run this "
-                        "upgrade to converge onto intact-backend:" + _tt +
-                        " (the image swap now runs automatically).", "warning")
+                        "still running the previous image (" + _run_img + ") via code "
+                        "mounts. Triggering the same self-heal image swap boot-time "
+                        "uses, to converge onto intact-backend:" + _tt +
+                        " automatically instead of requiring a manual re-run.", "warning")
+                    _heal = self_heal_backend_swap(logger=log)
+                    if _heal.get("healed"):
+                        log("  Self-heal swap triggered (run "
+                            + str(_heal.get("run_id")) + ") — backend will recreate "
+                            "onto the new image within the next ~10-60s.", "success")
+                    else:
+                        log(f"  Self-heal swap could not be triggered automatically "
+                            f"({_heal.get('reason')}) — re-run this upgrade, or "
+                            f"restart the backend, to converge onto intact-backend:"
+                            + _tt + ".", "warning")
         except Exception as _cv:
             log(f"  Full-mode convergence check skipped ({_cv})", "warning")
 
