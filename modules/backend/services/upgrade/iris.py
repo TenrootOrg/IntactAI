@@ -425,11 +425,16 @@ def install_iris_offline(package_dir: str, version: str, logger=None, run_id=Non
     if not compose_result.get('success'):
         return compose_result
 
-    # Post-install bootstrap. Without this, the install reports success
-    # but the IntactAI backend has NO IRIS api_key in its secrets DB →
-    # every backend → IRIS API call fails with 401. Mirrors
-    # lib/modules.sh:bootstrap_iris_api_key.
-    log("IRIS containers up. Waiting for first-init + extracting api_key...", "info")
+    # Post-install bootstrap. The wait below is a READINESS GATE: IRIS's
+    # first-init (alembic migrations + seed) creates the administrator row
+    # WITHOUT an api_key initially, then populates it in a later step —
+    # polling for a non-null api_key is what confirms the admin row actually
+    # exists before enforce_iris_admin_password() below tries to reset its
+    # password. (The backend's own IRIS auto-push integration was removed
+    # entirely — this api_key value is no longer persisted or read by
+    # anything; the only remaining IRIS API caller is the Velociraptor-side
+    # bundled artifacts, which use their own separately-configured IrisKey.)
+    log("IRIS containers up. Waiting for first-init...", "info")
 
     import subprocess as _sub
 
@@ -464,38 +469,13 @@ def install_iris_offline(package_dir: str, version: str, logger=None, run_id=Non
 
     if not api_key:
         log(
-            "IRIS administrator api_key did not appear in iris_db after 5 minutes. "
-            "Containers ARE running, but backend → IRIS API calls will fail until "
-            "the key is stored. Fix manually once IRIS is ready: "
-            "`docker exec intact_iris_db psql -U iris -d iris_db -tAc "
-            "\"SELECT api_key FROM \\\"user\\\" WHERE name='administrator';\"` "
-            "then `docker exec intact_backend python3 -c \"from services.storage."
-            "secret_store import set_secret; set_secret('iris.administrator.api_key', '<key>')\"`",
+            "IRIS administrator api_key did not appear in iris_db after 5 minutes — "
+            "IRIS first-init may not be complete. Skipping admin-password "
+            "enforcement; if IRIS is actually up, this can be re-run via the "
+            "upgrade flow once it finishes initializing.",
             "warning",
         )
         return compose_result
-
-    # Stage 2: store the api_key in the backend's secrets DB so iris_service
-    # can auth without doing a docker-exec lookup on every call.
-    log("Storing IRIS api_key in backend secrets DB...", "info")
-    try:
-        from services.storage.secret_store import set_secret, get_secret
-        if set_secret('iris.administrator.api_key', api_key):
-            # Read-back verify (set_secret can succeed but a transient
-            # SQLite lock can roll the write back silently).
-            persisted = get_secret('iris.administrator.api_key')
-            if persisted == api_key:
-                log("  IRIS api_key persisted to backend secrets table — verified", "success")
-            else:
-                log(
-                    "  IRIS api_key set_secret() returned OK but read-back didn't match. "
-                    "Run the manual set_secret() shown in the prior warning.",
-                    "warning",
-                )
-        else:
-            log("  IRIS api_key set_secret() returned False. Fix manually.", "warning")
-    except Exception as e:
-        log(f"  Failed to persist IRIS api_key to backend secrets: {e}", "warning")
 
     # Re-assert the IRIS admin password from config.yaml. The admin row exists
     # by now (we waited for its api_key above), so this guarantees the documented
