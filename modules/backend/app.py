@@ -475,16 +475,26 @@ def run_startup_initialization():
     except Exception as e:
         print(f"[STARTUP] Orphan-run reaper skipped: {e}", flush=True)
 
-    # Initialize Elasticsearch
+    # Initialize Elasticsearch — only when the module is actually enabled.
+    # Previously this ran unconditionally even on installs with
+    # modules.elk.enabled: false (the common case), attempting a network
+    # connection (with its own retries/timeout) to a host that was never
+    # started, before the per-request hot-path calls did the same thing again
+    # on nearly every dashboard load (see workflow_service._elk_enabled).
     try:
-        print("[STARTUP] Initializing Elasticsearch...", flush=True)
-        es_result = init_elasticsearch(
-            host=ELASTICSEARCH_CONFIG['host'],
-            port=ELASTICSEARCH_CONFIG['port']
-        )
-        initialization_status["elasticsearch"] = es_result
-        if es_result:
-            print("[WORKFLOW] Elasticsearch initialized successfully", flush=True)
+        from config import is_module_enabled
+        if is_module_enabled('elk'):
+            print("[STARTUP] Initializing Elasticsearch...", flush=True)
+            es_result = init_elasticsearch(
+                host=ELASTICSEARCH_CONFIG['host'],
+                port=ELASTICSEARCH_CONFIG['port']
+            )
+            initialization_status["elasticsearch"] = es_result
+            if es_result:
+                print("[WORKFLOW] Elasticsearch initialized successfully", flush=True)
+        else:
+            print("[STARTUP] Elasticsearch skipped (modules.elk.enabled: false)", flush=True)
+            initialization_status["elasticsearch"] = False
     except Exception as e:
         print(f"[STARTUP] Elasticsearch initialization failed: {e}", flush=True)
 

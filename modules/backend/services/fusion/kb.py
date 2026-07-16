@@ -13,21 +13,35 @@ INDEX = "intact_fusion_entities"
 KB_TYPES = ("ioc", "account", "yarahit")
 
 _client = None
-_failed = False
+_failed_at = None
+_FAILURE_COOLDOWN_S = 60.0
 
 
 def _es():
-    """Lazy ES client; caches a failure so we don't reconnect every fuse."""
-    global _client, _failed
-    if _failed:
-        return None
+    """Lazy ES client; caches a failure for a cooldown window so we don't
+    reconnect on every fuse — but retries after it, rather than latching
+    permanently. Previously a single transient failure (e.g. ES still in its
+    ~60s cold-start window when the first fuse ran) disabled cross-case
+    enrichment for the rest of the backend process's lifetime, even once ES
+    became healthy."""
+    global _client, _failed_at
+    import time as _time
     if _client is not None:
         return _client
+    if _failed_at is not None and (_time.time() - _failed_at) < _FAILURE_COOLDOWN_S:
+        return None
+    try:
+        from config import is_module_enabled
+        if not is_module_enabled('elk'):
+            _failed_at = _time.time()
+            return None
+    except Exception:
+        pass
     try:
         from elasticsearch import Elasticsearch
         c = Elasticsearch(["http://elasticsearch:9200"], request_timeout=3, max_retries=1)
         if not c.ping():
-            _failed = True
+            _failed_at = _time.time()
             return None
         if not c.indices.exists(index=INDEX):
             c.indices.create(index=INDEX, body={"mappings": {"properties": {
@@ -36,9 +50,10 @@ def _es():
                 "hosts": {"type": "keyword"}, "sources": {"type": "keyword"},
                 "first_seen": {"type": "keyword"}}}})
         _client = c
+        _failed_at = None
         return c
     except Exception:
-        _failed = True
+        _failed_at = _time.time()
         return None
 
 
@@ -49,12 +64,18 @@ def index_case_entities(case_id, graph) -> int:
     if not es:
         return 0
     from .correlate import _assets_of, _host_label
+    import hashlib
     n = 0
     for e in graph.entities.values():
         if e.type not in KB_TYPES or not e.label:
             continue
         try:
-            es.index(index=INDEX, id=f"{case_id}:{e.id}", document={
+            # A plain f"{case_id}:{e.id}" string-concat can collide across
+            # cases if either id contains a colon (entity ids frequently do —
+            # e.g. "process:client_id:pid:createtime" style composite keys).
+            # Hash the pair instead of concatenating them raw.
+            doc_id = hashlib.sha1(f"{case_id}\x00{e.id}".encode()).hexdigest()
+            es.index(index=INDEX, id=doc_id, document={
                 "case_id": case_id, "type": e.type, "label": e.label,
                 "severity": e.severity,
                 "hosts": [_host_label(graph, a) for a in _assets_of(e)],

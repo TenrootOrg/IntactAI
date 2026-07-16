@@ -193,7 +193,7 @@ def _collect_for_region(
     start_dt,
     end_dt,
     event_names: Optional[List[str]],
-    username_filter: Optional[str],
+    username_filters: Optional[List[str]],
     max_events: int,
     log,
     is_cancelled_func: Optional[Callable[[], bool]],
@@ -204,26 +204,27 @@ def _collect_for_region(
     # Build LookupAttributes — LookupEvents only accepts ONE attribute
     # at a time. We make multiple passes and dedupe by EventId.
     #
-    # For identity-scoped runs we need BOTH directions:
+    # For identity-scoped runs we need BOTH directions PER TARGETED USER:
     #   - "Events by the user" (Username=X) — catches the user acting
     #   - "Events about the user" (ResourceName=arn:...:user/X) —
     #     catches CreateUser / CreateAccessKey / AttachUserPolicy that
     #     SET UP this user even when the actor is someone else. Without
     #     this second pass, investigating a freshly-compromised user
     #     surfaces zero events because the victim itself never acted.
-    if username_filter:
-        attr_passes = [[{"AttributeKey": "Username", "AttributeValue": username_filter}]]
-        # If we know the full ARN (or can reconstruct it), also pass
-        # ResourceName so events ON the user surface. We store the
-        # username in the closure but the caller may also pass a full
-        # ARN via `username_filter` — handle both.
-        if username_filter.startswith("arn:aws:"):
-            attr_passes.append([{"AttributeKey": "ResourceName", "AttributeValue": username_filter}])
-        else:
-            # Best-effort: the AWS account-id isn't always known here,
-            # but LookupEvents accepts a bare username for ResourceName
-            # too on most services. Add a pass with just the name.
-            attr_passes.append([{"AttributeKey": "ResourceName", "AttributeValue": username_filter}])
+    #
+    # username_filters is a LIST (not a single string) so an investigation
+    # naming 2+ principals stays fully identity-scoped instead of silently
+    # falling through to the unscoped event-name/full-sweep branches below
+    # — that used to happen for any call with 0 or ≥2 users.
+    if username_filters:
+        attr_passes = []
+        for uf in username_filters:
+            attr_passes.append([{"AttributeKey": "Username", "AttributeValue": uf}])
+            # If we know the full ARN (or can reconstruct it), also pass
+            # ResourceName so events ON the user surface. Best-effort: the
+            # AWS account-id isn't always known here, but LookupEvents
+            # accepts a bare username for ResourceName too on most services.
+            attr_passes.append([{"AttributeKey": "ResourceName", "AttributeValue": uf}])
     elif event_names:
         attr_passes = [[{"AttributeKey": "EventName", "AttributeValue": en}] for en in event_names]
     else:
@@ -301,13 +302,16 @@ def collect_cloudtrail(
     else:  # light (default)
         event_names = list(LIGHT_EVENT_NAMES_CONSOLE) + list(LIGHT_EVENT_NAMES_IAM)
 
-    # Identity-scoped: extract usernames from target ARNs.
-    username_filter = None
+    # Identity-scoped: extract usernames from target ARNs. A multi-principal
+    # investigation (2+ users) stays identity-scoped too — this used to only
+    # apply for exactly 1 user and silently fall through to an unscoped sweep
+    # otherwise.
+    username_filters = None
     if target_principal_arns:
         users = [a.rsplit("/", 1)[-1] for a in target_principal_arns if ":user/" in a]
-        if len(users) == 1:
-            username_filter = users[0]
-            log(f"[cloudtrail] identity-scoped run: username={username_filter}", "info")
+        if users:
+            username_filters = users
+            log(f"[cloudtrail] identity-scoped run: username(s)={', '.join(users)}", "info")
 
     start_dt, end_dt = _resolve_time_window(time_filter)
     log(f"[cloudtrail] mode={mode} window={start_dt.isoformat()} → {end_dt.isoformat()}", "info")
@@ -328,7 +332,7 @@ def collect_cloudtrail(
             start_dt=start_dt,
             end_dt=end_dt,
             event_names=event_names,
-            username_filter=username_filter,
+            username_filters=username_filters,
             max_events=max_events_per_region,
             log=log,
             is_cancelled_func=is_cancelled_func,

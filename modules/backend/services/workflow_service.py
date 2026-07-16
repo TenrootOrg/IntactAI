@@ -164,6 +164,32 @@ try:
 except ImportError:
     ES_AVAILABLE = False
 
+# ES_AVAILABLE only means the `elasticsearch` package imported — it's a hard
+# dependency baked into the image, so this was True even on installs where
+# the operator left modules.elk.enabled: false in config.yaml (the common
+# case). Nothing gated on the actual config flag, so cleanup_orphan_workflows/
+# get_all_automation_runs/get_automation_run — called on nearly every
+# dashboard load, case view, upload, and fusion re-fuse — each attempted a
+# fresh network connection (with its own retries/timeout) to a host that was
+# never even started. Cached (config rarely changes at runtime; a stale
+# read for a few seconds is harmless) so this doesn't add a YAML parse to
+# every one of those hot-path calls.
+_elk_enabled_cache = {"value": None, "checked_at": 0.0}
+_ELK_ENABLED_CACHE_TTL = 30.0
+
+
+def _elk_enabled() -> bool:
+    import time as _time
+    now = _time.time()
+    if _elk_enabled_cache["value"] is None or (now - _elk_enabled_cache["checked_at"]) > _ELK_ENABLED_CACHE_TTL:
+        try:
+            from config import is_module_enabled
+            _elk_enabled_cache["value"] = ES_AVAILABLE and is_module_enabled('elk')
+        except Exception:
+            _elk_enabled_cache["value"] = False
+        _elk_enabled_cache["checked_at"] = now
+    return _elk_enabled_cache["value"]
+
 # Enhanced job tracking with detailed logs
 jobs = {}
 
@@ -609,7 +635,7 @@ def cleanup_orphan_workflows():
                 print(f"[WORKFLOW] Error checking SQLite workflow age: {e}", flush=True)
 
     # Clean up Elasticsearch workflows
-    if ES_AVAILABLE:
+    if _elk_enabled():
         try:
             es_workflows = es_get_all_workflows(size=200)
             for workflow in es_workflows:
@@ -645,7 +671,7 @@ def get_all_automation_runs():
     # Get Elasticsearch workflows and merge (avoiding duplicates)
     all_workflows = list(sqlite_workflows)
 
-    if ES_AVAILABLE:
+    if _elk_enabled():
         try:
             es_workflows = es_get_all_workflows(size=200)
             for es_wf in es_workflows:
@@ -679,7 +705,7 @@ def get_automation_run(run_id):
         return workflow
 
     # Try Elasticsearch
-    if ES_AVAILABLE:
+    if _elk_enabled():
         try:
             es_wf = es_get_workflow(run_id)
             if es_wf:

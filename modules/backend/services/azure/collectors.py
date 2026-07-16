@@ -193,16 +193,18 @@ def graph_request(token: str, endpoint: str, params: Optional[Dict] = None,
     if extra_headers:
         headers.update(extra_headers)
 
-    for attempt in range(3):
+    for attempt in range(5):
         resp = requests.get(url, headers=headers, params=params, timeout=30)
         if resp.status_code == 429:
             retry_after = int(resp.headers.get('Retry-After', 10))
-            print(f"[AZURE] Rate limited, waiting {retry_after}s...")
+            print(f"[AZURE] Rate limited, waiting {retry_after}s... (attempt {attempt + 1}/5)")
             time.sleep(retry_after)
             continue
         return resp
 
-    return resp  # Return last response after retries
+    return resp  # Return last (still-429) response after retries — the caller
+                 # decides whether to degrade gracefully or fail (see
+                 # collect_with_pagination's explicit 429 branch)
 
 
 def collect_with_pagination(token: str, endpoint: str, time_filter: Optional[str] = None,
@@ -238,6 +240,17 @@ def collect_with_pagination(token: str, endpoint: str, time_filter: Optional[str
             return None  # Source not available at this license tier
         if resp.status_code == 401:
             raise ValueError("Authentication failed - check credentials and API permissions")
+        if resp.status_code == 429:
+            # graph_request() already retried with Retry-After backoff and
+            # is STILL rate-limited — sustained throttling on a large tenant.
+            # Previously this fell into the generic `!= 200` branch below and
+            # raised, discarding every record already collected THIS
+            # pagination loop (the whole source came back as one hard
+            # failure instead of a partial result). Degrade instead: keep
+            # what's already collected rather than losing it all.
+            print(f"[AZURE] Graph API still rate-limited after retries — "
+                  f"returning {len(records)} record(s) collected so far", flush=True)
+            break
         if resp.status_code != 200:
             raise Exception(f"Graph API error {resp.status_code}: {resp.text[:200]}")
 
