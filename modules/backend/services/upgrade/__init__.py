@@ -705,16 +705,9 @@ def self_heal_backend_swap(logger: Callable = None, parent_run_id: str = None) -
             add_log_to_run(run_id, m, l)
 
     if content_drift:
-        _dual_log(f"Backend content drift detected at boot: running {target_image} is "
-                   f"stale — the branch moved forward since this image was baked (likely "
-                   f"a deliberate same-tag re-upgrade, e.g. after a partial failure or to "
-                   f"pick up a forgotten module, or a 'development' box that pulled newer "
-                   f"commits) — self-healing", "warning")
+        _dual_log(f"Refreshing {target_image} (content changed since it was built)...", "info")
     else:
-        _dual_log(f"Backend image mismatch detected at boot: running {running_ref}, "
-                   f"config.yaml target {target_image} — self-healing (this box likely "
-                   f"came through an old, pre-Wave-F 'intact'-alone upgrade that mirrored "
-                   f"code but never swapped the image)", "warning")
+        _dual_log(f"Converging backend onto {target_image}...", "info")
 
     # Build if the target tag isn't present locally, OR if content drifted —
     # an existing same-tagged image is exactly what's stale in that case.
@@ -1655,11 +1648,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                 _tt = backend_target_tag()
                 _run_img = running_backend_image() or ''
                 if _run_img != f"intact-backend:{_tt}":
-                    log("Full-mode release applied by an older upgrader — backend is "
-                        "still running the previous image (" + _run_img + ") via code "
-                        "mounts. Triggering the same self-heal image swap boot-time "
-                        "uses, to converge onto intact-backend:" + _tt +
-                        " automatically instead of requiring a manual re-run.", "warning")
+                    log(f"Converging backend onto intact-backend:{_tt}...", "info")
                     # parent_run_id=run_id: keep this as ONE workflow from the
                     # operator's perspective — continue logging into this same
                     # "Online Upgrade" run instead of spawning a second,
