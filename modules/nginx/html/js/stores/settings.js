@@ -222,14 +222,26 @@ document.addEventListener('alpine:init', () => {
         },
 
         // --- Settings → Actions (system-operation run history) ----------------
+        actionsInitialLoad: true,
         async loadActions() {
-            this.actionsLoading = true;
+            // Only show the loading spinner on the very first load — the 1s
+            // auto-refresh poll otherwise flips actionsLoading true/false
+            // every tick, which flashed the spinner and made the whole
+            // panel look like it was "ticking"/jittering constantly.
+            if (this.actionsInitialLoad) this.actionsLoading = true;
             try {
                 const r = await fetch('/api/system/actions');
                 const d = await r.json();
-                this.actions = (d && d.actions) || [];
+                const newActions = (d && d.actions) || [];
+                // Same guard as $store.workflows.load(): only reassign (and
+                // trigger a re-render) when the data actually changed, so a
+                // no-op poll doesn't visibly redraw/jitter the whole table.
+                if (this.actionsInitialLoad || JSON.stringify(this.actions) !== JSON.stringify(newActions)) {
+                    this.actions = newActions;
+                }
+                this.actionsInitialLoad = false;
             } catch (e) {
-                this.actions = [];
+                if (this.actionsInitialLoad) this.actions = [];
             } finally {
                 this.actionsLoading = false;
             }
