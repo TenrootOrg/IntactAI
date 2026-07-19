@@ -196,15 +196,29 @@ def run_startup_initialization():
                         if (_sf_run_id and _sf_marker_tag == _sf_target
                                 and _sf_running == f"intact-backend:{_sf_target}"):
                             _sf_run = get_automation_run(_sf_run_id)
-                            if _sf_run and _sf_run.get('status') in ('pending', 'running'):
-                                print(f"[STARTUP] Self-heal for {_sf_target} confirmed "
-                                      f"successful (run {_sf_run_id}) — marking completed",
-                                      flush=True)
-                                _sf_urs(_sf_run_id, "completed", progress=100, force=True)
-                                try:
-                                    os.remove(_sf_marker)
-                                except OSError:
-                                    pass
+                            if _sf_run:
+                                # Always add the confirmation line, even when the
+                                # run's status is already terminal (the common
+                                # case now that self-heal reuses the parent
+                                # "Online Upgrade" run: that run is marked
+                                # completed the moment Phase 2 returns, well
+                                # before this detached recreate actually lands —
+                                # so its log used to just stop at "triggered",
+                                # never confirming the swap really happened).
+                                from services.workflow_service import add_log_to_run as _sf_alog
+                                _sf_alog(_sf_run_id,
+                                         f"Backend confirmed running intact-backend:"
+                                         f"{_sf_target} — self-heal converged.",
+                                         "success")
+                                if _sf_run.get('status') in ('pending', 'running'):
+                                    print(f"[STARTUP] Self-heal for {_sf_target} confirmed "
+                                          f"successful (run {_sf_run_id}) — marking completed",
+                                          flush=True)
+                                    _sf_urs(_sf_run_id, "completed", progress=100, force=True)
+                            try:
+                                os.remove(_sf_marker)
+                            except OSError:
+                                pass
                     except Exception as _sf_me:
                         print(f"[STARTUP] Self-heal marker check error ({_sf_marker}): {_sf_me}",
                               flush=True)

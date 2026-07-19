@@ -1648,7 +1648,11 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                 _tt = backend_target_tag()
                 _run_img = running_backend_image() or ''
                 if _run_img != f"intact-backend:{_tt}":
-                    log(f"Converging backend onto intact-backend:{_tt}...", "info")
+                    # self_heal_backend_swap() logs its own "Converging backend
+                    # onto..." line — no separate announcement needed here (it
+                    # used to be worded differently, so this wasn't visible as
+                    # a literal duplicate; now that both are short and plain,
+                    # logging it twice read as a bug).
                     # parent_run_id=run_id: keep this as ONE workflow from the
                     # operator's perspective — continue logging into this same
                     # "Online Upgrade" run instead of spawning a second,
