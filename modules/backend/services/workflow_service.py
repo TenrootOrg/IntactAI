@@ -635,6 +635,15 @@ def cleanup_orphan_workflows():
     # Clean up SQLite workflows
     sqlite_workflows = load_workflows()
     for workflow in sqlite_workflows:
+        # A "case"/"fusion_baseline" row IS a workspace container, not a job —
+        # it has no natural "completed" state and can legitimately sit
+        # untouched for days between investigation sessions. Treating that as
+        # "orphaned" auto-failed the built-in System AND Default workspaces
+        # after they simply sat idle past the threshold, which in turn broke
+        # every system-run's visibility (case_id pointed at a now-"failed"
+        # workspace) — not the workflow's fault, the reaper's.
+        if workflow.get('automation_type') in INTERNAL_CASE_TYPES:
+            continue
         if workflow.get('status') in ['running', 'pending']:
             last_active = _last_activity(workflow)
             if last_active is None:
@@ -664,6 +673,8 @@ def cleanup_orphan_workflows():
         try:
             es_workflows = es_get_all_workflows(size=200)
             for workflow in es_workflows:
+                if workflow.get('automation_type') in INTERNAL_CASE_TYPES:
+                    continue
                 if workflow.get('status') in ['running', 'pending']:
                     last_active = _last_activity(workflow)
                     if last_active is None:

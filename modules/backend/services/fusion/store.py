@@ -559,6 +559,30 @@ def import_case(bundle: dict, *, name: str | None = None) -> dict:
     return {"case_id": new_case_id, "name": disp_name, "runs_imported": len(member_ids)}
 
 
+def _unfail_stale_idle_workspace(run: dict) -> None:
+    """A workspace ("case") row has no natural "completed" state — it's a
+    container, not a job — so cleanup_orphan_workflows()'s idle->failed
+    reaper used to mistake a quiet built-in workspace (no investigation
+    activity for >10h) for an orphaned job. That's now fixed at the source
+    (the reaper skips case/fusion_baseline rows), but a box that already hit
+    it before that fix has the built-in workspace permanently stuck 'failed'
+    forever after — self-heal it back to 'running' the next time it's
+    looked up, so an already-affected box recovers without a manual repair."""
+    if run.get("status") != "failed":
+        return
+    if "idle for" not in (run.get("error") or "").lower():
+        return
+    try:
+        # update_run_status() only overwrites `error` when truthy (there's no
+        # "clear" sentinel), so leaving it None would keep showing the stale
+        # "idle for Nh" message even after status flips back to 'running'.
+        _ws().update_run_status(
+            run.get("run_id"), "running",
+            error="(resumed — self-healed from a stale idle-timeout failure)")
+    except Exception:
+        pass
+
+
 def ensure_default_case() -> str:
     """Return the id of the Default workspace, creating it if missing. Idempotent —
     safe to call on every startup."""
@@ -568,6 +592,7 @@ def ensure_default_case() -> str:
             continue
         det = r.get("details") or {}
         if det.get("is_default") or det.get("name") == DEFAULT_CASE_NAME:
+            _unfail_stale_idle_workspace(r)
             return r.get("run_id")
     return create_case(DEFAULT_CASE_NAME, is_default=True)
 
@@ -581,6 +606,7 @@ def ensure_system_case() -> str:
             continue
         det = r.get("details") or {}
         if det.get("is_system") or det.get("name") == SYSTEM_CASE_NAME:
+            _unfail_stale_idle_workspace(r)
             return r.get("run_id")
     return create_case(SYSTEM_CASE_NAME, is_system=True)
 

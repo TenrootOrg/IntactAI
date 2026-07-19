@@ -71,8 +71,20 @@ def _run_visible_in_active_workspace(run):
     without this check an operator in one case could read/stop/read-logs-of
     another case's (or the System workspace's) runs just by guessing/trying
     ids. Same rule as the list route: no active case_id means no filtering
-    (admin/no-workspace-concept context)."""
+    (admin/no-workspace-concept context).
+
+    System-operation runs (SYSTEM_TYPES) are always visible regardless of
+    the active case: /api/system/actions (Settings -> Actions) already
+    lists them independent of X-Case-Id, since System stopped being a
+    selectable workspace — but its "Logs"/"Stop" buttons reuse THIS same
+    per-run lookup. Without this exemption, every one of those buttons
+    404'd with "not found" for anyone whose active workspace isn't System
+    (which is everyone, since System can no longer be selected), even
+    though the run is right there in the list they clicked it from."""
     from flask import g
+    from services.workflow_service import SYSTEM_TYPES
+    if run.get("automation_type") in SYSTEM_TYPES:
+        return True
     case_id = getattr(g, "case_id", None)
     if not case_id:
         return True
