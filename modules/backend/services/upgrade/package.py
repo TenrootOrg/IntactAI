@@ -647,6 +647,63 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
     return {"success": True}
 
 
+# Host path of the SigmaHQ AWS rule pack that the aws_sigma module ships as its
+# data artifact. Module-level so tests can point it at a fixture dir.
+AWS_SIGMA_RULES_DIR = "/opt/sigma-rules/rules/cloud/aws"
+
+
+def bundle_single_module(module: str, version: str, package_dir: str,
+                         manifest: Dict, logger: Callable = None) -> bool:
+    """Bundle ONE no-image "data artifact" module into an existing package dir
+    + manifest. Mutates `manifest` in place; returns True iff an artifact was
+    produced.
+
+    Extracted verbatim from prepare_upgrade_package's per-module loop so the
+    Phase-2 reconciliation path (services/upgrade/__init__.py) can bundle a
+    module that the ORIGINAL prepare skipped as "Unknown module". That happens
+    when the prepare ran on a backend OLDER than the target release, which does
+    not recognize a module the target added or renamed (e.g. cloudtrail →
+    aws_sigma). After the swap, the NEW backend knows the module and can bundle
+    it here, then apply it through the existing dispatch.
+
+    Only covers the no-docker-image "ships a data artifact" modules a stale
+    prepare would miss on an add/rename — today: aws_sigma (the SIGMA AWS rule
+    pack). Image-carrying modules can't be reconciled this way (no source to
+    build from post-swap on an air-gap box); those are the CI-phase's job.
+    """
+    log = logger or (lambda m, l="info": None)
+    if module == 'aws_sigma':
+        import tarfile as _cttf
+        aws_rules = AWS_SIGMA_RULES_DIR
+        if os.path.isdir(aws_rules):
+            images_dir = f"{package_dir}/images"
+            os.makedirs(images_dir, exist_ok=True)
+            out_tar = f"{images_dir}/cloudtrail-{version}.tar"
+            with _cttf.open(out_tar, 'w') as tar:
+                tar.add(aws_rules, arcname='.')
+            n_rules = sum(1 for _r, _d, fs in os.walk(aws_rules)
+                          for f in fs if f.endswith(('.yml', '.yaml')))
+            size_mb = os.path.getsize(out_tar) / (1024 * 1024)
+            manifest["contents"].setdefault("rule_packs", []).append({
+                "module": "aws_sigma",
+                "file": f"images/cloudtrail-{version}.tar",
+                "rules": n_rules, "size_mb": round(size_mb, 2),
+            })
+            # Register aws_sigma as a versioned module so the apply orchestrator
+            # actually installs it (the per-module apply loop is version-gated
+            # on manifest['versions']).
+            manifest["versions"]["aws_sigma"] = version
+            log(f"  Bundled SIGMA AWS rule pack: {n_rules} rules "
+                f"({size_mb:.1f} MB)", "success")
+            return True
+        log(f"  WARNING: no SIGMA AWS rules at {aws_rules} — aws_sigma was "
+            "selected but this host has no rule pack to bundle. Run the "
+            "installer's download_sigma_rules first, otherwise the target "
+            "starts with no AWS detection rules.", "warning")
+        return False
+    return False
+
+
 def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             compress: bool = True,
                             work_dir: Optional[str] = None) -> Dict:
@@ -1950,44 +2007,13 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             "Maintenance → Refresh YARA Rulesets later if "
                             "the target gets internet.", "warning")
             elif module == 'aws_sigma':
-                # CloudTrail ships no docker image — the versioned artifact is the
-                # SIGMA AWS CloudTrail rule pack (cloned from SigmaHQ into
-                # /opt/sigma-rules). Bundle it as images/cloudtrail-<version>.tar so an
-                # air-gapped target installs the detection rules on apply
-                # (services/upgrade/aws.py:upgrade_cloudtrail_offline). Mirrors the
-                # cve_scan pattern (a no-image module that ships a data artifact).
-                import tarfile as _cttf
-                aws_rules = "/opt/sigma-rules/rules/cloud/aws"
-                if os.path.isdir(aws_rules):
-                    images_dir = f"{package_dir}/images"
-                    os.makedirs(images_dir, exist_ok=True)
-                    out_tar = f"{images_dir}/cloudtrail-{version}.tar"
-                    with _cttf.open(out_tar, 'w') as tar:
-                        tar.add(aws_rules, arcname='.')
-                    n_rules = sum(1 for _r, _d, fs in os.walk(aws_rules)
-                                  for f in fs if f.endswith(('.yml', '.yaml')))
-                    size_mb = os.path.getsize(out_tar) / (1024 * 1024)
-                    manifest["contents"].setdefault("rule_packs", []).append({
-                        "module": "aws_sigma",
-                        "file": f"images/cloudtrail-{version}.tar",
-                        "rules": n_rules, "size_mb": round(size_mb, 2),
-                    })
-                    # Register aws_sigma as a versioned module so the apply
-                    # orchestrator actually installs it. The per-module apply loop
-                    # is version-gated (`version = manifest['versions'].get(module)`
-                    # then `if not version: continue`), so a rule-pack that only
-                    # lives under contents.rule_packs is silently skipped — the
-                    # bundled tar never reaches upgrade_cloudtrail_offline. Pinning
-                    # the version here routes aws_sigma through the same dispatch as
-                    # every other module (offline_upgrade_functions['aws_sigma']).
-                    manifest["versions"]["aws_sigma"] = version
-                    log(f"  Bundled SIGMA AWS rule pack: {n_rules} rules "
-                        f"({size_mb:.1f} MB)", "success")
-                else:
-                    log(f"  WARNING: no SIGMA AWS rules at {aws_rules} — aws_sigma was "
-                        "selected but this build host has no rule pack to bundle. Run the "
-                        "installer's download_sigma_rules first, otherwise the air-gap "
-                        "target starts with no AWS detection rules.", "warning")
+                # CloudTrail/aws_sigma ships no docker image — the versioned
+                # artifact is the SIGMA AWS rule pack (bundled as
+                # images/cloudtrail-<version>.tar, installed on apply by
+                # aws.py:upgrade_cloudtrail_offline). Bundling is factored into
+                # bundle_single_module() so the Phase-2 reconciliation path can
+                # reuse it when a stale prepare skipped this module.
+                bundle_single_module(module, version, package_dir, manifest, logger=log)
 
             elif module == 'cve_scan':
                 # CVE Scan ships no docker image — what we bundle is the

@@ -1314,6 +1314,50 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     log(f"Modules to upgrade: {', '.join(remaining)}", "info")
     log("=" * 50, "info")
 
+    # NEW-MODULE RECONCILIATION (factor 5). Phase 1's `prepare` ran on the
+    # backend that was current at trigger time. If that backend PREDATES a
+    # module the target release added or renamed (e.g. cloudtrail -> aws_sigma),
+    # its prepare logged "Unknown module" and never bundled that module's
+    # artifact — so the apply loop below would install nothing for it. Phase 2
+    # now runs the NEW code (post-swap / post-restart), which recognizes every
+    # module in its own release, so bundle any requested no-image data-artifact
+    # module whose artifact is still missing from the package. The existing
+    # per-module dispatch then applies it for free. Online has the internet +
+    # the /opt/sigma-rules host mount this needs; if it can't complete it logs
+    # and continues (never fails the upgrade over it). Offline/air-gap's full
+    # fix is the CI-built package, not this.
+    if package_dir:
+        try:
+            import json as _json
+            from .package import bundle_single_module
+            _man_path = os.path.join(package_dir, 'manifest.json')
+            _manifest = {}
+            if os.path.exists(_man_path):
+                with open(_man_path) as _mf:
+                    _manifest = _json.load(_mf)
+            _manifest.setdefault('versions', {})
+            _manifest.setdefault('contents', {})
+            _bundled = set((_manifest.get('versions') or {}).keys())
+            _reconciled = False
+            for _m in modules:
+                if _m in completed_modules or _m in _bundled:
+                    continue
+                if bundle_single_module(_m, modules[_m], package_dir, _manifest, logger=log):
+                    log(f"  Reconciled '{_m}': its artifact was missing from the "
+                        f"package (skipped by an older release's prepare) and has "
+                        f"now been bundled, so it will install below.", "success")
+                    _reconciled = True
+            if _reconciled:
+                try:
+                    with open(_man_path, 'w') as _mf:
+                        _json.dump(_manifest, _mf, indent=2)
+                except Exception as _mw:
+                    log(f"  (manifest rewrite after reconciliation skipped: {_mw})",
+                        "warning")
+        except Exception as _rec:
+            log(f"  New-module reconciliation skipped "
+                f"({type(_rec).__name__}: {_rec})", "warning")
+
     # STRUCTURAL: pre-load every bundled image into the local docker
     # store BEFORE the per-module loop. Eliminates the "did this
     # module's upgrade function remember to load its sidecar tars?"
