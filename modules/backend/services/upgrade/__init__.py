@@ -692,8 +692,17 @@ def self_heal_backend_swap(logger: Callable = None, parent_run_id: str = None) -
         log(f"  (could not write self-heal marker: {e})", "warning")
 
     def _dual_log(m, l="info"):
+        # log() is whatever the caller passed as `logger`. For a cold-boot
+        # self-heal, that's a plain console printer with no run attached —
+        # add_log_to_run() below is the ONLY thing that gets the message
+        # into the (freshly created) tracked run. But when parent_run_id is
+        # used, `logger` IS the finalizer's own log(), which already writes
+        # to this exact run_id — calling add_log_to_run() again here would
+        # double every line in that run's log (seen as literal duplicate
+        # consecutive lines in production).
         log(m, l)
-        add_log_to_run(run_id, m, l)
+        if not parent_run_id:
+            add_log_to_run(run_id, m, l)
 
     if content_drift:
         _dual_log(f"Backend content drift detected at boot: running {target_image} is "

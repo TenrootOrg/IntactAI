@@ -53,13 +53,24 @@ document.addEventListener('alpine:init', () => {
         async viewLogs(runId) {
             try {
                 const response = await fetch(`/api/dashboard/automation/${runId}`);
-                this.selectedRun = await response.json();
+                const data = await response.json();
+                // A 404/error response is still valid JSON (e.g. {"error": "..."})
+                // with none of a real run's fields — without this check it silently
+                // became the modal's default "UNKNOWN | UNKNOWN | 0% Complete" /
+                // "No logs available yet." with no indication anything went wrong.
+                this.selectedRun = response.ok ? data : {
+                    id: runId, name: 'Workflow Logs', logs: [],
+                    fetchError: data?.error || `HTTP ${response.status}`,
+                };
                 this.modalOpen = true;
                 this.currentRunId = runId;
-                this.startAutoRefresh(runId);
+                if (response.ok) this.startAutoRefresh(runId);
                 this.scrollToBottom();
             } catch (e) {
                 console.error('Failed to load logs:', e);
+                this.selectedRun = { id: runId, name: 'Workflow Logs', logs: [], fetchError: e.message };
+                this.modalOpen = true;
+                this.currentRunId = runId;
             }
         },
 
@@ -75,6 +86,15 @@ document.addEventListener('alpine:init', () => {
                 }
                 try {
                     const response = await fetch(`/api/dashboard/automation/${runId}`);
+                    if (!response.ok) {
+                        const data = await response.json().catch(() => null);
+                        this.selectedRun = {
+                            ...this.selectedRun,
+                            fetchError: data?.error || `HTTP ${response.status}`,
+                        };
+                        this.stopAutoRefresh();
+                        return;
+                    }
                     const newData = await response.json();
 
                     // Only update if logs changed
@@ -87,6 +107,8 @@ document.addEventListener('alpine:init', () => {
                     }
                 } catch (e) {
                     console.error('Failed to refresh logs:', e);
+                    this.selectedRun = { ...this.selectedRun, fetchError: e.message };
+                    this.stopAutoRefresh();
                 }
             }, 1000);
         },

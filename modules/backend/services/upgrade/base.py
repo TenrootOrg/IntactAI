@@ -27,14 +27,22 @@ def run_command(cmd: str, cwd: str = None, timeout: int = 300, logger: Callable 
     For docker compose commands, cwd should be the WORKDIR (container) path.
     The --project-directory flag with HOST_PATH is added automatically for compose commands.
 
-    When `run_id` is supplied, the subprocess is launched with Popen and
-    polled against the workflow's cancel event. If the operator clicks
-    Stop, the subprocess is SIGTERM'd (then SIGKILL'd) within ~1 second
-    and the call returns with success=False, error='cancelled'. Without
-    this, a long-running `docker pull` / `docker save` / `tar` would
-    block the workflow thread for minutes and ignore the cancel — which
-    is what made the Stop button feel broken on prepare_package and
-    download-tools.
+    The subprocess is always launched with Popen and polled by hand (never
+    subprocess.run(..., timeout=N)): that stdlib helper's own post-timeout
+    cleanup does an UNBOUNDED communicate() to drain remaining output, and
+    a command that forks a long-lived helper (docker build/buildx sessions
+    are the observed case) can keep the captured stdout/stderr pipes open
+    via that grandchild even after the immediate child is killed — so the
+    "bounded" timeout doesn't actually bound anything; the call can hang for
+    hours past it (`docker compose build backend` did exactly this, wedging
+    an entire Phase-2 finalizer thread). Polling by hand and never calling
+    communicate() after a timeout/cancel avoids that.
+
+    When `run_id` is supplied, the same loop also checks the workflow's
+    cancel event, so Stop is honoured DURING long-running subprocesses
+    (docker pull, docker save, tar), not just between them — SIGTERM'd
+    (then SIGKILL'd) within ~1 second, returning success=False,
+    error='cancelled'.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     try:
@@ -47,69 +55,56 @@ def run_command(cmd: str, cwd: str = None, timeout: int = 300, logger: Callable 
 
         log(f"  Running: {cmd[:80]}...", "info")
 
-        # Cancellation-aware path: Popen + poll the cancel event every
-        # second so Stop is honoured DURING long-running subprocesses
-        # (docker pull, docker save, tar), not just between them.
-        if run_id:
-            try:
-                from services.workflow_service import (
-                    get_cancel_event, register_cleanup, terminate_subprocess,
-                )
-                cancel_event = get_cancel_event(run_id)
-            except Exception:
-                cancel_event = None
-            # Fall through to the blocking path if no event is registered
-            # for this run_id — keeps behaviour identical for callers that
-            # opt-in but happen to not have a registered run.
-            if cancel_event is not None:
-                process = subprocess.Popen(
-                    cmd, shell=True, cwd=cwd,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                )
-                # Register cleanup so request_stop() can SIGTERM us instantly
-                # even before our next poll tick — terminate_subprocess is
-                # idempotent + safe-on-already-exited.
-                try:
-                    register_cleanup(run_id, lambda p=process: terminate_subprocess(p))
-                except Exception:
-                    pass
+        try:
+            from services.workflow_service import (
+                get_cancel_event, register_cleanup, terminate_subprocess,
+            )
+            cancel_event = get_cancel_event(run_id) if run_id else None
+        except Exception:
+            cancel_event = None
+            register_cleanup = None
+            terminate_subprocess = None
 
-                # Poll the event every second; check process every iter too.
-                # `timeout` still acts as a hard ceiling.
-                import time as _time
-                start = _time.time()
-                while process.poll() is None:
-                    if cancel_event.is_set():
-                        log("  Command cancelled by user", "warning")
-                        terminate_subprocess(process)
-                        return {"success": False, "error": "cancelled", "cancelled": True}
-                    if _time.time() - start > timeout:
-                        log(f"  Command timed out after {timeout}s", "error")
-                        terminate_subprocess(process)
-                        return {"success": False, "error": f"Command timed out after {timeout}s"}
-                    _time.sleep(1.0)
-                stdout, stderr = process.communicate()
-                if process.returncode != 0:
-                    log(f"  Command failed: {(stderr or '')[:200]}", "warning")
-                    return {"success": False, "error": stderr or "", "stdout": stdout or ""}
-                return {"success": True, "stdout": stdout or "", "stderr": stderr or ""}
-
-        # Legacy blocking path (callers that don't care about cancel).
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout
+        # start_new_session=True makes this its own process group leader, so
+        # terminate_subprocess() (below and on cancel) can kill the WHOLE
+        # subtree instead of just this one process — see its docstring.
+        process = subprocess.Popen(
+            cmd, shell=True, cwd=cwd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,
         )
-        if result.returncode != 0:
-            log(f"  Command failed: {result.stderr[:200]}", "warning")
-            return {"success": False, "error": result.stderr, "stdout": result.stdout}
-        return {"success": True, "stdout": result.stdout, "stderr": result.stderr}
-    except subprocess.TimeoutExpired:
-        log(f"  Command timed out after {timeout}s", "error")
-        return {"success": False, "error": f"Command timed out after {timeout}s"}
+
+        def _kill(proc):
+            if terminate_subprocess is not None:
+                terminate_subprocess(proc)
+            else:
+                proc.kill()
+
+        # Register cleanup so request_stop() can SIGTERM us instantly even
+        # before our next poll tick — terminate_subprocess is idempotent +
+        # safe-on-already-exited.
+        if run_id and cancel_event is not None and register_cleanup is not None:
+            try:
+                register_cleanup(run_id, lambda p=process: _kill(p))
+            except Exception:
+                pass
+
+        start = time.time()
+        while process.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                log("  Command cancelled by user", "warning")
+                _kill(process)
+                return {"success": False, "error": "cancelled", "cancelled": True}
+            if time.time() - start > timeout:
+                log(f"  Command timed out after {timeout}s", "error")
+                _kill(process)
+                return {"success": False, "error": f"Command timed out after {timeout}s"}
+            time.sleep(1.0)
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            log(f"  Command failed: {(stderr or '')[:200]}", "warning")
+            return {"success": False, "error": stderr or "", "stdout": stdout or ""}
+        return {"success": True, "stdout": stdout or "", "stderr": stderr or ""}
     except Exception as e:
         log(f"  Command error: {str(e)}", "error")
         return {"success": False, "error": str(e)}

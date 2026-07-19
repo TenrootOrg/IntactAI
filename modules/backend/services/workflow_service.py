@@ -3,6 +3,8 @@
 Workflow Service - Centralized workflow and job tracking with SQLite + Elasticsearch
 """
 
+import os
+import signal
 import subprocess
 import time
 import threading
@@ -232,7 +234,17 @@ def get_cancel_event(run_id):
 
 
 def terminate_subprocess(process, timeout: float = 5.0) -> None:
-    """SIGTERM a subprocess.Popen, wait briefly, then SIGKILL if still alive.
+    """SIGTERM the process's whole process group, wait briefly, then SIGKILL.
+
+    Kills the ENTIRE process group, not just the immediate child. A command
+    that forks a long-lived helper (docker build/buildx sessions are the
+    observed case — `docker compose build backend` outliving its stated
+    timeout by hours, freezing the calling thread forever) can otherwise
+    survive: the immediate child dies, but the surviving grandchild keeps
+    the captured stdout/stderr pipes open, so any subsequent read of them
+    (communicate()) blocks forever with no further timeout protection.
+    Requires the Popen to have been started with start_new_session=True;
+    falls back to killing just the process itself otherwise.
 
     Idempotent — safe to call from a cleanup callback even if the process
     has already exited (returns silently). Best-effort: never raises.
@@ -241,14 +253,27 @@ def terminate_subprocess(process, timeout: float = 5.0) -> None:
     """
     if not process or process.poll() is not None:
         return
+
+    def _signal(sig):
+        try:
+            os.killpg(os.getpgid(process.pid), sig)
+        except Exception:
+            try:
+                if sig == signal.SIGTERM:
+                    process.terminate()
+                else:
+                    process.kill()
+            except Exception:
+                pass
+
     try:
-        process.terminate()
+        _signal(signal.SIGTERM)
         try:
             process.wait(timeout=timeout)
             return
         except subprocess.TimeoutExpired:
             pass
-        process.kill()
+        _signal(signal.SIGKILL)
         try:
             process.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
