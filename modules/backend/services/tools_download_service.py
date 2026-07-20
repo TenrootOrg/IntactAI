@@ -28,7 +28,10 @@ def load_tools_config() -> Optional[Dict]:
     """Load tools inventory configuration from YAML file."""
     paths_to_try = [
         '/app/data/tools_inventory.yaml',
-        os.path.join(os.path.dirname(__file__), '..', 'data', 'tools_inventory.yaml')
+        os.path.join(os.path.dirname(__file__), '..', 'data', 'tools_inventory.yaml'),
+        # INTACT_PATH-relative: the CI packager mounts the repo checkout there
+        # (data/ isn't COPYed into the backend image, so /app/data is absent).
+        os.path.join(os.environ.get('INTACT_PATH', '/app/workdir'), 'data', 'tools_inventory.yaml'),
     ]
     for config_path in paths_to_try:
         try:

@@ -1081,8 +1081,13 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 ]
 
                 # Module build context dirs (mirror the COPY paths in
-                # modules/velociraptor/Dockerfile).
-                velo_dir = "/app/workdir/modules/velociraptor"
+                # modules/velociraptor/Dockerfile). Derive from WORKDIR (not a
+                # literal /app/workdir) so the host-path translation below
+                # (velo_dir.replace(WORKDIR, HOST_PATH)) works when WORKDIR is
+                # overridden via INTACT_PATH — e.g. the CI packager, where the
+                # repo is the mounted checkout, not the image's /app/workdir.
+                # Identical to the old literal on a normal box (WORKDIR=/app/workdir).
+                velo_dir = os.path.join(WORKDIR, "modules", "velociraptor")
 
                 # Refresh the build files (Dockerfile / entrypoint.sh /
                 # bundled_artifacts) from the TARGET release's source before
