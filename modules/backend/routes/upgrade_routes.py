@@ -1024,9 +1024,19 @@ def prepare_upgrade_package():
                             logger(f"Release {target} has a prebuilt CI package — "
                                    f"downloading + reassembling it (no on-box build).",
                                    "info")
+                            # Move the progress bar during the download —
+                            # throttled to whole-percent changes so we don't
+                            # hammer the run store on every chunk.
+                            _dl_pct = [5]
+                            def _dl_progress(frac):
+                                p = min(95, 5 + int(frac * 90))
+                                if p > _dl_pct[0]:
+                                    _dl_pct[0] = p
+                                    update_run_status(run_id, "running", progress=p)
                             pkg_path = download_release_package(
                                 target, dest_dir="/data/upgrade_packages",
-                                run_id=run_id, logger=logger)
+                                run_id=run_id, logger=logger,
+                                progress_cb=_dl_progress)
                             if pkg_path:
                                 _save_package_info({
                                     'run_id': run_id,

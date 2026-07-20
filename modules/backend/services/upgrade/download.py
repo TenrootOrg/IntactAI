@@ -113,7 +113,7 @@ def find_release_package(tag: str, logger: Callable = None) -> Optional[dict]:
 
 
 def _download_asset(url: str, dest: str, size: int, run_id: Optional[str],
-                    log: Callable) -> None:
+                    log: Callable, on_progress: Optional[Callable] = None) -> None:
     """Stream one release asset to ``dest`` with auth, resuming a partial file
     via ``Range`` and retrying transient failures. ``size`` (0 = unknown, e.g.
     the tiny .sha256) enables an exact-length check."""
@@ -146,12 +146,28 @@ def _download_asset(url: str, dest: str, size: int, run_id: Optional[str],
                                  allow_redirects=True,
                                  timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
             r.raise_for_status()
+            downloaded = have
+            # Log a progress line every ~5% of the part (min 50 MB) so the
+            # operator can see it moving — a 1.9 GB part is otherwise silent
+            # for minutes and looks stuck.
+            report_every = max((size // 20) if size else 0, 50 * 1024 * 1024)
+            next_report = downloaded + report_every
             with open(dest, mode) as f:
                 for chunk in r.iter_content(_STREAM_CHUNK):
                     if cancel is not None and cancel.is_set():
                         raise PackageDownloadCancelled()
                     if chunk:
                         f.write(chunk)
+                        downloaded += len(chunk)
+                        if on_progress is not None:
+                            on_progress(downloaded)
+                        if downloaded >= next_report:
+                            if size:
+                                log(f"      … {downloaded // 1048576}/{size // 1048576} MB "
+                                    f"({downloaded * 100 // size}%)", "info")
+                            else:
+                                log(f"      … {downloaded // 1048576} MB", "info")
+                            next_report = downloaded + report_every
             got = os.path.getsize(dest)
             if size and got != size:
                 raise IOError(f"length mismatch: got {got}, expected {size}")
@@ -190,7 +206,8 @@ def _verify_sha256(path: str, expected: str, run_id: Optional[str],
 
 
 def download_release_package(tag: str, dest_dir: str, run_id: str = None,
-                             logger: Callable = None) -> Optional[str]:
+                             logger: Callable = None,
+                             progress_cb: Optional[Callable] = None) -> Optional[str]:
     """Download + reassemble + verify the CI package for release ``tag``.
 
     Returns the path to a single ``.tar.gz`` under ``dest_dir`` (ready for
@@ -233,11 +250,19 @@ def download_release_package(tag: str, dest_dir: str, run_id: str = None,
             f"parts, {total / 1024 / 1024 / 1024:.1f} GB (built in CI from the "
             f"target release's own code — no on-box build needed)…", "info")
         part_paths: List[str] = []
+        done_bytes = 0  # bytes fully downloaded in PRIOR parts
         for i, (name, url, size) in enumerate(parts):
             pth = os.path.join(dest_dir, name)
             log(f"  part {i + 1}/{len(parts)}: {name} "
                 f"({size / 1024 / 1024:.0f} MB)", "info")
-            _download_asset(url, pth, size, run_id, log)
+            # Feed an overall fraction (download phase = 0..0.9 of the bar) so
+            # the workflow progress bar advances smoothly, not just per-part.
+            cb = None
+            if progress_cb and total:
+                cb = lambda d, _base=done_bytes: progress_cb(
+                    min(0.9, (_base + d) / total))
+            _download_asset(url, pth, size, run_id, log, on_progress=cb)
+            done_bytes += size
             part_paths.append(pth)
         # Concatenate, deleting each part as soon as it's appended so peak
         # disk is ~ the assembled file + one part, not 2× the package.
