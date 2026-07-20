@@ -39,19 +39,10 @@ def release_module_set(tag: str) -> dict:
     from services.upgrade import UPGRADE_ORDER
     cfg_path = os.path.join(os.environ.get("INTACT_PATH", "/app/workdir"), "config.yaml")
     versions = (yaml.safe_load(open(cfg_path)) or {}).get("versions") or {}
-
-    # TEMPORARY — velociraptor CI packaging is being debugged. Build ONLY the
-    # module(s) in _ONLY_MODULES so each run is fast and isolates the failure,
-    # instead of saving the whole ~5.5 GB fleet every iteration. To restore the
-    # full package, set `_ONLY_MODULES = None` (or delete it + the guard below).
-    _ONLY_MODULES = {"velociraptor"}
-
     modules = {}
     for m in UPGRADE_ORDER:
         if m == "cve_scan":
             continue  # rolling: fetched at apply time, not baked into a release
-        if _ONLY_MODULES is not None and m not in _ONLY_MODULES:
-            continue  # TEMPORARY velo-only restriction — see _ONLY_MODULES above
         if m == "intact":
             modules["intact"] = tag  # -> builds intact-backend:<tag>
         elif m in versions:
