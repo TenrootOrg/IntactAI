@@ -1,0 +1,99 @@
+# Build the version-pinned upgrade package for a release, IN CI.
+#
+# Why: the package is built by the TARGET release's own code (this checkout),
+# so it always knows every module the release ships — the real fix for the
+# factor-5 / "Unknown module" class where an older on-box backend can't package
+# a module a newer release added or renamed. The finished tarball is attached
+# to the GitHub Release as an asset; customers download + apply it (offline/
+# import today; the online path switches to downloading it in a later phase),
+# instead of building it on their own box.
+#
+# The build runs the exact same prepare_upgrade_package() the platform uses,
+# headless, inside a container from the release's freshly-built backend image
+# (which has the code + deps), with the docker socket, a freshly-cloned
+# /opt/sigma-rules (for the aws_sigma rule pack), and an output dir mounted.
+# See scripts/ci/build_release_package.py.
+
+name: Build release upgrade package
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build (e.g. intact-20260720)"
+        required: true
+
+permissions:
+  contents: write            # upload the package as a Release asset
+
+jobs:
+  build-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90       # full package = backend build + all sidecar image saves
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          case "$TAG" in
+            intact-*) ;;
+            *) echo "::error::Not an intact-* release tag ($TAG) — nothing to build"; exit 1 ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building release package for $TAG"
+
+      - name: Checkout the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      # The full package saves several GB of sidecar images (timesketch/
+      # opensearch/plaso/...) as tars; a stock runner's ~14GB free disk is
+      # tight, so reclaim the big preinstalled toolchains up front.
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          docker image prune -af || true
+          df -h /
+
+      - name: Seed SigmaHQ rules (aws_sigma rule pack source)
+        run: |
+          sudo mkdir -p /opt/sigma-rules
+          sudo chown "$(id -un)" /opt/sigma-rules
+          git clone --depth 1 https://github.com/SigmaHQ/sigma /opt/sigma-rules
+          echo "AWS sigma rules: $(find /opt/sigma-rules/rules/cloud/aws -name '*.yml' | wc -l)"
+
+      - name: Build the release backend image (packager runtime)
+        run: docker build -f modules/backend/Dockerfile -t intact-backend:ci-packager .
+
+      - name: Build the release package
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/ci-output"
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -e INTACT_PATH="$GITHUB_WORKSPACE" \
+            -e INTACT_HOST_PATH="$GITHUB_WORKSPACE" \
+            -v /opt/sigma-rules:/opt/sigma-rules:ro \
+            -v "$GITHUB_WORKSPACE/ci-output:/output" \
+            intact-backend:ci-packager \
+            python3 "$GITHUB_WORKSPACE/scripts/ci/build_release_package.py" \
+              --tag "${{ steps.tag.outputs.tag }}" --out /output
+          echo "== built =="; ls -lh "$GITHUB_WORKSPACE/ci-output"
+
+      - name: Attach package to the GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ steps.tag.outputs.tag }}" "$GITHUB_WORKSPACE"/ci-output/*.tar.gz* --clobber
+
+      - name: Upload package as a workflow artifact (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-package-${{ steps.tag.outputs.tag }}
+          path: ci-output/*.tar.gz*
+          retention-days: 7

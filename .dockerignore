@@ -1,0 +1,25 @@
+# Build-context hygiene for the backend image (built with the repo tree as the
+# docker context). The backend Dockerfile only COPYs `config.yaml` and
+# `modules/backend/{requirements*,install_deps.py,config.py,app.py,services,
+# routes,scripts,config}` — nothing below is ever needed in the context, so
+# keeping it out shrinks the context and (for .env) keeps secrets out of it.
+# NOTE: must never exclude config.yaml or anything under modules/backend/.
+
+.git
+.github
+**/__pycache__
+**/*.py[cod]
+**/.env
+**/.env.*
+*.log
+data/
+backups/
+docs/
+node_modules/
+.venv/
+venv/
+client_installers/
+modules/nginx/html/downloads/
+modules/velociraptor/bundled_artifacts/
+*.tar
+*.tar.gz
