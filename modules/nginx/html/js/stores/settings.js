@@ -706,6 +706,7 @@ document.addEventListener('alpine:init', () => {
         optedInReinstall: [],       // ONLINE mode: no-change module IDs ticked to FORCE a reinstall (bug recovery)
         prepareModules: null,       // PREPARE mode: flat list from /api/upgrade/prepare-list
         prepareSelected: [],        // PREPARE mode: ticked modules (operator unticks to exclude)
+        preparePrebuilt: null,      // PREPARE mode: {size_mb} when the release ships a CI package (download whole, no selection)
         fetchingRefs: false,
         computingPlan: false,
         showingPrepareModules: false,
@@ -932,9 +933,14 @@ document.addEventListener('alpine:init', () => {
                 });
                 const d = await r.json();
                 if (d && d.success) {
+                    // If this release ships a prebuilt CI package, Prepare will
+                    // DOWNLOAD it whole — hide the checkbox table and show the
+                    // "will download" panel instead (selection is ignored).
+                    this.preparePrebuilt = d.ci_package || null;
                     this.prepareModules = d.modules || [];
                     // Default: every module ticked. Operator unchecks to
-                    // exclude from the tarball.
+                    // exclude from the tarball. (Only used for the on-box
+                    // build path — a release with a CI package ignores this.)
                     this.prepareSelected = this.prepareModules.map(r => r.module);
                 } else {
                     this.showTopToast('Module list failed: ' + (d.error || 'unknown'), 'error');
@@ -1019,6 +1025,7 @@ document.addEventListener('alpine:init', () => {
             this.optedInReinstall = [];
             this.prepareModules = null;
             this.prepareSelected = [];
+            this.preparePrebuilt = null;
             this.githubQuota = null;
             this.currentIntactVersion = '';
             // Fire-and-forget — independent of the refs fetch. Used by

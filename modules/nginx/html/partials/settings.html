@@ -1002,7 +1002,17 @@
                                  (you'd have a bunch of module images and no Intact to drive
                                  them). Renders with a locked-checked indicator instead of a
                                  toggleable checkbox. -->
-                            <div x-show="$store.settings.prepareModalMode === 'prepare' && $store.settings.prepareModules" class="bg-gray-900 rounded border border-gray-700 p-3">
+                            <!-- Step 3 (PREPARE mode, RELEASE with a CI package): no selection —
+                                 the whole prebuilt package is downloaded + reassembled. -->
+                            <div x-show="$store.settings.prepareModalMode === 'prepare' && $store.settings.preparePrebuilt" class="bg-gray-900 rounded border border-blue-700/50 p-3">
+                                <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">3. Prebuilt package</label>
+                                <div class="text-xs text-gray-300 bg-blue-900/30 border border-blue-700/40 rounded p-2">
+                                    This release ships a <span class="text-blue-400">prebuilt package</span> (<span class="font-mono" x-text="($store.settings.preparePrebuilt?.size_mb || 0) + ' MB'"></span>). It will be <span class="text-blue-400">downloaded and reassembled</span> as one <span class="font-mono">.tar.gz</span> — no on-box build, and every module is included (pick which to install when you import it). No module selection needed here.
+                                </div>
+                            </div>
+
+                            <!-- Step 3 (PREPARE mode, no CI package — development / pre-CI): on-box build with module selection. -->
+                            <div x-show="$store.settings.prepareModalMode === 'prepare' && $store.settings.prepareModules && !$store.settings.preparePrebuilt" class="bg-gray-900 rounded border border-gray-700 p-3">
                                 <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">3. Tick modules to include</label>
                                 <div class="text-gray-400 text-xs mb-2">All pre-checked. Untick anything you don't want in the tarball. <span class="text-blue-400">Intact platform is always included.</span></div>
                                 <template x-for="row in $store.settings.prepareModules" :key="row.module">

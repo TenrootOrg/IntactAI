@@ -280,7 +280,22 @@ def list_prepare_modules():
             rows = list_upstream_modules(target, user_action='prepare-list')
         except ResolverError as e:
             return jsonify({"success": False, "error": str(e)}), 502
-        return jsonify({"success": True, "target": target, "modules": rows})
+        # Does this release already ship a CI-built package? If so, Prepare
+        # DOWNLOADS it whole (module selection is ignored), so the UI can hide
+        # the checkbox table and show a "will download" panel instead. Best
+        # effort — on any error we just omit the flag and the build path shows.
+        ci_package = None
+        try:
+            from services.upgrade.download import find_release_package
+            info = find_release_package(target)
+            if info:
+                total = (sum(p[2] for p in info['parts'])
+                         or (info['whole'][2] if info['whole'] else 0))
+                ci_package = {"size_mb": round(total / 1024 / 1024)}
+        except Exception:
+            ci_package = None
+        return jsonify({"success": True, "target": target, "modules": rows,
+                        "ci_package": ci_package})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -989,6 +1004,47 @@ def prepare_upgrade_package():
                         # Calculate progress (5% start, 95% for work, 100% at end)
                         progress = 5 + int((completed_steps[0] / total_steps) * 90)
                         update_run_status(run_id, "running", progress=min(progress, 95))
+
+                # If the operator picked a RELEASE that already ships a CI-built
+                # package, DOWNLOAD + reassemble it instead of rebuilding on-box.
+                # It's the verified artifact built by the target release's OWN
+                # code (no module-blind / factor-5 risk), it saves the whole
+                # on-box build, and — for air-gap — it's the same tarball the
+                # operator carries in and imports. Whole package (module subset
+                # is ignored for a CI release; selection happens at apply/import).
+                # Falls back to the on-box build below for the `development`
+                # branch / pre-CI releases that have no CI asset, or if the
+                # download fails.
+                if target:
+                    try:
+                        from services.upgrade.download import (
+                            find_release_package, download_release_package,
+                            PackageDownloadCancelled)
+                        if find_release_package(target, logger=logger):
+                            logger(f"Release {target} has a prebuilt CI package — "
+                                   f"downloading + reassembling it (no on-box build).",
+                                   "info")
+                            pkg_path = download_release_package(
+                                target, dest_dir="/data/upgrade_packages",
+                                run_id=run_id, logger=logger)
+                            if pkg_path:
+                                _save_package_info({
+                                    'run_id': run_id,
+                                    'path': pkg_path,
+                                    'name': os.path.basename(pkg_path),
+                                    'size': os.path.getsize(pkg_path),
+                                    'created_at': time.time(),
+                                })
+                                add_log_to_run(run_id, f"Package ready for download: {os.path.basename(pkg_path)}", "success")
+                                add_log_to_run(run_id, "Note: Preparing a new package will replace this one", "info")
+                                update_run_status(run_id, "completed", progress=100)
+                                return
+                    except PackageDownloadCancelled:
+                        return  # 'cancelled' state already set by request_stop()
+                    except Exception as _de:
+                        add_log_to_run(run_id, f"CI package download failed "
+                                       f"({type(_de).__name__}: {_de}); building on-box "
+                                       f"instead.", "warning")
 
                 result = do_prepare(modules, run_id, logger)
 
