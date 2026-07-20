@@ -246,28 +246,32 @@
                                                             <template x-if="['upgrade','downgrade','no-change','unknown'].includes($store.settings.applyModuleAction(name, target))">
                                                                 <div class="flex items-center text-xs px-2 py-1.5 rounded border-l-2 mb-1"
                                                                      :class="{
-                                                                       'border-gray-600 text-gray-500 bg-gray-800/30': $store.settings.applyModuleAction(name, target) === 'no-change',
-                                                                       'border-blue-500 text-gray-200 bg-gray-800':    $store.settings.applyModuleAction(name, target) === 'upgrade',
+                                                                       'border-gray-600 text-gray-500 bg-gray-800/30': $store.settings.applyModuleAction(name, target) === 'no-change' && !$store.settings.applySelectedModules.includes(name),
+                                                                       'border-blue-500 text-gray-200 bg-gray-800':    $store.settings.applyModuleAction(name, target) === 'upgrade' || ($store.settings.applyModuleAction(name, target) === 'no-change' && $store.settings.applySelectedModules.includes(name)),
                                                                        'border-orange-500 text-gray-200 bg-gray-800':  $store.settings.applyModuleAction(name, target) === 'downgrade',
                                                                        'border-gray-700 text-gray-300 bg-gray-800':    $store.settings.applyModuleAction(name, target) === 'unknown',
                                                                      }">
+                                                                    <!-- no-change rows: optional reinstall; others have no toggle (spacer keeps columns aligned) -->
+                                                                    <template x-if="$store.settings.applyModuleAction(name, target) === 'no-change'">
+                                                                        <input type="checkbox"
+                                                                               :checked="$store.settings.applySelectedModules.includes(name)"
+                                                                               @change="$store.settings.toggleApplyModule(name)"
+                                                                               title="Reinstall this module even though it is already at this version"
+                                                                               class="mr-3 w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500 cursor-pointer">
+                                                                    </template>
+                                                                    <template x-if="$store.settings.applyModuleAction(name, target) !== 'no-change'"><span class="mr-3 w-4 inline-block"></span></template>
                                                                     <span class="flex-1 font-mono" x-text="name"></span>
                                                                     <span class="font-mono" x-text="$store.settings.applyCurrentVersions[name] || '?'"></span>
                                                                     <span class="mx-2 text-gray-500">→</span>
                                                                     <span class="font-mono" x-text="target"></span>
                                                                     <span class="ml-3 text-xs uppercase"
                                                                           :class="{
-                                                                            'text-gray-500':   $store.settings.applyModuleAction(name, target) === 'no-change',
-                                                                            'text-blue-400':   $store.settings.applyModuleAction(name, target) === 'upgrade',
+                                                                            'text-gray-500':   $store.settings.applyModuleAction(name, target) === 'no-change' && !$store.settings.applySelectedModules.includes(name),
+                                                                            'text-blue-400':   $store.settings.applyModuleAction(name, target) === 'upgrade' || ($store.settings.applyModuleAction(name, target) === 'no-change' && $store.settings.applySelectedModules.includes(name)),
                                                                             'text-orange-400': $store.settings.applyModuleAction(name, target) === 'downgrade',
                                                                             'text-gray-400':   $store.settings.applyModuleAction(name, target) === 'unknown',
                                                                           }"
-                                                                          x-text="{
-                                                                            'no-change': '(no change)',
-                                                                            'upgrade':   'upgrade',
-                                                                            'downgrade': 'downgrade',
-                                                                            'unknown':   '?',
-                                                                          }[$store.settings.applyModuleAction(name, target)] || ''"></span>
+                                                                          x-text="$store.settings.applyModuleAction(name, target) === 'no-change' ? ($store.settings.applySelectedModules.includes(name) ? 'reinstall' : '(no change)') : ({'upgrade':'upgrade','downgrade':'downgrade','unknown':'?'}[$store.settings.applyModuleAction(name, target)] || '')"></span>
                                                                 </div>
                                                             </template>
                                                         </template>
@@ -1039,17 +1043,26 @@
                                 <!-- Forced rows (no checkbox) -->
                                 <template x-if="$store.settings.upgradePlan && $store.settings.upgradePlan.forced.length">
                                     <div class="mb-3">
-                                        <div class="text-gray-400 text-xs mb-1">Installed modules (will be upgraded automatically):</div>
+                                        <div class="text-gray-400 text-xs mb-1">Installed modules (upgrades applied automatically; tick a “no change” one to reinstall):</div>
                                         <template x-for="row in $store.settings.upgradePlan.forced" :key="row.module">
-                                            <div class="flex items-center text-xs px-2 py-1.5 rounded border-l-2"
-                                                 :class="row.action === 'noop' ? 'border-gray-600 text-gray-500 bg-gray-800/30' : 'border-blue-500 text-gray-200 bg-gray-800'">
+                                            <div class="flex items-center text-xs px-2 py-1.5 rounded border-l-2 mb-1"
+                                                 :class="row.action !== 'noop' || $store.settings.optedInReinstall.includes(row.module) ? 'border-blue-500 text-gray-200 bg-gray-800' : 'border-gray-600 text-gray-500 bg-gray-800/30'">
+                                                <!-- no-change rows get a reinstall opt-in; upgrades are forced (spacer keeps columns aligned) -->
+                                                <template x-if="row.action === 'noop'">
+                                                    <input type="checkbox"
+                                                           :checked="$store.settings.optedInReinstall.includes(row.module)"
+                                                           @change="$store.settings.toggleReinstallModule(row.module)"
+                                                           title="Reinstall this module even though it is already at this version"
+                                                           class="mr-3 w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500 cursor-pointer">
+                                                </template>
+                                                <template x-if="row.action !== 'noop'"><span class="mr-3 w-4 inline-block"></span></template>
                                                 <span class="flex-1 font-mono" x-text="row.module"></span>
                                                 <span class="font-mono" x-text="row.current"></span>
                                                 <span class="mx-2 text-gray-500">→</span>
                                                 <span class="font-mono" x-text="row.target"></span>
                                                 <span class="ml-3 text-xs uppercase"
-                                                      :class="row.action === 'noop' ? 'text-gray-500' : 'text-blue-400'"
-                                                      x-text="row.action === 'noop' ? '(no change)' : 'upgrade'"></span>
+                                                      :class="row.action !== 'noop' || $store.settings.optedInReinstall.includes(row.module) ? 'text-blue-400' : 'text-gray-500'"
+                                                      x-text="row.action !== 'noop' ? 'upgrade' : ($store.settings.optedInReinstall.includes(row.module) ? 'reinstall' : '(no change)')"></span>
                                             </div>
                                         </template>
                                     </div>

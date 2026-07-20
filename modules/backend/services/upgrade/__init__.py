@@ -2027,15 +2027,25 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
             elif not version:
                 continue
 
-            # A2: skip a module that needs nothing done — already installed and
-            # neither its primary version nor any sidecar pin changed. intact is
-            # handled above and always refreshes; absent modules still install
-            # per the operator's package selection (see _upgrade_noop_module).
+            # A2: a module that needs nothing done — already installed and
+            # neither its primary version nor any sidecar pin changed (intact is
+            # handled above and always refreshes).
+            #
+            # Only AUTO-skip when the caller gave NO explicit module selection
+            # (automation / legacy API). When there IS a selection (the operator
+            # picked in the online plan or the apply modal, or a track), an
+            # unchanged module only reaches here because the operator explicitly
+            # TICKED it to force a reinstall — unchanged modules are excluded
+            # from the selection by default — so honor that and re-apply it
+            # (recovery path for a corrupted/half-broken module at the same
+            # version).
             if _upgrade_noop_module(module_name):
-                log(f"  {module_name.upper()}: already at {version} — no version/sidecar change, skipping", "info")
-                results[module_name] = {"success": True, "skipped": True,
-                                        "reason": "already up to date (no change)"}
-                continue
+                if selected_set is None:
+                    log(f"  {module_name.upper()}: already at {version} — no version/sidecar change, skipping", "info")
+                    results[module_name] = {"success": True, "skipped": True,
+                                            "reason": "already up to date (no change)"}
+                    continue
+                log(f"  {module_name.upper()}: already at {version}, but you selected it — reinstalling", "info")
 
             # Install-or-upgrade detection: pick the install function
             # (when registered) if the module's primary container is

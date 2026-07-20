@@ -703,6 +703,7 @@ document.addEventListener('alpine:init', () => {
         selectedRef: '',            // the ref the operator picked in the dropdown
         upgradePlan: null,          // ONLINE mode: forced/optional table from /api/upgrade/plan
         optedInOptional: [],        // ONLINE mode: module IDs the operator ticked in the optional table
+        optedInReinstall: [],       // ONLINE mode: no-change module IDs ticked to FORCE a reinstall (bug recovery)
         prepareModules: null,       // PREPARE mode: flat list from /api/upgrade/prepare-list
         prepareSelected: [],        // PREPARE mode: ticked modules (operator unticks to exclude)
         fetchingRefs: false,
@@ -866,6 +867,7 @@ document.addEventListener('alpine:init', () => {
             this.computingPlan = true;
             this.upgradePlan = null;
             this.optedInOptional = [];
+            this.optedInReinstall = [];
             try {
                 const r = await this._fetchWithTimeout('/api/upgrade/plan', {
                     method: 'POST',
@@ -893,6 +895,19 @@ document.addEventListener('alpine:init', () => {
                 this.optedInOptional.splice(idx, 1);
             } else {
                 this.optedInOptional.push(moduleId);
+            }
+        },
+
+        // Toggle a no-change (noop) module's forced-reinstall opt-in. Unchecked
+        // by default (unchanged modules are skipped); ticking one re-applies it
+        // even though it's already at the target version — the recovery path
+        // for a module that broke at its current version.
+        toggleReinstallModule(moduleId) {
+            const idx = this.optedInReinstall.indexOf(moduleId);
+            if (idx >= 0) {
+                this.optedInReinstall.splice(idx, 1);
+            } else {
+                this.optedInReinstall.push(moduleId);
             }
         },
 
@@ -966,7 +981,8 @@ document.addEventListener('alpine:init', () => {
                 ? 'Online upgrade started — check Workflows for progress'
                 : 'Package preparation started — check Workflows for progress';
             const body = isOnline
-                ? {target: this.selectedRef, opted_in_optional: this.optedInOptional}
+                ? {target: this.selectedRef, opted_in_optional: this.optedInOptional,
+                   opted_in_reinstall: this.optedInReinstall}
                 : {target: this.selectedRef, selected_modules: this.prepareSelected};
             this.prepareLoading = true;
             try {
@@ -1000,6 +1016,7 @@ document.addEventListener('alpine:init', () => {
             this.selectedRef = '';
             this.upgradePlan = null;
             this.optedInOptional = [];
+            this.optedInReinstall = [];
             this.prepareModules = null;
             this.prepareSelected = [];
             this.githubQuota = null;

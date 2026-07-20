@@ -133,7 +133,8 @@ def _read_package_manifest(package_path):
     return {}
 
 
-def _modules_from_track(target: str, opted_in_optional: list):
+def _modules_from_track(target: str, opted_in_optional: list,
+                        opted_in_reinstall: list = None):
     """Translate the new ``{target, opted_in_optional}`` request shape
     into the ``{module: version}`` dict the existing prepare/online
     dispatchers consume.
@@ -165,15 +166,21 @@ def _modules_from_track(target: str, opted_in_optional: list):
     from services.upgrade.resolver import compute_plan, fetch_upstream_config
     from services.upgrade.base import set_module_block_in_config
 
+    from services.upgrade import LEGACY_MODULE_ALIASES
     plan = compute_plan(target, user_action='submit')
     modules: dict = {}
     warnings: list = []
+    # Unchanged ("noop") modules the operator explicitly ticked to force a
+    # reinstall (bug-recovery — reinstall a module that's already at the target
+    # version). Excluded by default; only these get re-added below.
+    reinstall_set = {LEGACY_MODULE_ALIASES.get(m, m) for m in (opted_in_reinstall or [])}
     for row in plan['forced']:
         if row['action'] == 'noop':
+            if row['module'] in reinstall_set:
+                modules[row['module']] = row['target']
             continue
         modules[row['module']] = row['target']
 
-    from services.upgrade import LEGACY_MODULE_ALIASES
     opted_in_set = {LEGACY_MODULE_ALIASES.get(m, m) for m in (opted_in_optional or [])}
     if opted_in_set:
         # Cache hit ~all the time — compute_plan above already cached
@@ -882,7 +889,8 @@ def prepare_upgrade_package():
             from services.upgrade.resolver import ResolverError
             try:
                 modules, track_warnings = _modules_from_track(
-                    target, data.get('opted_in_optional') or []
+                    target, data.get('opted_in_optional') or [],
+                    data.get('opted_in_reinstall') or [],
                 )
             except ResolverError as e:
                 return jsonify({"error": str(e)}), 502
@@ -1063,7 +1071,8 @@ def start_online_upgrade():
             from services.upgrade.resolver import ResolverError
             try:
                 modules, track_warnings = _modules_from_track(
-                    target, data.get('opted_in_optional') or []
+                    target, data.get('opted_in_optional') or [],
+                    data.get('opted_in_reinstall') or [],
                 )
             except ResolverError as e:
                 return jsonify({"error": str(e)}), 502
