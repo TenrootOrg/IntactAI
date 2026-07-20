@@ -1149,11 +1149,28 @@ document.addEventListener('alpine:init', () => {
                 path: null,                                // filled in after upload
             };
             this.applyManifest = peek.manifest || peek;
-            this.applySelectedModules = Object.keys(
-                (this.applyManifest && this.applyManifest.versions) || {}
-            );
             this.applyDbOverwrite = {};
+            this.applyCurrentVersions = {};
             this.showApplyPackageModal = true;
+            // Fetch what's installed NOW so the modal shows current → target
+            // and seeds the selection the SAME way the pending-package path
+            // does: installed-module upgrades are forced, new modules are
+            // opt-in, and no-change modules are skipped (grayed, tick to
+            // reinstall). Without this the peek path showed "?" for every
+            // module and pre-selected all of them.
+            try {
+                const cres = await fetch('/api/upgrade/current-versions', {method: 'GET'});
+                const cur = await cres.json();
+                if (cur && cur.success) this.applyCurrentVersions = cur.versions || {};
+            } catch (_) { /* best-effort — modal still works, shows "?" */ }
+            const versions = (this.applyManifest && this.applyManifest.versions) || {};
+            this.applySelectedModules = [];
+            for (const [name, target] of Object.entries(versions)) {
+                const action = this.applyModuleAction(name, target);
+                if (action === 'upgrade' || action === 'downgrade' || action === 'unknown') {
+                    this.applySelectedModules.push(name);
+                }
+            }
             this.loadingApplyInfo = false;
         },
 
