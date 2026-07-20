@@ -1557,13 +1557,28 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     # capture_output=True)` path handles the large
                     # output correctly; we accept that Stop can't kill
                     # this specific query (it returns in ~2 s anyway).
-                    snap = run_command(
-                        "docker exec intact_velociraptor /velociraptor/velociraptor "
-                        "--config /velociraptor/server.config.yaml query "
-                        "'SELECT name, raw FROM artifact_definitions() "
-                        "WHERE built_in = FALSE AND raw != \"\"'",
-                        logger=None, timeout=180,
-                    )
+                    # Pre-check whether velociraptor is actually running here.
+                    # `docker exec` into an absent container fails with "No such
+                    # container", and run_command logs that at WARNING — which
+                    # looks alarming on a build host (CI / backend-only deploy)
+                    # that legitimately has no velo. `docker ps` succeeds with
+                    # empty output when the container is absent, so probing this
+                    # way emits no scary warning; we then reuse the graceful
+                    # "not running" branch below.
+                    _velo_ps = run_command(
+                        "docker ps -q -f name=intact_velociraptor",
+                        logger=None, timeout=15)
+                    if not (_velo_ps.get('stdout') or '').strip():
+                        snap = {"success": False,
+                                "error": "No such container: intact_velociraptor"}
+                    else:
+                        snap = run_command(
+                            "docker exec intact_velociraptor /velociraptor/velociraptor "
+                            "--config /velociraptor/server.config.yaml query "
+                            "'SELECT name, raw FROM artifact_definitions() "
+                            "WHERE built_in = FALSE AND raw != \"\"'",
+                            logger=None, timeout=180,
+                        )
                     if snap.get('success'):
                         import json as _json
                         # Velociraptor's `query` doesn't emit a single
@@ -1636,12 +1651,16 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         # transients) still get WARNING.
                         snap_err = snap.get('error', '') or ''
                         if 'No such container' in snap_err:
-                            log("  Velociraptor not running on this host — "
-                                "skipping live artifact-registry snapshot. "
-                                "The direct downloads below cover the "
-                                "standard set (ArtifactExchange, DetectRaptor, "
-                                "Sigma, Triage, etc.); only operator-curated "
-                                "bespoke artifacts won't be included.", "info")
+                            log("  Velociraptor isn't running on this build host "
+                                "— skipping the live artifact-registry snapshot. "
+                                "This is NOT critical: the full curated artifact "
+                                "set is baked into the velociraptor image (loaded "
+                                "on boot via --definitions), and the direct "
+                                "downloads below cover the standard sources "
+                                "(ArtifactExchange, DetectRaptor, Sigma, Triage). "
+                                "The snapshot would only add bespoke artifacts an "
+                                "operator hand-imported on a LIVE server — none "
+                                "exist on a build host.", "info")
                         else:
                             log(f"  Registry snapshot SQL failed (continuing — direct "
                                 f"downloads below will cover the standard sources): "
