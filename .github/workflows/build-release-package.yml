@@ -84,16 +84,50 @@ jobs:
               --tag "${{ steps.tag.outputs.tag }}" --out /output
           echo "== built =="; ls -lh "$GITHUB_WORKSPACE/ci-output"
 
+      # A GitHub Release asset is capped at 2 GiB per file. The full package
+      # (backend image + ~22 sidecar image tars + velociraptor binaries) is
+      # several GB, so a single asset upload is rejected. Split it into
+      # <2 GiB parts and record the sha256 of the WHOLE tarball so the consumer
+      # can `cat *.part-* > pkg.tar.gz` and verify. Keep tar-as-asset (air-gap
+      # friendly) — no registry. Parts are named <pkg>.part-00, .part-01, ...
+      - name: Split package into release-sized parts
+        run: |
+          cd "$GITHUB_WORKSPACE/ci-output"
+          PKG="$(ls *.tar.gz 2>/dev/null | head -1)"
+          if [ -z "$PKG" ]; then echo "::error::no .tar.gz produced"; ls -lh; exit 1; fi
+          sha256sum "$PKG" > "$PKG.sha256"          # sha of the whole, pre-split
+          SIZE=$(stat -c%s "$PKG")
+          LIMIT=$((1900 * 1024 * 1024))             # 1900 MiB < 2 GiB, safe margin
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+            echo "Package is $((SIZE/1024/1024)) MiB (> 2 GiB asset limit) — splitting into parts"
+            split -b 1900m -d -a 2 "$PKG" "$PKG.part-"
+            rm -f "$PKG"                            # upload only the parts, not the monolith
+          else
+            echo "Package is $((SIZE/1024/1024)) MiB — under the limit, uploading whole"
+          fi
+          echo "== to upload =="; ls -lh
+
+      # Runs on a real release, and also on a manual dispatch IF a release
+      # already exists for the tag — so `workflow_dispatch` (from any branch)
+      # exercises the exact split + 2 GiB-limited release-asset path, letting
+      # us iterate on `development` before merging to the default branch.
       - name: Attach package to the GitHub Release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ steps.tag.outputs.tag }}" "$GITHUB_WORKSPACE"/ci-output/*.tar.gz* --clobber
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$GITHUB_WORKSPACE"/ci-output/* --clobber
+            echo "Attached package parts to release $TAG"
+          else
+            echo "No release exists for $TAG — skipping asset attach (artifact upload covers this run)"
+          fi
 
       - name: Upload package as a workflow artifact (manual runs)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: release-package-${{ steps.tag.outputs.tag }}
-          path: ci-output/*.tar.gz*
+          path: ci-output/*
           retention-days: 7
