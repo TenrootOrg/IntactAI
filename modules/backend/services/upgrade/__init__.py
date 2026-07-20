@@ -2597,6 +2597,51 @@ def run_online_upgrade_workflow(modules: Dict[str, str], run_id: str = None,
             "versions": {},
         }
 
+    # Phase 1 (preferred): DOWNLOAD the CI-built release package instead of
+    # building it on-box. CI builds the package with the TARGET release's OWN
+    # code, so it never drops a module an older on-box backend can't recognize
+    # (the factor-5 / "Unknown module" class). Falls back to the on-box build
+    # below when the target has no package asset (the rolling `development`
+    # branch, or a pre-CI release) or the download fails — so every existing
+    # scenario keeps working and this is purely additive.
+    _intact_ref = modules.get('intact')
+    if _intact_ref and _intact_ref != 'development':
+        _pkg = None
+        try:
+            from services.upgrade.download import (
+                download_release_package, PackageDownloadCancelled)
+            os.makedirs('/data/uploads', exist_ok=True)  # ALLOWED_PACKAGE_DIR
+            _pkg = download_release_package(
+                _intact_ref, dest_dir='/data/uploads', run_id=run_id, logger=log)
+        except PackageDownloadCancelled:
+            log("Upgrade cancelled during package download.", "warning")
+            return {"success": False, "status": "cancelled", "cancelled": True,
+                    "error": "cancelled", "results": {}, "completed": 0,
+                    "total": 0, "versions": {}}
+        except Exception as _de:
+            log(f"Could not download the pre-built release package "
+                f"({type(_de).__name__}: {_de}) — building on-box instead.",
+                "warning")
+            _pkg = None
+        if _pkg:
+            log("", "info")
+            log("=" * 50, "info")
+            log("Using pre-built CI release package (no on-box build).", "success")
+            log("=" * 50, "info")
+            log("", "info")
+            # Rejoin the SAME apply engine the offline flow uses; it extracts,
+            # verifies every file against the in-package manifest, and drives
+            # the Phase-1/Phase-2 restart + resume. Restrict apply to the
+            # modules the operator selected (the CI package always carries all).
+            return run_offline_upgrade_workflow(
+                package_path=_pkg,
+                run_id=run_id,
+                logger=log,
+                db_overwrite=db_overwrite,
+                selected_modules=list(modules.keys()),
+                workflow_label="ONLINE UPGRADE (download CI package + apply)",
+            )
+
     prepare_result = prepare_upgrade_package(
         modules=modules,
         run_id=run_id,
