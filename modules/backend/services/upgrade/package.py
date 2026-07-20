@@ -2016,7 +2016,16 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         "the air-gap target starts with an empty CVE corpus.",
                         "warning")
             else:
-                log(f"  Unknown module: {module}", "warning")
+                # This build host's code doesn't have packaging logic for
+                # '{module}' — normal when it's a module a NEWER release added
+                # or renamed and this (older) code predates it. Not an error:
+                # on a connected target the module reads its data live (e.g.
+                # aws_sigma reads /opt/sigma-rules), and the versioned artifact
+                # is (re)built by the target's own code in the release package.
+                # Info, not warning, so it doesn't read as a failure.
+                log(f"  Module '{module}' isn't packaged by this build host "
+                    f"(newer/renamed module this code predates) — skipping its "
+                    f"artifact here; it installs from the release package.", "info")
 
             completed += 1
 

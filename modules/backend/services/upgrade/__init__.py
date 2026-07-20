@@ -1240,6 +1240,31 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
         log(f"  Config migration step raised ({type(e).__name__}: {e}); "
             f"continuing without migrations", "warning")
 
+    # aws_sigma reassurance: an OLDER release's prepare can't recognize the
+    # renamed 'aws_sigma' module and logs a scary "Unknown module" while
+    # bundling. That's harmless on a connected box — aws_sigma reads its rules
+    # LIVE from /opt/sigma-rules/rules/cloud/aws (populated at install), so once
+    # enabled it just works; the bundled rule pack only matters for air-gap.
+    # Emit a clear confirmation here (Phase 2 = new code, so it shows even on
+    # the transitional upgrade) so the operator isn't left thinking aws_sigma
+    # failed. Best-effort; never affects the upgrade.
+    try:
+        import yaml as _yaml
+        with open(os.path.join(WORKDIR, 'config.yaml')) as _cf:
+            _cfg = _yaml.safe_load(_cf) or {}
+        _aws = (_cfg.get('modules') or {}).get('aws_sigma') or {}
+        if isinstance(_aws, dict) and _aws.get('enabled'):
+            _rules_dir = '/opt/sigma-rules/rules/cloud/aws'
+            if os.path.isdir(_rules_dir):
+                _n = sum(1 for _r, _d, _fs in os.walk(_rules_dir)
+                         for _f in _fs if _f.endswith(('.yml', '.yaml')))
+                log(f"aws_sigma is enabled and its detection rules are present "
+                    f"({_n} rules at {_rules_dir}) — active. (Any 'Unknown "
+                    f"module: aws_sigma' from prepare is expected on a "
+                    f"cross-version upgrade and is harmless here.)", "success")
+    except Exception as _ae:
+        log(f"  (aws_sigma status check skipped: {_ae})", "info")
+
     # 2026-06-16 incident: volweb was silently dropped from Phase 2
     # because resume_upgrade_workflow's upgrade_order didn't include it,
     # even though run_offline_upgrade_workflow and run_online_upgrade

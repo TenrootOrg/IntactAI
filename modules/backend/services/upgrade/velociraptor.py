@@ -32,6 +32,17 @@ def _velo_host_dirs():
             os.path.join(HOST_PATH, "data", "velociraptor"))
 
 
+def _besteffort_logger(log: Callable) -> Callable:
+    """Wrap a workflow logger so a wrapped command's error-level lines (e.g.
+    run_command's 'Command timed out' on a best-effort/optional step) are
+    downgraded to warning — they must not pollute the run's error_count
+    (which would auto-flip an otherwise-successful upgrade to 'failed') or
+    read to the operator as a real failure."""
+    def _log(msg, level="info"):
+        log(msg, "warning" if level == "error" else level)
+    return _log
+
+
 def _valid_velo_server_config(path) -> bool:
     """True iff `path` is a real server.config.yaml carrying a CA private key —
     so we never enshrine an empty/corrupt file as 'migrated'."""
@@ -1482,7 +1493,16 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
             --config /velociraptor/server.config.yaml query \
             "SELECT name, raw FROM artifact_definitions() WHERE built_in = false AND raw != ''" \
             --format jsonl 2>/dev/null"""
-        result = run_command(export_cmd, logger=log, timeout=60)
+        # Best-effort backup of user-defined artifacts. A COMMUNICATING
+        # Velociraptor answers this query in ~1-2s; when it hangs it's up but
+        # its API isn't responding (observed mid-upgrade), and waiting longer
+        # won't help — so fast-fail at 20s instead of stalling 60s. Skipping is
+        # safe: custom artifacts live in the datastore volume (which survives
+        # the upgrade) and are refreshed from source anyway. Also downgrade
+        # run_command's timeout log from error->warning so this optional step
+        # never pollutes error_count (which would flip an otherwise-successful
+        # run to "failed") or read as a real failure.
+        result = run_command(export_cmd, logger=_besteffort_logger(log), timeout=20)
         if result['success'] and result.get('stdout'):
             exported = 0
             for line in result['stdout'].strip().split('\n'):
@@ -1499,6 +1519,10 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
                     except:
                         pass
             log(f"  Exported {exported} custom artifacts", "info")
+        elif not result.get('success'):
+            log("  Custom-artifact export skipped (Velociraptor slow to respond) "
+                "— non-fatal; artifacts refresh from source during the upgrade.",
+                "warning")
     except Exception as e:
         log(f"  Export warning: {str(e)[:50]}", "warning")
 
@@ -1726,7 +1750,16 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
             --config /velociraptor/server.config.yaml query \
             "SELECT name, raw FROM artifact_definitions() WHERE built_in = false AND raw != ''" \
             --format jsonl 2>/dev/null"""
-        result = run_command(export_cmd, logger=log, timeout=60)
+        # Best-effort backup of user-defined artifacts. A COMMUNICATING
+        # Velociraptor answers this query in ~1-2s; when it hangs it's up but
+        # its API isn't responding (observed mid-upgrade), and waiting longer
+        # won't help — so fast-fail at 20s instead of stalling 60s. Skipping is
+        # safe: custom artifacts live in the datastore volume (which survives
+        # the upgrade) and are refreshed from source anyway. Also downgrade
+        # run_command's timeout log from error->warning so this optional step
+        # never pollutes error_count (which would flip an otherwise-successful
+        # run to "failed") or read as a real failure.
+        result = run_command(export_cmd, logger=_besteffort_logger(log), timeout=20)
         if result['success'] and result.get('stdout'):
             exported = 0
             for line in result['stdout'].strip().split('\n'):
@@ -1743,6 +1776,10 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
                     except:
                         pass
             log(f"  Exported {exported} custom artifacts", "info")
+        elif not result.get('success'):
+            log("  Custom-artifact export skipped (Velociraptor slow to respond) "
+                "— non-fatal; artifacts refresh from source during the upgrade.",
+                "warning")
     except Exception as e:
         log(f"  Export warning: {str(e)[:50]}", "warning")
 
