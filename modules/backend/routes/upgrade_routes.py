@@ -507,15 +507,11 @@ def get_upgrade_current_versions():
         }
     """
     out = {}
-    # intact's own version comes from the VERSION file, not from a .env
-    workdir = os.environ.get('INTACT_PATH', '/app/workdir')
-    try:
-        with open(os.path.join(workdir, 'VERSION')) as f:
-            v = f.read().strip()
-        out['intact'] = v or 'unknown'
-    except Exception:
-        out['intact'] = 'unknown'
-
+    # Everything — including intact, whose version now falls back
+    # VERSION-file -> BACKEND_VERSION (.env) -> container image tag -> 'unknown'
+    # — comes from get_current_versions() so the modal shows exactly what the
+    # apply will compare against (and never a bare "?" for a box that's actually
+    # installed, incl. older releases with an empty/gitignored VERSION file).
     try:
         from services.upgrade.base import get_current_versions
         modules = get_current_versions() or {}

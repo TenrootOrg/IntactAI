@@ -1219,13 +1219,22 @@ def get_current_versions() -> Dict:
     # as "installed → upgrade automatically" — they'd never agreed
     # to deploy any of those.
     def _ondemand_enabled(name: str) -> bool:
+        # Older releases named the AWS module 'cloudtrail' / 'prowler' before the
+        # rename to 'aws_sigma' (config_migrations 1->2). On a box that hasn't
+        # migrated yet, modules.aws_sigma is absent — so honour the legacy keys
+        # too, otherwise aws_sigma's enabled-state (hence its version) reads wrong
+        # when upgrading FROM an older release.
+        aliases = {'aws_sigma': ['aws_sigma', 'cloudtrail', 'prowler']}.get(name, [name])
         try:
             import yaml as _yaml
             with open(os.path.join(WORKDIR, 'config.yaml')) as f:
                 cfg = _yaml.safe_load(f) or {}
             mods = cfg.get('modules') or {}
-            entry = mods.get(name) or {}
-            return bool(entry.get('enabled'))
+            for alias in aliases:
+                entry = mods.get(alias)
+                if isinstance(entry, dict) and 'enabled' in entry:
+                    return bool(entry.get('enabled'))
+            return False
         except Exception:
             # If config.yaml is unreadable / missing, fall back to
             # "treat as enabled" — better to surface a phantom row in
@@ -1300,6 +1309,13 @@ def get_current_versions() -> Dict:
         'env_file': backend_env,
     }
 
+    # CVE Scan is versionless (rolling NVD feeds — no pin), so report
+    # Installed / Not installed by the enabled flag. Without this it was absent
+    # from the map entirely, so the import/plan UI showed a blank "?".
+    versions['cve_scan'] = {
+        'current': 'Installed' if _ondemand_enabled('cve_scan') else 'Not installed',
+    }
+
     # Intact.AI Platform — read from VERSION file at repo root (stamped by
     # .github/workflows/stamp-version-on-release.yml on every release, AND
     # re-stamped by services/upgrade/package.py at prepare time as a
@@ -1320,6 +1336,14 @@ def get_current_versions() -> Dict:
                     intact_version = v
             except Exception:
                 pass
+        if not intact_version:
+            # Fallback for older releases whose VERSION file was gitignored/empty
+            # (20260705/20260615): the BACKEND_VERSION pin the install/upgrade
+            # writes into the backend .env. Preferred over the image tag because
+            # it's a real release string, not e.g. 'development' / '1.0.0'.
+            bv = backend_vars.get('BACKEND_VERSION', '').strip()
+            if bv:
+                intact_version = bv
         if not intact_version:
             try:
                 result = subprocess.run(
