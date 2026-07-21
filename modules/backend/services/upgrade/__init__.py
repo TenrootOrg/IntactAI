@@ -1034,10 +1034,20 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
             continue
         total += 1
 
+    # 0615B backport (QA finding F1): state persisted across the intact restart
+    # must carry ONLY the operator-selected modules. The online-download path
+    # passes selected_modules = the installed+opted set (a SUBSET of the CI
+    # package's full manifest); without this, the Phase-2 resume applies
+    # state['target_modules'] = the FULL manifest and installs modules the
+    # operator never selected. Fall back to the full set only when nothing was
+    # explicitly selected.
+    state_modules = ({k: v for k, v in modules_dict.items() if k in selected_set}
+                     if selected_set is not None else modules_dict)
+
     # Save initial state if we have a run_id (include package_path for cleanup after Phase 2)
     extract_dir = verify_result.get('extract_dir')
     if run_id:
-        save_upgrade_state(run_id, 'phase1', modules_dict, [], 'offline', extract_dir, package_path,
+        save_upgrade_state(run_id, 'phase1', state_modules, [], 'offline', extract_dir, package_path,
                            db_overwrite=db_overwrite)
 
     # STRUCTURAL: see comment at the equivalent spot in
@@ -1220,7 +1230,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                             log(f"Remaining modules for Phase 2: {', '.join(remaining)}", "info")
                             log(f"{'='*50}", "info")
 
-                            save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline',
+                            save_upgrade_state(run_id, 'awaiting_restart', state_modules, completed_modules, 'offline',
                                                extract_dir, package_path, db_overwrite=db_overwrite)
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
                             schedule_backend_restart()
