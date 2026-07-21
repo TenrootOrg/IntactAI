@@ -1965,6 +1965,17 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     if selected_set is not None:
         log(f"Operator-selected subset: {sorted(selected_set)}", "info")
 
+    # State persisted across the intact restart must carry ONLY the modules the
+    # operator selected. The Phase-2 resume (resume_upgrade_workflow) applies
+    # state['target_modules'] with NO further selection filter, so persisting the
+    # FULL manifest here would make the resume INSTALL every module in the package
+    # after the intact restart. That's the bug where a 1-module online-download
+    # upgrade (whole package downloaded, `intact` selected) went on to install
+    # elk/volweb/timesketch/… on resume. Fall back to the full set only when
+    # nothing was explicitly selected (automation / legacy).
+    state_modules = ({k: v for k, v in modules_dict.items() if k in selected_set}
+                     if selected_set is not None else modules_dict)
+
     # Count `total` against modules the operator ACTUALLY intends to
     # apply. Without this, a 1-module apply with intact deselected
     # reports "1/2 modules" because the manifest's intact entry was
@@ -1981,7 +1992,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     # Save initial state if we have a run_id (include package_path for cleanup after Phase 2)
     extract_dir = verify_result.get('extract_dir')
     if run_id:
-        save_upgrade_state(run_id, 'phase1', modules_dict, [], 'offline', extract_dir, package_path,
+        save_upgrade_state(run_id, 'phase1', state_modules, [], 'offline', extract_dir, package_path,
                            db_overwrite=db_overwrite)
 
     # STRUCTURAL: see comment at the equivalent spot in
@@ -2199,10 +2210,10 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                             if remaining:
                                 log(f"Remaining modules for Phase 2: {', '.join(remaining)}", "info")
                             log(f"{'='*50}", "info")
-                            _saved = save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline',
+                            _saved = save_upgrade_state(run_id, 'awaiting_restart', state_modules, completed_modules, 'offline',
                                                         extract_dir, package_path, db_overwrite=db_overwrite)
                             if not _saved:
-                                _saved = save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline',
+                                _saved = save_upgrade_state(run_id, 'awaiting_restart', state_modules, completed_modules, 'offline',
                                                             extract_dir, package_path, db_overwrite=db_overwrite)
                             if not _saved:
                                 return {"success": False,
@@ -2235,11 +2246,11 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                             # The resume state MUST be persisted before we
                             # restart — a restart without it means Phase 2
                             # silently never runs (remaining modules vanish).
-                            _saved = save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline',
+                            _saved = save_upgrade_state(run_id, 'awaiting_restart', state_modules, completed_modules, 'offline',
                                                         extract_dir, package_path, db_overwrite=db_overwrite)
                             if not _saved:
                                 log("Retrying resume-state persist...", "warning")
-                                _saved = save_upgrade_state(run_id, 'awaiting_restart', modules_dict, completed_modules, 'offline',
+                                _saved = save_upgrade_state(run_id, 'awaiting_restart', state_modules, completed_modules, 'offline',
                                                             extract_dir, package_path, db_overwrite=db_overwrite)
                             if not _saved:
                                 log("Could not persist Phase-2 resume state — ABORTING "
