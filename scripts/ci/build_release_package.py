@@ -43,13 +43,13 @@ RELEASE_MODULES = {
     "velociraptor",
     "aws_sigma",      # SigmaHQ AWS CloudTrail rule pack
     "cve_scan",       # ships the prebuilt CVE SQLite DB if the build host has one
-    # "timesketch",
+    "timesketch",
+    "plaso",
     # "elk",
     # "iris",
     # "volweb",
     # "portainer",
     # "o365rc",
-    # "plaso",
 }
 
 
