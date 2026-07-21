@@ -32,19 +32,48 @@ if "/app" not in sys.path:
     sys.path.insert(0, "/app")
 
 
+# LEAN RELEASE SCOPE (2026-07-21, per operator request):
+# ship a package with ONLY the core platform + the actively-needed DFIR
+# modules — intact (backend + frontend/nginx), velociraptor, aws_sigma, and
+# cve_scan. The heavier/less-used modules are commented out below; to build a
+# FULL release again, just un-comment them (no other change needed — the
+# loop below reads this set).
+RELEASE_MODULES = {
+    "intact",         # backend + frontend (nginx) platform source + image
+    "velociraptor",
+    "aws_sigma",      # SigmaHQ AWS CloudTrail rule pack
+    "cve_scan",       # ships the prebuilt CVE SQLite DB if the build host has one
+    # "timesketch",
+    # "elk",
+    # "iris",
+    # "volweb",
+    # "portainer",
+    # "o365rc",
+    # "plaso",
+}
+
+
 def release_module_set(tag: str) -> dict:
-    """{module: version} for every primary module the release ships (intact
-    pinned to `tag`; cve_scan skipped as rolling data)."""
+    """{module: version} for the modules this (lean) release ships.
+
+    intact is pinned to `tag`; cve_scan carries a truthy version only to pass the
+    packager's version gate (its real artifact is the bundled CVE DB, not a
+    version pin). Scope is controlled by :data:`RELEASE_MODULES` above."""
     import yaml
     from services.upgrade import UPGRADE_ORDER
     cfg_path = os.path.join(os.environ.get("INTACT_PATH", "/app/workdir"), "config.yaml")
     versions = (yaml.safe_load(open(cfg_path)) or {}).get("versions") or {}
     modules = {}
     for m in UPGRADE_ORDER:
-        if m == "cve_scan":
-            continue  # rolling: fetched at apply time, not baked into a release
+        if m not in RELEASE_MODULES:
+            continue  # excluded from this release — see RELEASE_MODULES
         if m == "intact":
             modules["intact"] = tag  # -> builds intact-backend:<tag>
+        elif m == "cve_scan":
+            # rolling data: the packager bakes the current CVE SQLite DB when it
+            # exists on the build host. A truthy version keeps cve_scan past the
+            # version-gated packaging loop.
+            modules["cve_scan"] = versions.get("cve_scan") or "rolling"
         elif m in versions:
             modules[m] = versions[m]
     return modules
