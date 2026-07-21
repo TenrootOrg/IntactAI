@@ -862,6 +862,48 @@ def prepare_upgrade_package():
                         progress = 5 + int((completed_steps[0] / total_steps) * 90)
                         update_run_status(run_id, "running", progress=min(progress, 95))
 
+                # 0615B backport: if the operator picked a RELEASE that already
+                # ships a CI-built package, DOWNLOAD + reassemble it instead of
+                # rebuilding on-box. Falls back to the on-box build below for
+                # `development` / pre-CI releases, or if the download fails.
+                if target and target != 'development':
+                    try:
+                        from services.upgrade.download import (
+                            find_release_package, download_release_package,
+                            PackageDownloadCancelled)
+                        if find_release_package(target, logger=logger):
+                            logger(f"Release {target} has a prebuilt CI package — "
+                                   f"downloading + reassembling it (no on-box build).",
+                                   "info")
+                            _dl_pct = [5]
+                            def _dl_progress(frac):
+                                p = min(95, 5 + int(frac * 90))
+                                if p > _dl_pct[0]:
+                                    _dl_pct[0] = p
+                                    update_run_status(run_id, "running", progress=p)
+                            pkg_path = download_release_package(
+                                target, dest_dir="/data/upgrade_packages",
+                                run_id=run_id, logger=logger,
+                                progress_cb=_dl_progress)
+                            if pkg_path:
+                                _save_package_info({
+                                    'run_id': run_id,
+                                    'path': pkg_path,
+                                    'name': os.path.basename(pkg_path),
+                                    'size': os.path.getsize(pkg_path),
+                                    'created_at': time.time(),
+                                })
+                                add_log_to_run(run_id, f"Package ready for download: {os.path.basename(pkg_path)}", "success")
+                                add_log_to_run(run_id, "Note: Preparing a new package will replace this one", "info")
+                                update_run_status(run_id, "completed", progress=100)
+                                return
+                    except PackageDownloadCancelled:
+                        return  # 'cancelled' state already set by request_stop()
+                    except Exception as _de:
+                        add_log_to_run(run_id, f"CI package download failed "
+                                       f"({type(_de).__name__}: {_de}); building on-box "
+                                       f"instead.", "warning")
+
                 result = do_prepare(modules, run_id, logger)
 
                 if result.get('success'):
