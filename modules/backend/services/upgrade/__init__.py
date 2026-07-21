@@ -1629,8 +1629,10 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                     log(f"  Backend image intact-backend:{_tt0} loaded from package "
                         f"— convergence will recreate, not rebuild.", "info")
                 else:
-                    log(f"  Backend image not bundled ({(_ens.get('error') or '')[:140]}) "
-                        f"— convergence may rebuild from source.", "warning")
+                    log(f"  Backend image intact-backend:{_tt0} not pre-baked in this "
+                        f"package — convergence will rebuild it from source (works, but "
+                        f"slower). Prepare the package on a Full-mode release to bundle "
+                        f"the image and skip the rebuild.", "info")
         except Exception as _pl:
             log(f"  (pre-cleanup backend image load skipped: {_pl})", "warning")
 

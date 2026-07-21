@@ -615,9 +615,20 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
         if _pull_and_save_image(f"tusproject/tusd:{tusd_tag}", _out, log, run_id=run_id):
             manifest["contents"]["images"].append(f"tusd-{tusd_tag}.tar")
 
-    # backend runtime image — Full-mode releases only
+    # backend runtime image — Full-mode releases MUST ship their baked image.
+    # A Full-mode package without it forces the target to rebuild the backend
+    # from source at convergence (slow, and it stranded boxes at ~95%). So decide
+    # the mode from the TARGET's own compose, and if we can't decide — the compose
+    # is missing/unreadable — FAIL LOUD instead of silently defaulting to "legacy"
+    # and shipping an image-less package.
     from .intact import backend_full_mode
     target_compose = os.path.join(src_root, 'modules', 'backend', 'docker-compose.yaml')
+    if not os.path.isfile(target_compose):
+        return {"success": False,
+                "error": (f"target backend docker-compose.yaml not found at "
+                          f"{target_compose} — cannot determine backend deploy mode. "
+                          f"Refusing to ship a package that may be missing the backend "
+                          f"image. Re-prepare from a complete release tree.")}
     if not backend_full_mode(target_compose):
         log("  Backend is legacy source-mounted mode — no backend image bake "
             "needed (restart path)", "info")
@@ -626,6 +637,11 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
     image = f"intact-backend:{be_tag}"
     log(f"Baking backend runtime image {image} (Full-mode release)...", "info")
     dockerfile = os.path.join(src_root, 'modules', 'backend', 'Dockerfile')
+    if not os.path.isfile(dockerfile):
+        return {"success": False,
+                "error": (f"Full-mode release but no backend Dockerfile at {dockerfile} "
+                          f"— cannot bake the required backend image. Re-prepare from a "
+                          f"complete release tree.")}
     build = run_command(f"docker build -f {dockerfile} -t {image} {src_root}",
                         timeout=1800, logger=None, run_id=run_id)
     if build.get("cancelled"):
