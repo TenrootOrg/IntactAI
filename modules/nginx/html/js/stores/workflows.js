@@ -78,7 +78,16 @@ document.addEventListener('alpine:init', () => {
             // Clear any existing interval
             this.stopAutoRefresh();
 
-            // Refresh logs every 1 second
+            // Tolerate TRANSIENT failures. An offline upgrade RECREATES the
+            // backend container mid-run, so these polls will briefly 502/timeout
+            // for tens of seconds. The old code killed polling on the very first
+            // failed fetch, freezing the log view on "Upload complete / Package
+            // path" until the operator manually refreshed. Instead: keep polling,
+            // show a reconnecting note, and only give up after a SUSTAINED outage
+            // (well past a normal backend swap). Recovery clears the note.
+            this._refreshFailures = 0;
+            const MAX_CONSECUTIVE_FAILURES = 120;   // ~120s of continuous failure
+
             this.refreshInterval = setInterval(async () => {
                 if (!this.modalOpen) {
                     this.stopAutoRefresh();
@@ -87,18 +96,29 @@ document.addEventListener('alpine:init', () => {
                 try {
                     const response = await fetch(`/api/dashboard/automation/${runId}`);
                     if (!response.ok) {
-                        const data = await response.json().catch(() => null);
-                        this.selectedRun = {
-                            ...this.selectedRun,
-                            fetchError: data?.error || `HTTP ${response.status}`,
-                        };
-                        this.stopAutoRefresh();
+                        this._refreshFailures++;
+                        if (this._refreshFailures >= MAX_CONSECUTIVE_FAILURES) {
+                            const data = await response.json().catch(() => null);
+                            this.selectedRun = {
+                                ...this.selectedRun,
+                                reconnecting: false,
+                                fetchError: data?.error || `HTTP ${response.status}`,
+                            };
+                            this.stopAutoRefresh();
+                        } else {
+                            // transient (backend mid-swap) — keep trying
+                            this.selectedRun = { ...this.selectedRun, reconnecting: true };
+                        }
                         return;
                     }
                     const newData = await response.json();
+                    this._refreshFailures = 0;
+                    newData.reconnecting = false;
 
-                    // Only update if logs changed
-                    if (JSON.stringify(this.selectedRun?.logs) !== JSON.stringify(newData?.logs)) {
+                    // Update if we're recovering from a blip OR the logs changed.
+                    const recovering = this.selectedRun?.reconnecting || this.selectedRun?.fetchError;
+                    if (recovering ||
+                        JSON.stringify(this.selectedRun?.logs) !== JSON.stringify(newData?.logs)) {
                         this.selectedRun = newData;
                         // Auto-scroll if enabled
                         if (this.autoScroll) {
@@ -106,9 +126,15 @@ document.addEventListener('alpine:init', () => {
                         }
                     }
                 } catch (e) {
-                    console.error('Failed to refresh logs:', e);
-                    this.selectedRun = { ...this.selectedRun, fetchError: e.message };
-                    this.stopAutoRefresh();
+                    this._refreshFailures++;
+                    if (this._refreshFailures >= MAX_CONSECUTIVE_FAILURES) {
+                        console.error('Failed to refresh logs:', e);
+                        this.selectedRun = { ...this.selectedRun, reconnecting: false, fetchError: e.message };
+                        this.stopAutoRefresh();
+                    } else {
+                        // transient network error while the backend restarts — keep trying
+                        this.selectedRun = { ...this.selectedRun, reconnecting: true };
+                    }
                 }
             }, 1000);
         },

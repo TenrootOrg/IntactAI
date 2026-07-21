@@ -612,7 +612,23 @@ document.addEventListener('alpine:init', () => {
                 const db_overwrite = Object.assign({}, this.applyDbOverwrite);
                 console.log('[Import] Starting tus upload for', file.name,
                             '(', file.size, 'bytes), modules:', selected);
-                this.showMessage('Uploading package… (you can watch the upload run in Workflows)', 'info');
+                // Create the workflow row NOW so it's visible the instant we
+                // navigate to Workflows — instead of waiting for tusd's
+                // post-create hook (which is why the operator "saw nothing" for
+                // a while). The hook reuses this run_id (passed in metadata),
+                // and as an upgrade_package_upload it lands in the SAME System
+                // workspace as the apply — one row, one workspace.
+                let uploadRunId = '';
+                try {
+                    const rr = await fetch('/api/upgrade/upload-run', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({filename: file.name, size_bytes: file.size}),
+                    });
+                    const rj = await rr.json();
+                    if (rj && rj.success) uploadRunId = rj.run_id;
+                } catch (_) { /* best-effort — hook still creates the run */ }
+                this.showMessage('Uploading package… (progress shows in Workflows)', 'info');
                 this.closeApplyPackageModal();
                 window.ActiveCase.gotoSystemWorkflows();
                 this.applying = false;
@@ -620,10 +636,15 @@ document.addEventListener('alpine:init', () => {
                     endpoint: '/api/uploads/',
                     retryDelays: [0, 1000, 3000, 5000],
                     chunkSize: 5 * 1024 * 1024,
+                    // Clear the resume fingerprint once done so re-importing the
+                    // same file later doesn't silently re-open / re-upload a
+                    // stale entry (the "it uploaded again" artifact).
+                    removeFingerprintOnSuccess: true,
                     metadata: {
                         filename: file.name,
                         filetype: file.type || 'application/gzip',
                         purpose: 'upgrade_package',
+                        upload_run_id: uploadRunId,
                     },
                     onError: (error) => {
                         console.error('Upload error:', error);
@@ -1183,6 +1204,7 @@ document.addEventListener('alpine:init', () => {
                 endpoint: '/api/uploads/',
                 retryDelays: [0, 1000, 3000, 5000],
                 chunkSize: 5 * 1024 * 1024,
+                removeFingerprintOnSuccess: true,
                 metadata: {
                     filename: file.name,
                     filetype: file.type || 'application/gzip',

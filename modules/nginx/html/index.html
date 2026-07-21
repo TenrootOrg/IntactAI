@@ -688,8 +688,8 @@
     <!-- App stores (split from the former monolithic app.js) -->
     <script src="js/stores/app.js?v=1"></script>
     <script src="js/stores/services.js?v=1"></script>
-    <script src="js/stores/workflows.js?v=2"></script>
-    <script src="js/stores/settings.js?v=3"></script>
+    <script src="js/stores/workflows.js?v=3"></script>
+    <script src="js/stores/settings.js?v=4"></script>
     <script src="js/legacy/handlers.js?v=1"></script>
     <script src="js/velociraptor.js?v=5"></script>
     <script src="js/blueprints.js?v=4"></script>
@@ -773,6 +773,9 @@
                     <p class="text-gray-500 text-xs mb-1">All times in UTC+00:00</p>
                     <template x-if="$store.workflows.selectedRun?.fetchError">
                         <p class="text-red-400">Could not load this workflow: <span x-text="$store.workflows.selectedRun.fetchError"></span></p>
+                    </template>
+                    <template x-if="$store.workflows.selectedRun?.reconnecting">
+                        <p class="text-yellow-400">Reconnecting… (the backend restarts during an upgrade — this log will resume automatically)</p>
                     </template>
                     <template x-if="!$store.workflows.selectedRun?.fetchError && (!$store.workflows.selectedRun?.logs || $store.workflows.selectedRun?.logs.length === 0)">
                         <p class="text-gray-400">No logs available yet.</p>

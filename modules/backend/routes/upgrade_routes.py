@@ -662,6 +662,37 @@ def get_upgrade_package_info():
         return jsonify({"error": str(e)}), 500
 
 
+@upgrade_bp.route('/api/upgrade/upload-run', methods=['POST'])
+def create_upgrade_upload_run():
+    """Pre-create the UPGRADE_PACKAGE_UPLOAD workflow row so the UI shows it the
+    instant the operator clicks Apply — instead of waiting for tusd's post-create
+    hook. The browser passes the returned run_id back in the tus upload metadata
+    as `upload_run_id`; the hook reuses it (see routes/upload_routes.py) rather
+    than opening a second run. As an `upgrade_package_upload` type it is forced to
+    the System workspace (services/workflow_service.SYSTEM_TYPES), the SAME place
+    the apply lands, so the whole import is one row in one workspace."""
+    try:
+        data = request.get_json(silent=True) or {}
+        filename = (data.get('filename') or 'upgrade package').strip()
+        size_bytes = int(data.get('size_bytes') or 0)
+        size_mb = size_bytes / (1024 * 1024) if size_bytes else 0
+        run_id = create_automation_run(
+            'upgrade_package_upload',
+            f"Upload: {filename}",
+            {
+                "filename": filename,
+                "purpose": "upgrade_package",
+                "size_bytes": size_bytes,
+                "size_mb": round(size_mb, 2),
+            },
+        )
+        add_log_to_run(run_id, f"Preparing upload: {filename} ({size_mb:.1f} MB)")
+        update_run_status(run_id, "running", progress=0)
+        return jsonify({"success": True, "run_id": run_id})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @upgrade_bp.route('/api/upgrade/offline', methods=['POST'])
 def start_offline_upgrade():
     """Start offline upgrade from an uploaded package.

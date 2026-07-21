@@ -476,8 +476,11 @@ def prepare_recreate_handoff(run_id: str, swap_info: Dict, logger: Callable = No
     H = HOST_PATH
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')   # container-visible
     backend_dir_host = os.path.join(H, 'modules', 'backend')
-    new_tag = swap_info.get('target_tag') or '1.0.0'
-    old_image = swap_info.get('old_image') or 'intact-backend:1.0.0'
+    # Never silently fall back to the placeholder '1.0.0' tag — that recreates
+    # the backend onto the OLD install-day image (old code) and is exactly how a
+    # box gets stranded. Resolve the real release tag instead.
+    new_tag = swap_info.get('target_tag') or backend_target_tag()
+    old_image = swap_info.get('old_image') or (running_backend_image() or 'intact-backend:1.0.0')
     snap = swap_info.get('snapshot') or ''
     snap_host = snap.replace('/app/data', os.path.join(H, 'data')) if snap else ''
 
@@ -1604,6 +1607,32 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
         log(f"{'='*50}", "info")
         log("FINALIZING PHASE 2", "info")
         log(f"{'='*50}", "info")
+
+        # Wave-F: LOAD the baked backend image into the docker store BEFORE the
+        # extracted package is deleted below. `docker load` puts the image in the
+        # local store where it PERSISTS after the package dir is gone, so the
+        # convergence self-heal (both the one a few lines down AND the boot-time
+        # safety net in app.py) finds intact-backend:<tag> already present and
+        # RECREATES onto it with --no-build. Without this, convergence had no
+        # image to inspect and fell back to `docker compose build backend`; that
+        # source rebuild stalled (bounded to 900s by run_command, then failed)
+        # and stranded boxes on the old intact-backend:1.0.0 image at ~95%.
+        try:
+            from .intact import (backend_full_mode as _bfm,
+                                 backend_target_tag as _btt,
+                                 ensure_backend_runtime_image as _ebri)
+            _cp0 = os.path.join(WORKDIR, 'modules', 'backend', 'docker-compose.yaml')
+            if extract_dir and os.path.isdir(extract_dir) and _bfm(_cp0):
+                _tt0 = _btt()
+                _ens = _ebri(extract_dir, _tt0, run_id=run_id, logger=log)
+                if _ens.get("available"):
+                    log(f"  Backend image intact-backend:{_tt0} loaded from package "
+                        f"— convergence will recreate, not rebuild.", "info")
+                else:
+                    log(f"  Backend image not bundled ({(_ens.get('error') or '')[:140]}) "
+                        f"— convergence may rebuild from source.", "warning")
+        except Exception as _pl:
+            log(f"  (pre-cleanup backend image load skipped: {_pl})", "warning")
 
         # Cleanup extracted package directory
         if extract_dir and os.path.exists(extract_dir):

@@ -35,7 +35,16 @@ AGENTIC_TYPES = {"velociraptor_collection", "memory", "cve_scan", "timesketch",
 # and never clutter an investigation workspace.
 SYSTEM_TYPES = {"upgrade", "online_upgrade", "prepare_package", "maintenance",
                 "system_purge", "support_bundle", "settings",
-                "case_import", "case_export"}
+                "case_import", "case_export",
+                # An imported upgrade PACKAGE upload is a system op, exactly like
+                # the `upgrade`/`online_upgrade` apply it feeds. Without this it
+                # was forced to the active/Default workspace while the apply run
+                # went to System — so the import showed up as two rows in two
+                # different workspaces (and "vanished" for an operator viewing
+                # System). It rides in the SAME System workspace as the apply now.
+                # NB: only the UPGRADE-package upload — velociraptor_upload /
+                # timesketch_upload stay investigation-workspace runs.
+                "upgrade_package_upload"}
 
 # Internal bookkeeping run-types (match services.fusion.store CASE_TYPE /
 # BASELINE_TYPE). The workspace row + fusion baseline marker are not case work

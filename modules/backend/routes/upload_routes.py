@@ -301,6 +301,28 @@ def handle_tus_hook():
             workflow_type = f"{purpose}_upload"
             workflow_name = f"Upload: {filename}"
 
+            # If the browser PRE-CREATED the workflow row (so the operator sees
+            # it the instant they click Apply, before this hook fires — the run
+            # otherwise only appears once tusd assigns an ID and calls us), reuse
+            # that run instead of opening a second one. Its id rides in the
+            # upload metadata as `upload_run_id`. This keeps ONE row for the
+            # whole import and makes it appear immediately.
+            provided_run = (metadata.get('upload_run_id') or '').strip()
+            if provided_run:
+                try:
+                    from services.file_storage_service import get_workflow as _get_wf
+                    if _get_wf(provided_run):
+                        _upload_runs[upload_id] = provided_run
+                        add_log_to_run(provided_run, f"Upload started: {filename} ({size_mb:.1f} MB)")
+                        add_log_to_run(provided_run, f"Upload ID: {upload_id}")
+                        update_run_status(provided_run, "running", progress=0)
+                        print(f"[TUS HOOK] Reusing pre-created run {provided_run} "
+                              f"for upload {upload_id}", flush=True)
+                        return jsonify({"ok": True})
+                except Exception as _e:
+                    print(f"[TUS HOOK] pre-created run reuse failed ({_e}); "
+                          "creating a fresh run", flush=True)
+
             # tusd webhooks are server-to-server and don't carry the browser's
             # X-Case-Id header, so the active workspace rides in the upload
             # metadata (set by js/upload.js). Pass it through explicitly so the
@@ -501,7 +523,13 @@ def handle_tus_hook():
                     add_log_to_run(run_id, f"Upload complete: {original_filename}", "success")
                     add_log_to_run(run_id, f"Package path: {file_path}", "info")
                     add_log_to_run(run_id, "Ready to apply — applying this package continues the same workflow.", "info")
-                    update_run_status(run_id, "completed", progress=100)
+                    # Keep the run OPEN (running), NOT completed: the apply
+                    # immediately continues THIS run via the .run sidecar. Marking
+                    # it completed made the row read as "done" at the upload stage
+                    # (and an older frontend then stopped following it), even
+                    # though the apply re-opens it. An upload that's never applied
+                    # is reaped by cleanup_orphan_workflows after its idle window.
+                    update_run_status(run_id, "running", progress=10)
 
             return jsonify({"ok": True})
 
