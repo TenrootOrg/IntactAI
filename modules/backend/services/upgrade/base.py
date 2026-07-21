@@ -1842,6 +1842,29 @@ def _read_module_version(module_id: str, env_path: str, version_key: str) -> str
     return 'unknown'
 
 
+def _tar_is_docker_image(tar_path: str) -> bool:
+    """True if `tar_path` looks like a `docker save` archive.
+
+    A docker-save tar always contains a top-level ``manifest.json`` (and an
+    OCI archive an ``index.json`` / ``oci-layout``). Data tars bundled under
+    images/ (e.g. the aws_sigma rule pack) contain neither. We only read tar
+    member HEADERS (no payload), and stop as soon as we see the marker, so this
+    is cheap even for multi-GB uncompressed image tars. On any read error we
+    fall back to True so the loader still attempts `docker load` (old behaviour).
+    """
+    import tarfile
+    markers = ('manifest.json', 'index.json', 'oci-layout')
+    try:
+        with tarfile.open(tar_path) as tf:
+            for member in tf:
+                name = member.name.lstrip('./')
+                if name in markers:
+                    return True
+        return False
+    except Exception:
+        return True
+
+
 def load_all_bundled_images(package_dir: str, logger: Callable = None,
                               run_id: str = None) -> None:
     """Load EVERY .tar in `package_dir/images/`. Idempotent — `docker
@@ -1878,6 +1901,16 @@ def load_all_bundled_images(package_dir: str, logger: Callable = None,
         if not fn.endswith('.tar'):
             continue
         image_tar = os.path.join(images_dir, fn)
+        # Not every tar under images/ is a docker image. Some no-image modules
+        # ship a DATA artifact here as a plain tar (e.g. aws_sigma bundles the
+        # SigmaHQ AWS CloudTrail rule pack as images/cloudtrail-<ver>.tar, applied
+        # by upgrade_cloudtrail_offline — not `docker load`ed). A docker-save tar
+        # always has a top-level `manifest.json`; a data tar does not. Skip the
+        # non-image tars quietly so they don't log a misleading "Image load
+        # failed: does not contain a manifest.json" warning on every apply.
+        if not _tar_is_docker_image(image_tar):
+            log(f"  Skipping {fn} (bundled data/rule pack, not a docker image)", "info")
+            continue
         log(f"  Loading bundled image: {fn}", "info")
         loaded = load_docker_image(image_tar, logger=log, run_id=run_id)
         if not loaded.get('success'):
