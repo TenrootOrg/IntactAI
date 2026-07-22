@@ -1449,6 +1449,19 @@ document.addEventListener('alpine:init', () => {
                 path: null,                                // filled in after upload
             };
             this.applyManifest = peek.manifest || peek;
+            // Same current-vs-target comparison the prepared-package modal
+            // renders. Without this the IMPORT path left applyCurrentVersions
+            // empty, so every row showed "?" -> "unknown" even though the box
+            // knows its versions. Best-effort, exactly as in
+            // openApplyPackageModal — a failed read must never block the apply.
+            this.applyCurrentVersions = {};
+            try {
+                const curRes = await fetch('/api/upgrade/current-versions', {method: 'GET'});
+                const cur = await curRes.json();
+                if (cur && cur.success) {
+                    this.applyCurrentVersions = cur.versions || {};
+                }
+            } catch (_) { /* cosmetic only */ }
             this.applySelectedModules = Object.keys(
                 (this.applyManifest && this.applyManifest.versions) || {}
             );
