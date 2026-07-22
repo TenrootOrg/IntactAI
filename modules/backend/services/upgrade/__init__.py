@@ -35,7 +35,12 @@ from .elk import upgrade_elk, upgrade_elk_offline
 from .timesketch import upgrade_timesketch, upgrade_timesketch_offline
 from .iris import upgrade_iris, upgrade_iris_offline
 from .velociraptor import upgrade_velociraptor, upgrade_velociraptor_offline
-from .intact import upgrade_intact, upgrade_intact_offline
+from .intact import (
+    upgrade_intact, upgrade_intact_offline,
+    # Full-mode machinery used by the recreate handoff + finalizer.
+    backend_full_mode, backend_target_tag, running_backend_image,
+    ensure_backend_runtime_image, cleanup_rollback_snapshots,
+)
 from .plaso import upgrade_plaso, upgrade_plaso_offline
 from .aws import upgrade_aws, upgrade_aws_offline
 from .azure import upgrade_azure, upgrade_azure_offline
@@ -174,6 +179,11 @@ def schedule_backend_restart():
         start_new_session=True
     )
 
+
+
+def shlex_quote(s: str) -> str:
+    import shlex as _shlex
+    return _shlex.quote(s)
 
 
 _RECREATE_HELPER_TEMPLATE = r'''#!/bin/sh
