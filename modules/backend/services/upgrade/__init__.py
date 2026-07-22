@@ -2096,6 +2096,28 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     awaiting_restart = False  # Flag to prevent cleanup when Phase 2 pending
     extract_dir = verify_result.get('extract_dir')
 
+    # Second disk check, now sized from THIS package instead of a fixed floor.
+    # The early check ran before extraction, when the real requirement was still
+    # unknown; a big package can clear a 10 GiB floor and then die of ENOSPC
+    # halfway through `docker load`. Advisory-but-blocking here is the right
+    # trade: it fails before the module loop, so nothing is half-applied.
+    try:
+        from .config_validate import required_free_gb_for_manifest, preflight_environment as _pe
+        _pkg_bytes = os.path.getsize(package_path) if (package_path and os.path.exists(package_path)) else 0
+        _need = required_free_gb_for_manifest(manifest, _pkg_bytes)
+        _ok2, _errs2 = _pe(logger=None, min_free_gb=_need)
+        if not _ok2:
+            log(f"Insufficient disk for this package (~{_need} GiB needed, "
+                f"sized from this package rather than a fixed floor):", "error")
+            for _e in _errs2:
+                log(f"  - {_e}", "error")
+            return {"success": False, "status": "failed",
+                    "error": "; ".join(_errs2),
+                    "results": {}, "completed": 0, "total": 0, "versions": {}}
+        log(f"  Disk preflight: ~{_need} GiB required for this package, satisfied.", "info")
+    except Exception as _de:
+        log(f"  manifest-sized disk check skipped ({type(_de).__name__}: {_de})", "warning")
+
     # Build modules dict for state tracking
     modules_dict = {k: v for k, v in versions.items()}
     if 'intact' not in modules_dict:

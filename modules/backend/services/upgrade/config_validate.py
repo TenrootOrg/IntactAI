@@ -168,6 +168,35 @@ PREPARE_MIN_FREE_GB = 25
 APPLY_MIN_FREE_GB = 10
 
 
+
+def required_free_gb_for_manifest(manifest: dict, package_bytes: int = 0,
+                                  floor_gb: int = APPLY_MIN_FREE_GB) -> float:
+    """Disk an apply of THIS package actually needs, in GiB.
+
+    The fixed floor is a guess that is wrong in both directions: too strict for a
+    small module-only package, too loose for a multi-GB one carrying a dozen
+    images. The manifest already lists every bundled image and the package size
+    is known, so size the requirement from the real numbers instead:
+
+      package (already on disk) + extracted tree + loaded images + headroom
+
+    Extraction roughly restores the compressed payload, and `docker load` writes
+    the image layers a second time into /var/lib/docker, so the images are
+    counted twice — once extracted under images/, once in the image store. The
+    floor still applies as a lower bound so a tiny package cannot claim an
+    implausibly small requirement.
+    """
+    images = ((manifest or {}).get('contents') or {}).get('image_sizes') or {}
+    img_bytes = sum(int(v or 0) for v in images.values()) if isinstance(images, dict) else 0
+    if not img_bytes:
+        # Older manifests record only image NAMES, not sizes. Fall back to the
+        # package size, which is dominated by those same images.
+        img_bytes = int(package_bytes or 0)
+    need = int(package_bytes or 0) + img_bytes * 2
+    need_gb = need / (1024 ** 3)
+    return max(float(floor_gb), round(need_gb * 1.15, 1))   # 15% headroom
+
+
 def preflight_environment(logger: Callable = None,
                           min_free_gb: int = APPLY_MIN_FREE_GB) -> Tuple[bool, List[str]]:
     """Pre-upgrade environment check. Never raises. Returns (ok, errors).
@@ -183,6 +212,7 @@ def preflight_environment(logger: Callable = None,
     import subprocess as _sp
     log = logger or (lambda m, l="info": None)
     errors: List[str] = []
+    _sized_from_manifest = min_free_gb != APPLY_MIN_FREE_GB
 
     def _run(cmd):
         try:
@@ -234,7 +264,9 @@ def preflight_environment(logger: Callable = None,
             errors.append(
                 f"only {free_gb:.1f} GiB free on {staging} — at least "
                 f"{min_free_gb} GiB is required for upgrade staging. Free disk "
-                f"space (old packages/images) and retry.")
+                f"space (old packages/images) and retry."
+                + (f" (This package needs ~{min_free_gb} GiB: sized from its own "
+                   f"manifest, not a fixed floor.)" if _sized_from_manifest else ""))
     except Exception as e:
         log(f"  [preflight] disk check skipped ({e})", "warning")
 
