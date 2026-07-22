@@ -1520,9 +1520,12 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
                         pass
             log(f"  Exported {exported} custom artifacts", "info")
         elif not result.get('success'):
-            log("  Custom-artifact export skipped (Velociraptor slow to respond) "
-                "— non-fatal; artifacts refresh from source during the upgrade.",
-                "warning")
+            log("  Custom-artifact export skipped — Velociraptor's API is busy "
+                "mid-upgrade (expected). This is a best-effort convenience "
+                "export only: custom artifacts live in the datastore volume, "
+                "which survives the upgrade, and are refreshed from source "
+                "regardless. Nothing is lost and no action is needed.",
+                "info")
     except Exception as e:
         log(f"  Export warning: {str(e)[:50]}", "warning")
 
@@ -1777,9 +1780,12 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
                         pass
             log(f"  Exported {exported} custom artifacts", "info")
         elif not result.get('success'):
-            log("  Custom-artifact export skipped (Velociraptor slow to respond) "
-                "— non-fatal; artifacts refresh from source during the upgrade.",
-                "warning")
+            log("  Custom-artifact export skipped — Velociraptor's API is busy "
+                "mid-upgrade (expected). This is a best-effort convenience "
+                "export only: custom artifacts live in the datastore volume, "
+                "which survives the upgrade, and are refreshed from source "
+                "regardless. Nothing is lost and no action is needed.",
+                "info")
     except Exception as e:
         log(f"  Export warning: {str(e)[:50]}", "warning")
 
