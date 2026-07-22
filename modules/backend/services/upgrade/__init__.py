@@ -249,6 +249,41 @@ def _reject_downgrades(modules_dict: Dict, current_versions: Dict,
             "migrated volume. Apply a package at or above the installed versions.")
 
 
+# The package layout this release knows how to read. The manifest has always
+# carried `package_version`, but nothing ever read it — so the day the layout
+# changes, every older box would misread the new package instead of declining it.
+# Phase 1 runs the OLD release's code and can never be fixed retroactively, which
+# is exactly why it must be able to say "I don't understand this" cleanly.
+SUPPORTED_PACKAGE_FORMAT = 1
+
+
+def check_package_format(manifest: Dict, logger: Callable = None):
+    """Return an error string if this release cannot read the package's format.
+
+    Deliberately permissive: only a MAJOR bump is refused. A minor bump means
+    additive changes an older reader can ignore, and an unparseable or missing
+    value is treated as the original format — refusing those would block valid
+    upgrades, which is a worse failure than reading an old package loosely.
+    """
+    log = logger or (lambda m, l="info": None)
+    raw = str((manifest or {}).get('package_version') or '1.0').strip()
+    try:
+        major = int(raw.split('.')[0])
+    except Exception:
+        log(f"  package_version {raw!r} is unparseable — assuming format "
+            f"{SUPPORTED_PACKAGE_FORMAT}.x", "warning")
+        return None
+    if major > SUPPORTED_PACKAGE_FORMAT:
+        return (f"this package uses format {raw}, newer than this release can "
+                f"read (supports {SUPPORTED_PACKAGE_FORMAT}.x). Upgrade to a "
+                f"newer release first, then apply this package.")
+    if raw != f"{SUPPORTED_PACKAGE_FORMAT}.0":
+        log(f"  package format {raw} (this release reads "
+            f"{SUPPORTED_PACKAGE_FORMAT}.x) — proceeding", "info")
+    return None
+
+
+
 def preflight_package(package_path: str, logger: Callable = None) -> Dict:
     """Answer "would this package apply cleanly here?" WITHOUT touching anything.
 
@@ -294,6 +329,9 @@ def preflight_package(package_path: str, logger: Callable = None) -> Dict:
                     "blocking": [f"package failed verification: {vr.get('error')}"]}
         manifest = vr.get('manifest') or {}
         package_dir = vr.get('package_dir') or scratch
+        _fmt = check_package_format(manifest, logger=None)
+        add("package format readable by this release", _fmt is None, _fmt or "")
+
         versions = manifest.get('versions', {}) or {}
         add("archive integrity + manifest", True, f"{len(versions)} module(s)")
 
@@ -1419,6 +1457,12 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     # The database-backed modules are the reason: OpenSearch and Postgres
     # migrate their on-disk schema forward and an older engine cannot read a
     # migrated volume, which is not recoverable after the fact.
+    _fmt = check_package_format(manifest, logger=log)
+    if _fmt:
+        log(f"PACKAGE FORMAT UNSUPPORTED — {_fmt}", "error")
+        return {"success": False, "status": "failed", "error": _fmt,
+                "results": {}, "completed": 0, "total": 0, "versions": {}}
+
     _dg = _reject_downgrades(modules_dict, current_versions, logger=log)
     if _dg:
         log("DOWNGRADE REFUSED — aborting with the platform untouched.", "error")

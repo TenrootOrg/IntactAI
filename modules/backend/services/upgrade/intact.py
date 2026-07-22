@@ -1051,7 +1051,19 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
     # source copy, means a package missing its backend image aborts with the
     # platform completely untouched.
     needs_swap = False
-    target_tag = backend_target_tag()          # = versions.backend (post-merge)
+    # The MANIFEST is authoritative for which image this package installs.
+    # `version` here is manifest versions.intact — the release being applied.
+    # Reading config.yaml instead (backend_target_tag) only yields the right
+    # answer AFTER the versions-merge has run, which made the whole thing
+    # order-dependent: detect before the merge and you resolve the OLD pin, so
+    # the helper recreates onto the image the box is already on and the upgrade
+    # silently no-ops (observed 2026-07-22, and the same coupling produced a
+    # false preflight failure). Taking it from the package removes the ordering
+    # dependency entirely rather than relying on everyone remembering it.
+    # Fallbacks preserve old behaviour for packages that predate a pinned
+    # intact version, or where intact came from source with no version.
+    _mv = (version or '').strip()
+    target_tag = (_mv if _mv and _mv != 'from_package' else '') or backend_target_tag()
     old_image = running_backend_image()
     if has_backend:
         target_compose = os.path.join(backend_source, 'docker-compose.yaml')
