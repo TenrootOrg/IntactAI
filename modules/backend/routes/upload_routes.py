@@ -312,9 +312,27 @@ def handle_tus_hook():
                 print(f"[TUS HOOK] Upgrade package uploaded (deferred apply): "
                       f"{original_filename}", flush=True)
                 if run_id:
+                    # Persist THIS run_id in a sidecar next to the package so
+                    # /api/upgrade/offline CONTINUES this run instead of opening
+                    # a second workflow — the import and the apply belong in ONE
+                    # row/log. (Prepare-built packages have no sidecar and still
+                    # get their own run.)
+                    try:
+                        with open(f"{file_path}.run", "w") as _rf:
+                            _rf.write(run_id)
+                    except Exception as _e:
+                        print(f"[TUS HOOK] could not write upload run sidecar: {_e}",
+                              flush=True)
                     add_log_to_run(run_id, f"Upload complete: {original_filename}", "success")
                     add_log_to_run(run_id, f"Package path: {file_path}", "info")
-                    update_run_status(run_id, "completed", progress=100)
+                    add_log_to_run(run_id, "Ready to apply - applying this package "
+                                           "continues the same workflow.", "info")
+                    # Keep the run OPEN (running), NOT completed: the apply
+                    # continues THIS run via the .run sidecar. Marking it
+                    # completed made the row read as "done" at the upload stage
+                    # even though the apply re-opens it. An upload that is never
+                    # applied is reaped by the orphan-workflow cleanup.
+                    update_run_status(run_id, "running", progress=10)
 
             return jsonify({"ok": True})
 

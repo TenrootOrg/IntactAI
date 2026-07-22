@@ -607,16 +607,42 @@ def start_offline_upgrade():
         if not os.path.exists(package_path):
             return jsonify({"error": f"Package not found: {package_path}"}), 400
 
-        # Create workflow run
-        run_id = create_automation_run(
-            automation_type="upgrade",
-            name="System Upgrade (Offline)",
-            details={
-                "trigger": "manual",
-                "mode": "offline",
-                "package_path": package_path
-            }
-        )
+        # Continue the UPLOAD's workflow when this package came from a TUS
+        # upload — its run_id was persisted in a `<package>.run` sidecar by the
+        # upload hook. Reusing it keeps the import (upload) and the apply in ONE
+        # workflow/log instead of two rows. Prepare-built packages
+        # (/data/upgrade_packages/) have no sidecar and get a fresh run.
+        run_id = None
+        sidecar = f"{package_path}.run"
+        if os.path.exists(sidecar):
+            try:
+                with open(sidecar) as _rf:
+                    candidate = (_rf.read() or "").strip()
+                from services.file_storage_service import get_workflow as _get_wf
+                if candidate and _get_wf(candidate):
+                    run_id = candidate
+            except Exception:
+                run_id = None
+
+        if run_id:
+            # Consume the sidecar so a later RE-apply of the same package gets
+            # its own run (honest audit trail) instead of re-opening this one.
+            try:
+                os.remove(sidecar)
+            except Exception:
+                pass
+            add_log_to_run(run_id, "-" * 40, "info")
+            add_log_to_run(run_id, "Applying uploaded package - continuing this workflow.", "info")
+        else:
+            run_id = create_automation_run(
+                automation_type="upgrade",
+                name="System Upgrade (Offline)",
+                details={
+                    "trigger": "manual",
+                    "mode": "offline",
+                    "package_path": package_path
+                }
+            )
         add_log_to_run(run_id, "Starting offline upgrade from package", "info")
         add_log_to_run(run_id, f"Package: {package_path}", "info")
         for line in _quota_audit_lines(0):
