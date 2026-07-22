@@ -260,6 +260,112 @@ def _version_is_older(target: str, current: str) -> bool:
 
 
 
+
+def preflight_package(package_path: str, logger: Callable = None) -> Dict:
+    """Answer "would this package apply cleanly here?" WITHOUT touching anything.
+
+    Every check below is the SAME function the real apply calls, so this cannot
+    drift into a reassuring lie: verify_upgrade_package for structure/integrity,
+    _reject_downgrades for ordering, required_free_gb_for_manifest +
+    preflight_environment for disk/docker, backend_full_mode +
+    ensure_backend_runtime_image's own precondition for the backend image.
+
+    STRICTLY READ-ONLY. It extracts to a scratch dir under /app/data/tmp and
+    removes it again; it never mirrors source, never loads an image, never
+    writes config.yaml, never touches a container. A preflight that can change
+    state is worse than no preflight, so the only writes are inside the scratch
+    dir it owns and deletes.
+
+    Returns {"ok": bool, "checks": [{name, ok, detail}], "blocking": [str]}.
+    """
+    import shutil as _sh
+    import tempfile as _tf
+    log = logger or (lambda m, l="info": None)
+    checks = []
+
+    def add(name, ok, detail=""):
+        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+        log(f"  [{'PASS' if ok else 'FAIL'}] {name}{(' — ' + detail) if detail else ''}",
+            "info" if ok else "warning")
+
+    scratch = None
+    try:
+        if not package_path or not os.path.exists(package_path):
+            add("package exists", False, f"{package_path} not found")
+            return {"ok": False, "checks": checks,
+                    "blocking": [f"package not found: {package_path}"]}
+        pkg_bytes = os.path.getsize(package_path)
+        add("package exists", True, f"{pkg_bytes / (1024**3):.2f} GiB")
+
+        # verify_upgrade_package chooses its own extract dir under
+        # /app/data/tmp (Phase 2 needs it to survive a restart). We do not get
+        # to pick it, so capture what it created and delete exactly that —
+        # a preflight must leave no residue behind.
+        os.makedirs('/app/data/tmp', exist_ok=True)
+        vr = verify_upgrade_package(package_path, logger=None)
+        scratch = vr.get('extract_dir') or vr.get('package_dir')
+        if not vr.get('success'):
+            add("archive integrity + manifest", False, str(vr.get('error'))[:160])
+            return {"ok": False, "checks": checks,
+                    "blocking": [f"package failed verification: {vr.get('error')}"]}
+        manifest = vr.get('manifest') or {}
+        package_dir = vr.get('package_dir') or scratch
+        add("archive integrity + manifest", True,
+            f"{len(manifest.get('versions') or {})} module(s)")
+
+        versions = _normalize_legacy_module_keys(manifest.get('versions', {}))
+        current = get_current_versions()
+
+        dg = _reject_downgrades(versions, current, logger=None)
+        add("no module downgrades", dg is None, dg[:200] if dg else "")
+
+        from .config_validate import (required_free_gb_for_manifest,
+                                      preflight_environment as _pe)
+        need = required_free_gb_for_manifest(manifest, pkg_bytes)
+        env_ok, env_errs = _pe(logger=None, min_free_gb=need)
+        add(f"disk + docker (needs ~{need} GiB)", env_ok,
+            "; ".join(env_errs)[:200] if env_errs else "")
+
+        # Backend image: the single most common silent defect — a Full-mode
+        # release whose image is absent or named for a different tag makes the
+        # box rebuild from source. Checked by INSPECTION only, no docker load.
+        tgt = backend_target_tag()
+        img_tar = os.path.join(package_dir, 'images', f'intact-backend-{tgt}.tar')
+        src_compose = os.path.join(package_dir, 'source', 'intact', 'modules',
+                                   'backend', 'docker-compose.yaml')
+        if os.path.isfile(src_compose) and backend_full_mode(src_compose):
+            present = os.path.exists(img_tar)
+            if not present:
+                shipped = []
+                idir = os.path.join(package_dir, 'images')
+                if os.path.isdir(idir):
+                    shipped = [f for f in os.listdir(idir)
+                               if f.startswith('intact-backend-')]
+                add("backend image for this target", False,
+                    f"expected intact-backend-{tgt}.tar; package has "
+                    f"{shipped or 'no backend image'} — the box would rebuild "
+                    f"from source")
+            else:
+                add("backend image for this target", True,
+                    f"intact-backend-{tgt}.tar")
+        else:
+            add("backend image for this target", True,
+                "target is not Full-mode; no image expected")
+
+        blocking = [f"{c['name']}: {c['detail']}" for c in checks if not c['ok']]
+        return {"ok": not blocking, "checks": checks, "blocking": blocking}
+    except Exception as e:
+        add("preflight completed", False, f"{type(e).__name__}: {e}")
+        return {"ok": False, "checks": checks,
+                "blocking": [f"preflight error: {type(e).__name__}: {e}"]}
+    finally:
+        if scratch and os.path.isdir(scratch):
+            try:
+                _sh.rmtree(scratch)
+            except Exception:
+                pass
+
+
 def post_upgrade_health_gate(logger: Callable = None, budget_s: int = 45) -> Dict:
     """Observe whether the platform is actually serving after an upgrade.
 
@@ -2923,6 +3029,8 @@ __all__ = [
     # Workflow functions
     'run_upgrade_workflow',
     'run_offline_upgrade_workflow',
+    'preflight_package',
+    'post_upgrade_health_gate',
     'run_online_upgrade_workflow',
     'resume_upgrade_workflow',
     # State management
