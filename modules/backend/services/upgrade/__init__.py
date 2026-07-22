@@ -372,7 +372,8 @@ def preflight_package(package_path: str, logger: Callable = None) -> Dict:
                 pass
 
 
-def post_upgrade_health_gate(logger: Callable = None, budget_s: int = 45) -> Dict:
+def post_upgrade_health_gate(logger: Callable = None, budget_s: int = 45,
+                            expected_backend_tag: str = None) -> Dict:
     """Observe whether the platform is actually serving after an upgrade.
 
     Every module reporting success is not the same as a working platform. On
@@ -416,7 +417,29 @@ def post_upgrade_health_gate(logger: Callable = None, budget_s: int = 45) -> Dic
     except Exception as e:
         log(f"  [health] container check skipped ({type(e).__name__}: {e})", "warning")
 
-    # 2. The backend is actually serving its own API — the single most useful
+    # 2. Is the backend on the image this upgrade was supposed to put it on?
+    #    A 2026-07-22 run reported "completed · 0 errors" with every container
+    #    healthy and every endpoint answering, while the backend sat on the OLD
+    #    image: the swap had resolved a stale tag and recreated onto the image it
+    #    was already running. Liveness checks cannot see that — only identity can.
+    if expected_backend_tag:
+        checked += 1
+        try:
+            r = run_command(
+                "docker inspect -f '{{.Config.Image}}' intact_backend",
+                logger=None, timeout=min(15, max(5, int(_left()))))
+            running = (r.get('stdout') or '').strip().strip("'")
+            want = expected_backend_tag if ':' in expected_backend_tag \
+                else f'intact-backend:{expected_backend_tag}'
+            if running and running != want:
+                problems.append(
+                    f"backend is running {running} but this upgrade targeted "
+                    f"{want} — the image swap did not take effect")
+        except Exception as e:
+            log(f"  [health] backend image check skipped "
+                f"({type(e).__name__}: {e})", "warning")
+
+    # 3. The backend is actually serving its own API — the single most useful
     #    signal, and the one a per-module success can never establish.
     if _left() > 2:
         try:
@@ -2792,7 +2815,9 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
             # establish that (see post_upgrade_health_gate's docstring). Purely
             # observational — it can only downgrade the verdict to degraded.
             try:
-                _hg = post_upgrade_health_gate(logger=log)
+                _hg = post_upgrade_health_gate(
+                    logger=log,
+                    expected_backend_tag=(modules_dict or {}).get('intact'))
                 results["_health"] = _hg
                 if not _hg.get("healthy") and overall_status == "success":
                     overall_status = "completed_with_warnings"
