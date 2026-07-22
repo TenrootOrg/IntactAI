@@ -1493,6 +1493,23 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     # module in the manifest is applied (legacy behavior — keeps
     # external automation working).
     selected_set = set(selected_modules) if selected_modules else None
+
+    # Safety net mirroring _modules_for_prepare's "intact is force-added even
+    # if the request omitted it": the real UI always includes intact when it's
+    # an upgrade/downgrade (applyModuleAction forces it into the ticked set),
+    # but nothing stopped an external/API caller from posting a subset that
+    # forgets it. Without this, 'intact' silently drops out of state_modules
+    # below, the swap-detection step in upgrade_intact_offline() never runs,
+    # and the run reports "completed, 0 errors" while the platform quietly
+    # never upgraded — discovered 2026-07-22 when a hand-built API call
+    # omitted intact and got exactly that misleading result.
+    if selected_set is not None and 'intact' in modules_dict and 'intact' not in selected_set:
+        log("'intact' was not in the selected subset but IS in this package — "
+            "force-including it. A package without its own platform upgrade "
+            "applied is a half-applied release. Deselect modules you don't "
+            "want, not the platform itself.", "warning")
+        selected_set.add('intact')
+
     if selected_set is not None:
         log(f"Operator-selected subset: {sorted(selected_set)}", "info")
 
