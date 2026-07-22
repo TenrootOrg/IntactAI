@@ -1911,7 +1911,8 @@ def _tar_is_docker_image(tar_path: str) -> bool:
 
 
 def load_all_bundled_images(package_dir: str, logger: Callable = None,
-                              run_id: str = None) -> None:
+                              run_id: str = None,
+                              cleanup_after_load: bool = False) -> None:
     """Load EVERY .tar in `package_dir/images/`. Idempotent — `docker
     load` of an already-loaded image is a no-op, so calling this
     multiple times in a multi-module apply is harmless.
@@ -1937,11 +1938,19 @@ def load_all_bundled_images(package_dir: str, logger: Callable = None,
     Timesketch (missing all four base-image prefixes), and VolWeb
     (postgres+redis not even bundled). Loading every tar removes
     the failure mode by construction.
+
+    `cleanup_after_load` deletes each tar once its layers are safely in the
+    docker image store, so a multi-GB package doesn't hold the extracted
+    copy AND the image-store copy for the whole run. Only the orchestrators'
+    single up-front pre-load passes it; the per-module fallback calls leave
+    it False (they'd be no-ops on an already-reclaimed images/ anyway). See
+    the inline comment at the deletion for why every re-read path is safe.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     images_dir = os.path.join(package_dir, 'images')
     if not os.path.isdir(images_dir):
         return
+    freed_bytes = 0
     for fn in sorted(os.listdir(images_dir)):
         if not fn.endswith('.tar'):
             continue
@@ -1964,6 +1973,38 @@ def load_all_bundled_images(package_dir: str, logger: Callable = None,
                 f"try to pull): {loaded.get('error')}",
                 "warning",
             )
+            continue
+        # Reclaim the tar as soon as its layers are in the image store. Until
+        # now the whole extracted tree survived until the FINALIZING block, so
+        # peak disk was package + extracted-tree + image-store all at once —
+        # which is exactly what required_free_gb_for_manifest has to budget
+        # for (package + images*2). Dropping each tar right after a SUCCESSFUL
+        # load cuts the extracted half of that as the run progresses.
+        #
+        # Safe against every re-read of these tars:
+        #   - the Phase-2 resume re-runs this function, finds images/ empty,
+        #     and doesn't care: the images are already in the store from
+        #     Phase 1, which is the only thing compose-up needs;
+        #   - ensure_backend_runtime_image() checks `docker image inspect`
+        #     FIRST and only touches the tar when the image is absent, so a
+        #     deleted backend tar is a no-op there (its tar-refresh branch is
+        #     documented as already being a no-op on the offline path);
+        #   - a fresh retry after a failed run re-extracts the whole tree from
+        #     the still-present package tarball.
+        # Failed loads are deliberately skipped above — never delete the only
+        # copy of an image that didn't make it into the store.
+        if not cleanup_after_load:
+            continue
+        try:
+            sz = os.path.getsize(image_tar)
+            os.remove(image_tar)
+            freed_bytes += sz
+        except Exception as e:
+            log(f"  Could not reclaim {fn} after load ({e}) — harmless, it is "
+                f"removed with the extracted tree at the end of the run", "warning")
+    if freed_bytes:
+        log(f"  Reclaimed {freed_bytes / (1024 ** 3):.1f} GiB of loaded image "
+            f"tars (images are in the docker store now)", "info")
 
 
 def stamp_transitive_env_from_manifest(

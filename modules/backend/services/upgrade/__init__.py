@@ -1789,7 +1789,8 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     if package_dir:
         try:
             from .base import load_all_bundled_images
-            load_all_bundled_images(package_dir, logger=log, run_id=run_id)
+            load_all_bundled_images(package_dir, logger=log, run_id=run_id,
+                                    cleanup_after_load=True)
         except Exception as _e:
             log(f"Pre-load of bundled images raised "
                 f"({type(_e).__name__}: {_e}); per-module load "
@@ -2551,7 +2552,8 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     if package_dir:
         try:
             from .base import load_all_bundled_images
-            load_all_bundled_images(package_dir, logger=log, run_id=run_id)
+            load_all_bundled_images(package_dir, logger=log, run_id=run_id,
+                                    cleanup_after_load=True)
         except Exception as _e:
             log(f"Pre-load of bundled images raised "
                 f"({type(_e).__name__}: {_e}); per-module load "
