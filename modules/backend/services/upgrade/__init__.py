@@ -10,6 +10,7 @@ Two-Phase Upgrade Support:
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from typing import Dict, Callable, Optional
@@ -188,7 +189,41 @@ def check_upgrade_lock(force: bool = False, logger: Callable = None) -> Dict:
         return {"ok": True}
 
 
-def _upgrade_noop_module(module_name: str) -> bool:
+# An IMMUTABLE ref: a release tag (intact-YYYYMMDD, optional suffix) or a raw
+# commit sha. Re-applying one of these is genuinely a no-op. A rolling ref
+# (`development`, any branch) is NOT immutable — the same name resolves to new
+# code over time — so it must always refresh.
+_IMMUTABLE_REF_RE = re.compile(r'^(intact-\d{8}[A-Za-z0-9._-]*|[0-9a-f]{7,40})$')
+
+
+def _intact_ref_is_noop(target_ref: str) -> bool:
+    """True iff re-applying ``target_ref`` for `intact` would do nothing.
+
+    Requires BOTH:
+      * the ref is immutable (release tag / commit sha) — a rolling ref like
+        `development` always refreshes, since the same name resolves to
+        different code over time;
+      * WORKDIR/VERSION already records that exact ref. VERSION is stamped only
+        once that release's intact upgrade COMPLETED, so a match means the
+        release is fully applied, not merely started.
+
+    This lets an operator install a module they don't yet have, from a package
+    for the release they are ALREADY on, without dragging the backend through a
+    pointless mirror + restart — which also collapses the run to a single
+    phase, because that restart is what forces Phase 2.
+    """
+    ref = (target_ref or '').strip()
+    if not ref or not _IMMUTABLE_REF_RE.match(ref):
+        return False              # rolling / unrecognised ref -> always refresh
+    try:
+        with open(os.path.join(WORKDIR, 'VERSION')) as f:
+            running = f.read().strip()
+    except Exception:
+        return False              # can't tell -> do the work
+    return bool(running) and running == ref
+
+
+def _upgrade_noop_module(module_name: str, target_ref: str = None) -> bool:
     """True iff this module needs NOTHING done this upgrade — it's already
     installed and none of its version pins changed (the primary pin `M` OR any
     transitive sidecar pin `M_*`, e.g. timesketch_opensearch / iris_rabbitmq /
@@ -205,7 +240,9 @@ def _upgrade_noop_module(module_name: str) -> bool:
     something that actually needed work.
     """
     if module_name == 'intact':
-        return False
+        # Rolling refs always refresh; an immutable tag already recorded in
+        # VERSION is a true no-op (see _intact_ref_is_noop).
+        return _intact_ref_is_noop(target_ref)
     from .base import _module_container_exists
     if _module_container_exists(module_name) is False:
         return False
@@ -875,8 +912,9 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
 
             # A2: skip a module that needs nothing done — already installed and
             # neither its primary version nor any sidecar pin changed. intact
-            # always refreshes (see _upgrade_noop_module).
-            if _upgrade_noop_module(module_name):
+            # refreshes unless the target is an immutable tag already applied
+            # (see _upgrade_noop_module / _intact_ref_is_noop).
+            if _upgrade_noop_module(module_name, target_version):
                 log(f"  {module_name.upper()}: already at {target_version} — no version/sidecar change, skipping", "info")
                 results[module_name] = {"success": True, "skipped": True,
                                         "reason": "already up to date (no change)"}
@@ -1406,7 +1444,8 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             # NOT take this shortcut — a crash after its pin bump makes it
             # look done while the old containers still run; its down->up is
             # idempotent, so re-running is always safe.
-            if _upgrade_noop_module(module_name) and module_name != in_flight_module:
+            if (_upgrade_noop_module(module_name, target_version)
+                    and module_name != in_flight_module):
                 log(f"  {module_name.upper()}: already at {target_version} — no version/sidecar change, skipping", "info")
                 results[module_name] = {"success": True, "skipped": True,
                                         "reason": "already up to date (no change)"}
@@ -2554,187 +2593,71 @@ def run_online_upgrade_workflow(modules: Dict[str, str], run_id: str = None,
     log("  Mode: prepare + apply in one run (no intermediate tar.gz)", "info")
     log("", "info")
 
-    from services.upgrade.package import prepare_upgrade_package
-
-    # Build directly into /app/data/tmp/ — the persistent host-mounted
-    # path. /tmp/ would break Phase 2 because intact's backend restart
-    # between Phase 1 and Phase 2 wipes the container's /tmp.
-    from datetime import datetime as _dt
-    package_name = f"intact-upgrade-{_dt.now().strftime('%Y%m%d_%H%M%S')}"
-    persistent_work_dir = f"/app/data/tmp/{package_name}"
-    os.makedirs("/app/data/tmp", exist_ok=True)
-
-    # Pre-prepare config.yaml merge: fetch the target intact ref's
-    # config.yaml from GitHub and merge its `versions:` block into the
-    # operator's local config.yaml BEFORE the prepare step reads it.
-    # Without this, prepare reads the operator's STALE versions:
-    # block — an operator on test-1 (timesketch_opensearch: 2.11.0)
-    # who triggers an upgrade to test-2 (which ships 2.19.5) would
-    # otherwise bundle opensearch:2.11.0 because the prepare side
-    # reads config.yaml BEFORE the apply-side intact-step's merge
-    # has run. Operator hit this 2026-06-15. Skipped when intact
-    # isn't in the modules dict.
-    intact_ref = modules.get('intact')
-    if intact_ref:
-        try:
-            from services.upgrade.resolver import fetch_upstream_config
-            from services.upgrade.intact import merge_versions_from_new_config
-            import tempfile, yaml as _yaml
-            log(f"Fetching target config.yaml from intact @ {intact_ref} "
-                f"for pre-prepare versions: merge...", "info")
-            target_cfg = fetch_upstream_config(intact_ref, user_action='submit')
-            # Write the dict to a temp file so the text-level merge
-            # helper can read it (it operates on file paths, not dicts,
-            # to keep the merge logic uniform between online + offline
-            # flows). Dump preserves the source structure well enough
-            # for the helper's regex extractors.
-            with tempfile.NamedTemporaryFile(
-                    mode='w', suffix='.yaml', delete=False) as tmp:
-                _yaml.safe_dump(target_cfg, tmp, sort_keys=False,
-                                default_flow_style=False)
-                tmp_path = tmp.name
-            operator_config = os.path.join(WORKDIR, 'config.yaml')
-            merge_result = merge_versions_from_new_config(
-                tmp_path, operator_config, logger=log,
-            )
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-            if merge_result.get('success'):
-                upd = merge_result.get('updated') or {}
-                add = merge_result.get('added') or {}
-                if upd or add:
-                    log(f"Pre-prepare config.yaml merge: "
-                        f"{len(upd)} updated, {len(add)} added — "
-                        f"prepare will now read the new versions",
-                        "success")
-                else:
-                    log(f"Pre-prepare config.yaml merge: already up-to-date",
-                        "info")
-        except Exception as e:
-            log(f"Pre-prepare config.yaml merge failed "
-                f"({type(e).__name__}: {e}); prepare will use the "
-                f"operator's existing versions — pins may be stale",
-                "warning")
-
-    # Pre-flight: now that the target's version pins are merged into the
-    # operator's config.yaml (pre-prepare merge above), validate it fully —
-    # including primary + sidecar pin completeness — BEFORE prepare reads it.
-    # This pre-empts the operator-facing get_transitive_tag KeyError
-    # (package.py) that prepare would otherwise raise mid-run. require_pins=True
-    # is safe here: any pin the merge would supply is already present.
-    # Environment preflight uses the PREPARE floor: this flow pulls + saves
-    # multi-GB images before applying.
-    from .config_validate import validate_config, preflight_environment, PREPARE_MIN_FREE_GB
-    _cfg_ok, _cfg_errs = validate_config(logger=log, require_pins=True)
-    _env_ok, _env_errs = preflight_environment(logger=log, min_free_gb=PREPARE_MIN_FREE_GB)
-    _cfg_errs = _cfg_errs + _env_errs
-    if not (_cfg_ok and _env_ok):
-        log("Pre-prepare validation failed:", "error")
-        for _e in _cfg_errs:
+    # Disk preflight for the download + extract (the apply engine re-checks
+    # with the same floor once the package is in hand). The old PREPARE floor
+    # of 25 GiB was sized for an on-box image build, which no longer happens.
+    from .config_validate import preflight_environment, APPLY_MIN_FREE_GB
+    _env_ok, _env_errs = preflight_environment(logger=log,
+                                               min_free_gb=APPLY_MIN_FREE_GB)
+    if not _env_ok:
+        for _e in _env_errs:
             log(f"  - {_e}", "error")
-        if os.path.exists(persistent_work_dir):
-            try:
-                shutil.rmtree(persistent_work_dir)
-            except Exception:
-                pass
-        return {
-            "success": False,
-            "status": "failed",
-            "error": "config.yaml validation failed: " + "; ".join(_cfg_errs),
-            "results": {},
-            "completed": 0,
-            "total": 0,
-            "versions": {},
-        }
+        return {"success": False, "status": "failed",
+                "error": "environment preflight failed: " + "; ".join(_env_errs),
+                "results": {}, "completed": 0, "total": 0, "versions": {}}
 
-    # Phase 1 (preferred): DOWNLOAD the CI-built release package instead of
-    # building it on-box. CI builds the package with the TARGET release's OWN
-    # code, so it never drops a module an older on-box backend can't recognize
-    # (the factor-5 / "Unknown module" class). Falls back to the on-box build
-    # below when the target has no package asset (the rolling `development`
-    # branch, or a pre-CI release) or the download fails — so every existing
-    # scenario keeps working and this is purely additive.
+    # DOWNLOAD-ONLY: the online upgrade installs the CI-built release package
+    # and nothing else. CI builds that package from the TARGET release's OWN
+    # code, so it can never drop a module an older on-box backend fails to
+    # recognise (the factor-5 / "Unknown module" class). There is deliberately
+    # NO on-box build fallback — building on the operator's machine is exactly
+    # what produced that bug class. /api/upgrade/refs only offers releases that
+    # ship a package, so a missing one here means the release was retargeted or
+    # its CI build has not run yet.
     _intact_ref = modules.get('intact')
-    if _intact_ref and _intact_ref != 'development':
+    _pkg = None
+    try:
+        from services.upgrade.download import (
+            download_release_package, PackageDownloadCancelled)
+        os.makedirs('/data/uploads', exist_ok=True)  # ALLOWED_PACKAGE_DIR
+        _pkg = download_release_package(
+            _intact_ref, dest_dir='/data/uploads', run_id=run_id, logger=log)
+    except PackageDownloadCancelled:
+        log("Upgrade cancelled during package download.", "warning")
+        return {"success": False, "status": "cancelled", "cancelled": True,
+                "error": "cancelled", "results": {}, "completed": 0,
+                "total": 0, "versions": {}}
+    except Exception as _de:
+        log(f"Could not download the pre-built release package "
+            f"({type(_de).__name__}: {_de}).", "error")
         _pkg = None
-        try:
-            from services.upgrade.download import (
-                download_release_package, PackageDownloadCancelled)
-            os.makedirs('/data/uploads', exist_ok=True)  # ALLOWED_PACKAGE_DIR
-            _pkg = download_release_package(
-                _intact_ref, dest_dir='/data/uploads', run_id=run_id, logger=log)
-        except PackageDownloadCancelled:
-            log("Upgrade cancelled during package download.", "warning")
-            return {"success": False, "status": "cancelled", "cancelled": True,
-                    "error": "cancelled", "results": {}, "completed": 0,
-                    "total": 0, "versions": {}}
-        except Exception as _de:
-            log(f"Could not download the pre-built release package "
-                f"({type(_de).__name__}: {_de}) — building on-box instead.",
-                "warning")
-            _pkg = None
-        if _pkg:
-            log("", "info")
-            log("=" * 50, "info")
-            log("Using pre-built CI release package (no on-box build).", "success")
-            log("=" * 50, "info")
-            log("", "info")
-            # Rejoin the SAME apply engine the offline flow uses; it extracts,
-            # verifies every file against the in-package manifest, and drives
-            # the Phase-1/Phase-2 restart + resume. Restrict apply to the
-            # modules the operator selected (the CI package always carries all).
-            return run_offline_upgrade_workflow(
-                package_path=_pkg,
-                run_id=run_id,
-                logger=log,
-                db_overwrite=db_overwrite,
-                selected_modules=list(modules.keys()),
-                workflow_label="ONLINE UPGRADE (download CI package + apply)",
-            )
 
-    prepare_result = prepare_upgrade_package(
-        modules=modules,
-        run_id=run_id,
-        logger=log,
-        compress=False,
-        work_dir=persistent_work_dir,
-    )
-
-    if not prepare_result.get('success'):
-        if os.path.exists(persistent_work_dir):
-            try:
-                shutil.rmtree(persistent_work_dir)
-            except Exception:
-                pass
-        return {
-            "success": False,
-            "status": "failed",
-            "error": prepare_result.get('error', 'Prepare step failed'),
-            "results": {},
-            "completed": 0,
-            "total": 0,
-            "versions": {},
-        }
-
-    package_dir = prepare_result['package_dir']
-    manifest = prepare_result['manifest']
+    if not _pkg:
+        _msg = (f"Release '{_intact_ref}' ships no downloadable upgrade "
+                f"package. Upgrades install the CI-built package only — "
+                f"nothing is built on this machine. Pick a release that ships "
+                f"a package, or run the build-release-package workflow for "
+                f"this tag first.")
+        log(_msg, "error")
+        return {"success": False, "status": "failed", "error": _msg,
+                "results": {}, "completed": 0, "total": 0, "versions": {}}
 
     log("", "info")
     log("=" * 50, "info")
-    log("HAND-OFF TO APPLY (no compression step)", "success")
+    log("Using pre-built CI release package (no on-box build).", "success")
     log("=" * 50, "info")
     log("", "info")
-
+    # Rejoin the SAME apply engine the offline flow uses; it extracts, verifies
+    # every file against the in-package manifest, and drives the Phase-1/Phase-2
+    # restart + resume. Restrict apply to the modules the operator selected
+    # (the CI package always carries all of them).
     return run_offline_upgrade_workflow(
-        package_path=None,
+        package_path=_pkg,
         run_id=run_id,
         logger=log,
         db_overwrite=db_overwrite,
-        prebuilt_package_dir=package_dir,
-        prebuilt_manifest=manifest,
-        workflow_label="ONLINE UPGRADE WORKFLOW (Phase 2 of 2: apply)",
+        selected_modules=list(modules.keys()),
+        workflow_label="ONLINE UPGRADE (download CI package + apply)",
     )
 
 

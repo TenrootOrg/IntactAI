@@ -255,51 +255,6 @@ def _modules_for_prepare(target: str, selected_modules: list) -> dict:
     return modules
 
 
-@upgrade_bp.route('/api/upgrade/prepare-list', methods=['POST'])
-def list_prepare_modules():
-    """Operator-triggered (the Prepare modal's "Show Modules" button).
-
-    Body: ``{"target": "<ref>"}`` — the release the operator picked.
-    Returns the flat module list for that release, no local-state diff.
-
-    Used by the Prepare Package modal to render its checkbox table.
-    Online Upgrade uses ``/api/upgrade/plan`` instead (which DOES read
-    local state for the forced/optional split).
-    """
-    try:
-        data = request.json or {}
-        target = (data.get('target') or '').strip()
-        if not target:
-            return jsonify({"success": False, "error": "target required"}), 400
-
-        err = _quota_preflight_or_jsonify(1, "prepare-list (module enumeration)")
-        if err: return err
-
-        from services.upgrade.resolver import list_upstream_modules, ResolverError
-        try:
-            rows = list_upstream_modules(target, user_action='prepare-list')
-        except ResolverError as e:
-            return jsonify({"success": False, "error": str(e)}), 502
-        # Does this release already ship a CI-built package? If so, Prepare
-        # DOWNLOADS it whole (module selection is ignored), so the UI can hide
-        # the checkbox table and show a "will download" panel instead. Best
-        # effort — on any error we just omit the flag and the build path shows.
-        ci_package = None
-        try:
-            from services.upgrade.download import find_release_package
-            info = find_release_package(target)
-            if info:
-                total = (sum(p[2] for p in info['parts'])
-                         or (info['whole'][2] if info['whole'] else 0))
-                ci_package = {"size_mb": round(total / 1024 / 1024)}
-        except Exception:
-            ci_package = None
-        return jsonify({"success": True, "target": target, "modules": rows,
-                        "ci_package": ci_package})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
 @upgrade_bp.route('/api/upgrade/peek-manifest', methods=['POST'])
 def peek_manifest_from_blob():
     """Extract manifest.json from the FIRST few MB of a tarball blob.
@@ -915,44 +870,15 @@ def prepare_upgrade_package():
         if err: return err
 
         target = (data.get('target') or '').strip()
-        track_warnings: list = []
-        selected_modules = data.get('selected_modules')
-        if target and selected_modules is not None:
-            # New shape: explicit module subset against the picked
-            # release's upstream versions. Pure — no local-state read.
-            from services.upgrade.resolver import ResolverError
-            try:
-                modules = _modules_for_prepare(target, selected_modules)
-            except ResolverError as e:
-                return jsonify({"error": str(e)}), 502
-        elif target:
-            # Legacy track-flow shape (local-state-aware). Backed by
-            # _modules_from_track which reads `current_versions`.
-            from services.upgrade.resolver import ResolverError
-            try:
-                modules, track_warnings = _modules_from_track(
-                    target, data.get('opted_in_optional') or [],
-                    data.get('opted_in_reinstall') or [],
-                )
-            except ResolverError as e:
-                return jsonify({"error": str(e)}), 502
-        else:
-            modules = data.get('modules', {})
+        if not target:
+            # Legacy shapes posted a module dict; download-only needs the ref.
+            target = ((data.get('modules') or {}).get('intact') or '').strip()
+        if not target:
+            return jsonify({"error": "target (release tag) required"}), 400
 
-        if not modules:
-            return jsonify({"error": "No modules selected for package"}), 400
-
-        # NOTE: no downgrade check here on purpose. The prepare-side
-        # machine is often DIFFERENT from the target — a build server
-        # at 0.76.5 may legitimately prepare a 0.75.6 package destined
-        # for a customer who's still on 0.74.0. The downgrade guard
-        # lives in services/upgrade/velociraptor.py where it checks
-        # the TARGET's .env at apply time, which is the only point
-        # where "current vs requested" has a meaningful answer.
-
-        # Create workflow run — behind the single-writer gate (prepare mutates
-        # staging + the config.yaml versions block, so it serializes with
-        # upgrades). Mutex closes the double-click TOCTOU.
+        # Create workflow run — behind the single-writer gate (prepare writes
+        # into the package staging dir, so it serializes with upgrades). The
+        # mutex closes the double-click TOCTOU.
         with _UPGRADE_START_MUTEX:
             blocked = _upgrade_gate(force=bool((data or {}).get('force')))
             if blocked:
@@ -960,52 +886,22 @@ def prepare_upgrade_package():
             run_id = create_automation_run(
                 automation_type="prepare_package",
                 name="Prepare Upgrade Package",
-                details={
-                    "trigger": "manual",
-                    "modules": modules
-                }
+                details={"trigger": "manual", "target": target},
             )
-        add_log_to_run(run_id, "Starting package preparation", "info")
-        add_log_to_run(run_id, f"Modules: {', '.join(modules.keys())}", "info")
+        add_log_to_run(run_id, f"Fetching the prebuilt release package for {target}", "info")
         for line in _quota_audit_lines(2):
             add_log_to_run(run_id, line, "info")
-        for w in track_warnings:
-            add_log_to_run(run_id, w, "warning")
         update_run_status(run_id, "running", progress=5)
 
-        # Calculate total steps for progress tracking
-        # Each module has different number of operations:
-        # - ELK: 3 images (elasticsearch, kibana, logstash)
-        # - Timesketch: 1 image
-        # - Plaso: 1 image
-        # - IRIS: 2 images (app, nginx)
-        # - Velociraptor: 1 binary download
-        # - CloudTrail (AWS SIGMA rule pack): 1 artifact
-        # - DFIR-O365RC (Microsoft 365 UAL): 1 image
-        # - Intact.AI: 2 source copies (backend, frontend)
-        # Plus: manifest (1) + archive (1)
-        steps_per_module = {
-            'elk': 3,
-            'timesketch': 1,
-            'plaso': 1,
-            'iris': 2,
-            'velociraptor': 1,
-            'aws_sigma': 1,
-            'o365rc': 1,
-            'intact': 2,
-            'volweb': 2,
-            'portainer': 2,
-        }
-        total_steps = sum(steps_per_module.get(m, 1) for m in modules.keys()) + 2  # +2 for manifest and archive
-        completed_steps = [0]
-
         from services.workflow_service import register_cancel_event, unregister_cancel
-        cancel_event_prep = register_cancel_event(run_id)
+        register_cancel_event(run_id)
 
-        # Run package preparation in background
+        # Download the package in the background
         def run_prepare():
+            # Imported first so the except clause below can always name it.
+            from services.upgrade.download import (
+                download_release_package, PackageDownloadCancelled)
             try:
-                from services.upgrade.package import prepare_upgrade_package as do_prepare
                 from services.connectivity import require_internet
                 if not require_internet(run_id, "Prepare upgrade package"):
                     return
@@ -1013,98 +909,53 @@ def prepare_upgrade_package():
                 def logger(msg, level="info"):
                     add_log_to_run(run_id, msg, level)
 
-                    # Track progress based on completion messages
-                    if level == "success":
-                        # Image saved or binary downloaded
-                        if msg.strip().startswith("Done (") or msg.strip().startswith("Downloaded ("):
-                            completed_steps[0] += 1
-                        # Intact.AI source copies
-                        elif "source copied" in msg:
-                            completed_steps[0] += 1
-                        # Manifest created
-                        elif "Created manifest.json" in msg:
-                            completed_steps[0] += 1
-                        # Package archive created
-                        elif "Package created:" in msg:
-                            completed_steps[0] += 1
+                # DOWNLOAD-ONLY: the package is the CI-built artifact attached
+                # to the GitHub Release, produced from that release's OWN code.
+                # Nothing is built on this machine — building on-box is what
+                # produced the factor-5 / "Unknown module" bug class.
+                # /api/upgrade/refs only offers releases that ship a package, so
+                # a miss here means the release was retargeted, or its CI build
+                # has not run yet.
+                _dl_pct = [5]
 
-                        # Calculate progress (5% start, 95% for work, 100% at end)
-                        progress = 5 + int((completed_steps[0] / total_steps) * 90)
-                        update_run_status(run_id, "running", progress=min(progress, 95))
+                def _dl_progress(frac):
+                    p = min(95, 5 + int(frac * 90))
+                    if p > _dl_pct[0]:
+                        _dl_pct[0] = p
+                        update_run_status(run_id, "running", progress=p)
 
-                # If the operator picked a RELEASE that already ships a CI-built
-                # package, DOWNLOAD + reassemble it instead of rebuilding on-box.
-                # It's the verified artifact built by the target release's OWN
-                # code (no module-blind / factor-5 risk), it saves the whole
-                # on-box build, and — for air-gap — it's the same tarball the
-                # operator carries in and imports. Whole package (module subset
-                # is ignored for a CI release; selection happens at apply/import).
-                # Falls back to the on-box build below for the `development`
-                # branch / pre-CI releases that have no CI asset, or if the
-                # download fails.
-                if target:
-                    try:
-                        from services.upgrade.download import (
-                            find_release_package, download_release_package,
-                            PackageDownloadCancelled)
-                        if find_release_package(target, logger=logger):
-                            logger(f"Release {target} has a prebuilt CI package — "
-                                   f"downloading + reassembling it (no on-box build).",
-                                   "info")
-                            # Move the progress bar during the download —
-                            # throttled to whole-percent changes so we don't
-                            # hammer the run store on every chunk.
-                            _dl_pct = [5]
-                            def _dl_progress(frac):
-                                p = min(95, 5 + int(frac * 90))
-                                if p > _dl_pct[0]:
-                                    _dl_pct[0] = p
-                                    update_run_status(run_id, "running", progress=p)
-                            pkg_path = download_release_package(
-                                target, dest_dir="/data/upgrade_packages",
-                                run_id=run_id, logger=logger,
-                                progress_cb=_dl_progress)
-                            if pkg_path:
-                                _save_package_info({
-                                    'run_id': run_id,
-                                    'path': pkg_path,
-                                    'name': os.path.basename(pkg_path),
-                                    'size': os.path.getsize(pkg_path),
-                                    'created_at': time.time(),
-                                })
-                                add_log_to_run(run_id, f"Package ready for download: {os.path.basename(pkg_path)}", "success")
-                                add_log_to_run(run_id, "Note: Preparing a new package will replace this one", "info")
-                                update_run_status(run_id, "completed", progress=100)
-                                return
-                    except PackageDownloadCancelled:
-                        return  # 'cancelled' state already set by request_stop()
-                    except Exception as _de:
-                        add_log_to_run(run_id, f"CI package download failed "
-                                       f"({type(_de).__name__}: {_de}); building on-box "
-                                       f"instead.", "warning")
+                pkg_path = download_release_package(
+                    target, dest_dir="/data/upgrade_packages",
+                    run_id=run_id, logger=logger, progress_cb=_dl_progress)
 
-                result = do_prepare(modules, run_id, logger)
+                if not pkg_path:
+                    msg = (f"Release '{target}' ships no downloadable upgrade "
+                           f"package, and nothing is built on this machine. "
+                           f"Run the build-release-package workflow for this "
+                           f"tag, then retry.")
+                    add_log_to_run(run_id, msg, "error")
+                    update_run_status(run_id, "failed", progress=0, error=msg)
+                    return
 
-                if result.get('success'):
-                    # Store package info (only one package at a time, overwrites previous)
-                    _save_package_info({
-                        'run_id': run_id,
-                        'path': result['package_path'],
-                        'name': result['package_name'],
-                        'size': result['package_size'],
-                        'created_at': time.time()
-                    })
-                    add_log_to_run(run_id, f"Package ready for download: {result['package_name']}", "success")
-                    add_log_to_run(run_id, "Note: Preparing a new package will replace this one", "info")
-                    update_run_status(run_id, "completed", progress=100)
-                else:
-                    add_log_to_run(run_id, f"Package preparation failed: {result.get('error', 'Unknown error')}", "error")
-                    update_run_status(run_id, "failed", progress=0, error=result.get('error'))
+                _save_package_info({
+                    'run_id': run_id,
+                    'path': pkg_path,
+                    'name': os.path.basename(pkg_path),
+                    'size': os.path.getsize(pkg_path),
+                    'created_at': time.time(),
+                })
+                add_log_to_run(run_id, f"Package ready for download: "
+                                       f"{os.path.basename(pkg_path)}", "success")
+                add_log_to_run(run_id, "Note: Preparing a new package will "
+                                       "replace this one", "info")
+                update_run_status(run_id, "completed", progress=100)
 
+            except PackageDownloadCancelled:
+                return  # 'cancelled' already set by request_stop()
             except Exception as e:
-                # If the user clicked Stop, the killed subprocess raised
-                # on its way out — that's not a real failure. Let the
-                # 'cancelled' state (already set by request_stop()) stand.
+                # If the operator clicked Stop, the aborted download raised on
+                # its way out — that's not a real failure. Let the 'cancelled'
+                # state stand.
                 from services.workflow_service import is_cancelled, get_automation_run
                 wf = get_automation_run(run_id) or {}
                 if is_cancelled(run_id) or wf.get('status') == 'cancelled':
@@ -1200,16 +1051,12 @@ def start_online_upgrade():
             add_log_to_run(run_id, w, "warning")
         update_run_status(run_id, "running", progress=2)
 
-        # Progress estimation: split the visible 2-95% band between
-        # prepare-side image saves + apply-side per-module completions.
-        steps_per_module_prepare = {
-            'elk': 3, 'timesketch': 1, 'plaso': 1, 'iris': 2,
-            'velociraptor': 1, 'aws_sigma': 1, 'o365rc': 1,
-            'volweb': 2, 'intact': 2, 'portainer': 2,
-        }
-        prepare_steps_total = sum(steps_per_module_prepare.get(m, 1) for m in modules) + 1
-        apply_steps_total = len(modules)
-        total_steps = max(prepare_steps_total + apply_steps_total, 1)
+        # Progress estimation over the visible 2-95% band. DOWNLOAD-ONLY: there
+        # are no prepare-side image saves to count any more (nothing is built
+        # here), so the band belongs entirely to apply-side per-module
+        # completions. The download phase reports its own MB/percentage lines
+        # into the run log via download_release_package().
+        total_steps = max(len(modules), 1)
         completed_steps = [0]
 
         def bump_progress_from_log(msg, level):
