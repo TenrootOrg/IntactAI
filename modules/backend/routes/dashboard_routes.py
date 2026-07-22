@@ -131,6 +131,49 @@ def stop_automation(run_id):
     if run.get('status') not in ('running', 'pending'):
         return jsonify({"error": f"Cannot stop workflow in '{run.get('status')}' state"}), 400
 
+    # POINT OF NO RETURN: an upgrade that has committed Phase 1 cannot be
+    # stopped, and pretending otherwise is worse than refusing.
+    #
+    # request_stop() sets an IN-MEMORY cancel event. Phase 1 ends by swapping
+    # the backend image and restarting the container — which destroys that
+    # event along with the process holding it. The boot-time resume in app.py
+    # then finds the pending upgrade_state, registers a FRESH (unset) cancel
+    # event, and drives Phase 2 to completion. Meanwhile update_run_status()
+    # and add_log_to_run() both hard-ignore everything once a run is
+    # 'cancelled', so none of that work is visible.
+    #
+    # Observed 2026-07-22: operator hit Stop at 5%, UI showed "cancelled",
+    # and the platform went on to fully upgrade itself — backend swapped and
+    # four modules installed — with no trace in the run log.
+    #
+    # Refusing is the honest answer AND the safe one: once the backend runs
+    # the new image, Phase 2 is what converges the modules to match it.
+    # Stopping in between strands the box on new platform code driving old
+    # module versions. Pre-commit cancels (phase1, before any state is
+    # written) still work exactly as before.
+    try:
+        from services.storage.base import get_pending_upgrade
+        pending = get_pending_upgrade()
+        if pending and pending.get('run_id') == run_id:
+            return jsonify({
+                "error": (
+                    "This upgrade has passed the point of no return: Phase 1 "
+                    "already swapped the backend image, and Phase 2 is what "
+                    "brings the modules up to match it. Stopping now would "
+                    "leave this host running new platform code against old "
+                    "module versions. Let it finish — if it fails, the run "
+                    "reports the failure and the rollback snapshot is still "
+                    "available."
+                ),
+                "phase": pending.get('phase'),
+                "run_id": run_id,
+            }), 409
+    except Exception as e:
+        # Never let this guard block a legitimate stop of a NON-upgrade
+        # workflow just because the upgrade-state lookup misbehaved.
+        print(f"[STOP-GUARD] upgrade-state check failed for {run_id}: {e}",
+              flush=True)
+
     request_stop(run_id)
     return jsonify({"status": "cancelled", "run_id": run_id})
 
