@@ -312,7 +312,13 @@ def preflight_package(package_path: str, logger: Callable = None) -> Dict:
         # The most common silent defect: a Full-mode release whose backend image
         # is absent or named for a different tag makes the box rebuild from
         # source. Inspection only — no docker load.
-        tgt = backend_target_tag()
+        # The tag the TARGET will resolve, not the one this box currently has.
+        # Phase 1 merges the release's versions: block into config.yaml BEFORE
+        # backend_target_tag() is consulted, so the post-merge answer is the
+        # package's own intact version. Reading the pre-merge pin here would
+        # make a perfectly good package look broken on every box that is not
+        # already on the target release — which is every box that needs it.
+        tgt = (versions.get('intact') or '').strip() or backend_target_tag()
         img_tar = os.path.join(package_dir, 'images', f'intact-backend-{tgt}.tar')
         src_compose = os.path.join(package_dir, 'source', 'intact', 'modules',
                                    'backend', 'docker-compose.yaml')
