@@ -79,6 +79,31 @@ def release_module_set(tag: str) -> dict:
     return modules
 
 
+def _stamp_backend_pin(tag: str) -> None:
+    """Set ``versions.backend`` to ``tag`` in the release checkout's config.yaml.
+
+    Surgical single-line edit on purpose: the whole-block rewriter would drop
+    every other pin and all the comments. A no-op when the pin already matches.
+    """
+    import re
+    cfg = os.path.join(os.environ.get("INTACT_PATH", "/app/workdir"), "config.yaml")
+    try:
+        with open(cfg) as f:
+            txt = f.read()
+        new, n = re.subn(r'^([ \t]+backend:[ \t]*).*$',
+                         lambda m: f"{m.group(1)}{tag}", txt, count=1, flags=re.M)
+        if not n:
+            print(f"[ci-package] WARNING: no versions.backend key in {cfg} to pin",
+                  flush=True)
+            return
+        if new != txt:
+            with open(cfg, "w") as f:
+                f.write(new)
+            print(f"[ci-package] pinned versions.backend -> {tag}", flush=True)
+    except Exception as e:
+        print(f"[ci-package] WARNING: could not pin versions.backend ({e})", flush=True)
+
+
 def _verify_package_usable(result: dict, tag: str):
     """Return an error string if the built package would not be usable by a box
     upgrading to ``tag``, else None.
@@ -157,6 +182,15 @@ def main() -> int:
     ap.add_argument("--print-modules", action="store_true",
                     help="print the resolved module set and exit (no build)")
     args = ap.parse_args()
+
+    # Pin the backend image tag to the release BEFORE building. The checkout is
+    # ephemeral in CI and the tag is authoritative here, so this is the natural
+    # place to resolve it — `development` (or any stale value) carried in from
+    # the branch the release was cut from would otherwise ship as-is and send
+    # every upgraded box hunting for intact-backend:development, an image the
+    # package does not contain. Doing it on the checkout means the packaged
+    # source inherits it too, since prepare copies the tree.
+    _stamp_backend_pin(args.tag)
 
     modules = release_module_set(args.tag)
     if args.print_modules:
