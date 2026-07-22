@@ -1574,6 +1574,41 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             package_dir = package_dir_raw
             extract_dir = package_dir_raw
 
+    # Manifest-sized disk check — the SAME check run_offline_upgrade_workflow
+    # does before ITS module loop, but that one only covers Phase 1 (which,
+    # for a real old->new upgrade, runs on the OLD release's code and may not
+    # even HAVE this check — e.g. intact-20260615 predates it entirely). This
+    # is Phase 2: the NEW code, and where the bulk of the disk-hungry work
+    # actually happens (loading every OTHER module's images). Without this,
+    # NO disk check of any kind — not even a fixed floor — ever ran here, in
+    # ANY release, so a box tight on disk could sail through Phase 1 and then
+    # ENOSPC mid-module-loop with zero advance warning. Best-effort: reads
+    # manifest.json straight from package_dir, which Phase 1 already
+    # extracted and hasn't been cleaned up yet at this point.
+    try:
+        manifest_path = os.path.join(package_dir, 'manifest.json') if package_dir else None
+        if manifest_path and os.path.exists(manifest_path):
+            with open(manifest_path) as _mf:
+                _resume_manifest = json.load(_mf)
+            from .config_validate import required_free_gb_for_manifest, preflight_environment as _pe
+            _pkg_bytes = os.path.getsize(package_path) if (package_path and os.path.exists(package_path)) else 0
+            _need = required_free_gb_for_manifest(_resume_manifest, _pkg_bytes)
+            _ok2, _errs2 = _pe(logger=None, min_free_gb=_need)
+            if not _ok2:
+                log(f"Insufficient disk for the remaining modules (~{_need} GiB "
+                    f"needed, sized from the package manifest):", "error")
+                for _e in _errs2:
+                    log(f"  - {_e}", "error")
+                return {"success": False, "status": "failed",
+                        "error": "; ".join(_errs2),
+                        "results": {}, "completed": 0, "total": 0, "versions": {}}
+            log(f"  Disk preflight (Phase 2): ~{_need} GiB required, satisfied.", "info")
+        else:
+            log("  Phase-2 disk check skipped (no manifest.json at package_dir — "
+                "package already cleaned up or an older state format)", "warning")
+    except Exception as _de:
+        log(f"  Phase-2 manifest-sized disk check skipped ({type(_de).__name__}: {_de})", "warning")
+
     # ── Phase 2 (NEW code) finalizes intact's version + config pin ───────────
     # Phase 1 copied the package source and restarted; we are now executing the
     # JUST-INSTALLED code. Re-stamp WORKDIR/VERSION and re-write config.yaml's
