@@ -2095,6 +2095,22 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
         update_upgrade_phase(run_id, 'completed')
         clear_upgrade_state(run_id)
 
+        # Health gate on the RESUME path. Every Full-mode upgrade finishes HERE,
+        # not in run_offline_upgrade_workflow: Phase 1 recreates the container and
+        # Phase 2 resumes in the new one. Wiring the gate only into the offline
+        # finalizer left it dead on the exact path it exists to watch — the
+        # 2026-07-22 run that reported success while the backend sat on the old
+        # image would still have gone unreported.
+        try:
+            _target = (state.get('modules') or {}).get('intact')
+            _hg = post_upgrade_health_gate(logger=log, expected_backend_tag=_target)
+            results["_health"] = _hg
+            if not _hg.get("healthy") and overall_status == "success":
+                overall_status = "completed_with_warnings"
+        except Exception as _he:
+            log(f"  post-upgrade health gate skipped "
+                f"({type(_he).__name__}: {_he})", "warning")
+
         # Print summary
         log("", "info")
         log(f"{'='*50}", "info")
