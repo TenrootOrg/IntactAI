@@ -100,7 +100,10 @@ versions:
   # release in lockstep so a SINGLE pin drives both (same pattern as
   # IRIS, where `iris: v2.4.27` drives 4 containers).
   volweb: '3.16.0'
-  backend: '1.0.0'
+  # Backend runtime image tag. Full-mode: the backend runs code baked into
+  # intact-backend:<this value>, never from host bind-mounts, so this MUST
+  # track the release — it is the tag upgrade convergence looks for.
+  backend: intact-20260615
 
   # ── External sidecar pins (postgres / opensearch / redis / nginx / rabbitmq) ──
   # 2026-06-14 refactor: these used to be scraped live from each

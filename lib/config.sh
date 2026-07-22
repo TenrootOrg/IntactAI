@@ -216,10 +216,22 @@ update_env_files() {
         local ts_pass=$(read_config "['modules']['timesketch']['password']")
         local plaso_version=$(read_config "['versions']['plaso']")
         local o365rc_version=$(read_config "['versions']['o365rc']")
+        local backend_version=$(read_config "['versions']['backend']")
 
         update_env_var "$backend_env" "TIMESKETCH_USER" "$ts_user"
         update_env_var "$backend_env" "TIMESKETCH_PASS" "$ts_pass"
         update_env_var "$backend_env" "PLASO_VERSION" "$plaso_version"
+        # Full-mode: the backend runs code baked into intact-backend:<tag>, and
+        # its compose declares BACKEND_VERSION as REQUIRED (no default) so a box
+        # can never silently boot a stale image. Stamp it from versions.backend
+        # here or a fresh install cannot come up at all.
+        [[ -n "$backend_version" && "$backend_version" != "None" ]] && update_env_var "$backend_env" "BACKEND_VERSION" "$backend_version"
+        # INTACT_HOST_PATH was historically only a shell export from install.sh,
+        # never in .env — `docker restart` preserves mounts so it never showed.
+        # A container RECREATE resolves the compose `:-` default instead, which
+        # silently breaks non-default install paths. Stamp it so it survives
+        # every recreate, on every surface.
+        update_env_var "$backend_env" "INTACT_HOST_PATH" "$SCRIPT_DIR"
         # Azure (DFIR-O365RC) image version — consumed at scan time by
         # services/azure/dfir_o365rc.py.
         [[ -n "$o365rc_version" ]] && update_env_var "$backend_env" "DFIR_O365RC_VERSION" "$o365rc_version"

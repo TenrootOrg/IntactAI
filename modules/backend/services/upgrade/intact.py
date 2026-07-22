@@ -3,9 +3,345 @@
 
 import os
 import re
+import shutil
 from typing import Dict, Callable, Optional
 
-from .base import WORKDIR, run_command
+from .base import WORKDIR, run_command, load_docker_image
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Full-mode backend machinery (ported verbatim from intact-20260721).
+#
+# This release runs the backend from the baked image intact-backend:<release>,
+# never from host code bind-mounts. Phase 1 therefore LOADS the image shipped in
+# the package and RECREATES the container onto it before Phase 2 runs, so the
+# NEW release's code drives the rest of its own upgrade. See WAVE_F_PLAN.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _mirror_tree(src: str, dst: str, protect=(), logger=None) -> Dict:
+    """Mirror src -> dst so dst becomes an EXACT copy of the new release's tree:
+    overwrite every file from src AND delete files dst still has that src no
+    longer ships. The delete half is the whole point — a plain ``cp -a src/*``
+    only ever adds/overwrites, so a module retired upstream (e.g. the old
+    services/agentic/chat.py, the pre-package analyzers.py/reports.py monoliths,
+    engagement_routes.py, downloaded skill packs) would linger forever and could
+    shadow its replacement. Mirroring removes them.
+
+    Operator + runtime data is spared: top-level relpaths in ``protect`` (e.g.
+    '.env', 'downloads') are never copied, never deleted, never descended into,
+    and any __pycache__ is ignored (regenerated on import). Pure-Python so it
+    works in the backend container without an rsync dependency.
+
+    Returns {"copied": int, "deleted": [relpath, ...]}.
+    """
+    log = logger or (lambda m, l="info": None)
+    protect = set(protect)
+
+    def _spared(rel: str) -> bool:
+        parts = rel.split('/')
+        if '__pycache__' in parts:
+            return True
+        for p in protect:
+            if rel == p or rel.startswith(p + '/'):
+                return True
+        return False
+
+    def _rel(root_rel: str, name: str) -> str:
+        return name if not root_rel else f"{root_rel}/{name}"
+
+    # 1) DELETE: bottom-up so a stale dir empties out before we rmdir it.
+    deleted = []
+    for root, dirs, files in os.walk(dst, topdown=False):
+        rr = os.path.relpath(root, dst)
+        rr = '' if rr == '.' else rr
+        for name in files:
+            rel = _rel(rr, name)
+            if _spared(rel):
+                continue
+            if not os.path.exists(os.path.join(src, rel)):
+                try:
+                    os.remove(os.path.join(root, name))
+                    deleted.append(rel)
+                except OSError:
+                    pass
+        for name in dirs:
+            rel = _rel(rr, name)
+            if _spared(rel):
+                continue
+            d = os.path.join(root, name)
+            if not os.path.exists(os.path.join(src, rel)) and not os.listdir(d):
+                try:
+                    os.rmdir(d)
+                    deleted.append(rel + '/')
+                except OSError:
+                    pass
+
+    # 2) COPY: overwrite dst with everything src ships (minus spared paths).
+    copied = 0
+    for root, dirs, files in os.walk(src, topdown=True):
+        rr = os.path.relpath(root, src)
+        rr = '' if rr == '.' else rr
+        dirs[:] = [d for d in dirs if not _spared(_rel(rr, d))]
+        dst_root = dst if not rr else os.path.join(dst, rr)
+        os.makedirs(dst_root, exist_ok=True)
+        for name in files:
+            rel = _rel(rr, name)
+            if _spared(rel):
+                continue
+            shutil.copy2(os.path.join(root, name), os.path.join(dst_root, name))
+            copied += 1
+
+    log(f"  mirror {os.path.basename(dst.rstrip('/'))}: {copied} file(s) copied, "
+        f"{len(deleted)} stale entr{'y' if len(deleted) == 1 else 'ies'} removed",
+        "info")
+    if deleted:
+        preview = ", ".join(deleted[:12])
+        more = f" (+{len(deleted) - 12} more)" if len(deleted) > 12 else ""
+        log(f"    removed: {preview}{more}", "info")
+    return {"copied": copied, "deleted": deleted}
+
+
+# ---------------------------------------------------------------------------
+# Anti-brick: source snapshot + importability gate.
+#
+# _mirror_tree replaces the LIVE backend source in place. Before these
+# helpers, a release with a syntax error meant the backend crash-looped on
+# import after the restart — whole platform down, manual recovery only,
+# because no copy of the old tree existed and nothing verified the new tree
+# before restarting into it.
+# ---------------------------------------------------------------------------
+
+
+ROLLBACK_ROOT = "/app/data/tmp"          # host bind mount — survives restarts
+ROLLBACK_PREFIX = "intact-rollback-"
+
+
+def snapshot_intact_tree(run_id, backend_dir, nginx_html, logger=None):
+    """Snapshot the CURRENT install to ROLLBACK_ROOT/intact-rollback-<run_id>/
+    ({backend/, frontend/}) so a bad release can be rolled back. Keeps exactly
+    one snapshot (deletes previous intact-rollback-*). Excludes backend/.env
+    (the mirror never touches it either) and frontend/downloads/ (large,
+    regenerated); __pycache__ is skipped by _mirror_tree itself. Source-only
+    tree is tens of MB — deps live in the image, not the tree.
+
+    Returns the snapshot path, or None on failure (caller proceeds LOUDLY
+    unprotected — a full disk shouldn't block upgrades, but must be visible).
+    """
+    log = logger or (lambda m, l="info": None)
+    try:
+        import glob as _glob
+        tag = (run_id or 'manual').replace('/', '_')
+        snap = os.path.join(ROLLBACK_ROOT, f"{ROLLBACK_PREFIX}{tag}")
+        for old in _glob.glob(os.path.join(ROLLBACK_ROOT, f"{ROLLBACK_PREFIX}*")):
+            if old != snap:
+                shutil.rmtree(old, ignore_errors=True)
+        shutil.rmtree(snap, ignore_errors=True)
+        os.makedirs(os.path.join(snap, 'backend'), exist_ok=True)
+        os.makedirs(os.path.join(snap, 'frontend'), exist_ok=True)
+        _mirror_tree(backend_dir, os.path.join(snap, 'backend'),
+                     protect=('.env',), logger=None)
+        _mirror_tree(nginx_html, os.path.join(snap, 'frontend'),
+                     protect=('downloads',), logger=None)
+        log(f"  Rollback snapshot of the current install saved to {snap}", "info")
+        return snap
+    except Exception as e:
+        log(f"  ⚠ NO ROLLBACK SNAPSHOT ({type(e).__name__}: {e}) — proceeding "
+            f"UNPROTECTED: a broken release cannot be auto-rolled-back", "warning")
+        return None
+
+
+def restore_intact_tree(snapshot_dir, backend_dir, nginx_html, logger=None) -> bool:
+    """Exact restore of the pre-upgrade install from a snapshot_intact_tree
+    snapshot — including DELETING files the bad release added (mirror
+    semantics both ways). Spares the same operator paths (.env, downloads/).
+    """
+    log = logger or (lambda m, l="info": None)
+    try:
+        _mirror_tree(os.path.join(snapshot_dir, 'backend'), backend_dir,
+                     protect=('.env',), logger=log)
+        _mirror_tree(os.path.join(snapshot_dir, 'frontend'), nginx_html,
+                     protect=('downloads',), logger=log)
+        run_command(f"chown -R 1000:1000 {backend_dir}/", logger=None)
+        run_command(f"chown -R 1000:1000 {nginx_html}/", logger=None)
+        log("  Previous install restored from rollback snapshot", "success")
+        return True
+    except Exception as e:
+        log(f"  RESTORE FAILED ({type(e).__name__}: {e}) — snapshot kept at "
+            f"{snapshot_dir} for manual recovery", "error")
+        return False
+
+
+def cleanup_rollback_snapshots(logger=None):
+    """Remove all intact-rollback-* snapshots. Called when an upgrade finishes
+    on code that has proven it boots (Phase 2 runs ON the new code, so reaching
+    its finalizer is the proof). Failed upgrades keep their snapshot for manual
+    recovery; the 168h sweep in base.sweep_stale_upgrade_staging reaps leftovers.
+    """
+    log = logger or (lambda m, l="info": None)
+    import glob as _glob
+    for snap in _glob.glob(os.path.join(ROLLBACK_ROOT, f"{ROLLBACK_PREFIX}*")):
+        shutil.rmtree(snap, ignore_errors=True)
+        log(f"  Removed rollback snapshot {os.path.basename(snap)} (upgrade "
+            f"finished on the new code)", "info")
+
+
+
+_BACKEND_CODE_MOUNT_SENTINEL = re.compile(r'\./services:/app/services')
+
+
+def backend_full_mode(compose_path: str) -> bool:
+    """True when the backend compose runs code from the IMAGE (the Full,
+    post-flip model — no ./services code bind-mount). False = legacy
+    source-mounted (restart path). Missing/unreadable file → False (safe:
+    default to the proven restart path)."""
+    try:
+        with open(compose_path) as f:
+            return not _BACKEND_CODE_MOUNT_SENTINEL.search(f.read())
+    except OSError:
+        return False
+
+
+def backend_target_tag() -> str:
+    """Image tag the target release wants = versions.backend (the release id),
+    read from the (post-merge) operator config.yaml. The backend image is
+    always named after the actual release — never a static placeholder like
+    the old '1.0.0' — so an absent/garbled config key falls back to the
+    release's own VERSION file (the same source of truth every other release
+    identifier comes from), and only as a last resort to 'development'."""
+    try:
+        import yaml
+        with open(os.path.join(WORKDIR, 'config.yaml')) as f:
+            cfg = yaml.safe_load(f) or {}
+        tag = (cfg.get('versions') or {}).get('backend')
+        tag = str(tag).strip() if tag not in (None, '') else ''
+        if tag:
+            return tag
+    except Exception:
+        pass
+    try:
+        with open(os.path.join(WORKDIR, 'VERSION')) as f:
+            v = f.read().strip()
+        if v:
+            return v
+    except Exception:
+        pass
+    return 'development'
+
+
+def running_backend_image() -> Optional[str]:
+    """The image ref the LIVE intact_backend container was created from
+    (ground truth for the old tag / swap detection). None if not resolvable."""
+    r = run_command("docker inspect -f '{{.Config.Image}}' intact_backend",
+                    logger=None, timeout=15)
+    out = (r.get('stdout') or '').strip() if r.get('success') else ''
+    return out or None
+
+
+_BACKEND_FINGERPRINT_SKIP_DIRS = {'__pycache__', 'downloads', 'report_downloads',
+                                  'upgrade_packages', 'upload_data'}
+_BACKEND_FINGERPRINT_SKIP_FILES = {'.env'}
+
+
+def backend_source_fingerprint(backend_dir: Optional[str] = None) -> str:
+    """SHA-256 over every file's actual bytes under modules/backend/ (sorted
+    by relative path), skipping .env/runtime-only dirs. Deliberately NOT a
+    comparison of built Docker image IDs — those are sensitive to file mtimes
+    in the build context (routine git checkouts/chown touch mtimes with zero
+    content change) and are not guaranteed reproducible across separate
+    `docker build` invocations even for byte-identical source. This is a pure
+    content hash: the only thing that can move it is an actual code change."""
+    import hashlib
+    root = backend_dir or os.path.join(WORKDIR, 'modules', 'backend')
+    h = hashlib.sha256()
+    try:
+        paths = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in sorted(dirnames) if d not in _BACKEND_FINGERPRINT_SKIP_DIRS]
+            for fn in sorted(filenames):
+                if fn in _BACKEND_FINGERPRINT_SKIP_FILES:
+                    continue
+                paths.append(os.path.join(dirpath, fn))
+        for p in sorted(paths):
+            rel = os.path.relpath(p, root).encode('utf-8', 'replace')
+            h.update(rel)
+            try:
+                with open(p, 'rb') as f:
+                    h.update(f.read())
+            except OSError:
+                pass
+    except Exception:
+        return ''
+    return h.hexdigest()
+
+
+_BACKEND_FINGERPRINT_FILE = '/app/data/backend-source.applied.sha256'
+
+
+def record_backend_source_fingerprint(logger: Callable = None) -> None:
+    """Save the CURRENT live tree's fingerprint as 'what's actually running'
+    — called right after a successful swap so the next boot's drift check has
+    a baseline to compare against."""
+    log = logger or (lambda m, l="info": None)
+    try:
+        fp = backend_source_fingerprint()
+        if fp:
+            with open(_BACKEND_FINGERPRINT_FILE, 'w') as f:
+                f.write(fp + '\n')
+    except Exception as e:
+        log(f"  (could not record backend source fingerprint: {e})", "warning")
+
+
+def read_recorded_backend_source_fingerprint() -> Optional[str]:
+    try:
+        with open(_BACKEND_FINGERPRINT_FILE) as f:
+            v = f.read().strip()
+        return v or None
+    except OSError:
+        return None
+
+
+def ensure_backend_runtime_image(package_dir: str, target_tag: str,
+                                 run_id: Optional[str] = None,
+                                 logger: Callable = None) -> Dict:
+    """Make `intact-backend:<target_tag>` present locally BEFORE any recreate.
+
+    Order (idempotent — safe on crash-resume): already-present → refresh from the
+    bundled tar if one ships (loads a moved dev tag's new bits) → load the bundled
+    tar → FAIL. Runs in Phase 1 before the snapshot/mirror, so a FAIL leaves the
+    platform fully up and untouched.
+
+    Returns {"available": bool, "error": str}.
+    """
+    log = logger or (lambda m, l="info": None)
+    image = f"intact-backend:{target_tag}"
+    tar = (os.path.join(package_dir, 'images', f'intact-backend-{target_tag}.tar')
+           if package_dir else None)
+
+    present = run_command(f"docker image inspect {image}",
+                          logger=None, timeout=30).get('success')
+    if present:
+        # Full mode always ships a freshly-baked image; refresh from the tar so a
+        # moved tag (dev 'development') picks up new bits. Offline already loaded
+        # it via load_all_bundled_images — this is a cheap no-op there.
+        if tar and os.path.isfile(tar):
+            load_docker_image(tar, logger=log, run_id=run_id)
+        return {"available": True, "error": ""}
+
+    if tar and os.path.isfile(tar):
+        log(f"  Loading bundled backend image {os.path.basename(tar)}...", "info")
+        res = load_docker_image(tar, logger=log, run_id=run_id)
+        if res.get('success') and run_command(
+                f"docker image inspect {image}", logger=None, timeout=30).get('success'):
+            return {"available": True, "error": ""}
+
+    return {"available": False,
+            "error": (f"backend runtime image {image} is neither present nor "
+                      f"bundled in the package — this Full-mode release cannot be "
+                      f"applied. Re-prepare the package with a Wave-F-capable "
+                      f"release (the prepare step bakes + bundles the image).")}
+
+
+
 
 
 def merge_versions_from_new_config(
@@ -676,6 +1012,37 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
         log("Intact.AI source not included in package, skipping...", "warning")
         return {"success": True, "skipped": True}
 
+    # ── Full-mode image-swap detection (BEFORE anything is mutated) ──────────
+    # This release runs the backend from a baked image, so Phase 1 loads the
+    # image the package ships and hands off to a RECREATE — the new code then
+    # drives Phase 2. Deciding (and failing) here, before the snapshot and the
+    # source copy, means a package missing its backend image aborts with the
+    # platform completely untouched.
+    needs_swap = False
+    target_tag = backend_target_tag()          # = versions.backend (post-merge)
+    old_image = running_backend_image()
+    if has_backend:
+        target_compose = os.path.join(backend_source, 'docker-compose.yaml')
+        if backend_full_mode(target_compose):
+            needs_swap = True
+            log(f"Full-mode release detected — backend runs from image "
+                f"intact-backend:{target_tag} (swap + recreate)", "info")
+            _ens = ensure_backend_runtime_image(package_dir, target_tag,
+                                                run_id=run_id, logger=log)
+            if not _ens["available"]:
+                log(f"BACKEND RUNTIME IMAGE UNAVAILABLE — aborting the intact "
+                    f"upgrade with the platform untouched. {_ens['error']}", "error")
+                return {"success": False, "rolled_back": False,
+                        "needs_swap": True, "error": _ens["error"]}
+        else:
+            log("Target release is legacy source-mounted (no backend image) — "
+                "using the restart path.", "info")
+
+    # Anti-brick snapshot: capture the CURRENT install before the copy replaces
+    # it, so a broken release can be rolled back by the recreate helper instead
+    # of crash-looping the platform. Lives on the /app/data bind mount.
+    snapshot = snapshot_intact_tree(run_id, backend_dir, nginx_html, logger=log)
+
     # Merge the new release's versions: block into the operator's local
     # config.yaml. Without this, an operator on test-1 (config.yaml has
     # timesketch_opensearch: 2.11.0) who upgrades to test-2 would still
@@ -729,4 +1096,6 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
 
     log("Intact.AI Platform files updated", "success")
 
-    return {"success": True, "message": "Files updated"}
+    return {"success": True, "message": "Files updated",
+            "needs_swap": needs_swap, "target_tag": target_tag,
+            "old_image": old_image, "snapshot": snapshot}

@@ -4,7 +4,7 @@
 services:
   backend:
     container_name: intact_backend
-    image: intact-backend:${BACKEND_VERSION:-1.0.0}
+    image: intact-backend:${BACKEND_VERSION:?must be set via modules/backend/.env — see versions.backend in config.yaml}
     # `intact-backend` is a private local image name. See the matching
     # comment in modules/velociraptor/docker-compose.yaml for why we
     # need pull_policy: build — same reason here.
@@ -34,12 +34,6 @@ services:
       - ../../client_installers:/app/client_installers:rw  # Client installers (writable for MSI generation)
       - ../../data:/app/data  # SQLite database (intact.db) for workflows, configs, and reports
       - ../nginx/html/downloads:/app/downloads:rw  # Velociraptor binaries for offline collectors
-      - ./app.py:/app/app.py:ro  # Mount app.py for live code updates
-      - ./config.py:/app/config.py:ro  # Mount config.py for live code updates
-      - ./services:/app/services:ro  # Mount services for live code updates
-      - ./routes:/app/routes:ro  # Mount routes for live code updates
-      - ./config/default_blueprints.yaml:/app/config/default_blueprints.yaml:ro  # Live blueprint updates
-      - /app/logs  # Logs directory
       - upload_data:/data/uploads  # Shared volume for tus uploads
       # Shared memory-dump staging — same `intact_memory_dumps` docker
       # volume mounted into Velociraptor + VolWeb. Lets the backend's

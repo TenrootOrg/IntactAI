@@ -93,6 +93,38 @@ def run_startup_initialization():
         from services.upgrade import resume_upgrade_workflow
         from services.workflow_logger import WorkflowLogger
 
+        # A recreate-failed marker means the LAST boot was the recreate helper's
+        # ROLLBACK landing back on the OLD image (or, rarer, a manual restore).
+        # This MUST run BEFORE the pending read: if the awaiting_restart row is
+        # still there, resuming now would run Phase 2 on the OLD (rolled-back)
+        # code against NEW-release state. Fail the run + clear state first so the
+        # pending read below sees a clean slate.
+        try:
+            import glob as _glob, json as _json
+            from services.storage.base import clear_upgrade_state as _clear_state
+            from services.workflow_service import update_run_status as _urs, add_log_to_run as _alr
+            for _marker in _glob.glob('/app/data/tmp/recreate-failed-*.json'):
+                try:
+                    with open(_marker) as _mf:
+                        _info = _json.load(_mf)
+                    _rid = _info.get('run_id')
+                    _reason = _info.get('reason', 'backend recreate failed')
+                    _state = get_pending_upgrade()
+                    if _rid and _state and _state.get('run_id') == _rid:
+                        print(f"[STARTUP] recreate-failed marker for {_rid}: {_reason}", flush=True)
+                        _alr(_rid, f"Backend recreate failed: {_reason}", "error")
+                        _urs(_rid, "failed", error=_reason)
+                        _clear_state(_rid)
+                except Exception as _me:
+                    print(f"[STARTUP] recreate-failed marker parse error ({_marker}): {_me}", flush=True)
+                finally:
+                    try:
+                        os.remove(_marker)
+                    except OSError:
+                        pass
+        except Exception as _mke:
+            print(f"[STARTUP] recreate-failed marker check error: {_mke}", flush=True)
+
         pending = get_pending_upgrade()
         if pending:
             run_id = pending['run_id']
@@ -139,6 +171,46 @@ def run_startup_initialization():
 
             resume_thread = threading.Thread(target=resume_in_background, daemon=True)
             resume_thread.start()
+        else:
+            # No upgrade in flight — safe to tidy up after past swaps. Sweep any
+            # leaked recreate-helper container (it is --rm, but a killed one can
+            # linger), and prune intact-backend images beyond the running tag +
+            # the recorded previous tag so swap history doesn't fill the disk.
+            try:
+                import subprocess as _sp
+                _lst = _sp.run(
+                    ["docker", "ps", "-aq", "--filter", "name=intact-upgrade-helper-"],
+                    capture_output=True, text=True, timeout=15)
+                for _cid in (_lst.stdout or '').split():
+                    _sp.run(["docker", "rm", "-f", _cid], capture_output=True, timeout=15)
+                    print(f"[STARTUP] Removed stale recreate-helper container {_cid}", flush=True)
+            except Exception as _hse:
+                print(f"[STARTUP] recreate-helper sweep skipped: {_hse}", flush=True)
+
+            try:
+                import subprocess as _sp
+                _running = _sp.run(
+                    ["docker", "inspect", "-f", "{{.Config.Image}}", "intact_backend"],
+                    capture_output=True, text=True, timeout=15)
+                running_tag = (_running.stdout or '').strip()
+                keep = {running_tag} if running_tag else set()
+                try:
+                    with open('/app/data/backend-image.previous') as _pf:
+                        prev = _pf.read().strip()
+                    if prev:
+                        keep.add(prev)
+                except FileNotFoundError:
+                    pass
+                _tags = _sp.run(
+                    ["docker", "images", "intact-backend", "--format", "{{.Repository}}:{{.Tag}}"],
+                    capture_output=True, text=True, timeout=15)
+                for _img in (_tags.stdout or '').splitlines():
+                    _img = _img.strip()
+                    if _img and _img not in keep:
+                        _sp.run(["docker", "rmi", _img], capture_output=True, timeout=60)
+                        print(f"[STARTUP] Pruned old backend image {_img}", flush=True)
+            except Exception as _pe:
+                print(f"[STARTUP] backend-image retention prune skipped: {_pe}", flush=True)
     except Exception as e:
         print(f"[STARTUP] Could not check for pending upgrades: {e}", flush=True)
 
