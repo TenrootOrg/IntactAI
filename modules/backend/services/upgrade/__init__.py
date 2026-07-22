@@ -1484,7 +1484,16 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
             f"({type(_e).__name__}: {_e}); harmless leftover at "
             f"config.yaml.pre-upgrade-backup", "warning")
 
-    all_success = all(r.get('success', False) for r in results.values() if not isinstance(r, str))
+    # Underscore keys are run METADATA (_health from the post-upgrade gate,
+    # _workflow_error), not modules, and carry no `success` field — so the
+    # naive all() marked every run "failed: unknown" the instant the health
+    # gate ran at all, REGARDLESS of what it found. Observed on a genuinely
+    # clean upgrade: every module [OK], gate reported "OK", config-cleanup
+    # ran (a success-only step) — and the very next line was "Upgrade
+    # failed: unknown", because this all_success computation, unlike the
+    # failed-module list, was never updated to skip them.
+    all_success = all(r.get('success', False) for k, r in results.items()
+                      if not isinstance(r, str) and not k.startswith('_'))
     return {
         "success": all_success,
         "status": overall_status,
@@ -2178,7 +2187,16 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             f"({type(_e).__name__}: {_e}); harmless leftover at "
             f"config.yaml.pre-upgrade-backup", "warning")
 
-    all_success = all(r.get('success', False) for r in results.values() if not isinstance(r, str))
+    # Underscore keys are run METADATA (_health from the post-upgrade gate,
+    # _workflow_error), not modules, and carry no `success` field — so the
+    # naive all() marked every run "failed: unknown" the instant the health
+    # gate ran at all, REGARDLESS of what it found. Observed on a genuinely
+    # clean upgrade: every module [OK], gate reported "OK", config-cleanup
+    # ran (a success-only step) — and the very next line was "Upgrade
+    # failed: unknown", because this all_success computation, unlike the
+    # failed-module list, was never updated to skip them.
+    all_success = all(r.get('success', False) for k, r in results.items()
+                      if not isinstance(r, str) and not k.startswith('_'))
     return {
         "success": all_success,
         "status": overall_status,
@@ -2975,7 +2993,16 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
             f"({type(_e).__name__}: {_e}); harmless leftover at "
             f"config.yaml.pre-upgrade-backup", "warning")
 
-    all_success = all(r.get('success', False) for r in results.values() if not isinstance(r, str))
+    # Underscore keys are run METADATA (_health from the post-upgrade gate,
+    # _workflow_error), not modules, and carry no `success` field — so the
+    # naive all() marked every run "failed: unknown" the instant the health
+    # gate ran at all, REGARDLESS of what it found. Observed on a genuinely
+    # clean upgrade: every module [OK], gate reported "OK", config-cleanup
+    # ran (a success-only step) — and the very next line was "Upgrade
+    # failed: unknown", because this all_success computation, unlike the
+    # failed-module list, was never updated to skip them.
+    all_success = all(r.get('success', False) for k, r in results.items()
+                      if not isinstance(r, str) and not k.startswith('_'))
     return {
         "success": all_success,
         "status": overall_status,
