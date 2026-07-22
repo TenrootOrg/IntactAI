@@ -116,16 +116,42 @@ def test_always_ship_is_unconditional():
     assert _pick(bp, BASE, dict(BASE)) == {"intact", "cve_scan"}
 
 
-def test_default_baseline_is_a_real_release_tag():
-    """DEFAULT_SINCE_REF must look like a release tag, not a branch.
+def test_previous_release_resolution():
+    """_previous_release picks the newest published release before the target.
 
-    It is the OLDEST SUPPORTED upgrade source, deliberately not "the previous
-    tag": the online flow downloads ONE package for the target and never walks
-    the chain, so diffing against the immediately-preceding tag drops whatever
-    changed in a gap the customer skipped.
+    Package assets are deliberately NOT required. A box can be running a
+    release it installed from source, and computing a diff only needs that
+    release's config.yaml, which the tag carries whether or not a tarball was
+    ever attached. An earlier draft required assets and resolved to NOTHING
+    for intact-20260722 — because intact-20260615 is a real published release
+    with no assets — silently falling back to shipping all ten modules.
+
+    Drafts stay excluded: nobody can be running one.
     """
     bp = _load_picker()
-    assert bp.DEFAULT_SINCE_REF.startswith("intact-"), bp.DEFAULT_SINCE_REF
+
+    fake = [
+        {"tag_name": "intact-20260801", "draft": False, "assets": []},
+        {"tag_name": "intact-20260722", "draft": False, "assets": []},
+        {"tag_name": "intact-20260721", "draft": False, "assets": []},  # no package
+        {"tag_name": "intact-20260715", "draft": True,  "assets": []},  # draft
+        {"tag_name": "intact-20260615", "draft": False, "assets": []},
+        {"tag_name": "v-not-a-release", "draft": False, "assets": []},  # foreign tag
+    ]
+
+    import io, json, urllib.request
+    orig = urllib.request.urlopen
+    urllib.request.urlopen = lambda *a, **k: io.BytesIO(json.dumps(fake).encode())
+    try:
+        # newest predecessor wins, package or not
+        assert bp._previous_release("intact-20260722") == "intact-20260721"
+        assert bp._previous_release("intact-20260801") == "intact-20260722"
+        # never itself, never newer, and None when nothing precedes it
+        assert bp._previous_release("intact-20260615") is None
+        # a draft is skipped in favour of the next real release below it
+        assert bp._previous_release("intact-20260721") == "intact-20260615"
+    finally:
+        urllib.request.urlopen = orig
 
 
 def test_every_config_pin_maps_to_a_module():

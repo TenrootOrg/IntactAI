@@ -13,15 +13,18 @@ Meant to run INSIDE a container built from the release's backend image, with:
   - INTACT_PATH / INTACT_HOST_PATH set to the release checkout,
   - an output dir mounted for the finished tarball.
 
-Module set = the DIFF against DEFAULT_SINCE_REF (override with `--since`): only
-modules whose pin actually moved, plus `intact` (the platform itself, pinned to
-the release tag so the backend image is `intact-backend:<tag>`) and `cve_scan`
-(versionless rolling NVD corpus — a diff can never see it change). Shipping a
-module whose pin is byte-identical costs gigabytes and buys nothing, since the
-apply side skips same-version modules anyway.
+Module set = the DIFF against the PREVIOUS packaged release (auto-resolved; see
+_previous_release, override with `--since`): only modules whose pin actually
+moved, plus `intact` (the platform itself, pinned to the release tag so the
+backend image is `intact-backend:<tag>`) and `cve_scan` (versionless rolling NVD
+corpus — a diff can never see it change). Shipping a module whose pin is
+byte-identical costs gigabytes and buys nothing, since the apply side skips
+same-version modules anyway.
 
-The baseline is the OLDEST SUPPORTED release, not the previous tag — see
-DEFAULT_SINCE_REF for why that distinction is load-bearing.
+A sidecar bump drags its parent module in: transitive pins like
+`timesketch_opensearch` live only in `versions:` but their images are bundled
+per MODULE, so matching the literal key would ship an opensearch CVE fix with
+no timesketch to carry it. See _changed_since.
 
 Usage:
   build_release_package.py --tag intact-20260722 --out /output
@@ -61,20 +64,56 @@ RELEASE_MODULES = {
 # cannot tell whether these changed. See release_module_set().
 ALWAYS_SHIP = {"intact", "cve_scan"}
 
-# Default diff baseline: the OLDEST release a customer may still be upgrading
-# FROM — deliberately NOT "the previous tag".
-#
-# The online flow downloads ONE package for the target ref; it does not walk
-# the upgrade chain downloading each intermediate. So a package diffed against
-# the immediately-preceding tag silently omits everything that changed in a gap
-# the customer skipped, and their modules report success while staying stale.
-# Concretely on 2026-07-22: intact-20260721 -> intact-20260722 has ZERO module
-# pin changes, so that baseline would have shipped intact + cve_scan only,
-# while a box on 20260615 needed timesketch, plaso, iris, portainer,
-# velociraptor and aws_sigma.
-#
-# Bump this ONLY when dropping support for upgrading from an older release.
-DEFAULT_SINCE_REF = "intact-20260615"
+def _previous_release(tag: str) -> str:
+    """The most recent published release BEFORE `tag`.
+
+    Drafts are excluded (nobody can be running one); everything else counts.
+    Deliberately NOT filtered to releases that shipped a package: a box can be
+    running a release it installed from source via install.sh, and the diff
+    only needs that release's config.yaml — which is readable from the tag
+    whether or not a tarball was ever attached. An earlier draft of this
+    function required package assets and picked NOTHING for intact-20260722,
+    because intact-20260615 is a real published release with no assets; the
+    build then silently fell back to shipping all ten modules.
+
+    Release tags are `intact-YYYYMMDD`, which sorts lexicographically in date
+    order, so string comparison is the ordering.
+
+    Returns None when no earlier release exists (the first release ever),
+    which the caller treats as "no diff — ship the full scope".
+
+    CAVEAT, deliberately accepted: the online flow downloads ONE package for
+    the target and does not walk the upgrade chain. So a customer who skips a
+    release gets a package diffed against a baseline NEWER than what they are
+    running, and whatever changed in the gap they jumped is not bundled —
+    their modules stay stale while the run reports success. Diffing against
+    the OLDEST supported release avoids that at the cost of larger packages;
+    this build ships the operator's chosen trade-off. If release-skipping ever
+    needs supporting, either switch the baseline or make the online flow apply
+    each package in the chain.
+    """
+    import json
+    import urllib.request
+    from services.upgrade.resolver import GITHUB_REPO, _github_token
+
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=100",
+        headers={"Accept": "application/vnd.github.v3+json"})
+    token = _github_token()
+    if token:
+        req.add_header("Authorization", f"token {token}")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        releases = json.load(resp)
+
+    candidates = []
+    for rel in releases:
+        rtag = rel.get("tag_name") or ""
+        if not rtag.startswith("intact-") or rel.get("draft"):
+            continue
+        if rtag >= tag:                      # itself, or anything newer
+            continue
+        candidates.append(rtag)
+    return max(candidates) if candidates else None
 
 
 # Version keys that belong to a module but do not carry its name as a prefix.
@@ -84,6 +123,7 @@ _PIN_OWNER = {
     "sigma_rules": "aws_sigma",   # the SIGMA rule pack IS the aws_sigma artifact
     "backend_tusd": "intact",     # tusd ships inside the platform stack
     "nginx": "intact",            # top-level reverse proxy, part of the platform
+    "backend": "intact",          # the backend image tag IS intact's own pin
 }
 
 
@@ -305,12 +345,11 @@ def main() -> int:
     ap.add_argument("--print-modules", action="store_true",
                     help="print the resolved module set and exit (no build)")
     ap.add_argument("--since", default=None, metavar="REF",
-                    help=f"baseline release tag to diff against. Ship only modules "
-                         f"whose pin changed since it, plus intact and cve_scan. "
-                         f"Defaults to {DEFAULT_SINCE_REF!r} (the oldest release "
-                         f"still supported as an upgrade source). Pass "
-                         f"--since '' to disable diffing and use the full "
-                         f"fallback allowlist.")
+                    help="baseline release tag to diff against. Ship only modules "
+                         "whose pin changed since it, plus intact and cve_scan. "
+                         "Default: auto-resolve the most recent PREVIOUS release "
+                         "that ships a package. Pass --since '' to disable "
+                         "diffing and build the full fallback allowlist.")
     args = ap.parse_args()
 
     # Pin the backend image tag to the release BEFORE building. The checkout is
@@ -322,8 +361,17 @@ def main() -> int:
     # source inherits it too, since prepare copies the tree.
     _stamp_backend_pin(args.tag)
 
-    # `--since` unset -> default baseline; `--since ''` -> explicit opt-out.
-    since_ref = DEFAULT_SINCE_REF if args.since is None else (args.since or None)
+    # `--since REF` -> explicit; `--since ''` -> opt out of diffing entirely;
+    # unset -> auto-resolve the previous packaged release.
+    if args.since is None:
+        since_ref = _previous_release(args.tag)
+        if since_ref:
+            print(f"[ci-package] auto baseline: previous release {since_ref}", flush=True)
+        else:
+            print("[ci-package] no earlier release found — building the "
+                  "FULL fallback scope", flush=True)
+    else:
+        since_ref = args.since or None
     modules = release_module_set(args.tag, since_ref=since_ref)
     if args.print_modules:
         for m, v in modules.items():
