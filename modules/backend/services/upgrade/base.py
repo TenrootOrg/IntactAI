@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import json
 import tarfile
@@ -89,18 +90,62 @@ def run_command(cmd: str, cwd: str = None, timeout: int = 300, logger: Callable 
             except Exception:
                 pass
 
+        # Drain stdout/stderr CONTINUOUSLY in daemon threads while the poll
+        # loop below only watches for exit/cancel/timeout. Popen.poll() never
+        # touches the pipes — it just checks whether the process has exited —
+        # so a child that writes more than the OS pipe buffer (~64KB) blocks on
+        # write() waiting for a reader that was never there, and looks
+        # IDENTICAL to a genuinely slow/hung command: poll() keeps returning
+        # None until the timeout fires and kills it, no matter how large that
+        # timeout is. Observed concretely: a Velociraptor query returning
+        # 6.7MB of artifact YAML "timed out" at 8s, 20s, AND 30s — it was
+        # never slow, it was deadlocked on the very first write() past 64KB.
+        # Daemon reader threads plus a BOUNDED join (not communicate()) after
+        # kill/exit preserves the original "never do an unbounded post-kill
+        # read" guarantee from this function's docstring — a lingering
+        # grandchild holding the write end open blocks the reader thread
+        # forever, but it is a daemon we only join() briefly, so it can never
+        # hang the caller.
+        stdout_buf, stderr_buf = [], []
+
+        def _drain_pipe(pipe, sink):
+            try:
+                for line in iter(pipe.readline, ''):
+                    sink.append(line)
+            except Exception:
+                pass
+            finally:
+                try:
+                    pipe.close()
+                except Exception:
+                    pass
+
+        stdout_thread = threading.Thread(
+            target=_drain_pipe, args=(process.stdout, stdout_buf), daemon=True)
+        stderr_thread = threading.Thread(
+            target=_drain_pipe, args=(process.stderr, stderr_buf), daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
+
+        def _collect(join_s: float):
+            stdout_thread.join(timeout=join_s)
+            stderr_thread.join(timeout=join_s)
+            return ''.join(stdout_buf), ''.join(stderr_buf)
+
         start = time.time()
         while process.poll() is None:
             if cancel_event is not None and cancel_event.is_set():
                 log("  Command cancelled by user", "warning")
                 _kill(process)
+                _collect(2)
                 return {"success": False, "error": "cancelled", "cancelled": True}
             if time.time() - start > timeout:
                 log(f"  Command timed out after {timeout}s", "error")
                 _kill(process)
+                _collect(2)
                 return {"success": False, "error": f"Command timed out after {timeout}s"}
             time.sleep(1.0)
-        stdout, stderr = process.communicate()
+        stdout, stderr = _collect(5)
         if process.returncode != 0:
             log(f"  Command failed: {(stderr or '')[:200]}", "warning")
             return {"success": False, "error": stderr or "", "stdout": stdout or ""}

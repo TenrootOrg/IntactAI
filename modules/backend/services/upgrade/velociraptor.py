@@ -1493,26 +1493,19 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
             --config /velociraptor/server.config.yaml query \
             "SELECT name, raw FROM artifact_definitions() WHERE built_in = false AND raw != ''" \
             --format jsonl 2>/dev/null"""
-        # Best-effort backup of user-defined artifacts. A COMMUNICATING
-        # Velociraptor answers this query in ~1-2s; when it hangs it's up but
-        # its API isn't responding (observed mid-upgrade), and waiting longer
-        # won't help — so fast-fail at 20s instead of stalling 60s. Skipping is
-        # safe: custom artifacts live in the datastore volume (which survives
-        # the upgrade) and are refreshed from source anyway. Also downgrade
-        # run_command's timeout log from error->warning so this optional step
-        # never pollutes error_count (which would flip an otherwise-successful
-        # run to "failed") or read as a real failure.
+        # This query can return several MB of custom-artifact YAML. It used to
+        # "time out" here at ANY timeout value (8s, 20s, 30s all failed
+        # identically) — not because Velociraptor was slow, but because
+        # run_command()'s poll loop never drained stdout/stderr while
+        # waiting, so output past the ~64KB OS pipe buffer deadlocked the
+        # child on write(). Fixed at the root in run_command (continuous
+        # pipe-draining reader threads) rather than papered over here with a
+        # bigger timeout or a retry loop — this single call now succeeds in
+        # a few seconds. Still best-effort: a genuine Velociraptor outage
+        # skips this optional backup rather than failing the upgrade (custom
+        # artifacts live in the datastore volume and are refreshed from
+        # source regardless).
         result = run_command(export_cmd, logger=_besteffort_logger(log), timeout=20)
-        if not result.get('success'):
-            # Retried once rather than given a longer timeout. Measured on a
-            # healthy box this query answers in ~1s, so a 20s miss means the API
-            # was busy at that instant, not that it needs 60s — and if it is
-            # genuinely wedged, a bigger timeout only makes every upgrade slower.
-            # One retry after a short pause separates those two cases cheaply.
-            import time as _t
-            _t.sleep(5)
-            log("  Custom-artifact export timed out — retrying once...", "info")
-            result = run_command(export_cmd, logger=_besteffort_logger(log), timeout=20)
         if result['success'] and result.get('stdout'):
             exported = 0
             for line in result['stdout'].strip().split('\n'):
@@ -1763,26 +1756,19 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
             --config /velociraptor/server.config.yaml query \
             "SELECT name, raw FROM artifact_definitions() WHERE built_in = false AND raw != ''" \
             --format jsonl 2>/dev/null"""
-        # Best-effort backup of user-defined artifacts. A COMMUNICATING
-        # Velociraptor answers this query in ~1-2s; when it hangs it's up but
-        # its API isn't responding (observed mid-upgrade), and waiting longer
-        # won't help — so fast-fail at 20s instead of stalling 60s. Skipping is
-        # safe: custom artifacts live in the datastore volume (which survives
-        # the upgrade) and are refreshed from source anyway. Also downgrade
-        # run_command's timeout log from error->warning so this optional step
-        # never pollutes error_count (which would flip an otherwise-successful
-        # run to "failed") or read as a real failure.
+        # This query can return several MB of custom-artifact YAML. It used to
+        # "time out" here at ANY timeout value (8s, 20s, 30s all failed
+        # identically) — not because Velociraptor was slow, but because
+        # run_command()'s poll loop never drained stdout/stderr while
+        # waiting, so output past the ~64KB OS pipe buffer deadlocked the
+        # child on write(). Fixed at the root in run_command (continuous
+        # pipe-draining reader threads) rather than papered over here with a
+        # bigger timeout or a retry loop — this single call now succeeds in
+        # a few seconds. Still best-effort: a genuine Velociraptor outage
+        # skips this optional backup rather than failing the upgrade (custom
+        # artifacts live in the datastore volume and are refreshed from
+        # source regardless).
         result = run_command(export_cmd, logger=_besteffort_logger(log), timeout=20)
-        if not result.get('success'):
-            # Retried once rather than given a longer timeout. Measured on a
-            # healthy box this query answers in ~1s, so a 20s miss means the API
-            # was busy at that instant, not that it needs 60s — and if it is
-            # genuinely wedged, a bigger timeout only makes every upgrade slower.
-            # One retry after a short pause separates those two cases cheaply.
-            import time as _t
-            _t.sleep(5)
-            log("  Custom-artifact export timed out — retrying once...", "info")
-            result = run_command(export_cmd, logger=_besteffort_logger(log), timeout=20)
         if result['success'] and result.get('stdout'):
             exported = 0
             for line in result['stdout'].strip().split('\n'):
