@@ -2148,14 +2148,16 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
 
         # Per-image byte sizes, keyed by the same filenames already recorded
         # in contents.images. Without this, required_free_gb_for_manifest()
-        # (the apply-side disk preflight) falls back to using the ENTIRE
-        # package size as its "just the images" estimate — the package also
-        # contains the source tree, binaries and artifacts, none of which get
-        # docker-loaded, so that fallback triples the real requirement
-        # (package_bytes + package_bytes*2). Observed 2026-07-22: a 3.7 GB
-        # elk/iris/volweb/portainer package reported "needs ~12.4 GiB" (10.4
-        # GiB free failed it) when the apply itself completed fine — this is
-        # what that overestimate was silently masking.
+        # (the apply-side disk preflight) falls back to using the COMPRESSED
+        # package size as a stand-in for the UNCOMPRESSED image bytes it
+        # actually needs to budget for. That systematically UNDER-estimates:
+        # the images are what dominate the package, and they expand on the
+        # way out. Measured 2026-07-22 on the lean package — images total
+        # 5.02 GiB uncompressed against a 2.32 GiB tarball, so the fallback
+        # was reasoning about less than half the real footprint and only
+        # avoided a bad call because APPLY_MIN_FREE_GB floored it at 10.
+        # Recording the real sizes makes the estimate honest rather than
+        # accidentally-in-range.
         images_dir = os.path.join(package_dir, 'images')
         image_sizes = {}
         for fn in manifest["contents"].get("images") or []:
