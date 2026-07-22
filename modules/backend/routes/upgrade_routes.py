@@ -573,6 +573,43 @@ def get_upgrade_package_info():
         return jsonify({"error": str(e)}), 500
 
 
+@upgrade_bp.route('/api/upgrade/preflight', methods=['POST'])
+def preflight_upgrade_package():
+    """Would this package apply cleanly on this box? Changes NOTHING.
+
+    Body: ``{"package_path": "/data/uploads/<id>"}``
+
+    Runs the same checks the real apply runs — archive integrity, module
+    ordering (downgrade refusal), disk sized from the package's own manifest,
+    docker reachability, and whether the backend image this target resolves is
+    actually bundled. Answering "will this work?" previously required running
+    it, which is a poor question to have to answer destructively.
+
+    Read-only by construction: it extracts to a scratch dir and deletes it, and
+    never mirrors source, loads an image, writes config.yaml, or touches a
+    container. Returns 200 with ``ok: false`` for a package that would fail —
+    the CHECK succeeded, the package is what is bad — and 4xx only for a bad
+    request.
+    """
+    try:
+        data = request.json or {}
+        package_path = (data.get('package_path') or '').strip()
+        if not package_path:
+            return jsonify({"error": "package_path required"}), 400
+        err = _reject_package_path(package_path)
+        if err:
+            return err
+
+        from services.upgrade import preflight_package
+        lines = []
+        result = preflight_package(
+            package_path, logger=lambda m, l="info": lines.append(f"[{l}] {m}"))
+        result["log"] = lines
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @upgrade_bp.route('/api/upgrade/offline', methods=['POST'])
 def start_offline_upgrade():
     """Start offline upgrade from an uploaded package.

@@ -181,6 +181,172 @@ def schedule_backend_restart():
 
 
 
+_RELEASE_TAG_RE = re.compile(r'^intact-(\d{8})')
+
+
+def _version_is_older(target: str, current: str) -> bool:
+    """True only when `target` is CONFIDENTLY older than `current`.
+
+    Deliberately conservative — an ambiguous comparison must never block a
+    legitimate upgrade, so anything unparseable returns False:
+
+    * release tags (`intact-YYYYMMDD…`) compare on the date, because
+      compare_versions() parses them as a single non-numeric part and would
+      call every pair equal;
+    * `Not installed` / `unknown` / empty are not versions at all (a module the
+      box does not have is an INSTALL, never a downgrade);
+    * everything else falls through to compare_versions(), which handles the
+      dotted numeric pins (0.77.1, 2026.04) and the date-ish ones (20260630).
+    """
+    t, c = (target or '').strip(), (current or '').strip()
+    if not t or not c:
+        return False
+    if c.lower() in ('not installed', 'unknown', 'from_package', 'latest'):
+        return False
+    if t.lower() in ('from_package', 'latest', 'development'):
+        return False           # rolling / package-sourced: no ordering to judge
+    mt, mc = _RELEASE_TAG_RE.match(t), _RELEASE_TAG_RE.match(c)
+    if mt and mc:
+        return mt.group(1) < mc.group(1)
+    if mt or mc:
+        return False           # one is a release tag, the other isn't — unjudgeable
+    try:
+        return compare_versions(t, c) < 0
+    except Exception:
+        return False
+
+
+
+
+def _reject_downgrades(modules_dict: Dict, current_versions: Dict,
+                       logger: Callable = None):
+    """Return an error string when the package would move any module BACKWARDS.
+
+    Downgrades are refused outright, with no force flag. The DB-backed modules
+    are the reason: OpenSearch and Postgres migrate their on-disk schema
+    forward, and pointing an older engine at a migrated volume does not fail
+    cleanly — it corrupts or refuses to mount, and the data is gone. Catching
+    it here costs nothing; catching it afterwards is not possible.
+
+    Runs BEFORE any extraction or mutation, so a rejected run leaves the
+    platform exactly as it was.
+    """
+    log = logger or (lambda m, l="info": None)
+    offenders = []
+    for mod, target in sorted((modules_dict or {}).items()):
+        cur = ((current_versions or {}).get(mod) or {})
+        cur = cur.get('current') if isinstance(cur, dict) else cur
+        if _version_is_older(str(target), str(cur or '')):
+            offenders.append(f"{mod}: installed {cur} -> package {target}")
+    if not offenders:
+        return None
+    for o in offenders:
+        log(f"  DOWNGRADE REFUSED — {o}", "error")
+    return ("this package would downgrade " +
+            ", ".join(offenders) +
+            ". Downgrades are not supported: the database-backed modules migrate "
+            "their on-disk schema forward, and an older engine cannot read a "
+            "migrated volume. Apply a package at or above the installed versions.")
+
+
+def preflight_package(package_path: str, logger: Callable = None) -> Dict:
+    """Answer "would this package apply cleanly here?" WITHOUT touching anything.
+
+    Adapted from the newer releases for this tree: it has no config_validate
+    module, so the disk check reads free space directly rather than calling
+    preflight_environment, and there is no legacy module-key normalizer to
+    apply (this release predates the aws_sigma rename).
+
+    Every other check is the SAME function the real apply calls —
+    verify_upgrade_package for structure/integrity, _reject_downgrades for
+    ordering, backend_full_mode for the deploy mode — so this cannot drift into
+    a reassuring lie about what apply will do.
+
+    STRICTLY READ-ONLY: it removes the extract dir verify_upgrade_package
+    created and never mirrors source, loads an image, writes config.yaml, or
+    touches a container.
+
+    Returns {"ok": bool, "checks": [{name, ok, detail}], "blocking": [str]}.
+    """
+    import shutil as _sh
+    log = logger or (lambda m, l="info": None)
+    checks = []
+
+    def add(name, ok, detail=""):
+        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+        log(f"  [{'PASS' if ok else 'FAIL'}] {name}{(' — ' + detail) if detail else ''}",
+            "info" if ok else "warning")
+
+    scratch = None
+    try:
+        if not package_path or not os.path.exists(package_path):
+            add("package exists", False, f"{package_path} not found")
+            return {"ok": False, "checks": checks,
+                    "blocking": [f"package not found: {package_path}"]}
+        pkg_bytes = os.path.getsize(package_path)
+        add("package exists", True, f"{pkg_bytes / (1024**3):.2f} GiB")
+
+        vr = verify_upgrade_package(package_path, logger=None)
+        scratch = vr.get('extract_dir') or vr.get('package_dir')
+        if not vr.get('success'):
+            add("archive integrity + manifest", False, str(vr.get('error'))[:160])
+            return {"ok": False, "checks": checks,
+                    "blocking": [f"package failed verification: {vr.get('error')}"]}
+        manifest = vr.get('manifest') or {}
+        package_dir = vr.get('package_dir') or scratch
+        versions = manifest.get('versions', {}) or {}
+        add("archive integrity + manifest", True, f"{len(versions)} module(s)")
+
+        dg = _reject_downgrades(versions, get_current_versions(), logger=None)
+        add("no module downgrades", dg is None, dg[:200] if dg else "")
+
+        # Sized from the package rather than a fixed floor: extraction restores
+        # the payload and `docker load` writes the layers again, so budget ~3x
+        # the archive plus headroom.
+        staging = '/app/data' if os.path.isdir('/app/data') else WORKDIR
+        need_gb = max(10.0, round((pkg_bytes * 3 / (1024**3)) * 1.15, 1))
+        free_gb = _sh.disk_usage(staging).free / (1024**3)
+        add(f"disk (needs ~{need_gb} GiB)", free_gb >= need_gb,
+            f"{free_gb:.1f} GiB free on {staging}" if free_gb < need_gb else "")
+
+        # The most common silent defect: a Full-mode release whose backend image
+        # is absent or named for a different tag makes the box rebuild from
+        # source. Inspection only — no docker load.
+        tgt = backend_target_tag()
+        img_tar = os.path.join(package_dir, 'images', f'intact-backend-{tgt}.tar')
+        src_compose = os.path.join(package_dir, 'source', 'intact', 'modules',
+                                   'backend', 'docker-compose.yaml')
+        if os.path.isfile(src_compose) and backend_full_mode(src_compose):
+            if not os.path.exists(img_tar):
+                idir = os.path.join(package_dir, 'images')
+                shipped = ([f for f in os.listdir(idir)
+                            if f.startswith('intact-backend-')]
+                           if os.path.isdir(idir) else [])
+                add("backend image for this target", False,
+                    f"expected intact-backend-{tgt}.tar; package has "
+                    f"{shipped or 'no backend image'} — the box would rebuild "
+                    f"from source")
+            else:
+                add("backend image for this target", True,
+                    f"intact-backend-{tgt}.tar")
+        else:
+            add("backend image for this target", True,
+                "target is not Full-mode; no image expected")
+
+        blocking = [f"{c['name']}: {c['detail']}" for c in checks if not c['ok']]
+        return {"ok": not blocking, "checks": checks, "blocking": blocking}
+    except Exception as e:
+        add("preflight completed", False, f"{type(e).__name__}: {e}")
+        return {"ok": False, "checks": checks,
+                "blocking": [f"preflight error: {type(e).__name__}: {e}"]}
+    finally:
+        if scratch and os.path.isdir(scratch):
+            try:
+                _sh.rmtree(scratch)
+            except Exception:
+                pass
+
+
 def shlex_quote(s: str) -> str:
     import shlex as _shlex
     return _shlex.quote(s)
@@ -1241,6 +1407,19 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
 
     # Build modules dict for state tracking
     modules_dict = {k: v for k, v in versions.items()}
+
+    # Refuse a package that would move any module BACKWARDS, before the loop
+    # touches anything — a rejected run leaves the platform exactly as it was.
+    # The database-backed modules are the reason: OpenSearch and Postgres
+    # migrate their on-disk schema forward and an older engine cannot read a
+    # migrated volume, which is not recoverable after the fact.
+    _dg = _reject_downgrades(modules_dict, current_versions, logger=log)
+    if _dg:
+        log("DOWNGRADE REFUSED — aborting with the platform untouched.", "error")
+        log(f"  {_dg}", "error")
+        return {"success": False, "status": "failed", "error": _dg,
+                "results": {}, "completed": 0, "total": 0, "versions": {}}
+
     if 'intact' not in modules_dict:
         # Check if intact source exists in package (not just empty dirs).
         # Try the new GitHub-tarball layout first (`source/intact/`) and
