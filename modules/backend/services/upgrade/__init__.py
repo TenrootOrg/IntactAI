@@ -761,6 +761,21 @@ def self_heal_backend_swap(logger: Callable = None, parent_run_id: str = None) -
         build = run_command("docker compose build backend",
                             cwd=os.path.join(WORKDIR, 'modules', 'backend'),
                             timeout=900, logger=lambda m, l="info": _dual_log(m, l))
+        # A non-zero/timed-out `docker compose build` does NOT prove the image
+        # is missing. Observed 2026-07-22 on a live convergence: the image was
+        # committed fine but the compose CLI never exited (a `docker` child went
+        # zombie), so run_command hit its 900s timeout — and this branch would
+        # have declared failure and left the box on the OLD image with a
+        # perfectly good new one sitting in the local store. Trust the image
+        # store, not the exit code: re-inspect and carry on if it's really there.
+        if not build.get('success') and run_command(
+                f"docker image inspect {target_image}", logger=None,
+                timeout=30).get('success'):
+            _dual_log(f"  `compose build` reported failure ({(build.get('error') or '')[:120]}) "
+                      f"but {target_image} IS present in the image store — continuing "
+                      f"with the swap.", "warning")
+            build = {"success": True}
+
         if not build.get('success'):
             _err = (f"Self-heal image build FAILED: {(build.get('error') or '')[:300]} — "
                     f"platform stays on the old image; investigate manually")

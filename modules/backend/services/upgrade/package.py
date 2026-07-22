@@ -607,7 +607,19 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
         log(f"  (backend-image prep: could not read target config.yaml: {_e})", "warning")
         _versions = {}
     tusd_tag = _versions.get('backend_tusd')
-    be_tag = _versions.get('backend') or target_version
+    # The baked image MUST carry the identity the TARGET will look for at
+    # convergence, or the shipped image is invisible and the box rebuilds from
+    # source. backend_target_tag() on the target resolves
+    #   config.yaml versions.backend  ->  VERSION  ->  'development'
+    # so an absent/placeholder versions.backend there lands on the release tag
+    # from VERSION. Baking off `versions.backend` alone disagreed with that:
+    # a 20260721 package shipped intact-backend:development while the box
+    # looked for intact-backend:intact-20260721, and rebuilt (observed
+    # 2026-07-22). Prefer the release identity from the manifest — it is the
+    # same value the target's VERSION carries — and keep the old sources as
+    # fallbacks.
+    _release_tag = ((manifest.get('versions') or {}).get('intact') or '').strip()
+    be_tag = _release_tag or _versions.get('backend') or target_version
 
     # tusd sidecar image — best-effort
     if tusd_tag:
