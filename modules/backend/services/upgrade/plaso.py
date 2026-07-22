@@ -8,7 +8,7 @@ from .base import (
     WORKDIR, HOST_PATH,
     run_command, read_env_file, update_env_file, load_docker_image,
     backup_env_file, restore_env_file, cleanup_backup,
-    remove_old_module_image,
+    remove_old_module_image, ensure_module_enabled_in_config,
 )
 
 
@@ -19,6 +19,20 @@ def upgrade_plaso(version: str, logger: Callable = None) -> Dict:
     backend_dir = os.path.join(WORKDIR, 'modules', 'backend')
 
     log("Starting Plaso upgrade...", "info")
+
+    # Enable in config.yaml (creates the block if the operator never had
+    # one). Plaso has no container of its own — nothing else in the
+    # install-vs-upgrade dispatch flips this flag for it the way a
+    # container-having module gets on a fresh install (plaso isn't in
+    # offline_install_functions, so it's always dispatched as "UPGRADING",
+    # never "INSTALLING", and that generic enable-on-install writeback never
+    # fires). Without this, a fresh plaso pull via the upgrade mechanism
+    # correctly stamps PLASO_VERSION but silently leaves modules.plaso.enabled
+    # false forever — same class of bug cve_scan already guards against here.
+    try:
+        ensure_module_enabled_in_config('plaso', logger=log)
+    except Exception as e:
+        log(f"  config.yaml enable failed for plaso: {e}", "warning")
 
     # Get current version for rollback
     current_vars = read_env_file(backend_env)
@@ -74,6 +88,14 @@ def upgrade_plaso_offline(package_dir: str, version: str, logger: Callable = Non
     images_dir = os.path.join(package_dir, 'images')
 
     log("Starting Plaso offline upgrade...", "info")
+
+    # See upgrade_plaso()'s comment — plaso has no install_functions entry
+    # so it never gets INSTALLING-classified, and the generic enable-on-
+    # install writeback in the caller never fires for it.
+    try:
+        ensure_module_enabled_in_config('plaso', logger=log)
+    except Exception as e:
+        log(f"  config.yaml enable failed for plaso: {e}", "warning")
 
     # Get current version for rollback
     current_vars = read_env_file(backend_env)

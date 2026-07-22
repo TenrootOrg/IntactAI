@@ -25,7 +25,7 @@ from .base import (
     WORKDIR,
     run_command, read_env_file, update_env_file,
     backup_env_file, restore_env_file, cleanup_backup,
-    set_module_enabled_in_config,
+    ensure_module_enabled_in_config,
 )
 
 SIGMA_RULES_DIR = "/opt/sigma-rules"
@@ -55,7 +55,13 @@ def upgrade_cloudtrail(version: str, logger: Callable = None) -> Dict:
             log("  Rule-pack git pull skipped (non-fatal) — keeping current rules", "warning")
 
         update_env_file(backend_env, 'CLOUDTRAIL_VERSION', version, logger=log)
-        set_module_enabled_in_config('aws_sigma', logger=log)
+        # ensure_* (not set_module_enabled_in_config): 'aws_sigma' is a
+        # RENAMED module (was cloudtrail/prowler) that older config.yaml
+        # files never got a modules.aws_sigma block for at all — the
+        # flip-only helper silently no-ops when the block doesn't exist,
+        # so a fresh install via upgrade left it permanently 'disabled'
+        # despite the rule pack + version pin installing correctly.
+        ensure_module_enabled_in_config('aws_sigma', logger=log)
 
         cleanup_backup(backup_file, logger=log)
         log(f"CloudTrail rule-pack upgrade completed: {current_version} -> {version}", "success")
@@ -101,7 +107,13 @@ def upgrade_cloudtrail_offline(package_dir: str, version: str, logger: Callable 
                 f"skipping (rules ship with the SigmaHQ clone)", "warning")
 
         update_env_file(backend_env, 'CLOUDTRAIL_VERSION', version, logger=log)
-        set_module_enabled_in_config('aws_sigma', logger=log)
+        # ensure_* (not set_module_enabled_in_config): 'aws_sigma' is a
+        # RENAMED module (was cloudtrail/prowler) that older config.yaml
+        # files never got a modules.aws_sigma block for at all — the
+        # flip-only helper silently no-ops when the block doesn't exist,
+        # so a fresh install via upgrade left it permanently 'disabled'
+        # despite the rule pack + version pin installing correctly.
+        ensure_module_enabled_in_config('aws_sigma', logger=log)
 
         cleanup_backup(backup_file, logger=log)
         log(f"CloudTrail offline upgrade completed: {current_version} -> {version}", "success")
