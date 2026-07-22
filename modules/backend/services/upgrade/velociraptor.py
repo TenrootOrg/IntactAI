@@ -1503,6 +1503,16 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
         # never pollutes error_count (which would flip an otherwise-successful
         # run to "failed") or read as a real failure.
         result = run_command(export_cmd, logger=_besteffort_logger(log), timeout=20)
+        if not result.get('success'):
+            # Retried once rather than given a longer timeout. Measured on a
+            # healthy box this query answers in ~1s, so a 20s miss means the API
+            # was busy at that instant, not that it needs 60s — and if it is
+            # genuinely wedged, a bigger timeout only makes every upgrade slower.
+            # One retry after a short pause separates those two cases cheaply.
+            import time as _t
+            _t.sleep(5)
+            log("  Custom-artifact export timed out — retrying once...", "info")
+            result = run_command(export_cmd, logger=_besteffort_logger(log), timeout=20)
         if result['success'] and result.get('stdout'):
             exported = 0
             for line in result['stdout'].strip().split('\n'):
@@ -1763,6 +1773,16 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         # never pollutes error_count (which would flip an otherwise-successful
         # run to "failed") or read as a real failure.
         result = run_command(export_cmd, logger=_besteffort_logger(log), timeout=20)
+        if not result.get('success'):
+            # Retried once rather than given a longer timeout. Measured on a
+            # healthy box this query answers in ~1s, so a 20s miss means the API
+            # was busy at that instant, not that it needs 60s — and if it is
+            # genuinely wedged, a bigger timeout only makes every upgrade slower.
+            # One retry after a short pause separates those two cases cheaply.
+            import time as _t
+            _t.sleep(5)
+            log("  Custom-artifact export timed out — retrying once...", "info")
+            result = run_command(export_cmd, logger=_besteffort_logger(log), timeout=20)
         if result['success'] and result.get('stdout'):
             exported = 0
             for line in result['stdout'].strip().split('\n'):

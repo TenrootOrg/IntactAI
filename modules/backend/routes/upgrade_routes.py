@@ -838,7 +838,13 @@ def start_offline_upgrade():
                     # caused unnecessary full re-runs (G8). Failed modules'
                     # version pins were already reverted per-module, so a
                     # re-run retries exactly the right thing.
-                    failed = [m for m, r in result.get('results', {}).items() if not r.get('success')]
+                    # Skip underscore METADATA keys (_health, _workflow_error):
+                    # they are not modules and carry no `success` field, so
+                    # counting them turned a healthy run into "completed with
+                    # failed module(s): _health".
+                    failed = [m for m, r in result.get('results', {}).items()
+                              if isinstance(r, dict) and not r.get('success')
+                              and not m.startswith('_')]
                     if failed:
                         add_log_to_run(run_id, f"Offline upgrade completed with failures: {', '.join(failed)}", "warning")
                         update_run_status(run_id, "completed", progress=100, force=True,

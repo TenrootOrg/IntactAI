@@ -394,8 +394,15 @@ def run_startup_initialization():
                     result = resume_upgrade_workflow(run_id, logger=upgrade_logger)
                     from services.workflow_service import update_run_status as _urs
                     _results = result.get('results') or {}
+                    # Underscore keys are run METADATA, not modules (_health from
+                    # the post-upgrade gate, _workflow_error). Counting them reported
+                    # a perfectly healthy upgrade as "completed with failed
+                    # module(s): _health", because the health result carries
+                    # `healthy`, not `success`. The gate already signals trouble by
+                    # demoting overall_status to completed_with_warnings.
                     _failed = [m for m, r in _results.items()
-                               if isinstance(r, dict) and not r.get('success')]
+                               if isinstance(r, dict) and not r.get('success')
+                               and not m.startswith('_')]
                     if result.get('success'):
                         # force=True: per-module results are authoritative — an
                         # error-level line from a step that recovered must not
