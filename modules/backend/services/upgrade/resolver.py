@@ -87,6 +87,10 @@ def _release_package_bytes(rel: dict, tag: str):
 
 _cache: Dict[str, Tuple[float, object]] = {}
 
+# Sentinel distinguishing "cached: confirmed no manifest asset" from "not yet
+# cached" (which _cache_get already represents as plain None).
+_MISSING = object()
+
 
 
 def _github_token():
@@ -402,6 +406,74 @@ def fetch_upstream_config(ref: str, user_action: str = 'plan') -> Dict:
     return cfg
 
 
+def fetch_release_manifest(ref: str, user_action: str = 'plan') -> Optional[Dict]:
+    """Fetch and parse the ``.manifest.json`` sidecar of release ``ref``'s
+    CI-built package — the actual list of modules that download will contain.
+
+    ``config.yaml``'s ``modules:`` block (what :func:`fetch_upstream_config`
+    reads) lists every module the CODEBASE supports, regardless of what a
+    given release's CI build chose to bundle (see ``RELEASE_MODULES`` in
+    ``scripts/ci/build_release_package.py`` — a release can deliberately ship
+    lean, e.g. skipping elk/iris/volweb/portainer). Deriving the picker from
+    config.yaml offers a checkbox for a module the download can never
+    deliver — ticking it is a silent no-op at apply time, since the module
+    simply isn't in the tarball's own manifest. This reads the SAME manifest
+    the apply engine matches against, so the picker can never promise more
+    than the package actually contains.
+
+    Returns ``None`` when the release carries no manifest asset (shouldn't
+    happen for any ref ``list_github_refs`` offers, since that already
+    filters to releases with a package asset — the sidecar ships alongside
+    it). Cached like :func:`fetch_upstream_config`.
+    """
+    cache_key = f'manifest:{ref}'
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return None if cached is _MISSING else cached
+
+    headers = {'Accept': 'application/vnd.github.v3+json'}
+    token = _github_token()
+    if token:
+        headers['Authorization'] = f'token {token}'
+    _gh_call_log(f'/repos/{GITHUB_REPO}/releases/tags/{ref}', user_action)
+    try:
+        resp = requests.get(f'{GITHUB_API}/releases/tags/{ref}',
+                            headers=headers, timeout=GH_TIMEOUT)
+    except requests.RequestException as e:
+        raise ResolverError(f'GitHub unreachable fetching release {ref}: {e}')
+    if resp.status_code != 200:
+        raise ResolverError(
+            f'GitHub /releases/tags/{ref} returned {resp.status_code}: '
+            f'{resp.text[:200]}'
+        )
+    rel = resp.json() or {}
+    manifest_name = f'intact-upgrade-{ref}.tar.gz.manifest.json'
+    asset_url = None
+    for a in (rel.get('assets') or []):
+        if (a.get('name') or '') == manifest_name:
+            asset_url = a.get('browser_download_url')
+            break
+    if not asset_url:
+        _cache_put(cache_key, _MISSING)
+        return None
+
+    try:
+        mresp = requests.get(asset_url, timeout=GH_TIMEOUT)
+    except requests.RequestException as e:
+        raise ResolverError(f'Manifest download failed for {ref}: {e}')
+    if mresp.status_code != 200:
+        raise ResolverError(
+            f'Manifest download for {ref} returned {mresp.status_code}'
+        )
+    try:
+        manifest = mresp.json()
+    except ValueError as e:
+        raise ResolverError(f'Manifest for {ref} did not parse as JSON: {e}')
+
+    _cache_put(cache_key, manifest)
+    return manifest
+
+
 def resolve_upgrade_chain(current_ref: Optional[str],
                           target_ref: str,
                           user_action: str = 'plan') -> List[str]:
@@ -480,25 +552,47 @@ _MODULE_DISPLAY_ORDER = ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor',
                          'aws_sigma', 'o365rc', 'volweb', 'cve_scan', 'portainer']
 
 
-def _upstream_module_rows(upstream_cfg: dict, target_ref: str) -> List[Dict]:
-    """Generic module list for the upgrade/prepare picker, derived from the
-    fetched release ``config.yaml`` — NOT a hardcoded map. A new module added to
-    the release's ``modules:`` block automatically appears here (module + target
-    version), so the picker never needs a code edit to gain a row.
+def _upstream_module_rows(upstream_cfg: dict, target_ref: str,
+                          package_manifest: Optional[dict] = None) -> List[Dict]:
+    """Generic module list for the upgrade/prepare picker.
 
-    - The ``modules:`` block is the authoritative, operator-facing module set.
-      Transitive sidecar pins (``timesketch_opensearch``, ``iris_rabbitmq``,
-      ``volweb_postgres`` …) live ONLY in ``versions:``, NOT in ``modules:``, so
-      they are naturally excluded as picker rows — they still ride along inside
-      their parent module's bundle/install (TRANSITIVE_IMAGES / env stamping).
+    Prefers ``package_manifest`` (see :func:`fetch_release_manifest`) — the
+    actual ``versions:`` block baked into the release's downloadable
+    package — over ``upstream_cfg``'s ``config.yaml`` ``modules:`` block.
+    config.yaml lists every module the CODEBASE supports regardless of
+    packaging scope (a release can deliberately ship lean, e.g. skipping
+    elk/iris/volweb/portainer — see ``RELEASE_MODULES`` in
+    ``scripts/ci/build_release_package.py``); reading it here would offer a
+    checkbox for a module the download can never deliver, a silent no-op at
+    apply time since the module isn't in the tarball. Falls back to
+    ``upstream_cfg`` only when no manifest was fetched (e.g. the caller
+    tolerated a fetch failure) — better a possibly-stale list than none.
+
     - ``intact`` is implicit (its config key is ``backend`` and its real
       "version" is the picked ref), so it is prepended explicitly, target = ref.
-    - Versionless artifact modules (e.g. ``cve_scan``) fall back to ``'latest'``.
+    - ``cve_scan`` is versionless (its CVE DB is rolling data baked
+      best-effort — see ``upgrade_cve_offline``, which degrades gracefully
+      with a warning when no DB was bundled) so it never appears in a
+      manifest's ``versions`` dict even on releases that include it. Always
+      surfaced with target ``'latest'`` — safe unlike the other modules
+      since ticking it never silently does nothing.
     - ``_NON_UPGRADEABLE`` infra modules are skipped.
 
     Returns ``[{'module': str, 'target': str}, ...]`` with intact first, then the
     preferred order, then any new modules alphabetically.
     """
+    if package_manifest is not None:
+        pkg_versions = dict(package_manifest.get('versions') or {})
+        pkg_versions.pop('intact', None)
+        pkg_versions.setdefault('cve_scan', 'latest')
+        names = [m for m in pkg_versions if m not in _NON_UPGRADEABLE]
+        ordered = [m for m in _MODULE_DISPLAY_ORDER if m in names]
+        ordered += sorted(m for m in names if m not in _MODULE_DISPLAY_ORDER)
+        rows: List[Dict] = [{'module': 'intact', 'target': target_ref}]
+        for name in ordered:
+            rows.append({'module': name, 'target': str(pkg_versions[name])})
+        return rows
+
     mods = upstream_cfg.get('modules') or {}
     versions = upstream_cfg.get('versions') or {}
     names = [m for m in mods if m not in _NON_UPGRADEABLE]
@@ -517,7 +611,7 @@ def list_upstream_modules(target_ref: str,
 
     Used by Prepare Package — the build-server's local state is
     irrelevant when bundling for an unknown air-gap target, so this
-    helper returns every module in the upstream ``versions:`` block
+    helper returns every module the release's ACTUAL package contains,
     without any noop/forced/optional classification.
 
     The intact module isn't in upstream's versions block as a
@@ -534,14 +628,16 @@ def list_upstream_modules(target_ref: str,
             ...
         ]
 
-    Reuses :func:`fetch_upstream_config` (30-min cache), so this is a
-    no-cost call on repeat clicks within the cache window.
+    Reuses :func:`fetch_upstream_config` + :func:`fetch_release_manifest`
+    (both 30-min cached), so this is a no-cost call on repeat clicks within
+    the cache window.
     """
     upstream_cfg = fetch_upstream_config(target_ref, user_action=user_action)
-    # Generic — derived from the release's modules: block (see
-    # _upstream_module_rows). A new module in config.yaml shows up automatically;
-    # transitive sidecar pins are excluded; cve_scan surfaces as 'latest'.
-    return _upstream_module_rows(upstream_cfg, target_ref)
+    package_manifest = fetch_release_manifest(target_ref, user_action=user_action)
+    # Manifest-scoped — see _upstream_module_rows. Only what the download for
+    # THIS release actually contains shows up as a row.
+    return _upstream_module_rows(upstream_cfg, target_ref,
+                                 package_manifest=package_manifest)
 
 
 def compute_plan(target_ref: str,
@@ -574,15 +670,17 @@ def compute_plan(target_ref: str,
     # module table. Intermediate steps' configs are pulled at apply
     # time, not here, to keep Compute Plan cheap.
     upstream_cfg = fetch_upstream_config(target_ref, user_action=user_action)
+    package_manifest = fetch_release_manifest(target_ref, user_action=user_action)
 
     forced: List[Dict] = []
     optional: List[Dict] = []
 
-    # Generic module set from the fetched release config (see
-    # _upstream_module_rows): a new module in the release's modules: block shows
-    # up automatically; transitive sidecar pins are excluded; intact's target is
-    # the picked ref. Classification (forced/optional/noop) is unchanged.
-    for row in _upstream_module_rows(upstream_cfg, target_ref):
+    # Manifest-scoped module set (see _upstream_module_rows): only modules
+    # THIS release's package actually bundles show up, so ticking a box can
+    # never silently do nothing at apply time. intact's target is the
+    # picked ref; classification (forced/optional/noop) is unchanged.
+    for row in _upstream_module_rows(upstream_cfg, target_ref,
+                                     package_manifest=package_manifest):
         module_id = row['module']
         upstream_ver = row['target']
         cur_state = current.get(module_id, {}).get('current', 'Not installed')

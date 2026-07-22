@@ -554,7 +554,7 @@ def compute_upgrade_plan():
         if not target:
             return jsonify({"success": False, "error": "target required"}), 400
 
-        err = _quota_preflight_or_jsonify(1, "plan compute")
+        err = _quota_preflight_or_jsonify(2, "plan compute")
         if err: return err
 
         from services.upgrade.resolver import compute_plan, ResolverError
@@ -909,7 +909,7 @@ def prepare_upgrade_package():
         # Pre-flight: prepare hits api.github.com a few times (intact
         # branches API + maybe DetectRaptor /latest/ redirect). Refuse
         # early if quota is too low instead of failing mid-run.
-        err = _quota_preflight_or_jsonify(2, "prepare package")
+        err = _quota_preflight_or_jsonify(3, "prepare package")
         if err: return err
 
         target = (data.get('target') or '').strip()
@@ -1049,7 +1049,7 @@ def start_online_upgrade():
         # Pre-flight: online upgrade prepares + applies in one run, so
         # it hits all the same github endpoints as prepare. Same quota
         # cost — refuse early instead of mid-run.
-        err = _quota_preflight_or_jsonify(2, "online upgrade")
+        err = _quota_preflight_or_jsonify(3, "online upgrade")
         if err: return err
 
         target = (data.get('target') or '').strip()
