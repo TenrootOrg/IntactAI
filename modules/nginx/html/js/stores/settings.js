@@ -526,6 +526,12 @@ document.addEventListener('alpine:init', () => {
         // styling and the apply-button warning.
         applyModuleAction(module, target) {
             const cur = this.applyCurrentVersions[module];
+            // A module the backend never reported at all is one it does not
+            // know about — exactly what happens when a NEWER release's package
+            // introduces a module this older backend has never heard of. That
+            // is an INSTALL, not an unknown: it belongs in the opt-in section
+            // (default unticked), not silently in the forced list showing "?".
+            if (cur === undefined || cur === null) return 'install';
             if (!cur || cur === 'unknown') return 'unknown';
             if (cur === 'Not installed') return 'install';
             const curStr = String(cur).trim();
