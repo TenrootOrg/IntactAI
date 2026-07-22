@@ -8,7 +8,7 @@ from .base import (
     WORKDIR, HOST_PATH,
     run_command, read_env_file, update_env_file, load_docker_image,
     backup_env_file, restore_env_file, cleanup_backup,
-    remove_old_module_image, ensure_module_enabled_in_config,
+    remove_old_module_image, set_module_enabled_in_config,
 )
 
 
@@ -20,17 +20,18 @@ def upgrade_plaso(version: str, logger: Callable = None) -> Dict:
 
     log("Starting Plaso upgrade...", "info")
 
-    # Enable in config.yaml (creates the block if the operator never had
-    # one). Plaso has no container of its own — nothing else in the
-    # install-vs-upgrade dispatch flips this flag for it the way a
-    # container-having module gets on a fresh install (plaso isn't in
-    # offline_install_functions, so it's always dispatched as "UPGRADING",
-    # never "INSTALLING", and that generic enable-on-install writeback never
-    # fires). Without this, a fresh plaso pull via the upgrade mechanism
-    # correctly stamps PLASO_VERSION but silently leaves modules.plaso.enabled
-    # false forever — same class of bug cve_scan already guards against here.
+    # Flip modules.plaso.enabled in config.yaml (the block always exists
+    # on this release, so the flip-only helper is sufficient here — unlike
+    # a renamed module such as aws_sigma). Plaso has no container of its
+    # own — nothing else in the install-vs-upgrade dispatch flips this flag
+    # for it the way a container-having module gets on a fresh install
+    # (plaso isn't in offline_install_functions, so it's always dispatched
+    # as "UPGRADING", never "INSTALLING", and that generic enable-on-install
+    # writeback never fires). Without this, a fresh plaso pull via the
+    # upgrade mechanism correctly stamps PLASO_VERSION but silently leaves
+    # modules.plaso.enabled false forever.
     try:
-        ensure_module_enabled_in_config('plaso', logger=log)
+        set_module_enabled_in_config('plaso', logger=log)
     except Exception as e:
         log(f"  config.yaml enable failed for plaso: {e}", "warning")
 
@@ -93,7 +94,7 @@ def upgrade_plaso_offline(package_dir: str, version: str, logger: Callable = Non
     # so it never gets INSTALLING-classified, and the generic enable-on-
     # install writeback in the caller never fires for it.
     try:
-        ensure_module_enabled_in_config('plaso', logger=log)
+        set_module_enabled_in_config('plaso', logger=log)
     except Exception as e:
         log(f"  config.yaml enable failed for plaso: {e}", "warning")
 
