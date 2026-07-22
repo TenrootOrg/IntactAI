@@ -1015,49 +1015,6 @@ pull_dfir_o365rc_image() {
 }
 
 
-pull_prowler_image() {
-    # Pull Prowler image for AWS posture-scanning (used by
-    # services/aws/prowler_runner.py). Mirrors pull_dfir_o365rc_image
-    # so the install flow gates the pre-pull on the module being
-    # enabled in config.yaml and reports the same way.
-    #
-    # The image is ~3.5 GB so it's worth front-loading at install time
-    # — at runtime the first scan would otherwise stall for several
-    # minutes waiting for the pull on a fresh customer machine.
-
-    local aws_enabled=$(read_config "['modules']['prowler']['enabled']")
-    if ! is_enabled "$aws_enabled"; then
-        log_info "AWS module disabled, skipping Prowler image"
-        return 0
-    fi
-
-    # Version pin from config.yaml for reproducible installs.
-    local prowler_version=$(read_config "['versions']['prowler']")
-    [[ -z "$prowler_version" ]] && prowler_version="5.28.1"
-    local prowler_image="toniblyx/prowler:${prowler_version}"
-
-    log_info "Pulling Prowler image (${prowler_image}, AWS posture scans, ~3.5 GB)..."
-
-    if docker image inspect "$prowler_image" > /dev/null 2>&1; then
-        log_info "Prowler image already present"
-        return 0
-    fi
-
-    local pull_start=$SECONDS
-    if docker pull "$prowler_image" 2>&1 | tee -a "$LOG_FILE"; then
-        if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
-            _log_pull_throughput "$prowler_image" "$pull_start"
-            log_success "Prowler image pulled successfully"
-        else
-            log_warn "Failed to pull Prowler image - AWS posture scans will fall back to fixture data"
-            return 1
-        fi
-    else
-        log_warn "Failed to pull Prowler image - AWS posture scans will fall back to fixture data"
-        return 1
-    fi
-}
-
 
 pull_velociraptor_base_image() {
     # Velociraptor's Dockerfile builds FROM ubuntu:22.04. Pre-pulling the base

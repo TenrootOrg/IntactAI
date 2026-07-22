@@ -24,8 +24,6 @@ options:
   check_module_updates: false
 
 modules:
-  prowler:
-    enabled: false
   o365rc:
     enabled: false
   # Plaso — log2timeline timeline parser. On-demand image: pulled by the
@@ -83,7 +81,6 @@ versions:
   velociraptor: '0.76.1'
   # AWS posture scans run the Prowler image (toniblyx/prowler). Pinned to a
   # real release tag for reproducible installs + upgrades.
-  prowler: '5.28.1'
   # Azure Unified Audit Log collection runs the DFIR-O365RC image
   # (anssi/dfir-o365rc). Upstream only publishes ':latest' (no version tags),
   # so we track latest — "upgrade" re-pulls the newest latest.
