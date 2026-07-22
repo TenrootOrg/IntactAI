@@ -223,6 +223,73 @@ def _intact_ref_is_noop(target_ref: str) -> bool:
     return bool(running) and running == ref
 
 
+
+_RELEASE_TAG_RE = re.compile(r'^intact-(\d{8})')
+
+
+def _version_is_older(target: str, current: str) -> bool:
+    """True only when `target` is CONFIDENTLY older than `current`.
+
+    Deliberately conservative — an ambiguous comparison must never block a
+    legitimate upgrade, so anything unparseable returns False:
+
+    * release tags (`intact-YYYYMMDD…`) compare on the date, because
+      compare_versions() parses them as a single non-numeric part and would
+      call every pair equal;
+    * `Not installed` / `unknown` / empty are not versions at all (a module the
+      box does not have is an INSTALL, never a downgrade);
+    * everything else falls through to compare_versions(), which handles the
+      dotted numeric pins (0.77.1, 2026.04) and the date-ish ones (20260630).
+    """
+    t, c = (target or '').strip(), (current or '').strip()
+    if not t or not c:
+        return False
+    if c.lower() in ('not installed', 'unknown', 'from_package', 'latest'):
+        return False
+    if t.lower() in ('from_package', 'latest', 'development'):
+        return False           # rolling / package-sourced: no ordering to judge
+    mt, mc = _RELEASE_TAG_RE.match(t), _RELEASE_TAG_RE.match(c)
+    if mt and mc:
+        return mt.group(1) < mc.group(1)
+    if mt or mc:
+        return False           # one is a release tag, the other isn't — unjudgeable
+    try:
+        return compare_versions(t, c) < 0
+    except Exception:
+        return False
+
+
+def _reject_downgrades(modules_dict: Dict, current_versions: Dict,
+                       logger: Callable = None):
+    """Return an error string when the package would move any module BACKWARDS.
+
+    Downgrades are refused outright, with no force flag. The DB-backed modules
+    are the reason: OpenSearch and Postgres migrate their on-disk schema
+    forward, and pointing an older engine at a migrated volume does not fail
+    cleanly — it corrupts or refuses to mount, and the data is gone. Catching
+    it here costs nothing; catching it afterwards is not possible.
+
+    Runs BEFORE any extraction or mutation, so a rejected run leaves the
+    platform exactly as it was.
+    """
+    log = logger or (lambda m, l="info": None)
+    offenders = []
+    for mod, target in sorted((modules_dict or {}).items()):
+        cur = ((current_versions or {}).get(mod) or {})
+        cur = cur.get('current') if isinstance(cur, dict) else cur
+        if _version_is_older(str(target), str(cur or '')):
+            offenders.append(f"{mod}: installed {cur} -> package {target}")
+    if not offenders:
+        return None
+    for o in offenders:
+        log(f"  DOWNGRADE REFUSED — {o}", "error")
+    return ("this package would downgrade " +
+            ", ".join(offenders) +
+            ". Downgrades are not supported: the database-backed modules migrate "
+            "their on-disk schema forward, and an older engine cannot read a "
+            "migrated volume. Apply a package at or above the installed versions.")
+
+
 def _upgrade_noop_module(module_name: str, target_ref: str = None) -> bool:
     """True iff this module needs NOTHING done this upgrade — it's already
     installed and none of its version pins changed (the primary pin `M` OR any
@@ -2056,6 +2123,16 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     if 'cve_scan' not in modules_dict and os.path.exists(
             os.path.join(package_dir, 'cve', 'cves.db')):
         modules_dict['cve_scan'] = 'latest'
+
+    # Refuse a package that would move any module BACKWARDS. Checked here —
+    # after the module set is known, before the loop touches anything — so a
+    # rejected run leaves the platform exactly as it was.
+    _dg = _reject_downgrades(modules_dict, current_versions, logger=log)
+    if _dg:
+        log("DOWNGRADE REFUSED — aborting with the platform untouched.", "error")
+        log(f"  {_dg}", "error")
+        return {"success": False, "status": "failed", "error": _dg,
+                "results": {}, "completed": 0, "total": 0, "versions": {}}
 
     # Apply Uploaded Package can pass an operator-chosen subset. When
     # set, modules in the manifest NOT in this set are skipped and the
