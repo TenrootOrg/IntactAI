@@ -1268,6 +1268,20 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
                     f"upgrade with the platform untouched. {_ens['error']}", "error")
                 return {"success": False, "rolled_back": False,
                         "needs_swap": True, "error": _ens["error"]}
+        else:
+            # Every supported release runs the backend from its own image, so a
+            # target still carrying the ./services code bind-mount is either a
+            # pre-flip release (no longer supported) or a mis-built package. The
+            # old restart path cannot apply a new image, which is exactly the
+            # class of silent half-upgrade the flip exists to remove — so refuse
+            # here, before anything is touched, instead of degrading into it.
+            _msg = ("target release is legacy source-mounted (its backend "
+                    "compose still bind-mounts ./services) — no longer "
+                    "supported. Every release must run the backend from "
+                    "intact-backend:<release>. Re-build the package from a "
+                    "Full-mode release tree.")
+            log(f"LEGACY TARGET REJECTED — {_msg}", "error")
+            return {"success": False, "rolled_back": False, "error": _msg}
 
     # Anti-brick snapshot: capture the CURRENT install before the mirror
     # replaces it in place, so a broken release can be rolled back instead of

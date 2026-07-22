@@ -346,7 +346,23 @@ def recreate_timesketch_user(logger: Callable = None) -> bool:
 
 
 def schedule_backend_restart(run_id: str = None, logger: Callable = None) -> bool:
-    """Schedule backend restart after a short delay using a detached process.
+    """DEPRECATED — UNREACHABLE in a Full-mode-only fleet.
+
+    `docker restart` reuses the container's existing image, so it can never
+    apply a new backend image or a changed compose file. Every supported
+    release now runs the backend from intact-backend:<release>, and
+    upgrade_intact_offline REFUSES a legacy source-mounted target outright
+    (see the LEGACY TARGET REJECTED branch in intact.py), so needs_swap is
+    always True and the swap dispatch always wins.
+
+    Kept, not deleted, because it is still the correct primitive for the
+    non-upgrade restart cases and because deleting a function this deep in the
+    dispatch while the retrofit is still being validated buys nothing. It
+    should be removed once a full release cycle has shipped with no legacy
+    target reaching it.
+
+    Original behaviour, retained: schedules a backend restart after a short
+    delay using a detached process.
 
     Hardened (G4): previously fire-and-forget with output DEVNULL'd — a failed
     `docker restart` (socket busy/denied) left the OLD code running with the
