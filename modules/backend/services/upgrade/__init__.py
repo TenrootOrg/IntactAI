@@ -10,6 +10,7 @@ Two-Phase Upgrade Support:
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from typing import Dict, Callable, Optional
@@ -1487,155 +1488,58 @@ def run_online_upgrade_workflow(modules: Dict[str, str], run_id: str = None,
     log("  Mode: prepare + apply in one run (no intermediate tar.gz)", "info")
     log("", "info")
 
-    from services.upgrade.package import prepare_upgrade_package
-
-    # Build directly into /app/data/tmp/ — the persistent host-mounted
-    # path. /tmp/ would break Phase 2 because intact's backend restart
-    # between Phase 1 and Phase 2 wipes the container's /tmp.
-    from datetime import datetime as _dt
-    package_name = f"intact-upgrade-{_dt.now().strftime('%Y%m%d_%H%M%S')}"
-    persistent_work_dir = f"/app/data/tmp/{package_name}"
-    os.makedirs("/app/data/tmp", exist_ok=True)
-
-    # Pre-prepare config.yaml merge: fetch the target intact ref's
-    # config.yaml from GitHub and merge its `versions:` block into the
-    # operator's local config.yaml BEFORE the prepare step reads it.
-    # Without this, prepare reads the operator's STALE versions:
-    # block — an operator on test-1 (timesketch_opensearch: 2.11.0)
-    # who triggers an upgrade to test-2 (which ships 2.19.5) would
-    # otherwise bundle opensearch:2.11.0 because the prepare side
-    # reads config.yaml BEFORE the apply-side intact-step's merge
-    # has run. Operator hit this 2026-06-15. Skipped when intact
-    # isn't in the modules dict.
-    intact_ref = modules.get('intact')
-    if intact_ref:
-        try:
-            from services.upgrade.resolver import fetch_upstream_config
-            from services.upgrade.intact import merge_versions_from_new_config
-            import tempfile, yaml as _yaml
-            log(f"Fetching target config.yaml from intact @ {intact_ref} "
-                f"for pre-prepare versions: merge...", "info")
-            target_cfg = fetch_upstream_config(intact_ref, user_action='submit')
-            # Write the dict to a temp file so the text-level merge
-            # helper can read it (it operates on file paths, not dicts,
-            # to keep the merge logic uniform between online + offline
-            # flows). Dump preserves the source structure well enough
-            # for the helper's regex extractors.
-            with tempfile.NamedTemporaryFile(
-                    mode='w', suffix='.yaml', delete=False) as tmp:
-                _yaml.safe_dump(target_cfg, tmp, sort_keys=False,
-                                default_flow_style=False)
-                tmp_path = tmp.name
-            operator_config = os.path.join(WORKDIR, 'config.yaml')
-            merge_result = merge_versions_from_new_config(
-                tmp_path, operator_config, logger=log,
-            )
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-            if merge_result.get('success'):
-                upd = merge_result.get('updated') or {}
-                add = merge_result.get('added') or {}
-                if upd or add:
-                    log(f"Pre-prepare config.yaml merge: "
-                        f"{len(upd)} updated, {len(add)} added — "
-                        f"prepare will now read the new versions",
-                        "success")
-                else:
-                    log(f"Pre-prepare config.yaml merge: already up-to-date",
-                        "info")
-        except Exception as e:
-            log(f"Pre-prepare config.yaml merge failed "
-                f"({type(e).__name__}: {e}); prepare will use the "
-                f"operator's existing versions — pins may be stale",
-                "warning")
-
-    # 0615B backport: DOWNLOAD the CI-built release package instead of building
-    # it on-box. CI builds the package with the TARGET release's OWN code, so it
-    # never drops a module this older backend can't recognize. Falls back to the
-    # on-box build below when the target has no package asset (the rolling
-    # `development` branch, or a pre-CI release) or the download fails — purely
-    # additive, every existing scenario keeps working.
+    # DOWNLOAD-ONLY: the online upgrade installs the CI-built release package
+    # and nothing else. CI builds that package from the TARGET release's OWN
+    # code, so it can never drop a module an older on-box backend fails to
+    # recognise (the factor-5 / "Unknown module" class). There is deliberately
+    # NO on-box build fallback — building on the operator's machine is exactly
+    # what produced that bug class. /api/upgrade/refs only offers releases that
+    # ship a package, so a missing one here means the release was retargeted or
+    # its CI build has not run yet.
     _intact_ref = modules.get('intact')
-    if _intact_ref and _intact_ref != 'development':
+    _pkg = None
+    try:
+        from services.upgrade.download import (
+            download_release_package, PackageDownloadCancelled)
+        os.makedirs('/data/uploads', exist_ok=True)  # ALLOWED_PACKAGE_DIR
+        _pkg = download_release_package(
+            _intact_ref, dest_dir='/data/uploads', run_id=run_id, logger=log)
+    except PackageDownloadCancelled:
+        log("Upgrade cancelled during package download.", "warning")
+        return {"success": False, "status": "cancelled", "cancelled": True,
+                "error": "cancelled", "results": {}, "completed": 0,
+                "total": 0, "versions": {}}
+    except Exception as _de:
+        log(f"Could not download the pre-built release package "
+            f"({type(_de).__name__}: {_de}).", "error")
         _pkg = None
-        try:
-            from services.upgrade.download import (
-                download_release_package, PackageDownloadCancelled)
-            os.makedirs('/data/uploads', exist_ok=True)
-            _pkg = download_release_package(
-                _intact_ref, dest_dir='/data/uploads', run_id=run_id, logger=log)
-        except PackageDownloadCancelled:
-            log("Upgrade cancelled during package download.", "warning")
-            return {"success": False, "status": "cancelled", "cancelled": True,
-                    "error": "cancelled", "results": {}, "completed": 0,
-                    "total": 0, "versions": {}}
-        except Exception as _de:
-            log(f"Could not download the pre-built release package "
-                f"({type(_de).__name__}: {_de}) — building on-box instead.",
-                "warning")
-            _pkg = None
-        if _pkg:
-            log("", "info")
-            log("=" * 50, "info")
-            log("Using pre-built CI release package (no on-box build).", "success")
-            log("=" * 50, "info")
-            log("", "info")
-            # Rejoin the SAME apply engine the offline flow uses; it extracts,
-            # verifies every file against the in-package manifest, and drives
-            # the Phase-1/Phase-2 restart + resume. Restrict apply to the
-            # modules the operator selected (the CI package carries all).
-            return run_offline_upgrade_workflow(
-                package_path=_pkg,
-                run_id=run_id,
-                logger=log,
-                db_overwrite=db_overwrite,
-                selected_modules=list(modules.keys()),
-                workflow_label="ONLINE UPGRADE (download CI package + apply)",
-            )
 
-    prepare_result = prepare_upgrade_package(
-        modules=modules,
-        run_id=run_id,
-        logger=log,
-        compress=False,
-        work_dir=persistent_work_dir,
-    )
-
-    if not prepare_result.get('success'):
-        if os.path.exists(persistent_work_dir):
-            try:
-                shutil.rmtree(persistent_work_dir)
-            except Exception:
-                pass
-        return {
-            "success": False,
-            "status": "failed",
-            "error": prepare_result.get('error', 'Prepare step failed'),
-            "results": {},
-            "completed": 0,
-            "total": 0,
-            "versions": {},
-        }
-
-    package_dir = prepare_result['package_dir']
-    manifest = prepare_result['manifest']
+    if not _pkg:
+        _msg = (f"Release '{_intact_ref}' ships no downloadable upgrade "
+                f"package. Upgrades install the CI-built package only — "
+                f"nothing is built on this machine. Pick a release that ships "
+                f"a package, or run the build-release-package workflow for "
+                f"this tag first.")
+        log(_msg, "error")
+        return {"success": False, "status": "failed", "error": _msg,
+                "results": {}, "completed": 0, "total": 0, "versions": {}}
 
     log("", "info")
     log("=" * 50, "info")
-    log("HAND-OFF TO APPLY (no compression step)", "success")
+    log("Using pre-built CI release package (no on-box build).", "success")
     log("=" * 50, "info")
     log("", "info")
-
+    # Rejoin the SAME apply engine the offline flow uses; it extracts, verifies
+    # every file against the in-package manifest, and drives the Phase-1/Phase-2
+    # restart + resume. Restrict apply to the modules the operator selected
+    # (the CI package always carries all of them).
     return run_offline_upgrade_workflow(
-        package_path=None,
+        package_path=_pkg,
         run_id=run_id,
         logger=log,
         db_overwrite=db_overwrite,
-        prebuilt_package_dir=package_dir,
-        prebuilt_manifest=manifest,
-        workflow_label="ONLINE UPGRADE WORKFLOW (Phase 2 of 2: apply)",
+        selected_modules=list(modules.keys()),
+        workflow_label="ONLINE UPGRADE (download CI package + apply)",
     )
 
 

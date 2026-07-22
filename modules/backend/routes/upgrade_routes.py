@@ -207,36 +207,6 @@ def _modules_for_prepare(target: str, selected_modules: list) -> dict:
     return modules
 
 
-@upgrade_bp.route('/api/upgrade/prepare-list', methods=['POST'])
-def list_prepare_modules():
-    """Operator-triggered (the Prepare modal's "Show Modules" button).
-
-    Body: ``{"target": "<ref>"}`` — the release the operator picked.
-    Returns the flat module list for that release, no local-state diff.
-
-    Used by the Prepare Package modal to render its checkbox table.
-    Online Upgrade uses ``/api/upgrade/plan`` instead (which DOES read
-    local state for the forced/optional split).
-    """
-    try:
-        data = request.json or {}
-        target = (data.get('target') or '').strip()
-        if not target:
-            return jsonify({"success": False, "error": "target required"}), 400
-
-        err = _quota_preflight_or_jsonify(1, "prepare-list (module enumeration)")
-        if err: return err
-
-        from services.upgrade.resolver import list_upstream_modules, ResolverError
-        try:
-            rows = list_upstream_modules(target, user_action='prepare-list')
-        except ResolverError as e:
-            return jsonify({"success": False, "error": str(e)}), 502
-        return jsonify({"success": True, "target": target, "modules": rows})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
 @upgrade_bp.route('/api/upgrade/peek-manifest', methods=['POST'])
 def peek_manifest_from_blob():
     """Extract manifest.json from the FIRST few MB of a tarball blob.
@@ -838,7 +808,6 @@ def prepare_upgrade_package():
         # Run package preparation in background
         def run_prepare():
             try:
-                from services.upgrade.package import prepare_upgrade_package as do_prepare
 
                 def logger(msg, level="info"):
                     add_log_to_run(run_id, msg, level)
@@ -901,27 +870,21 @@ def prepare_upgrade_package():
                         return  # 'cancelled' state already set by request_stop()
                     except Exception as _de:
                         add_log_to_run(run_id, f"CI package download failed "
-                                       f"({type(_de).__name__}: {_de}); building on-box "
-                                       f"instead.", "warning")
+                                       f"({type(_de).__name__}: {_de}).", "error")
 
-                result = do_prepare(modules, run_id, logger)
-
-                if result.get('success'):
-                    # Store package info (only one package at a time, overwrites previous)
-                    _save_package_info({
-                        'run_id': run_id,
-                        'path': result['package_path'],
-                        'name': result['package_name'],
-                        'size': result['package_size'],
-                        'created_at': time.time()
-                    })
-                    add_log_to_run(run_id, f"Package ready for download: {result['package_name']}", "success")
-                    add_log_to_run(run_id, "Note: Preparing a new package will replace this one", "info")
-                    update_run_status(run_id, "completed", progress=100)
-                else:
-                    add_log_to_run(run_id, f"Package preparation failed: {result.get('error', 'Unknown error')}", "error")
-                    update_run_status(run_id, "failed", progress=0, error=result.get('error'))
-
+                # DOWNLOAD-ONLY: nothing is built on this machine. Reaching here
+                # means the release ships no package (or its download failed) —
+                # that is a hard failure, not a cue to build locally, because an
+                # on-box build by an older backend is what produced the
+                # factor-5 / "Unknown module" class. /api/upgrade/refs only
+                # offers releases that ship a package.
+                _msg = (f"Release '{target}' ships no downloadable upgrade "
+                        f"package, and nothing is built on this machine. Run "
+                        f"the build-release-package workflow for this tag, "
+                        f"then retry.")
+                add_log_to_run(run_id, _msg, "error")
+                update_run_status(run_id, "failed", progress=0, error=_msg)
+                return
             except Exception as e:
                 # If the user clicked Stop, the killed subprocess raised
                 # on its way out — that's not a real failure. Let the

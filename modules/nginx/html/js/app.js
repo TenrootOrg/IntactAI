@@ -1072,8 +1072,6 @@ document.addEventListener('alpine:init', () => {
         selectedRef: '',            // the ref the operator picked in the dropdown
         upgradePlan: null,          // ONLINE mode: forced/optional table from /api/upgrade/plan
         optedInOptional: [],        // ONLINE mode: module IDs the operator ticked in the optional table
-        prepareModules: null,       // PREPARE mode: flat list from /api/upgrade/prepare-list
-        prepareSelected: [],        // PREPARE mode: ticked modules (operator unticks to exclude)
         fetchingRefs: false,
         computingPlan: false,
         showingPrepareModules: false,
@@ -1265,54 +1263,14 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        // ─── PREPARE-mode helpers ────────────────────────────────────
-        // Prepare semantics: bundle a subset of UPSTREAM modules at the
-        // picked release's pinned versions. Build-server's installed
-        // state is irrelevant (we're targeting an air-gap machine we
-        // don't know yet).
-        async showPrepareModules() {
-            if (!this.selectedRef) {
-                this.showTopToast('Pick a release first', 'error');
-                return;
-            }
-            this.showingPrepareModules = true;
-            this.prepareModules = null;
-            this.prepareSelected = [];
-            try {
-                const r = await this._fetchWithTimeout('/api/upgrade/prepare-list', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({target: this.selectedRef}),
-                });
-                const d = await r.json();
-                if (d && d.success) {
-                    this.prepareModules = d.modules || [];
-                    // Default: every module ticked. Operator unchecks to
-                    // exclude from the tarball.
-                    this.prepareSelected = this.prepareModules.map(r => r.module);
-                } else {
-                    this.showTopToast('Module list failed: ' + (d.error || 'unknown'), 'error');
-                }
-            } catch (e) {
-                const msg = e.name === 'AbortError'
-                    ? 'Module list timed out after 60s — GitHub may be slow; try again.'
-                    : 'Module list request failed: ' + e.message;
-                this.showTopToast(msg, 'error');
-            }
-            this.showingPrepareModules = false;
-        },
-
-        togglePrepareModule(moduleId) {
-            // intact is the platform — a package without it has no
-            // runtime to apply other modules. Guard against any code
-            // path that tries to untick it.
-            if (moduleId === 'intact') return;
-            const idx = this.prepareSelected.indexOf(moduleId);
-            if (idx >= 0) {
-                this.prepareSelected.splice(idx, 1);
-            } else {
-                this.prepareSelected.push(moduleId);
-            }
+        // DOWNLOAD-ONLY: /api/upgrade/refs lists only releases that ship a
+        // CI-built package and carries its size, so the modal can state exactly
+        // what will be downloaded with no extra round-trip. There is no module
+        // selection any more — the whole package comes down, and the operator
+        // picks what to install when they import it.
+        get selectedRefPackageMb() {
+            const r = (this.upgradeRefs || []).find(x => x.name === this.selectedRef);
+            return r ? (r.package_mb || 0) : 0;
         },
 
         async startTrackUpgrade() {
@@ -1321,8 +1279,8 @@ document.addEventListener('alpine:init', () => {
                 this.showMessage('Compute a plan first', 'error');
                 return;
             }
-            if (!isOnline && !this.prepareModules) {
-                this.showMessage('Click "Show modules" first to load the list', 'error');
+            if (!isOnline && !this.selectedRef) {
+                this.showMessage('Pick a release first', 'error');
                 return;
             }
             // Zero ticks is intentionally allowed: the backend always
@@ -1336,7 +1294,7 @@ document.addEventListener('alpine:init', () => {
                 : 'Package preparation started — check Workflows for progress';
             const body = isOnline
                 ? {target: this.selectedRef, opted_in_optional: this.optedInOptional}
-                : {target: this.selectedRef, selected_modules: this.prepareSelected};
+                : {target: this.selectedRef};
             this.prepareLoading = true;
             try {
                 const r = await fetch(endpoint, {
@@ -1369,8 +1327,6 @@ document.addEventListener('alpine:init', () => {
             this.selectedRef = '';
             this.upgradePlan = null;
             this.optedInOptional = [];
-            this.prepareModules = null;
-            this.prepareSelected = [];
             this.githubQuota = null;
             this.currentIntactVersion = '';
             // Fire-and-forget — independent of the refs fetch. Used by
@@ -1406,7 +1362,6 @@ document.addEventListener('alpine:init', () => {
             if (this.prepareModalMode === 'online') {
                 await this.computeUpgradePlan();
             } else {
-                await this.showPrepareModules();
             }
         },
 

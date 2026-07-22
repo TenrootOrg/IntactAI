@@ -50,6 +50,33 @@ GITHUB_RAW = f'https://github.com/{GITHUB_REPO}/raw'
 # (development is a moving target; "stepping through" is meaningless).
 DEV_BRANCH = 'development'
 
+# DOWNLOAD-ONLY upgrades: the package is always the CI-built artifact attached
+# to a GitHub Release; nothing is ever built on the operator's box. `development`
+# is a rolling branch with no Release — and therefore no package — so it cannot
+# be an upgrade target. Flip this to True to offer it again (only meaningful if
+# an on-box build path is reinstated).
+OFFER_DEV_BRANCH = False
+
+
+def _release_package_bytes(rel: dict, tag: str):
+    """Total size in bytes of the CI upgrade-package attached to ``rel``, or
+    ``None`` when that release carries no package asset.
+
+    CI attaches either a single ``intact-upgrade-<tag>.tar.gz`` or, when the
+    tarball exceeds GitHub's 2 GiB asset cap, a set of ``….tar.gz.part-NN``
+    pieces. Either shape counts; the ``.sha256`` / ``.manifest.json`` sidecars
+    do not.
+    """
+    base = f'intact-upgrade-{tag}.tar.gz'
+    total = 0
+    found = False
+    for a in (rel.get('assets') or []):
+        name = a.get('name') or ''
+        if name == base or name.startswith(base + '.part-'):
+            total += a.get('size') or 0
+            found = True
+    return total if found else None
+
 # Pinned for legibility — bumping these is a backend code change, not an
 # operator concern.
 GH_TIMEOUT = 30
@@ -286,18 +313,28 @@ def list_github_refs(user_action: str = 'fetch') -> List[Dict]:
         tag = rel.get('tag_name') or ''
         if not tag:
             continue
+        # DOWNLOAD-ONLY: upgrades consume the CI-built package exclusively —
+        # nothing is ever built on the operator's box. A release without a
+        # package asset therefore isn't a usable target, so it never shows.
+        # The /releases payload carries `assets` inline, so this costs no
+        # extra GitHub call.
+        pkg_bytes = _release_package_bytes(rel, tag)
+        if pkg_bytes is None:
+            continue
         if not latest_marked:
             label = f'release {tag} (latest)'
             latest_marked = True
         else:
             label = f'release {tag}'
-        items.append({'kind': 'tag', 'name': tag, 'label': label})
+        items.append({'kind': 'tag', 'name': tag, 'label': label,
+                      'package_mb': round(pkg_bytes / 1024 / 1024)})
 
-    items.append({
-        'kind': 'branch',
-        'name': DEV_BRANCH,
-        'label': 'development branch (rolling)',
-    })
+    if OFFER_DEV_BRANCH:
+        items.append({
+            'kind': 'branch',
+            'name': DEV_BRANCH,
+            'label': 'development branch (rolling)',
+        })
 
     _cache_put('refs', items)
     return items
