@@ -103,6 +103,25 @@ def _verify_package_usable(result: dict, tag: str):
         return (f"manifest versions.intact is {versions.get('intact')!r}, "
                 f"expected {tag!r}")
 
+    # RELEASE_PIN: config.yaml versions.backend is the FIRST thing
+    # backend_target_tag() reads on the target, so it decides which image the
+    # box goes looking for at convergence. If it says anything other than this
+    # release tag, the box hunts for an image the package never shipped and
+    # falls back to rebuilding the backend from source. intact-20260721 shipped
+    # with versions.backend: 'development' for exactly this reason.
+    try:
+        import yaml as _yaml
+        _cfg_path = os.path.join(os.environ.get("INTACT_PATH", "/app/workdir"),
+                                 "config.yaml")
+        _pin = ((_yaml.safe_load(open(_cfg_path)) or {}).get("versions") or {}).get("backend")
+        _pin = str(_pin).strip() if _pin is not None else ""
+        if _pin != tag:
+            return (f"config.yaml versions.backend is {_pin!r}, expected {tag!r} — "
+                    f"the target resolves its backend image from this key, so it "
+                    f"would look for intact-backend:{_pin} and rebuild from source.")
+    except Exception as e:                                    # pragma: no cover
+        return f"could not read config.yaml versions.backend ({type(e).__name__}: {e})"
+
     # Full-mode is decided by the TARGET release's own backend compose, the same
     # way prepare decided whether to bake. Reuse that helper rather than
     # re-deriving the rule here.
