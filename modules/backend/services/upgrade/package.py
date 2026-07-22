@@ -1056,6 +1056,38 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         with open(version_file, "w") as vf:
                             vf.write(version.strip() + "\n")
                         log(f"  Stamped source/intact/VERSION -> {version}", "info")
+                        # Stamp the backend image pin the same way, and for the
+                        # same reason. backend_target_tag() reads config.yaml
+                        # versions.backend BEFORE VERSION, so that key — not the
+                        # VERSION file — is what the target resolves its backend
+                        # image from at convergence. A release whose pin lags its
+                        # own tag sends every box hunting for an image the package
+                        # never shipped, and it silently rebuilds the backend from
+                        # source (intact-20260721 shipped pinned to 'development'
+                        # for exactly this reason). Stamping it here makes the pin
+                        # a property of the BUILD rather than a manual edit someone
+                        # has to remember before tagging.
+                        # SURGICAL single-key edit on purpose: _rewrite_versions_block
+                        # rewrites the WHOLE versions: block from the dict it is
+                        # given, which would drop every pin not passed in (and all
+                        # the comments). Only the one `backend:` line is touched.
+                        _cfg = os.path.join(intact_source_root, 'config.yaml')
+                        if os.path.isfile(_cfg):
+                            import re as _re
+                            with open(_cfg) as _cf:
+                                _txt = _cf.read()
+                            _pat = _re.compile(r'^([ \t]+backend:[ \t]*).*$', _re.M)
+                            _new, _n = _pat.subn(
+                                lambda m: f"{m.group(1)}{version.strip()}", _txt, count=1)
+                            if _n and _new != _txt:
+                                with open(_cfg, 'w') as _cf:
+                                    _cf.write(_new)
+                                log(f"  Stamped source/intact/config.yaml "
+                                    f"versions.backend -> {version}", "info")
+                            elif not _n:
+                                log("  config.yaml has no versions.backend key to "
+                                    "stamp — the target will fall back to VERSION",
+                                    "warning")
                 except Exception as e:
                     log(f"  Could not stamp VERSION file: {e}", "warning")
 
