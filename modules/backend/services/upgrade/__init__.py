@@ -1574,40 +1574,55 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             package_dir = package_dir_raw
             extract_dir = package_dir_raw
 
-    # Manifest-sized disk check — the SAME check run_offline_upgrade_workflow
-    # does before ITS module loop, but that one only covers Phase 1 (which,
-    # for a real old->new upgrade, runs on the OLD release's code and may not
-    # even HAVE this check — e.g. intact-20260615 predates it entirely). This
-    # is Phase 2: the NEW code, and where the bulk of the disk-hungry work
-    # actually happens (loading every OTHER module's images). Without this,
-    # NO disk check of any kind — not even a fixed floor — ever ran here, in
-    # ANY release, so a box tight on disk could sail through Phase 1 and then
-    # ENOSPC mid-module-loop with zero advance warning. Best-effort: reads
-    # manifest.json straight from package_dir, which Phase 1 already
-    # extracted and hasn't been cleaned up yet at this point.
+    # Disk check for what PHASE 2 still has to do. Before this, no disk check
+    # of any kind ran here in any release, so a box tight on disk could sail
+    # through Phase 1 and then ENOSPC mid-module-loop with no warning.
+    #
+    # Deliberately NOT run_offline_upgrade_workflow's manifest-sized number.
+    # That one budgets `package + images*2` because Phase 1 has to extract the
+    # tree AND load every image into the store. By the time we get here Phase 1
+    # has already done both, and load_all_bundled_images(cleanup_after_load)
+    # has reclaimed each tar as it landed — so re-charging the full amount
+    # double-counts finished work. It is not a conservative over-estimate, it
+    # is simply wrong: a 3.7 GB elk/iris/volweb/portainer package demanded
+    # ~25.7 GiB at resume and hard-failed an upgrade with 14.2 GiB free that
+    # had completed fine on the same box minutes earlier (2026-07-22).
+    #
+    # What Phase 2 actually consumes: container writable layers + volumes for
+    # each module's compose-up, plus loading any image tar that is somehow
+    # STILL on disk (Phase 1 ran old code without the pre-load, or a load
+    # failed and its tar was deliberately kept). So: size from the tars that
+    # actually remain, and floor it at the same APPLY_MIN_FREE_GB the rest of
+    # the apply path uses.
     try:
-        manifest_path = os.path.join(package_dir, 'manifest.json') if package_dir else None
-        if manifest_path and os.path.exists(manifest_path):
-            with open(manifest_path) as _mf:
-                _resume_manifest = json.load(_mf)
-            from .config_validate import required_free_gb_for_manifest, preflight_environment as _pe
-            _pkg_bytes = os.path.getsize(package_path) if (package_path and os.path.exists(package_path)) else 0
-            _need = required_free_gb_for_manifest(_resume_manifest, _pkg_bytes)
-            _ok2, _errs2 = _pe(logger=None, min_free_gb=_need)
-            if not _ok2:
-                log(f"Insufficient disk for the remaining modules (~{_need} GiB "
-                    f"needed, sized from the package manifest):", "error")
-                for _e in _errs2:
-                    log(f"  - {_e}", "error")
-                return {"success": False, "status": "failed",
-                        "error": "; ".join(_errs2),
-                        "results": {}, "completed": 0, "total": 0, "versions": {}}
-            log(f"  Disk preflight (Phase 2): ~{_need} GiB required, satisfied.", "info")
-        else:
-            log("  Phase-2 disk check skipped (no manifest.json at package_dir — "
-                "package already cleaned up or an older state format)", "warning")
+        from .config_validate import APPLY_MIN_FREE_GB, preflight_environment as _pe
+        _remaining = 0
+        _images_dir = os.path.join(package_dir, 'images') if package_dir else None
+        if _images_dir and os.path.isdir(_images_dir):
+            for _fn in os.listdir(_images_dir):
+                if _fn.endswith('.tar'):
+                    try:
+                        _remaining += os.path.getsize(os.path.join(_images_dir, _fn))
+                    except OSError:
+                        pass
+        # Each still-present tar gets a second copy in the image store.
+        _need = max(float(APPLY_MIN_FREE_GB),
+                    round(_remaining / (1024 ** 3) * 1.15, 1))
+        _ok2, _errs2 = _pe(logger=None, min_free_gb=_need)
+        if not _ok2:
+            log(f"Insufficient disk for the remaining modules (~{_need} GiB "
+                f"needed for Phase 2; {_remaining / (1024 ** 3):.1f} GiB of "
+                f"image tars still to load):", "error")
+            for _e in _errs2:
+                log(f"  - {_e}", "error")
+            return {"success": False, "status": "failed",
+                    "error": "; ".join(_errs2),
+                    "results": {}, "completed": 0, "total": 0, "versions": {}}
+        log(f"  Disk preflight (Phase 2): ~{_need} GiB required "
+            f"({_remaining / (1024 ** 3):.1f} GiB of image tars left to load), "
+            f"satisfied.", "info")
     except Exception as _de:
-        log(f"  Phase-2 manifest-sized disk check skipped ({type(_de).__name__}: {_de})", "warning")
+        log(f"  Phase-2 disk check skipped ({type(_de).__name__}: {_de})", "warning")
 
     # ── Phase 2 (NEW code) finalizes intact's version + config pin ───────────
     # Phase 1 copied the package source and restarted; we are now executing the
