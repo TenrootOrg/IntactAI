@@ -895,6 +895,12 @@ document.addEventListener('alpine:init', () => {
         // styling and the apply-button warning.
         applyModuleAction(module, target) {
             const cur = this.applyCurrentVersions[module];
+            // A module the backend never reported at all is one it does not
+            // know about — exactly what happens when a NEWER release's package
+            // introduces a module this older backend has never heard of. That
+            // is an INSTALL, not an unknown: it belongs in the opt-in section
+            // (default unticked), not silently in the forced list showing "?".
+            if (cur === undefined || cur === null) return 'install';
             if (!cur || cur === 'unknown') return 'unknown';
             if (cur === 'Not installed') return 'install';
             const curStr = String(cur).trim();
@@ -1462,9 +1468,22 @@ document.addEventListener('alpine:init', () => {
                     this.applyCurrentVersions = cur.versions || {};
                 }
             } catch (_) { /* cosmetic only */ }
-            this.applySelectedModules = Object.keys(
-                (this.applyManifest && this.applyManifest.versions) || {}
-            );
+            // Seed the selection by ACTION, not blindly from the manifest:
+            //   upgrade / downgrade / unknown -> forced (ticked)
+            //   install (module absent here)  -> opt-in, default UNTICKED
+            //   no-change                     -> skipped
+            // Blind Object.keys() pre-ticked modules the host doesn't even
+            // have, so an import silently installed new modules.
+            {
+                const _versions = (this.applyManifest && this.applyManifest.versions) || {};
+                this.applySelectedModules = [];
+                for (const [_name, _target] of Object.entries(_versions)) {
+                    const _action = this.applyModuleAction(_name, _target);
+                    if (_action === 'upgrade' || _action === 'downgrade' || _action === 'unknown') {
+                        this.applySelectedModules.push(_name);
+                    }
+                }
+            }
             this.applyDbOverwrite = {};
             this.showApplyPackageModal = true;
             this.loadingApplyInfo = false;
