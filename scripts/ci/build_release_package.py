@@ -79,6 +79,58 @@ def release_module_set(tag: str) -> dict:
     return modules
 
 
+def _verify_package_usable(result: dict, tag: str):
+    """Return an error string if the built package would not be usable by a box
+    upgrading to ``tag``, else None.
+
+    Checks the two things that make a package silently useless rather than
+    obviously broken:
+
+    1. **Backend image present and correctly named.** For a Full-mode release
+       (target compose runs code from the image), the target resolves the image
+       via ``backend_target_tag()`` — config ``versions.backend`` → ``VERSION``
+       → 'development'. Both of those land on the release tag, so the bundled
+       image MUST be ``intact-backend-<tag>.tar``. Any other name is invisible
+       to the target and forces an on-box rebuild.
+    2. **intact pinned to the release tag** in the manifest, since that is what
+       the target reads to decide what it is upgrading to.
+    """
+    manifest = result.get("manifest") or {}
+    versions = manifest.get("versions") or {}
+    images = ((manifest.get("contents") or {}).get("images") or [])
+
+    if versions.get("intact") != tag:
+        return (f"manifest versions.intact is {versions.get('intact')!r}, "
+                f"expected {tag!r}")
+
+    # Full-mode is decided by the TARGET release's own backend compose, the same
+    # way prepare decided whether to bake. Reuse that helper rather than
+    # re-deriving the rule here.
+    try:
+        from services.upgrade.intact import backend_full_mode
+        src_root = os.path.join(os.environ.get("INTACT_PATH", "/app/workdir"))
+        target_compose = os.path.join(src_root, "modules", "backend",
+                                      "docker-compose.yaml")
+        full_mode = backend_full_mode(target_compose)
+    except Exception as e:                                    # pragma: no cover
+        return f"could not determine backend deploy mode ({type(e).__name__}: {e})"
+
+    if not full_mode:
+        print("[ci-package] self-check: legacy source-mounted release — "
+              "no backend image expected.", flush=True)
+        return None
+
+    expected = f"intact-backend-{tag}.tar"
+    if expected not in images:
+        backend_imgs = [i for i in images if i.startswith("intact-backend-")]
+        return (f"Full-mode release but {expected} is not in the package "
+                f"(backend images present: {backend_imgs or 'NONE'}). The target "
+                f"would not find its image and would rebuild from source.")
+    print(f"[ci-package] self-check: {expected} bundled — the target will load "
+          f"it, not rebuild.", flush=True)
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tag", required=True, help="release tag, e.g. intact-20260720")
@@ -104,6 +156,19 @@ def main() -> int:
     )
     if not result.get("success"):
         print(f"[ci-package] FAILED: {result.get('error')}", flush=True)
+        return 1
+
+    # ── Self-check: the package must be USABLE by the target, not merely built.
+    # A Full-mode release whose backend image is missing — or baked under a tag
+    # the target won't look for — is a package that silently forces the customer
+    # box to rebuild the backend from source at convergence. That is exactly what
+    # shipped in intact-20260721: the image was baked as `intact-backend:development`
+    # while the box resolved `intact-backend:intact-20260721`, so the bundled image
+    # was invisible. Nothing caught it until a real upgrade limped and hung.
+    # Assert it here, in CI, where it costs nothing to fix.
+    err = _verify_package_usable(result, args.tag)
+    if err:
+        print(f"[ci-package] SELF-CHECK FAILED: {err}", flush=True)
         return 1
 
     src = result["package_path"]
