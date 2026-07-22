@@ -259,6 +259,85 @@ def _version_is_older(target: str, current: str) -> bool:
         return False
 
 
+
+def post_upgrade_health_gate(logger: Callable = None, budget_s: int = 45) -> Dict:
+    """Observe whether the platform is actually serving after an upgrade.
+
+    Every module reporting success is not the same as a working platform. On
+    2026-07-22 a run finished `completed 100% · 0 errors` while the backend was
+    still on the OLD image — every per-module claim was true and the overall
+    verdict was wrong. This looks at the result instead of the intentions.
+
+    Strictly observational: it NEVER fails a run, reverts anything, or blocks.
+    The worst it does is downgrade the reported status to DEGRADED so the
+    operator is told to look. Hard-bounded by `budget_s` (default 45s) because a
+    health check that hangs is worse than one that is briefly wrong.
+
+    Returns {"healthy": bool, "checked": int, "problems": [str]}.
+    """
+    import time as _t
+    log = logger or (lambda m, l="info": None)
+    started = _t.time()
+    problems = []
+    checked = 0
+
+    def _left():
+        return max(0.0, budget_s - (_t.time() - started))
+
+    # 1. Container health — anything created but not running, or reporting
+    #    unhealthy. `docker ps -a` so a container that died is not invisible.
+    try:
+        r = run_command(
+            "docker ps -a --filter name=intact_ --format "
+            "'{{.Names}}\t{{.State}}\t{{.Status}}'",
+            logger=None, timeout=min(15, max(5, int(_left()))))
+        for line in (r.get('stdout') or '').splitlines():
+            parts = line.strip().split('\t')
+            if len(parts) < 3:
+                continue
+            name, state, status = parts[0], parts[1], parts[2]
+            checked += 1
+            if state != 'running':
+                problems.append(f"{name} is {state} ({status[:40]})")
+            elif 'unhealthy' in status.lower():
+                problems.append(f"{name} reports unhealthy ({status[:40]})")
+    except Exception as e:
+        log(f"  [health] container check skipped ({type(e).__name__}: {e})", "warning")
+
+    # 2. The backend is actually serving its own API — the single most useful
+    #    signal, and the one a per-module success can never establish.
+    if _left() > 2:
+        try:
+            import urllib.request
+            for path in ('/api/health', '/api/upgrade/current-versions'):
+                if _left() <= 2:
+                    break
+                checked += 1
+                try:
+                    with urllib.request.urlopen(
+                            f'http://127.0.0.1:5001{path}',
+                            timeout=min(10, max(2, int(_left())))) as resp:
+                        if resp.status != 200:
+                            problems.append(f"{path} returned HTTP {resp.status}")
+                except Exception as e:
+                    problems.append(f"{path} unreachable ({type(e).__name__})")
+        except Exception as e:
+            log(f"  [health] api check skipped ({type(e).__name__}: {e})", "warning")
+
+    healthy = not problems
+    if healthy:
+        log(f"  Post-upgrade health: OK ({checked} checks, "
+            f"{_t.time() - started:.1f}s)", "success")
+    else:
+        log(f"  Post-upgrade health: DEGRADED — {len(problems)} problem(s) after "
+            f"an otherwise successful upgrade:", "warning")
+        for pr in problems[:8]:
+            log(f"    - {pr}", "warning")
+        log("    The upgrade itself completed; these are runtime symptoms worth "
+            "checking before you rely on the platform.", "warning")
+    return {"healthy": healthy, "checked": checked, "problems": problems}
+
+
 def _reject_downgrades(modules_dict: Dict, current_versions: Dict,
                        logger: Callable = None):
     """Return an error string when the package would move any module BACKWARDS.
@@ -2596,6 +2675,18 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                       if not m.startswith("_") and not r.get('success') and not r.get('skipped')]
             skipped = [m for m, r in results.items()
                        if not m.startswith("_") and r.get('skipped')]
+
+            # Did the platform actually come back? Per-module success does not
+            # establish that (see post_upgrade_health_gate's docstring). Purely
+            # observational — it can only downgrade the verdict to degraded.
+            try:
+                _hg = post_upgrade_health_gate(logger=log)
+                results["_health"] = _hg
+                if not _hg.get("healthy") and overall_status == "success":
+                    overall_status = "completed_with_warnings"
+            except Exception as _he:
+                log(f"  post-upgrade health gate skipped "
+                    f"({type(_he).__name__}: {_he})", "warning")
 
             log("", "info")
             log(f"{'='*50}", "info")
