@@ -1012,32 +1012,6 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
         log("Intact.AI source not included in package, skipping...", "warning")
         return {"success": True, "skipped": True}
 
-    # ── Full-mode image-swap detection (BEFORE anything is mutated) ──────────
-    # This release runs the backend from a baked image, so Phase 1 loads the
-    # image the package ships and hands off to a RECREATE — the new code then
-    # drives Phase 2. Deciding (and failing) here, before the snapshot and the
-    # source copy, means a package missing its backend image aborts with the
-    # platform completely untouched.
-    needs_swap = False
-    target_tag = backend_target_tag()          # = versions.backend (post-merge)
-    old_image = running_backend_image()
-    if has_backend:
-        target_compose = os.path.join(backend_source, 'docker-compose.yaml')
-        if backend_full_mode(target_compose):
-            needs_swap = True
-            log(f"Full-mode release detected — backend runs from image "
-                f"intact-backend:{target_tag} (swap + recreate)", "info")
-            _ens = ensure_backend_runtime_image(package_dir, target_tag,
-                                                run_id=run_id, logger=log)
-            if not _ens["available"]:
-                log(f"BACKEND RUNTIME IMAGE UNAVAILABLE — aborting the intact "
-                    f"upgrade with the platform untouched. {_ens['error']}", "error")
-                return {"success": False, "rolled_back": False,
-                        "needs_swap": True, "error": _ens["error"]}
-        else:
-            log("Target release is legacy source-mounted (no backend image) — "
-                "using the restart path.", "info")
-
     # Anti-brick snapshot: capture the CURRENT install before the copy replaces
     # it, so a broken release can be rolled back by the recreate helper instead
     # of crash-looping the platform. Lives on the /app/data bind mount.
@@ -1063,6 +1037,39 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
             log(f"  config.yaml merge raised "
                 f"({type(e).__name__}: {e}); proceeding with existing "
                 f"config.yaml — pins may be stale", "warning")
+
+    # ── Full-mode image-swap detection ───────────────────────────────────────
+    # MERGE FIRST, then decide the swap. backend_target_tag() reads config.yaml
+    # versions.backend, and the merge above is what rewrites it to the TARGET
+    # release. Detecting before the merge resolved the OLD pin, so the helper
+    # dutifully recreated the backend onto the image it was already running —
+    # a perfect no-op swap, after which Phase 2 resumed on the OLD code with no
+    # bind-mounts to save it. Observed on a real 0615 -> 0721 run 2026-07-22.
+    # This release runs the backend from a baked image, so Phase 1 loads the
+    # image the package ships and hands off to a RECREATE — the new code then
+    # drives Phase 2. Deciding (and failing) here, before the snapshot and the
+    # source copy, means a package missing its backend image aborts with the
+    # platform completely untouched.
+    needs_swap = False
+    target_tag = backend_target_tag()          # = versions.backend (post-merge)
+    old_image = running_backend_image()
+    if has_backend:
+        target_compose = os.path.join(backend_source, 'docker-compose.yaml')
+        if backend_full_mode(target_compose):
+            needs_swap = True
+            log(f"Full-mode release detected — backend runs from image "
+                f"intact-backend:{target_tag} (swap + recreate)", "info")
+            _ens = ensure_backend_runtime_image(package_dir, target_tag,
+                                                run_id=run_id, logger=log)
+            if not _ens["available"]:
+                log(f"BACKEND RUNTIME IMAGE UNAVAILABLE — aborting the intact "
+                    f"upgrade with the platform untouched. {_ens['error']}", "error")
+                return {"success": False, "rolled_back": False,
+                        "needs_swap": True, "error": _ens["error"]}
+        else:
+            log("Target release is legacy source-mounted (no backend image) — "
+                "using the restart path.", "info")
+
 
     # Copy backend source files
     if has_backend:
