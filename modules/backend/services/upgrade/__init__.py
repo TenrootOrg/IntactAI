@@ -313,6 +313,9 @@ def preflight_package(package_path: str, logger: Callable = None) -> Dict:
         add("archive integrity + manifest", True,
             f"{len(manifest.get('versions') or {})} module(s)")
 
+        _fmt = check_package_format(manifest, logger=None)
+        add("package format readable by this release", _fmt is None, _fmt or "")
+
         versions = _normalize_legacy_module_keys(manifest.get('versions', {}))
         current = get_current_versions()
 
@@ -370,6 +373,41 @@ def preflight_package(package_path: str, logger: Callable = None) -> Dict:
                 _sh.rmtree(scratch)
             except Exception:
                 pass
+
+
+
+# The package layout this release knows how to read. The manifest has always
+# carried `package_version`, but nothing ever read it — so the day the layout
+# changes, every older box would misread the new package instead of declining it.
+# Phase 1 runs the OLD release's code and can never be fixed retroactively, which
+# is exactly why it must be able to say "I don't understand this" cleanly.
+SUPPORTED_PACKAGE_FORMAT = 1
+
+
+def check_package_format(manifest: Dict, logger: Callable = None):
+    """Return an error string if this release cannot read the package's format.
+
+    Deliberately permissive: only a MAJOR bump is refused. A minor bump means
+    additive changes an older reader can ignore, and an unparseable or missing
+    value is treated as the original format — refusing those would block valid
+    upgrades, which is a worse failure than reading an old package loosely.
+    """
+    log = logger or (lambda m, l="info": None)
+    raw = str((manifest or {}).get('package_version') or '1.0').strip()
+    try:
+        major = int(raw.split('.')[0])
+    except Exception:
+        log(f"  package_version {raw!r} is unparseable — assuming format "
+            f"{SUPPORTED_PACKAGE_FORMAT}.x", "warning")
+        return None
+    if major > SUPPORTED_PACKAGE_FORMAT:
+        return (f"this package uses format {raw}, newer than this release can "
+                f"read (supports {SUPPORTED_PACKAGE_FORMAT}.x). Upgrade to a "
+                f"newer release first, then apply this package.")
+    if raw != f"{SUPPORTED_PACKAGE_FORMAT}.0":
+        log(f"  package format {raw} (this release reads "
+            f"{SUPPORTED_PACKAGE_FORMAT}.x) — proceeding", "info")
+    return None
 
 
 def post_upgrade_health_gate(logger: Callable = None, budget_s: int = 45,
@@ -2325,6 +2363,14 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     overall_status = "success"
     awaiting_restart = False  # Flag to prevent cleanup when Phase 2 pending
     extract_dir = verify_result.get('extract_dir')
+
+    # Can this release even read this package? Checked before anything is
+    # touched, so an unreadable package is declined rather than misinterpreted.
+    _fmt = check_package_format(manifest, logger=log)
+    if _fmt:
+        log(f"PACKAGE FORMAT UNSUPPORTED — {_fmt}", "error")
+        return {"success": False, "status": "failed", "error": _fmt,
+                "results": {}, "completed": 0, "total": 0, "versions": {}}
 
     # Second disk check, now sized from THIS package instead of a fixed floor.
     # The early check ran before extraction, when the real requirement was still
