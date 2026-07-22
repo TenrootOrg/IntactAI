@@ -57,6 +57,11 @@ DEV_BRANCH = 'development'
 # an on-box build path is reinstated).
 OFFER_DEV_BRANCH = False
 
+# Pinned for legibility — bumping these is a backend code change, not an
+# operator concern.
+GH_TIMEOUT = 30
+CACHE_TTL_SECONDS = 30 * 60
+
 
 def _release_package_bytes(rel: dict, tag: str):
     """Total size in bytes of the CI upgrade-package attached to ``rel``, or
@@ -64,8 +69,8 @@ def _release_package_bytes(rel: dict, tag: str):
 
     CI attaches either a single ``intact-upgrade-<tag>.tar.gz`` or, when the
     tarball exceeds GitHub's 2 GiB asset cap, a set of ``….tar.gz.part-NN``
-    pieces. Either shape counts; the ``.sha256`` / ``.manifest.json`` sidecars
-    do not.
+    pieces (see .github/workflows/build-release-package.yml). Either shape
+    counts; the ``.sha256`` / ``.manifest.json`` sidecars do not.
     """
     base = f'intact-upgrade-{tag}.tar.gz'
     total = 0
@@ -77,16 +82,36 @@ def _release_package_bytes(rel: dict, tag: str):
             found = True
     return total if found else None
 
-# Pinned for legibility — bumping these is a backend code change, not an
-# operator concern.
-GH_TIMEOUT = 30
-CACHE_TTL_SECONDS = 30 * 60
-
 
 # ─── Cache (in-process, no Redis dep) ─────────────────────────────────────
 
 _cache: Dict[str, Tuple[float, object]] = {}
 
+# Sentinel distinguishing "cached: confirmed no manifest asset" from "not yet
+# cached" (which _cache_get already represents as plain None).
+_MISSING = object()
+
+
+
+def _github_token():
+    """GitHub API token: GITHUB_TOKEN env (set into the backend .env at install
+    from config.yaml options.github_token) first, falling back to a fresh read
+    of config.yaml itself — so an operator can add the token to config.yaml and
+    it takes effect WITHOUT editing .env or restarting the backend. Raises the
+    anonymous 60 req/hr per-IP cap to 5,000 req/hr. Needs a READ-ONLY-PUBLIC
+    token (classic PAT with no scopes, or fine-grained public-repos read-only)
+    — see the github_token comment in config.yaml.
+    """
+    token = os.environ.get('GITHUB_TOKEN')
+    if token:
+        return token
+    try:
+        from config import load_main_config
+        cfg = load_main_config() or {}
+        token = (cfg.get('options') or {}).get('github_token')
+        return token if isinstance(token, str) and token.strip() else None
+    except Exception:
+        return None
 
 def _cache_get(key: str):
     """Return cached value or None if missing/stale."""
@@ -132,7 +157,7 @@ def get_github_rate_limit() -> Optional[Dict]:
     """
     import time as _time
     headers = {'Accept': 'application/vnd.github.v3+json'}
-    token = os.environ.get('GITHUB_TOKEN')
+    token = _github_token()
     if token:
         headers['Authorization'] = f'token {token}'
     try:
@@ -238,13 +263,16 @@ def check_quota_or_raise(needed: int, action_name: str,
         else:
             fix_block = (
                 "\n\nTo raise the cap from 60 → 5000/hr:\n"
-                "  1) Get a token: github.com/settings/tokens "
-                "→ Generate new token (classic). Leave all scopes UNCHECKED "
-                "(public-repo reads only, smaller blast radius if it leaks).\n"
-                "  2) On the IntactAI host:\n"
-                "       echo 'GITHUB_TOKEN=ghp_YOUR_TOKEN' | sudo tee -a "
-                "/home/tenroot/intact/modules/backend/.env\n"
-                "       docker restart intact_backend\n"
+                "  1) Get a token: https://github.com/settings/tokens/new "
+                "(classic). Leave ALL scopes UNCHECKED — the platform only "
+                "READS a public repo, so an empty-scope token authenticates "
+                "fine and is harmless if it leaks. (Fine-grained alt: "
+                "https://github.com/settings/personal-access-tokens/new with "
+                "'Public repositories (read-only)' and no permissions.)\n"
+                "  2) Put it in config.yaml under options:\n"
+                "       github_token: 'ghp_YOUR_TOKEN'\n"
+                "     (picked up immediately — no restart needed; install.sh "
+                "also persists it to the backend .env on the next run)\n"
                 "  3) Confirm — open this modal again; the [GH-QUOTA] log "
                 "should now show have N/5000 instead of N/60.\n"
                 "Otherwise, wait until reset."
@@ -280,7 +308,7 @@ def list_github_refs(user_action: str = 'fetch') -> List[Dict]:
 
     _gh_call_log(f'/repos/{GITHUB_REPO}/releases', user_action)
     headers = {'Accept': 'application/vnd.github.v3+json'}
-    token = os.environ.get('GITHUB_TOKEN')
+    token = _github_token()
     if token:
         headers['Authorization'] = f'token {token}'
     try:
@@ -378,6 +406,74 @@ def fetch_upstream_config(ref: str, user_action: str = 'plan') -> Dict:
     return cfg
 
 
+def fetch_release_manifest(ref: str, user_action: str = 'plan') -> Optional[Dict]:
+    """Fetch and parse the ``.manifest.json`` sidecar of release ``ref``'s
+    CI-built package — the actual list of modules that download will contain.
+
+    ``config.yaml``'s ``modules:`` block (what :func:`fetch_upstream_config`
+    reads) lists every module the CODEBASE supports, regardless of what a
+    given release's CI build chose to bundle (see ``RELEASE_MODULES`` in
+    ``scripts/ci/build_release_package.py`` — a release can deliberately ship
+    lean, e.g. skipping elk/iris/volweb/portainer). Deriving the picker from
+    config.yaml offers a checkbox for a module the download can never
+    deliver — ticking it is a silent no-op at apply time, since the module
+    simply isn't in the tarball's own manifest. This reads the SAME manifest
+    the apply engine matches against, so the picker can never promise more
+    than the package actually contains.
+
+    Returns ``None`` when the release carries no manifest asset (shouldn't
+    happen for any ref ``list_github_refs`` offers, since that already
+    filters to releases with a package asset — the sidecar ships alongside
+    it). Cached like :func:`fetch_upstream_config`.
+    """
+    cache_key = f'manifest:{ref}'
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return None if cached is _MISSING else cached
+
+    headers = {'Accept': 'application/vnd.github.v3+json'}
+    token = _github_token()
+    if token:
+        headers['Authorization'] = f'token {token}'
+    _gh_call_log(f'/repos/{GITHUB_REPO}/releases/tags/{ref}', user_action)
+    try:
+        resp = requests.get(f'{GITHUB_API}/releases/tags/{ref}',
+                            headers=headers, timeout=GH_TIMEOUT)
+    except requests.RequestException as e:
+        raise ResolverError(f'GitHub unreachable fetching release {ref}: {e}')
+    if resp.status_code != 200:
+        raise ResolverError(
+            f'GitHub /releases/tags/{ref} returned {resp.status_code}: '
+            f'{resp.text[:200]}'
+        )
+    rel = resp.json() or {}
+    manifest_name = f'intact-upgrade-{ref}.tar.gz.manifest.json'
+    asset_url = None
+    for a in (rel.get('assets') or []):
+        if (a.get('name') or '') == manifest_name:
+            asset_url = a.get('browser_download_url')
+            break
+    if not asset_url:
+        _cache_put(cache_key, _MISSING)
+        return None
+
+    try:
+        mresp = requests.get(asset_url, timeout=GH_TIMEOUT)
+    except requests.RequestException as e:
+        raise ResolverError(f'Manifest download failed for {ref}: {e}')
+    if mresp.status_code != 200:
+        raise ResolverError(
+            f'Manifest download for {ref} returned {mresp.status_code}'
+        )
+    try:
+        manifest = mresp.json()
+    except ValueError as e:
+        raise ResolverError(f'Manifest for {ref} did not parse as JSON: {e}')
+
+    _cache_put(cache_key, manifest)
+    return manifest
+
+
 def resolve_upgrade_chain(current_ref: Optional[str],
                           target_ref: str,
                           user_action: str = 'plan') -> List[str]:
@@ -443,13 +539,79 @@ def resolve_upgrade_chain(current_ref: Optional[str],
     return step_tags
 
 
+# Modules that appear in config.yaml but are NOT upgraded/bundled through this
+# system — infrastructure managed by install.sh, with no upgrade handler
+# (not in PRIMARY_IMAGES, not in offline_upgrade_functions). Explicit, documented
+# skip so the picker never offers a non-upgradeable row.
+_NON_UPGRADEABLE = set()
+
+# Preferred display order for the module picker. Any module NOT listed here —
+# e.g. a brand-new module added to config.yaml — is appended after these
+# (alphabetically), so new modules appear automatically with no code change.
+_MODULE_DISPLAY_ORDER = ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor',
+                         'aws_sigma', 'o365rc', 'volweb', 'cve_scan', 'portainer']
+
+
+def _upstream_module_rows(upstream_cfg: dict, target_ref: str,
+                          package_manifest: Optional[dict] = None) -> List[Dict]:
+    """Generic module list for the upgrade/prepare picker.
+
+    Prefers ``package_manifest`` (see :func:`fetch_release_manifest`) — the
+    actual ``versions:`` block baked into the release's downloadable
+    package — over ``upstream_cfg``'s ``config.yaml`` ``modules:`` block.
+    config.yaml lists every module the CODEBASE supports regardless of
+    packaging scope (a release can deliberately ship lean, e.g. skipping
+    elk/iris/volweb/portainer — see ``RELEASE_MODULES`` in
+    ``scripts/ci/build_release_package.py``); reading it here would offer a
+    checkbox for a module the download can never deliver, a silent no-op at
+    apply time since the module isn't in the tarball. Falls back to
+    ``upstream_cfg`` only when no manifest was fetched (e.g. the caller
+    tolerated a fetch failure) — better a possibly-stale list than none.
+
+    - ``intact`` is implicit (its config key is ``backend`` and its real
+      "version" is the picked ref), so it is prepended explicitly, target = ref.
+    - ``cve_scan`` is versionless (its CVE DB is rolling data baked
+      best-effort — see ``upgrade_cve_offline``, which degrades gracefully
+      with a warning when no DB was bundled) so it never appears in a
+      manifest's ``versions`` dict even on releases that include it. Always
+      surfaced with target ``'latest'`` — safe unlike the other modules
+      since ticking it never silently does nothing.
+    - ``_NON_UPGRADEABLE`` infra modules are skipped.
+
+    Returns ``[{'module': str, 'target': str}, ...]`` with intact first, then the
+    preferred order, then any new modules alphabetically.
+    """
+    if package_manifest is not None:
+        pkg_versions = dict(package_manifest.get('versions') or {})
+        pkg_versions.pop('intact', None)
+        pkg_versions.setdefault('cve_scan', 'latest')
+        names = [m for m in pkg_versions if m not in _NON_UPGRADEABLE]
+        ordered = [m for m in _MODULE_DISPLAY_ORDER if m in names]
+        ordered += sorted(m for m in names if m not in _MODULE_DISPLAY_ORDER)
+        rows: List[Dict] = [{'module': 'intact', 'target': target_ref}]
+        for name in ordered:
+            rows.append({'module': name, 'target': str(pkg_versions[name])})
+        return rows
+
+    mods = upstream_cfg.get('modules') or {}
+    versions = upstream_cfg.get('versions') or {}
+    names = [m for m in mods if m not in _NON_UPGRADEABLE]
+    ordered = [m for m in _MODULE_DISPLAY_ORDER if m in names]
+    ordered += sorted(m for m in names if m not in _MODULE_DISPLAY_ORDER)
+    rows: List[Dict] = [{'module': 'intact', 'target': target_ref}]
+    for name in ordered:
+        v = versions.get(name)
+        rows.append({'module': name, 'target': str(v) if v is not None else 'latest'})
+    return rows
+
+
 def list_upstream_modules(target_ref: str,
                           user_action: str = 'prepare-list') -> List[Dict]:
     """Return the flat module list for a given target ref.
 
     Used by Prepare Package — the build-server's local state is
     irrelevant when bundling for an unknown air-gap target, so this
-    helper returns every module in the upstream ``versions:`` block
+    helper returns every module the release's ACTUAL package contains,
     without any noop/forced/optional classification.
 
     The intact module isn't in upstream's versions block as a
@@ -466,38 +628,16 @@ def list_upstream_modules(target_ref: str,
             ...
         ]
 
-    Reuses :func:`fetch_upstream_config` (30-min cache), so this is a
-    no-cost call on repeat clicks within the cache window.
+    Reuses :func:`fetch_upstream_config` + :func:`fetch_release_manifest`
+    (both 30-min cached), so this is a no-cost call on repeat clicks within
+    the cache window.
     """
     upstream_cfg = fetch_upstream_config(target_ref, user_action=user_action)
-    upstream_versions = upstream_cfg.get('versions') or {}
-
-    # Same key map as compute_plan(). intact's "version" is the ref.
-    KEY_MAP = [
-        ('intact',       'backend'),
-        ('elk',          'elk'),
-        ('timesketch',   'timesketch'),
-        ('plaso',        'plaso'),
-        ('iris',         'iris'),
-        ('velociraptor', 'velociraptor'),
-        ('prowler',      'prowler'),
-        ('o365rc',       'o365rc'),
-        ('volweb',       'volweb'),
-    ]
-
-    out: List[Dict] = []
-    for module_id, cfg_key in KEY_MAP:
-        if module_id == 'intact':
-            out.append({'module': 'intact', 'target': target_ref})
-            continue
-        v = upstream_versions.get(cfg_key)
-        if v is None:
-            # Module not in upstream — skip silently. Future-proof: a
-            # release that drops a module shouldn't show it as
-            # bundleable.
-            continue
-        out.append({'module': module_id, 'target': str(v)})
-    return out
+    package_manifest = fetch_release_manifest(target_ref, user_action=user_action)
+    # Manifest-scoped — see _upstream_module_rows. Only what the download for
+    # THIS release actually contains shows up as a row.
+    return _upstream_module_rows(upstream_cfg, target_ref,
+                                 package_manifest=package_manifest)
 
 
 def compute_plan(target_ref: str,
@@ -530,46 +670,38 @@ def compute_plan(target_ref: str,
     # module table. Intermediate steps' configs are pulled at apply
     # time, not here, to keep Compute Plan cheap.
     upstream_cfg = fetch_upstream_config(target_ref, user_action=user_action)
-    upstream_versions = upstream_cfg.get('versions') or {}
-    upstream_modules = upstream_cfg.get('modules') or {}
-
-    # Same key map as base.get_latest_versions(). intact in code →
-    # backend key in config.yaml.
-    KEY_MAP = {
-        'elk':          'elk',
-        'timesketch':   'timesketch',
-        'plaso':        'plaso',
-        'iris':         'iris',
-        'velociraptor': 'velociraptor',
-        'prowler':      'prowler',
-        'o365rc':       'o365rc',
-        'intact':       'backend',
-        'volweb':       'volweb',
-    }
+    package_manifest = fetch_release_manifest(target_ref, user_action=user_action)
 
     forced: List[Dict] = []
     optional: List[Dict] = []
 
-    for module_id, cfg_key in KEY_MAP.items():
+    # Manifest-scoped module set (see _upstream_module_rows): only modules
+    # THIS release's package actually bundles show up, so ticking a box can
+    # never silently do nothing at apply time. intact's target is the
+    # picked ref; classification (forced/optional/noop) is unchanged.
+    for row in _upstream_module_rows(upstream_cfg, target_ref,
+                                     package_manifest=package_manifest):
+        module_id = row['module']
+        upstream_ver = row['target']
         cur_state = current.get(module_id, {}).get('current', 'Not installed')
-        if module_id == 'intact':
-            # The 'intact' (backend) module's "target version" isn't a
-            # docker-image tag — it's the GitHub ref the operator
-            # picked. config.yaml's versions.backend exists for legacy
-            # reasons but is a fallback constant (1.0.0), not the
-            # shipped tag. Showing 'intact-20260609 → 1.0.0' would
-            # misleadingly suggest the operator is being asked to
-            # downgrade to a year-old release. The right answer:
-            # target == the picked ref (or 'development' for the
-            # rolling branch).
-            upstream_ver = target_ref
-        else:
-            upstream_ver = upstream_versions.get(cfg_key)
-            if upstream_ver is None:
-                # Module no longer in upstream (e.g. removed in a future
-                # release). Don't surface as install-able; leave running.
-                continue
-            upstream_ver = str(upstream_ver)
+
+        # CVE Scan is versionless (corpus is always the latest NVD feeds), so it
+        # can't go through the version-diff below. Surface as a standalone
+        # OPTIONAL row whose "current" is whether the module is enabled; default
+        # unchecked so a routine upgrade never silently re-downloads the feeds.
+        if module_id == 'cve_scan':
+            try:
+                from config import is_module_enabled as _mod_enabled
+                cve_on = bool(_mod_enabled('cve_scan'))
+            except Exception:
+                cve_on = False
+            optional.append({
+                'module': 'cve_scan',
+                'current': 'Installed' if cve_on else 'Not installed',
+                'target': 'latest',
+                'action': 'upgrade' if cve_on else 'install',
+            })
+            continue
 
         if cur_state == 'Not installed':
             # New-to-this-host. Show as optional (default unchecked).
@@ -582,16 +714,12 @@ def compute_plan(target_ref: str,
             continue
 
         # Module is installed. action depends on version delta.
-        # SPECIAL CASE — intact: the platform code itself never gets a
-        # 'noop' even when the ref/version string matches. Rolling refs
-        # like 'development' map the SAME name to DIFFERENT commits over
-        # time, and bumping a pinned numeric version isn't the only way
-        # new module-integration logic ships (a bugfix re-push to the
-        # same ref must still re-copy files + restart). Always running
-        # the intact step also unblocks the "Bug: nothing to upgrade →
-        # button greyed" footgun the operator hit 2026-06-14: even when
-        # every module is at-target, the operator can still click Start
-        # to refresh intact and pick up new commits on the rolling ref.
+        # SPECIAL CASE — intact: the platform code itself never gets a 'noop'
+        # even when the ref/version string matches. Rolling refs like
+        # 'development' map the SAME name to DIFFERENT commits over time, and a
+        # bugfix re-push to the same ref must still re-copy files + restart. Also
+        # unblocks the "nothing to upgrade → button greyed" footgun: the operator
+        # can always click Start to refresh intact on the rolling ref.
         if module_id == 'intact':
             action = 'upgrade'
         elif cur_state == upstream_ver:
