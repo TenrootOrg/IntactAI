@@ -6,7 +6,7 @@ from typing import Dict, Callable, Optional
 
 from .base import (
     WORKDIR, HOST_PATH,
-    run_command, read_env_file, update_env_file, load_docker_image,
+    run_command, read_env_file, update_env_file, preflight_offline_images,
     backup_env_file, restore_env_file, cleanup_backup,
     remove_old_module_image, ensure_module_enabled_in_config,
 )
@@ -106,15 +106,29 @@ def upgrade_plaso_offline(package_dir: str, version: str, logger: Callable = Non
     backup_file = backup_env_file(backend_env, logger=log)
 
     try:
-        # Load Plaso image from package
-        plaso_tar = os.path.join(images_dir, f"plaso-{version}.tar")
-        if os.path.exists(plaso_tar):
-            log(f"Loading Plaso image from package...", "info")
-            result = load_docker_image(plaso_tar, logger=log, run_id=run_id)
-            if not result['success']:
-                raise Exception(f"Failed to load Plaso image: {result.get('error', 'unknown')}")
-        else:
-            log(f"Plaso image not found in package: {plaso_tar}", "warning")
+        # Make the image available and PROVE it is, instead of assuming.
+        #
+        # A missing tar here is the NORMAL case, not an error: the orchestrator
+        # pre-loads every bundled tar up front and then deletes it to reclaim
+        # disk (load_all_bundled_images(cleanup_after_load=True)), so by the
+        # time this runs the image is already in the daemon and the tar is
+        # gone. The old code logged "image not found in package" as a warning
+        # and carried on regardless — which read as a failure when it wasn't,
+        # and, worse, meant a GENUINELY absent image still reported
+        # "upgrade completed" and stamped PLASO_VERSION to a tag that exists
+        # nowhere on the box. That only surfaced much later, when a Plaso job
+        # died on image-not-found.
+        #
+        # preflight_offline_images() collapses both cases correctly: it loads
+        # the tar when present, then `docker image inspect`s the ref either
+        # way, so already-loaded passes and truly-missing fails loudly here,
+        # before the version is stamped and while rollback is still cheap.
+        pre = preflight_offline_images('plaso', version, images_dir,
+                                       logger=log, run_id=run_id)
+        if not pre['success']:
+            raise Exception(
+                f"Plaso image {', '.join(pre['missing'])} is neither bundled "
+                f"in the package nor already loaded on this host")
 
         # Update version in backend .env
         log(f"Updating Plaso version to {version}...", "info")

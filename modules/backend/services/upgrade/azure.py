@@ -20,7 +20,7 @@ from typing import Dict, Callable, Optional
 
 from .base import (
     WORKDIR,
-    run_command, read_env_file, update_env_file, load_docker_image,
+    run_command, read_env_file, update_env_file, preflight_offline_images,
     backup_env_file, restore_env_file, cleanup_backup,
     set_module_enabled_in_config,
 )
@@ -89,14 +89,18 @@ def upgrade_azure_offline(package_dir: str, version: str, logger: Callable = Non
     backup_file = backup_env_file(backend_env, logger=log)
 
     try:
-        o365rc_tar = os.path.join(images_dir, f"dfir-o365rc-{version}.tar")
-        if os.path.exists(o365rc_tar):
-            log("Loading DFIR-O365RC image from package...", "info")
-            result = load_docker_image(o365rc_tar, logger=log, run_id=run_id)
-            if not result['success']:
-                raise Exception(f"Failed to load DFIR-O365RC image: {result.get('error', 'unknown')}")
-        else:
-            log(f"DFIR-O365RC image not found in package: {o365rc_tar}", "warning")
+        # See the twin block in plaso.py for the full rationale. Short version:
+        # the orchestrator pre-loads bundled tars and deletes them to reclaim
+        # disk, so an absent tar is normal and only proves nothing about the
+        # image. Warning-and-continuing let a genuinely missing image report
+        # "upgrade completed" while DFIR_O365RC_VERSION was stamped to a tag
+        # the host doesn't have. Verify presence instead of assuming it.
+        pre = preflight_offline_images('o365rc', version, images_dir,
+                                       logger=log, run_id=run_id)
+        if not pre['success']:
+            raise Exception(
+                f"DFIR-O365RC image {', '.join(pre['missing'])} is neither "
+                f"bundled in the package nor already loaded on this host")
 
         log(f"Updating DFIR-O365RC version to {version}...", "info")
         update_env_file(backend_env, 'DFIR_O365RC_VERSION', version, logger=log)
