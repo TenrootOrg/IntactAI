@@ -592,6 +592,33 @@ def _bootstrap_alembic_if_needed(current_version: str, logger: Callable = None,
             f"upgrade will likely fail to apply schema deltas", "error")
         return False
 
+    # Every step below is `docker exec` into the web container, which fails
+    # outright ("container is not running") if it merely EXISTS. Compose can
+    # leave it `Created` — seen 2026-07-22 on a 0615 -> 0722 online upgrade
+    # where a Phase-2 abort/resume left the timesketch stack half-up: the
+    # stamp failed, the bootstrap correctly refused to continue rather than
+    # migrate against it, and timesketch was reported MODULE_FAILED while
+    # staying on the old version. The container starts fine on demand, so it
+    # is a race, not a broken stack — start it and carry on.
+    _st = run_command(
+        f"docker inspect -f '{{{{.State.Status}}}}' {_WEB_CONTAINER}",
+        logger=None, timeout=30)
+    _status = (_st.get('stdout') or '').strip().strip("'")
+    if _st.get('success') and _status and _status != 'running':
+        log(f"  {_WEB_CONTAINER} is '{_status}', not running — starting it "
+            f"before the alembic bootstrap", "warning")
+        run_command(f"docker start {_WEB_CONTAINER}", logger=log, timeout=120)
+        for _ in range(20):
+            _s = run_command(
+                f"docker inspect -f '{{{{.State.Status}}}}' {_WEB_CONTAINER}",
+                logger=None, timeout=30)
+            if (_s.get('stdout') or '').strip().strip("'") == 'running':
+                break
+            time.sleep(3)
+        else:
+            log(f"  {_WEB_CONTAINER} did not reach 'running' — the bootstrap "
+                f"below will fail loudly rather than migrate blind", "error")
+
     run_command(f"docker exec {_WEB_CONTAINER} rm -rf /migrations", logger=None)
     cp = run_command(
         f"docker cp {shlex.quote(mig_path)} {_WEB_CONTAINER}:/migrations",
