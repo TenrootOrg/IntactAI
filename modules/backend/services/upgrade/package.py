@@ -2146,6 +2146,24 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         manifest["contents"]["sha256"] = _sha_map
         log(f"  Hashed {len(_sha_map)} file(s)", "success")
 
+        # Per-image byte sizes, keyed by the same filenames already recorded
+        # in contents.images. Without this, required_free_gb_for_manifest()
+        # (the apply-side disk preflight) falls back to using the ENTIRE
+        # package size as its "just the images" estimate — the package also
+        # contains the source tree, binaries and artifacts, none of which get
+        # docker-loaded, so that fallback triples the real requirement
+        # (package_bytes + package_bytes*2). Observed 2026-07-22: a 3.7 GB
+        # elk/iris/volweb/portainer package reported "needs ~12.4 GiB" (10.4
+        # GiB free failed it) when the apply itself completed fine — this is
+        # what that overestimate was silently masking.
+        images_dir = os.path.join(package_dir, 'images')
+        image_sizes = {}
+        for fn in manifest["contents"].get("images") or []:
+            fpath = os.path.join(images_dir, fn)
+            if os.path.exists(fpath):
+                image_sizes[fn] = os.path.getsize(fpath)
+        manifest["contents"]["image_sizes"] = image_sizes
+
         # Write manifest
         log("", "info")
         log("=== Creating Manifest ===", "info")
