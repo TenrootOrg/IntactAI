@@ -294,6 +294,12 @@ def run_startup_initialization():
             try:
                 from services.upgrade.base import sweep_stale_upgrade_staging
                 sweep_stale_upgrade_staging()
+                # ~4 GiB per uploaded package, previously never removed. Now
+                # that the apply path refuses to start on low disk, this
+                # garbage could make a box refuse to upgrade.
+                from services.upgrade.base import sweep_applied_upload_packages
+                sweep_applied_upload_packages(
+                    logger=lambda m, l="info": print(f"[STARTUP] {m}", flush=True))
             except Exception as _se:
                 print(f"[STARTUP] staging sweep skipped: {_se}", flush=True)
 
@@ -303,8 +309,17 @@ def run_startup_initialization():
             # + the recorded previous tag — so a swap history doesn't fill disk.
             try:
                 import subprocess as _sp
+                # Only sweep helpers that are NOT running. This used to
+                # `docker rm -f` every match, which is safe for a leaked
+                # helper and actively harmful for a live one: the backend
+                # reaches this code moments after a helper recreated it, so a
+                # helper still finishing its work (health-gate, rollback) was
+                # being force-killed by the very container it had just
+                # started — removing the one thing able to roll the box back.
                 _lst = _sp.run(
-                    ["docker", "ps", "-aq", "--filter", "name=intact-upgrade-helper-"],
+                    ["docker", "ps", "-aq", "--filter",
+                     "name=intact-upgrade-helper-", "--filter", "status=exited",
+                     "--filter", "status=created", "--filter", "status=dead"],
                     capture_output=True, text=True, timeout=15)
                 for _cid in (_lst.stdout or '').split():
                     _sp.run(["docker", "rm", "-f", _cid], capture_output=True, timeout=15)
@@ -408,6 +423,28 @@ def run_startup_initialization():
                         # error-level line from a step that recovered must not
                         # auto-demote a fully-successful Phase 2 (G8).
                         wf_logger.success("Upgrade completed successfully")
+                        # Re-baseline the backend source fingerprint NOW that
+                        # every source mutation is done.
+                        #
+                        # It is already recorded during Phase 1's swap prep, but
+                        # Phase 2 then re-copies the intact source (the intact
+                        # module always refreshes, even same-ref), so the tree on
+                        # disk no longer matches what was recorded. The next boot
+                        # read that as content drift and "healed" a backend image
+                        # that was already correct — a full rebuild from source
+                        # which recreated, and killed, the container it was
+                        # running in (observed 2026-07-23: backend exit 137, box
+                        # left down until an operator started it by hand).
+                        try:
+                            from services.upgrade.intact import (
+                                record_backend_source_fingerprint)
+                            record_backend_source_fingerprint(
+                                logger=lambda m, l="info": wf_logger.info(m))
+                        except Exception as _fe:
+                            wf_logger.warning(
+                                f"Could not re-baseline the backend source "
+                                f"fingerprint ({_fe}) — the next boot may run a "
+                                f"self-heal rebuild it does not actually need.")
                         # The browser is still running the PREVIOUS release's
                         # JS bundle — the backend swapped underneath it. Without
                         # a hard reload the operator sees the old UI and

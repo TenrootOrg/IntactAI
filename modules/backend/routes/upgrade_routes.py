@@ -783,10 +783,24 @@ def start_offline_upgrade():
                 return blocked
 
             # Continue the UPLOAD's workflow when this package came from a TUS
-            # upload — its run_id was persisted in a `<package>.run` sidecar by
-            # the upload hook. Reusing it keeps the import (upload) and the apply
-            # in ONE workflow/log instead of two. Prepare-built packages
-            # (/data/upgrade_packages/) have no sidecar and get a fresh run.
+            # upload, so the import and the apply are ONE workflow row instead
+            # of two. Prepare-built packages (/data/upgrade_packages/) have no
+            # upload run at all and get a fresh one.
+            #
+            # This used to depend solely on a `<package>.run` sidecar written by
+            # the post-finish hook — and lost a race to it. The frontend POSTs
+            # this apply from its tus onSuccess handler while the server-side
+            # hook runs concurrently, so the check landed BEFORE the file
+            # existed: observed 2026-07-23 with the sidecar written at
+            # .843 and this handler creating a second run at .849, 6 ms later.
+            # A wider sleep would just be a bigger guess.
+            #
+            # So identity no longer comes from the sidecar. tus stores the
+            # package at /data/uploads/<upload_id>, and the upload run recorded
+            # that id in details.upload_id when the row was CREATED — minutes
+            # earlier, entirely outside the contested window. The basename is
+            # therefore a durable join key that cannot be raced. The sidecar is
+            # kept only as a fast path.
             run_id = None
             sidecar = f"{package_path}.run"
             if os.path.exists(sidecar):
@@ -799,9 +813,53 @@ def start_offline_upgrade():
                 except Exception:
                     run_id = None
 
+            if not run_id:
+                # Durable fallback: find the upload's run by upload_id.
+                try:
+                    from routes.upload_routes import _resolve_upload_run
+                    from services.file_storage_service import get_workflow as _get_wf
+                    _uid = os.path.basename(package_path or '')
+                    _rid = _resolve_upload_run(_uid) if _uid else None
+                    if _rid:
+                        _wf = _get_wf(_rid) or {}
+                        # Only adopt a row that is still open. An upload run
+                        # that already finished belongs to a previous apply.
+                        if _wf.get('status') not in ('completed', 'failed',
+                                                     'cancelled'):
+                            run_id = _rid
+                except Exception as _ae:
+                    print(f"[UPGRADE] upload-run adoption lookup failed: {_ae}",
+                          flush=True)
+
             if run_id:
-                # Consume the sidecar so a later RE-apply of the same package gets
-                # its own run (honest audit trail) instead of re-opening this one.
+                # Consume-once, so a genuine RE-apply of the same package gets
+                # its own row (honest audit trail) instead of re-opening this
+                # one. Deleting the sidecar is no longer sufficient for that —
+                # the upload_id fallback above would happily find the row again
+                # — so the claim is recorded IN the run. mutate_run_details does
+                # read-modify-write under the per-run lock, making this a real
+                # test-and-set rather than a check-then-write.
+                _claimed = {"ok": False}
+
+                def _claim(d, _c=_claimed):
+                    if not d.get("applied"):
+                        d["applied"] = True
+                        _c["ok"] = True
+
+                try:
+                    from services.workflow_service import mutate_run_details
+                    mutate_run_details(run_id, _claim)
+                except Exception as _ce:
+                    print(f"[UPGRADE] could not claim upload run {run_id}: {_ce}",
+                          flush=True)
+                    _claimed["ok"] = True   # fail open: adopt rather than split
+
+                if not _claimed["ok"]:
+                    # Someone already applied this package — give this attempt
+                    # its own row instead of writing into the finished one.
+                    run_id = None
+
+            if run_id:
                 try:
                     os.remove(sidecar)
                 except Exception:

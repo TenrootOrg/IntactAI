@@ -1049,6 +1049,21 @@ def self_heal_backend_swap(logger: Callable = None, parent_run_id: str = None) -
     if not tag_mismatch and not content_drift:
         return {"healed": False, "reason": "already on target image (content current)"}
 
+    # Never start a second swap while one is still in flight. The build below
+    # runs in-process for up to 900s inside the very container a live helper is
+    # recreating, so overlapping attempts fight over the same image tag, .env
+    # and container name. Evidence this happens: the 2026-07-23 boot logged two
+    # leaked helpers, then began a rebuild, then died (exit 137) leaving the box
+    # down. Deferring costs one boot; the next one re-evaluates from a settled
+    # state.
+    _helpers = run_command(
+        "docker ps -q --filter name=intact-upgrade-helper-",
+        logger=None, timeout=15)
+    if (_helpers.get('stdout') or '').strip():
+        log("Backend swap already in flight (a recreate helper is running) — "
+            "not starting a second one this boot.", "info")
+        return {"healed": False, "reason": "recreate helper already running"}
+
     marker = f"/app/data/tmp/backend-selfheal-{target_tag}.attempted"
     if os.path.exists(marker):
         log(f"Backend {'content drift' if content_drift else 'image mismatch'} "

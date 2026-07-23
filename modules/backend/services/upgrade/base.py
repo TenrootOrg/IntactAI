@@ -286,6 +286,92 @@ def refresh_module_compose_file(module_name: str, intact_root: str,
 _UPGRADE_STAGING_GLOBS = ("/app/data/tmp/intact-upgrade-*", "/tmp/intact-upgrade-*")
 
 
+def sweep_applied_upload_packages(logger: Callable = None,
+                                  grace_hours: float = 12.0,
+                                  orphan_hours: float = 168.0,
+                                  uploads_dir: str = '/data/uploads') -> int:
+    """Delete uploaded upgrade packages whose upload run has already finished.
+
+    An upgrade package is ~4 GiB and nothing ever removed it. A single QA box
+    accumulated 7.8 GiB from two attempts at the SAME upload (one cancelled,
+    one applied), neither reachable from the UI again. That is now actively
+    dangerous rather than merely untidy: the apply path refuses to start when
+    free space is short, so this garbage can make a box refuse to upgrade.
+
+    Deliberately conservative, because deleting a 4 GiB file an operator still
+    wants is far worse than keeping it:
+      * only files whose upload run is TERMINAL (completed/failed/cancelled)
+        and older than ``grace_hours`` — a finished run means the apply either
+        happened or never will;
+      * a file with NO run at all could be an upload still in flight, so it is
+        only removed after ``orphan_hours`` (a week);
+      * a run still pending/running is never touched at any age.
+
+    Removes the tus ``.info`` and our ``.run`` sidecars alongside each file.
+    Returns the number of packages removed. Never raises.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    removed = 0
+    freed = 0
+    try:
+        if not os.path.isdir(uploads_dir):
+            return 0
+        from services.workflow_service import get_all_automation_runs
+        runs_by_upload = {}
+        for r in (get_all_automation_runs() or []):
+            uid = (r.get('details') or {}).get('upload_id')
+            if uid:
+                runs_by_upload[uid] = r
+
+        now = time.time()
+        for name in os.listdir(uploads_dir):
+            if name.endswith('.info') or name.endswith('.run'):
+                continue                       # handled with their package
+            path = os.path.join(uploads_dir, name)
+            if not os.path.isfile(path):
+                continue
+            try:
+                age_h = (now - os.path.getmtime(path)) / 3600.0
+            except OSError:
+                continue
+
+            run = runs_by_upload.get(name)
+            if run is None:
+                if age_h < orphan_hours:
+                    continue                   # may be an upload in flight
+                why = f"no upload run, {age_h:.0f}h old"
+            else:
+                if run.get('status') not in ('completed', 'failed', 'cancelled'):
+                    continue                   # still pending/running — leave it
+                if age_h < grace_hours:
+                    continue
+                why = f"upload run {run.get('status')}, {age_h:.0f}h old"
+
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            try:
+                os.remove(path)
+                removed += 1
+                freed += size
+                for suffix in ('.info', '.run'):
+                    try:
+                        os.remove(path + suffix)
+                    except OSError:
+                        pass
+                log(f"  Swept uploaded package {name} ({size / (1024**3):.1f} GiB — {why})",
+                    "info")
+            except OSError as e:
+                log(f"  Could not sweep uploaded package {name}: {e}", "warning")
+        if removed:
+            log(f"  Reclaimed {freed / (1024**3):.1f} GiB from {removed} "
+                f"uploaded package(s).", "success")
+    except Exception as e:
+        log(f"  Upload-package sweep skipped ({type(e).__name__}: {e})", "warning")
+    return removed
+
+
 def sweep_stale_upgrade_staging(logger: Callable = None, max_age_hours: float = 2.0) -> int:
     """Remove leftover intact-upgrade-* staging dirs older than ``max_age_hours``.
     Returns the number removed. Safe: only dirs, only older than the cutoff (the
@@ -299,7 +385,7 @@ def sweep_stale_upgrade_staging(logger: Callable = None, max_age_hours: float = 
     import glob
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     removed = 0
-    sweep_sets = (
+    sweep_sets = (  # noqa: E501 — see sweep_applied_upload_packages for uploads
         [(p, max_age_hours) for p in _UPGRADE_STAGING_GLOBS]
         + [("/app/data/tmp/intact-rollback-*", 168.0),
            ("/app/data/tmp/restart-*.log", 168.0),
