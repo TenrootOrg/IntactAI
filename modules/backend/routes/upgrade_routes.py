@@ -35,6 +35,40 @@ upgrade_bp = Blueprint('upgrade', __name__)
 ALLOWED_PACKAGE_DIRS = ('/data/uploads/', '/data/upgrade_packages/')
 
 
+def _resolve_upload_run_id(package_path: str):
+    """The run_id of the TUS upload that produced ``package_path``, or None.
+
+    tus stores the package at /data/uploads/<upload_id> and the upload run
+    records that id in ``details.upload_id``, so the basename is the join key.
+    (``details`` has no package_path — the row is created before tus assigns
+    one — so matching on that would silently never fire.)
+
+    Checked in-memory first, then recovered from storage so a backend restart
+    mid-upload doesn't lose the link. Never raises.
+    """
+    try:
+        upload_id = os.path.basename(package_path or '')
+        if not upload_id:
+            return None
+        try:
+            from routes.upload_routes import _upload_runs
+            rid = _upload_runs.get(upload_id)
+            if rid:
+                return rid
+        except Exception:
+            pass
+        from services.workflow_service import get_all_automation_runs
+        for r in get_all_automation_runs() or []:
+            if (r.get('details') or {}).get('upload_id') == upload_id:
+                rid = r.get('id') or r.get('run_id')
+                if rid:
+                    return rid
+    except Exception as e:
+        print(f"[UPGRADE] upload-run lookup failed for {package_path}: {e}",
+              flush=True)
+    return None
+
+
 def _close_orphan_upload_run(package_path: str) -> None:
     """Close an upload run for ``package_path`` that is still `running`.
 
@@ -59,24 +93,7 @@ def _close_orphan_upload_run(package_path: str) -> None:
     an upgrade.
     """
     try:
-        upload_id = os.path.basename(package_path or '')
-        if not upload_id:
-            return
-
-        rid = None
-        try:
-            from routes.upload_routes import _upload_runs
-            rid = _upload_runs.get(upload_id)
-        except Exception:
-            rid = None
-        if not rid:
-            # Recover from storage — the in-memory map is empty after a restart.
-            from services.workflow_service import get_all_automation_runs
-            for r in get_all_automation_runs() or []:
-                if (r.get('details') or {}).get('upload_id') == upload_id:
-                    rid = r.get('id') or r.get('run_id')
-                    if rid:
-                        break
+        rid = _resolve_upload_run_id(package_path)
         if not rid:
             return
 
@@ -737,10 +754,22 @@ def start_offline_upgrade():
             print(f"[UPGRADE] disk pre-check skipped: {_de}", flush=True)
 
         # Continue the UPLOAD's workflow when this package came from a TUS
-        # upload — its run_id was persisted in a `<package>.run` sidecar by the
-        # upload hook. Reusing it keeps the import (upload) and the apply in ONE
-        # workflow/log instead of two rows. Prepare-built packages
-        # (/data/upgrade_packages/) have no sidecar and get a fresh run.
+        # upload, so the import and the apply are ONE workflow row instead of
+        # two. Prepare-built packages (/data/upgrade_packages/) have no upload
+        # run at all and get a fresh one.
+        #
+        # This used to depend solely on a `<package>.run` sidecar written by the
+        # post-finish hook — and lost a race to it. The frontend POSTs this
+        # apply from its tus onSuccess handler while the server-side hook runs
+        # concurrently, so the check landed BEFORE the file existed: observed
+        # 2026-07-23 with the sidecar written at .843 and this handler creating
+        # a second run at .849, 6 ms later. A wider sleep would just be a bigger
+        # guess.
+        #
+        # So identity no longer comes from the sidecar. The upload run recorded
+        # details.upload_id when the row was CREATED — minutes earlier, entirely
+        # outside the contested window — and the package basename IS that id.
+        # The sidecar is kept only as a fast path.
         run_id = None
         sidecar = f"{package_path}.run"
         if os.path.exists(sidecar):
@@ -753,9 +782,45 @@ def start_offline_upgrade():
             except Exception:
                 run_id = None
 
+        if not run_id:
+            # Durable fallback: find the upload's run by upload_id.
+            _rid = _resolve_upload_run_id(package_path)
+            if _rid:
+                from services.file_storage_service import get_workflow as _get_wf
+                _wf = _get_wf(_rid) or {}
+                # Only adopt a row that is still open — one that already
+                # finished belongs to a previous apply.
+                if _wf.get('status') not in ('completed', 'failed', 'cancelled'):
+                    run_id = _rid
+
         if run_id:
-            # Consume the sidecar so a later RE-apply of the same package gets
-            # its own run (honest audit trail) instead of re-opening this one.
+            # Consume-once, so a genuine RE-apply of the same package gets its
+            # own row (honest audit trail) instead of re-opening this one.
+            # Deleting the sidecar no longer achieves that — the upload_id
+            # fallback above would find the row again — so the claim is recorded
+            # IN the run as details.applied.
+            #
+            # This release has no mutate_run_details() and no single-writer
+            # mutex on the apply route, so this is a check-then-write rather
+            # than an atomic test-and-set. The residual race needs two applies
+            # of the SAME package within milliseconds of each other; losing it
+            # yields two rows, which is exactly today's unconditional behaviour,
+            # so this is strictly an improvement and never worse.
+            try:
+                from services.file_storage_service import get_workflow as _get_wf
+                _already = ((_get_wf(run_id) or {}).get('details') or {}).get('applied')
+            except Exception:
+                _already = False
+            if _already:
+                run_id = None
+            else:
+                try:
+                    update_run_status(run_id, 'running', details={'applied': True})
+                except Exception as _ce:
+                    print(f"[UPGRADE] could not claim upload run {run_id}: {_ce}",
+                          flush=True)
+
+        if run_id:
             try:
                 os.remove(sidecar)
             except Exception:
