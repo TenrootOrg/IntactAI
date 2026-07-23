@@ -82,8 +82,14 @@ def _close_orphan_upload_run(package_path: str) -> None:
 
         from services.file_storage_service import get_workflow
         wf = get_workflow(rid) or {}
-        if wf.get('status') != 'running':
-            return          # already closed, or never opened — nothing to tidy
+        # Anything not already finished is fair game. Gating on == 'running'
+        # missed the real case: the apply can arrive in the few milliseconds
+        # before the tus post-finish hook flips the row to running/10%, so this
+        # saw a still-`pending` row, returned, and the hook then set `running`
+        # on a row nothing would ever close again (observed 2026-07-23: apply
+        # at .849, hook at .843).
+        if wf.get('status') in ('completed', 'failed', 'cancelled'):
+            return          # already closed — nothing to tidy
         add_log_to_run(rid, "Upload complete. This package was applied in a "
                             "separate workflow - closing this row so it does "
                             "not read as still-running.", "info")
@@ -701,6 +707,34 @@ def start_offline_upgrade():
 
         if not os.path.exists(package_path):
             return jsonify({"error": f"Package not found: {package_path}"}), 400
+
+        # Refuse to start without room to finish. preflight_package() has had
+        # this check since forever, but it is only reachable from the separate,
+        # operator-initiated /preflight endpoint — the apply path never called
+        # it, so an upgrade could commit the Phase 1 image swap and only then
+        # discover it had no space for Phase 2, leaving the box swapped and
+        # stuck. Sized like preflight's: extraction restores the payload and
+        # `docker load` writes the layers again, so budget ~3x the archive plus
+        # headroom. Deliberately NOT the full preflight — that extracts the
+        # whole archive to scratch, which is far too expensive to repeat here.
+        try:
+            import shutil as _sh
+            _pkg_bytes = os.path.getsize(package_path)
+            _staging = '/app/data' if os.path.isdir('/app/data') else '/app'
+            _need_gb = max(10.0, round((_pkg_bytes * 3 / (1024**3)) * 1.15, 1))
+            _free_gb = _sh.disk_usage(_staging).free / (1024**3)
+            if _free_gb < _need_gb:
+                return jsonify({
+                    "error": f"Not enough disk space to apply this package: "
+                             f"{_free_gb:.1f} GiB free on {_staging}, needs "
+                             f"~{_need_gb} GiB (about 3x the {_pkg_bytes / (1024**3):.1f} GiB "
+                             f"archive, for extraction plus docker load). "
+                             f"Free up space and try again — stopping now, "
+                             f"before anything is changed."
+                }), 400
+        except Exception as _de:
+            # Never block an upgrade because the check itself broke.
+            print(f"[UPGRADE] disk pre-check skipped: {_de}", flush=True)
 
         # Continue the UPLOAD's workflow when this package came from a TUS
         # upload — its run_id was persisted in a `<package>.run` sidecar by the
