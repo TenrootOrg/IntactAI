@@ -673,8 +673,21 @@ stage_velociraptor_client_binaries() {
         log_error "stage_velociraptor_client_binaries: malformed version '$velo_version' — need at least major.minor"
         return 1
     fi
-    local release_tag="v${parts[0]}.${parts[1]}"
+    # Velociraptor changed its release-tag convention. Older releases are
+    # tagged major.minor (v0.72 holds velociraptor-v0.72.4-*), newer ones use
+    # the full patch version (v0.77.1). Hardcoding major.minor made every
+    # 0.77.x install fail with "REQUIRED binary unavailable upstream" while the
+    # asset sat at the full-version tag (v0.77 -> 404, v0.77.1 -> 200).
+    # Probe the full tag first, fall back to major.minor for older pins.
+    local release_tag="v${velo_version}"
+    local legacy_release_tag="v${parts[0]}.${parts[1]}"
+    if ! curl -fsSL -I -o /dev/null --max-time 20 \
+            "https://github.com/Velocidex/velociraptor/releases/tag/${release_tag}" 2>/dev/null; then
+        log_info "  Release tag ${release_tag} not found upstream - falling back to ${legacy_release_tag}"
+        release_tag="$legacy_release_tag"
+    fi
     local base_url="https://github.com/Velocidex/velociraptor/releases/download/${release_tag}"
+    log_info "  Using Velociraptor release tag ${release_tag}"
 
     local linux_dir="${module_dir}/clients/linux"
     local mac_dir="${module_dir}/clients/mac"
