@@ -35,6 +35,64 @@ upgrade_bp = Blueprint('upgrade', __name__)
 ALLOWED_PACKAGE_DIRS = ('/data/uploads/', '/data/upgrade_packages/')
 
 
+def _close_orphan_upload_run(package_path: str) -> None:
+    """Close an upload run for ``package_path`` that is still `running`.
+
+    The tus hook leaves the upload's run open on purpose, because the apply is
+    meant to adopt it via the `<package>.run` sidecar and continue it as ONE
+    workflow. When adoption doesn't happen the row is orphaned: it reports
+    `running` indefinitely, so the UI shows a stalled-looking upload next to a
+    perfectly healthy upgrade.
+
+    Adoption legitimately fails two ways, both leaving the same wreckage:
+    re-applying a package whose sidecar the FIRST apply consumed (consume-once
+    is deliberate — a second apply deserves its own run), and an apply that
+    raced the post-finish hook.
+
+    tus stores the package at /data/uploads/<upload_id> and the upload run
+    records that id in ``details.upload_id``, so the basename is the join key.
+    (Matching on ``details.package_path`` would silently never fire — the row
+    is created before tus assigns a path.) The in-memory map is checked first,
+    then storage, so a backend restart mid-upload doesn't lose the link.
+
+    Best-effort and never raises: failing to tidy a status row must not block
+    an upgrade.
+    """
+    try:
+        upload_id = os.path.basename(package_path or '')
+        if not upload_id:
+            return
+
+        rid = None
+        try:
+            from routes.upload_routes import _upload_runs
+            rid = _upload_runs.get(upload_id)
+        except Exception:
+            rid = None
+        if not rid:
+            # Recover from storage — the in-memory map is empty after a restart.
+            from services.workflow_service import get_all_automation_runs
+            for r in get_all_automation_runs() or []:
+                if (r.get('details') or {}).get('upload_id') == upload_id:
+                    rid = r.get('id') or r.get('run_id')
+                    if rid:
+                        break
+        if not rid:
+            return
+
+        from services.file_storage_service import get_workflow
+        wf = get_workflow(rid) or {}
+        if wf.get('status') != 'running':
+            return          # already closed, or never opened — nothing to tidy
+        add_log_to_run(rid, "Upload complete. This package was applied in a "
+                            "separate workflow - closing this row so it does "
+                            "not read as still-running.", "info")
+        update_run_status(rid, "completed", progress=100)
+    except Exception as e:                                    # pragma: no cover
+        print(f"[UPGRADE] could not close orphan upload run for "
+              f"{package_path}: {e}", flush=True)
+
+
 def _reject_package_path(package_path):
     """Return a (jsonify_response, 400_status) tuple if `package_path`
     is outside the allowlist; otherwise return None.
@@ -671,6 +729,12 @@ def start_offline_upgrade():
             add_log_to_run(run_id, "-" * 40, "info")
             add_log_to_run(run_id, "Applying uploaded package - continuing this workflow.", "info")
         else:
+            # No sidecar to adopt, so this apply opens its own row. Close any
+            # upload run for the same package that is still sitting `running`
+            # first — otherwise nothing ever closes it and it reads as a hung
+            # upload beside a finished upgrade (reported 2026-07-23).
+            _close_orphan_upload_run(package_path)
+
             run_id = create_automation_run(
                 automation_type="upgrade",
                 name="System Upgrade (Offline)",
