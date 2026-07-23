@@ -879,6 +879,16 @@ def start_offline_upgrade():
                     # retried/rolled back inside a module that ultimately
                     # SUCCEEDED) auto-demotes the whole run to 'failed' (G8).
                     add_log_to_run(run_id, f"Offline upgrade completed: {result.get('completed', 0)}/{result.get('total', 0)} modules", "success")
+                    # See app.py's twin: the browser may still be running the
+                    # pre-upgrade JS bundle, so say so rather than letting the
+                    # operator conclude nothing changed.
+                    add_log_to_run(run_id,
+                        "Refresh your browser with Ctrl+Shift+R (Cmd+Shift+R on Mac) "
+                        "to load the new interface — until you do, you are still "
+                        "viewing the previous version's UI.", "info")
+                    add_log_to_run(run_id,
+                        "This run is kept under Workflows → System workspace, "
+                        "so you can reopen these logs at any time.", "info")
                     update_run_status(run_id, "completed", progress=100, force=True)
                 elif result.get('error') and not result.get('results'):
                     # Workflow aborted BEFORE any module ran (config.yaml

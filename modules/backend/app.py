@@ -408,6 +408,17 @@ def run_startup_initialization():
                         # error-level line from a step that recovered must not
                         # auto-demote a fully-successful Phase 2 (G8).
                         wf_logger.success("Upgrade completed successfully")
+                        # The browser is still running the PREVIOUS release's
+                        # JS bundle — the backend swapped underneath it. Without
+                        # a hard reload the operator sees the old UI and
+                        # reasonably concludes the upgrade didn't take.
+                        wf_logger.info(
+                            "Refresh your browser with Ctrl+Shift+R (Cmd+Shift+R on Mac) "
+                            "to load the new interface — until you do, you are still "
+                            "viewing the previous version's UI.")
+                        wf_logger.info(
+                            "This run is kept under Workflows → System workspace, "
+                            "so you can reopen these logs at any time.")
                         _urs(run_id, "completed", progress=100, force=True)
                         print(f"[STARTUP] Upgrade Phase 2 completed successfully", flush=True)
                     elif _failed and len(_failed) < len(_results):
