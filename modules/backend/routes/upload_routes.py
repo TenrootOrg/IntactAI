@@ -94,6 +94,16 @@ def _fuse_offline_import(import_result, upload_run_id):
     hunt_id = import_result.get("hunt_id")
     flow_id = import_result.get("flow_id")
     if not (hunt_id or flow_id):
+        # Say so. This used to return silently, so an import that produced
+        # neither id looked to the operator like fusion had simply never been
+        # attempted — no log line anywhere explained the missing case data.
+        try:
+            from services.workflow_service import add_log_to_run
+            add_log_to_run(upload_run_id,
+                           "[Import] No hunt_id or flow_id came back from the "
+                           "import — nothing to fuse into the case.", "warning")
+        except Exception:
+            pass
         return
     try:
         from services.workflow_service import (

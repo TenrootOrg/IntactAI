@@ -448,7 +448,28 @@ def post_upgrade_health_gate(logger: Callable = None, budget_s: int = 45,
                 continue
             name, state, status = parts[0], parts[1], parts[2]
             checked += 1
-            if state != 'running':
+            if state == 'created':
+                # `created` means docker built the container and nothing ever
+                # started it — the recreate was interrupted half-way. Observed
+                # 2026-07-23: an upgrade finished "completed · 0 errors" while
+                # intact_tusd sat in `created`, so uploads were dead until an
+                # operator ran `docker start` by hand. Detection alone was not
+                # enough; start it and only complain if it will not come up.
+                log(f"  [health] {name} is created but never started — "
+                    f"starting it.", "info")
+                run_command(f"docker start {name}", logger=None,
+                            timeout=min(30, max(5, int(_left()))))
+                r2 = run_command(
+                    f"docker inspect -f '{{{{.State.Status}}}}' {name}",
+                    logger=None, timeout=min(10, max(5, int(_left()))))
+                state = (r2.get('stdout') or '').strip().strip("'") or state
+                if state == 'running':
+                    log(f"  [health] {name} is now running.", "success")
+                else:
+                    problems.append(
+                        f"{name} was in `created` and would not start "
+                        f"(now {state})")
+            elif state != 'running':
                 problems.append(f"{name} is {state} ({status[:40]})")
             elif 'unhealthy' in status.lower():
                 problems.append(f"{name} reports unhealthy ({status[:40]})")

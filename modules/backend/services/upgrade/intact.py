@@ -4,6 +4,7 @@
 import os
 import re
 import shutil
+import time
 from typing import Dict, Callable, Optional
 
 from .base import (
@@ -1078,13 +1079,25 @@ def backend_target_tag() -> str:
     return 'development'
 
 
-def running_backend_image() -> Optional[str]:
+def running_backend_image(attempts: int = 3, delay: float = 2.0) -> Optional[str]:
     """The image ref the LIVE intact_backend container was created from
-    (ground truth for the old tag / swap detection). None if not resolvable."""
-    r = run_command("docker inspect -f '{{.Config.Image}}' intact_backend",
-                    logger=None, timeout=15)
-    out = (r.get('stdout') or '').strip() if r.get('success') else ''
-    return out or None
+    (ground truth for the old tag / swap detection). None if not resolvable.
+
+    Retried, because the container is legitimately absent for a moment while
+    docker recreates it — inspecting inside that window returns empty and made
+    boot self-heal emit "could not determine the running backend image" as an
+    operator-facing warning for what is a purely transient condition (observed
+    2026-07-23 on the QA box mid-recreate). A genuinely missing container (a
+    first install) still resolves to None, just `attempts * delay` later."""
+    for i in range(max(1, attempts)):
+        r = run_command("docker inspect -f '{{.Config.Image}}' intact_backend",
+                        logger=None, timeout=15)
+        out = (r.get('stdout') or '').strip() if r.get('success') else ''
+        if out:
+            return out
+        if i < attempts - 1:
+            time.sleep(delay)
+    return None
 
 
 _BACKEND_FINGERPRINT_SKIP_DIRS = {'__pycache__', 'downloads', 'report_downloads',

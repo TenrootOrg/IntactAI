@@ -413,8 +413,14 @@ def _close_orphan_upload_run(package_path: str) -> None:
         if not rid:
             return
         wf = get_workflow(rid) or {}
-        if wf.get('status') != 'running':
-            return          # already closed, or never opened — nothing to tidy
+        # Anything not already finished is fair game. Gating on == 'running'
+        # missed the real case: the apply can arrive in the few milliseconds
+        # before the tus post-finish hook flips the row to running/10%, so this
+        # saw a still-`pending` row, returned, and the hook then set `running`
+        # on a row nothing would ever close again (observed 2026-07-23: apply
+        # at .849, hook at .843).
+        if wf.get('status') in ('completed', 'failed', 'cancelled'):
+            return          # already closed — nothing to tidy
         add_log_to_run(rid, "Upload complete. This package was applied in a "
                             "separate workflow — closing this row so it does "
                             "not read as still-running.", "info")

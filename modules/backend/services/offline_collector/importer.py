@@ -433,54 +433,63 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
                     Query=[api_pb2.VQLRequest(VQL=results_query)]
                 )
 
+                # Scan EVERY row of EVERY response batch, keeping the first
+                # non-empty value for each field.
+                #
+                # This used to read results_data[0] only, and reassign each
+                # field on every response batch. Both halves broke multi-client
+                # imports: a hunt export of N clients emits many rows across
+                # several batches, the hunt id is not necessarily on row 0, and
+                # a later batch whose row 0 had no HuntId would clobber an
+                # already-found hunt id back to None. With hunt_id None the
+                # caller falls back to the SERVER import flow, which holds no
+                # per-client rows, so fusion silently got nothing (reported
+                # 2026-07-23 on a 9-client hunt export).
+                def _first(row, *keys):
+                    for k in keys:
+                        v = row.get(k)
+                        if v:
+                            return v
+                    return None
+
                 for response in stub2.Query(results_request, timeout=60):
                     if response.Response:
                         print(f"[OFFLINE] Import results response: {response.Response}", flush=True)
                         results_data = json.loads(response.Response)
                         if results_data and len(results_data) > 0:
-                            result_row = results_data[0]
-                            print(f"[OFFLINE] Import result keys: {list(result_row.keys())}", flush=True)
-                            print(f"[OFFLINE] Import result: {json.dumps(result_row, indent=2)[:2000]}", flush=True)
+                            print(f"[OFFLINE] Import result keys: {list(results_data[0].keys())}", flush=True)
+                            print(f"[OFFLINE] Import result: {json.dumps(results_data[0], indent=2)[:2000]}", flush=True)
 
+                        for result_row in (results_data or []):
+                            if not isinstance(result_row, dict):
+                                continue
                             # Extract the imported client_id and flow_id from results
-                            imported_client_id = (
-                                result_row.get("ClientId") or
-                                result_row.get("client_id") or
-                                result_row.get("NewClientId") or
-                                result_row.get("new_client_id")
-                            )
-                            imported_flow_id = (
-                                result_row.get("FlowId") or
-                                result_row.get("flow_id") or
-                                result_row.get("ImportedFlowId")
-                            )
+                            imported_client_id = imported_client_id or _first(
+                                result_row, "ClientId", "client_id",
+                                "NewClientId", "new_client_id")
+                            imported_flow_id = imported_flow_id or _first(
+                                result_row, "FlowId", "flow_id", "ImportedFlowId")
                             # A collector ZIP that was originally a HUNT export
                             # re-imports as a hunt: the real per-client data lives
                             # under this hunt, NOT the server import flow. Capture
                             # it so the caller fuses the hunt's flows.
-                            imported_hunt_id = (
-                                result_row.get("HuntId") or
-                                result_row.get("hunt_id")
-                            )
+                            imported_hunt_id = imported_hunt_id or _first(
+                                result_row, "HuntId", "hunt_id")
 
                             # Get count info from results
-                            total_rows = (
-                                result_row.get("TotalRows") or
-                                result_row.get("total_rows") or
-                                result_row.get("RowCount") or
-                                result_row.get("ImportedRows") or
-                                len(results_data)  # At minimum, count the result rows
-                            )
+                            # `or 0` / `or []` matter: _first() returns None when
+                            # no key matches, and total_rows is compared with
+                            # `> 0` further down (TypeError against None).
+                            total_rows = total_rows or _first(
+                                result_row, "TotalRows", "total_rows",
+                                "RowCount", "ImportedRows") or 0
 
                             # Get artifacts info
-                            artifacts = (
-                                result_row.get("Artifacts") or
-                                result_row.get("artifacts") or
-                                result_row.get("ImportedArtifacts") or
-                                []
-                            )
+                            artifacts = artifacts or _first(
+                                result_row, "Artifacts", "artifacts",
+                                "ImportedArtifacts") or []
 
-                            add_log_to_run(run_id, f"Import results: client={imported_client_id}, flow={imported_flow_id}, hunt={imported_hunt_id}, rows={total_rows}")
+                        add_log_to_run(run_id, f"Import results: client={imported_client_id}, flow={imported_flow_id}, hunt={imported_hunt_id}, rows={total_rows}")
 
                 # If we found the imported client, update our variables
                 if imported_client_id:
