@@ -539,13 +539,21 @@ download_offline_collector_binaries() {
         log_error "Offline-Collector: versions.velociraptor is not set in config.yaml — cannot determine which binaries to download"
         return 0
     fi
-    # GitHub tag is the major.minor (e.g. "v0.76"); patch versions live as
-    # release assets within that tag.
+    # Velocidex changed convention at v0.76.6: older releases keep a
+    # major.minor tag (v0.72 holds velociraptor-v0.72.4-*), newer patches get
+    # their own full-version tag (v0.77.1). Truncating unconditionally 404s on
+    # 0.77+ — probe the full tag first, fall back to major.minor.
     local velo_tag
     velo_tag=$(echo "$velo_version" | sed 's/^\([0-9]*\.[0-9]*\).*/\1/')
+    local velo_release_tag="v${velo_version}"
+    if ! curl -fsSL -I -o /dev/null --max-time 20 \
+            "https://github.com/Velocidex/velociraptor/releases/tag/v${velo_version}" 2>/dev/null; then
+        velo_release_tag="v${velo_tag}"
+    fi
 
     local downloads_dir="${SCRIPT_DIR}/modules/nginx/html/downloads"
-    local base_url="https://github.com/Velocidex/velociraptor/releases/download/v${velo_tag}"
+    local base_url="https://github.com/Velocidex/velociraptor/releases/download/${velo_release_tag}"
+    log_info "  Offline-collector binaries: using release tag ${velo_release_tag}"
 
     log_info "Checking Velociraptor v${velo_version} binaries for Offline Collector..."
 
