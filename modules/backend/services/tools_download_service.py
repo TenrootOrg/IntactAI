@@ -722,6 +722,17 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None) -
     summary = f"Configured: {configured}, Already served: {already}, File not found: {not_found}, Failed: {failed}"
     log(f"Inventory configuration complete. {summary}", "success")
 
+    # Name them. The count alone ("File not found: 12") says something is
+    # systematically missing but gives nobody a way to find out WHAT — the
+    # names were collected above and then thrown away. Support bundles from
+    # two different boxes showed 12 and 11 missing with no way to diff them.
+    if results['file_not_found']:
+        log(f"  Not downloaded on this host ({not_found}): "
+            f"{', '.join(sorted(results['file_not_found']))}", "info")
+    if results['failed']:
+        log(f"  Failed to configure ({failed}): "
+            f"{', '.join(sorted(results['failed']))}", "warning")
+
     # Query and log final inventory table
     inventory_table = []
     try:

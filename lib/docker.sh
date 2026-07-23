@@ -903,21 +903,36 @@ create_velociraptor_collector() {
         fi
     fi
 
-    # Download the collector template from GitHub
+    # Download the collector template from GitHub.
+    #
+    # The version-pinned URL is a best-effort: Velocidex does NOT cut a GitHub
+    # release for every version we pin. `versions.velociraptor: 0.76.1` has no
+    # upstream release at all, so this 404'd on the 2026-07-22 install and the
+    # box silently ended up with no collector — which per the rationale above
+    # makes Hunt-collector generation fail at runtime with "lookup github.com".
+    # Fall back to the latest release, which always exists and ships the asset.
+    local latest_url="https://github.com/Velocidex/velociraptor/releases/latest/download/velociraptor-collector"
+    local url_label="v${velo_version}"
+
     log_info "  Downloading from: $collector_url"
-    if _curl_with_throughput "velociraptor-collector" "$collector_url" "$dest_path"; then
-        chmod +x "$dest_path"
-        local size=$(stat -c%s "$dest_path" 2>/dev/null || echo "0")
-        if [[ "$size" -gt "$min_size" ]]; then
-            log_success "  Downloaded: velociraptor-collector ($(numfmt --to=iec $size))"
-            return 0
-        else
-            log_warn "  Downloaded file too small: $size bytes"
-            rm -f "$dest_path"
+    if ! _curl_with_throughput "velociraptor-collector" "$collector_url" "$dest_path"; then
+        log_warn "  No collector published for v${velo_version} — falling back to latest release"
+        rm -f "$dest_path"
+        url_label="latest"
+        if ! _curl_with_throughput "velociraptor-collector" "$latest_url" "$dest_path"; then
+            log_warn "  Failed to download velociraptor-collector (pinned and latest)"
             return 1
         fi
+    fi
+
+    chmod +x "$dest_path"
+    local size=$(stat -c%s "$dest_path" 2>/dev/null || echo "0")
+    if [[ "$size" -gt "$min_size" ]]; then
+        log_success "  Downloaded: velociraptor-collector from ${url_label} ($(numfmt --to=iec $size))"
+        return 0
     else
-        log_warn "  Failed to download velociraptor-collector"
+        log_warn "  Downloaded file too small: $size bytes"
+        rm -f "$dest_path"
         return 1
     fi
 }
