@@ -490,7 +490,13 @@ osquery_tools:
     enabled: false
     type: github_release
     repo: "osquery/osquery"
-    pattern: "osquery-.*\\.windows\\.x86_64\\.msi$"
+    # Upstream ships the Windows installer as plain `osquery-<ver>.msi` — the
+    # `.windows.x86_64` infix this used to match has never existed on any
+    # release (verified against osquery/osquery 5.23.1: the assets are
+    # osquery-5.23.1.msi and osquery-5.23.1.windows_x86_64.zip). The old
+    # pattern could therefore never match, so enabling this tool silently
+    # downloaded nothing. The Linux/macOS patterns beside it are correct.
+    pattern: "osquery-[0-9.]+\\.msi$"
     category: monitoring
     description: "OS instrumentation framework for Windows"
 
@@ -781,21 +787,29 @@ velociraptor_inventory:
     file_pattern: "(?i)^velociraptor-v.*-windows-amd64.msi$"
     enabled: true
 
+  # The four below are OPTIONAL because install.sh / the upgrade path never
+  # fetch them: _velociraptor_binary_set stages exactly linux-amd64,
+  # darwin-amd64, windows-amd64.exe and windows-amd64.msi. Leaving these
+  # enabled meant configure_inventory looked for files nothing ever produces
+  # and reported "File not found: N" on every healthy install — a permanent
+  # phantom that made a real gap impossible to spot (2026-07-23 support
+  # bundles showed 12 and 11 with no way to tell which mattered).
+  # Flip to true only alongside code that actually downloads them.
   - tool_name: "VelociraptorWindows_x86"
     file_pattern: "(?i)^velociraptor-v.*-windows-386.exe$"
-    enabled: true
+    enabled: false
 
   - tool_name: "VelociraptorWindows_x86MSI"
     file_pattern: "(?i)^velociraptor-v.*-windows-386.msi$"
-    enabled: true
+    enabled: false
 
   - tool_name: "VelociraptorDebian"
     file_pattern: "(?i)^velociraptor.*_amd64.deb$"
-    enabled: true
+    enabled: false
 
   - tool_name: "VelociraptorRedHat"
     file_pattern: "(?i)^velociraptor.*.x86_64.rpm$"
-    enabled: true
+    enabled: false
 
   - tool_name: "VelociraptorCollector"
     file_pattern: "(?i)^velociraptor-collector$"
@@ -803,7 +817,9 @@ velociraptor_inventory:
 
   # OSQuery
   - tool_name: "OSQueryWindows"
-    file_pattern: "(?i)^osquery-.*\\.windows\\.x86_64\\.msi$"
+    # Must mirror the osquery_tools download pattern above — upstream ships
+    # `osquery-<ver>.msi`, never a `.windows.x86_64` infix.
+    file_pattern: "(?i)^osquery-[0-9.]+\\.msi$"
     enabled: false
 
   - tool_name: "OSQueryLinux"

@@ -784,6 +784,59 @@ stage_velociraptor_client_binaries() {
     if (( placeholders > 0 )); then
         log_warn "stage_velociraptor_client_binaries: ${placeholders} optional client binary placeholder(s) inserted — image build will succeed, those platforms just won't have a pre-repacked client."
     fi
+
+    publish_velociraptor_binaries_to_tools "$velo_version"
+    return 0
+}
+
+publish_velociraptor_binaries_to_tools() {
+    # Mirror the staged client binaries into data/tools under their UPSTREAM
+    # versioned names.
+    #
+    # The two sides disagreed on both location and naming: staging writes
+    # generic names (clients/windows/velociraptor_client.exe) under
+    # modules/velociraptor, while velociraptor_inventory matches
+    # `^velociraptor-v.*-windows-amd64.exe$` inside data/tools. So the agent
+    # binaries were on the box yet permanently "File not found" in the
+    # inventory — and Velociraptor then has no locally-served client to hand
+    # out, sending client-package generation to the internet at hunt time.
+    # That is the same air-gap failure mode as the image/tar bug.
+    local velo_version="$1"
+    [[ -z "$velo_version" ]] && return 0
+    local module_dir="${SCRIPT_DIR}/modules/velociraptor"
+    local tools_dir="${SCRIPT_DIR}/data/tools"
+    mkdir -p "$tools_dir"
+
+    local pairs=(
+        "${module_dir}/clients/linux/velociraptor|velociraptor-v${velo_version}-linux-amd64"
+        "${module_dir}/clients/mac/velociraptor_client|velociraptor-v${velo_version}-darwin-amd64"
+        "${module_dir}/clients/windows/velociraptor_client.exe|velociraptor-v${velo_version}-windows-amd64.exe"
+        "${module_dir}/clients/windows/velociraptor_client.msi|velociraptor-v${velo_version}-windows-amd64.msi"
+    )
+    local published=0
+    for pair in "${pairs[@]}"; do
+        local src="${pair%%|*}"
+        local dest="${tools_dir}/${pair##*|}"
+        # Skip the zero-byte placeholders the loop above may have written.
+        [[ -s "$src" ]] || continue
+        if [[ -f "$dest" ]] && [[ $(stat -c%s "$dest" 2>/dev/null || echo 0) -eq $(stat -c%s "$src" 2>/dev/null || echo 1) ]]; then
+            continue
+        fi
+        cp -f "$src" "$dest" 2>/dev/null && ((published++))
+    done
+
+    # Drop stale copies from previous versions so the tools dir doesn't grow a
+    # binary per upgrade (they are ~85 MB each).
+    local keep="velociraptor-v${velo_version}-"
+    for old in "$tools_dir"/velociraptor-v*-linux-amd64 \
+               "$tools_dir"/velociraptor-v*-darwin-amd64 \
+               "$tools_dir"/velociraptor-v*-windows-amd64.exe \
+               "$tools_dir"/velociraptor-v*-windows-amd64.msi; do
+        [[ -f "$old" ]] || continue
+        [[ "$(basename "$old")" == ${keep}* ]] || rm -f "$old"
+    done
+
+    (( published > 0 )) && log_success "  Published ${published} Velociraptor client binaries to data/tools (inventory can now serve them locally)"
     return 0
 }
 
