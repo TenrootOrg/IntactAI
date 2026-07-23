@@ -1537,6 +1537,25 @@ def load_docker_image(image_tar: str, logger: Callable = None,
     return result
 
 
+def docker_image_present(image_ref: str, run_id: Optional[str] = None) -> bool:
+    """True when ``image_ref`` is already in the local docker store.
+
+    The authority on "do we have this image" is the daemon, never the presence
+    of a tar in the package. The orchestrator pre-loads every bundled tar and
+    then DELETES it to reclaim disk (``load_all_bundled_images(
+    cleanup_after_load=True)``), so by the time a module handler runs, a
+    missing tar is the NORMAL case and proves nothing at all.
+
+    Handlers that inferred "no tar therefore no image" have shipped two
+    distinct bugs: plaso/o365rc reported success while stamping a version
+    whose image did not exist, and velociraptor fell back to a local
+    `docker compose build` that needs apt-get and therefore cannot work in an
+    air-gap (2026-07-23, the first real air-gapped apply). Ask the daemon.
+    """
+    return run_command(f"docker image inspect {image_ref}",
+                       logger=None, timeout=60, run_id=run_id).get('success', False)
+
+
 def preflight_offline_images(module: str, version: str, images_dir: str,
                               logger: Callable = None,
                               run_id: Optional[str] = None) -> Dict:

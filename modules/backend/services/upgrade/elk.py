@@ -163,7 +163,12 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None,
                 if not result['success']:
                     log(f"  Warning: Failed to load {img_name}", "warning")
             else:
-                log(f"  Image not found: {tar_path}", "warning")
+                # Not a problem: the pre-check above already proved every ELK
+                # image is in the docker store, and the orchestrator deletes
+                # each tar after loading it to reclaim disk. Warning here made
+                # a healthy air-gapped upgrade look broken.
+                log(f"  {img_name}: tar already reclaimed after pre-load "
+                    f"(image verified present by the pre-check) — nothing to do.", "info")
 
         # Update version in .env
         log(f"Updating version to {version}...", "info")

@@ -154,7 +154,10 @@ def upgrade_portainer_offline(package_dir: str, version: str, logger: Callable =
                 if not result['success']:
                     log(f"  Warning: failed to load {tar_name}", "warning")
             else:
-                log(f"  Image not found: {tar_path}", "warning")
+                # See elk.py's twin: pre-check already verified presence and the
+                # orchestrator reclaims tars after loading them.
+                log(f"  {tar_name}: already reclaimed after pre-load "
+                    f"(image verified present by the pre-check) — nothing to do.", "info")
 
         log(f"Updating version to {version}...", "info")
         _update_portainer_versions(env_file, version, log)

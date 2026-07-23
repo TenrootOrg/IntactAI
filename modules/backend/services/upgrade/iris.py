@@ -264,7 +264,12 @@ def upgrade_iris_offline(package_dir: str, version: str, logger: Callable = None
             if os.path.exists(tar_path):
                 load_docker_image(tar_path, logger=log, run_id=run_id)
             else:
-                log(f"  Image not found: {tar_path}", "warning")
+                # See elk.py's twin: the pre-check above already verified these
+                # images are loaded, and the orchestrator reclaims each tar
+                # after loading it. This fired three times per IRIS upgrade in
+                # the 2026-07-23 air-gap run while the upgrade was perfectly fine.
+                log(f"  {img_name}: tar already reclaimed after pre-load "
+                    f"(image verified present by the pre-check) — nothing to do.", "info")
 
         # Infrastructure deps: rabbitmq is a fixed-version dep declared
         # in IRIS compose. Load it if bundled (newer packages include

@@ -11,7 +11,7 @@ from .base import (
     WORKDIR, HOST_PATH,
     run_command, read_env_file, update_env_file,
     backup_env_file, restore_env_file, cleanup_backup,
-    load_docker_image, compare_versions,
+    load_docker_image, compare_versions, docker_image_present,
     remove_old_module_image,
 )
 
@@ -1700,9 +1700,20 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
             run_command(f"cp {backup_dir}/velociraptor.backup {velo_bin}", logger=log)
             run_command(f"chmod +x {velo_bin}", logger=log)
 
-        # Rebuild and restart with old version
+        # Restart on the old version. Only REBUILD if the old image is actually
+        # gone: a rollback is the worst possible moment to need the network, and
+        # `docker compose build` runs apt-get. In the 2026-07-23 air-gapped
+        # failure this line burned a second doomed three-minute build before the
+        # `up -d` below quietly succeeded on the 0.76.1 image that was there the
+        # whole time.
         run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
-        run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
+        if docker_image_present(f"velociraptor-server:{current_version}"):
+            log(f"  velociraptor-server:{current_version} still present — "
+                f"restarting on it without rebuilding.", "info")
+        else:
+            log(f"  velociraptor-server:{current_version} is gone — rebuilding "
+                f"(needs network; will fail air-gapped).", "warning")
+            run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
         run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
 
         # Cleanup backup dir
@@ -1911,7 +1922,20 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         # artifact bundle. Pre-built image load is already correct (it was baked
         # from the right source during prepare).
         pkg_velo_src = os.path.join(package_dir, 'source', 'intact', 'modules', 'velociraptor')
-        if os.path.exists(image_path):
+        image_ref = f"velociraptor-server:{actual_version}"
+
+        # Ask the DAEMON first, not the filesystem. The orchestrator pre-loads
+        # every bundled tar and then deletes it to reclaim disk, so by the time
+        # we get here the tar is normally gone BECAUSE the image loaded fine.
+        # Testing os.path.exists(image_path) first therefore sent every modern
+        # package down the "build locally" branch — which runs apt-get and so
+        # cannot work air-gapped. That is exactly how the 2026-07-23 air-gapped
+        # apply failed: image velociraptor-server:0.77.1 was sitting in the
+        # store, and we spent three minutes failing to rebuild it anyway.
+        if docker_image_present(image_ref, run_id=run_id):
+            log(f"  Image {image_ref} already loaded (tar reclaimed after "
+                f"pre-load) — skipping load and build.", "info")
+        elif os.path.exists(image_path):
             log("Loading pre-built Velociraptor image...", "info")
             result = load_docker_image(image_path, logger=log, run_id=run_id)
             if not result['success']:
@@ -1921,7 +1945,12 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
                 if not build['success']:
                     raise Exception(f"docker compose build failed: {build.get('error','')[:200]}")
         else:
-            log("No pre-built image in package — building locally (offline-safe).", "info")
+            # Legacy packages that predate image baking. Say what this actually
+            # costs instead of calling it "offline-safe": the Dockerfile runs
+            # apt-get, so this branch REQUIRES network and will fail air-gapped.
+            log(f"  {image_ref} is neither loaded nor bundled — falling back to a "
+                f"local build. This needs network access (apt-get) and will fail "
+                f"in an air-gapped environment.", "warning")
             refresh_velociraptor_build_files(pkg_velo_src, work_dir, logger=log)
             build = run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log, run_id=run_id)
             if not build['success']:
@@ -2085,9 +2114,20 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
             run_command(f"cp {backup_dir}/velociraptor.backup {velo_bin}", logger=log)
             run_command(f"chmod +x {velo_bin}", logger=log)
 
-        # Rebuild and restart with old version
+        # Restart on the old version. Only REBUILD if the old image is actually
+        # gone: a rollback is the worst possible moment to need the network, and
+        # `docker compose build` runs apt-get. In the 2026-07-23 air-gapped
+        # failure this line burned a second doomed three-minute build before the
+        # `up -d` below quietly succeeded on the 0.76.1 image that was there the
+        # whole time.
         run_command("docker compose down --remove-orphans", cwd=work_dir, logger=log)
-        run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
+        if docker_image_present(f"velociraptor-server:{current_version}"):
+            log(f"  velociraptor-server:{current_version} still present — "
+                f"restarting on it without rebuilding.", "info")
+        else:
+            log(f"  velociraptor-server:{current_version} is gone — rebuilding "
+                f"(needs network; will fail air-gapped).", "warning")
+            run_command("docker compose build --no-cache", cwd=work_dir, timeout=600, logger=log)
         run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
 
         run_command(f"rm -rf {backup_dir}", logger=log)

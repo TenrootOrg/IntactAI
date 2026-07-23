@@ -2373,7 +2373,13 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         if current_ver in ('Not installed', 'unknown'):
             log(f"  {module.upper()}: installing {target_ver} (fresh install)", "info")
         elif current_ver == target_ver:
-            log(f"  {module.upper()}: reinstalling {target_ver} (same version)", "info")
+            # Say what actually happens. The dispatch below SKIPS same-version
+            # modules, so "reinstalling" promised work that never came: the
+            # 2026-07-23 air-gap run printed "VOLWEB: reinstalling 3.16.0" and
+            # then never showed an UPGRADING: VOLWEB section, which reads as a
+            # module that silently vanished rather than one correctly skipped.
+            log(f"  {module.upper()}: {target_ver} already installed "
+                f"(same version — will be skipped)", "info")
         else:
             log(f"  {module.upper()}: {current_ver} -> {target_ver} (upgrade)", "info")
     log("-" * 40, "info")
