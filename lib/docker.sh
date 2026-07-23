@@ -543,12 +543,18 @@ download_offline_collector_binaries() {
     # major.minor tag (v0.72 holds velociraptor-v0.72.4-*), newer patches get
     # their own full-version tag (v0.77.1). Truncating unconditionally 404s on
     # 0.77+ — probe the full tag first, fall back to major.minor.
+    # Probe the ASSET, not the tag page: a tag page (e.g. v0.76.1) can return
+    # 200 while its release assets actually live under the minor tag (v0.76).
+    # 0.76.1's binaries are at .../download/v0.76/velociraptor-v0.76.1-* — the
+    # v0.76.1 tag page exists but carries no assets. So default to the minor
+    # tag (the historical location) and switch to the full-version tag ONLY
+    # when the full-tag asset itself is present (that's the 0.77.x case).
     local velo_tag
     velo_tag=$(echo "$velo_version" | sed 's/^\([0-9]*\.[0-9]*\).*/\1/')
-    local velo_release_tag="v${velo_version}"
-    if ! curl -fsSL -I -o /dev/null --max-time 20 \
-            "https://github.com/Velocidex/velociraptor/releases/tag/v${velo_version}" 2>/dev/null; then
-        velo_release_tag="v${velo_tag}"
+    local velo_release_tag="v${velo_tag}"
+    if [[ "$(curl -s -o /dev/null -w '%{http_code}' -IL --max-time 20 \
+            "https://github.com/Velocidex/velociraptor/releases/download/v${velo_version}/velociraptor-v${velo_version}-linux-amd64" 2>/dev/null)" == "200" ]]; then
+        velo_release_tag="v${velo_version}"
     fi
 
     local downloads_dir="${SCRIPT_DIR}/modules/nginx/html/downloads"
@@ -686,13 +692,16 @@ stage_velociraptor_client_binaries() {
     # the full patch version (v0.77.1). Hardcoding major.minor made every
     # 0.77.x install fail with "REQUIRED binary unavailable upstream" while the
     # asset sat at the full-version tag (v0.77 -> 404, v0.77.1 -> 200).
-    # Probe the full tag first, fall back to major.minor for older pins.
-    local release_tag="v${velo_version}"
+    # Probe the ASSET, not the tag page. A tag page (v0.76.1) can return 200
+    # while its binaries live under the minor tag (v0.76) — the v0.76.1 page
+    # exists but is asset-less, so a tag-page probe wrongly picks v0.76.1 and
+    # 404s on every download. Default to the minor tag and switch to the full
+    # version ONLY when the full-tag asset is really there (the 0.77.x case).
     local legacy_release_tag="v${parts[0]}.${parts[1]}"
-    if ! curl -fsSL -I -o /dev/null --max-time 20 \
-            "https://github.com/Velocidex/velociraptor/releases/tag/${release_tag}" 2>/dev/null; then
-        log_info "  Release tag ${release_tag} not found upstream - falling back to ${legacy_release_tag}"
-        release_tag="$legacy_release_tag"
+    local release_tag="$legacy_release_tag"
+    if [[ "$(curl -s -o /dev/null -w '%{http_code}' -IL --max-time 20 \
+            "https://github.com/Velocidex/velociraptor/releases/download/v${velo_version}/velociraptor-v${velo_version}-linux-amd64" 2>/dev/null)" == "200" ]]; then
+        release_tag="v${velo_version}"
     fi
     local base_url="https://github.com/Velocidex/velociraptor/releases/download/${release_tag}"
     log_info "  Using Velociraptor release tag ${release_tag}"
