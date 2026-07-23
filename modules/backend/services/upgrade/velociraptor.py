@@ -1009,6 +1009,62 @@ def _refresh_offline_collector_downloads(clean_version: str,
     }
 
 
+def _publish_client_binaries_to_tools(module_dir: str, version: str,
+                                      logger: Callable = None) -> None:
+    """Mirror the staged client binaries into ``data/tools`` under their
+    UPSTREAM versioned names, so Velociraptor's inventory can serve them.
+
+    Staging writes GENERIC names under ``modules/velociraptor/clients/``
+    (``velociraptor_client.exe``), but ``velociraptor_inventory`` matches
+    ``^velociraptor-v.*-windows-amd64.exe$`` inside ``data/tools``. Nothing
+    bridged the two, so the agent binaries sat on the box while the inventory
+    reported them "File not found" forever — and with no locally-served
+    client, Velociraptor reaches upstream to build client packages at hunt
+    time, which fails air-gapped. Same failure mode as the image/tar bug.
+
+    Best-effort: never raises. A missing binary just isn't published.
+    """
+    log = logger or (lambda msg, level="info": None)
+    try:
+        tools_dir = os.path.join(WORKDIR, 'data', 'tools')
+        os.makedirs(tools_dir, exist_ok=True)
+        pairs = [
+            (os.path.join(module_dir, 'clients', 'linux', 'velociraptor'),
+             f'velociraptor-v{version}-linux-amd64'),
+            (os.path.join(module_dir, 'clients', 'mac', 'velociraptor_client'),
+             f'velociraptor-v{version}-darwin-amd64'),
+            (os.path.join(module_dir, 'clients', 'windows', 'velociraptor_client.exe'),
+             f'velociraptor-v{version}-windows-amd64.exe'),
+            (os.path.join(module_dir, 'clients', 'windows', 'velociraptor_client.msi'),
+             f'velociraptor-v{version}-windows-amd64.msi'),
+        ]
+        published = 0
+        for src, name in pairs:
+            # Skip the zero-byte placeholders staging inserts for platforms
+            # upstream didn't publish.
+            if not (os.path.exists(src) and os.path.getsize(src) > 0):
+                continue
+            shutil.copyfile(src, os.path.join(tools_dir, name))
+            published += 1
+
+        # Drop stale per-version copies so the dir doesn't grow ~85 MB an upgrade.
+        keep = f'velociraptor-v{version}-'
+        for fn in os.listdir(tools_dir):
+            if (fn.startswith('velociraptor-v') and not fn.startswith(keep)
+                    and any(fn.endswith(s) for s in ('-linux-amd64', '-darwin-amd64',
+                                                     '-windows-amd64.exe', '-windows-amd64.msi'))):
+                try:
+                    os.remove(os.path.join(tools_dir, fn))
+                except OSError:
+                    pass
+
+        if published:
+            log(f"  Published {published} client binaries to data/tools "
+                f"(inventory can serve them locally)", "info")
+    except Exception as e:
+        log(f"  Could not publish client binaries to data/tools: {e}", "warning")
+
+
 def _stage_binaries_for_build(
     module_dir: str,
     clean_version: str,
@@ -1604,6 +1660,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         if os.path.exists(staged_linux):
             run_command(f"cp {staged_linux} {velo_bin}", logger=log)
             run_command(f"chmod +x {velo_bin}", logger=log)
+        _publish_client_binaries_to_tools(work_dir, actual_version, logger=log)
         log("  Binaries staged successfully", "info")
 
         # Prefer the pre-built image tar bundled in the package — fast,

@@ -475,7 +475,10 @@ osquery_tools:
     enabled: true
     type: github_release
     repo: "osquery/osquery"
-    pattern: "osquery-.*\\.windows\\.x86_64\\.msi$"
+    # Upstream ships `osquery-<ver>.msi`; the `.windows.x86_64` infix has
+    # never existed on any release (verified against 5.23.1), so this could
+    # never match and the tool downloaded nothing, silently.
+    pattern: "osquery-[0-9.]+\\.msi$"
     category: monitoring
     description: "OS instrumentation framework for Windows"
 
@@ -766,21 +769,25 @@ velociraptor_inventory:
     file_pattern: "(?i)^velociraptor-v.*-windows-amd64.msi$"
     enabled: true
 
+  # The four below are OPTIONAL: stage_velociraptor_client_binaries fetches
+  # only linux-amd64, darwin-amd64, windows-amd64.exe and .msi, so nothing on
+  # any code path ever produces these. Leaving them enabled made every healthy
+  # install report "File not found" forever, hiding real gaps.
   - tool_name: "VelociraptorWindows_x86"
     file_pattern: "(?i)^velociraptor-v.*-windows-386.exe$"
-    enabled: true
+    enabled: false
 
   - tool_name: "VelociraptorWindows_x86MSI"
     file_pattern: "(?i)^velociraptor-v.*-windows-386.msi$"
-    enabled: true
+    enabled: false
 
   - tool_name: "VelociraptorDebian"
     file_pattern: "(?i)^velociraptor.*_amd64.deb$"
-    enabled: true
+    enabled: false
 
   - tool_name: "VelociraptorRedHat"
     file_pattern: "(?i)^velociraptor.*.x86_64.rpm$"
-    enabled: true
+    enabled: false
 
   - tool_name: "VelociraptorCollector"
     file_pattern: "(?i)^velociraptor-collector$"
@@ -788,7 +795,7 @@ velociraptor_inventory:
 
   # OSQuery
   - tool_name: "OSQueryWindows"
-    file_pattern: "(?i)^osquery-.*\\.windows\\.x86_64\\.msi$"
+    file_pattern: "(?i)^osquery-[0-9.]+\\.msi$"
     enabled: true
 
   - tool_name: "OSQueryLinux"
