@@ -380,6 +380,50 @@ def _quota_preflight_or_jsonify(needed: int, action: str):
         return (jsonify({"success": False, "error": str(e)}), 429)
 
 
+def _close_orphan_upload_run(package_path: str) -> None:
+    """Close an upload run for ``package_path`` that is still `running`.
+
+    The tus hook leaves the upload's run open (progress=10) on purpose, because
+    the apply is meant to adopt it via the `<package>.run` sidecar and continue
+    it as ONE workflow. When adoption doesn't happen the row is orphaned: it
+    reports `running` indefinitely until cleanup_orphan_workflows reaps it, so
+    the UI shows a stalled-looking upload beside a perfectly healthy upgrade.
+
+    Adoption legitimately fails in two cases, and both leave the same wreckage:
+      * re-applying a package whose sidecar the FIRST apply consumed
+        (consume-once is deliberate — a second apply deserves its own run);
+      * an apply that raced the post-finish hook.
+
+    Best-effort and never raises: failing to tidy a status row must not block
+    an upgrade.
+    """
+    try:
+        # tus stores the package at /data/uploads/<upload_id>, and the upload
+        # run records that id in details.upload_id — so the basename IS the key.
+        # (details has no package_path: the row is created before tus assigns a
+        # path, carrying only filename/purpose/size. Matching on package_path
+        # would silently never fire.) _resolve_upload_run also recovers the
+        # mapping from storage when the in-memory map was lost to a restart.
+        upload_id = os.path.basename(package_path or '')
+        if not upload_id:
+            return
+        from routes.upload_routes import _resolve_upload_run
+        from services.file_storage_service import get_workflow
+        rid = _resolve_upload_run(upload_id)
+        if not rid:
+            return
+        wf = get_workflow(rid) or {}
+        if wf.get('status') != 'running':
+            return          # already closed, or never opened — nothing to tidy
+        add_log_to_run(rid, "Upload complete. This package was applied in a "
+                            "separate workflow — closing this row so it does "
+                            "not read as still-running.", "info")
+        update_run_status(rid, "completed", progress=100)
+    except Exception as e:                                    # pragma: no cover
+        print(f"[UPGRADE] could not close orphan upload run for "
+              f"{package_path}: {e}", flush=True)
+
+
 def _quota_audit_lines(needed: int) -> list:
     """Build the multi-line quota audit + setup-hint emission for the
     workflow log. Returns a list of strings the caller pushes via
@@ -759,6 +803,21 @@ def start_offline_upgrade():
                 add_log_to_run(run_id, "─" * 40, "info")
                 add_log_to_run(run_id, "Applying uploaded package — continuing this workflow.", "info")
             else:
+                # No sidecar to adopt, so this apply gets its own row. Before
+                # opening it, CLOSE any upload run for this same package that is
+                # still sitting `running`.
+                #
+                # The upload hook deliberately leaves its run open at progress=10
+                # (see upload_routes.py) because the apply is expected to re-open
+                # it. When adoption doesn't happen — a re-apply, whose sidecar was
+                # consumed by the first apply, or an apply that raced the hook —
+                # nothing ever closes that row, so it reads "running" forever until
+                # cleanup_orphan_workflows reaps it hours later. An operator then
+                # sees a permanently-in-progress upload next to a finished upgrade
+                # and reasonably concludes something hung (reported 2026-07-23).
+                # Same class as the Stop-button bug in 654799a: the status lied.
+                _close_orphan_upload_run(package_path)
+
                 run_id = create_automation_run(
                     automation_type="upgrade",
                     name="System Upgrade (Offline)",
