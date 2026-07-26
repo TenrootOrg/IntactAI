@@ -331,6 +331,14 @@ function tokenBadge(ab){
 function _usd(v){ v=v||0; return '$'+(v>=1?v.toFixed(2):(v>=0.01?v.toFixed(3):v.toFixed(4))); }
 function costBadge(ce){
   if(!ce) return '';
+  // Subscription providers (Codex CLI) are not metered per token — a dollar
+  // figure would be fiction. Say "subscription" and name the model, which for a
+  // blank setting is whatever the plan picks.
+  if(ce.subscription){
+    const m = ce.model || 'plan default';
+    return `<span class="stat" title="Billed to your ${esc(ce.provider||'')} subscription, not per token — no per-report price applies. Model: ${esc(m)}. ~${((ce.output_tokens)||0).toLocaleString()} output tokens per report; the distilled payload is ${(((ce.after&&ce.after.input_tokens))||0).toLocaleString()} input tokens vs ${(((ce.before&&ce.before.input_tokens))||0).toLocaleString()} raw.">
+      <b style="color:var(--ok,#3fb950)">subscription</b> /report <span style="color:var(--muted)">(${esc(m)})</span></span>`;
+  }
   if(!ce.model) return `<span class="stat" title="No fusion LLM model configured — set Settings ▸ Agentic ▸ model to price this"><b style="color:var(--muted)">—</b> cost/report <span style="color:var(--muted)">(no model)</span></span>`;
   const after=(ce.after&&ce.after.usd)||0, before=(ce.before&&ce.before.usd)||0;
   if(!(before>0||after>0)) return `<span class="stat" title="No pricing for ${esc(ce.model)} in the model catalog"><b style="color:var(--muted)">—</b> cost/report <span style="color:var(--muted)">(${esc(ce.model)})</span></span>`;

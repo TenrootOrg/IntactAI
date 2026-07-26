@@ -278,7 +278,17 @@ def estimate_rescan_cost(d):
                 "usd": round(_estimate_llm_cost(model or "", in_tokens, out_tokens), 4)}
 
     before, after = _side(raw_in), _side(fused_in)
+    # A subscription provider is not metered per token, so a dollar figure would
+    # be fiction. Flag it instead and let the UI say "subscription" — the model
+    # name still matters (the plan chooses one when the field is left blank).
+    subscription = False
+    try:
+        from services.agentic import subscription_cli as _sub
+        subscription = _sub.is_subscription_provider(provider)
+    except Exception:  # noqa: BLE001
+        subscription = False
     return {"model": model, "provider": provider, "mode": mode,
+            "subscription": subscription,
             "output_tokens": out_tokens,
             "model_max_output_tokens": model_max_out,   # UI uses this as the cap default
             "priced": before["usd"] > 0 or after["usd"] > 0,
