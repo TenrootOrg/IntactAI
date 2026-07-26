@@ -822,6 +822,43 @@ def _finish(run_id, ok, summary):
         print(f"[SUB-CLI] could not close run {run_id}: {e}", flush=True)
 
 
+def sweep_orphaned_runs() -> int:
+    """Fail every connector run left pending/running by a dead process.
+
+    Called once at backend boot. These workflows live on daemon threads, so a
+    restart (upgrade, crash, compose recreate) takes the worker AND the CLI
+    child with it — including any device login that was mid-approval. The row
+    would otherwise sit at 'running' forever and the operator would approve a
+    code that no longer has a process behind it.
+    """
+    try:
+        from services import workflow_service as ws
+        sid = ws._system_case_id()
+        runs = ws.get_automation_runs_by_case(sid) if sid else []
+    except Exception as e:  # noqa: BLE001
+        print(f"[SUB-CLI] orphan sweep could not read runs: {e}", flush=True)
+        return 0
+    ours = set(WORKFLOW_NAMES.values())
+    n = 0
+    for r in runs:
+        if r.get("name") not in ours or r.get("status") not in ("pending", "running"):
+            continue
+        try:
+            ws.add_log_to_run(
+                r["run_id"],
+                "Interrupted: the backend restarted while this workflow was "
+                "running, so it could not finish. Any sign-in code it issued is "
+                "no longer valid — start the action again.", "error")
+            ws.update_run_status(r["run_id"], "failed",
+                                 error="interrupted by a backend restart")
+            n += 1
+        except Exception:  # noqa: BLE001
+            pass
+    if n:
+        print(f"[SUB-CLI] closed {n} orphaned connector run(s) after restart", flush=True)
+    return n
+
+
 def run_install_workflow(run_id, provider):
     """Background body for the Install action."""
     _mark_active(run_id)

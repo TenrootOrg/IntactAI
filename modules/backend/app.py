@@ -128,6 +128,17 @@ def run_startup_initialization():
 
     print("[STARTUP] Starting background initialization...", flush=True)
 
+    # Subscription-connector runs execute on daemon threads, so any of ours left
+    # in pending/running belongs to the process that just died — its worker and
+    # its CLI child are gone, and any device code it issued is dead. Nothing can
+    # revive them, so close them out now instead of leaving an operator staring
+    # at a spinner (or approving a code whose process no longer exists).
+    try:
+        from services.agentic.subscription_cli import sweep_orphaned_runs
+        sweep_orphaned_runs()
+    except Exception as e:  # noqa: BLE001 — never block boot on housekeeping
+        print(f"[STARTUP] subscription-connector sweep skipped: {e}", flush=True)
+
     # CHECK FOR PENDING UPGRADES FIRST (Two-Phase Upgrade Support)
     try:
         from services.storage.base import get_pending_upgrade
