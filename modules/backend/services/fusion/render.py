@@ -159,6 +159,39 @@ def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
     return lines
 
 
+def _known_identities(graph, limit=60):
+    """Cross-host identity clusters (Identities tab data) as a compact summary.
+
+    top_entities below is ranked by ANOMALY SCORE, so a person who is simply
+    present on several hosts with no attached finding — anomaly=0 on every one
+    of their per-host account records — never survives the truncation, however
+    many entities the case has. That is a real gap: the Identities tab already
+    knows this person exists and which hosts they operate (exact-username
+    clustering across hosts), but the chat/report LLM had no access to that
+    clustering at all and would flatly deny the person existed (reported
+    2026-07-26 — asked about a real, 5-host identity named in the Identities
+    tab; the model correctly said it wasn't in the evidence it was given,
+    because it genuinely wasn't). Feed the same clustering in here so the two
+    views of one case agree on who exists.
+    """
+    try:
+        from .identities import resolve_identities
+        idents = resolve_identities(graph)
+    except Exception:
+        return []
+    out = []
+    for i in idents:
+        # `i["hosts"]` is the OPERATES-hosts heuristic (hostname textually implies
+        # this person administers it) — often empty, as it was for the person this
+        # bug was found on. What "who is X" actually needs is where the account was
+        # SEEN, which is each account's own ctx (the endpoint it was observed on).
+        seen_on = sorted({a["ctx"] for a in i["accounts"] if a.get("ctx")})
+        out.append({"name": i["name"], "accounts": len(i["accounts"]),
+                    "seen_on_hosts": seen_on,
+                    "operates_hosts": [h["label"] for h in i["hosts"]]})
+    return out[:limit]
+
+
 def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"):
     assets, findings = scope(graph, window=window, min_severity=min_severity)
     eff_detail, _ = _resolve_detail(graph, detail, window=window, min_severity=min_severity)
@@ -188,6 +221,11 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         "top_entities": [{"type": e.type, "label": e.label, "severity": e.severity,
                           "anomaly": e.anomaly, "flags": e.flags,
                           "hosts": [_host_label(graph, x) for x in _assets_of(e)]} for e in ents],
+        # Every identity the Identities tab shows, independent of anomaly score —
+        # see _known_identities(). Cheap relative to the rest of this payload;
+        # keeps "who is X" answerable for every real person in the case, not only
+        # the ones a finding happens to be attached to.
+        "identities": _known_identities(graph),
     }
 
 
