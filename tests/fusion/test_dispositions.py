@@ -243,12 +243,22 @@ def test_broken_english_and_hebrew_never_blocks_the_answer():
 
 
 def test_confirmation_vocabulary_covers_hebrew():
-    assert llm_sim.is_affirmative("yes") and llm_sim.is_affirmative("כן")
-    assert llm_sim.is_affirmative("ok") and llm_sim.is_affirmative("confirm")
+    """Confirmation takes an explicit word, in either language.
+
+    "yes"/"ok"/"כן" are deliberately NOT confirmations: the model habitually ends
+    its answer with a question of its own, so a bare yes almost always means
+    "yes, continue" — and would otherwise have applied a suppression the operator
+    never considered.
+    """
+    assert llm_sim.is_affirmative("confirm") and llm_sim.is_affirmative("אשר")
+    assert llm_sim.is_affirmative("confirm benign") and llm_sim.is_affirmative("אישור")
+    for casual in ("yes", "ok", "sure", "yep", "כן", "בסדר", "do it"):
+        assert not llm_sim.is_affirmative(casual), \
+            f"{casual!r} must not confirm a suppression"
     assert llm_sim.is_negative("no") and llm_sim.is_negative("לא")
-    # a long sentence merely containing 'ok' must not confirm anything
+    # a long sentence merely containing the word must not confirm anything
     assert not llm_sim.is_affirmative(
-        "ok so what happened on the backup server and who did it")
+        "confirm what happened on the backup server and who did it")
     assert not llm_sim.is_affirmative("")
 
 

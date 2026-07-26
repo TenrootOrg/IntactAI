@@ -2437,7 +2437,8 @@ def chat_case(case_id, question) -> str:
                            f"({proposal.get('attribution')}) — awaiting confirmation")
             ans = (f"{ans}\n\n---\n_Did you mean to mark_ **{proposal['label']}** "
                    f"_as {proposal['verdict']} ({proposal['attribution']})? "
-                   f"Reply **yes** to apply it, or ignore this line._")
+                   f"Reply_ **confirm** _to apply it. Anything else — including_ "
+                   f"_'yes' — leaves the finding exactly as it is._")
     except llm_sim.LLMUnavailable as e:
         # The model couldn't be reached (missing/outdated key, no connection,
         # timeout). Tell the operator EXACTLY why — never a canned pseudo-answer.

@@ -44,17 +44,25 @@ _STRIP_CHARS = '.!?"\u2019\'` '
 # Confirmation vocabulary for the propose-then-apply triage loop. Hebrew is
 # included because most operators here are native Hebrew speakers who type a
 # short affirmative in their own language even mid-English conversation.
-_AFFIRM = ("yes", "yeah", "yep", "yup", "confirm", "confirmed", "correct",
-           "right", "ok", "okay", "sure", "do it", "apply", "agreed",
-           "כן", "נכון", "אישור", "מאשר", "מאשרת", "בסדר", "אוקיי")
+# Deliberately NOT "yes"/"ok"/"sure"/"כן". The model routinely ends its answer
+# with a question of its own ("What would you like to investigate next?"), so a
+# bare yes is overwhelmingly likely to mean "yes, continue" rather than "yes,
+# suppress that finding". Confirmation therefore requires a word nobody types by
+# accident, and the offer always names it.
+_AFFIRM = ("confirm", "confirmed", "confirm benign", "confirm it",
+           "אשר", "אישור", "מאשר", "מאשרת")
 _NEGATE = ("no", "nope", "not", "don't", "dont", "cancel", "keep it", "wrong",
            "mistake", "לא", "בטל", "טעות", "לא נכון")
 
 
 def is_affirmative(msg: str) -> bool:
-    """True for a short standalone yes. Deliberately strict: only a SHORT reply
-    counts, so a long sentence that merely contains 'ok' cannot apply a pending
-    triage verdict by accident."""
+    """True only for an explicit, unambiguous confirmation of a triage offer.
+
+    Strict on purpose, twice over: the reply must be SHORT (so a sentence that
+    merely contains the word cannot confirm), and the vocabulary excludes every
+    casual affirmative — a "yes" in this chat almost always answers the model's
+    own closing question, not a suppression offer.
+    """
     q = (msg or "").strip().strip(_STRIP_CHARS).lower()
     if not q or len(q) > 24:
         return False
