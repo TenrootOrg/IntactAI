@@ -129,8 +129,15 @@ def cli_login_start():
     # already awaiting approval must NOT kill it — that would invalidate the code
     # the operator is part-way through entering. Hand back the run that is
     # already waiting instead, along with its still-valid URL and code.
+    # `force` is the "Generate new code" button: deliberately discard the
+    # in-flight sign-in and issue a fresh code (the old one has expired, or the
+    # operator lost it).
+    force = bool((request.get_json(silent=True) or {}).get("force"))
+    if force:
+        sub.login_cancel(provider)
+
     live = sub.pending_login(provider)
-    if live.get("url"):
+    if not force and live.get("url"):
         return jsonify({
             "success": True, "run_id": live.get("run_id"),
             "name": sub.WORKFLOW_NAMES["configure"],

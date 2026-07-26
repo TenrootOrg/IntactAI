@@ -783,6 +783,11 @@
                                     </div>
 
                                     <div class="flex items-center gap-3 mt-3 pt-2 border-t border-gray-800">
+                                        <button @click="$store.settings.cliNewCode()"
+                                                :disabled="$store.settings.cliBusy"
+                                                class="bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 px-3 py-1 rounded text-xs">
+                                            <span x-text="$store.settings.cliBusy ? 'Requesting…' : 'Generate new code'"></span>
+                                        </button>
                                         <button @click="$store.settings.cliCancelLogin()"
                                                 class="text-xs text-gray-400 hover:text-red-400 underline">
                                             Cancel sign-in

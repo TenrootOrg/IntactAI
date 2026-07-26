@@ -1291,6 +1291,32 @@ document.addEventListener('alpine:init', () => {
             await this._cliStartAction('/api/agentic/cli/install', 'Install Codex CLI');
         },
 
+        // "Generate new code": discard the in-flight sign-in and issue a fresh
+        // one. Needed when the ~15-minute code expires or the operator loses it —
+        // otherwise a plain Connect would just hand back the same dead code.
+        async cliNewCode() {
+            this.cliLogin = { url: '', code: '' };
+            const provider = this.config.agentic.online_llm.provider;
+            this.cliBusy = true;
+            try {
+                const r = await fetch('/api/agentic/cli/login', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ provider, force: true })
+                });
+                const d = await r.json();
+                if (r.ok && d.success) {
+                    this.showMessage('New code requested', 'success');
+                } else {
+                    this.showMessage('Could not get a new code: ' + (d.error || 'unknown error'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Could not get a new code: ' + e.message, 'error');
+            } finally {
+                this.cliBusy = false;
+                this.cliRefresh();
+            }
+        },
+
         async cliConnect() {
             // The device URL + one-time code are logged into the workflow AND
             // returned by /status, so the panel can show clickable/copyable
