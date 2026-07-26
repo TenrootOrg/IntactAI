@@ -218,16 +218,24 @@ def _known_identities(graph, limit=5000):
     return out[:limit]
 
 
+# Default identity ceiling when the case leaves 'Identity limit' empty.
+# NOT tied to max_entities: identities cost ~27 tokens each (two orders of
+# magnitude cheaper than an entity row) and answer a different question ("who
+# exists here"), so binding them to an entity budget sized for a different kind
+# of content silently dropped real people — chat's budget is 60 entities, so a
+# 61st person became invisible to the very path where "who is X" is asked.
+# The real overflow guard is distilled()'s budget_chars stepdown, which shrinks
+# identities alongside entities when the payload genuinely doesn't fit.
+DEFAULT_MAX_IDENTITIES = 500
+
+
 def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary",
                   max_identities=None):
-    """`max_identities` (the case's 'Identity limit' setting) is a CEILING inside
-    the SAME top-N budget as max_entities, not a separate side-channel: the
-    effective count is min(max_identities, max_entities). A generous/unset value
-    therefore just rides whatever max_entities already is (and shrinks with it
-    during distilled()'s stepdown), which is the whole point — a high 'Identity
-    limit' can never let identities escape the context-safe budget that keeps
-    the rest of this payload in check. Set it LOWER than max_entities to show
-    fewer identity rows than the entity budget would otherwise allow."""
+    """`max_identities` (the case's 'Identity limit' setting) caps identity rows
+    INDEPENDENTLY of max_entities — see DEFAULT_MAX_IDENTITIES for why. Unset =
+    DEFAULT_MAX_IDENTITIES, which covers any realistic engagement (~1.5
+    identities per host). Overflow is still bounded: distilled() shrinks this in
+    lockstep with max_entities on each budget_chars stepdown."""
     assets, findings = scope(graph, window=window, min_severity=min_severity)
     eff_detail, _ = _resolve_detail(graph, detail, window=window, min_severity=min_severity)
     ents = sorted((e for e in graph.entities.values()
@@ -261,8 +269,8 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         # keeps "who is X" answerable for every real person in the case, not only
         # the ones a finding happens to be attached to.
         "identities": _known_identities(
-            graph, limit=max_entities if max_identities is None
-                        else max(0, min(int(max_identities), max_entities))),
+            graph, limit=DEFAULT_MAX_IDENTITIES if max_identities is None
+                         else max(0, int(max_identities))),
     }
 
 
@@ -281,14 +289,17 @@ def distilled(graph, *, window=None, min_severity="informational", max_entities=
                       max_identities=max_identities)
     if budget_chars:
         steps = 0
+        eff_ident = DEFAULT_MAX_IDENTITIES if max_identities is None else max_identities
         while _b.over_budget(p, budget_chars) and steps < _b.MAX_STEPDOWNS and max_entities > 5:
             max_entities = max(5, max_entities // 2)
-            # max_identities is NOT independently halved — it is re-clamped against
-            # the new (smaller) max_entities inside _distilled_at each iteration,
-            # so identities shrink in lockstep automatically.
+            # Identities are capped independently of entities now, so the stepdown
+            # has to shrink them explicitly or an over-budget payload would keep
+            # re-rendering the same identity block. Risk-ranked (see
+            # _known_identities), so halving drops bystanders before suspects.
+            eff_ident = max(10, eff_ident // 2)
             p = _distilled_at(graph, window=window, min_severity=min_severity,
                               max_entities=max_entities, detail=detail,
-                              max_identities=max_identities)
+                              max_identities=eff_ident)
             steps += 1
     return p
 

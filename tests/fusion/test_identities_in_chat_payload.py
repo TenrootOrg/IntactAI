@@ -85,7 +85,16 @@ def test_a_person_with_no_accounts_produces_no_crash():
 # huge value can't push identities past the same context-safe budget that
 # governs everything else in the payload, and a stepdown shrinks both together.
 
-def test_identity_limit_can_lower_but_never_raise_past_the_entity_budget():
+def test_identity_limit_is_independent_of_the_entity_budget():
+    """Identities are capped on their OWN axis, not by max_entities.
+
+    They were briefly clamped to min(limit, max_entities), which looked safe but
+    reintroduced the original bug at a higher threshold: chat's entity budget is
+    60, so the 61st person in a large environment became invisible to the exact
+    path where "who is X" is asked. Identities cost ~27 tokens each (vs ~500 for
+    an entity row) and answer a different question, so they get their own ceiling;
+    budget_chars remains the real overflow guard (see the stepdown test below).
+    """
     g = _graph_with_quiet_cross_host_identity()
     # 4 quiet accounts cluster to 1 identity; add more distinct people to count against
     for i in range(6):
@@ -100,13 +109,29 @@ def test_identity_limit_can_lower_but_never_raise_past_the_entity_budget():
     # LOWER: an explicit small ceiling wins
     assert len(render.distilled(g, max_entities=100, max_identities=2)["identities"]) == 2
 
-    # HIGHER: cannot exceed the entity budget — that is the whole safety property
-    capped = render.distilled(g, max_entities=3, max_identities=999999)["identities"]
-    assert len(capped) <= 3, \
-        "a large Identity limit escaped the entity budget — it must be a ceiling INSIDE it"
+    # A TINY entity budget must NOT starve identities — this is the regression
+    # that made person #61 invisible in chat.
+    assert len(render.distilled(g, max_entities=1)["identities"]) == all_n, \
+        "a small entity budget suppressed identities — they must be independent"
 
-    # UNSET: tied to the entity budget
+    # UNSET: the generous default, not the entity count
     assert len(render.distilled(g, max_entities=100, max_identities=None)["identities"]) == all_n
+
+
+def test_identities_still_shrink_when_the_payload_genuinely_overflows():
+    """The independence above must not become an unbounded escape hatch: when
+    budget_chars can't fit the payload, identities step down with entities."""
+    g = FusionGraph(case_id="c")
+    for i in range(300):
+        aid = f"asset:endpoint:C.big{i}"
+        g.upsert(Entity(id=aid, type="asset", label=f"BIGHOST{i}", attrs={"_assets": [aid]}))
+        g.upsert(Entity(id=f"account:{aid}:person{i:03d}", type="account",
+                        label=f"person{i:03d}", severity="informational", anomaly=0,
+                        attrs={"_assets": [aid]}))
+    roomy = render.distilled(g, max_entities=60, budget_chars=None)["identities"]
+    tight = render.distilled(g, max_entities=60, budget_chars=8000)["identities"]
+    assert len(tight) < len(roomy), \
+        "a tight char budget did not shrink the identity block — it can overflow the context"
 
 
 def test_identity_limit_zero_means_none():
@@ -164,7 +189,7 @@ def test_truncation_keeps_the_identities_that_matter():
                           confidence="high", summary="x", entity_ids=["account:risky"],
                           asset_ids=[aid], mitre=[]))
 
-    only_one = render.distilled(g, max_entities=1)["identities"]
+    only_one = render.distilled(g, max_entities=1, max_identities=1)["identities"]
     assert len(only_one) == 1
     assert only_one[0]["name"] == "riskyuser", (
         "truncation dropped the identity tied to a critical finding and kept the "
