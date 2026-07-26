@@ -396,6 +396,16 @@ def refresh_openai_models():
     return jsonify(body), status
 
 
+@maintenance_bp.route('/api/maintenance/refresh-codex-models', methods=['POST'])
+def refresh_codex_models():
+    """Refresh `data/codex_models.json` from the Codex CLI's own catalog
+    (`codex debug models`). Requires the CLI installed and signed in — there is
+    no API key on this path."""
+    from services.llm_catalogs import codex as catalog_module
+    body, status = _refresh_one_catalog(catalog_module)
+    return jsonify(body), status
+
+
 @maintenance_bp.route('/api/maintenance/refresh-gemini-models', methods=['POST'])
 def refresh_gemini_models():
     """Refresh `data/gemini_models.json` from Google's `/v1beta/models`

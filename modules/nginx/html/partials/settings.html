@@ -526,23 +526,17 @@
                                              // openrouter — the vendor convention OpenRouter uses).
                                              // Translate here so /api/config/<route>/models resolves.
                                              routeFor(provider) {
-                                                 return provider === 'claude' ? 'anthropic' : provider;
+                                                 if (provider === 'claude') return 'anthropic';
+                                                 // subscription catalog comes from the CLI itself
+                                                 if (provider === 'codex-subscription') return 'codex';
+                                                 return provider;
                                              },
                                              async query() {
                                                  const p = $store.settings.config.agentic.online_llm.provider;
                                                  const q = $store.settings.config.agentic.online_llm.model || '';
-                                                 // Subscription providers do not choose a model: under
-                                                 // ChatGPT-account auth the CLI refuses every explicit
-                                                 // model, including each slug the vendor own /models
-                                                 // endpoint returns. The plan decides. NOTE: never use a
-                                                 // double quote anywhere in this block — it lives inside
-                                                 // an x-data attribute and one would terminate it,
-                                                 // dumping the rest of the script onto the page as text.
-                                                 if ($store.settings.isSubscription()) {
-                                                     this.results = []; this.total = 0; this.selectedModel = null;
-                                                     this.open = false; this.loading = false;
-                                                     return;
-                                                 }
+                                                 // NOTE: never use a double quote anywhere in this block
+                                                 // — it lives inside an x-data attribute and one would
+                                                 // terminate it, dumping the script onto the page.
                                                  this.loading = true;
                                                  try {
                                                      const url = '/api/config/' + this.routeFor(p) + '/models?limit=10&q=' + encodeURIComponent(q);
@@ -561,7 +555,6 @@
                                                  const p = $store.settings.config.agentic.online_llm.provider;
                                                  const id = $store.settings.config.agentic.online_llm.model;
                                                  if (!id) { this.selectedModel = null; return; }
-                                                 if ($store.settings.isSubscription()) { this.selectedModel = null; return; }
                                                  try {
                                                      const url = '/api/config/' + this.routeFor(p) + '/models?limit=10&q=' + encodeURIComponent(id);
                                                      const resp = await fetch(url);
@@ -611,10 +604,8 @@
                                                @click.away="open = false"
                                                @keydown.escape="open = false"
                                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
-                                               :readonly="$store.settings.isSubscription()"
-                                               :class="$store.settings.isSubscription() ? 'text-gray-500 cursor-not-allowed' : ''"
                                                :placeholder="$store.settings.isSubscription()
-                                                    ? 'chosen automatically by your plan'
+                                                    ? 'blank = your plan default, or pick a model'
                                                     : 'Type to search ' + ($store.settings.config.agentic.online_llm.provider || '') + ' models'">
                                         <div x-show="loading" class="absolute right-2 top-2 text-xs text-gray-500">
                                             Loading models from <span x-text="$store.settings.config.agentic.online_llm.provider"></span>…
@@ -673,8 +664,8 @@
                                 </div>
                                 <div x-show="$store.settings.isSubscription()" class="text-xs text-gray-500 self-end pb-1.5">
                                     No API key needed — this provider signs in with your
-                                    own subscription, and the plan decides which model
-                                    serves the request.
+                                    own subscription. Leave the model blank to use your
+                                    plan default.
                                 </div>
                             </div>
 

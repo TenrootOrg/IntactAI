@@ -733,6 +733,39 @@ def _text_from_jsonl(stdout):
     return best
 
 
+def list_models(provider) -> list:
+    """Return the model catalog the CLI itself publishes for this account.
+
+    `codex debug models` renders the catalog as JSON. This is the authoritative
+    list for the CLI transport — unlike the vendor's web /models endpoint, whose
+    slugs `codex exec -m` rejects outright.
+    """
+    if not is_installed(provider):
+        raise SubscriptionCLIError(
+            f"{_spec(provider)['binary']} CLI is not installed", "cli_not_installed")
+    if not has_credentials(provider):
+        raise SubscriptionCLIError("not connected", "cli_not_authenticated")
+
+    home = _materialize_home(provider)
+    try:
+        r = _run(provider, ["debug", "models"], home, 60)
+        raw = _plain(r.stdout or "")
+        start = raw.find("{")
+        if start < 0:
+            raise SubscriptionCLIError(
+                f"the CLI returned no catalog: "
+                f"{(_plain(r.stderr or '') or raw)[-300:]}", _classify(raw))
+        try:
+            data = json.loads(raw[start:])
+        except Exception as e:
+            raise SubscriptionCLIError(f"could not parse the catalog: {e}", "llm_error")
+        return data.get("models") or []
+    except subprocess.TimeoutExpired:
+        raise SubscriptionCLIError("listing models timed out", "timeout")
+    finally:
+        _release_home(provider, home)
+
+
 def test_connection(provider, run_id=None) -> dict:
     """Round-trip a trivial prompt so the operator can prove it works."""
     spec = _spec(provider)

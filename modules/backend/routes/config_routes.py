@@ -346,6 +346,21 @@ def get_openrouter_models():
     return _serve_catalog(catalog_module, "openrouter", bootstrap=True)
 
 
+@config_bp.route('/api/config/codex/models', methods=['GET'])
+def get_codex_models():
+    """Search the Codex-subscription model catalog.
+
+    Sourced from `codex debug models` — the CLI's own catalog, scoped to the
+    connected account. The vendor's web /models endpoint is NOT usable here:
+    its slugs are refused by `codex exec -m`. See services/llm_catalogs/codex.py.
+
+    Aliases are not prepended: the entitled set is per-account, so a fixed alias
+    could name a model this plan cannot use.
+    """
+    from services.llm_catalogs import codex as catalog_module
+    return _serve_catalog(catalog_module, "codex", bootstrap=True)
+
+
 @config_bp.route('/api/config/anthropic/models', methods=['GET'])
 def get_anthropic_models():
     """Search the Anthropic model catalog persisted on disk.

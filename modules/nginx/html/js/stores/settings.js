@@ -129,7 +129,8 @@ document.addEventListener('alpine:init', () => {
                         openrouter: 'refresh-openrouter-models',
                         claude:     'refresh-anthropic-models',
                         openai:     'refresh-openai-models',
-                        gemini:     'refresh-gemini-models'
+                        gemini:     'refresh-gemini-models',
+                        'codex-subscription': 'refresh-codex-models'
                     };
                     const route = providerToRoute[provider];
                     if (route) {
@@ -1233,7 +1234,14 @@ document.addEventListener('alpine:init', () => {
                     this.cliLogin = { url: '', code: '' };
                 }
                 // login finished out-of-band (or expired) → drop the code panel
-                if (this.cli.authenticated && this.cliLogin.url) this._cliStopLogin();
+                if (this.cli.authenticated && this.cliLogin.url) {
+                    this._cliStopLogin();
+                    // the CLI can only list models once it is signed in
+                    fetch('/api/maintenance/refresh-codex-models', { method: 'POST' })
+                        .then(() => window.dispatchEvent(new CustomEvent('llm-catalog-refreshed',
+                              { detail: { provider: this.config.agentic.online_llm.provider } })))
+                        .catch(() => {});
+                }
             } catch (e) { /* transient — the poll will retry */ }
         },
 
@@ -1415,12 +1423,15 @@ document.addEventListener('alpine:init', () => {
                 // Blank = let the CLI choose a model the subscription is actually
                 // entitled to. Pinning one here broke ChatGPT-account logins:
                 // "The 'gpt-5-codex' model is not supported when using Codex
-                // with a ChatGPT account." — and that holds for every slug the
-                // vendor's own /models endpoint returns, so there is nothing to
-                // offer: the plan decides.
+                // with a ChatGPT account." The catalog the combobox reads comes
+                // from `codex debug models` (the CLI's own list, which the CLI
+                // actually accepts), not from the vendor's web /models endpoint.
                 this.config.agentic.online_llm.model = '';
                 this._cliStopLogin();
                 this.cliStartPolling();
+                // populate the CLI-backed catalog (no-op until connected)
+                try { await fetch('/api/maintenance/refresh-codex-models', { method: 'POST' }); } catch (e) {}
+                window.dispatchEvent(new CustomEvent('llm-catalog-refreshed', { detail: { provider } }));
                 return;
             }
             this.cliStopPolling();
