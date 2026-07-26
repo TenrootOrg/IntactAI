@@ -159,7 +159,12 @@ def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
     return lines
 
 
-def _known_identities(graph, limit=60):
+def _known_identities(graph, limit=5000):
+    # No practical cap: the whole point of this function is that a real person
+    # is never dropped merely because their accounts carry no anomaly score.
+    # `limit` exists only as a defensive ceiling against a pathological graph —
+    # at ~100 bytes/identity even a genuinely huge case (hundreds of identities)
+    # adds a rounding error to what this payload already carries.
     """Cross-host identity clusters (Identities tab data) as a compact summary.
 
     top_entities below is ranked by ANOMALY SCORE, so a person who is simply
