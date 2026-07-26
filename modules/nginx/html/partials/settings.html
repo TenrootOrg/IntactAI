@@ -728,40 +728,104 @@
                                     </span>
                                 </div>
 
-                                <!-- Device-code login: one click to open, or copy the URL
-                                     if the browser is on another machine. -->
+                                <!-- Device-code sign-in. Everything the operator needs is
+                                     here on the page: the link, the code in a selectable box,
+                                     and the two steps in order. The workflow in Actions carries
+                                     the same values for the audit trail. -->
                                 <div x-show="$store.settings.cliLogin.url" x-transition
-                                     class="mt-3 bg-gray-900 border border-gray-700 rounded p-3">
-                                    <div class="text-xs text-gray-400 mb-2">
-                                        Approve the sign-in, then this panel updates by itself.
-                                    </div>
-                                    <div class="flex flex-wrap items-center gap-2">
-                                        <a :href="$store.settings.cliLogin.url" target="_blank" rel="noopener"
-                                           class="bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded text-sm font-medium">
-                                            Open login page
-                                        </a>
-                                        <button @click="$store.settings.cliCopy($store.settings.cliLogin.url, 'Login URL')"
-                                                class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm">
-                                            Copy URL
-                                        </button>
-                                        <template x-if="$store.settings.cliLogin.code">
-                                            <div class="flex items-center gap-2">
-                                                <span class="text-xs text-gray-400">Code</span>
-                                                <code class="bg-gray-800 text-green-400 px-2 py-1 rounded text-sm tracking-widest"
-                                                      x-text="$store.settings.cliLogin.code"></code>
-                                                <button @click="$store.settings.cliCopy($store.settings.cliLogin.code, 'Code')"
-                                                        class="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs">
+                                     class="mt-3 bg-gray-900 border border-blue-800 rounded p-3">
+                                    <div class="text-sm text-white font-medium mb-2">Finish signing in</div>
+
+                                    <div class="flex items-start gap-2 mb-2">
+                                        <span class="text-xs text-gray-500 mt-1.5 w-4">1.</span>
+                                        <div class="flex-1">
+                                            <div class="text-xs text-gray-400 mb-1">
+                                                Open this page and sign in to your ChatGPT account
+                                                (any device — it does not have to be this machine):
+                                            </div>
+                                            <div class="flex flex-wrap items-center gap-2">
+                                                <a :href="$store.settings.cliLogin.url" target="_blank" rel="noopener"
+                                                   class="bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded text-sm font-medium">
+                                                    Open login page
+                                                </a>
+                                                <input type="text" readonly
+                                                       :value="$store.settings.cliLogin.url"
+                                                       @focus="$event.target.select()"
+                                                       class="flex-1 min-w-[220px] bg-gray-800 text-gray-300 border border-gray-700 rounded px-2 py-1.5 text-xs">
+                                                <button @click="$store.settings.cliCopy($store.settings.cliLogin.url, 'Login URL')"
+                                                        class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm">
                                                     Copy
                                                 </button>
                                             </div>
-                                        </template>
+                                        </div>
+                                    </div>
+
+                                    <div class="flex items-start gap-2" x-show="$store.settings.cliLogin.code">
+                                        <span class="text-xs text-gray-500 mt-1.5 w-4">2.</span>
+                                        <div class="flex-1">
+                                            <div class="text-xs text-gray-400 mb-1">
+                                                Enter this one-time code on that page (valid ~15 minutes):
+                                            </div>
+                                            <div class="flex flex-wrap items-center gap-2">
+                                                <input type="text" readonly
+                                                       :value="$store.settings.cliLogin.code"
+                                                       @focus="$event.target.select()"
+                                                       class="bg-gray-800 text-green-400 border border-gray-700 rounded px-3 py-1.5 text-lg font-mono tracking-widest w-56">
+                                                <button @click="$store.settings.cliCopy($store.settings.cliLogin.code, 'Code')"
+                                                        class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm">
+                                                    Copy code
+                                                </button>
+                                                <span class="text-xs text-gray-500">
+                                                    Approve it and this panel switches to Connected on its own.
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="flex items-center gap-3 mt-3 pt-2 border-t border-gray-800">
                                         <button @click="$store.settings.cliCancelLogin()"
-                                                class="text-xs text-gray-400 hover:text-red-400 underline ml-auto">
-                                            Cancel
+                                                class="text-xs text-gray-400 hover:text-red-400 underline">
+                                            Cancel sign-in
+                                        </button>
+                                        <button @click="$store.settings.cliManualOpen = !$store.settings.cliManualOpen"
+                                                class="text-xs text-gray-400 hover:text-gray-200 underline">
+                                            Get a code manually
                                         </button>
                                     </div>
-                                    <div class="mt-2 text-[11px] text-gray-500 break-all"
-                                         x-text="$store.settings.cliLogin.url"></div>
+
+                                    <!-- Escape hatch: if the in-app flow cannot reach the vendor
+                                         (proxy, egress rules), the same login can be driven from a
+                                         shell on the host and the credential still lands in the DB. -->
+                                    <div x-show="$store.settings.cliManualOpen" x-transition
+                                         class="mt-2 text-[11px] text-gray-400 bg-gray-800 rounded p-2">
+                                        <div class="mb-1">
+                                            Run this on the intact host, approve the code it prints,
+                                            then press <span class="text-gray-200">Test connection</span>:
+                                        </div>
+                                        <code class="block bg-gray-900 text-gray-300 rounded px-2 py-1 break-all">
+docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/data/agentic_cli/bin/codex login --device-auth
+                                        </code>
+                                        <div class="mt-2 flex items-center gap-2">
+                                            <button @click="$store.settings.cliImportManual()"
+                                                    class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-xs">
+                                                Import that login
+                                            </button>
+                                            <span class="text-gray-500">
+                                                reads the credential the command wrote and stores it
+                                                in the database (it is never left on disk).
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Connected confirmation -->
+                                <div x-show="$store.settings.cli.authenticated" x-transition
+                                     class="mt-3 bg-green-900/30 border border-green-800 rounded p-2 flex items-center gap-2">
+                                    <span class="text-green-400 text-sm">✓</span>
+                                    <span class="text-xs text-green-300">
+                                        Connected — Case Analysis will use this subscription.
+                                        Press <span class="text-white">Test connection</span> to prove a live round-trip.
+                                    </span>
                                 </div>
 
                                 <!-- current state, refreshed by the 3s detect poll.

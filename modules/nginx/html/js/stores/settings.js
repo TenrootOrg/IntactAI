@@ -1200,6 +1200,7 @@ document.addEventListener('alpine:init', () => {
         cliBusy: false,
         cliTesting: false,
         cliLogin: { url: '', code: '' },
+        cliManualOpen: false,
         _cliTimer: null,
 
         isSubscription() {
@@ -1334,6 +1335,30 @@ document.addEventListener('alpine:init', () => {
             } finally {
                 this.cliTesting = false;
             }
+        },
+
+        // Escape hatch for sites whose egress rules block the in-app device flow:
+        // the operator runs the login in a shell and we adopt the credential it
+        // wrote, storing it in the DB and deleting the file.
+        async cliImportManual() {
+            const provider = this.config.agentic.online_llm.provider;
+            try {
+                const r = await fetch('/api/agentic/cli/import-credential', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ provider })
+                });
+                const d = await r.json();
+                if (r.ok && d.success) {
+                    this.showMessage('Login imported — subscription connected', 'success');
+                    this.cliManualOpen = false;
+                    this._cliStopLogin();
+                } else {
+                    this.showMessage('Import failed: ' + (d.error || 'unknown error'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Import failed: ' + e.message, 'error');
+            }
+            this.cliRefresh();
         },
 
         cliCopy(text, what) {

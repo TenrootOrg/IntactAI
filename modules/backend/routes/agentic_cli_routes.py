@@ -168,6 +168,16 @@ def cli_disconnect():
     return jsonify({"success": sub.forget_credentials(provider)})
 
 
+@agentic_cli_bp.route('/api/agentic/cli/import-credential', methods=['POST'])
+def cli_import_credential():
+    """Adopt a login the operator created manually on the host."""
+    provider, err = _provider_from_request()
+    if err:
+        return err
+    result = sub.import_manual_credential(provider)
+    return jsonify(result), (200 if result.get('success') else 400)
+
+
 @agentic_cli_bp.route('/api/agentic/cli/test', methods=['POST'])
 def cli_test():
     """Round-trip a trivial prompt, as an Actions workflow."""

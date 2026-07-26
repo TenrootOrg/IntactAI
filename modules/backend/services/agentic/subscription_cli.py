@@ -227,6 +227,48 @@ def _release_home(provider, home, persist=True):
         shutil.rmtree(home, ignore_errors=True)
 
 
+# Where the "do it manually" escape hatch tells the operator to point the CLI.
+# Used when the in-app device flow cannot reach the vendor (egress rules, proxy)
+# and the login is driven from a shell instead.
+MANUAL_HOME = os.path.join(_CLI_ROOT, "manual")
+
+
+def import_manual_credential(provider) -> dict:
+    """Adopt a credential produced by a manual `codex login` on the host.
+
+    The file is read, stored in the `secrets` table and then deleted, so the
+    token ends up in the same place as an in-app login and does not linger on
+    the bind-mounted data volume where a backup could pick it up.
+    """
+    spec = _spec(provider)
+    path = os.path.join(MANUAL_HOME, spec["auth_file"])
+    if not os.path.isfile(path):
+        return {"success": False,
+                "error": f"nothing to import — {path} does not exist. Run the "
+                         f"command above first, and approve the code it prints."}
+    try:
+        with open(path) as f:
+            blob = f.read()
+        json.loads(blob)          # refuse to store something that is not the CLI's file
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"{path} is not readable JSON: {e}"}
+
+    if not set_secret(spec["secret_key"], blob):
+        return {"success": False, "error": "could not write the credential to the database"}
+    try:
+        os.remove(path)
+        shutil.rmtree(MANUAL_HOME, ignore_errors=True)
+    except Exception:  # noqa: BLE001
+        pass
+    _log(provider, "Imported a manually-created login into the database")
+    d = detect(provider)
+    if not d.get("authenticated"):
+        return {"success": False,
+                "error": f"the credential was imported but the CLI still reports: "
+                         f"{d.get('detail') or 'not logged in'}"}
+    return {"success": True, "detail": d.get("detail", "connected")}
+
+
 def forget_credentials(provider) -> bool:
     """Disconnect: drop the stored token. The CLI binary is left installed."""
     return delete_secret(_spec(provider)["secret_key"])
