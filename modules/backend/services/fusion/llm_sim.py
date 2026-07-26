@@ -39,6 +39,35 @@ _GENERIC_TITLE_TOK = {"sigma", "host", "suspicious", "activity", "detection", "c
                       "alert", "process", "service", "indicator", "account", "driver",
                       "malicious", "benign", "attack", "threat", "user", "users"}
 
+_STRIP_CHARS = '.!?"\u2019\'` '
+
+# Confirmation vocabulary for the propose-then-apply triage loop. Hebrew is
+# included because most operators here are native Hebrew speakers who type a
+# short affirmative in their own language even mid-English conversation.
+_AFFIRM = ("yes", "yeah", "yep", "yup", "confirm", "confirmed", "correct",
+           "right", "ok", "okay", "sure", "do it", "apply", "agreed",
+           "כן", "נכון", "אישור", "מאשר", "מאשרת", "בסדר", "אוקיי")
+_NEGATE = ("no", "nope", "not", "don't", "dont", "cancel", "keep it", "wrong",
+           "mistake", "לא", "בטל", "טעות", "לא נכון")
+
+
+def is_affirmative(msg: str) -> bool:
+    """True for a short standalone yes. Deliberately strict: only a SHORT reply
+    counts, so a long sentence that merely contains 'ok' cannot apply a pending
+    triage verdict by accident."""
+    q = (msg or "").strip().strip(_STRIP_CHARS).lower()
+    if not q or len(q) > 24:
+        return False
+    return any(q == a or q.startswith(a + " ") for a in _AFFIRM)
+
+
+def is_negative(msg: str) -> bool:
+    q = (msg or "").strip().strip(_STRIP_CHARS).lower()
+    if not q or len(q) > 24:
+        return False
+    return any(q == n or q.startswith(n + " ") for n in _NEGATE)
+
+
 # A message that ASKS something is never a triage command, however many verdict
 # words it happens to contain.
 _QUESTION_OPENERS = ("who", "what", "which", "where", "when", "why", "how",

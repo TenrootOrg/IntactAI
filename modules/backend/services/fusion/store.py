@@ -342,6 +342,23 @@ def set_disposition(case_id, target, *, verdict="benign", attribution="it_admin"
     return disp
 
 
+def _set_pending_disposition(case_id, proposal) -> None:
+    """Park (or clear) a triage verdict awaiting the operator's yes.
+
+    Kept on the case row rather than in memory so the offer survives a backend
+    restart and cannot leak between cases.
+    """
+    def _mutate(details):
+        if proposal:
+            details["pending_disposition"] = proposal
+        else:
+            details.pop("pending_disposition", None)
+    try:
+        _ws().mutate_run_details(case_id, _mutate)
+    except Exception as e:  # noqa: BLE001 — never break the chat over this
+        print(f"[FUSION] pending disposition not saved for {case_id}: {e}", flush=True)
+
+
 def clear_disposition(case_id, target) -> dict:
     """Reverse an operator triage on a target (un-suppress) and re-fuse so a
     finding marked not-real / known-IT comes back to its real severity. The
@@ -2337,54 +2354,89 @@ def chat_case(case_id, question) -> str:
     # Log the ACTION only (never the message content) so the audit trail stays useful
     # without leaking case Q&A into the log.
     log_case_event(case_id, "Chat · question received", "info", f"{len(question or '')} chars")
-    # FP-triage via chat: if the message attributes activity to IT/employee/etc and grounds
-    # to a real finding/entity, record the disposition + re-fuse, then confirm.
-    disp = llm_sim.detect_disposition(g, question)
-    if disp:
-        log_case_event(case_id, "Chat · disposition detected", "info",
-                       f"{disp.get('label')} → {disp.get('verdict')} ({disp.get('attribution')})")
-        set_disposition(case_id, disp["target"], verdict=disp["verdict"],
-                        attribution=disp["attribution"], reason=disp.get("reason", ""),
-                        scope=disp.get("scope", "case"))
-        ans = (f"Noted — marked **{disp['label']}** as {disp['verdict']} "
-               f"({disp['attribution']}). It's suppressed from active findings and won't "
-               f"drive host risk; re-fused. Say 'environment' to suppress it fleet-wide.")
-    else:
-        model, provider, _m = _configured_fusion_model()
-        log_case_event(case_id, "Chat · sending to LLM", "info",
-                       f"model {model} ({provider})" if model else "no model configured")
-        # masking (customer-facing): same anonymization generate_report()/analyze()
-        # apply — chat sends the FULL graph every turn (full_context=True below),
-        # so without this it bypassed masking entirely even when the case had it
-        # enabled, leaking real hostnames/usernames/IPs to the LLM.
-        mask = None
-        mk = d.get("masking") or {}
-        if mk.get("enabled"):
-            try:
-                from services.data_anonymizer import DataAnonymizer
-                mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
-            except Exception:
-                mask = None
+    # FP-triage via chat is PROPOSE-then-APPLY, never apply-on-guess.
+    #
+    # Intent used to be decided by substring matching BEFORE the model was called,
+    # in an if/else where the LLM was only the else branch. A wrong guess therefore
+    # did two harmful things at once: it silently suppressed a finding, and it
+    # replaced the operator's answer with a canned "Noted —". Both are unacceptable
+    # when most operators are not native English speakers: "the backup server was
+    # compromised" reads as a benign verdict to a keyword matcher, and no amount of
+    # keyword tuning fixes a sentence written in Hebrew.
+    #
+    # So the matcher can no longer decide anything. The model ALWAYS answers, and a
+    # detected verdict is only offered for confirmation; it is applied on the next
+    # turn if — and only if — the operator says yes.
+    pending = d.get("pending_disposition") or None
+    if pending:
+        if llm_sim.is_affirmative(question):
+            log_case_event(case_id, "Chat · disposition confirmed", "info",
+                           f"{pending.get('label')} → {pending.get('verdict')} "
+                           f"({pending.get('attribution')})")
+            set_disposition(case_id, pending["target"], verdict=pending["verdict"],
+                            attribution=pending["attribution"],
+                            reason=pending.get("reason", ""),
+                            scope=pending.get("scope", "case"))
+            _set_pending_disposition(case_id, None)
+            return (f"Marked **{pending['label']}** as {pending['verdict']} "
+                    f"({pending['attribution']}). It is suppressed from active findings "
+                    f"and no longer drives host risk; the case was re-fused. "
+                    f"Say 'environment' to suppress it fleet-wide.")
+        if llm_sim.is_negative(question):
+            log_case_event(case_id, "Chat · disposition declined", "info",
+                           str(pending.get("label"))[:80])
+            _set_pending_disposition(case_id, None)
+            return (f"Kept **{pending['label']}** as-is — nothing was changed.")
+        # anything else: the offer simply lapses, the question is answered normally
+        _set_pending_disposition(case_id, None)
+
+    proposal = llm_sim.detect_disposition(g, question)
+    model, provider, _m = _configured_fusion_model()
+    log_case_event(case_id, "Chat · sending to LLM", "info",
+                   f"model {model} ({provider})" if model else "no model configured")
+    # masking (customer-facing): same anonymization generate_report()/analyze()
+    # apply — chat sends the FULL graph every turn (full_context=True below),
+    # so without this it bypassed masking entirely even when the case had it
+    # enabled, leaking real hostnames/usernames/IPs to the LLM.
+    mask = None
+    mk = d.get("masking") or {}
+    if mk.get("enabled"):
         try:
-            ans = llm_sim.chat(g, question, history=d.get("chat_messages") or [],
-                               window=d.get("time_window") or None,
-                               min_severity=d.get("min_severity", "informational"),
-                               run_id=case_id, dispositions=d.get("dispositions") or None,
-                               validations=d.get("timeline_validations") or None,
-                               full_context=True,   # LOCKED: chat always sends full context
-                               max_output_tokens=_effective_output_cap(d),
-                               require_llm=True,    # no deterministic fallback: surface real errors
-                               mask=mask)
-            log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
-        except llm_sim.LLMUnavailable as e:
-            # The model couldn't be reached (missing/outdated key, no connection,
-            # timeout). Tell the operator EXACTLY why — never a canned pseudo-answer.
-            # Not persisted to chat history, so a retry after the fix starts clean.
-            log_case_event(case_id, "Chat · LLM unavailable", "error", e.reason)
-            return llm_sim.llm_error_message(e.reason)
-        except Exception as e:
-            log_case_event(case_id, "Chat", "error", f"LLM failed: {e}")
-            raise
+            from services.data_anonymizer import DataAnonymizer
+            mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
+        except Exception:
+            mask = None
+    try:
+        ans = llm_sim.chat(g, question, history=d.get("chat_messages") or [],
+                           window=d.get("time_window") or None,
+                           min_severity=d.get("min_severity", "informational"),
+                           run_id=case_id, dispositions=d.get("dispositions") or None,
+                           validations=d.get("timeline_validations") or None,
+                           full_context=True,   # LOCKED: chat always sends full context
+                           max_output_tokens=_effective_output_cap(d),
+                           require_llm=True,    # no deterministic fallback: surface real errors
+                           mask=mask)
+        log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
+        # A detected verdict rides ALONG WITH the answer as an offer. Worst case
+        # for a misread is one extra sentence the operator ignores — never a
+        # blocked answer, never a silent mutation.
+        if proposal:
+            _set_pending_disposition(case_id, proposal)
+            log_case_event(case_id, "Chat · disposition proposed", "info",
+                           f"{proposal.get('label')} → {proposal.get('verdict')} "
+                           f"({proposal.get('attribution')}) — awaiting confirmation")
+            ans = (f"{ans}\n\n---\n_Did you mean to mark_ **{proposal['label']}** "
+                   f"_as {proposal['verdict']} ({proposal['attribution']})? "
+                   f"Reply **yes** to apply it, or ignore this line._")
+    except llm_sim.LLMUnavailable as e:
+        # The model couldn't be reached (missing/outdated key, no connection,
+        # timeout). Tell the operator EXACTLY why — never a canned pseudo-answer.
+        # Not persisted to chat history, so a retry after the fix starts clean.
+        log_case_event(case_id, "Chat · LLM unavailable", "error", e.reason)
+        return llm_sim.llm_error_message(e.reason)
+    except Exception as e:
+        log_case_event(case_id, "Chat", "error", f"LLM failed: {e}")
+        raise
     def _append_msgs(details):           # atomic, so concurrent turns don't clobber
         msgs = list(details.get("chat_messages") or [])
         msgs += [{"role": "user", "content": question},

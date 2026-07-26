@@ -163,3 +163,97 @@ def test_real_attributions_still_detected():
     d = llm_sim.detect_disposition(g, "the powershell scriptblock alert is benign, it is our admin")
     assert d and d["verdict"] == "benign", "a genuine triage command stopped being detected"
     assert "scriptblock" in (d["label"] or "").lower() or "powershell" in (d["label"] or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# The operators here are native Hebrew speakers writing imperfect English, so
+# the chat must survive: missing question marks, non-native word order,
+# transliterated Hebrew, Hebrew script, and — above all — descriptions of an
+# ATTACK that happen to contain words the triage keywords treat as benign
+# ("backup", "expected", "legitimate"). A keyword matcher cannot be made
+# correct for that input; these tests therefore pin the property that MATTERS:
+# a message can never mutate the case on its own. Triage is propose-then-apply.
+# ---------------------------------------------------------------------------
+
+def _graph_backup_finding():
+    g = FusionGraph(case_id="c")
+    g.upsert(Entity(id="a1", type="asset", label="SRV-BACKUP", attrs={"_assets": ["a1"]}))
+    g.upsert(Entity(id="acc", type="account", label="corp\\kobia", attrs={"_assets": ["a1"]}))
+    g.add_finding(Finding(id="f_bk", title="Veeam backup agent spawned encoded PowerShell on SRV-BACKUP",
+                          severity="high", confidence="medium", summary="x",
+                          entity_ids=["acc"], asset_ids=["a1"], mitre=[]))
+    return g
+
+
+BROKEN_ENGLISH_AND_HEBREW = [
+    # questions without a question mark / non-native word order
+    "who the most malicious user", "what kobia did", "kobia did what",
+    "the most malicious user who", "why powershell is malicious",
+    "what happen in the backup server", "the backup server what happened",
+    "explain me the scriptblock", "i want to know about malicious powershell",
+    "give me the malicious findings", "malicious user list",
+    # descriptions of an attack that contain benign-flavoured words
+    "the backup server was compromised", "ransomware deleted the backup catalog",
+    "attacker used the backup account", "the backup job is the initial access vector",
+    "this is not expected behaviour", "the legitimate account was stolen",
+    # Hebrew script
+    "מי המשתמש הכי זדוני", "מה קרה בשרת הגיבוי", "תסביר לי על הפאוורשל",
+    # transliterated / mixed Hebrew-English
+    "ma kara ba backup server", "mi ze kobia", "the backup shel hamachshev nifga",
+]
+
+
+def test_no_message_ever_applies_a_disposition_by_itself():
+    """THE load-bearing property. detect_disposition may still guess wrong on
+    broken English — it is a keyword matcher — but chat_case treats its output
+    as a PROPOSAL only, so nothing here can suppress a finding without an
+    explicit yes on the following turn."""
+    from services.fusion import store
+    src = _code_of(store.chat_case)
+    # the proposal must never be applied in the same turn it is detected
+    detect_at = src.index("detect_disposition")
+    applied_after_detect = src.find("set_disposition(", detect_at)
+    assert applied_after_detect == -1, \
+        "chat_case applies a disposition in the same turn it detects one — " \
+        "a misread message would silently mutate the case"
+    # and the model must be reached regardless of what the matcher decided
+    assert "llm_sim.chat(" in src, "chat_case no longer always calls the model"
+
+
+def _code_of(fn) -> str:
+    """Source of `fn` with comments stripped — a rule about what the CODE does
+    must not be satisfied or broken by prose in a comment."""
+    import inspect
+    out = []
+    for ln in inspect.getsource(fn).split("\n"):
+        stripped = ln.strip()
+        if stripped.startswith("#"):
+            continue
+        out.append(ln.split("  #")[0])
+    return "\n".join(out)
+
+
+def test_broken_english_and_hebrew_never_blocks_the_answer():
+    """A guess must never REPLACE the operator's answer. Before this, a matched
+    message returned a canned reply and the model was never called, so the same
+    wrong sentence came back no matter how the question was rephrased."""
+    from services.fusion import store
+    src = _code_of(store.chat_case)
+    assert "Noted" not in src, "the canned triage reply still short-circuits the chat"
+
+
+def test_confirmation_vocabulary_covers_hebrew():
+    assert llm_sim.is_affirmative("yes") and llm_sim.is_affirmative("כן")
+    assert llm_sim.is_affirmative("ok") and llm_sim.is_affirmative("confirm")
+    assert llm_sim.is_negative("no") and llm_sim.is_negative("לא")
+    # a long sentence merely containing 'ok' must not confirm anything
+    assert not llm_sim.is_affirmative(
+        "ok so what happened on the backup server and who did it")
+    assert not llm_sim.is_affirmative("")
+
+
+def test_attack_descriptions_do_not_read_as_confirmation():
+    """The confirm step is the only thing standing between a wrong guess and a
+    mutated case, so it must not fire on ordinary prose."""
+    for msg in BROKEN_ENGLISH_AND_HEBREW:
+        assert not llm_sim.is_affirmative(msg), f"treated as a yes: {msg!r}"
