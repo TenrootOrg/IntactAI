@@ -1241,15 +1241,6 @@ document.addEventListener('alpine:init', () => {
         cliStartPolling() {
             this.cliStopPolling();
             if (!this.isSubscription()) return;
-            // Subscription providers have no model catalog to pick from, so make
-            // sure the field carries a sensible default rather than sitting empty
-            // (onProviderChange only fires when the operator switches provider,
-            // not when a saved provider is loaded).
-            if (!this.config.agentic.online_llm.model) {
-                const d = { 'codex-subscription': 'gpt-5-codex' }[
-                    this.config.agentic.online_llm.provider];
-                if (d) this.config.agentic.online_llm.model = d;
-            }
             this.cliRefresh();
             this._cliTimer = setInterval(() => this.cliRefresh(), 3000);
         },
@@ -1421,8 +1412,13 @@ document.addEventListener('alpine:init', () => {
             // key to enumerate models with), so skip the fetch entirely — it
             // would 404 and leave the field stale — and start the detect poll.
             if (this.isSubscription()) {
-                const subDefault = { 'codex-subscription': 'gpt-5-codex' }[provider];
-                if (subDefault) this.config.agentic.online_llm.model = subDefault;
+                // Blank = let the CLI choose a model the subscription is actually
+                // entitled to. Pinning one here broke ChatGPT-account logins:
+                // "The 'gpt-5-codex' model is not supported when using Codex
+                // with a ChatGPT account." — and that holds for every slug the
+                // vendor's own /models endpoint returns, so there is nothing to
+                // offer: the plan decides.
+                this.config.agentic.online_llm.model = '';
                 this._cliStopLogin();
                 this.cliStartPolling();
                 return;

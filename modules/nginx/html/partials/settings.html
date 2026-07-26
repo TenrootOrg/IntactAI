@@ -531,9 +531,11 @@
                                              async query() {
                                                  const p = $store.settings.config.agentic.online_llm.provider;
                                                  const q = $store.settings.config.agentic.online_llm.model || '';
-                                                 // Subscription providers have no catalog endpoint (no key
-                                                 // to enumerate models with) — querying would 404, so the
-                                                 // model stays a free-text field for them.
+                                                 // Subscription providers do not choose a model: with
+                                                 // ChatGPT-account auth `codex exec -m <anything>` is
+                                                 // refused ("not supported when using Codex with a
+                                                 // ChatGPT account"), including every slug the vendor's
+                                                 // own /models endpoint returns. The plan decides.
                                                  if ($store.settings.isSubscription()) {
                                                      this.results = []; this.total = 0; this.selectedModel = null;
                                                      this.open = false; this.loading = false;
@@ -557,7 +559,6 @@
                                                  const p = $store.settings.config.agentic.online_llm.provider;
                                                  const id = $store.settings.config.agentic.online_llm.model;
                                                  if (!id) { this.selectedModel = null; return; }
-                                                 // no catalog for subscription providers — see query()
                                                  if ($store.settings.isSubscription()) { this.selectedModel = null; return; }
                                                  try {
                                                      const url = '/api/config/' + this.routeFor(p) + '/models?limit=10&q=' + encodeURIComponent(id);
@@ -608,8 +609,10 @@
                                                @click.away="open = false"
                                                @keydown.escape="open = false"
                                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
+                                               :readonly="$store.settings.isSubscription()"
+                                               :class="$store.settings.isSubscription() ? 'text-gray-500 cursor-not-allowed' : ''"
                                                :placeholder="$store.settings.isSubscription()
-                                                    ? 'gpt-5-codex — or leave blank for the CLI default'
+                                                    ? 'chosen automatically by your plan'
                                                     : 'Type to search ' + ($store.settings.config.agentic.online_llm.provider || '') + ' models'">
                                         <div x-show="loading" class="absolute right-2 top-2 text-xs text-gray-500">
                                             Loading models from <span x-text="$store.settings.config.agentic.online_llm.provider"></span>…
@@ -667,8 +670,9 @@
                                     <input type="password" x-model="$store.settings.config.agentic.online_llm.api_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="sk-...">
                                 </div>
                                 <div x-show="$store.settings.isSubscription()" class="text-xs text-gray-500 self-end pb-1.5">
-                                    No API key needed — this provider signs in
-                                    with your own subscription.
+                                    No API key needed — this provider signs in with your
+                                    own subscription, and the plan decides which model
+                                    serves the request.
                                 </div>
                             </div>
 

@@ -61,7 +61,11 @@ PROVIDERS = {
         "secret_key": "codex_cli_auth",
         "home_env": "CODEX_HOME",
         "auth_file": "auth.json",
-        "default_model": "gpt-5-codex",
+        # Deliberately empty: the models a subscription may use depend on the
+        # account tier, and the CLI picks one the account is entitled to. Naming
+        # a model here caused "The 'gpt-5-codex' model is not supported when
+        # using Codex with a ChatGPT account." for ChatGPT-auth operators.
+        "default_model": "",
         "installer": "https://github.com/openai/codex/releases/latest/download/install.sh",
     },
 }
@@ -616,6 +620,9 @@ class SubscriptionCLIError(RuntimeError):
 
 def _classify(text) -> str:
     t = (text or "").lower()
+    if "not supported when using" in t or "model is not supported" in t \
+            or ("invalid_request_error" in t and "model" in t):
+        return "model_unsupported"
     if "not logged in" in t or "unauthor" in t or "authentication_failed" in t \
             or "login" in t and "required" in t:
         return "cli_not_authenticated"

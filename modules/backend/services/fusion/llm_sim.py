@@ -814,6 +814,7 @@ _LLM_ERR_MESSAGES = {
     "llm_error": "⚠️ Could not get a response from the LLM. Check the API key and internet connection.",
     "cli_not_installed": "⚠️ The subscription CLI is not installed. Install it in Settings → Agentic (needs internet).",
     "cli_not_authenticated": "⚠️ The subscription is not connected. Sign in from Settings → Agentic (needs internet).",
+    "model_unsupported": "⚠️ The vendor rejected the selected model for this subscription. Clear the Model field in Settings → Agentic to use the model your plan allows.",
 }
 
 
