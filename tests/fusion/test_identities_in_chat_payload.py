@@ -194,3 +194,59 @@ def test_truncation_keeps_the_identities_that_matter():
     assert only_one[0]["name"] == "riskyuser", (
         "truncation dropped the identity tied to a critical finding and kept the "
         f"merely-broad one: got {only_one[0]['name']!r}")
+
+
+# ---------------------------------------------------------------------------
+# 'Use the model's full context' flag.
+# ---------------------------------------------------------------------------
+# The static budget constants are written for a ~128k-context model and never
+# consult the model actually selected — wrong in both directions (a 272k model
+# is trimmed to ~37% of what fits; an 8k local model would be overflowed). The
+# flag derives the budget from the real context window instead.
+
+def test_adaptive_budget_scales_with_the_real_context_window():
+    from services.fusion import budget
+
+    big = budget.adaptive_budget(272_000, 4_000)
+    mid = budget.adaptive_budget(128_000, 8_000)
+    small = budget.adaptive_budget(8_192, 2_048)
+    assert big and mid and small
+    assert big[1] > mid[1] > small[1], "budget must scale with the context window"
+
+    # output cap is subtracted — context is shared input+output, and over-filling
+    # is rejected by the provider rather than degrading gracefully
+    assert budget.adaptive_budget(100_000, 50_000)[1] < \
+           budget.adaptive_budget(100_000, 1_000)[1]
+
+    # headroom: never claim the whole window (approx_tokens is a chars/4 estimate)
+    assert big[1] < 272_000
+
+    # unknown context -> None, so the caller keeps the safe static constants
+    assert budget.adaptive_budget(None, 4_000) is None
+    assert budget.adaptive_budget(0, 4_000) is None
+
+
+def test_full_context_flag_only_ever_raises_the_ceiling():
+    """A model whose window resolves small must not SHRINK the payload when the
+    operator ticks 'use the full context' — that is the opposite of the ask."""
+    from services import workflow_service as ws
+    for r in ws.get_all_automation_runs() or []:
+        if r.get("automation_type") == store.CASE_TYPE and \
+                (r.get("details") or {}).get("name") == "full-context-flag":
+            store.delete_case(r.get("run_id"))
+    cid = store.create_case("full-context-flag", min_severity="informational")
+    try:
+        d = dict(store.get_case(cid))
+        d["llm_use_full_context"] = False
+        _, off = store._llm_payload_budget(d)
+        d["llm_use_full_context"] = True
+        _, on = store._llm_payload_budget(d)
+        assert on >= off, "the flag lowered the budget instead of raising it"
+
+        # and it must round-trip through the case config like any other setting
+        store.set_analysis_config(cid, {"llm_use_full_context": True})
+        assert store.get_case(cid).get("llm_use_full_context") is True
+        store.set_analysis_config(cid, {"llm_use_full_context": False})
+        assert store.get_case(cid).get("llm_use_full_context") is False
+    finally:
+        store.delete_case(cid)

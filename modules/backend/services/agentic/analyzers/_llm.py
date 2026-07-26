@@ -293,6 +293,63 @@ def get_model_max_output_tokens(model_input: str, provider: str):
 
     return None
 
+def get_model_context_length(model_input: str, provider: str):
+    """Resolve the model's CONTEXT WINDOW (input+output ceiling), or None.
+
+    Same walk as get_model_max_output_tokens — alias table, then the provider's
+    catalog, then the OpenRouter mirror — but reading `context_length`. Exists so
+    the payload budget can be derived from the model actually selected instead of
+    a constant written for a hypothetical one (services/fusion/budget.py).
+    """
+    if not model_input:
+        return None
+    alias_entry = MODEL_ALIASES.get(model_input)
+    if alias_entry and alias_entry.get("context_length"):
+        return alias_entry["context_length"]
+
+    catalog_module = None
+    try:
+        if provider == "openrouter":
+            from services.llm_catalogs import openrouter as catalog_module
+        elif provider == "claude":
+            from services.llm_catalogs import anthropic as catalog_module
+        elif provider == "openai":
+            from services.llm_catalogs import openai as catalog_module
+        elif provider == "gemini":
+            from services.llm_catalogs import gemini as catalog_module
+        elif provider == "codex-subscription":
+            from services.llm_catalogs import codex as catalog_module
+    except Exception:
+        catalog_module = None
+
+    if catalog_module:
+        try:
+            models = catalog_module.load_catalog()
+            resolved = resolve_model_alias(model_input, provider)
+            for m in models:
+                if m.get("id") == resolved or m.get("id") == model_input \
+                        or m.get("canonical_id") == resolved:
+                    if m.get("context_length"):
+                        return m["context_length"]
+        except Exception:
+            pass
+
+    if provider in ("claude", "openai", "gemini"):
+        try:
+            from routes.config_routes import _canonical_from_direct_sdk_id
+            from services.llm_catalogs import openrouter as or_catalog
+            canonical = _canonical_from_direct_sdk_id(model_input, provider)
+            if canonical:
+                for m in or_catalog.load_catalog():
+                    cid = m.get("id") or ""
+                    bare = cid[1:] if cid.startswith("~") else cid
+                    if bare == canonical and m.get("context_length"):
+                        return m["context_length"]
+        except Exception:
+            pass
+    return None
+
+
 def resolve_model_alias(model_name: str, provider: str) -> str:
     """Resolve a friendly model name to the actual model ID for a provider.
 

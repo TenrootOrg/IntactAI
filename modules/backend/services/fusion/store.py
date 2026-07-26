@@ -180,17 +180,38 @@ def _llm_payload_budget(d):
     """LLM payload size, derived from the case's 'Entity limit' (max_entities) but
     BOUNDED to a context-safe size. The Entity limit can be huge (it sizes the
     stored graph you browse); the LLM only ever receives the top-N entities that
-    fit ~_LLM_MAX_BUDGET_CHARS, so a 500k graph cap can't overflow the model
-    context. For small graph caps the LLM payload tracks the limit 1:1; above the
-    context-safe cap it plateaus. Returns (llm_max_entities, budget_chars)."""
+    fit the char budget, so a 500k graph cap can't overflow the model context.
+
+    The ceiling is normally the static _LLM_MAX_BUDGET_CHARS (written for a
+    ~128k-context model). With the case's 'Use the model's full context' flag on,
+    it is instead DERIVED from the selected model's real context window — see
+    budget.adaptive_budget(). Returns (llm_max_entities, budget_chars)."""
     n = d.get("max_entities")
     try:
         n = int(n)
     except (TypeError, ValueError):
         n = DEFAULT_MAX_ENTITIES
     n = max(20, n)
-    safe_cap = _LLM_MAX_BUDGET_CHARS // _LLM_CHARS_PER_ENTITY   # entities that fit the context
-    return min(n, safe_cap), _LLM_MAX_BUDGET_CHARS
+
+    budget_chars = _LLM_MAX_BUDGET_CHARS
+    if d.get("llm_use_full_context"):
+        try:
+            from services.agentic.analyzers._llm import get_model_context_length
+            model, provider, _ = _configured_fusion_model()
+            adaptive = budget.adaptive_budget(
+                get_model_context_length(model or "", provider or ""),
+                _effective_output_cap(d))
+            if adaptive:
+                # Only ever RAISE the ceiling here, never lower it: a small local
+                # model resolving to a tiny window would otherwise starve the
+                # report to a few entities the moment the flag is ticked, which
+                # is not what "use the full context" means to an operator.
+                budget_chars = max(budget_chars, adaptive[0])
+        except Exception:  # noqa: BLE001 — never break fusion over a budget hint
+            pass
+
+    safe_cap = budget_chars // _LLM_CHARS_PER_ENTITY            # entities that fit the context
+    return min(n, safe_cap), budget_chars
 
 
 def _llm_identity_budget(d):
@@ -1689,6 +1710,10 @@ def set_analysis_config(case_id, cfg) -> dict:
             patch["max_entities"] = max(100, min(int(cfg["max_entities"]), MAX_GRAPH_ENTITIES))
         except (TypeError, ValueError):
             pass
+    if "llm_use_full_context" in cfg:      # derive the payload budget from the
+                                           # selected model's real context window
+                                           # instead of the static constant
+        patch["llm_use_full_context"] = bool(cfg.get("llm_use_full_context"))
     if "max_identities" in cfg:            # identity rows in the LLM payload — a
                                            # ceiling INSIDE max_entities, not a separate
                                            # budget (see _llm_identity_budget); empty/0
