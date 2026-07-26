@@ -38,6 +38,7 @@ MODULES = [
     "tests.fusion.test_case_routes",
     "tests.fusion.test_workspaces",
     "tests.fusion.test_dispositions",
+    "tests.fusion.test_chat_never_mutates",
     "tests.fusion.test_validation_attack2",
     "tests.fusion.test_no_llm",
     "tests.fusion.test_time_filter",

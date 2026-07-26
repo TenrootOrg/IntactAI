@@ -104,7 +104,9 @@ def test_activity_log_records_actions_and_errors():
     acts = [(e["action"], e["status"]) for e in log]
     assert any(a == "Disposition" and s == "ok" for a, s in acts), acts
     assert any(a == "Timeline status" and s == "error" for a, s in acts), acts
-    assert any(e["action"] == "Fuse" for e in log), "the disposition's re-fuse is logged"
+    # the re-fuse logs under "Refusion · …" since 36491dc added streamed progress
+    assert any(str(e["action"]).startswith(("Refusion", "Fuse")) for e in log), \
+        "the disposition's re-fuse is logged"
     # the failed action records WHY it failed (explicit error handling)
     assert any(e["status"] == "error" and "finding_id" in (e.get("detail") or "")
                for e in log), log
