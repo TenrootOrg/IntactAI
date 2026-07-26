@@ -531,11 +531,13 @@
                                              async query() {
                                                  const p = $store.settings.config.agentic.online_llm.provider;
                                                  const q = $store.settings.config.agentic.online_llm.model || '';
-                                                 // Subscription providers do not choose a model: with
-                                                 // ChatGPT-account auth `codex exec -m <anything>` is
-                                                 // refused ("not supported when using Codex with a
-                                                 // ChatGPT account"), including every slug the vendor's
-                                                 // own /models endpoint returns. The plan decides.
+                                                 // Subscription providers do not choose a model: under
+                                                 // ChatGPT-account auth the CLI refuses every explicit
+                                                 // model, including each slug the vendor own /models
+                                                 // endpoint returns. The plan decides. NOTE: never use a
+                                                 // double quote anywhere in this block — it lives inside
+                                                 // an x-data attribute and one would terminate it,
+                                                 // dumping the rest of the script onto the page as text.
                                                  if ($store.settings.isSubscription()) {
                                                      this.results = []; this.total = 0; this.selectedModel = null;
                                                      this.open = false; this.loading = false;
