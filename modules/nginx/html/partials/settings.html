@@ -608,7 +608,9 @@
                                                @click.away="open = false"
                                                @keydown.escape="open = false"
                                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
-                                               :placeholder="'Type to search ' + ($store.settings.config.agentic.online_llm.provider || '') + ' models'">
+                                               :placeholder="$store.settings.isSubscription()
+                                                    ? 'gpt-5-codex — or leave blank for the CLI default'
+                                                    : 'Type to search ' + ($store.settings.config.agentic.online_llm.provider || '') + ' models'">
                                         <div x-show="loading" class="absolute right-2 top-2 text-xs text-gray-500">
                                             Loading models from <span x-text="$store.settings.config.agentic.online_llm.provider"></span>…
                                         </div>

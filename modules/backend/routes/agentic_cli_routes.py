@@ -33,13 +33,13 @@ def _provider_from_request(default="codex-subscription"):
 
 
 def _close_orphaned_runs(provider):
-    """Fail any earlier run of ours still marked pending/running.
+    """Close out any earlier run of ours still marked pending/running.
 
-    These workflows execute on a daemon thread, so a backend restart (upgrade,
-    crash, compose recreate) kills the worker while the row stays 'pending'
-    forever — an operator sees a spinner that will never resolve. There is no
-    worker left to recover, so mark them failed with the reason when the next
-    action starts.
+    Two different situations end up looking identical in the table, and each
+    gets its own explanation below: a backend restart (upgrade, crash, compose
+    recreate) kills the daemon worker while the row stays 'pending' forever, and
+    a second click supersedes a run that is legitimately still waiting (a device
+    login can sit for 15 minutes awaiting approval).
     """
     try:
         from services import workflow_service as ws
@@ -49,16 +49,26 @@ def _close_orphaned_runs(provider):
         return
     ours = set(sub.WORKFLOW_NAMES.values())
     for r in runs:
-        if r.get("name") in ours and r.get("status") in ("pending", "running"):
-            try:
-                ws.add_log_to_run(
-                    r["run_id"],
-                    "Interrupted: the backend restarted while this workflow was "
-                    "running, so it could not finish. Start it again.", "error")
-                ws.update_run_status(r["run_id"], "failed",
-                                     error="interrupted by a backend restart")
-            except Exception:  # noqa: BLE001
-                pass
+        if r.get("name") not in ours or r.get("status") not in ("pending", "running"):
+            continue
+        # A run whose worker is still alive here is being superseded by the
+        # action the operator just started (e.g. clicking Connect twice while
+        # the first code was still awaiting approval). One with no worker was
+        # orphaned by a restart. Saying "restarted" for both is a lie the
+        # operator cannot debug.
+        superseded = sub.is_run_active(r["run_id"])
+        msg = ("Superseded: a newer attempt was started from Settings, so this "
+               "one was cancelled." if superseded else
+               "Interrupted: the backend restarted while this workflow was "
+               "running, so it could not finish. Start it again.")
+        try:
+            ws.add_log_to_run(r["run_id"], msg, "warning" if superseded else "error")
+            ws.update_run_status(
+                r["run_id"], "failed",
+                error="superseded by a newer attempt" if superseded
+                      else "interrupted by a backend restart")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _start_action(provider, kind, target, *args):
@@ -115,6 +125,19 @@ def cli_login_start():
     provider, err = _provider_from_request()
     if err:
         return err
+    # A device code stays valid for ~15 minutes, so a second click while one is
+    # already awaiting approval must NOT kill it — that would invalidate the code
+    # the operator is part-way through entering. Hand back the run that is
+    # already waiting instead, along with its still-valid URL and code.
+    live = sub.pending_login(provider)
+    if live.get("url"):
+        return jsonify({
+            "success": True, "run_id": live.get("run_id"),
+            "name": sub.WORKFLOW_NAMES["configure"],
+            "url": live.get("url"), "code": live.get("code"),
+            "message": "A sign-in is already waiting for approval — use the "
+                       "code already shown, or Cancel it first to start over.",
+        })
     return _start_action(provider, "configure", sub.run_configure_workflow)
 
 

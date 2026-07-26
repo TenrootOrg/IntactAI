@@ -1240,6 +1240,15 @@ document.addEventListener('alpine:init', () => {
         cliStartPolling() {
             this.cliStopPolling();
             if (!this.isSubscription()) return;
+            // Subscription providers have no model catalog to pick from, so make
+            // sure the field carries a sensible default rather than sitting empty
+            // (onProviderChange only fires when the operator switches provider,
+            // not when a saved provider is loaded).
+            if (!this.config.agentic.online_llm.model) {
+                const d = { 'codex-subscription': 'gpt-5-codex' }[
+                    this.config.agentic.online_llm.provider];
+                if (d) this.config.agentic.online_llm.model = d;
+            }
             this.cliRefresh();
             this._cliTimer = setInterval(() => this.cliRefresh(), 3000);
         },

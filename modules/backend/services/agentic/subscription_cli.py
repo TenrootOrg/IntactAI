@@ -752,7 +752,25 @@ WORKFLOW_NAMES = {
 }
 
 
+# Run ids whose worker thread is alive *in this process*. A pending row that is
+# NOT in here has no worker left (the backend restarted); one that IS here is
+# being superseded by a newer attempt. The two deserve different explanations.
+_active_runs = set()
+
+
+def is_run_active(run_id) -> bool:
+    with _log_lock:
+        return run_id in _active_runs
+
+
+def _mark_active(run_id):
+    with _log_lock:
+        _active_runs.add(run_id)
+
+
 def _finish(run_id, ok, summary):
+    with _log_lock:
+        _active_runs.discard(run_id)
     try:
         from services.workflow_service import update_run_status
         update_run_status(run_id, "completed" if ok else "failed",
@@ -764,6 +782,7 @@ def _finish(run_id, ok, summary):
 
 def run_install_workflow(run_id, provider):
     """Background body for the Install action."""
+    _mark_active(run_id)
     try:
         _progress(run_id, 1)
         res = install(provider, run_id=run_id)
@@ -777,6 +796,7 @@ def run_configure_workflow(run_id, provider, wait_seconds=900):
     """Background body for the Configure action: start the device login, then
     wait for the operator to approve it (default 15 min, matching the code's
     lifetime) so the run's status reflects the real outcome."""
+    _mark_active(run_id)
     try:
         _progress(run_id, 1)
         started = login_start(provider, run_id=run_id)
@@ -809,6 +829,7 @@ def run_configure_workflow(run_id, provider, wait_seconds=900):
 
 def run_test_workflow(run_id, provider):
     """Background body for the Test action."""
+    _mark_active(run_id)
     try:
         _progress(run_id, 1)
         res = test_connection(provider, run_id=run_id)
