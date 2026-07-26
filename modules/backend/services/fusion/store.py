@@ -981,10 +981,27 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     ws = _ws()
     d = get_case(case_id)
 
-    def _plog(msg, status="info", detail=""):   # progress -> case log (recorded fuses only)
-        if _record:
+    import time as _time
+    _t0 = _time.time()
+
+    def _plog(msg, status="info", detail="", pct=None):
+        # progress -> case log (recorded fuses only). When a pct is given, append
+        # "<pct>% · ~<eta>s remaining" to the detail and stash pct/eta as structured
+        # fields so the Log tab can render a live progress bar. ETA is a linear
+        # extrapolation from elapsed time (elapsed / pct * (100-pct)) — rough, but
+        # honest and monotonic enough to reassure the operator during a Refusion.
+        if not _record:
+            return
+        if pct is not None:
+            el = _time.time() - _t0
+            eta = int(el * (100 - pct) / pct) if 0 < pct < 100 else 0
+            tag = f"{int(pct)}%" + (f" · ~{eta}s remaining" if 0 < pct < 100 else "")
+            detail = (f"{detail} · {tag}" if detail else tag)
+            log_case_event(case_id, msg, status, detail, pct=int(pct), eta_s=eta)
+        else:
             log_case_event(case_id, msg, status, detail)
 
+    _plog("Refusion · starting", "info", "preparing to re-fuse the case graph", pct=1)
     members = _members_for_case(case_id, d)
     # include/exclude: scope the fusion to a chosen subset of the case's runs (None = all)
     inc = d.get("included_run_ids")
@@ -998,9 +1015,10 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         # members but contribute nothing to the graph. Drop the filtered runs
         # from `members` too so run_ids/baseline reflect what was actually fused.
         _plog("Refusion · reading + mapping run data", "info",
-              f"{len(members)} member run(s)")
+              f"{len(members)} member run(s)", pct=5)
         contributions, kept = [], []
-        for rid in members:
+        _nmem = max(1, len(members))
+        for _i, rid in enumerate(members):
             run = ws.get_automation_run(rid)
             if not run:
                 continue
@@ -1008,12 +1026,16 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
                 continue
             kept.append(rid)
             contributions.append(_contribution_for_run(run, log=log))
+            # 5% → 40% spread across the member runs (the per-run read + map is the
+            # bulk of I/O for a multi-host hunt import).
+            _plog(f"Refusion · mapped {len(kept)}/{_nmem} run(s)", "info",
+                  (run.get("name") or rid)[:60], pct=5 + int(35 * (_i + 1) / _nmem))
         members = kept
     window = d.get("time_window") or None
     min_sev = d.get("min_severity", "informational")
     _plog("Refusion · building case graph", "info",
           f"window {(window or {}).get('start') or 'open'}…{(window or {}).get('end') or 'now'}, "
-          f"severity {min_sev}+ · {len(contributions)} contributing run(s)")
+          f"severity {min_sev}+ · {len(contributions)} contributing run(s)", pct=45)
     # subtract the environment baseline (if one was captured) so provisioning /
     # automation noise doesn't read as attack signal.
     baseline = None if d.get("is_baseline") else load_baseline(_env_key_from_members(members))
@@ -1024,7 +1046,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     _apply_identity_links(g, d, log=_plog if _record else None)
     _plog("Refusion · graph built", "info",
           f"{len(g.entities):,} entities, {len(g.relationships):,} links, "
-          f"{len(g.findings):,} findings")
+          f"{len(g.findings):,} findings", pct=80)
     if not _record:
         return g
     # cross-case KB: enrich with prior sightings, then index this case (best-effort,
@@ -1067,6 +1089,8 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         # re-fuse) → it may now be behind. Surface a "report not up to date" hint.
         report_dirty = True
     else:
+        _plog("Refusion · generating report", "info",
+              "deterministic report, advisory & checklist", pct=88)
         llm_ent, llm_chars = _llm_payload_budget(d)
         llm_out = _effective_output_cap(d)
         report = llm_sim.generate_report(
@@ -1124,7 +1148,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     pruned = g.pruned(max_entities=int(d.get("max_entities")
                                        or DEFAULT_MAX_ENTITIES)).to_dict()
     _plog("Refusion · writing graph to database", "info",
-          f"{len(pruned.get('entities') or {}):,} entities → sidecar")
+          f"{len(pruned.get('entities') or {}):,} entities → sidecar", pct=95)
     if not _write_graph_sidecar(case_id, pruned):
         _plog("Refusion · graph write", "error", "sidecar write failed (see backend log)")
     ws.update_run_status(case_id, "completed",
@@ -1149,7 +1173,8 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     log_case_event(case_id, "Refusion complete", "success",
                    f"saved to database — {len(g.entities):,} entities, "
                    f"{len(g.relationships):,} links, {len(g.findings):,} findings "
-                   f"across {len(members)} run(s)")
+                   f"across {len(members)} run(s) · 100%",
+                   pct=100, eta_s=0)
     return g
 
 

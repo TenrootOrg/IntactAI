@@ -567,9 +567,21 @@ async function _railCfg(){
 // The /rescan endpoint persists the posted config (set_analysis_config) before fusing,
 // so saving is always the first step — there is no separate Save button.
 async function doRefusion(id){
-  toast('saving + refusing — updating the data…');
-  await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(await _railCfg())});
-  toast('✓ Refusion complete — data, risk & timeline updated'); openCase(id);
+  // Read the config rail BEFORE switching tabs — setTab('log') replaces #tabc,
+  // unmounting the #cf-* inputs _railCfg() reads.
+  const cfg = await _railCfg();
+  // Move to the Log so the operator watches the refusion progress live. The
+  // rescan runs server-side while the Log tab's follower polls /log every few
+  // seconds; fuse_case emits "<phase> · <pct>% · ~<eta>s remaining" rows, so
+  // the progression is visible instead of a frozen spinner.
+  setTab('log');
+  if(typeof logRefresh==='function') logRefresh();
+  toast('refusing — follow the progress in the Log…');
+  try{
+    await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+    toast('✓ Refusion complete — data, risk & timeline updated');
+  }catch(e){ toast('✗ Refusion failed — see the Log for details'); }
+  if(typeof logRefresh==='function') logRefresh();   // pull the final rows at once
 }
 // Rescan (LLM) = SAVE config → re-fuse → regenerate report + chat narrative with the LLM.
 async function doRescanLLM(id){
