@@ -618,6 +618,44 @@ class SubscriptionCLIError(RuntimeError):
         self.reason = reason
 
 
+def _vendor_message(text) -> str:
+    """Pull the human sentence out of the CLI's JSON event stream.
+
+    A failure arrives as newline-delimited events whose `error.message` is
+    itself a JSON string, so the readable sentence sits two levels deep:
+        {"type":"turn.failed","error":{"message":"{\"error\":{\"message\":
+         \"The 'x' model is not supported ...\"}}"}}
+    Logging the raw blob (truncated mid-token) tells an operator nothing, so dig
+    out the sentence and fall back to the raw tail only if we cannot find one.
+    """
+    best = ""
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        msg = ((ev.get("error") or {}).get("message")
+               if isinstance(ev.get("error"), dict) else None)
+        if not isinstance(msg, str):
+            continue
+        # the message is frequently another JSON document
+        inner = msg.strip()
+        if inner.startswith("{"):
+            try:
+                doc = json.loads(inner)
+                deep = (doc.get("error") or {}).get("message")
+                if isinstance(deep, str) and deep.strip():
+                    inner = deep.strip()
+            except Exception:
+                pass
+        if inner:
+            best = inner
+    return best
+
+
 def _classify(text) -> str:
     t = (text or "").lower()
     if "not supported when using" in t or "model is not supported" in t \
@@ -675,16 +713,20 @@ def run_prompt(provider, prompt, system_prompt=None, model=None, timeout=None) -
         in_tok, out_tok = _usage_from_jsonl(r.stdout)
 
         if r.returncode != 0 and not text:
+            vendor = _vendor_message(r.stdout or "")
             raise SubscriptionCLIError(
+                f"{spec['label']}: {vendor}" if vendor else
                 f"{spec['label']} CLI failed (exit {r.returncode}): "
-                f"{combined[-400:] or 'no output'}", _classify(combined))
+                f"{combined[-400:] or 'no output'}",
+                _classify(vendor or combined))
         if not text:
             # fall back to the JSON event stream if -o produced nothing
             text = _text_from_jsonl(r.stdout)
         if not text:
+            vendor = _vendor_message(r.stdout or "")
             raise SubscriptionCLIError(
-                f"{spec['label']} CLI returned no content: {combined[-400:]}",
-                _classify(combined))
+                f"{spec['label']} returned no content: {vendor or combined[-300:]}",
+                _classify(vendor or combined))
         return {"text": text, "in_tokens": in_tok, "out_tokens": out_tok}
     except subprocess.TimeoutExpired:
         raise SubscriptionCLIError(
