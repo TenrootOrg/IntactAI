@@ -193,6 +193,24 @@ def _llm_payload_budget(d):
     return min(n, safe_cap), _LLM_MAX_BUDGET_CHARS
 
 
+def _llm_identity_budget(d):
+    """Max identities the LLM payload may include — the case's 'Identity limit'
+    setting (Case Analysis -> Configuration). Unset/None means 'tied to the
+    Entity limit': render._distilled_at() clamps identities to whatever
+    max_entities already is (see _llm_payload_budget), so raising the Entity
+    limit already raises this too with no separate action needed. Set this
+    explicitly LOWER to show fewer identity rows than the entity budget would
+    otherwise allow (a more concise/private payload) — it can only lower the
+    effective count, never raise it past the entity ceiling, so a large value
+    here can't blow past the same context-safe budget everything else respects."""
+    n = d.get("max_identities")
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return None
+    return max(0, n)
+
+
 def _effective_output_cap(d):
     """Max tokens the model WRITES per LLM call for THIS case. Uses the per-case
     'Output token cap' if the operator set one; otherwise DEFAULTS TO THE SELECTED
@@ -1115,6 +1133,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         _plog("Refusion · generating report", "info",
               "deterministic report, advisory & checklist", pct=88)
         llm_ent, llm_chars = _llm_payload_budget(d)
+        llm_ident = _llm_identity_budget(d)
         llm_out = _effective_output_cap(d)
         report = llm_sim.generate_report(
             gv, window=window, min_severity=min_sev,
@@ -1126,13 +1145,14 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
             validations=d.get("timeline_validations") or None,
             prefer_llm=False,   # first scan = fast, free, deterministic; LLM on Rescan
             max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out,
-            detail="explicit")
+            detail="explicit", max_identities=llm_ident)
         # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
         # SEPARATELY from the deterministic findings; fed prior operator dispositions.
         analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
                                    dispositions=d.get("dispositions") or None,
                                    max_entities=llm_ent, budget_chars=llm_chars,
-                                   max_output_tokens=llm_out, mask=mask)
+                                   max_output_tokens=llm_out, mask=mask,
+                                   max_identities=llm_ident)
         report_members = list(members)   # report now reflects exactly these members
         report_dirty = False             # report freshly generated → up to date
     # customer-confirmation checklist — generate once (preserve operator decisions on re-fuse)
@@ -1154,11 +1174,12 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
             if run:
                 raw_approx += _raw_payload_size(run)
         _le, _lc = _llm_payload_budget(d)
+        _li = _llm_identity_budget(d)
         # report_detail=explicit adds per-event evidence to the payload, so the token
         # A/B + Rescan price must reflect the SELECTED mode (re-priced on Refusion).
         distilled = render.distilled(g, window=window, min_severity=min_sev,
                                      max_entities=_le, budget_chars=_lc,
-                                     detail="explicit")
+                                     detail="explicit", max_identities=_li)
         fusion_approx = budget.approx_tokens(json.dumps(distilled))
         token_ab = {"raw_approx": raw_approx, "fusion_approx": fusion_approx,
                     "reduction_ratio": round(raw_approx / max(fusion_approx, 1), 1)}
@@ -1531,6 +1552,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
         except Exception:
             mask = None
     llm_ent, llm_chars = _llm_payload_budget(d)
+    llm_ident = _llm_identity_budget(d)
     llm_out = _effective_output_cap(d)
     model, provider, mode = _configured_fusion_model()
     if use_llm:
@@ -1553,14 +1575,15 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
             prefer_llm=use_llm, max_entities=llm_ent, budget_chars=llm_chars,
-            max_output_tokens=llm_out, detail="explicit")
+            max_output_tokens=llm_out, detail="explicit", max_identities=llm_ident)
         if use_llm and model:
             log_case_event(case_id, "Report · LLM responded", "success",
                            f"narrative generated ({len(report):,} chars)")
         analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
                                    dispositions=d.get("dispositions") or None,
                                    max_entities=llm_ent, budget_chars=llm_chars,
-                                   max_output_tokens=llm_out, mask=mask)
+                                   max_output_tokens=llm_out, mask=mask,
+                                   max_identities=llm_ident)
     except Exception as e:
         log_case_event(case_id, "Report generation", "error", f"LLM/render failed: {e}")
         raise
@@ -1664,6 +1687,15 @@ def set_analysis_config(case_id, cfg) -> dict:
     if "max_entities" in cfg:              # operator cap on the stored graph
         try:
             patch["max_entities"] = max(100, min(int(cfg["max_entities"]), MAX_GRAPH_ENTITIES))
+        except (TypeError, ValueError):
+            pass
+    if "max_identities" in cfg:            # identity rows in the LLM payload — a
+                                           # ceiling INSIDE max_entities, not a separate
+                                           # budget (see _llm_identity_budget); empty/0
+                                           # means "tied to the Entity limit" (unset).
+        try:
+            v = cfg["max_identities"]
+            patch["max_identities"] = max(0, int(v)) if v not in (None, "") else None
         except (TypeError, ValueError):
             pass
     if "llm_max_output_tokens" in cfg:     # cap on tokens the model WRITES per call
@@ -2425,7 +2457,7 @@ def chat_case(case_id, question) -> str:
                            full_context=True,   # LOCKED: chat always sends full context
                            max_output_tokens=_effective_output_cap(d),
                            require_llm=True,    # no deterministic fallback: surface real errors
-                           mask=mask)
+                           mask=mask, max_identities=_llm_identity_budget(d))
         log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
         # A detected verdict rides ALONG WITH the answer as an offer. Worst case
         # for a misread is one extra sentence the operator ignores — never a

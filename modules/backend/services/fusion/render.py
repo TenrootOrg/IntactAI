@@ -197,7 +197,16 @@ def _known_identities(graph, limit=5000):
     return out[:limit]
 
 
-def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"):
+def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary",
+                  max_identities=None):
+    """`max_identities` (the case's 'Identity limit' setting) is a CEILING inside
+    the SAME top-N budget as max_entities, not a separate side-channel: the
+    effective count is min(max_identities, max_entities). A generous/unset value
+    therefore just rides whatever max_entities already is (and shrinks with it
+    during distilled()'s stepdown), which is the whole point — a high 'Identity
+    limit' can never let identities escape the context-safe budget that keeps
+    the rest of this payload in check. Set it LOWER than max_entities to show
+    fewer identity rows than the entity budget would otherwise allow."""
     assets, findings = scope(graph, window=window, min_severity=min_severity)
     eff_detail, _ = _resolve_detail(graph, detail, window=window, min_severity=min_severity)
     ents = sorted((e for e in graph.entities.values()
@@ -230,12 +239,14 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         # see _known_identities(). Cheap relative to the rest of this payload;
         # keeps "who is X" answerable for every real person in the case, not only
         # the ones a finding happens to be attached to.
-        "identities": _known_identities(graph),
+        "identities": _known_identities(
+            graph, limit=max_entities if max_identities is None
+                        else max(0, min(int(max_identities), max_entities))),
     }
 
 
 def distilled(graph, *, window=None, min_severity="informational", max_entities=60,
-              budget_chars=None, detail="summary"):
+              budget_chars=None, detail="summary", max_identities=None):
     """Compact, in-window, high-signal payload — what a real LLM would get.
 
     If ``budget_chars`` is set and the payload exceeds it, halve ``max_entities``
@@ -245,13 +256,18 @@ def distilled(graph, *, window=None, min_severity="informational", max_entities=
     adds the real cmdline/path/hash to each high finding (see _resolve_detail)."""
     from . import budget as _b
     p = _distilled_at(graph, window=window, min_severity=min_severity,
-                      max_entities=max_entities, detail=detail)
+                      max_entities=max_entities, detail=detail,
+                      max_identities=max_identities)
     if budget_chars:
         steps = 0
         while _b.over_budget(p, budget_chars) and steps < _b.MAX_STEPDOWNS and max_entities > 5:
             max_entities = max(5, max_entities // 2)
+            # max_identities is NOT independently halved — it is re-clamped against
+            # the new (smaller) max_entities inside _distilled_at each iteration,
+            # so identities shrink in lockstep automatically.
             p = _distilled_at(graph, window=window, min_severity=min_severity,
-                              max_entities=max_entities, detail=detail)
+                              max_entities=max_entities, detail=detail,
+                              max_identities=max_identities)
             steps += 1
     return p
 

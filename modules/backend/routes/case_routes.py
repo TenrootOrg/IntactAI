@@ -319,6 +319,11 @@ def get_case(case_id):
                     # memory optional; timesketch/cve/cloud disabled for now)
                     # Single entity knob: sizes the stored graph AND the LLM payload.
                     "max_entities": d.get("max_entities") or store.DEFAULT_MAX_ENTITIES,
+                    # Identity rows in the LLM payload — a CEILING inside the Entity
+                    # limit above (min(this, max_entities)), so a large value here can
+                    # never let identities escape the same context-safe budget. None =
+                    # tied to the Entity limit with no separate action needed.
+                    "max_identities": d.get("max_identities"),
                     # cap on tokens the model WRITES per call (None = model default).
                     "llm_max_output_tokens": d.get("llm_max_output_tokens"),
                     # LOCKED ON: chat always sends the FULL graph every message

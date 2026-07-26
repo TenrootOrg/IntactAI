@@ -616,7 +616,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     audience="both", language="en", master_prompt=None, mask=None,
                     dispositions=None, validations=None, prefer_llm=True,
                     max_entities=None, budget_chars=None, max_output_tokens=None,
-                    detail="auto") -> str:
+                    detail="auto", max_identities=None) -> str:
     """Case report. Real path = LLM narrative over distilled() + deterministic
     fact tables appended verbatim. `audience` (exec/technical/both) + `language`
     tailor the narrative (reusing the engagement directive); `master_prompt` is the
@@ -634,7 +634,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
     if prefer_llm and (_use_real() or _llm_available()):
         try:
             payload = render.distilled(graph, window=window, min_severity=min_severity,
-                                       max_entities=me, budget_chars=bc, detail=detail)
+                                       max_entities=me, budget_chars=bc, detail=detail,
+                                       max_identities=max_identities)
             # give the model the analyst's triage so the narrative reflects it
             if dispositions:
                 payload["operator_dispositions"] = dispositions
@@ -747,7 +748,7 @@ def _simulated_analysis(graph, findings) -> dict:
 
 def analyze(graph, *, window=None, min_severity="informational", run_id=None,
             dispositions=None, max_entities=None, budget_chars=None,
-            max_output_tokens=None, mask=None) -> dict:
+            max_output_tokens=None, mask=None, max_identities=None) -> dict:
     """ADVISORY analyst pass over the distilled graph: incident-grouping + grounded
     hypotheses. Reuses the agentic skills corpus for expertise. Never mutates
     graph.findings. Real path is grounding-gated; simulated path is deterministic.
@@ -762,7 +763,8 @@ def analyze(graph, *, window=None, min_severity="informational", run_id=None,
         return _simulated_analysis(graph, findings)
     try:
         payload = render.distilled(graph, window=window, min_severity=min_severity,
-                                   max_entities=me, budget_chars=bc)
+                                   max_entities=me, budget_chars=bc,
+                                   max_identities=max_identities)
         # select the curated DFIR macro playbook FROM THE GRAPH (reuse agentic skills)
         system = ANALYST_SYSTEM_PROMPT
         try:
@@ -929,7 +931,7 @@ def _classify_llm_error(exc) -> str:
 
 def chat(graph, question: str, history=None, *, window=None, min_severity="informational",
          run_id=None, dispositions=None, validations=None, full_context=None,
-         max_output_tokens=None, require_llm=False, mask=None) -> str:
+         max_output_tokens=None, require_llm=False, mask=None, max_identities=None) -> str:
     """Grounded Q&A. Real path narrates the distilled graph; simulated = deterministic
     retrieval. Surfaces operator dispositions (what's been triaged as benign/IT).
     `mask` (optional DataAnonymizer) anonymizes the LLM payload the same way
@@ -971,7 +973,8 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                 # Bypass: send the FULL distilled graph every turn (pricier).
                 payload = render.distilled(graph, window=window, min_severity=min_severity,
                                            max_entities=budget.REPORT_MAX_ENTITIES,
-                                           budget_chars=budget.REPORT_BUDGET_CHARS)
+                                           budget_chars=budget.REPORT_BUDGET_CHARS,
+                                           max_identities=max_identities)
             else:
                 payload = render.chat_subgraph(graph, question, window=window,
                                                min_severity=min_severity,
