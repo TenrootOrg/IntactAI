@@ -11,6 +11,11 @@ data/*.json.migrated
 data/intact.db
 data/intact.db-shm
 data/intact.db-wal
+# Vendor CLI installed at runtime for subscription LLM providers (~350 MB of
+# native binary + unpacked release). Fetched on demand by Settings -> Agentic;
+# never part of the source tree. Credentials never live here — they are kept in
+# the `secrets` table and materialised to tmpfs per call.
+data/agentic_cli/
 data/reports/
 data/scheduler_jobs.db
 
