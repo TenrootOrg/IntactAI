@@ -751,6 +751,21 @@ def report_download_pdf(case_id):
 def graph(case_id):
     d = store.get_case(case_id)
     g = store.load_graph(case_id)   # reads the sidecar (falls back to legacy inline)
+    # Is a member still importing? An offline-collector upload / live hunt runs
+    # ASYNChronously and can take minutes to pull its rows. Before this flag the
+    # case view auto-fused whatever was present — so viewing mid-import showed a
+    # blank/partial graph with no explanation and read as "fusion is broken"
+    # (reported 2026-07-26). Surface it so the UI can say "importing…" and the
+    # operator knows to wait + refresh rather than assume failure.
+    import_in_progress = False
+    try:
+        for rid in store._members_for_case(case_id, d) or []:
+            run = store._ws().get_automation_run(rid)
+            if run and run.get("status") in ("running", "pending"):
+                import_in_progress = True
+                break
+    except Exception:
+        import_in_progress = False
     # Auto-populate: if the case has member runs but no graph has been built yet
     # (e.g. right after an offline import), fuse once on first view so Case
     # Analysis isn't blank. A non-empty cached graph is returned as-is (fast).
@@ -759,7 +774,8 @@ def graph(case_id):
             g = store.fuse_case(case_id)
         except Exception as e:
             print(f"[CASE] on-view fuse failed for {case_id}: {e}", flush=True)
-    return jsonify({"case_id": case_id, "fusion_graph": g.to_dict()})
+    return jsonify({"case_id": case_id, "fusion_graph": g.to_dict(),
+                    "import_in_progress": import_in_progress})
 
 
 @case_bp.route("/api/cases/<case_id>/timeline", methods=["GET"])

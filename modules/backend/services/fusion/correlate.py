@@ -888,6 +888,16 @@ def in_window(ts, window) -> bool:
     if not ts:
         return True            # structural (no time) — kept; filtered by link elsewhere
     start, end = window.get("start"), window.get("end")
+    # A degenerate window (start >= end — e.g. start == end from a date picker
+    # that defaulted both ends to the same instant) would drop every timestamped
+    # row and silently produce an edgeless graph: only the events/files/hashes
+    # carry time + edges, so filtering them all out leaves structural pivots
+    # (accounts, IOCs) with nothing to connect. Treat it as OPEN instead of
+    # nuking the case. (2026-07-26: a real hunt-import case with
+    # start==end='2026-05-01T12:00:00' fused to 568 entities / 0 links; the same
+    # data with an open window fuses to 18,768 entities / 368 links.)
+    if start and end and start >= end:
+        return True
     if start and ts < start:
         return False
     if end and ts > end:
