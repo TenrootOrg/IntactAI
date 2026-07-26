@@ -95,6 +95,23 @@ def _estimate_llm_cost(model: str, in_tokens: int, out_tokens: int) -> float:
     return 0.0
 
 
+def _case_log(run_id, action, status="info", detail=""):
+    """Best-effort line into the Case Analysis activity log.
+
+    `run_id` is the case_id on every fusion chain (report / chat / synthesize);
+    log_case_event itself no-ops when the id is not a real case, so this is safe
+    to call from the transport layer unconditionally. Telemetry only — it must
+    never raise into an LLM call.
+    """
+    if not run_id:
+        return
+    try:
+        from services.fusion.store import log_case_event
+        log_case_event(run_id, action, status, detail)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _record_llm_usage(run_id, provider, model, response):
     """Extract usage tokens from a provider response and persist to workflow row.
 
@@ -126,6 +143,10 @@ def _record_llm_usage(run_id, provider, model, response):
             if isinstance(response, dict):
                 in_tokens = int(response.get('prompt_eval_count', 0) or 0)
                 out_tokens = int(response.get('eval_count', 0) or 0)
+        elif isinstance(response, dict) and 'in_tokens' in response:
+            # subscription CLI providers: already normalised by subscription_cli
+            in_tokens = int(response.get('in_tokens', 0) or 0)
+            out_tokens = int(response.get('out_tokens', 0) or 0)
     except Exception as ex:
         print(f"[ANALYZER] usage extraction failed ({provider}): {ex}", flush=True)
         return
@@ -318,8 +339,29 @@ def is_llm_configured(config) -> bool:
     agentic_config = (config or {}).get('agentic', {}) or {}
     mode = agentic_config.get('llm_mode', 'online')
     if mode == 'online':
-        return bool((agentic_config.get('online_llm') or {}).get('api_key'))
+        online = agentic_config.get('online_llm') or {}
+        # Subscription providers authenticate through a vendor CLI, so there is
+        # no api_key to test — "configured" means the CLI is installed and a
+        # credential is stored.
+        if subscription_provider_ready(online.get('provider')):
+            return True
+        return bool(online.get('api_key'))
     return bool((agentic_config.get('offline_llm') or {}).get('url'))
+
+
+def subscription_provider_ready(provider) -> bool:
+    """True iff `provider` is a CLI-subscription provider that is ready to use.
+
+    Import is local and failure-tolerant: the subscription path is optional and
+    must never be able to break the api-key providers.
+    """
+    try:
+        from services.agentic import subscription_cli as sub
+        if not sub.is_subscription_provider(provider):
+            return False
+        return sub.is_installed(provider) and sub.has_credentials(provider)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def call_llm(prompt, system_prompt, config, run_id=None, model_override=None):
@@ -384,7 +426,12 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
         # Resolve model alias to actual model ID
         model = resolve_model_alias(model_input, provider)
 
-    if not api_key:
+    # Subscription providers carry no api_key — they authenticate through the
+    # vendor CLI, so they must bypass this gate entirely and are handled below.
+    from services.agentic import subscription_cli as _sub
+    _is_subscription = _sub.is_subscription_provider(provider)
+
+    if not api_key and not _is_subscription:
         raise ValueError("Online LLM API key not configured. Set it in Settings.")
 
     # Big report-generation prompts (~30-50K input tokens) routinely exceed
@@ -464,6 +511,36 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
         ))
         _record_llm_usage(run_id, 'gemini', model, response)
         return response.text
+    elif _is_subscription:
+        # Spend the operator's subscription via the vendor CLI instead of a
+        # metered API key. The connection outcome is logged to the case's
+        # activity log so an analyst can see, in the Case Analysis Log, whether
+        # the subscription answered — run_id IS the case_id on every fusion
+        # chain, and log_case_event no-ops for non-case run ids.
+        spec_label = _sub.PROVIDERS[provider]['label']
+        _case_log(run_id, f"LLM · calling {spec_label}", "info",
+                  f"model {model or 'CLI default'} via the {provider} CLI "
+                  f"(subscription auth, needs internet)")
+        try:
+            result = _sub.run_prompt(
+                provider, prompt,
+                system_prompt=system_prompt,
+                model=(model or None),
+                timeout=ONLINE_LLM_TIMEOUT_SECONDS,
+            )
+        except _sub.SubscriptionCLIError as e:
+            _case_log(run_id, f"LLM · {spec_label} connection failed", "error",
+                      f"{e.reason}: {e}")
+            raise
+        except Exception as e:
+            _case_log(run_id, f"LLM · {spec_label} call failed", "error", str(e))
+            raise
+        _case_log(run_id, f"LLM · {spec_label} responded", "success",
+                  f"{len(result.get('text') or ''):,} chars, "
+                  f"{result.get('in_tokens', 0):,} in / "
+                  f"{result.get('out_tokens', 0):,} out tokens")
+        _record_llm_usage(run_id, provider, model, result)
+        return result['text']
     else:
         raise ValueError(f"Unsupported online provider: {provider}")
 

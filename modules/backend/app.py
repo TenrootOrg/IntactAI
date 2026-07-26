@@ -34,6 +34,7 @@ from routes import (
     upgrade_bp,
     blueprint_bp,
     agentic_bp,
+    agentic_cli_bp,
     db_bp,
     scheduler_bp,
     upload_bp,
@@ -69,6 +70,7 @@ app.register_blueprint(maintenance_bp)
 app.register_blueprint(upgrade_bp)
 app.register_blueprint(blueprint_bp)
 app.register_blueprint(agentic_bp)
+app.register_blueprint(agentic_cli_bp)
 app.register_blueprint(db_bp)
 app.register_blueprint(scheduler_bp)
 app.register_blueprint(upload_bp)

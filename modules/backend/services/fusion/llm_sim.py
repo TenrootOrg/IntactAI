@@ -104,10 +104,23 @@ def _use_real() -> bool:
     cfg = _agentic_cfg()
     if str(cfg.get("fusion_llm_mode", "simulated")).lower() != "real":
         return False
-    # need a usable transport: online needs an api_key, offline (ollama) is self-hosted
+    # need a usable transport: online needs an api_key (or a connected
+    # subscription CLI, which has no key), offline (ollama) is self-hosted
     if str(cfg.get("llm_mode", "online")).lower() == "offline":
         return True
-    return bool((cfg.get("online_llm") or {}).get("api_key"))
+    online = cfg.get("online_llm") or {}
+    if _subscription_ready(online.get("provider")):
+        return True
+    return bool(online.get("api_key"))
+
+
+def _subscription_ready(provider) -> bool:
+    """True iff provider is a CLI-subscription provider that is ready to use."""
+    try:
+        from services.agentic.analyzers import subscription_provider_ready
+        return bool(subscription_provider_ready(provider))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _llm_available() -> bool:
@@ -799,6 +812,8 @@ _LLM_ERR_MESSAGES = {
     "rate_limited": "⚠️ The LLM provider rate-limited the request. Wait a moment and try again.",
     "missing_offline_url": "⚠️ No local LLM (Ollama) URL is configured. Set it in Settings or switch to an online model.",
     "llm_error": "⚠️ Could not get a response from the LLM. Check the API key and internet connection.",
+    "cli_not_installed": "⚠️ The subscription CLI is not installed. Install it in Settings → Agentic (needs internet).",
+    "cli_not_authenticated": "⚠️ The subscription is not connected. Sign in from Settings → Agentic (needs internet).",
 }
 
 
@@ -817,7 +832,20 @@ def _llm_unavailable_reason():
         return "missing_key"
     if str(ag.get("llm_mode", "online")).lower() == "offline":
         return None if (ag.get("offline_llm") or {}).get("url") else "missing_offline_url"
-    return None if (ag.get("online_llm") or {}).get("api_key") else "missing_key"
+    online = ag.get("online_llm") or {}
+    provider = online.get("provider")
+    # A subscription provider is configured by installing + connecting its CLI,
+    # so report which of those two steps is still missing rather than the
+    # api-key message, which would send the operator hunting for a key.
+    try:
+        from services.agentic import subscription_cli as _sub
+        if _sub.is_subscription_provider(provider):
+            if not _sub.is_installed(provider):
+                return "cli_not_installed"
+            return None if _sub.has_credentials(provider) else "cli_not_authenticated"
+    except Exception:  # noqa: BLE001
+        pass
+    return None if online.get("api_key") else "missing_key"
 
 
 def _classify_llm_error(exc) -> str:

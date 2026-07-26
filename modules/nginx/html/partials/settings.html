@@ -492,6 +492,7 @@
                                     <label class="block text-xs text-gray-400 mb-1">Provider</label>
                                     <select x-model="$store.settings.config.agentic.online_llm.provider" @change="$store.settings.onProviderChange()" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
                                         <option value="openrouter">OpenRouter</option>
+                                        <option value="codex-subscription">Codex (Subscription)</option>
                                     </select>
                                 </div>
                                 <div>
@@ -530,6 +531,14 @@
                                              async query() {
                                                  const p = $store.settings.config.agentic.online_llm.provider;
                                                  const q = $store.settings.config.agentic.online_llm.model || '';
+                                                 // Subscription providers have no catalog endpoint (no key
+                                                 // to enumerate models with) — querying would 404, so the
+                                                 // model stays a free-text field for them.
+                                                 if ($store.settings.isSubscription()) {
+                                                     this.results = []; this.total = 0; this.selectedModel = null;
+                                                     this.open = false; this.loading = false;
+                                                     return;
+                                                 }
                                                  this.loading = true;
                                                  try {
                                                      const url = '/api/config/' + this.routeFor(p) + '/models?limit=10&q=' + encodeURIComponent(q);
@@ -548,6 +557,8 @@
                                                  const p = $store.settings.config.agentic.online_llm.provider;
                                                  const id = $store.settings.config.agentic.online_llm.model;
                                                  if (!id) { this.selectedModel = null; return; }
+                                                 // no catalog for subscription providers — see query()
+                                                 if ($store.settings.isSubscription()) { this.selectedModel = null; return; }
                                                  try {
                                                      const url = '/api/config/' + this.routeFor(p) + '/models?limit=10&q=' + encodeURIComponent(id);
                                                      const resp = await fetch(url);
@@ -649,10 +660,112 @@
                                         </div>
                                     </div>
                                 </div>
-                                <div>
+                                <div x-show="!$store.settings.isSubscription()">
                                     <label class="block text-xs text-gray-400 mb-1">API Key</label>
                                     <input type="password" x-model="$store.settings.config.agentic.online_llm.api_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="sk-...">
                                 </div>
+                                <div x-show="$store.settings.isSubscription()" class="text-xs text-gray-500 self-end pb-1.5">
+                                    No API key needed — this provider signs in
+                                    with your own subscription.
+                                </div>
+                            </div>
+
+                            <!-- Subscription (CLI) provider panel.
+                                 These providers spend an existing subscription through the
+                                 vendor's own CLI rather than a metered API key, so instead of
+                                 a key field the operator gets: install the CLI, sign in via a
+                                 device code (the browser can be on any machine), and test.
+                                 State is polled every 3s while this panel is visible. -->
+                            <div x-show="$store.settings.isSubscription()" x-transition
+                                 class="mt-4 pt-3 border-t border-gray-700">
+                                <div class="flex items-center justify-between mb-2">
+                                    <div class="text-xs text-gray-500" x-text="$store.settings.cli.label || 'Subscription'"></div>
+                                    <div class="flex items-center gap-2 text-xs">
+                                        <span class="w-2 h-2 rounded-full"
+                                              :class="$store.settings.cli.authenticated ? 'bg-green-500' : ($store.settings.cli.installed ? 'bg-yellow-500' : 'bg-gray-600')"></span>
+                                        <span class="text-gray-300"
+                                              x-text="$store.settings.cliStatusText()"></span>
+                                    </div>
+                                </div>
+
+                                <!-- CLI missing → install it -->
+                                <div x-show="!$store.settings.cli.installed" class="flex items-center gap-3">
+                                    <button @click="$store.settings.cliInstall()"
+                                            :disabled="$store.settings.cliBusy"
+                                            class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-3 py-1.5 rounded text-sm font-medium">
+                                        <span x-text="$store.settings.cliBusy ? 'Installing…' : 'Install CLI'"></span>
+                                    </button>
+                                    <span class="text-xs text-yellow-400">
+                                        The CLI must be installed before this provider can be used
+                                        — requires an internet connection. Progress and any error
+                                        appear in Settings → Actions.
+                                    </span>
+                                </div>
+
+                                <!-- CLI present → connect / test / disconnect -->
+                                <div x-show="$store.settings.cli.installed" class="flex flex-wrap items-center gap-3">
+                                    <button x-show="!$store.settings.cli.authenticated"
+                                            @click="$store.settings.cliConnect()"
+                                            :disabled="$store.settings.cliBusy"
+                                            class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-3 py-1.5 rounded text-sm font-medium">
+                                        <span x-text="$store.settings.cliBusy ? 'Starting…' : 'Connect'"></span>
+                                    </button>
+                                    <button @click="$store.settings.cliTest()"
+                                            :disabled="$store.settings.cliBusy || !$store.settings.cli.authenticated"
+                                            class="bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-500 px-3 py-1.5 rounded text-sm font-medium">
+                                        <span x-text="$store.settings.cliTesting ? 'Testing…' : 'Test connection'"></span>
+                                    </button>
+                                    <button x-show="$store.settings.cli.authenticated"
+                                            @click="$store.settings.cliDisconnect()"
+                                            class="text-xs text-gray-400 hover:text-red-400 underline">
+                                        Disconnect
+                                    </button>
+                                    <span class="text-xs text-gray-500">
+                                        Signing in and every analysis call require an internet connection.
+                                        Each action opens a workflow in Settings → Actions with its full log.
+                                    </span>
+                                </div>
+
+                                <!-- Device-code login: one click to open, or copy the URL
+                                     if the browser is on another machine. -->
+                                <div x-show="$store.settings.cliLogin.url" x-transition
+                                     class="mt-3 bg-gray-900 border border-gray-700 rounded p-3">
+                                    <div class="text-xs text-gray-400 mb-2">
+                                        Approve the sign-in, then this panel updates by itself.
+                                    </div>
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <a :href="$store.settings.cliLogin.url" target="_blank" rel="noopener"
+                                           class="bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded text-sm font-medium">
+                                            Open login page
+                                        </a>
+                                        <button @click="$store.settings.cliCopy($store.settings.cliLogin.url, 'Login URL')"
+                                                class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm">
+                                            Copy URL
+                                        </button>
+                                        <template x-if="$store.settings.cliLogin.code">
+                                            <div class="flex items-center gap-2">
+                                                <span class="text-xs text-gray-400">Code</span>
+                                                <code class="bg-gray-800 text-green-400 px-2 py-1 rounded text-sm tracking-widest"
+                                                      x-text="$store.settings.cliLogin.code"></code>
+                                                <button @click="$store.settings.cliCopy($store.settings.cliLogin.code, 'Code')"
+                                                        class="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs">
+                                                    Copy
+                                                </button>
+                                            </div>
+                                        </template>
+                                        <button @click="$store.settings.cliCancelLogin()"
+                                                class="text-xs text-gray-400 hover:text-red-400 underline ml-auto">
+                                            Cancel
+                                        </button>
+                                    </div>
+                                    <div class="mt-2 text-[11px] text-gray-500 break-all"
+                                         x-text="$store.settings.cliLogin.url"></div>
+                                </div>
+
+                                <!-- current state, refreshed by the 3s detect poll.
+                                     Step-by-step logs live in Settings → Actions. -->
+                                <div x-show="$store.settings.cli.detail" class="mt-2 text-[11px] text-gray-500"
+                                     x-text="$store.settings.cli.detail"></div>
                             </div>
                         </div>
 

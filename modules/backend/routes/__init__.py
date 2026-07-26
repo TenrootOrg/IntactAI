@@ -14,6 +14,7 @@ from routes.maintenance_routes import maintenance_bp
 from routes.upgrade_routes import upgrade_bp
 from routes.blueprint_routes import blueprint_bp
 from routes.agentic_routes import agentic_bp
+from routes.agentic_cli_routes import agentic_cli_bp
 from routes.db_routes import db_bp
 from routes.scheduler_routes import scheduler_bp
 from routes.upload_routes import upload_bp
@@ -38,6 +39,7 @@ __all__ = [
     'upgrade_bp',
     'blueprint_bp',
     'agentic_bp',
+    'agentic_cli_bp',
     'db_bp',
     'scheduler_bp',
     'upload_bp',

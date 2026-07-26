@@ -99,6 +99,10 @@ document.addEventListener('alpine:init', () => {
                 } catch (e) { /* best-effort */ }
 
                 window.currentConfig = this.config;
+
+                // If the saved provider is a subscription (CLI) one, begin the
+                // detect poll straight away so the panel is accurate on first paint.
+                if (this.isSubscription()) this.cliStartPolling();
             } catch (e) {
                 console.error('Failed to load settings:', e);
             }
@@ -1186,6 +1190,158 @@ document.addEventListener('alpine:init', () => {
             upload.start();
         },
 
+        // ---- Subscription (CLI) providers -------------------------------
+        // These spend an existing Codex/ChatGPT subscription through the
+        // vendor CLI instead of a metered API key, so they have no key field.
+        // The panel polls /status every 3s while it is on screen: the CLI can
+        // be installed, signed in, or expire outside this page's control.
+        SUBSCRIPTION_PROVIDERS: ['codex-subscription'],
+        cli: { installed: false, authenticated: false, detail: '', label: '', version: null },
+        cliBusy: false,
+        cliTesting: false,
+        cliLogin: { url: '', code: '' },
+        _cliTimer: null,
+
+        isSubscription() {
+            return this.SUBSCRIPTION_PROVIDERS.includes(
+                this.config?.agentic?.online_llm?.provider);
+        },
+
+        cliStatusText() {
+            if (!this.cli.installed) return 'CLI not installed';
+            if (this.cli.authenticated) return 'Connected' + (this.cli.version ? ' · ' + this.cli.version : '');
+            if (this.cliLogin.url) return 'Waiting for approval…';
+            return 'Installed — not connected';
+        },
+
+        async cliRefresh() {
+            if (!this.isSubscription()) return;
+            const provider = this.config.agentic.online_llm.provider;
+            try {
+                const r = await fetch('/api/agentic/cli/status?provider=' + encodeURIComponent(provider));
+                if (!r.ok) return;
+                const d = await r.json();
+                this.cli = {
+                    installed: !!d.installed, authenticated: !!d.authenticated,
+                    detail: d.detail || '', label: d.label || '', version: d.version || null
+                };
+                // a device login in flight → keep the URL/code buttons on screen
+                if (d.login && d.login.url) {
+                    this.cliLogin = { url: d.login.url, code: d.login.code || '' };
+                } else if (!this.cli.authenticated) {
+                    this.cliLogin = { url: '', code: '' };
+                }
+                // login finished out-of-band (or expired) → drop the code panel
+                if (this.cli.authenticated && this.cliLogin.url) this._cliStopLogin();
+            } catch (e) { /* transient — the poll will retry */ }
+        },
+
+        // Called from the tab's x-init and whenever the provider changes.
+        cliStartPolling() {
+            this.cliStopPolling();
+            if (!this.isSubscription()) return;
+            this.cliRefresh();
+            this._cliTimer = setInterval(() => this.cliRefresh(), 3000);
+        },
+
+        cliStopPolling() {
+            if (this._cliTimer) { clearInterval(this._cliTimer); this._cliTimer = null; }
+        },
+
+        // Install / Connect / Test all run as `settings` workflows so their full
+        // log (including the exact failure — no internet, blocked proxy, expired
+        // code) is inspectable in Settings → Actions like every other system
+        // operation. Starting one jumps straight to that tab.
+        async _cliStartAction(path, label) {
+            const provider = this.config.agentic.online_llm.provider;
+            this.cliBusy = true;
+            try {
+                const r = await fetch(path, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ provider })
+                });
+                const d = await r.json();
+                if (r.ok && d.success) {
+                    this.showMessage(label + ' started — follow it in Actions', 'success');
+                    window.dispatchEvent(new CustomEvent('show-system-actions'));
+                } else {
+                    this.showMessage(label + ' could not start: ' + (d.error || 'unknown error'), 'error');
+                }
+                return d;
+            } catch (e) {
+                this.showMessage(label + ' could not start: ' + e.message, 'error');
+                return null;
+            } finally {
+                this.cliBusy = false;
+                this.cliRefresh();
+            }
+        },
+
+        async cliInstall() {
+            await this._cliStartAction('/api/agentic/cli/install', 'Install Codex CLI');
+        },
+
+        async cliConnect() {
+            // The device URL + one-time code are logged into the workflow AND
+            // returned by /status, so the panel can show clickable/copyable
+            // buttons while the operator watches the run in Actions.
+            await this._cliStartAction('/api/agentic/cli/login', 'Configure Codex CLI');
+        },
+
+        _cliStopLogin() {
+            this.cliLogin = { url: '', code: '' };
+        },
+
+        async cliCancelLogin() {
+            const provider = this.config.agentic.online_llm.provider;
+            this._cliStopLogin();
+            try {
+                await fetch('/api/agentic/cli/login/cancel', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ provider })
+                });
+            } catch (e) { /* nothing to do */ }
+            this.cliRefresh();
+        },
+
+        async cliDisconnect() {
+            const provider = this.config.agentic.online_llm.provider;
+            try {
+                await fetch('/api/agentic/cli/disconnect', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ provider })
+                });
+                this.showMessage('Subscription disconnected', 'success');
+            } catch (e) {
+                this.showMessage('Disconnect failed: ' + e.message, 'error');
+            }
+            this.cliRefresh();
+        },
+
+        async cliTest() {
+            this.cliTesting = true;
+            try {
+                await this._cliStartAction('/api/agentic/cli/test', 'Test Codex CLI');
+            } finally {
+                this.cliTesting = false;
+            }
+        },
+
+        cliCopy(text, what) {
+            if (!text) return;
+            const done = () => this.showMessage((what || 'Value') + ' copied', 'success');
+            if (navigator.clipboard?.writeText) {
+                navigator.clipboard.writeText(text).then(done).catch(() => {});
+                return;
+            }
+            // http:// origins have no clipboard API — fall back to a temp textarea
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text; document.body.appendChild(ta); ta.select();
+                document.execCommand('copy'); document.body.removeChild(ta); done();
+            } catch (e) { /* operator can select the text shown below */ }
+        },
+
         async onProviderChange() {
             // Pick a sensible default model when the operator switches
             // provider, plus auto-fill max_response_tokens from it.
@@ -1200,6 +1356,19 @@ document.addEventListener('alpine:init', () => {
             // Route name mapping: the UI uses `claude` but the catalog
             // route is `/api/config/anthropic/models` — translate.
             const provider = this.config.agentic.online_llm.provider;
+
+            // Subscription providers have no model catalog endpoint (there is no
+            // key to enumerate models with), so skip the fetch entirely — it
+            // would 404 and leave the field stale — and start the detect poll.
+            if (this.isSubscription()) {
+                const subDefault = { 'codex-subscription': 'gpt-5-codex' }[provider];
+                if (subDefault) this.config.agentic.online_llm.model = subDefault;
+                this._cliStopLogin();
+                this.cliStartPolling();
+                return;
+            }
+            this.cliStopPolling();
+
             const route = provider === 'claude' ? 'anthropic' : provider;
             const preferredId = {
                 'claude':     'claude-sonnet-latest',
