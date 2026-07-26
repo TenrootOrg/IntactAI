@@ -97,3 +97,69 @@ if __name__ == "__main__":
             f += 1; print(f"FAIL {fn.__name__}: {e}")
     print(f"{p}/{len(fns)} passed")
     sys.exit(1 if f else 0)
+
+
+# ---------------------------------------------------------------------------
+# Regression: a QUESTION must never be read as a triage command.
+# ---------------------------------------------------------------------------
+# 2026-07-26 — "who is the most malicious user" silently marked a finding benign,
+# suppressed it and re-fused the case; the operator never saw a model answer,
+# only a canned "Noted — marked X as benign". Two faults combined: "is the" was a
+# benign-verdict keyword, and grounding anchored on the word "malicious" from the
+# question itself against a finding titled "SIGMA: Malicious PowerShell ...", so
+# the word that triggered the verdict also chose its target.
+#
+# The original 8 tests only asserted that real attributions ARE detected. Nothing
+# asserted what must NOT be. In a case chat the overwhelming majority of messages
+# are questions, so that is the input class most worth pinning down.
+
+def _graph_with_malicious_titled_finding():
+    """A finding whose TITLE contains the verdict words, which is what made the
+    question ground to it. Deliberately mirrors a real Sigma rule name."""
+    g = FusionGraph(case_id="c")
+    eid = "account:domain:corp\\kobia"
+    g.upsert(Entity(id="asset:endpoint:C.b", type="asset", label="WS1",
+                    attrs={"_assets": ["asset:endpoint:C.b"]}))
+    g.upsert(Entity(id=eid, type="account", label="corp\\kobia",
+                    attrs={"_assets": ["asset:endpoint:C.b"]}))
+    g.add_finding(Finding(id="f_ps", title="SIGMA: Malicious PowerShell Commandlets - ScriptBlock on WS1",
+                          severity="high", confidence="medium",
+                          summary="Encoded PowerShell.", entity_ids=[eid],
+                          asset_ids=["asset:endpoint:C.b"], mitre=["T1059"]))
+    return g
+
+
+def test_questions_never_produce_a_disposition():
+    g = _graph_with_malicious_titled_finding()
+    questions = [
+        "who is the most malicious user",          # the exact message that broke it
+        "what is the most malicious user",
+        '"what is the most malicious use',         # stray leading quote, as typed
+        "which host is the worst?",
+        "who else ?",
+        "show me the malicious powershell finding",
+        "what was the initial access vector",
+        "is there anything malicious on WS1?",
+        "explain the powershell scriptblock alert",
+        "how many findings are benign",            # names a verdict word outright
+    ]
+    for q in questions:
+        assert llm_sim.detect_disposition(g, q) is None, \
+            f"question was read as a triage command: {q!r}"
+
+
+def test_verdict_words_alone_cannot_ground_a_disposition():
+    """The word that triggers a verdict must not also be the anchor that grounds
+    it — otherwise any sentence mentioning 'malicious' targets every finding with
+    'Malicious' in its title."""
+    g = _graph_with_malicious_titled_finding()
+    # a statement (not a question) whose ONLY overlap with the title is 'malicious'
+    assert llm_sim.detect_disposition(g, "nothing here is malicious, ignore it") is None
+
+
+def test_real_attributions_still_detected():
+    """The guard must not cost the feature its purpose."""
+    g = _graph_with_malicious_titled_finding()
+    d = llm_sim.detect_disposition(g, "the powershell scriptblock alert is benign, it is our admin")
+    assert d and d["verdict"] == "benign", "a genuine triage command stopped being detected"
+    assert "scriptblock" in (d["label"] or "").lower() or "powershell" in (d["label"] or "").lower()
