@@ -20,14 +20,31 @@ from . import render, budget, severity as sev
 from .correlate import _assets_of, _host_label
 
 # FP-triage intent detection (deterministic, grounded).
+# NOTE "is the"/"was the" were removed: they appear in ordinary questions, so
+# "who is the most malicious user" was read as a benign verdict, grounded on the
+# word "malicious" against a finding titled "SIGMA: Malicious PowerShell ...",
+# and silently suppressed that finding and re-fused the case. A question must
+# never mutate the case — see the interrogative guard in detect_disposition.
 _DISP_BENIGN = ("benign", "false positive", "false-positive", "ignore", "expected",
-                "legitimate", "sanctioned", "is fine", "is our", "is the", "was the",
+                "legitimate", "sanctioned", "is fine", "is our",
                 "was our", "backup", "not malicious", "authorized", "authorised", "approved",
                 "that's it", "that was it", "known good")
 _DISP_MAL = ("confirmed malicious", "is malicious", "real attack", "true positive",
              "actually malicious")
+# Tokens too generic to ground a disposition on. The verdict words themselves
+# belong here: the word that TRIGGERS the verdict must not also be the anchor
+# that grounds it, or any sentence mentioning "malicious" grounds to every
+# finding with "Malicious" in its title.
 _GENERIC_TITLE_TOK = {"sigma", "host", "suspicious", "activity", "detection", "coordinated",
-                      "alert", "process", "service", "indicator", "account", "driver"}
+                      "alert", "process", "service", "indicator", "account", "driver",
+                      "malicious", "benign", "attack", "threat", "user", "users"}
+
+# A message that ASKS something is never a triage command, however many verdict
+# words it happens to contain.
+_QUESTION_OPENERS = ("who", "what", "which", "where", "when", "why", "how",
+                     "is there", "are there", "do i", "does ", "did ", "can ",
+                     "could ", "should ", "list ", "show ", "tell me", "explain",
+                     "summarize", "summarise", "describe")
 
 
 def _disp_attribution(q: str) -> str:
@@ -46,7 +63,13 @@ def detect_disposition(graph, question: str):
     """If the message attributes activity as benign/IT/etc AND grounds to a real finding or
     entity, return a disposition dict; else None (caller falls back to normal chat). Grounding
     is mandatory — the same anti-hallucination discipline as the analyst pass."""
-    q = (question or "").lower()
+    q = (question or "").lower().strip().strip('"\u2019\'` ')
+    # Questions are read-only by definition. Applying a disposition to one lets
+    # a plain enquiry suppress a finding and re-fuse the case behind the
+    # operator's back, which is exactly what "who is the most malicious user"
+    # did before this guard existed.
+    if q.endswith("?") or any(q.startswith(op) for op in _QUESTION_OPENERS):
+        return None
     verdict = ("malicious" if any(k in q for k in _DISP_MAL)
                else ("benign" if any(k in q for k in _DISP_BENIGN) else None))
     if not verdict:
