@@ -461,14 +461,9 @@ function renderConfig(info){
             const badge=dis?'<span class="modbadge dis">disabled</span>':(m.default?'<span class="modbadge def">default</span>':'');
             return `<label class="modrow${dis?' dis':''}${on?' on':''}"><input type="checkbox" data-mod="${m.name}" ${on?'checked':''} ${dis?'disabled':''}/> <span class="t">${esc(m.label)}</span>${badge}</label>`;}).join('')}
         </div>
-        <label style="margin-top:8px">Chat context</label>
-        <label class="modrow on" title="Locked on — chat always sends full context"><input type="checkbox" id="cf-chatfull" checked disabled style="width:auto"/> <span class="t">Send full context on every chat message <span style="color:var(--muted)">(locked on)</span></span></label>
-        <div class="modwarn">Chat always sends the FULL graph each message (host-resolution mode is too robotic). This is locked on.</div>
         <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled?'checked':''} style="width:auto"/> Mask hosts / users / IPs</label>
         <textarea id="cf-maskpat" placeholder="extra patterns, one per line (optional)" style="min-height:38px">${esc((mk.patterns||[]).join('\n'))}</textarea>
-        <label style="margin-top:8px">Report detail <span style="color:var(--muted)">— per-event evidence (locked)</span></label>
-        <select id="cf-detail" disabled title="Locked to Explicit">${[['auto','Auto (size-based)'],['explicit','Explicit — real cmdline / path / hash'],['summary','Summary — abstracted findings']].map(o=>opt(o[0],o[1],'explicit')).join('')}</select>
-        <div style="font-size:11px;color:var(--muted);margin-top:3px">Locked to Explicit — the report always surfaces the actual command line, path &amp; full hash per high finding (masked if masking is on).</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:8px">Chat always sends the full case graph; the report always shows the real command line, path &amp; hash per high finding (masked if masking is on).</div>
       </div>
       <div class="cfgcol">
         <h4>Hosts (include)</h4>

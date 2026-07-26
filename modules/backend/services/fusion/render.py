@@ -228,15 +228,42 @@ def _known_identities(graph, limit=5000):
 # identities alongside entities when the payload genuinely doesn't fit.
 DEFAULT_MAX_IDENTITIES = 500
 
+# Floor for the finding stepdown. Even a hard budget squeeze leaves this many —
+# below it the report has no material to narrate, and >= high findings are exempt
+# from trimming anyway (_trim_findings), so this only bounds the low-severity tail.
+_MIN_FINDINGS = 20
+
+
+def _trim_findings(findings, max_findings):
+    """Keep the highest-severity findings, dropping only the low-severity tail.
+
+    `findings` arrives severity-sorted (correlate.assemble sorts by -severity,
+    then ts), so the tail IS the least important. Anything >= high is exempt and
+    survives regardless of the cap: a budget squeeze may cost the operator some
+    medium/low noise, never a critical detection.
+    """
+    if not max_findings or len(findings) <= max_findings:
+        return findings
+    must_keep = [f for f in findings if sev.at_least(f.severity, "high")]
+    tail = [f for f in findings if not sev.at_least(f.severity, "high")]
+    room = max(0, max_findings - len(must_keep))
+    return must_keep + tail[:room]
+
 
 def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary",
-                  max_identities=None):
-    """`max_identities` (the case's 'Identity limit' setting) caps identity rows
+                  max_identities=None, max_findings=None):
+    """`max_findings` caps findings AND the timeline built from them (they are the
+    same set — the timeline is one row per finding), keeping them consistent so
+    the payload never cites a finding_id it did not send.
+
+    `max_identities` (the case's 'Identity limit' setting) caps identity rows
     INDEPENDENTLY of max_entities — see DEFAULT_MAX_IDENTITIES for why. Unset =
     DEFAULT_MAX_IDENTITIES, which covers any realistic engagement (~1.5
     identities per host). Overflow is still bounded: distilled() shrinks this in
     lockstep with max_entities on each budget_chars stepdown."""
     assets, findings = scope(graph, window=window, min_severity=min_severity)
+    findings = _trim_findings(findings, max_findings)
+    kept_ids = {f.id for f in findings}
     eff_detail, _ = _resolve_detail(graph, detail, window=window, min_severity=min_severity)
     ents = sorted((e for e in graph.entities.values()
                    if e.type != "asset" and sev.at_least(e.severity, min_severity)
@@ -260,7 +287,10 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         "report_detail": eff_detail,
         "assets": [{"id": a.id, "host": a.label, "severity": a.severity} for a in assets],
         "findings": [_fd(f) for f in findings],
-        "timeline": timeline(graph, window=window),
+        # Same set as `findings` above — filtered identically so a trimmed payload
+        # never carries a timeline row for a finding it dropped.
+        "timeline": [t for t in timeline(graph, window=window)
+                     if max_findings is None or t.get("finding_id") in kept_ids],
         "top_entities": [{"type": e.type, "label": e.label, "severity": e.severity,
                           "anomaly": e.anomaly, "flags": e.flags,
                           "hosts": [_host_label(graph, x) for x in _assets_of(e)]} for e in ents],
@@ -287,20 +317,38 @@ def distilled(graph, *, window=None, min_severity="informational", max_entities=
     p = _distilled_at(graph, window=window, min_severity=min_severity,
                       max_entities=max_entities, detail=detail,
                       max_identities=max_identities)
-    if budget_chars:
-        steps = 0
-        eff_ident = DEFAULT_MAX_IDENTITIES if max_identities is None else max_identities
-        while _b.over_budget(p, budget_chars) and steps < _b.MAX_STEPDOWNS and max_entities > 5:
+    if not budget_chars:
+        return p
+
+    # The stepdown must shrink what the payload is actually MADE OF. Measured on a
+    # real case: findings 51% + timeline 43% = 94% of the payload, entities 3.4%.
+    # Halving only entities therefore reclaimed ~1.7k chars of a 99.7k payload that
+    # was 3x over a 32k budget — it destroyed the cheapest, most useful context
+    # (entities 60 -> 15), achieved nothing, then shipped over budget anyway.
+    # So findings (and the timeline derived from them) shrink too, lowest-severity
+    # first; _trim_findings never drops anything >= high.
+    # Trim in order of COST PER UNIT OF VALUE — cut the bulk before the cheap,
+    # high-value context. Entities are 3.4% of the payload and are what makes
+    # "who/what is X" answerable, so they are the LAST thing to go, not the first
+    # (the previous loop halved them immediately, which is the bug this fixes).
+    steps = 0
+    eff_ident = DEFAULT_MAX_IDENTITIES if max_identities is None else max_identities
+    eff_findings = len(p.get("findings") or [])
+    while _b.over_budget(p, budget_chars) and steps < _b.MAX_STEPDOWNS:
+        before = (eff_findings, max_entities, eff_ident)
+        if eff_findings > _MIN_FINDINGS:
+            eff_findings = max(_MIN_FINDINGS, eff_findings // 2)   # the 94%
+        else:
+            # findings exhausted (or all remaining are >= high and exempt) — now
+            # spend the cheap stuff
             max_entities = max(5, max_entities // 2)
-            # Identities are capped independently of entities now, so the stepdown
-            # has to shrink them explicitly or an over-budget payload would keep
-            # re-rendering the same identity block. Risk-ranked (see
-            # _known_identities), so halving drops bystanders before suspects.
             eff_ident = max(10, eff_ident // 2)
-            p = _distilled_at(graph, window=window, min_severity=min_severity,
-                              max_entities=max_entities, detail=detail,
-                              max_identities=eff_ident)
-            steps += 1
+        if (eff_findings, max_entities, eff_ident) == before:
+            break                                    # nothing left to give
+        p = _distilled_at(graph, window=window, min_severity=min_severity,
+                          max_entities=max_entities, detail=detail,
+                          max_identities=eff_ident, max_findings=eff_findings)
+        steps += 1
     return p
 
 

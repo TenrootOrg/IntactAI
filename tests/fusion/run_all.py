@@ -41,6 +41,7 @@ MODULES = [
     "tests.fusion.test_chat_never_mutates",
     "tests.fusion.test_chat_robustness",
     "tests.fusion.test_identities_in_chat_payload",
+    "tests.fusion.test_payload_stepdown",
     "tests.fusion.test_validation_attack2",
     "tests.fusion.test_no_llm",
     "tests.fusion.test_time_filter",
