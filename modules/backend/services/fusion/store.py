@@ -981,23 +981,19 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     ws = _ws()
     d = get_case(case_id)
 
-    import time as _time
-    _t0 = _time.time()
-
     def _plog(msg, status="info", detail="", pct=None):
         # progress -> case log (recorded fuses only). When a pct is given, append
-        # "<pct>% · ~<eta>s remaining" to the detail and stash pct/eta as structured
-        # fields so the Log tab can render a live progress bar. ETA is a linear
-        # extrapolation from elapsed time (elapsed / pct * (100-pct)) — rough, but
-        # honest and monotonic enough to reassure the operator during a Refusion.
+        # "<pct>%" to the detail and stash pct as a structured field so the Log
+        # tab can render a progress bar. Deliberately NO ETA: a time estimate
+        # from elapsed-so-far swings wildly as uneven phases complete (it read
+        # "~0s" at the start and jumped around after), so percentage alone is
+        # the honest, stable signal.
         if not _record:
             return
         if pct is not None:
-            el = _time.time() - _t0
-            eta = int(el * (100 - pct) / pct) if 0 < pct < 100 else 0
-            tag = f"{int(pct)}%" + (f" · ~{eta}s remaining" if 0 < pct < 100 else "")
+            tag = f"{int(pct)}%"
             detail = (f"{detail} · {tag}" if detail else tag)
-            log_case_event(case_id, msg, status, detail, pct=int(pct), eta_s=eta)
+            log_case_event(case_id, msg, status, detail, pct=int(pct))
         else:
             log_case_event(case_id, msg, status, detail)
 
@@ -1174,7 +1170,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
                    f"saved to database — {len(g.entities):,} entities, "
                    f"{len(g.relationships):,} links, {len(g.findings):,} findings "
                    f"across {len(members)} run(s) · 100%",
-                   pct=100, eta_s=0)
+                   pct=100)
     return g
 
 
