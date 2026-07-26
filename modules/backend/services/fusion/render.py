@@ -184,6 +184,27 @@ def _known_identities(graph, limit=5000):
         idents = resolve_identities(graph)
     except Exception:
         return []
+    # RANK BY WHAT MATTERS TO THE INVESTIGATION before any truncation.
+    # resolve_identities() sorts for the Identities TAB — by infrastructure
+    # breadth, then account count — which is right for browsing but wrong for a
+    # budget cut: it would keep a quiet admin who happens to span 5 systems and
+    # drop the person actually named in a critical finding. Re-rank here, for
+    # the LLM payload only, so whatever survives a cut is the part that matters.
+    acct_sev = {}                      # account entity id -> worst finding severity rank
+    for f in graph.findings:
+        r = sev.rank(f.severity)
+        for eid in (f.entity_ids or []):
+            if r > acct_sev.get(eid, -1):
+                acct_sev[eid] = r
+
+    def _risk(ident):
+        ids = [a["id"] for a in ident["accounts"]]
+        worst = max((acct_sev.get(i, -1) for i in ids), default=-1)
+        n_findings = sum(1 for i in ids if i in acct_sev)
+        return (worst, n_findings, len(ident["accounts"]))
+
+    idents = sorted(idents, key=_risk, reverse=True)
+
     out = []
     for i in idents:
         # `i["hosts"]` is the OPERATES-hosts heuristic (hostname textually implies

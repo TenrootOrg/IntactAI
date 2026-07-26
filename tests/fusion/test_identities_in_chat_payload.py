@@ -133,3 +133,39 @@ def test_identity_limit_setting_round_trips_through_the_case_config():
         assert store._llm_identity_budget(store.get_case(cid)) is None
     finally:
         store.delete_case(cid)
+
+
+def test_truncation_keeps_the_identities_that_matter():
+    """When the budget forces a cut, keep people tied to FINDINGS — not merely
+    the ones spanning the most systems.
+
+    resolve_identities() sorts for the Identities tab (infrastructure breadth,
+    then account count), which is right for browsing and wrong for a budget cut:
+    it would keep a quiet admin on many hosts and drop the person named in a
+    critical finding. _known_identities re-ranks by risk for the LLM payload.
+    """
+    from services.fusion.schema import Finding
+
+    g = FusionGraph(case_id="c")
+    aid = "asset:endpoint:C.h"
+    g.upsert(Entity(id=aid, type="asset", label="H1", attrs={"_assets": [aid]}))
+
+    # BROAD but quiet: many accounts across many hosts, zero findings.
+    for i in range(6):
+        h = f"asset:endpoint:C.broad{i}"
+        g.upsert(Entity(id=h, type="asset", label=f"B{i}", attrs={"_assets": [h]}))
+        g.upsert(Entity(id=f"account:{h}:broaduser", type="account", label="broaduser",
+                        severity="informational", anomaly=0, attrs={"_assets": [h]}))
+
+    # NARROW but implicated: one account, one host, tied to a critical finding.
+    g.upsert(Entity(id="account:risky", type="account", label="riskyuser",
+                    severity="informational", anomaly=0, attrs={"_assets": [aid]}))
+    g.add_finding(Finding(id="f_crit", title="Credential theft on H1", severity="critical",
+                          confidence="high", summary="x", entity_ids=["account:risky"],
+                          asset_ids=[aid], mitre=[]))
+
+    only_one = render.distilled(g, max_entities=1)["identities"]
+    assert len(only_one) == 1
+    assert only_one[0]["name"] == "riskyuser", (
+        "truncation dropped the identity tied to a critical finding and kept the "
+        f"merely-broad one: got {only_one[0]['name']!r}")
