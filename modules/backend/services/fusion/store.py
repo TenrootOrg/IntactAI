@@ -194,7 +194,12 @@ def _llm_payload_budget(d):
     n = max(20, n)
 
     budget_chars = _LLM_MAX_BUDGET_CHARS
-    if d.get("llm_use_full_context"):
+    # DEFAULT ON (key absent => True). The static ceiling was written for a
+    # ~128k-context model and silently wasted most of a modern window; deriving
+    # from the selected model is the better default, and it can only ever RAISE
+    # the ceiling (see below), so switching it on cannot shrink an existing
+    # case's payload. An explicit False is still honoured.
+    if d.get("llm_use_full_context", True):
         try:
             from services.agentic.analyzers._llm import get_model_context_length
             model, provider, _ = _configured_fusion_model()

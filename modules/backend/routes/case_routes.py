@@ -328,7 +328,7 @@ def get_case(case_id):
                     "llm_max_output_tokens": d.get("llm_max_output_tokens"),
                     # size the LLM payload from the selected model's REAL context
                     # window rather than the static ~128k-model constant.
-                    "llm_use_full_context": bool(d.get("llm_use_full_context")),
+                    "llm_use_full_context": bool(d.get("llm_use_full_context", True)),
                     # LOCKED ON: chat always sends the FULL graph every message
                     # (host-resolution mode is too robotic). UI shows it fixed.
                     "chat_send_full_context": True,

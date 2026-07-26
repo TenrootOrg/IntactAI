@@ -226,6 +226,32 @@ def test_adaptive_budget_scales_with_the_real_context_window():
     assert budget.adaptive_budget(0, 4_000) is None
 
 
+def test_full_context_defaults_on_but_an_explicit_false_is_honoured():
+    """Default ON (key absent). An operator who deliberately unticked it to cap
+    cost must not have it silently switched back on."""
+    from services import workflow_service as ws
+    for r in ws.get_all_automation_runs() or []:
+        if r.get("automation_type") == store.CASE_TYPE and \
+                (r.get("details") or {}).get("name") == "full-context-default":
+            store.delete_case(r.get("run_id"))
+    cid = store.create_case("full-context-default", min_severity="informational")
+    try:
+        d = store.get_case(cid)
+        assert "llm_use_full_context" not in d or d.get("llm_use_full_context") is None, \
+            "fixture assumption: a fresh case leaves the key unset"
+        _, unset = store._llm_payload_budget(d)
+
+        d_off = dict(d); d_off["llm_use_full_context"] = False
+        _, off = store._llm_payload_budget(d_off)
+        assert unset >= off, "unset must behave as ON, not OFF"
+
+        d_on = dict(d); d_on["llm_use_full_context"] = True
+        _, on = store._llm_payload_budget(d_on)
+        assert unset == on, "an unset flag must match an explicit True"
+    finally:
+        store.delete_case(cid)
+
+
 def test_full_context_flag_only_ever_raises_the_ceiling():
     """A model whose window resolves small must not SHRINK the payload when the
     operator ticks 'use the full context' — that is the opposite of the ask."""
