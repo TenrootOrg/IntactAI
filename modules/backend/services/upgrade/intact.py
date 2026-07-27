@@ -852,6 +852,104 @@ def _format_value(v: str) -> str:
     return f"'{s}'"
 
 
+def ensure_nginx_basic_auth_secret(logger: Callable = None) -> None:
+    """Seed modules/nginx/secrets/{nginx_basic_auth_password,htpasswd} if
+    missing — mirrors lib/modules.sh:generate_nginx_secrets() exactly.
+
+    A box that was installed before nginx.conf gained its server-level
+    auth_basic gate (CWE-306 — see F7/F8: /api/, /api/uploads/, and
+    /velociraptor/ proxied with zero authentication) only picks up the new
+    nginx.conf and docker-compose.yaml (with its new htpasswd bind mount)
+    through an upgrade — install.sh's bash bootstrap never runs again. This
+    self-heals the secret so recreate_nginx() below has something valid to
+    mount; skips entirely if it already exists (idempotent, safe to call on
+    every intact upgrade).
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    secrets_dir = os.path.join(WORKDIR, 'modules', 'nginx', 'secrets')
+    password_path = os.path.join(secrets_dir, 'nginx_basic_auth_password')
+    htpasswd_path = os.path.join(secrets_dir, 'htpasswd')
+    if (os.path.exists(password_path) and os.path.getsize(password_path) > 0
+            and os.path.exists(htpasswd_path) and os.path.getsize(htpasswd_path) > 0):
+        # Already present — still re-assert ownership in case a prior
+        # permissions sweep (or a manually-copied file) left it un-readable
+        # by the nginx worker (see the chown/chmod note below).
+        try:
+            os.chown(htpasswd_path, 0, 101)
+        except (PermissionError, OSError):
+            pass
+        try:
+            os.chmod(htpasswd_path, 0o640)
+        except OSError:
+            pass
+        return
+    os.makedirs(secrets_dir, exist_ok=True)
+
+    import secrets as _secrets
+    password = _secrets.token_hex(16)
+
+    with open(password_path, 'w') as f:
+        f.write(password)
+    os.chmod(password_path, 0o600)
+
+    # SHA-1 htpasswd format ("{SHA}<base64 sha1 digest>") — natively
+    # supported by nginx's auth_basic module, computed in-process so the
+    # plaintext password never touches a subprocess argv (see run_command's
+    # shell=True — a CLI arg there would be briefly visible via `ps`).
+    import hashlib
+    import base64
+    digest = hashlib.sha1(password.encode()).digest()
+    with open(htpasswd_path, 'w') as f:
+        f.write(f"admin:{{SHA}}{base64.b64encode(digest).decode()}\n")
+
+    # The htpasswd file is read by the nginx WORKER process (uid/gid 101 —
+    # nginx:alpine's compiled --user=nginx --group=nginx default), not the
+    # root master, so owner-only 600 would make every request 500. Mirrors
+    # the root:33/640 pattern already used for the IRIS web TLS key (gid 33
+    # = iris-nginx's www-data).
+    try:
+        os.chown(htpasswd_path, 0, 101)
+    except (PermissionError, OSError) as e:
+        log(f"  Could not chown nginx htpasswd to root:101 ({type(e).__name__}: {e})",
+            "warning")
+    os.chmod(htpasswd_path, 0o640)
+
+    log("  Generated a random Nginx dashboard/API Basic Auth password (username: admin)",
+        "warning")
+    log(f"  Retrieve it with: cat {password_path}", "warning")
+
+
+def recreate_nginx(logger: Callable = None) -> bool:
+    """Recreate intact_nginx via `docker compose up -d nginx`.
+
+    `docker restart` (used elsewhere purely to refresh nginx's cached
+    upstream DNS — see restart_nginx() in services/upgrade/__init__.py)
+    reuses the container's EXISTING mount table and does NOT pick up a
+    docker-compose.yaml change such as the new htpasswd bind mount added
+    alongside the auth_basic gate — mirrors recreate_tusd()'s reasoning for
+    tusd below. `docker compose up -d` only recreates when the resolved
+    config actually differs from the running container, so this is a safe
+    no-op once nginx is already current.
+
+    Non-fatal by design — a hiccup here must not roll back the whole intact
+    upgrade. Safe to call on every intact upgrade (online + offline).
+    """
+    log = logger or (lambda m, l="info": None)
+    nginx_dir = os.path.join(WORKDIR, 'modules', 'nginx')
+    try:
+        r = run_command("docker compose up -d nginx", cwd=nginx_dir,
+                        logger=None, timeout=120)
+        if not r.get('success'):
+            log(f"nginx recreate returned nonzero (continuing): "
+                f"{(r.get('stderr') or r.get('stdout') or '')[:200]}", "warning")
+            return False
+        log("nginx container recreated (picked up compose/mount changes)", "success")
+        return True
+    except Exception as e:
+        log(f"nginx recreate skipped ({type(e).__name__}: {e})", "warning")
+        return False
+
+
 def recreate_tusd(logger: Callable = None) -> bool:
     """Apply the pinned tusd tag to the intact_tusd sidecar.
 
@@ -962,8 +1060,16 @@ def upgrade_intact(version: str = None, logger: Callable = None) -> Dict:
     # restart handoff only `docker restart`s tusd (keeps the old image).
     recreate_tusd(logger=log)
 
-    # NOTE: Nginx and backend restarts are handled by the upgrade orchestrator
-    # to support two-phase upgrades
+    # git pull above already refreshed nginx.conf (whole WORKDIR) and
+    # docker-compose.yaml (new htpasswd bind mount), so an existing install
+    # upgrading online needs only the secret (self-heals on a pre-fix box)
+    # and an actual recreate — `docker restart`, used elsewhere purely to
+    # clear nginx's cached upstream DNS, does not pick up a new mount.
+    ensure_nginx_basic_auth_secret(logger=log)
+    recreate_nginx(logger=log)
+
+    # NOTE: Backend restart (and the nginx DNS-cache refresh restart) is
+    # handled by the upgrade orchestrator to support two-phase upgrades
 
     log("Intact.AI Platform code updated", "success")
 
@@ -1380,6 +1486,22 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
             except Exception as e:
                 log(f"  Could not refresh {_sidecar} compose file: {e}", "warning")
 
+        # nginx.conf carries the server-level auth_basic gate (CWE-306 fix
+        # for the unauthenticated /api/, /api/uploads/, /velociraptor/
+        # proxies) — it lives under config/, which the file-only compose
+        # refresh above deliberately never touches. Without this explicit
+        # refresh, a box that installed before this fix stays permanently
+        # unauthenticated across every future offline-package upgrade, even
+        # though the compose file (and thus the htpasswd mount) gets
+        # refreshed. Same no-op-if-unchanged, never-deletes-over-incomplete
+        # behavior as the compose refresh; takes effect once recreate_nginx()
+        # (below) recreates the container.
+        try:
+            refresh_module_compose_file('nginx', intact_root, logger=log,
+                                        relative_path=os.path.join('config', 'nginx.conf'))
+        except Exception as e:
+            log(f"  Could not refresh nginx/config/nginx.conf: {e}", "warning")
+
     # Importability gate — BEFORE stamping VERSION and before the orchestrator
     # can schedule the restart. The orchestrator only saves awaiting_restart +
     # restarts inside its success branch, so returning success:False here
@@ -1418,8 +1540,21 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
     # restart handoff only `docker restart`s tusd (keeps the old image).
     recreate_tusd(logger=log)
 
-    # NOTE: Nginx and backend restarts are handled by the upgrade orchestrator
-    # to support two-phase upgrades
+    # The sidecar loop above (when the package uses the full-repo layout)
+    # already refreshed nginx/docker-compose.yaml (new htpasswd bind mount)
+    # and nginx/config/nginx.conf (the auth_basic gate itself) from the new
+    # release. Self-heal the secret those depend on — an existing install
+    # applying this as an offline upgrade never ran install.sh's bash
+    # bootstrap that would otherwise have created it — then force an actual
+    # recreate: `docker restart`, used elsewhere purely to clear nginx's
+    # cached upstream DNS, does not pick up a new mount or a changed config
+    # file, so without this the box stays fully unauthenticated after the
+    # upgrade "succeeds".
+    ensure_nginx_basic_auth_secret(logger=log)
+    recreate_nginx(logger=log)
+
+    # NOTE: Backend restart (and the nginx DNS-cache refresh restart) is
+    # handled by the upgrade orchestrator to support two-phase upgrades
 
     log("Intact.AI Platform files updated", "success")
 

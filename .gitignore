@@ -53,6 +53,10 @@ modules/portainer/secrets/*
 modules/volweb/secrets/*
 !modules/volweb/secrets/.gitkeep
 
+# Nginx Basic Auth password + htpasswd (generated on install; gates F7/F8)
+modules/nginx/secrets/*
+!modules/nginx/secrets/.gitkeep
+
 # Certificates (generated on install)
 modules/iris/config/certificates/rootCA/*
 modules/iris/config/certificates/web_certificates/*

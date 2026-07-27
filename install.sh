@@ -269,6 +269,17 @@ fix_source_permissions() {
     # install), or had their ownership reset by the chown -R above.
     find "${SCRIPT_DIR}/modules" -type f \( -path "*/secrets/*" -o -name ".env" \) -exec chmod 600 {} \; 2>/dev/null || true
     [[ -f "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key" ]] && chmod 640 "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key" 2>/dev/null || true
+    # nginx.conf's auth_basic_user_file is read by the nginx WORKER process
+    # (uid/gid 101 — nginx:alpine's compiled --user=nginx --group=nginx
+    # default), not the root master, so the blanket "secrets/* -> 600"
+    # sweep just above (owner-only, and ownership was just reset to the
+    # script dir's owner by the chown -R above) leaves the container unable
+    # to read it — every request would 500. Re-assert root:101/640, mirroring
+    # the iris_dev_key.pem override below.
+    if [[ -f "${SCRIPT_DIR}/modules/nginx/secrets/htpasswd" ]]; then
+        chown root:101 "${SCRIPT_DIR}/modules/nginx/secrets/htpasswd" 2>/dev/null || true
+        chmod 640 "${SCRIPT_DIR}/modules/nginx/secrets/htpasswd" 2>/dev/null || true
+    fi
     [[ -f "${SCRIPT_DIR}/modules/iris/config/certificates/rootCA/irisRootCAKey.pem" ]] && chmod 600 "${SCRIPT_DIR}/modules/iris/config/certificates/rootCA/irisRootCAKey.pem" 2>/dev/null || true
     if [[ -f "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_key.pem" ]]; then
         chown root:33 "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_key.pem" 2>/dev/null || true

@@ -250,27 +250,36 @@ def cleanup_backup(backup_file: str, logger: Callable = None):
 # template. Single-file copy on purpose — never directory-mirrors the module
 # dir, which also holds real per-install state (config/, secrets/, data).
 def refresh_module_compose_file(module_name: str, intact_root: str,
-                                 logger: Callable = None) -> bool:
-    """Refresh modules/<module_name>/docker-compose.yaml from the new
-    release's source tree. No-op (returns False) if the source lacks the
-    file or its content already matches — never deletes a working compose
-    file over an incomplete package, never touches anything else in the
-    module directory."""
+                                 logger: Callable = None,
+                                 relative_path: str = 'docker-compose.yaml') -> bool:
+    """Refresh modules/<module_name>/<relative_path> from the new release's
+    source tree. No-op (returns False) if the source lacks the file or its
+    content already matches — never deletes a working file over an
+    incomplete package, never touches anything else in the module
+    directory.
+
+    `relative_path` defaults to docker-compose.yaml (the only file this was
+    originally written for); it also accepts a path under a subdirectory
+    (e.g. 'config/nginx.conf') for the rare structural change — like the
+    auth_basic gate in nginx.conf — that lives outside the compose file and
+    genuinely needs to reach already-installed boxes on an offline-package
+    upgrade, not just fresh installs."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    src = os.path.join(intact_root, 'modules', module_name, 'docker-compose.yaml')
+    label = f"{module_name}/{relative_path}"
+    src = os.path.join(intact_root, 'modules', module_name, relative_path)
     if not os.path.isfile(src):
         return False
-    dst_dir = os.path.join(WORKDIR, 'modules', module_name)
-    dst = os.path.join(dst_dir, 'docker-compose.yaml')
+    dst = os.path.join(WORKDIR, 'modules', module_name, relative_path)
+    dst_dir = os.path.dirname(dst)
     try:
         if os.path.isfile(dst) and filecmp.cmp(src, dst, shallow=False):
             return False
         os.makedirs(dst_dir, exist_ok=True)
         shutil.copy2(src, dst)
-        log(f"  Refreshed {module_name}/docker-compose.yaml from the new release", "success")
+        log(f"  Refreshed {label} from the new release", "success")
         return True
     except Exception as e:
-        log(f"  Could not refresh {module_name}/docker-compose.yaml "
+        log(f"  Could not refresh {label} "
             f"({type(e).__name__}: {e})", "warning")
         return False
 

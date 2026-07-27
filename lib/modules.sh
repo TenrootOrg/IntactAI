@@ -124,6 +124,59 @@ generate_portainer_secrets() {
     log_success "Portainer secrets ready"
 }
 
+# Generates the HTTP Basic Auth credentials nginx.conf's server-level
+# auth_basic gates the whole site with (dashboard, /api/, /api/uploads/,
+# /velociraptor/ — see modules/nginx/config/nginx.conf). Without this, the
+# entire backend API and the unauthenticated-tus-upload proxy are reachable
+# by anyone who can route to the published port (CWE-306).
+#
+# The htpasswd file must be readable by the nginx WORKER process, which is
+# what actually evaluates auth_basic per request. The nginx:alpine image is
+# compiled with --user=nginx --group=nginx (uid/gid 101; verified via
+# `nginx -V` / `id nginx` inside the image) and our custom nginx.conf never
+# overrides `user`, so workers always run as uid/gid 101 regardless of who
+# generated the file. Owning the file root:101 mode 640 (mirrors the
+# root:33/640 pattern already used for the IRIS web TLS key, gid 33 being
+# iris-nginx's www-data) lets the worker read it without making it
+# world-readable on the host.
+generate_nginx_secrets() {
+    log_info "Generating Nginx Basic Auth secrets..."
+    local secrets_dir="${SCRIPT_DIR}/modules/nginx/secrets"
+    mkdir -p "$secrets_dir"
+    local password_file="$secrets_dir/nginx_basic_auth_password"
+    local htpasswd_file="$secrets_dir/htpasswd"
+
+    if [[ ! -s "$password_file" || ! -s "$htpasswd_file" ]]; then
+        local nginx_password
+        nginx_password=$(openssl rand -hex 16)
+        printf '%s' "$nginx_password" > "$password_file"
+        chmod 600 "$password_file"
+
+        # SHA-1 htpasswd format ("{SHA}<base64 of sha1 digest>") — supported
+        # natively by nginx's auth_basic module, no extra tooling needed
+        # beyond openssl (already a hard dependency of this installer).
+        # Piped via stdin so the plaintext password never appears as a
+        # process argument (visible to any local user via `ps`).
+        local sha1_b64
+        sha1_b64=$(printf '%s' "$nginx_password" | openssl dgst -sha1 -binary | openssl base64 -A)
+        printf 'admin:{SHA}%s\n' "$sha1_b64" > "$htpasswd_file"
+        chown root:101 "$htpasswd_file" 2>/dev/null || true
+        chmod 640 "$htpasswd_file"
+
+        log_warn "  Generated a random Nginx dashboard/API Basic Auth password (username: admin)"
+        log_warn "  Retrieve it with: cat ${password_file}"
+    else
+        log_info "  Nginx Basic Auth secrets exist, skipping"
+        # Re-assert ownership/mode on every run — a prior fix_source_permissions
+        # sweep (or a manually-copied file) could have left this owned by the
+        # invoking user instead of root:101, which would 500 every request.
+        chown root:101 "$htpasswd_file" 2>/dev/null || true
+        chmod 640 "$htpasswd_file" 2>/dev/null || true
+    fi
+
+    log_success "Nginx Basic Auth secrets ready"
+}
+
 generate_certificates() {
     log_info "Generating SSL certificates..."
     local domain="${DOMAIN:-localhost}"
@@ -1854,6 +1907,8 @@ start_services() {
     generate_iris_secrets
     echo ""
     generate_portainer_secrets
+    echo ""
+    generate_nginx_secrets
     echo ""
     generate_certificates
     echo ""
