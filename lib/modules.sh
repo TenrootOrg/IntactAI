@@ -182,14 +182,27 @@ generate_certificates() {
         if [[ -f "$nginx_ssl/nginx-cert.crt" ]]; then
             log_info "  Copying shared TLS certificate to IRIS..."
             cp "$nginx_ssl/nginx-cert.crt" "$iris_web/iris_dev_cert.pem"
+            chmod 644 "$iris_web/iris_dev_cert.pem"
             cp "$nginx_ssl/nginx-cert.key" "$iris_web/iris_dev_key.pem"
-            chmod 644 "$iris_web"/*.pem
+            # iris-nginx (ghcr.io/dfir-iris/iriswebapp_nginx) runs as
+            # www-data (uid/gid 33), not root, so it doesn't need — and must
+            # not get — world-read access to this shared private key. Own it
+            # root:33 and restrict to group-read (640), matching the
+            # restriction already applied to the source nginx-cert.key.
+            chown root:33 "$iris_web/iris_dev_key.pem" 2>/dev/null || true
+            chmod 640 "$iris_web/iris_dev_key.pem"
             log_success "  IRIS web certificate synced with Nginx certificate"
         fi
 
-        # Ensure IRIS certificates are readable (fix permissions if needed)
+        # Ensure IRIS certificates are readable (fix permissions if needed).
+        # Cert stays world-readable; the private key stays group-restricted
+        # to the iris-nginx container's gid (33), never world-readable.
         if [[ -d "$iris_web" ]]; then
-            chmod 644 "$iris_web"/*.pem 2>/dev/null || true
+            [[ -f "$iris_web/iris_dev_cert.pem" ]] && chmod 644 "$iris_web/iris_dev_cert.pem" 2>/dev/null || true
+            if [[ -f "$iris_web/iris_dev_key.pem" ]]; then
+                chown root:33 "$iris_web/iris_dev_key.pem" 2>/dev/null || true
+                chmod 640 "$iris_web/iris_dev_key.pem" 2>/dev/null || true
+            fi
         fi
     else
         log_info "  IRIS disabled — skipping IRIS Root CA + web cert sync"

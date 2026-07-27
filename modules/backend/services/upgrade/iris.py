@@ -48,10 +48,18 @@ def ensure_iris_web_cert(work_dir: str, logger: Callable = None) -> None:
                 os.makedirs(web_dir, exist_ok=True)
                 shutil.copy2(nginx_crt, cert)
                 shutil.copy2(nginx_key, key)
-                # 0o644: iris nginx reads these as a non-root user; a 0o600
-                # root-owned mount would be unreadable (mirrors lib/modules.sh).
+                # Cert can be world-readable; the private key must not be.
+                # iris-nginx (ghcr.io/dfir-iris/iriswebapp_nginx) runs as
+                # www-data (uid/gid 33), so group-read for gid 33 is enough
+                # — mirrors lib/modules.sh, which owns the key root:33/640
+                # instead of the previous world-readable 0o644.
                 os.chmod(cert, 0o644)
-                os.chmod(key, 0o644)
+                try:
+                    os.chown(key, 0, 33)
+                except (PermissionError, OSError) as e:
+                    log(f"  Could not chown IRIS web key to root:33 ({type(e).__name__}: {e})",
+                        "warning")
+                os.chmod(key, 0o640)
                 log("  Synced IRIS web TLS cert from the shared nginx certificate", "success")
             except Exception as e:
                 log(f"  Could not sync IRIS web cert ({type(e).__name__}: {e}) — "

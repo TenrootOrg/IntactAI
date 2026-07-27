@@ -248,7 +248,8 @@ fix_source_permissions() {
     # untouched: module secrets/ dirs (Portainer admin password, IRIS
     # IRIS_SECRET_KEY/POSTGRES_*_PASSWORD, ...), module .env files (DB/
     # session secrets, GitHub token), the shared Nginx/Kibana TLS private
-    # key, the IRIS Root CA private key, and the Azure cert bundle. Without
+    # key, the IRIS web TLS private key (a copy of that same shared key),
+    # the IRIS Root CA private key, and the Azure cert bundle. Without
     # these exclusions this blanket sweep silently reverted all of that
     # hardening to world-readable 644 on every install/upgrade.
     find "${SCRIPT_DIR}" -type f \
@@ -256,15 +257,22 @@ fix_source_permissions() {
         -not -path "*/modules/*/.env" \
         -not -path "*/modules/nginx/ssl/*.key" \
         -not -path "*/modules/iris/config/certificates/rootCA/irisRootCAKey.pem" \
+        -not -path "*/modules/iris/config/certificates/web_certificates/iris_dev_key.pem" \
         -not -path "*/data/azure_cert.pfx" \
         -exec chmod 644 {} \; 2>/dev/null || true
 
-    # Re-assert the restrictive modes on those same secret files in case
-    # any of them predate this run and weren't already at the intended
-    # mode (e.g. left over from an older install).
+    # Re-assert the restrictive modes (and, for the IRIS web key, the
+    # root:33 ownership the iris-nginx container's www-data gid needs) on
+    # those same secret files in case any of them predate this run and
+    # weren't already at the intended mode (e.g. left over from an older
+    # install), or had their ownership reset by the chown -R above.
     find "${SCRIPT_DIR}/modules" -type f \( -path "*/secrets/*" -o -name ".env" \) -exec chmod 600 {} \; 2>/dev/null || true
     [[ -f "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key" ]] && chmod 640 "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key" 2>/dev/null || true
     [[ -f "${SCRIPT_DIR}/modules/iris/config/certificates/rootCA/irisRootCAKey.pem" ]] && chmod 600 "${SCRIPT_DIR}/modules/iris/config/certificates/rootCA/irisRootCAKey.pem" 2>/dev/null || true
+    if [[ -f "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_key.pem" ]]; then
+        chown root:33 "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_key.pem" 2>/dev/null || true
+        chmod 640 "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_key.pem" 2>/dev/null || true
+    fi
     [[ -f "${SCRIPT_DIR}/data/azure_cert.pfx" ]] && chmod 600 "${SCRIPT_DIR}/data/azure_cert.pfx" 2>/dev/null || true
 
     # Restore execute permission on scripts
