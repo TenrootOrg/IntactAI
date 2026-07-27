@@ -67,7 +67,7 @@
                          event.target.value = '';
                      },
                      async deleteCustomRule(filename) {
-                         if (!confirm(`Delete custom rule "${filename}"?`)) return;
+                         if (!confirm(`Delete custom rule '${filename}'?`)) return;
                          try {
                              const r = await fetch(`/api/azure/rules/custom/${encodeURIComponent(filename)}`, { method: 'DELETE' });
                              const d = await r.json();
