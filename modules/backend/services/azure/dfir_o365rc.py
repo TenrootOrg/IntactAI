@@ -336,7 +336,15 @@ def collect_unified_audit_log(
         f"\\$job = Start-Job -ScriptBlock {{ "
         f"  try {{ "
         f"    Import-Module DFIR-O365RC; "
-        f"    \\$cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new('/mnt/cert/azure_cert.pfx', '', 'Exportable,PersistKeySet'); "
+        # The PFX passphrase is read from a file that is only ever bind-mounted
+        # (read-only) into the container's filesystem — it is never interpolated
+        # into this command string, which becomes part of the container's argv
+        # and would otherwise be readable via `ps`/`docker inspect` for the
+        # lifetime of the container. Installs predating the passphrase file
+        # (pre-existing PFX with an empty passphrase) fall back to '' unchanged.
+        f"    \\$certPassPath = '/mnt/cert/azure_cert.pfx.pass'; "
+        f"    \\$certPass = if (Test-Path \\$certPassPath) {{ (Get-Content -Path \\$certPassPath -Raw).Trim() }} else {{ '' }}; "
+        f"    \\$cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new('/mnt/cert/azure_cert.pfx', \\$certPass, 'Exportable,PersistKeySet'); "
         f"    Get-UnifiedAuditLogPurview {scope_clause} -sessionName '{session_name}' -startDate '{ps_start}' -endDate '{ps_end}' -certificate \\$cert -appId '{app_id}' -tenant '{tenant}' -logFile \\$args[0] -outputFile '{output_file}' {verbose_flag} *>&1 "
         f"  }} catch {{ "
         f"    Write-Host \"[FATAL ERROR] \$_ \"; "
@@ -875,14 +883,35 @@ def collect_azure_activity_logs(
     ps_start = _format_date_for_powershell(start_date)
     ps_end = _format_date_for_powershell(end_date)
 
+    # Get-AzRMActivityLogs's -certificatePath takes no passphrase parameter,
+    # so a passphrase-protected PFX can't be handed to it directly. Instead,
+    # decrypt it in-container (using the passphrase file, which is only ever
+    # bind-mounted read-only — never embedded in this command string, unlike
+    # the PFX path itself) and re-export a passphrase-free copy to the
+    # container's own ephemeral filesystem — never bind-mounted to the host —
+    # for this one cmdlet call, then delete it. Installs predating the
+    # passphrase file (pre-existing PFX with an empty passphrase) fall
+    # through and use the mounted PFX unchanged.
     ps_cmd = (
-        f"cd /mnt/host/output; "
-        f"Get-AzRMActivityLogs "
-        f"-startDate '{ps_start}' "
-        f"-endDate '{ps_end}' "
-        f"-appId '{app_id}' "
-        f"-tenant '{tenant}' "
-        f"-certificatePath '/mnt/cert/azure_cert.pfx'"
+        f"\\$pfxPath = '/mnt/cert/azure_cert.pfx'; "
+        f"\\$certPassPath = '/mnt/cert/azure_cert.pfx.pass'; "
+        f"if (Test-Path \\$certPassPath) {{ "
+        f"  \\$certPass = (Get-Content -Path \\$certPassPath -Raw).Trim(); "
+        f"  \\$cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(\\$pfxPath, \\$certPass, 'Exportable,PersistKeySet'); "
+        f"  \\$pfxPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ([guid]::NewGuid().ToString() + '.pfx')); "
+        f"  [System.IO.File]::WriteAllBytes(\\$pfxPath, \\$cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12)); "
+        f"}}; "
+        f"try {{ "
+        f"  cd /mnt/host/output; "
+        f"  Get-AzRMActivityLogs "
+        f"  -startDate '{ps_start}' "
+        f"  -endDate '{ps_end}' "
+        f"  -appId '{app_id}' "
+        f"  -tenant '{tenant}' "
+        f"  -certificatePath \\$pfxPath "
+        f"}} finally {{ "
+        f"  if (\\$pfxPath -ne '/mnt/cert/azure_cert.pfx') {{ Remove-Item -Path \\$pfxPath -Force -ErrorAction SilentlyContinue }} "
+        f"}}"
     )
 
     log("Collecting Azure RM Activity Logs via DFIR-O365RC...", "info")

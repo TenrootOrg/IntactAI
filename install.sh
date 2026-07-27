@@ -259,6 +259,7 @@ fix_source_permissions() {
         -not -path "*/modules/iris/config/certificates/rootCA/irisRootCAKey.pem" \
         -not -path "*/modules/iris/config/certificates/web_certificates/iris_dev_key.pem" \
         -not -path "*/data/azure_cert.pfx" \
+        -not -path "*/data/azure_cert.pfx.pass" \
         -exec chmod 644 {} \; 2>/dev/null || true
 
     # Re-assert the restrictive modes (and, for the IRIS web key, the
@@ -274,6 +275,7 @@ fix_source_permissions() {
         chmod 640 "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_key.pem" 2>/dev/null || true
     fi
     [[ -f "${SCRIPT_DIR}/data/azure_cert.pfx" ]] && chmod 600 "${SCRIPT_DIR}/data/azure_cert.pfx" 2>/dev/null || true
+    [[ -f "${SCRIPT_DIR}/data/azure_cert.pfx.pass" ]] && chmod 600 "${SCRIPT_DIR}/data/azure_cert.pfx.pass" 2>/dev/null || true
 
     # Restore execute permission on scripts
     chmod +x "${SCRIPT_DIR}/install.sh" 2>/dev/null || true

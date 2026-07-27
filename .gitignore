@@ -80,6 +80,7 @@ modules/velociraptor/velociraptor/
 
 # Azure app-auth cert (generated at install)
 data/azure_cert.pfx
+data/azure_cert.pfx.pass
 data/azure_cert_public.pem
 
 # Azure scan results (runtime data)

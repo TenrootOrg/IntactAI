@@ -1265,6 +1265,7 @@ generate_azure_certificate() {
 
     local cert_dir="${SCRIPT_DIR}/data"
     local pfx_path="${cert_dir}/azure_cert.pfx"
+    local pfx_pass_path="${cert_dir}/azure_cert.pfx.pass"
     local pub_path="${cert_dir}/azure_cert_public.pem"
 
     if [[ -f "$pfx_path" ]]; then
@@ -1280,10 +1281,19 @@ generate_azure_certificate() {
         -keyout /tmp/azure_key.pem -out /tmp/azure_cert.pem \
         -days 730 -nodes -subj "/CN=Intact.AI-Intact.AI-DFIR" 2>> "$LOG_FILE"
 
-    # Create PFX (no password)
+    # Random per-install passphrase protecting the PKCS#12 private key.
+    # An empty PFX passphrase (the previous behavior) provides no
+    # confidentiality at all for the embedded private key (CWE-522).
+    # Written via `-passout file:` (not `pass:`) so the plaintext never
+    # appears in this process's argv/ps output either.
+    openssl rand -hex 32 > "$pfx_pass_path"
+    chmod 600 "$pfx_pass_path"
+
+    # Create PFX, encrypted with the random passphrase above
     openssl pkcs12 -export -out "$pfx_path" \
         -inkey /tmp/azure_key.pem -in /tmp/azure_cert.pem \
-        -passout pass: 2>> "$LOG_FILE"
+        -passout file:"$pfx_pass_path" 2>> "$LOG_FILE"
+    chmod 600 "$pfx_path"
 
     # Export public key for user to upload to Azure
     cp /tmp/azure_cert.pem "$pub_path"
