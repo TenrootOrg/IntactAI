@@ -118,7 +118,9 @@ verify_installation() {
     # Test elasticsearch (with timeout) - check if ELK module is enabled
     local elk_enabled=$(read_config "['modules']['elk']['enabled']")
     if is_enabled "$elk_enabled"; then
-        if curl -sf --max-time 5 http://localhost:9200 > /dev/null 2>&1; then
+        local elk_user=$(read_config "['modules']['elk']['id']")
+        local elk_pass=$(read_config "['modules']['elk']['password']")
+        if curl -sf --max-time 5 -u "${elk_user:-elastic}:${elk_pass}" http://localhost:9200 > /dev/null 2>&1; then
             log_success "Elasticsearch: Running"
         else
             log_warn "Elasticsearch: Not responding"

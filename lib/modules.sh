@@ -611,10 +611,12 @@ deploy_elk() {
 
     # Wait for Elasticsearch to be ready
     log_info "  Waiting for Elasticsearch API (http://localhost:9200)..."
+    local elk_user=$(read_config "['modules']['elk']['id']")
+    local elk_pass=$(read_config "['modules']['elk']['password']")
     local es_wait=0
     local es_max_wait=90
     while [[ $es_wait -lt $es_max_wait ]]; do
-        if curl -sf --max-time 5 "http://localhost:9200/_cluster/health" > /dev/null 2>&1; then
+        if curl -sf --max-time 5 -u "${elk_user:-elastic}:${elk_pass}" "http://localhost:9200/_cluster/health" > /dev/null 2>&1; then
             log_success "  Elasticsearch is ready! (${es_wait}s)"
             track_module_success "ELK Stack"
             return 0

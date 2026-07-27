@@ -290,6 +290,25 @@ def collect_unified_audit_log(
     if azure_config and azure_config.get('target_ips'):
         target_ips = azure_config.get('target_ips')
 
+    # Shape-validate target_users/target_ips right here, at the point of
+    # use, rather than trusting an upstream caller to have already done
+    # so. Both values are about to be embedded (unescaped beyond a naive
+    # single-quote wrap) into a PowerShell -Command string that is itself
+    # run via subprocess.run(..., shell=True) below. target_users can
+    # arrive straight from the POST /api/azure/scan request body, and
+    # target_ips can arrive from persisted cloud config (PUT
+    # /api/config/cloud) — validating only at a route boundary would miss
+    # the config-sourced path, so it happens here instead.
+    from services.vql_safety import validate_target_users, validate_target_ips
+    target_users, _users_err = validate_target_users(target_users)
+    if _users_err:
+        log(f"Rejecting scan: {_users_err}", "error")
+        return {'success': False, 'records': [], 'error': f'Invalid target_users: {_users_err}'}
+    target_ips, _ips_err = validate_target_ips(target_ips)
+    if _ips_err:
+        log(f"Rejecting scan: {_ips_err}", "error")
+        return {'success': False, 'records': [], 'error': f'Invalid target_ips: {_ips_err}'}
+
     if target_users:
         users_arr = ",".join(f"'{u}'" for u in target_users)
         scope_clause = f"-requestType UserIds -UserIds @({users_arr})"

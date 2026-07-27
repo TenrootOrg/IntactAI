@@ -15,6 +15,12 @@ type: SERVER_EVENT
 
 sources:
   - queries:
+      # Elasticsearch now requires authentication (xpack.security.enabled).
+      # Read the credentials from this (server) process's own environment
+      # rather than hardcoding them, so they stay in sync with the
+      # ELASTIC_USER/ELASTIC_PASSWORD set in modules/velociraptor/.env.
+      - LET _creds <= SELECT ELASTIC_USER, ELASTIC_PASSWORD FROM environ()
+
       - LET completions = SELECT * FROM watch_monitoring(
              artifact="System.Flow.Completion")
              WHERE Flow.artifacts_with_results
@@ -40,4 +46,6 @@ sources:
             query=documents,
             addresses=["http://intact_elasticsearch:9200"],
             index="velociraptor",
-            type="artifact")
+            type="artifact",
+            username=_creds[0].ELASTIC_USER,
+            password=_creds[0].ELASTIC_PASSWORD)

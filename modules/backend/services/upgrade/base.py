@@ -494,8 +494,13 @@ def _container_state(name: str) -> str:
 
 
 def _probe_elk():
+    import shlex
+    elk_env = read_env_file(os.path.join(WORKDIR, 'modules', 'elk', '.env'))
+    es_user = elk_env.get('ELASTIC_USER', 'elastic')
+    es_pass = elk_env.get('ELASTIC_PASSWORD', 'changeme')
     r = run_command(
         "docker exec intact_elasticsearch curl -sf --max-time 8 "
+        f"-u {shlex.quote(f'{es_user}:{es_pass}')} "
         "http://localhost:9200/_cluster/health", logger=None, timeout=30)
     if not r.get('success'):
         return ('down', 'elasticsearch _cluster/health unreachable')

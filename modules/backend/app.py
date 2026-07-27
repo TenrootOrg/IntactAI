@@ -569,7 +569,9 @@ def run_startup_initialization():
             print("[STARTUP] Initializing Elasticsearch...", flush=True)
             es_result = init_elasticsearch(
                 host=ELASTICSEARCH_CONFIG['host'],
-                port=ELASTICSEARCH_CONFIG['port']
+                port=ELASTICSEARCH_CONFIG['port'],
+                user=ELASTICSEARCH_CONFIG['user'],
+                password=ELASTICSEARCH_CONFIG['password']
             )
             initialization_status["elasticsearch"] = es_result
             if es_result:

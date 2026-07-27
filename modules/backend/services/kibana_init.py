@@ -8,8 +8,15 @@ both `scripts/run_maintenance.py` (install-time init) and the ELK upgrader.
 
 Kibana is served over HTTPS (self-signed), so all calls use https + verify=
 False on the internal docker network.
+
+Kibana now requires authentication (xpack.security.enabled=true) for every
+API besides /api/status, so these calls authenticate with the same
+Elasticsearch-native-realm credentials the backend's own Elasticsearch
+client uses (ELASTICSEARCH_USER/ELASTICSEARCH_PASSWORD) — Kibana validates
+them against Elasticsearch just like a Kibana UI login.
 """
 
+import os
 import time
 from typing import Callable, Optional
 
@@ -21,6 +28,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 KIBANA_URL = "https://intact_kibana:5601"
 DATA_VIEW_TITLE = "artifact_*"
 DATA_VIEW_NAME = "Velociraptor Artifacts"
+_AUTH = (os.environ.get('ELASTICSEARCH_USER', 'elastic'),
+         os.environ.get('ELASTICSEARCH_PASSWORD', ''))
 
 
 def _wait_for_kibana(logger: Callable, timeout: int = 120) -> bool:
@@ -59,7 +68,7 @@ def ensure_kibana_data_view(logger: Optional[Callable] = None, wait: bool = True
                 log("  Kibana: not ready yet", "info")
                 return False
 
-        existing = requests.get(f"{KIBANA_URL}/api/data_views", headers=headers, timeout=10, verify=False)
+        existing = requests.get(f"{KIBANA_URL}/api/data_views", headers=headers, auth=_AUTH, timeout=10, verify=False)
         if existing.status_code != 200:
             log("  Kibana: could not check existing data views", "warning")
             return False
@@ -69,7 +78,7 @@ def ensure_kibana_data_view(logger: Optional[Callable] = None, wait: bool = True
             return True
 
         payload = {"data_view": {"title": DATA_VIEW_TITLE, "name": DATA_VIEW_NAME, "timeFieldName": "@timestamp"}}
-        resp = requests.post(f"{KIBANA_URL}/api/data_views/data_view", json=payload, headers=headers, timeout=10, verify=False)
+        resp = requests.post(f"{KIBANA_URL}/api/data_views/data_view", json=payload, headers=headers, auth=_AUTH, timeout=10, verify=False)
         if resp.status_code in (200, 201):
             log(f"  Kibana: created '{DATA_VIEW_NAME}' data view", "success")
             return True

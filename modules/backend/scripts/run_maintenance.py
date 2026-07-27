@@ -158,7 +158,11 @@ def main():
     else:
         try:
             import requests
-            es_response = requests.get("http://intact_elasticsearch:9200/_cluster/health", timeout=5)
+            from config import ELASTICSEARCH_CONFIG
+            es_auth = (ELASTICSEARCH_CONFIG.get('user'), ELASTICSEARCH_CONFIG.get('password'))
+            es_response = requests.get(
+                "http://intact_elasticsearch:9200/_cluster/health",
+                auth=es_auth, timeout=5)
             if es_response.status_code == 200:
                 status = es_response.json().get('status', 'unknown')
                 log(f"  Elasticsearch: {status}",

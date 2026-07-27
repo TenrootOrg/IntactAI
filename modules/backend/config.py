@@ -134,6 +134,8 @@ VELOCIRAPTOR_DATA_PATH = "/var."
 # Elasticsearch configuration
 ELASTICSEARCH_CONFIG = {
     'host': os.environ.get('ELASTICSEARCH_HOST', 'elasticsearch'),
-    'port': int(os.environ.get('ELASTICSEARCH_PORT', '9200'))
+    'port': int(os.environ.get('ELASTICSEARCH_PORT', '9200')),
+    'user': os.environ.get('ELASTICSEARCH_USER', 'elastic'),
+    'password': os.environ.get('ELASTICSEARCH_PASSWORD', '')
 }
 

@@ -269,6 +269,8 @@ def install_elk_offline(package_dir: str, version: str, logger=None, run_id=None
     # the same shape of failure Timesketch did (install reports
     # "completed" but downstream bootstrap times out).
     import subprocess as _sub
+    es_vars = read_env_file(env_file)
+    es_auth = f"{es_vars.get('ELASTIC_USER', 'elastic')}:{es_vars.get('ELASTIC_PASSWORD', 'changeme')}"
     es_ready = False
     waited = 0
     _ES_READY_WAIT_SECS = 300
@@ -277,6 +279,7 @@ def install_elk_offline(package_dir: str, version: str, logger=None, run_id=None
             probe = _sub.run(
                 ["docker", "exec", "intact_elasticsearch",
                  "curl", "-sf", "--max-time", "5",
+                 "-u", es_auth,
                  "http://localhost:9200/_cluster/health"],
                 capture_output=True, text=True, timeout=10,
             )
