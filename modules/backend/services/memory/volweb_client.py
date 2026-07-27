@@ -91,11 +91,11 @@ def _config_yaml_volweb(key: str) -> str:
 
     Why we go here instead of hardcoding ``admin:password``:
     `install.sh:seed_volweb_admin` creates the admin user with the
-    creds in ``config.yaml:modules.volweb.{id,password}`` (default
-    ``tenroot:123123``). The backend has to authenticate against
-    the SAME creds — otherwise every fresh install would need an
-    extra Settings → Memory → VolWeb step before the pipeline
-    works. By reading config.yaml here, fresh installs Just Work.
+    creds in ``config.yaml:modules.volweb.{id,password}``. The backend
+    has to authenticate against the SAME creds — otherwise every fresh
+    install would need an extra Settings → Memory → VolWeb step before
+    the pipeline works. By reading config.yaml here, fresh installs
+    Just Work.
     """
     try:
         from config import load_main_config
@@ -109,12 +109,32 @@ def _config_yaml_volweb(key: str) -> str:
     return ""
 
 
+def _volweb_secrets_file_password() -> str:
+    """Read the persisted VolWeb admin password generated at seed time when
+    config.yaml doesn't set ``modules.volweb.password``. Both
+    lib/modules.sh:get_volweb_admin_password() and
+    services.upgrade.volweb._get_volweb_admin_password() write the SAME
+    random per-install secret to this file, instead of falling back to a
+    fixed, publicly-documented password.
+    """
+    workdir = os.environ.get("INTACT_PATH", "/app/workdir")
+    secret_path = os.path.join(workdir, "modules", "volweb", "secrets", "ADMIN_PASSWORD")
+    try:
+        with open(secret_path) as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
 def _volweb_user() -> str:
     return _config_value("username", default=_config_yaml_volweb("id") or "tenroot")
 
 
 def _volweb_pass() -> str:
-    return _config_value("password", default=_config_yaml_volweb("password") or "123123")
+    return _config_value(
+        "password",
+        default=_config_yaml_volweb("password") or _volweb_secrets_file_password(),
+    )
 
 
 # ---------------------------------------------------------------------------

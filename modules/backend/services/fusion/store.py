@@ -504,7 +504,10 @@ def create_case(name, *, time_window=None, initial_access=None,
 
 
 def get_case(case_id) -> dict:
-    return (_ws().get_automation_run(case_id) or {}).get("details") or {}
+    run = _ws().get_automation_run(case_id)
+    if not run or run.get("automation_type") != CASE_TYPE:
+        return {}
+    return run.get("details") or {}
 
 
 def _members_for_case(case_id, d=None) -> list:

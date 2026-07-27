@@ -243,8 +243,29 @@ fix_source_permissions() {
     # Fix directory permissions (755 = rwxr-xr-x)
     find "${SCRIPT_DIR}" -type d -exec chmod 755 {} \; 2>/dev/null || true
 
-    # Fix file permissions (644 = rw-r--r--)
-    find "${SCRIPT_DIR}" -type f -exec chmod 644 {} \; 2>/dev/null || true
+    # Fix file permissions (644 = rw-r--r--), but leave secret material that
+    # earlier steps in this same run deliberately hardened to a tighter mode
+    # untouched: module secrets/ dirs (Portainer admin password, IRIS
+    # IRIS_SECRET_KEY/POSTGRES_*_PASSWORD, ...), module .env files (DB/
+    # session secrets, GitHub token), the shared Nginx/Kibana TLS private
+    # key, the IRIS Root CA private key, and the Azure cert bundle. Without
+    # these exclusions this blanket sweep silently reverted all of that
+    # hardening to world-readable 644 on every install/upgrade.
+    find "${SCRIPT_DIR}" -type f \
+        -not -path "*/modules/*/secrets/*" \
+        -not -path "*/modules/*/.env" \
+        -not -path "*/modules/nginx/ssl/*.key" \
+        -not -path "*/modules/iris/config/certificates/rootCA/irisRootCAKey.pem" \
+        -not -path "*/data/azure_cert.pfx" \
+        -exec chmod 644 {} \; 2>/dev/null || true
+
+    # Re-assert the restrictive modes on those same secret files in case
+    # any of them predate this run and weren't already at the intended
+    # mode (e.g. left over from an older install).
+    find "${SCRIPT_DIR}/modules" -type f \( -path "*/secrets/*" -o -name ".env" \) -exec chmod 600 {} \; 2>/dev/null || true
+    [[ -f "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key" ]] && chmod 640 "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key" 2>/dev/null || true
+    [[ -f "${SCRIPT_DIR}/modules/iris/config/certificates/rootCA/irisRootCAKey.pem" ]] && chmod 600 "${SCRIPT_DIR}/modules/iris/config/certificates/rootCA/irisRootCAKey.pem" 2>/dev/null || true
+    [[ -f "${SCRIPT_DIR}/data/azure_cert.pfx" ]] && chmod 600 "${SCRIPT_DIR}/data/azure_cert.pfx" 2>/dev/null || true
 
     # Restore execute permission on scripts
     chmod +x "${SCRIPT_DIR}/install.sh" 2>/dev/null || true

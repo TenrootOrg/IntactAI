@@ -49,6 +49,10 @@ modules/iris/secrets/*
 modules/portainer/secrets/*
 !modules/portainer/secrets/.gitkeep
 
+# VolWeb admin password file (generated on install)
+modules/volweb/secrets/*
+!modules/volweb/secrets/.gitkeep
+
 # Certificates (generated on install)
 modules/iris/config/certificates/rootCA/*
 modules/iris/config/certificates/web_certificates/*

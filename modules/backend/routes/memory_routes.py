@@ -77,6 +77,20 @@ def _get_run(run_id: str) -> dict | None:
     return file_get_workflow(run_id)
 
 
+def _run_visible_in_active_workspace(run: dict) -> bool:
+    """Mirror dashboard_routes.py's / azure_routes.py's own workspace check:
+    run_id is a predictable ``{automation_type}_{millis}`` string, so without
+    this an operator in one case could read the status/logs of, or stop,
+    another case's memory-forensics run just by guessing/reusing a run_id.
+    No active case_id means no filtering (admin/no-workspace-concept
+    context)."""
+    from flask import g
+    case_id = getattr(g, "case_id", None)
+    if not case_id:
+        return True
+    return run.get("case_id") == case_id
+
+
 def _llm_config() -> dict:
     """Reuse the agentic LLM config block (the chat module reads from
     ``cfg['agentic']`` already)."""
@@ -378,7 +392,7 @@ def upload_memory_dump():
 @memory_bp.route("/api/memory/run/<run_id>/status", methods=["GET"])
 def get_memory_status(run_id):
     run = _get_run(run_id)
-    if not run:
+    if not run or not _run_visible_in_active_workspace(run):
         return jsonify({"error": "Run not found"}), 404
     # Trim logs to last 200 to keep the polling payload reasonable —
     # the workflows table modal pulls full logs via the dashboard
@@ -405,7 +419,7 @@ def get_memory_status(run_id):
 @memory_bp.route("/api/memory/run/<run_id>/stop", methods=["POST"])
 def stop_memory_run(run_id):
     run = _get_run(run_id)
-    if not run:
+    if not run or not _run_visible_in_active_workspace(run):
         return jsonify({"error": "Run not found"}), 404
     request_stop(run_id)
     return jsonify({"ok": True})

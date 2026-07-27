@@ -38,8 +38,9 @@ jobs:
     steps:
       - name: Resolve tag
         id: tag
+        env:
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
         run: |
-          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
           case "$TAG" in
             intact-*) ;;
             *) echo "::error::Not an intact-* release tag ($TAG) — nothing to build"; exit 1 ;;
@@ -69,8 +70,9 @@ jobs:
       # no aws_sigma at all — reporting success the whole way.
       - name: Resolve diff baseline
         id: since
+        env:
+          SINCE: ${{ github.event.inputs.since }}
         run: |
-          SINCE="${{ github.event.inputs.since }}"
           if [ -n "$SINCE" ]; then
             echo "Diffing module scope against explicit baseline $SINCE"
           else
@@ -99,8 +101,15 @@ jobs:
         run: docker build -f modules/backend/Dockerfile -t intact-backend:ci-packager .
 
       - name: Build the release package
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          SINCE: ${{ steps.since.outputs.since }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/ci-output"
+          args=(--tag "$TAG" --out /output)
+          if [ -n "$SINCE" ]; then
+            args+=(--since "$SINCE")
+          fi
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
@@ -109,9 +118,7 @@ jobs:
             -v /opt/sigma-rules:/opt/sigma-rules:ro \
             -v "$GITHUB_WORKSPACE/ci-output:/output" \
             intact-backend:ci-packager \
-            python3 "$GITHUB_WORKSPACE/scripts/ci/build_release_package.py" \
-              --tag "${{ steps.tag.outputs.tag }}" --out /output \
-              ${{ steps.since.outputs.since && format('--since {0}', steps.since.outputs.since) || '' }}
+            python3 "$GITHUB_WORKSPACE/scripts/ci/build_release_package.py" "${args[@]}"
           echo "== built =="; ls -lh "$GITHUB_WORKSPACE/ci-output"
 
       # A GitHub Release asset is capped at 2 GiB per file. The full package
@@ -145,8 +152,8 @@ jobs:
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$GITHUB_WORKSPACE"/ci-output/* --clobber
             echo "Attached package parts to release $TAG"

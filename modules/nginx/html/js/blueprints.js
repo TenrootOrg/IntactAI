@@ -227,6 +227,24 @@ function filterBlueprints() {
     container.innerHTML = filteredBlueprints.map(bp => renderBlueprintCard(bp)).join('');
 }
 
+// Safely encode a value for interpolation into a single-quoted JS string
+// literal that is itself embedded inside a double-quoted HTML attribute
+// (e.g. onclick="fn('VALUE')"). bp.id is attacker-controlled (it can be set
+// verbatim via POST /api/blueprints/<type>), so it must be neutralized
+// against both the JS-string boundary (backslash/quote) and the outer HTML
+// attribute boundary (", &, <, >) before being interpolated below.
+function escapeJsAttr(value) {
+    return String(value ?? '')
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
 function renderBlueprintCard(bp) {
     const artifactCount = bp.artifacts ? bp.artifacts.length : 0;
     const isDefault = bp.is_default;
@@ -302,8 +320,8 @@ function renderBlueprintCard(bp) {
                 </div>
             </div>
             <div class="flex gap-2 ml-4">
-                <button onclick="editBlueprint('${bp.id}', '${actualType}')" class="text-xs bg-blue-700 hover:bg-blue-600 px-3 py-1.5 rounded">Edit</button>
-                ${!isDefault ? `<button onclick="deleteBlueprintById('${bp.id}', '${actualType}')" class="text-xs bg-red-700 hover:bg-red-600 px-3 py-1.5 rounded">Delete</button>` : ''}
+                <button onclick="editBlueprint('${escapeJsAttr(bp.id)}', '${actualType}')" class="text-xs bg-blue-700 hover:bg-blue-600 px-3 py-1.5 rounded">Edit</button>
+                ${!isDefault ? `<button onclick="deleteBlueprintById('${escapeJsAttr(bp.id)}', '${actualType}')" class="text-xs bg-red-700 hover:bg-red-600 px-3 py-1.5 rounded">Delete</button>` : ''}
             </div>
         </div>
     </div>`;

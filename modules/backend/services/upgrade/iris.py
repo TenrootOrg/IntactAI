@@ -359,7 +359,7 @@ def install_iris_offline(package_dir: str, version: str, logger=None, run_id=Non
             open(env_file, 'a').close()
         update_env_file(env_file, 'IRIS_VERSION', version, logger=log)
 
-    iris_admin_pw = '123123'
+    iris_admin_pw = None
     try:
         from config import load_main_config
         cfg = load_main_config() or {}
@@ -368,6 +368,14 @@ def install_iris_offline(package_dir: str, version: str, logger=None, run_id=Non
             iris_admin_pw = str(v)
     except Exception:
         pass
+    if not iris_admin_pw:
+        # A hardcoded fallback here would ship the same publicly-known
+        # password to every install that hits this path — generate a
+        # random one instead, matching lib/modules.sh:generate_iris_secrets()
+        # and _ensure_portainer_admin_secret().
+        iris_admin_pw = _secrets.token_hex(16)
+        log("  No IRIS password set in config.yaml; generated a random one instead", "warning")
+        log(f"  Retrieve it with: cat {os.path.join(secrets_dir, 'IRIS_ADM_PASSWORD')}", "warning")
 
     secret_specs = [
         ('IRIS_ADM_PASSWORD', iris_admin_pw),

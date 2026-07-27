@@ -278,7 +278,7 @@ function importWorkspace(ev){
 function loadCases(cb){
   api('/api/cases').then(d=>{const cs=d.cases||[]; const active=window.ActiveCase.get();
     $('#caselist').innerHTML=cs.map(c=>{const isAct=c.case_id===active;
-      const nm=esc(c.name||'').replace(/'/g,"\\'");
+      const nm=jsa(c.name||'');
       return `<div class="caseitem ${sel===c.case_id?'sel':''}" onclick="rowClick('${c.case_id}')">
       <div class="casehead"><span class="nm">${isAct?'● ':''}${esc(c.name||c.case_id)}</span>
         <div class="row" style="gap:6px">

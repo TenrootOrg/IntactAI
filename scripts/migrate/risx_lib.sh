@@ -38,17 +38,31 @@ discover_risx() {
         [[ -d "$RISX_ROOT" ]] || die "RISX_ROOT=$RISX_ROOT does not exist"
     else
         local cands=(/home/*/setup_platform)
-        RISX_ROOT=""
+        local matches=()
         local c
         for c in "${cands[@]}"; do
             [[ -f "$c/workdir/velociraptor/velociraptor/server.config.yaml" ]] \
-                && RISX_ROOT="$c" && break
+                && matches+=("$c")
         done
-        if [[ -z "$RISX_ROOT" ]]; then
+        if [[ ${#matches[@]} -eq 0 ]]; then
             [[ "${1:-}" == "optional" ]] && return 1
             die "no risx-mssp install found (looked for \
 /home/*/setup_platform/workdir/velociraptor/velociraptor/server.config.yaml); \
 set RISX_ROOT=... to point at it"
+        fi
+        if [[ ${#matches[@]} -gt 1 ]]; then
+            die "multiple risx-mssp candidates found under /home/*/setup_platform \
+(${matches[*]}) — refusing to guess which one is trusted; set RISX_ROOT=... \
+after verifying the correct one yourself"
+        fi
+        RISX_ROOT="${matches[0]}"
+        local owner
+        owner="$(stat -c %U "$RISX_ROOT")" \
+            || die "cannot stat $RISX_ROOT to verify ownership"
+        if [[ "$owner" != "$(id -un)" && "$owner" != "root" ]]; then
+            die "$RISX_ROOT is owned by '$owner', not by you ($(id -un)) or \
+root — refusing to trust a risx-mssp install planted by another local user; \
+verify it yourself and set RISX_ROOT=... to override"
         fi
     fi
     VELO_DIR="$RISX_ROOT/workdir/velociraptor"

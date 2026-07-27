@@ -23,16 +23,20 @@ generate_iris_secrets() {
 
     local secrets_created=false
 
-    # IRIS_ADM_PASSWORD should come from config.yaml, not be random
+    # IRIS_ADM_PASSWORD comes from config.yaml when the operator set one;
+    # otherwise generate a random per-install password instead of shipping
+    # the same fixed, publicly-documented string to every default install
+    # (the same pattern used for the Portainer admin password below).
     if [[ ! -f "$secrets_dir/IRIS_ADM_PASSWORD" ]] || [[ ! -s "$secrets_dir/IRIS_ADM_PASSWORD" ]]; then
         local iris_password=$(read_config "['modules']['iris']['password']")
         if [[ -n "$iris_password" && "$iris_password" != "None" ]]; then
             echo -n "$iris_password" > "$secrets_dir/IRIS_ADM_PASSWORD"
             log_info "  Created IRIS_ADM_PASSWORD from config.yaml"
         else
-            # Fallback to default if not in config
-            echo -n "123123" > "$secrets_dir/IRIS_ADM_PASSWORD"
-            log_warn "  Created IRIS_ADM_PASSWORD with default (set in config.yaml)"
+            iris_password=$(openssl rand -hex 16)
+            echo -n "$iris_password" > "$secrets_dir/IRIS_ADM_PASSWORD"
+            log_warn "  No IRIS password set in config.yaml; generated a random one instead"
+            log_warn "  Retrieve it with: cat ${secrets_dir}/IRIS_ADM_PASSWORD"
         fi
         secrets_created=true
     else
@@ -98,7 +102,7 @@ generate_portainer_secrets() {
         # seeded via --admin-password-file. Short values silently cause the
         # admin user to never be created and the UI falls back to the
         # timed-out "initial setup" state — exactly what we're trying to avoid.
-        if [[ -z "$portainer_password" || "$portainer_password" == "None" || ${#portainer_password} -lt 12 ]]; then
+        if [[ -z "$portainer_password" || "$portainer_password" == "None" || ${#portainer_password} -lt 12 || "$portainer_password" == "1234qwer!@#\$" ]]; then
             # A hardcoded fallback here would ship the same publicly-known
             # password to every default install (the exact string is visible
             # in this open-source file) — generate a random one instead, the
@@ -1572,15 +1576,48 @@ deploy_volweb() {
 }
 
 
+# Ensures modules/volweb/secrets/ADMIN_PASSWORD exists and returns its
+# content on stdout. Uses the operator's modules.volweb.password from
+# config.yaml when set; otherwise generates a random per-install password
+# instead of falling back to a fixed, publicly-documented string (same
+# pattern as generate_iris_secrets' IRIS_ADM_PASSWORD / the Portainer admin
+# password). Persisted so seed_volweb_admin() and seed_yara_rulesets()
+# (which authenticates as the same user) always agree, and re-runs stay
+# idempotent. Callers capture this via `$(get_volweb_admin_password)`, so
+# any log output MUST go to stderr — only the password itself goes to
+# stdout.
+get_volweb_admin_password() {
+    local secrets_dir="${SCRIPT_DIR}/modules/volweb/secrets"
+    mkdir -p "$secrets_dir"
+    local pass_file="$secrets_dir/ADMIN_PASSWORD"
+
+    if [[ ! -s "$pass_file" ]]; then
+        local volweb_pass
+        volweb_pass=$(read_config "['modules']['volweb']['password']")
+        if [[ -z "$volweb_pass" || "$volweb_pass" == "None" ]]; then
+            volweb_pass=$(openssl rand -hex 16)
+            {
+                log_warn "  No VolWeb password set in config.yaml; generated a random one instead"
+                log_warn "  Retrieve it with: cat ${pass_file}"
+            } >&2
+        fi
+        printf '%s' "$volweb_pass" > "$pass_file"
+        chmod 600 "$pass_file"
+    fi
+    cat "$pass_file"
+}
+
+
 seed_volweb_admin() {
     # Use the platform's VolWeb admin creds from config.yaml. Reads
-    # ``modules.volweb.id`` + ``modules.volweb.password`` so VolWeb
-    # has its own settable creds (instead of borrowing Timesketch's).
-    # Falls back to ``tenroot:123123`` only if the keys are missing.
+    # ``modules.volweb.id`` for the username, and the persisted
+    # admin password from get_volweb_admin_password() (config.yaml's
+    # password when the operator set one, otherwise a random per-install
+    # value generated on first run).
     local tenroot_user=$(read_config "['modules']['volweb']['id']")
     [[ -z "$tenroot_user" ]] && tenroot_user="tenroot"
-    local tenroot_pass=$(read_config "['modules']['volweb']['password']")
-    [[ -z "$tenroot_pass" ]] && tenroot_pass="123123"
+    local tenroot_pass
+    tenroot_pass=$(get_volweb_admin_password)
 
     log_info "  Seeding VolWeb admin user (${tenroot_user})..."
     docker exec --user app -w /home/app/web -i intact_volweb_backend python3 manage.py shell <<EOF 2>&1 | tail -3
@@ -1603,8 +1640,8 @@ seed_yara_rulesets() {
     # ingests every .yar / .yara file recursively.
     local volweb_user=$(read_config "['modules']['volweb']['id']")
     [[ -z "$volweb_user" ]] && volweb_user="tenroot"
-    local volweb_pass=$(read_config "['modules']['volweb']['password']")
-    [[ -z "$volweb_pass" ]] && volweb_pass="123123"
+    local volweb_pass
+    volweb_pass=$(get_volweb_admin_password)
 
     log_info "  Seeding YARA rulesets (~3 min)..."
 

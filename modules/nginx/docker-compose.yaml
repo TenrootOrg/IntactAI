@@ -25,7 +25,10 @@ services:
     networks:
       - intact_network
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/"]
+      # Port 80 now redirects to HTTPS (see nginx.conf); wget's --spider
+      # would follow that redirect and then fail on the self-signed cert,
+      # so use curl -f, which treats the 301 itself as a healthy response.
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:80/"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -34,7 +34,7 @@ import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, g, jsonify, request
 from werkzeug.utils import secure_filename
 
 from services.workflow_service import create_automation_run, get_automation_run, update_run_status, add_log_to_run
@@ -559,12 +559,25 @@ def run_cve_hunt():
         return jsonify({'error': str(e)}), 500
 
 
+def _run_visible_in_active_workspace(run):
+    """Mirror azure_routes.py/aws_routes.py's own workspace check: cve_scan
+    runs are tagged with case_id by create_automation_run(), but nothing
+    here verified it — without this an operator in one case could
+    read/download another case's CVE scan run just by guessing/reusing a
+    run_id. No active case_id means no filtering (admin/no-workspace-concept
+    context)."""
+    case_id = getattr(g, "case_id", None)
+    if not case_id:
+        return True
+    return bool(run) and run.get("case_id") == case_id
+
+
 @cve_bp.route('/api/cve/run/<run_id>/download', methods=['GET'])
 def download_combined(run_id):
     """Stream combined_cves.csv — the customer-facing deliverable."""
     try:
         run = get_automation_run(run_id)
-        if not run:
+        if not run or not _run_visible_in_active_workspace(run):
             return jsonify({'error': 'Run not found'}), 404
         details = run.get('details') or {}
         path = details.get('combined_csv')
@@ -589,6 +602,9 @@ def download_findings(run_id):
     """Stream findings.json — machine-friendly form for the future
     Engagement Report integration (or for the operator's pipelines)."""
     try:
+        run = get_automation_run(run_id)
+        if not run or not _run_visible_in_active_workspace(run):
+            return jsonify({'error': 'Run not found'}), 404
         path = f"/data/downloads/{run_id}/findings.json"
         if not os.path.exists(path):
             return jsonify({'error': 'findings.json not found for this run.'}), 404

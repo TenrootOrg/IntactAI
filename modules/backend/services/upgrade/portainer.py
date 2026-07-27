@@ -28,6 +28,10 @@ def _ensure_portainer_admin_secret(logger: Callable = None) -> None:
     the seeded password even via --admin-password-file; short/missing
     values silently never create the admin account, so this must match
     the bash version's fallback exactly."""
+    # Same shipped default rejected by lib/modules.sh:generate_portainer_secrets()
+    # (config.yaml's modules.portainer.password) — it's exactly 12 chars, so the
+    # length check alone lets it slip through; it must be denied explicitly.
+    _KNOWN_DEFAULT_PASSWORD = "1234qwer!@#$"
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     secrets_dir = os.path.join(WORKDIR, 'modules', 'portainer', 'secrets')
     secret_path = os.path.join(secrets_dir, 'admin_password')
@@ -37,7 +41,7 @@ def _ensure_portainer_admin_secret(logger: Callable = None) -> None:
     from config import load_main_config
     cfg = load_main_config() or {}
     password = ((cfg.get('modules') or {}).get('portainer') or {}).get('password')
-    if not password or len(password) < 12:
+    if not password or len(password) < 12 or password == _KNOWN_DEFAULT_PASSWORD:
         # A hardcoded fallback here would ship the same publicly-known
         # password to every install that hits this path — generate a random
         # one instead, same as every other auto-provisioned secret in this
@@ -45,8 +49,8 @@ def _ensure_portainer_admin_secret(logger: Callable = None) -> None:
         # secrets.token_hex). Must match lib/modules.sh's bash version.
         import secrets as _secrets
         password = _secrets.token_hex(16)
-        log("  Portainer password missing or < 12 chars in config.yaml; "
-            "generated a random one instead", "warning")
+        log("  Portainer password missing, < 12 chars, or matches the shipped "
+            "config.yaml default; generated a random one instead", "warning")
         log(f"  Retrieve it with: cat {secret_path}", "warning")
         log("  Change it from the Portainer UI after first login "
             "(Settings -> Users)", "warning")

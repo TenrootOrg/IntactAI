@@ -46,12 +46,26 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Write VERSION file
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
         run: |
-          tag="${{ github.event.release.tag_name }}"
-          echo "Stamping VERSION as: ${tag}"
-          echo "${tag}" > VERSION
+          # TAG_NAME is attacker-influenced free text (any actor who can
+          # publish a release chooses it). It is passed via env: so the
+          # shell always sees it as inert data, never as template-expanded
+          # script text, and it is validated against this project's own
+          # established release-tag convention (see _IMMUTABLE_REF_RE in
+          # modules/backend/services/upgrade/__init__.py: "intact-YYYYMMDD,
+          # optional suffix") before it is written or committed anywhere.
+          if ! [[ "$TAG_NAME" =~ ^intact-[0-9]{8}[A-Za-z0-9._-]*$ ]]; then
+            echo "::error::Release tag '${TAG_NAME}' does not match the expected intact-YYYYMMDD[suffix] convention; refusing to stamp VERSION." >&2
+            exit 1
+          fi
+          echo "Stamping VERSION as: ${TAG_NAME}"
+          echo "${TAG_NAME}" > VERSION
 
       - name: Commit and push if changed
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -60,5 +74,5 @@ jobs:
             exit 0
           fi
           git add VERSION
-          git commit -m "chore: stamp VERSION as ${{ github.event.release.tag_name }} [skip ci]"
+          git commit -m "chore: stamp VERSION as ${TAG_NAME} [skip ci]"
           git push origin development

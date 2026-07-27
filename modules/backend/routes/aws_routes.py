@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import traceback
 import uuid
 import zipfile
@@ -49,6 +50,29 @@ UPLOAD_FOLDER = '/tmp/aws_uploads'
 ALLOWED_EXTENSIONS = {'json', 'jsonl', 'csv', 'zip'}
 PARSEABLE_EXTENSIONS = {'json', 'jsonl', 'csv'}
 PERSIST_DIR = '/app/data/aws_runs'
+
+# run_ids are always generated as "<automation_type>_<epoch_ms>" (see
+# workflow_service._next_run_id) or "aws_offline_<uuid4_hex[:12]>" (see
+# handle_upload below) — letters, digits and underscores only. Anything
+# else (e.g. "..", "/", or an embedded path separator) is rejected before
+# it is ever joined onto a filesystem path.
+_RUN_ID_RE = re.compile(r'^[A-Za-z0-9_]+$')
+
+
+def _safe_run_dir(run_id: str) -> str | None:
+    """Resolve run_id to an upload directory strictly inside UPLOAD_FOLDER.
+
+    Returns None if run_id doesn't match the format run_ids are actually
+    generated in, or if the resolved path would (still) escape
+    UPLOAD_FOLDER — mirroring the containment check already used by
+    services/aws/sigma_runner.py's delete_custom_rule()."""
+    if not run_id or not _RUN_ID_RE.match(run_id):
+        return None
+    base = os.path.realpath(UPLOAD_FOLDER)
+    target = os.path.realpath(os.path.join(base, run_id))
+    if os.path.dirname(target) != base:
+        return None
+    return target
 
 
 def _allowed_file(filename: str) -> bool:
@@ -738,8 +762,8 @@ def delete_run(run_id):
             return jsonify({'error': 'Run not found'}), 404
         if run_id in _aws_runs:
             del _aws_runs[run_id]
-        run_dir = os.path.join(UPLOAD_FOLDER, run_id)
-        if os.path.exists(run_dir):
+        run_dir = _safe_run_dir(run_id)
+        if run_dir and os.path.exists(run_dir):
             import shutil
             shutil.rmtree(run_dir)
         return jsonify({'status': 'deleted', 'run_id': run_id})

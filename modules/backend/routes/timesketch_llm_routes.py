@@ -125,10 +125,15 @@ def get_timesketch_llm_config():
             with open(TIMESKETCH_CONFIG_PATH, 'r') as f:
                 content = f.read()
 
-            # Extract Google AI API key from aistudio section
+            # Extract Google AI API key from aistudio section. Mask it the
+            # same way GET /api/config and GET /api/config/cloud already
+            # mask their LLM/cloud secrets — this endpoint previously
+            # returned it in full plaintext to any unauthenticated caller.
             match = re.search(r"'aistudio':\s*\{[^}]*'api_key':\s*'([^']*)'", content)
             if match:
-                config['google_ai_key'] = match.group(1)
+                key = match.group(1)
+                if key:
+                    config['google_ai_key'] = '••••••••' + key[-4:] if len(key) > 4 else '••••••••'
 
             # Extract Google AI model
             match = re.search(r"'aistudio':\s*\{[^}]*'model':\s*'([^']*)'", content)
@@ -182,6 +187,13 @@ def _run_timesketch_settings_workflow(run_id, config_data):
             content = f.read()
 
         add_log_to_run(run_id, f"Successfully read config file: {TIMESKETCH_CONFIG_PATH}")
+
+        # Don't overwrite the real key with the masked placeholder GET
+        # /api/timesketch/config/llm now returns — same protection
+        # /api/config's and /api/config/cloud's PUT handlers already have.
+        if google_ai_key.startswith('••••'):
+            existing_match = re.search(r"'aistudio':\s*\{[^}]*'api_key':\s*'([^']*)'", content)
+            google_ai_key = existing_match.group(1) if existing_match else ''
 
         # Phase 2: Update configuration
         update_run_status(run_id, "running", progress=20)
