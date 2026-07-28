@@ -160,9 +160,14 @@ _RERUN_SPECS = {
 # of trusting the type: a run that died before its config was written, or one
 # created by an older release that stored less, would otherwise "rerun" with
 # defaults silently -- a different job wearing the same name.
+# An entry may be a field name, or a tuple of alternatives when the same
+# information has been stored under different keys across releases -- older
+# hunt rows carry a singular `artifact` where current ones carry `artifacts`.
+# The builder already handles that fallback; requiring the new name alone made
+# the guard reject runs the builder could rebuild perfectly.
 _RERUN_REQUIRED = {
     'velociraptor_collection': ('blueprint_id', 'client_ids'),
-    'velociraptor_hunt': ('artifacts',),
+    'velociraptor_hunt': (('artifacts', 'artifact'),),
     'memory': ('client_id',),
 }
 
@@ -189,7 +194,11 @@ def rerun_spec(run_id):
         })
 
     details = run.get('details') or {}
-    missing = [k for k in _RERUN_REQUIRED.get(atype, ()) if not details.get(k)]
+    missing = []
+    for req in _RERUN_REQUIRED.get(atype, ()):
+        alts = (req,) if isinstance(req, str) else tuple(req)
+        if not any(details.get(a) for a in alts):
+            missing.append(' or '.join(alts))
     if missing:
         return jsonify({
             "supported": False,
