@@ -455,20 +455,47 @@
 
                         <!-- Offline LLM -->
                         <div x-show="$store.settings.config.agentic.llm_mode === 'offline'" x-transition>
-                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">Ollama Configuration</div>
+                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">Self-Hosted LLM Configuration</div>
                             <div class="grid grid-cols-5 gap-3">
                                 <div>
-                                    <label class="block text-xs text-gray-400 mb-1">Model</label>
-                                    <select x-model="$store.settings.config.agentic.offline_llm.model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
-                                        <option value="llama3.3:70b">llama3.3:70b</option>
-                                        <option value="llama3.1:8b">llama3.1:8b</option>
-                                        <option value="deepseek-r1:14b">deepseek-r1:14b</option>
-                                        <option value="mistral:7b">mistral:7b</option>
+                                    <label class="block text-xs text-gray-400 mb-1">Server type</label>
+                                    <select x-model="$store.settings.config.agentic.offline_llm.provider"
+                                            @change="$store.settings.loadOfflineModels()"
+                                            class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                        <option value="ollama">Ollama (native)</option>
+                                        <option value="openai-compatible">OpenAI-compatible (LiteLLM / vLLM / LM Studio)</option>
                                     </select>
                                 </div>
                                 <div>
-                                    <label class="block text-xs text-gray-400 mb-1">Ollama URL</label>
-                                    <input type="text" x-model="$store.settings.config.agentic.offline_llm.url" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    <label class="block text-xs text-gray-400 mb-1">Server URL</label>
+                                    <input type="text" x-model="$store.settings.config.agentic.offline_llm.url"
+                                           @change="$store.settings.loadOfflineModels()"
+                                           placeholder="http://10.0.0.5:11434"
+                                           title="The LLM server, which is usually ANOTHER host on the network — it must be reachable from the Intact host, not just from your browser. For OpenAI-compatible servers include the /v1 suffix."
+                                           class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                </div>
+                                <div>
+                                    <!-- Populated from the server itself (GET /api/tags or /v1/models).
+                                         It used to be four hardcoded names, so picking one the server
+                                         did not have failed at report time, mid-case. -->
+                                    <label class="block text-xs text-gray-400 mb-1">
+                                        Model
+                                        <button type="button" @click="$store.settings.loadOfflineModels()"
+                                                class="ml-1 text-blue-400 hover:text-blue-300" title="Re-query the server">&#8635;</button>
+                                    </label>
+                                    <select x-model="$store.settings.config.agentic.offline_llm.model"
+                                            class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                        <template x-if="$store.settings.config.agentic.offline_llm.model &amp;&amp; !$store.settings.offlineModels.some(m =&gt; m.id === $store.settings.config.agentic.offline_llm.model)">
+                                            <option :value="$store.settings.config.agentic.offline_llm.model"
+                                                    x-text="$store.settings.config.agentic.offline_llm.model + ' (not on this server)'"></option>
+                                        </template>
+                                        <template x-for="m in $store.settings.offlineModels" :key="m.id">
+                                            <option :value="m.id" x-text="m.id"></option>
+                                        </template>
+                                    </select>
+                                    <p x-show="$store.settings.offlineModelsError" class="text-xs text-red-400 mt-1"
+                                       x-text="$store.settings.offlineModelsError"></p>
+                                    <p x-show="$store.settings.offlineModelsLoading" class="text-xs text-gray-500 mt-1">Asking the server…</p>
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">Context Size</label>
@@ -489,6 +516,10 @@
                                     <label class="block text-xs text-gray-400 mb-1">Provider</label>
                                     <select x-model="$store.settings.config.agentic.online_llm.provider" @change="$store.settings.onProviderChange()" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
                                         <option value="openrouter">OpenRouter</option>
+                                        <option value="openai">OpenAI</option>
+                                        <option value="claude">Anthropic (Claude)</option>
+                                        <option value="gemini">Google (Gemini)</option>
+                                        <option value="ollama-cloud">Ollama Cloud</option>
                                         <option value="codex-subscription">Codex (Subscription)</option>
                                     </select>
                                 </div>
@@ -840,6 +871,23 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
 
                         <!-- Save Button -->
                         <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
+                            <!-- Test connection: a real one-token round-trip through whatever
+                                 is currently on screen. Hidden for Codex, which has its own
+                                 staged tester in the subscription panel above. -->
+                            <button x-show="!$store.settings.isSubscription()"
+                                    @click="$store.settings.testLlmConnection()"
+                                    :disabled="$store.settings.llmTesting"
+                                    class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-4 py-2 rounded text-sm font-medium mr-2"
+                                    title="Sends a 1-token prompt to the configured model — proves the key, the URL, the model id and the response shape, at effectively zero cost.">
+                                <span x-text="$store.settings.llmTesting ? 'Testing…' : 'Test connection'"></span>
+                            </button>
+                            <template x-if="$store.settings.llmTestResult">
+                                <span class="text-sm mr-3"
+                                      :class="$store.settings.llmTestResult.success ? 'text-green-400' : 'text-red-400'"
+                                      x-text="$store.settings.llmTestResult.success
+                                        ? ('OK — replied in ' + $store.settings.llmTestResult.elapsed_ms + 'ms')
+                                        : ('Failed: ' + ($store.settings.llmTestResult.error || 'unknown'))"></span>
+                            </template>
                             <button @click="$store.settings.saveAgentic()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
                                 <span x-text="$store.settings.saving ? 'Saving...' : 'Save Agentic Settings'"></span>
                             </button>

@@ -34,6 +34,13 @@ document.addEventListener('alpine:init', () => {
             },
         },
         saving: false,
+        // Offline model list, fetched live from whichever server the operator
+        // points at. Not cached: a different URL is a different machine.
+        offlineModels: [],
+        offlineModelsLoading: false,
+        offlineModelsError: '',
+        llmTesting: false,
+        llmTestResult: null,
         message: '',
         messageType: '',
 
@@ -90,6 +97,66 @@ document.addEventListener('alpine:init', () => {
             } catch (e) {
                 console.error('Failed to load settings:', e);
             }
+        },
+
+        // Ask the configured self-hosted server which models it has.
+        //
+        // The list used to be four hardcoded names in the markup, so an
+        // operator could pick a model their server had never pulled and only
+        // find out mid-case, when the report failed with model-not-found.
+        //
+        // Errors are shown, not swallowed: "unreachable" and "server has no
+        // models" need completely different fixes (check the URL vs pull a
+        // model), so the reason from the backend is surfaced verbatim.
+        async loadOfflineModels() {
+            const off = this.config.agentic.offline_llm || {};
+            const url = (off.url || '').trim();
+            this.offlineModelsError = '';
+            if (!url) { this.offlineModels = []; return; }
+            this.offlineModelsLoading = true;
+            try {
+                const qs = new URLSearchParams({ url, kind: off.provider || 'ollama' });
+                if (off.api_key) qs.set('api_key', off.api_key);
+                const r = await fetch('/api/config/ollama/models?' + qs.toString());
+                const d = await r.json();
+                if (d && d.ok) {
+                    this.offlineModels = d.models || [];
+                    if (!this.offlineModels.length) {
+                        this.offlineModelsError = 'That server has no models installed yet.';
+                    }
+                } else {
+                    this.offlineModels = [];
+                    this.offlineModelsError = (d && d.error) || 'Could not list models.';
+                }
+            } catch (e) {
+                this.offlineModels = [];
+                this.offlineModelsError = 'Could not reach the backend: ' + e.message;
+            }
+            this.offlineModelsLoading = false;
+        },
+
+        // Prove the LLM answers, before a report depends on it.
+        //
+        // Tests what is ON SCREEN rather than what is saved, so a key or URL
+        // can be checked before committing it. A catalog refresh only ever
+        // proved a key could LIST models — not that a completion works, that
+        // the chosen model is one this key may use, or anything at all for a
+        // self-hosted server.
+        async testLlmConnection() {
+            if (this.llmTesting) return;
+            this.llmTesting = true;
+            this.llmTestResult = null;
+            try {
+                const r = await fetch('/api/config/llm/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ agentic: this.config.agentic }),
+                });
+                this.llmTestResult = await r.json();
+            } catch (e) {
+                this.llmTestResult = { success: false, error: e.message };
+            }
+            this.llmTesting = false;
         },
 
         async saveAgentic() {

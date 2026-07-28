@@ -396,6 +396,96 @@ def get_gemini_models():
     return _serve_catalog(catalog_module, "gemini", bootstrap=True)
 
 
+@config_bp.route('/api/config/ollama/models', methods=['GET'])
+def get_ollama_models():
+    """Models a SELF-HOSTED server actually has, asked live.
+
+    Query params: `url` (required), `kind` (ollama | openai-compatible),
+    `api_key` (optional, for gateways that require auth).
+
+    Deliberately not routed through _serve_catalog: that machinery serves one
+    global on-disk catalog per provider, which is the wrong shape here. The
+    answer belongs to one specific host — the operator's server is usually
+    another machine on the network, two customers point at different ones, and
+    the list changes whenever someone runs `ollama pull` there.
+
+    Errors return 200 with {ok: false, reason, error} rather than a 4xx: the
+    settings page asks this on every keystroke in the URL field, and a
+    half-typed URL is a normal state to be in, not a failure worth a red
+    console entry.
+    """
+    from services.llm_catalogs.ollama import list_models, OllamaListError
+    url = (request.args.get('url') or '').strip()
+    kind = (request.args.get('kind') or 'ollama').strip()
+    api_key = (request.args.get('api_key') or '').strip() or None
+    try:
+        models = list_models(url, kind=kind, api_key=api_key)
+    except OllamaListError as e:
+        return jsonify({"ok": False, "reason": e.reason, "error": e.message,
+                        "models": []})
+    return jsonify({"ok": True, "models": models, "count": len(models)})
+
+
+@config_bp.route('/api/config/llm/test', methods=['POST'])
+def test_llm_connection():
+    """Prove the configured LLM actually answers, before a report needs it.
+
+    Until now the only signal was a model-catalog refresh, which proves a key
+    can LIST models — not that a completion works, not that the chosen model is
+    one this key may use, and nothing at all for a self-hosted server. The first
+    real confirmation came mid-case, when a report failed.
+
+    Sends max_tokens=1 with a trivial prompt: enough to exercise auth, routing,
+    the model id and the response shape, while costing effectively nothing on a
+    metered provider.
+
+    Body is optional and overlays the saved config, so the operator can test
+    what is on screen before saving it.
+    """
+    import time as _time
+    from services.agentic.analyzers._llm import call_llm
+
+    overlay = request.get_json(silent=True) or {}
+    cfg = _load_config()
+    agentic = dict((cfg.get('agentic') or {}))
+    for k, v in (overlay.get('agentic') or {}).items():
+        if isinstance(v, dict) and isinstance(agentic.get(k), dict):
+            merged = dict(agentic[k]); merged.update(v); agentic[k] = merged
+        else:
+            agentic[k] = v
+
+    # A masked key means "keep what is saved" — the UI never holds the real one.
+    on = agentic.get('online_llm') or {}
+    if isinstance(on.get('api_key'), str) and on['api_key'].startswith('*'):
+        on = dict(on)
+        on['api_key'] = ((cfg.get('agentic') or {}).get('online_llm') or {}).get('api_key', '')
+        agentic['online_llm'] = on
+
+    # One token is all this needs; the saved cap would otherwise let a test
+    # bill like a real report.
+    agentic['max_response_tokens'] = 1
+
+    mode = str(agentic.get('llm_mode', 'online')).lower()
+    provider = ((agentic.get('offline_llm') if mode == 'offline'
+                 else agentic.get('online_llm')) or {}).get('provider')
+
+    started = _time.time()
+    try:
+        reply = call_llm("Reply with exactly: OK", "You are a connectivity probe.",
+                         {'agentic': agentic})
+    except Exception as e:      # noqa: BLE001 — every failure is a REPORTABLE result
+        return jsonify({
+            "success": False, "stage": "prompt", "provider": provider, "mode": mode,
+            "elapsed_ms": int((_time.time() - started) * 1000),
+            "error": f"{type(e).__name__}: {e}"[:400],
+        })
+    return jsonify({
+        "success": True, "stage": "prompt", "provider": provider, "mode": mode,
+        "elapsed_ms": int((_time.time() - started) * 1000),
+        "reply": (reply or "")[:200],
+    })
+
+
 # =============================================================================
 # Frontend Configuration Endpoints
 # =============================================================================

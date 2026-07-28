@@ -240,8 +240,10 @@ def test_three_module_integration():
     assert {"memory", "agentic", "timesketch"} <= srcs, f"all 3 modules merge, got {srcs}"
     with force_sim():
         md = llm_sim.generate_report(g, window=WINDOW, min_severity="medium", case_name="FULL")
-    assert "Vulnerability" in md or "CVE-2024-0001" in md
-    assert "Timeline of Events" in md   # all four modules render into the single report
+    # The CVE assertion that used to sit here went stale when the CVE Scan
+    # module was removed: nothing contributes a vulnerability entity any more,
+    # so it asserted on output the test no longer produces.
+    assert "Timeline of Events" in md   # every module renders into the single report
 
 
 def test_cloud_endpoint_correlation():
