@@ -121,6 +121,93 @@ def _reconcile_velociraptor_hunt(run):
         run["status"] = "completed"
         run["progress"] = 100
 
+# How to replay each run type: the dispatch endpoint, plus how to rebuild the
+# request body from what the run persisted.
+#
+# Deliberately returns a SPEC for the browser to POST rather than re-dispatching
+# server-side. The rerun then travels the exact path the UI uses -- same
+# validation, same workspace header, same error reporting -- instead of a second
+# copy of the launch logic that drifts the first time a route gains a parameter.
+#
+# Investigation runs only. System operations (upgrade, system_purge,
+# prepare_package, offline apply) are deliberately absent: "rerun" one click
+# away in a list is how someone re-triggers a purge or a half-finished upgrade
+# by accident, and those already have their own guarded entry points.
+_RERUN_SPECS = {
+    'velociraptor_collection': ('/api/agentic/run', lambda d: {
+        'blueprint_id': d.get('blueprint_id'),
+        'client_ids': d.get('client_ids') or [],
+        'collection_minutes': d.get('collection_minutes') or 30,
+    }),
+    'velociraptor_hunt': ('/api/velociraptor/bestpractice', lambda d: {
+        'artifacts': d.get('artifacts') or ([d['artifact']] if d.get('artifact') else []),
+        'blueprint_name': d.get('blueprint') or 'Custom',
+        'expire_minutes': d.get('expire_minutes') or 120,
+        'timeout_seconds': d.get('timeout_seconds') or 10000,
+        'cpu_limit': d.get('cpu_limit') or 80,
+        'per_artifact': bool(d.get('per_artifact')),
+        'include_labels': d.get('include_labels') or [],
+    }),
+    'memory': ('/api/memory/run', lambda d: {
+        'client_id': d.get('client_id'),
+        'blueprint_id': d.get('blueprint_id'),
+        'include_yara': d.get('include_yara', True),
+        'case_name': d.get('case_name'),
+    }),
+}
+
+# A payload is only replayable when these are actually present. Checked instead
+# of trusting the type: a run that died before its config was written, or one
+# created by an older release that stored less, would otherwise "rerun" with
+# defaults silently -- a different job wearing the same name.
+_RERUN_REQUIRED = {
+    'velociraptor_collection': ('blueprint_id', 'client_ids'),
+    'velociraptor_hunt': ('artifacts',),
+    'memory': ('client_id',),
+}
+
+
+@dashboard_bp.route('/api/dashboard/automation/<run_id>/rerun-spec', methods=['GET'])
+def rerun_spec(run_id):
+    """How to relaunch `run_id` with its original configuration.
+
+    Returns {supported, endpoint, payload} so the caller can POST it, or
+    {supported: false, reason} explaining why it cannot be replayed. Never
+    launches anything itself -- a GET that started work would rerun on every
+    accidental refresh.
+    """
+    run = get_automation_run(run_id)
+    if not run or not _run_visible_in_active_workspace(run):
+        return jsonify({"error": f"Automation run {run_id} not found"}), 404
+
+    atype = run.get('automation_type')
+    spec = _RERUN_SPECS.get(atype)
+    if not spec:
+        return jsonify({
+            "supported": False,
+            "reason": f"'{atype}' runs cannot be relaunched from here.",
+        })
+
+    details = run.get('details') or {}
+    missing = [k for k in _RERUN_REQUIRED.get(atype, ()) if not details.get(k)]
+    if missing:
+        return jsonify({
+            "supported": False,
+            "reason": ("This run did not record its configuration ("
+                       + ", ".join(missing) + "), so it cannot be reproduced. "
+                       "Launch it from its own page instead."),
+        })
+
+    endpoint, build = spec
+    try:
+        payload = build(details)
+    except Exception as e:      # noqa: BLE001 — a malformed run must not 500
+        return jsonify({"supported": False,
+                        "reason": f"Could not rebuild the configuration: {e}"})
+    return jsonify({"supported": True, "endpoint": endpoint, "payload": payload,
+                    "source_run_id": run_id, "automation_type": atype})
+
+
 @dashboard_bp.route('/api/dashboard/automation/<run_id>/stop', methods=['POST'])
 def stop_automation(run_id):
     """Stop a running workflow and clean up its resources"""

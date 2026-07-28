@@ -123,6 +123,24 @@
                                                         Stop
                                                     </button>
                                                 </template>
+                                                <!-- Rerun: relaunch with the ORIGINAL configuration. Only
+                                                     for finished runs — rerunning something still in
+                                                     flight would race two identical jobs against the same
+                                                     clients. Whether the run can actually be reproduced is
+                                                     decided server-side from what it persisted, so the
+                                                     button reports honestly instead of silently relaunching
+                                                     with defaults. -->
+                                                <template x-if="['completed','failed','cancelled'].includes(run.status)">
+                                                    <button @click.stop="$store.workflows.rerun(run.id)"
+                                                            :disabled="$store.workflows.rerunning === run.id"
+                                                            style="color:#fff;background-color:#7c3aed;"
+                                                            class="hover:bg-violet-700 disabled:opacity-50 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                                                        </svg>
+                                                        <span x-text="$store.workflows.rerunning === run.id ? 'Starting…' : 'Rerun'"></span>
+                                                    </button>
+                                                </template>
                                                 <button @click.stop="$store.workflows.viewLogs(run.id)" style="color:#fff;background-color:#475569;" class="hover:bg-slate-600 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1">
                                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
