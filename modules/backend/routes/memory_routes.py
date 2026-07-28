@@ -440,6 +440,15 @@ def create_memory_blueprint():
     data = request.get_json(silent=True) or {}
     if not data.get("name"):
         return jsonify({"error": "name is required"}), 400
+    # Every write must have a real id — without this, save_blueprint()
+    # inserts (id=NULL, ...), the follow-up get-by-id lookup finds nothing,
+    # and the route returns {"blueprint": null} with a 201 while silently
+    # clobbering the same NULL-id row on every subsequent create. Mirrors
+    # the id-generation already done by the sibling /api/blueprints/memory
+    # route (routes/blueprint_routes.py), which writes the SAME table.
+    if not data.get("id"):
+        import time
+        data["id"] = f"custom_{int(time.time() * 1000)}"
     bp = save_blueprint(_BLUEPRINT_TYPE, data)
     return jsonify({"blueprint": bp}), 201
 
