@@ -568,12 +568,36 @@ def list_upgrade_refs():
     (not page-load chatter). Returns cached results within the 30-minute
     TTL — so a double-click only spends one GitHub call.
     """
-    err = _quota_preflight_or_jsonify(1, "refs fetch")
+    # force=true is the operator explicitly asking GitHub again (opening the
+    # modal, or the refresh button). Costs 2 calls: /releases plus
+    # /releases/latest for the (latest) badge.
+    force = bool((request.get_json(silent=True) or {}).get('force'))
+
+    # Distinguish "no internet" from "GitHub said no" BEFORE spending the
+    # quota preflight — offline is the common case on an air-gapped or
+    # firewalled box, and "rate limit" or a bare socket error reads as a
+    # product fault rather than a missing link. Only probe on a forced
+    # fetch; a cached answer is still perfectly serviceable offline.
+    if force:
+        try:
+            from services.connectivity import has_internet
+            if not has_internet():
+                return jsonify({
+                    "success": False,
+                    "offline": True,
+                    "error": "No internet connection — cannot reach GitHub to "
+                             "list releases. Showing nothing rather than a "
+                             "stale list; reconnect and press refresh.",
+                }), 503
+        except Exception:
+            pass          # probe itself failed — fall through and let the real call decide
+
+    err = _quota_preflight_or_jsonify(2 if force else 1, "refs fetch")
     if err: return err
     try:
         from services.upgrade.resolver import list_github_refs, ResolverError
         try:
-            refs = list_github_refs(user_action='fetch')
+            refs = list_github_refs(user_action='fetch', force=force)
         except ResolverError as e:
             return jsonify({"success": False, "error": str(e)}), 502
         return jsonify({"success": True, "refs": refs})

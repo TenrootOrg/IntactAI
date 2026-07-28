@@ -873,10 +873,22 @@ document.addEventListener('alpine:init', () => {
             this.selectedRef = '';
             this.upgradePlan = null;
             try {
-                const r = await this._fetchWithTimeout('/api/upgrade/refs', { method: 'POST' });
+                // force: always ask GitHub. Both callers are explicit operator
+                // actions (opening the modal, pressing refresh), and the 30-min
+                // cache made a release whose CI package had only just finished
+                // invisible — with a refresh button that read the same cache and
+                // so could not break out of it.
+                const r = await this._fetchWithTimeout('/api/upgrade/refs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ force: true }),
+                });
                 const d = await r.json();
                 if (d && d.success) {
                     this.upgradeRefs = d.refs || [];
+                } else if (d && d.offline) {
+                    this.showTopToast('No internet connection — cannot reach GitHub to list '
+                                    + 'releases. Reconnect and press refresh.', 'error');
                 } else {
                     this.showTopToast('Could not fetch releases: ' + (d.error || 'unknown'), 'error');
                 }
