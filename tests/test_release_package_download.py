@@ -220,6 +220,83 @@ def test_stop_aborts_the_download():
         D._cancel_event = orig
 
 
+def test_progress_is_one_status_line_not_per_part_spam():
+    """A 4-part package logging every ~5% per part emits ~80 interleaved lines.
+    The central reporter replaces them with a single status line."""
+    lines = []
+    fake = _Fake()
+    orig_get, orig_floor = D.requests.get, D._PART_LOG_FLOOR
+    D.requests.get = fake.get
+    # Without this the assertion is VACUOUS: report_every floors at 50 MB, so a
+    # 256 KB fixture part could never emit a per-part line even with logging
+    # fully enabled, and the test would pass no matter what the pool passes.
+    D._PART_LOG_FLOOR = 32 * 1024
+    tmp = tempfile.mkdtemp(prefix="pkgdl_")
+    try:
+        D.download_release_package(TAG, tmp, run_id=None,
+                                   logger=lambda m, l="info": lines.append(m),
+                                   progress_cb=None)
+        status = [m for m in lines if m.startswith(D._PROGRESS_MARKER)]
+        assert status, "no aggregated status line was emitted"
+        per_part = [m for m in lines if m.lstrip().startswith("…")]
+        assert not per_part, (
+            f"per-part progress lines leaked into the log: {per_part[:3]} -- the "
+            f"pool must pass log_progress=False")
+    finally:
+        D.requests.get, D._PART_LOG_FLOOR = orig_get, orig_floor
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_status_line_shape_and_final_state():
+    """Format: [part n/N] X/Y MB (pct%) | (Completed) | queued."""
+    lines = []
+    fake = _Fake()
+    orig = D.requests.get
+    D.requests.get = fake.get
+    tmp = tempfile.mkdtemp(prefix="pkgdl_")
+    try:
+        D.download_release_package(TAG, tmp, run_id=None,
+                                   logger=lambda m, l="info": lines.append(m),
+                                   progress_cb=None)
+        final = [m for m in lines if m.startswith(D._PROGRESS_MARKER)][-1]
+        for i in range(N_PARTS):
+            assert f"[part {i + 1}/{N_PARTS}]" in final, (
+                f"part {i + 1} missing from the status line: {final}")
+        assert final.count("(Completed)") == N_PARTS, (
+            f"final line should show every part Completed: {final}")
+        assert "100%" in final, f"final line should read 100%: {final}"
+    finally:
+        D.requests.get = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_per_part_lines_still_work_without_a_central_reporter():
+    """The single-asset path (whole, unsplit package) keeps its own progress
+    lines -- there is no reporter there. Lower the floor so a small fixture
+    can trigger them; inline it could not, and this would pass vacuously."""
+    lines = []
+    fake = _Fake()
+    orig_get, orig_floor = D.requests.get, D._PART_LOG_FLOOR
+    D.requests.get = fake.get
+    D._PART_LOG_FLOOR = 32 * 1024          # well under PART_SIZE
+    tmp = tempfile.mkdtemp(prefix="pkgdl_")
+    try:
+        D._download_asset("asset://part/0", os.path.join(tmp, "one.bin"),
+                          PART_SIZE, None, lambda m, l="info": lines.append(m),
+                          None, " [part 1/1]", True)
+        assert any(m.lstrip().startswith("…") for m in lines), (
+            "a standalone asset download logged no progress at all")
+        lines.clear()
+        D._download_asset("asset://part/1", os.path.join(tmp, "two.bin"),
+                          PART_SIZE, None, lambda m, l="info": lines.append(m),
+                          None, " [part 1/1]", False)
+        assert not any(m.lstrip().startswith("…") for m in lines), (
+            "log_progress=False did not suppress the per-asset lines")
+    finally:
+        D.requests.get, D._PART_LOG_FLOOR = orig_get, orig_floor
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
