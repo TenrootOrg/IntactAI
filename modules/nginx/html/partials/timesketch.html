@@ -1,4 +1,4 @@
-            <div x-show="$store.app.currentTab === 'modules-timesketch'" x-transition class="tab-panel">
+            <div x-show="$store.app.currentTab === 'modules-timesketch'" data-automation-tab="modules-timesketch" x-transition class="tab-panel">
                 <h2 class="text-3xl font-bold text-white mb-2">TimeSketch Automation</h2>
                 <p class="text-gray-400 mb-6">Collect forensic artifacts and create investigation timelines</p>
 
@@ -138,7 +138,7 @@
                                 <div class="bg-gray-700 rounded-full h-2.5">
                                     <div id="ts-upload-bar" class="bg-gradient-to-r from-purple-500 to-blue-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
                                 </div>
-                                <p id="ts-upload-status" class="text-xs text-gray-400 mt-1"></p>
+                                <p id="ts-upload-status" class="js-run-status text-xs text-gray-400 mt-1"></p>
                             </div>
                         </div>
 

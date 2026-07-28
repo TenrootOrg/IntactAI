@@ -1,4 +1,4 @@
-            <div x-show="$store.app.currentTab === 'cloud-aws'" x-transition class="tab-panel"
+            <div x-show="$store.app.currentTab === 'cloud-aws'" data-automation-tab="cloud-aws" x-transition class="tab-panel"
                  x-data="{
                      awsMode: 'online',
                      awsStatus: null,
@@ -173,7 +173,7 @@
                          this.$store.app.switchTab('workflows');
                      }
                  }"
-                 x-init="checkAwsStatus(); loadCustomRules()">
+                 x-init="TabReset.arm($data, 'cloud-aws', { keep: ['awsBlueprints', 'awsStatus', 'awsRunning'] }); checkAwsStatus(); loadCustomRules()">
 
                 <h2 class="text-3xl font-bold text-white mb-2">AWS Security Automation</h2>
                 <p class="text-gray-400 mb-6">Collect AWS events &amp; state (CloudTrail, IAM principals, GuardDuty, AccessAnalyzer) and run SIGMA detection. Findings feed the case for analysis.</p>

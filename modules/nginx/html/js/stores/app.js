@@ -53,9 +53,84 @@ document.addEventListener('alpine:init', () => {
             localStorage.setItem('sidebarCollapsed', this.sidebarCollapsed);
         },
 
+        // Wipe the "run started / redirecting…" banners an automation page
+        // leaves behind. Starting a run shows one, then navigates to Workflows
+        // 600ms later — but nothing ever cleared it, so coming back to
+        // Velociraptor (or TimeSketch, or CVE) showed the PREVIOUS run's
+        // message as if it had just happened. Worst case the operator reads a
+        // stale run id and goes looking for the wrong workflow.
+        //
+        // Driven by the js-run-status class rather than a hardcoded id list,
+        // so a new automation page gets this by adding the class — a list here
+        // would silently rot the first time someone forgets to update it.
+        // Store-backed banners have no element to find, so they are reset
+        // explicitly; each guard is independent because these stores are
+        // registered by separately-loaded partials and may not exist yet.
+        _clearRunStatus() {
+            // Banners are plain DOM (getElementById + innerHTML), so they are
+            // invisible to the snapshot reset in TabReset. Driven by a class
+            // rather than a hardcoded id list: a new automation page gets this
+            // by adding js-run-status, whereas a list here rots silently the
+            // first time someone forgets to update it.
+            try {
+                document.querySelectorAll('.js-run-status').forEach(el => {
+                    el.innerHTML = '';
+                    el.classList.add('hidden');
+                });
+            } catch (e) { /* pre-Alpine / headless */ }
+        },
+
+        // Restore plain form controls in the entered panel to their markup
+        // defaults. Velociraptor and TimeSketch drive their forms with
+        // getElementById rather than Alpine, so TabReset's snapshot cannot see
+        // them — a client filter, a selection, a changed collection time all
+        // survived a tab switch.
+        //
+        // x-model inputs are SKIPPED deliberately: Alpine owns those, and
+        // writing .value behind its back desyncs the two (Alpine overwrites on
+        // the next reactive tick, so the reset would appear to work and then
+        // silently undo itself). Those panels are armed with TabReset instead.
+        _resetPanelInputs(tab) {
+            try {
+                const panel = document.querySelector(`[data-automation-tab="${tab}"]`);
+                if (!panel) return;
+                panel.querySelectorAll('input, select, textarea').forEach(el => {
+                    if (el.hasAttribute('x-model')) return;
+                    if (el.type === 'checkbox' || el.type === 'radio') {
+                        el.checked = el.defaultChecked;
+                    } else if (el.tagName === 'SELECT') {
+                        // defaultSelected is per-option; fall back to the first
+                        // option when the markup marks none.
+                        let restored = false;
+                        Array.from(el.options).forEach(o => {
+                            o.selected = o.defaultSelected;
+                            restored = restored || o.defaultSelected;
+                        });
+                        if (!restored) el.selectedIndex = 0;
+                    } else if (el.type !== 'file') {
+                        el.value = el.defaultValue;
+                    } else {
+                        el.value = '';        // file inputs reject any other value
+                    }
+                });
+            } catch (e) { /* headless */ }
+        },
+
         switchTab(tab) {
+            // Clear before the tab renders, so the incoming panel never paints
+            // the previous run's banner, even for a frame.
+            this._clearRunStatus();
+            this._resetPanelInputs(tab);
             this.currentTab = tab;
             window.location.hash = tab;
+            // Panels armed with TabReset.arm() restore their defaults here.
+            // Fired AFTER currentTab so a panel's own x-init/$watch (which
+            // repopulates dropdowns) runs against already-reset state rather
+            // than being undone by it.
+            try {
+                window.dispatchEvent(new CustomEvent('automation-tab-entered',
+                                                     { detail: tab }));
+            } catch (e) { /* headless */ }
             if (tab.startsWith('modules-')) {
                 this.modulesOpen = true;
             }

@@ -1,4 +1,4 @@
-            <div x-show="$store.app.currentTab === 'modules-forensics'" x-transition class="tab-panel" x-data="{ forensicsTab: 'collections', forensicsMode: 'ai' }" x-init="$watch('$store.app.currentTab', val => val === 'modules-forensics' && initForensicsTab('ai'))">
+            <div x-show="$store.app.currentTab === 'modules-forensics'" data-automation-tab="modules-forensics" x-transition class="tab-panel" x-data="{ forensicsTab: 'collections', forensicsMode: 'ai' }" x-init="$watch('$store.app.currentTab', val => val === 'modules-forensics' && initForensicsTab('ai'))">
                 <div class="flex items-center justify-between mb-2">
                     <h2 class="text-3xl font-bold text-white">Velociraptor</h2>
                 </div>
@@ -169,7 +169,7 @@
                             </svg>
                             <span x-text="forensicsMode === 'raw' ? 'Run Hunt' : 'Start Collection'"></span>
                         </button>
-                        <div id="forensics-status" class="mt-3 text-sm text-gray-400 hidden"></div>
+                        <div id="forensics-status" class="js-run-status mt-3 text-sm text-gray-400 hidden"></div>
                     </div>
                 </div>
 
@@ -313,7 +313,7 @@
                                     </svg>
                                     Generate Collector
                                 </button>
-                                <div id="offline-gen-status" class="text-sm text-gray-400 hidden"></div>
+                                <div id="offline-gen-status" class="js-run-status text-sm text-gray-400 hidden"></div>
                             </div>
                         </div>
                     </div>
@@ -356,7 +356,7 @@
                                     </svg>
                                     Import Results
                                 </button>
-                                <div id="offline-import-status" class="text-sm text-gray-400 hidden"></div>
+                                <div id="offline-import-status" class="js-run-status text-sm text-gray-400 hidden"></div>
                             </div>
                         </div>
 
