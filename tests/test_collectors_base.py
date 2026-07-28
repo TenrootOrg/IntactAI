@@ -71,6 +71,57 @@ def test_whitespace_os_is_trimmed_and_skipped():
     assert out == {}
 
 
+# ---------------------------------------------------------------------------
+# VQL injection boundary.
+#
+# Both helpers build `WHERE client_id IN ('{"', '".join(client_ids)}')` — a
+# single quote in one element closes the literal and the rest is parsed as VQL.
+# The scheduler's PUT route is validated now, but a job poisoned BEFORE that fix
+# is still on disk and fires on its next tick, where the route guard cannot
+# reach it. These assert the sink refuses on its own.
+# ---------------------------------------------------------------------------
+
+POISON = "C.aaa' OR 1=1 --"
+
+
+class _RecordingStub(_Stub):
+    """Captures the VQL actually sent, so a test can prove nothing was sent."""
+
+    def __init__(self, rows=None):
+        super().__init__(rows or [])
+        self.queries = []
+
+    def Query(self, request, timeout=None):
+        self.queries.append(request.Query[0].VQL)
+        yield from super().Query(request, timeout=timeout)
+
+
+def test_get_client_os_never_sends_a_quote_bearing_id():
+    stub = _RecordingStub([{"client_id": "C.1", "OS": "windows"}])
+    out = get_client_os(stub, [POISON])
+    assert out == {}, out
+    assert stub.queries == [], f"poisoned id reached the server: {stub.queries}"
+
+
+def test_get_client_hostnames_never_sends_a_quote_bearing_id():
+    from services.agentic.collectors._base import get_client_hostnames
+    stub = _RecordingStub([{"client_id": "C.1", "Hostname": "H"}])
+    out = get_client_hostnames(stub, [POISON])
+    assert out == {}, out
+    assert stub.queries == [], f"poisoned id reached the server: {stub.queries}"
+
+
+def test_a_poisoned_id_does_not_take_valid_ones_down_with_it():
+    """Filter, don't abort: one bad id in a batch must not silently cancel
+    collection against the operator's legitimate hosts."""
+    stub = _RecordingStub([{"client_id": "C.1", "OS": "windows"}])
+    out = get_client_os(stub, [POISON, "C.1"])
+    assert out == {"C.1": "windows"}, out
+    assert len(stub.queries) == 1
+    assert POISON not in stub.queries[0]
+    assert "C.1" in stub.queries[0]
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
