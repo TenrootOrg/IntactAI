@@ -886,6 +886,22 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
                 raise Exception(f"Timesketch failed to start - container status: {container_status}")
             log("Timesketch health check: TIMEOUT (containers may still be starting)", "warning")
 
+        # Honest health gate (G5). The pgrep loop above only proves gunicorn
+        # owns a PID, and its timeout path logs a warning and CONTINUES — a
+        # "may still be starting" pending-success. This converts a genuinely
+        # 'down' module into a real failure so the except-rollback below
+        # restores the previous version; 'degraded' never raises. Timesketch
+        # is HEALTH_POLICY 'rollback' (proven .env-restore rollback).
+        #
+        # This assignment is also what the success result below reads. Without
+        # it `health` was an undefined global, so a FULLY SUCCESSFUL upgrade —
+        # data verified, row counts preserved — raised NameError on the last
+        # line and fell into the rollback handler. The offline variant has had
+        # this call since Wave-4; only the online path was left behind.
+        log("Waiting for Timesketch to become healthy...", "info")
+        from .base import enforce_module_health
+        health = enforce_module_health('timesketch', timeout=150, logger=log)
+
         # Run the alembic schema migration from inside the NEW container.
         # This is the step that was missing before — without it the new
         # container code can hit columns/tables the old schema doesn't have,
