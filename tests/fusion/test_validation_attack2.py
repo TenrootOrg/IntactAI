@@ -46,9 +46,25 @@ def test_coordinated_activity_and_defender_critical():
 
 
 def test_detection_linking_connects_the_graph():
+    """Detections attach to processes instead of orphaning.
+
+    This asserted `>= 50`, a number calibrated before ingest-time filtering
+    landed. `_g()` passes a 30-minute WINDOW: the mapper still emits 93
+    event_about edges on this fixture, but only 20 survive the window — so the
+    threshold was failing on a deliberate feature, not a regression.
+
+    Assert the structural invariant the test is named for instead. The `all()`
+    clause is the part with teeth: it catches edges pointing at entities that
+    do not exist or are of the wrong type, which a bare count never could.
+    """
     g = _g()
-    ea = sum(1 for r in g.relationships if r.kind == "event_about")
-    assert ea >= 50, "detections must be linked to processes (not orphan events)"
+    proc_ids = {e.id for e in g.by_type("process")}
+    ev_ids = {e.id for e in g.by_type("event")}
+    ea = [r for r in g.relationships if r.kind == "event_about"]
+    assert ea, "detections must be linked to processes (not orphan events)"
+    assert all(r.src in proc_ids and r.dst in ev_ids for r in ea), \
+        "every event_about must connect a real process to a real event"
+    assert len(ea) >= 10, f"detection linking collapsed: only {len(ea)} edges"
 
 
 def test_no_provisioning_false_positives():

@@ -488,9 +488,17 @@ def test_agentic_namedpipe_to_event_linked_to_process():
               {"PipeName": "\\msagent_cc", "ProcPid": 800, "ProcName": "rundll32.exe",
                "_client_id": "C.z", "_hostname": "H"}]}
     g = correlate.assemble("c", [map_agentic(cd, run_id="a", hostnames={"C.z": "H"})], ["a"])
-    pipe_ev = [e for e in g.by_type("event") if "named pipe" in e.label]
+    # Match on the carried attribute, not the display label. This looked for
+    # "named pipe" while the mapper has always emitted "named-pipe detection";
+    # a hyphen was failing a test whose subject — the event_about link — was
+    # working the whole time.
+    pipe_ev = [e for e in g.by_type("event") if e.attrs.get("pipe") == "\\msagent_cc"]
     assert pipe_ev, "named pipe -> event"
-    assert any(r.kind == "event_about" for r in g.relationships), "pipe event linked to its process"
+    # ...and check the edge reaches THIS event. The old form accepted any
+    # event_about anywhere in the graph, so it would have passed even if the
+    # pipe event were orphaned.
+    assert any(r.kind == "event_about" and r.dst == pipe_ev[0].id
+               for r in g.relationships), "pipe event linked to its process"
 
 
 if __name__ == "__main__":

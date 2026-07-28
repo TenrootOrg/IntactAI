@@ -13,13 +13,32 @@ import tests.fusion.test_fusion as T  # noqa: E402
 
 
 def test_degrades_silently_without_es():
-    # Real environment here has no ES — must no-op, not raise.
-    g = T.build()
-    n_findings = len(g.findings)
-    assert kb.index_case_entities("c", g) == 0
-    assert kb.lookup_sightings({"5.100.251.10"}) == {}
-    assert kb.enrich(g, current_case_id="c") == 0
-    assert len(g.findings) == n_findings, "KB must never create or drop findings"
+    """Force ES absent rather than assuming it.
+
+    This used to open with "Real environment here has no ES" and simply call
+    through. On any box with ELK enabled that premise is false: `kb._es()`
+    returns a live client, `index_case_entities` indexes for real and returns a
+    non-zero count, and the test fails while asserting nothing about the
+    degrade path it is named for.
+
+    Worse, it was WRITING. Every run put this fixture's IOCs, accounts and YARA
+    hits into the production `intact_fusion_entities` index under case_id "c",
+    where `enrich()` then surfaces them as "prior sightings" in unrelated real
+    cases. Four such documents were found and removed. The fusion runner's
+    INTACT_STORAGE_BASE isolation only redirects SQLite, so ES has to be shut
+    off here, in the test.
+    """
+    saved = kb._es
+    kb._es = lambda: None
+    try:
+        g = T.build()
+        n_findings = len(g.findings)
+        assert kb.index_case_entities("c", g) == 0
+        assert kb.lookup_sightings({"5.100.251.10"}) == {}
+        assert kb.enrich(g, current_case_id="c") == 0
+        assert len(g.findings) == n_findings, "KB must never create or drop findings"
+    finally:
+        kb._es = saved
 
 
 def test_enrichment_raises_confidence_on_prior_sighting():

@@ -89,8 +89,13 @@ def test_agentic_details_collected_data_takes_precedence():
 def test_collect_only_report_is_informative():
     from services.agentic.pipeline import _collect_only_report
     md = _collect_only_report(120, {"Windows.Hayabusa.Rules": [], "Generic.System.Pstree": []}, 3)
-    assert "collection-only" in md.lower() and "Case" in md and "120 rows" in md
-    assert "Hayabusa" in md  # lists the artifacts collected
+    # Assert the contract the function documents — states what was collected
+    # and points the operator at fusion — not a literal heading. This required
+    # the phrase "collection-only", which the report has never used; the
+    # shipped wording is "Collection complete", and it is the better wording.
+    assert "120 rows" in md and "3 client(s)" in md      # what was collected
+    assert "Hayabusa" in md and "Pstree" in md           # lists the artifacts
+    assert "case" in md.lower() and "fuse" in md.lower()  # points at fusion
 
 
 if __name__ == "__main__":
