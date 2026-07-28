@@ -243,6 +243,35 @@ def test_ollama_cloud_lists_against_the_hosted_openai_endpoint():
     assert [m["id"] for m in models] == ["gpt-oss:120b"], models
 
 
+def test_the_subscription_provider_is_named_the_same_in_both_places():
+    """Its name lives twice: the provider <option> the operator picks, and
+    PROVIDERS[...]['label'] the CLI panel shows once picked. Drift between them
+    reads as two different providers on one screen.
+
+    Also asserts every dropdown entry names its VENDOR. This one used to read
+    just 'Codex (Subscription)', which is a tool, not a vendor — and once plain
+    'OpenAI' joined the list, nothing said the two were the same company billed
+    two different ways.
+    """
+    import os
+    import re
+    from services.agentic.subscription_cli import PROVIDERS
+
+    html = os.path.join(os.environ.get("INTACT_PATH", "/app/workdir"),
+                        "modules/nginx/html/partials/settings.html")
+    with open(html, encoding="utf-8") as fh:
+        markup = fh.read()
+
+    label = PROVIDERS["codex-subscription"]["label"]
+    m = re.search(r'<option value="codex-subscription">([^<]+)</option>', markup)
+    assert m, "the subscription provider lost its <option> in the dropdown"
+    assert m.group(1) == label, (
+        f"dropdown says {m.group(1)!r} but the CLI panel says {label!r}")
+    assert "OpenAI" in label, (
+        f"{label!r} does not name its vendor, so it cannot be told apart from "
+        f"the plain OpenAI entry")
+
+
 def test_one_providers_key_is_never_sent_to_another():
     """The config stores a SINGLE online_llm.api_key, owned by whichever
     provider is selected. Reading that field directly hands it to whoever asks.

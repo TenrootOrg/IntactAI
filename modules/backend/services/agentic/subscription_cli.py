@@ -56,7 +56,10 @@ _PKG_HOME = os.path.join(_CLI_ROOT, "pkg")
 # codex explicitly (install/login are vendor-specific by nature).
 PROVIDERS = {
     "codex-subscription": {
-        "label": "Codex (Subscription)",
+        # Keep in step with the provider <option> in partials/settings.html —
+        # this label is what the CLI panel shows once the provider is selected,
+        # so a mismatch reads as two different providers.
+        "label": "OpenAI Codex (Subscription)",
         "binary": "codex",
         "secret_key": "codex_cli_auth",
         "home_env": "CODEX_HOME",

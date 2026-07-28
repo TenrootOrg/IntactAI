@@ -520,7 +520,14 @@
                                         <option value="claude">Anthropic (Claude)</option>
                                         <option value="gemini">Google (Gemini)</option>
                                         <option value="ollama-cloud">Ollama Cloud</option>
-                                        <option value="codex-subscription">Codex (Subscription)</option>
+                                        <!-- Vendor first, like every option above it, because this
+                                             and the plain `openai` entry are the SAME vendor and
+                                             differ only in how they bill — which "Codex" alone did
+                                             not say. "Codex" is kept because the operator-facing
+                                             machinery all uses that word (codex-cli in the status
+                                             line, `codex login`, openai/codex installer), so the
+                                             label has to map to it while troubleshooting. -->
+                                        <option value="codex-subscription">OpenAI Codex (Subscription)</option>
                                     </select>
                                 </div>
                                 <div>
