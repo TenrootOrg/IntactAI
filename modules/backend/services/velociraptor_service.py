@@ -330,17 +330,29 @@ def get_hunt_description(hunt_id):
             channel.close()
 
 
-def is_hunt_collection_complete(hunt_id):
-    """Return True once every client Velociraptor scheduled for this hunt has
-    actually finished its flow (real data collected), not just when the hunt
-    object itself was created.
+def is_hunt_registered(hunt_id):
+    """Return True once Velociraptor actually has this hunt.
 
-    A hunt stays in VQL state 'RUNNING' for its whole expire window (it keeps
-    listening for new clients to join), so 'state' alone can't signal
-    completion for the common case here — one or a few known clients. The
-    real signal is the hunt's own stats: every scheduled client has finished.
-    Returns False (not complete) on any lookup failure — callers should leave
-    the run's status untouched rather than flip it on an unknown result."""
+    The workflow's deliverable is CREATING the hunt. Once Velociraptor holds
+    it, the hunt collects over its own expire window on its own schedule —
+    that is Velociraptor's job, not the run's, and the operator watches it in
+    the Velociraptor UI.
+
+    This used to wait for collection to finish:
+
+        return scheduled > 0 and finished >= scheduled
+
+    which never became true when no client was online at dispatch, because
+    Velociraptor only schedules a client when it checks in. Observed on
+    H.D9K786G1CQ8Q4: all 9 clients last seen 44.7 hours earlier, so
+    total_clients_scheduled stayed 0 and `scheduled > 0` pinned the run at
+    'running' forever — not merely until the 120-minute window expired, but
+    permanently, since the guard could never pass. The hunt itself was fine.
+
+    Confirmed against Velociraptor rather than trusting the create call: the
+    run should only close on evidence the hunt exists where it matters.
+    Returns False on any lookup failure so a gRPC blip leaves the run's
+    status untouched instead of falsely completing it."""
     if not hunt_id:
         return False
     channel = None
@@ -349,7 +361,7 @@ def is_hunt_collection_complete(hunt_id):
         if not channel:
             return False
         stub = api_pb2_grpc.APIStub(channel)
-        vql = ("SELECT stats FROM hunts() "
+        vql = ("SELECT hunt_id FROM hunts() "
                f"WHERE hunt_id = '{hunt_id}' LIMIT 1")
         req = api_pb2.VQLCollectorArgs(
             max_wait=10, max_row=1,
@@ -361,14 +373,15 @@ def is_hunt_collection_complete(hunt_id):
                     rows = json.loads(resp.Response)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(rows, list) and rows:
-                    stats = rows[0].get("stats") or {}
-                    scheduled = stats.get("total_clients_scheduled") or 0
-                    finished = stats.get("total_finished_clients") or 0
-                    return scheduled > 0 and finished >= scheduled
+                # A row means Velociraptor knows the hunt. Its state is
+                # deliberately NOT checked: RUNNING/PAUSED/STOPPED are all
+                # states of a hunt that exists, and the run's job was to put
+                # it there.
+                if isinstance(rows, list) and rows and rows[0].get("hunt_id"):
+                    return True
         return False
     except Exception as e:
-        print(f"[GRPC] is_hunt_collection_complete({hunt_id}) failed: {e}", flush=True)
+        print(f"[GRPC] is_hunt_registered({hunt_id}) failed: {e}", flush=True)
         return False
     finally:
         # This is polled by _reconcile_velociraptor_hunt on every dashboard
