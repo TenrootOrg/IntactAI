@@ -1147,10 +1147,16 @@ def prepare_upgrade_package():
         thread = threading.Thread(target=run_prepare, daemon=True)
         thread.start()
 
+        # NB: no `modules` in scope here — this route is download-only and takes
+        # a single `target` ref. A leftover f"{len(modules)}" raised NameError
+        # AFTER the run was created and the thread started, so the outer except
+        # returned a 500 and the UI reported "Upgrade request failed" for a
+        # preparation that was in fact running (and which then blocked the
+        # retry via the single-writer gate).
         return jsonify({
             "success": True,
             "run_id": run_id,
-            "message": f"Package preparation started for {len(modules)} module(s)"
+            "message": f"Package preparation started for {target}"
         })
 
     except Exception as e:
