@@ -1272,7 +1272,13 @@ document.addEventListener('alpine:init', () => {
                 const d = await r.json();
                 if (r.ok && d.success) {
                     this.showMessage(label + ' started — follow it in Actions', 'success');
-                    window.dispatchEvent(new CustomEvent('show-system-actions'));
+                    // gotoSystemWorkflows() rather than a bare
+                    // 'show-system-actions' dispatch: it also switches to the
+                    // settings tab and re-fires after 400ms, so it still lands
+                    // when the settings partial is mid-lazy-load. A single
+                    // dispatch only worked because the operator happened to
+                    // already be on this tab.
+                    window.ActiveCase.gotoSystemWorkflows();
                 } else {
                     this.showMessage(label + ' could not start: ' + (d.error || 'unknown error'), 'error');
                 }
@@ -1304,7 +1310,13 @@ document.addEventListener('alpine:init', () => {
                 });
                 const d = await r.json();
                 if (r.ok && d.success) {
-                    this.showMessage('New code requested', 'success');
+                    // Starts a `settings` workflow exactly like Connect does, so
+                    // it jumps to Actions the same way. The device URL + new code
+                    // are logged into that run, so the operator lands on the page
+                    // that shows them rather than on a panel that has just been
+                    // blanked by the cliLogin reset above.
+                    this.showMessage('New code requested — follow it in Actions', 'success');
+                    window.ActiveCase.gotoSystemWorkflows();
                 } else {
                     this.showMessage('Could not get a new code: ' + (d.error || 'unknown error'), 'error');
                 }
