@@ -68,9 +68,22 @@ services:
       - ./config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
       - ./config/pipeline:/usr/share/logstash/pipeline:ro
     ports:
-      - "5044:5044"      # Beats input
-      - "50000:50000"    # TCP input
-      - "9600:9600"      # API
+      # Loopback-only. Both ingestion inputs accept events with NO TLS and NO
+      # authentication (see config/pipeline/main.conf) and index everything
+      # straight into intact-*, the index analysts pivot on — so anyone who
+      # could route to this host could forge or flood incident evidence. The
+      # management API on 9600 answers unauthenticated too and fingerprints the
+      # service. Elasticsearch itself requires credentials, which made the open
+      # input side the weak edge rather than the store.
+      #
+      # Nothing in this repo ships to these ports: no filebeat/winlogbeat
+      # config exists, and the Velociraptor Elastic upload artifact writes
+      # directly to intact_elasticsearch:9200. If a deployment does add a beats
+      # agent later, publish the port deliberately WITH TLS and auth rather
+      # than reverting this.
+      - "127.0.0.1:5044:5044"      # Beats input
+      - "127.0.0.1:50000:50000"    # TCP input
+      - "127.0.0.1:9600:9600"      # API
     restart: unless-stopped
     depends_on:
       elasticsearch:

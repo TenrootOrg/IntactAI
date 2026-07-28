@@ -18,7 +18,7 @@ its installer, and the migration preserves all three:
 |---|---|
 | the **CA certificate** | the legacy CA cert + private key are transplanted into intact's `server.config.yaml` |
 | the **nonce** (`Client.nonce`) | transplanted verbatim |
-| **`server_urls`** (`https://<host>:8000/`) | same machine + intact publishes the same 8000/8001/8889 ports; intact's `domain` is pre-set to the legacy host |
+| **`server_urls`** (`https://<host>:8000/`) | same machine + intact publishes the same **8000** port, which is the only one a client ever contacts; intact's `domain` is pre-set to the legacy host |
 
 The client's identity (its keypair → `client_id`) lives in the client's own
 writeback file, so once trust + endpoint match, every client reconnects as

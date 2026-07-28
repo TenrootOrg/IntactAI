@@ -45,9 +45,22 @@ services:
       # 5 GB dump. The host directory is created by install.sh.
       - memory_dumps_shared:/data/memory_dumps:rw
     ports:
-      - "8889:8889"   # GUI (HTTP)
-      - "8000:8000"   # TLS Frontend (client connections)
-      - "8001:8001"   # gRPC API
+      # 8000 is the ONLY port that belongs on a public interface: every enrolled
+      # endpoint phones home here over TLS, and README's firewall matrix lists
+      # it as required.
+      #
+      # The GUI and the gRPC API are localhost-only. Both were published on all
+      # interfaces, and the GUI runs plain HTTP with use_plain_http (see
+      # entrypoint.sh) — so port 8889 was a direct bypass of nginx's TLS *and*
+      # its Basic Auth, for a service that holds case data and can task
+      # endpoints. Neither port needs to be reachable off-box: nginx proxies
+      # /velociraptor/ to intact_velociraptor:8889 and the backend reaches the
+      # API at intact_velociraptor:8001, both over intact_network by container
+      # name. Kept as loopback rather than removed so lib/health.sh's
+      # localhost:8001 probe still works.
+      - "127.0.0.1:8889:8889"   # GUI (HTTP) — analysts use nginx /velociraptor/
+      - "8000:8000"             # TLS Frontend (client connections) — public
+      - "127.0.0.1:8001:8001"   # gRPC API — backend uses the container name
     restart: unless-stopped
     networks:
       - intact_network
