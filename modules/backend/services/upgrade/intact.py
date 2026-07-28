@@ -862,13 +862,31 @@ def ensure_nginx_basic_auth_secret(logger: Callable = None) -> None:
     nginx.conf and docker-compose.yaml (with its new htpasswd bind mount)
     through an upgrade — install.sh's bash bootstrap never runs again. This
     self-heals the secret so recreate_nginx() below has something valid to
-    mount; skips entirely if it already exists (idempotent, safe to call on
-    every intact upgrade).
+    mount. Idempotent and safe to call on every intact upgrade:
+
+      * dashboard.password set in config.yaml -> re-applied every run, so the
+        operator's chosen password is what the dashboard actually uses.
+      * dashboard.password empty (shipped default) -> generate once if the
+        secret is missing, otherwise leave the existing one strictly alone.
+        An upgrade must never silently rotate a working box's password.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     secrets_dir = os.path.join(WORKDIR, 'modules', 'nginx', 'secrets')
     password_path = os.path.join(secrets_dir, 'nginx_basic_auth_password')
     htpasswd_path = os.path.join(secrets_dir, 'htpasswd')
+
+    # config.yaml wins whenever the operator filled in dashboard.password —
+    # rewritten on every upgrade so editing config.yaml actually changes the
+    # login, exactly like lib/modules.sh:generate_nginx_secrets does at install
+    # time. Left empty (the shipped default) we fall through to the
+    # generate-once-and-never-touch behaviour below.
+    dash_user, dash_password = _read_dashboard_credentials(log)
+    if dash_password:
+        os.makedirs(secrets_dir, exist_ok=True)
+        _write_nginx_htpasswd(dash_user, dash_password, password_path, htpasswd_path, log)
+        log(f"  Nginx Basic Auth password set from config.yaml (username: {dash_user})")
+        return
+
     if (os.path.exists(password_path) and os.path.getsize(password_path) > 0
             and os.path.exists(htpasswd_path) and os.path.getsize(htpasswd_path) > 0):
         # Already present — still re-assert ownership in case a prior
@@ -887,20 +905,68 @@ def ensure_nginx_basic_auth_secret(logger: Callable = None) -> None:
 
     import secrets as _secrets
     password = _secrets.token_hex(16)
+    _write_nginx_htpasswd(dash_user, password, password_path, htpasswd_path, log)
 
+    log(f"  Generated a random Nginx dashboard/API Basic Auth password "
+        f"(username: {dash_user})", "warning")
+    log(f"  Retrieve it with: cat {password_path}", "warning")
+    log("  Set dashboard.password in config.yaml to choose your own instead.",
+        "warning")
+
+
+def _read_dashboard_credentials(log: Callable) -> tuple:
+    """Return (username, password) from config.yaml's ``dashboard:`` block.
+
+    Username defaults to 'admin'; password defaults to '' meaning "operator
+    did not choose one — generate/keep a random secret". A malformed or
+    unreadable config.yaml must never break the upgrade, so any failure
+    degrades to the generated-secret path rather than raising.
+    """
+    config_path = os.path.join(WORKDIR, 'config.yaml')
+    user, password = 'admin', ''
+    try:
+        import yaml  # local import — mirrors base.py's read-config idiom
+        with open(config_path, 'r') as f:
+            cfg = yaml.safe_load(f) or {}
+        dash = cfg.get('dashboard') or {}
+        if isinstance(dash, dict):
+            # str() so a YAML-numeric password (e.g. `password: 123123`, which
+            # safe_load hands back as an int) still hashes to what the operator
+            # typed instead of blowing up on .encode().
+            user = str(dash.get('id') or 'admin').strip() or 'admin'
+            raw = dash.get('password')
+            password = '' if raw is None else str(raw).strip()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log(f"  Could not read dashboard credentials from config.yaml "
+            f"({type(e).__name__}: {e}) — falling back to a generated password",
+            "warning")
+    return user, password
+
+
+def _write_nginx_htpasswd(user: str, password: str, password_path: str,
+                          htpasswd_path: str, log: Callable) -> None:
+    """Write the plaintext + htpasswd pair for one user/password.
+
+    SHA-1 htpasswd format ("{SHA}<base64 sha1 digest>") — natively supported
+    by nginx's auth_basic module, computed in-process so the plaintext
+    password never touches a subprocess argv (see run_command's shell=True —
+    a CLI arg there would be briefly visible via `ps`).
+
+    Written with open(...,'w') (truncate in place, same inode) because docker
+    bind-mounts these BY PATH — replacing the inode would leave the running
+    nginx pinned to the old file and a changed password silently inert.
+    """
     with open(password_path, 'w') as f:
         f.write(password)
     os.chmod(password_path, 0o600)
 
-    # SHA-1 htpasswd format ("{SHA}<base64 sha1 digest>") — natively
-    # supported by nginx's auth_basic module, computed in-process so the
-    # plaintext password never touches a subprocess argv (see run_command's
-    # shell=True — a CLI arg there would be briefly visible via `ps`).
     import hashlib
     import base64
     digest = hashlib.sha1(password.encode()).digest()
     with open(htpasswd_path, 'w') as f:
-        f.write(f"admin:{{SHA}}{base64.b64encode(digest).decode()}\n")
+        f.write(f"{user}:{{SHA}}{base64.b64encode(digest).decode()}\n")
 
     # The htpasswd file is read by the nginx WORKER process (uid/gid 101 —
     # nginx:alpine's compiled --user=nginx --group=nginx default), not the
@@ -913,10 +979,6 @@ def ensure_nginx_basic_auth_secret(logger: Callable = None) -> None:
         log(f"  Could not chown nginx htpasswd to root:101 ({type(e).__name__}: {e})",
             "warning")
     os.chmod(htpasswd_path, 0o640)
-
-    log("  Generated a random Nginx dashboard/API Basic Auth password (username: admin)",
-        "warning")
-    log(f"  Retrieve it with: cat {password_path}", "warning")
 
 
 def recreate_nginx(logger: Callable = None) -> bool:

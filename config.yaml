@@ -1,6 +1,25 @@
 schema_version: 2
 domain: 192.168.120.10
 
+# Dashboard / API login (Nginx HTTP Basic Auth).
+#
+# Nginx gates EVERYTHING it serves — the dashboard, /api/, /api/uploads/ and
+# the /velociraptor/ proxy — behind Basic Auth. This is the username and
+# password your browser asks for at https://<domain>/.
+#
+# password: '' (the shipped default) means "generate one for me": install.sh
+# writes a random 32-character secret to
+# modules/nginx/secrets/nginx_basic_auth_password and prints where to find
+# it. That is secure but not memorable, so set your own here instead.
+#
+# When you DO set a password, this file is authoritative: it is re-applied on
+# every install AND every upgrade, so changing it here and re-running is how
+# you change the dashboard login. Leaving it empty never rotates an existing
+# box's generated password — an upgrade will not lock you out.
+dashboard:
+  id: admin
+  password: ''
+
 # Installation options
 options:
   # Download OPTIONAL forensic tools beyond the default set.

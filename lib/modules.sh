@@ -139,6 +139,30 @@ generate_portainer_secrets() {
 # root:33/640 pattern already used for the IRIS web TLS key, gid 33 being
 # iris-nginx's www-data) lets the worker read it without making it
 # world-readable on the host.
+# Write the plaintext + htpasswd pair for one user/password.
+#
+# SHA-1 htpasswd format ("{SHA}<base64 of sha1 digest>") — supported
+# natively by nginx's auth_basic module, no extra tooling needed beyond
+# openssl (already a hard dependency of this installer). Piped via stdin so
+# the plaintext password never appears as a process argument (visible to any
+# local user via `ps`).
+#
+# Both files are written with `>` (truncate in place, same inode) because
+# docker bind-mounts them BY PATH — replacing the inode would leave the
+# running nginx pinned to the old file and the new password silently inert.
+_write_nginx_htpasswd() {
+    local user="$1" password="$2" password_file="$3" htpasswd_file="$4"
+
+    printf '%s' "$password" > "$password_file"
+    chmod 600 "$password_file"
+
+    local sha1_b64
+    sha1_b64=$(printf '%s' "$password" | openssl dgst -sha1 -binary | openssl base64 -A)
+    printf '%s:{SHA}%s\n' "$user" "$sha1_b64" > "$htpasswd_file"
+    chown root:101 "$htpasswd_file" 2>/dev/null || true
+    chmod 640 "$htpasswd_file"
+}
+
 generate_nginx_secrets() {
     log_info "Generating Nginx Basic Auth secrets..."
     local secrets_dir="${SCRIPT_DIR}/modules/nginx/secrets"
@@ -146,25 +170,30 @@ generate_nginx_secrets() {
     local password_file="$secrets_dir/nginx_basic_auth_password"
     local htpasswd_file="$secrets_dir/htpasswd"
 
-    if [[ ! -s "$password_file" || ! -s "$htpasswd_file" ]]; then
+    # config.yaml is AUTHORITATIVE whenever the operator fills in
+    # dashboard.password: the htpasswd is rewritten on EVERY run, so editing
+    # config.yaml and re-running install/upgrade actually changes the login
+    # (same contract as the IRIS admin password). Left empty — the shipped
+    # default — we keep the previous behaviour: generate a random secret once
+    # and never touch it again, so an existing box is never locked out by an
+    # upgrade silently rotating its password.
+    local dash_user dash_password
+    dash_user=$(read_config "['dashboard']['id']")
+    dash_password=$(read_config "['dashboard']['password']")
+    [[ -z "$dash_user" || "$dash_user" == "None" ]] && dash_user="admin"
+    [[ "$dash_password" == "None" ]] && dash_password=""
+
+    if [[ -n "$dash_password" ]]; then
+        _write_nginx_htpasswd "$dash_user" "$dash_password" "$password_file" "$htpasswd_file"
+        log_info "  Nginx Basic Auth password set from config.yaml (username: ${dash_user})"
+    elif [[ ! -s "$password_file" || ! -s "$htpasswd_file" ]]; then
         local nginx_password
         nginx_password=$(openssl rand -hex 16)
-        printf '%s' "$nginx_password" > "$password_file"
-        chmod 600 "$password_file"
+        _write_nginx_htpasswd "$dash_user" "$nginx_password" "$password_file" "$htpasswd_file"
 
-        # SHA-1 htpasswd format ("{SHA}<base64 of sha1 digest>") — supported
-        # natively by nginx's auth_basic module, no extra tooling needed
-        # beyond openssl (already a hard dependency of this installer).
-        # Piped via stdin so the plaintext password never appears as a
-        # process argument (visible to any local user via `ps`).
-        local sha1_b64
-        sha1_b64=$(printf '%s' "$nginx_password" | openssl dgst -sha1 -binary | openssl base64 -A)
-        printf 'admin:{SHA}%s\n' "$sha1_b64" > "$htpasswd_file"
-        chown root:101 "$htpasswd_file" 2>/dev/null || true
-        chmod 640 "$htpasswd_file"
-
-        log_warn "  Generated a random Nginx dashboard/API Basic Auth password (username: admin)"
+        log_warn "  Generated a random Nginx dashboard/API Basic Auth password (username: ${dash_user})"
         log_warn "  Retrieve it with: cat ${password_file}"
+        log_warn "  Set dashboard.password in config.yaml to choose your own instead."
     else
         log_info "  Nginx Basic Auth secrets exist, skipping"
         # Re-assert ownership/mode on every run — a prior fix_source_permissions
