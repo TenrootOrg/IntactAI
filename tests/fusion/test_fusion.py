@@ -183,6 +183,33 @@ def test_persistence_service_finding():
     assert svc and "T1543" in svc[0].mitre
 
 
+def test_chat_more_intents():
+    g = build()
+    with force_sim():
+        summ = llm_sim.chat(g, "give me a summary", window=WINDOW, min_severity="low")
+        who = llm_sim.chat(g, "who is the most affected host?", window=WINDOW, min_severity="low")
+        ia = llm_sim.chat(g, "how did they get in?", window=WINDOW, min_severity="low")
+    assert "host" in summ.lower()
+    assert "WS01" in who
+    assert "initial-access" in ia.lower() or "earliest" in ia.lower()
+
+
+def test_host_severity_rollup():
+    g = build()
+    ws01 = g.entities[keys.asset_id(WS01)]
+    assert ws01.severity == "critical", f"WS01 should roll up to critical, got {ws01.severity}"
+
+
+def test_timesketch_mapper_extracts_iocs():
+    from services.fusion.mappers import map_timesketch
+    evs = [{"datetime": "2026-06-15T08:00:00", "message": "connection to 5.100.251.10 observed",
+            "parser": "winevtx"}]
+    g = correlate.assemble("c", [map_timesketch(evs, run_id="ts_1", asset=keys.asset_id("C.x"),
+                                                hostname="H")], ["ts_1"])
+    assert any(e.type == "event" for e in g.entities.values())
+    assert keys.ioc_id("ip", "5.100.251.10") in g.entities
+
+
 def test_hostname_asset_merges_into_client_id_asset():
     from services.fusion.mappers import map_agentic, map_timesketch
     DC = "C.dcdcdc"

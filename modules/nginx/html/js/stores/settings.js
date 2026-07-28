@@ -193,6 +193,14 @@ document.addEventListener('alpine:init', () => {
             this.saving = false;
         },
 
+        showMessage(msg, type) {
+            this.message = msg;
+            this.messageType = type;
+            setTimeout(() => { this.message = ''; }, 3000);
+        },
+
+        // --- Settings → Actions (system-operation run history) ----------------
+        actionsInitialLoad: true,
         async loadActions() {
             // Only show the loading spinner on the very first load — the 1s
             // auto-refresh poll otherwise flips actionsLoading true/false
