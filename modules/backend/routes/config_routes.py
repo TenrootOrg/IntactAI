@@ -9,6 +9,13 @@ from services.file_storage_service import load_frontend_config, save_frontend_co
 
 config_bp = Blueprint('config', __name__)
 
+# What GET /api/config substitutes for a saved secret. Anything arriving back
+# with this prefix means "the operator did not retype the key, keep the stored
+# one" — it is never a credential. Named because it is easy to guess wrong: it
+# is bullets, not asterisks, and a mismatched guess sends the mask itself to
+# the provider as a key.
+_API_KEY_MASK_PREFIX = '••••'
+
 # Default configuration (agentic settings only - velociraptor uses container's api.config.yaml)
 DEFAULT_CONFIG = {
     "agentic": {
@@ -426,6 +433,46 @@ def get_ollama_models():
     return jsonify({"ok": True, "models": models, "count": len(models)})
 
 
+@config_bp.route('/api/config/ollama-cloud/models', methods=['GET'])
+def get_ollama_cloud_models():
+    """Models Ollama's hosted API offers this key.
+
+    Shaped like the other /api/config/<provider>/models routes so the online
+    model combobox can reach it with no special case — it builds the URL from
+    the provider id. Without this the box would simply be empty for
+    Ollama Cloud, which is the same dead end as an unlisted provider.
+
+    Asked live rather than served from a CatalogStore: the list is key-scoped
+    and short, so there is no quota to protect by caching, and a cached copy
+    would go stale the moment a plan changes. Never 4xx — a missing or wrong
+    key returns an empty list with a reason, because the operator is typing.
+    """
+    from services.llm_catalogs.ollama import list_cloud_models, OllamaListError
+    from services.llm_catalogs.base import get_provider_api_key
+    q, limit, offset = _parse_catalog_query()
+
+    # get_provider_api_key, NOT a direct read of online_llm.api_key. The config
+    # stores ONE key, belonging to whichever provider is currently selected, so
+    # reading the field directly hands it to whoever asks: this route first did
+    # exactly that and posted a saved OpenRouter key to ollama.com as a Bearer
+    # token. The helper returns the key only when it is this provider's.
+    api_key = get_provider_api_key('ollama-cloud')
+    if not api_key:
+        return jsonify({"models": [], "total": 0, "limit": limit, "offset": offset,
+                        "error": "Select Ollama Cloud and save its API key to list models."})
+    try:
+        models = list_cloud_models(api_key)
+    except OllamaListError as e:
+        return jsonify({"models": [], "total": 0, "limit": limit, "offset": offset,
+                        "error": e.message})
+
+    ql = (q or "").strip().lower()
+    if ql:
+        models = [m for m in models if ql in m["id"].lower()]
+    return jsonify({"models": models[offset:offset + max(1, int(limit))],
+                    "total": len(models), "limit": limit, "offset": offset})
+
+
 @config_bp.route('/api/config/llm/test', methods=['POST'])
 def test_llm_connection():
     """Prove the configured LLM actually answers, before a report needs it.
@@ -455,8 +502,12 @@ def test_llm_connection():
             agentic[k] = v
 
     # A masked key means "keep what is saved" — the UI never holds the real one.
+    # The mask is bullets, matching what GET /api/config returns and what
+    # save_config guards on. Checking for '*' here (as this first did) never
+    # matched, so the bullet string was sent as the key and every test of an
+    # already-saved provider failed as an auth error.
     on = agentic.get('online_llm') or {}
-    if isinstance(on.get('api_key'), str) and on['api_key'].startswith('*'):
+    if isinstance(on.get('api_key'), str) and on['api_key'].startswith(_API_KEY_MASK_PREFIX):
         on = dict(on)
         on['api_key'] = ((cfg.get('agentic') or {}).get('online_llm') or {}).get('api_key', '')
         agentic['online_llm'] = on

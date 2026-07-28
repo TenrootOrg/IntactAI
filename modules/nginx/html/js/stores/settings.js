@@ -4,9 +4,14 @@ document.addEventListener('alpine:init', () => {
     Alpine.store('settings', {
         config: {
             agentic: {
-                llm_mode: 'offline',
+                // Must match DEFAULT_CONFIG in routes/config_routes.py. These
+                // two disagreed on llm_mode and on the online provider/model,
+                // so before a saved config existed the page showed Offline
+                // while the backend would have run Online against OpenRouter —
+                // the screen described a setup that was not the one in force.
+                llm_mode: 'online',
                 offline_llm: { provider: 'ollama', model: 'llama3.3:70b', url: 'http://localhost:11434' },
-                online_llm: { provider: 'claude', api_key: '', model: 'claude-sonnet-latest' },
+                online_llm: { provider: 'openrouter', api_key: '', model: '~anthropic/claude-haiku-latest' },
                 ollama_context_size: 65536,
                 ollama_timeout: 600
             },
@@ -57,7 +62,7 @@ document.addEventListener('alpine:init', () => {
                 if (agenticResponse.ok) {
                     const data = await agenticResponse.json();
                     this.config.agentic = {
-                        llm_mode: data.agentic?.llm_mode || 'offline',
+                        llm_mode: data.agentic?.llm_mode || 'online',
                         offline_llm: { ...this.config.agentic.offline_llm, ...data.agentic?.offline_llm },
                         online_llm: { ...this.config.agentic.online_llm, ...data.agentic?.online_llm },
                         ollama_context_size: data.agentic?.ollama_context_size || 65536,
@@ -1520,6 +1525,10 @@ document.addEventListener('alpine:init', () => {
             this.cliStopPolling();
 
             const route = provider === 'claude' ? 'anthropic' : provider;
+            // No entry for `ollama-cloud` on purpose: its line-up is set by
+            // Ollama and by the operator's plan, so any id hardcoded here
+            // would be a guess that 404s at report time. Falling through to
+            // list[0] picks something the account demonstrably has.
             const preferredId = {
                 'claude':     'claude-sonnet-latest',
                 'openai':     'gpt-latest',
@@ -1548,7 +1557,11 @@ document.addEventListener('alpine:init', () => {
                     'gemini':     'gemini-pro-latest',
                     'openrouter': '~anthropic/claude-sonnet-latest'
                 }[provider];
-                if (fallback) this.config.agentic.online_llm.model = fallback;
+                // Clear rather than leave the previous provider's model in
+                // place when there is no hardcoded fallback (ollama-cloud).
+                // A stale id from another vendor looks like a valid choice and
+                // fails later, at report time; an empty box asks to be filled.
+                this.config.agentic.online_llm.model = fallback || '';
             }
         }
     });

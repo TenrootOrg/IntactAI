@@ -41,6 +41,16 @@ _LLM_COST_PER_MTOK = {
     "openai/gpt-4o": (2.50, 10.00),
     "google/gemini-2.5-pro": (1.25, 10.00),
     "google/gemini-2.5-flash": (0.075, 0.30),
+    # Same Gemini rates under the bare ids the DIRECT google provider emits.
+    # The `google/...` rows above only match OpenRouter-style ids, so once
+    # Gemini became directly selectable its model ids (`gemini-2.5-flash`)
+    # matched nothing and every Gemini run reported $0 — the tokens were
+    # recorded, the spend was not.
+    "gemini-2.5-pro": (1.25, 10.00),
+    "gemini-2.5-flash": (0.075, 0.30),
+    # Ollama Cloud is deliberately absent: it bills by subscription tier, not
+    # per token, so any per-MTok figure here would be invented. Unknown models
+    # record token volume with $0 cost, which is the honest answer.
 }
 
 
@@ -322,6 +332,11 @@ def get_model_max_output_tokens(model_input: str, provider: str):
             from services.llm_catalogs import openai as catalog_module
         elif provider == "gemini":
             from services.llm_catalogs import gemini as catalog_module
+        elif provider == "codex-subscription":
+            # Present in get_model_context_length but was missing here, so a
+            # subscription model got the constant default output cap instead of
+            # its real one — silently truncating long reports.
+            from services.llm_catalogs import codex as catalog_module
     except Exception:
         catalog_module = None
 

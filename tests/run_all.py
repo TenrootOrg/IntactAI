@@ -31,7 +31,14 @@ def main():
     skipped = []
     for f in files:
         src = open(f).read()
-        if "__main__" not in src or "passed" not in src:
+        # A standalone runner is `if __name__ == "__main__"` and nothing else.
+        # This also required the literal word "passed", which is a property of
+        # the SUMMARY LINE, not of being runnable: 9 suites that print
+        # `PASS <name>` and exit non-zero on failure were filed under
+        # "pytest-style skipped" and never ran. They read as deliberately
+        # deferred, so nothing looked wrong, and a regression in any of them
+        # could not fail this gate.
+        if "__main__" not in src:
             skipped.append(f)            # pytest-style / no standalone runner
             continue
         ran += 1
@@ -44,7 +51,15 @@ def main():
             pp, tt = int(m.group(1)), int(m.group(2))
         else:
             m2 = re.search(r"(\d+) passed", p.stdout)
-            pp = tt = int(m2.group(1)) if m2 else 0
+            if m2:
+                pp = tt = int(m2.group(1))
+            else:
+                # Third format: per-check `PASS <name>` / `FAIL <name>` lines
+                # with no numeric trailer. Counting them keeps these suites
+                # from contributing 0/0 to the total, which would report a
+                # smaller gate than the one that actually ran.
+                pp = len(re.findall(r"^PASS ", p.stdout, re.M))
+                tt = pp + len(re.findall(r"^FAIL ", p.stdout, re.M))
         total += tt
         passed += pp
         ok = (p.returncode == 0)

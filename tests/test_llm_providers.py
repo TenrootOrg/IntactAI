@@ -191,6 +191,133 @@ def test_unknown_providers_are_rejected_loudly():
             raise AssertionError(f"{cfg}: unknown provider was accepted")
 
 
+def test_direct_gemini_model_ids_are_priced():
+    """The cost table only had `google/gemini-…` (OpenRouter's id form). Once
+    Gemini became directly selectable its ids arrive bare, matched nothing, and
+    every Gemini run reported $0 — tokens recorded, spend invisible."""
+    bare = _llm._estimate_llm_cost("gemini-2.5-flash", 1_000_000, 1_000_000)
+    via_or = _llm._estimate_llm_cost("google/gemini-2.5-flash", 1_000_000, 1_000_000)
+    assert bare > 0, "direct Gemini id priced at $0"
+    assert abs(bare - via_or) < 1e-9, f"same model, two prices: {bare} vs {via_or}"
+
+
+def test_self_hosted_models_are_priced_at_zero():
+    """Nothing is billed for a box the operator already owns — a made-up rate
+    would be worse than none."""
+    assert _llm._estimate_llm_cost("qwen2.5:0.5b", 1_000_000, 1_000_000) == 0.0
+
+
+def test_codex_subscription_reads_max_output_from_its_catalog():
+    """get_model_context_length had this branch and get_model_max_output_tokens
+    did not, so a subscription model silently took the constant default output
+    cap instead of its real one — truncating long reports."""
+    import services.llm_catalogs.codex as codex
+    orig = codex.load_catalog
+    codex.load_catalog = lambda: [{"id": "gpt-5-codex", "max_output_tokens": 77777}]
+    try:
+        got = _llm.get_model_max_output_tokens("gpt-5-codex", "codex-subscription")
+    finally:
+        codex.load_catalog = orig
+    assert got == 77777, f"codex-subscription cap not resolved: {got!r}"
+
+
+def test_ollama_cloud_lists_against_the_hosted_openai_endpoint():
+    """Ollama Cloud reuses the self-hosted lister rather than a catalog module.
+    If the base URL or the shape drifts, the model box goes silently empty."""
+    import services.llm_catalogs.ollama as cat
+    seen = {}
+
+    class _R:
+        status_code = 200
+
+        def json(self): return {"data": [{"id": "gpt-oss:120b"}]}
+
+    real = cat.requests.get
+    cat.requests.get = lambda url, **kw: (seen.update(url=url, **kw), _R())[1]
+    try:
+        models = cat.list_cloud_models("sk-test")
+    finally:
+        cat.requests.get = real
+    assert seen["url"] == "https://ollama.com/v1/models", seen["url"]
+    assert seen["headers"]["Authorization"] == "Bearer sk-test", seen["headers"]
+    assert [m["id"] for m in models] == ["gpt-oss:120b"], models
+
+
+def test_one_providers_key_is_never_sent_to_another():
+    """The config stores a SINGLE online_llm.api_key, owned by whichever
+    provider is selected. Reading that field directly hands it to whoever asks.
+
+    Not hypothetical: the Ollama Cloud route first read it directly, and a live
+    run with OpenRouter configured posted a real `sk-or-v1-…` key to
+    ollama.com as a Bearer token. Every catalog must go through
+    get_provider_api_key, which returns the key only for its own provider.
+    """
+    import routes.config_routes as C
+    import services.file_storage_service as FS
+    from flask import Flask
+
+    app = Flask(__name__)
+    reached = {}
+
+    def _must_not_be_called(*a, **kw):
+        reached["called"] = True
+        raise AssertionError("cross-provider key leak: contacted ollama.com "
+                             "while another provider's key was saved")
+
+    orig_load, orig_list = FS.load_frontend_config, None
+    import services.llm_catalogs.ollama as cat
+    orig_list = cat.list_cloud_models
+    FS.load_frontend_config = lambda: {"agentic": {"online_llm": {
+        "provider": "openrouter", "api_key": "sk-or-v1-SECRET"}}}
+    cat.list_cloud_models = _must_not_be_called
+    try:
+        with app.test_request_context("/api/config/ollama-cloud/models"):
+            body = C.get_ollama_cloud_models().get_json()
+    finally:
+        FS.load_frontend_config = orig_load
+        cat.list_cloud_models = orig_list
+
+    assert not reached.get("called"), "another provider's key was sent to ollama.com"
+    assert body["models"] == [] and body["total"] == 0, body
+    assert body.get("error"), "no explanation for the empty list"
+
+
+def test_a_masked_api_key_resolves_to_the_saved_one():
+    """GET /api/config returns the key as bullets. The probe first tested for
+    '*', so the mask never matched and the bullet string itself was sent as the
+    key — every test of an already-saved provider failed as an auth error, which
+    reads exactly like a genuinely bad key."""
+    import routes.config_routes as C
+    from flask import Flask
+
+    app = Flask(__name__)
+    saved = {"agentic": {"online_llm": {"provider": "openai", "api_key": "sk-REAL",
+                                        "model": "m"}, "llm_mode": "online"}}
+    used = {}
+
+    def _fake_call(prompt, system, cfg):
+        used["key"] = ((cfg["agentic"].get("online_llm") or {}).get("api_key"))
+        return "OK"
+
+    # The route imports call_llm inside the function body, so patching the
+    # module attribute is what it will pick up.
+    orig_load, orig_call = C._load_config, _llm.call_llm
+    C._load_config = lambda: {"agentic": {"online_llm": dict(
+        saved["agentic"]["online_llm"]), "llm_mode": "online"}}
+    _llm.call_llm = _fake_call
+    try:
+        masked = C._API_KEY_MASK_PREFIX + "••••REAL"
+        with app.test_request_context(
+                "/api/config/llm/test", method="POST",
+                json={"agentic": {"online_llm": {"api_key": masked}}}):
+            C.test_llm_connection()
+    finally:
+        C._load_config = orig_load
+        _llm.call_llm = orig_call
+    assert used.get("key") == "sk-REAL", (
+        f"masked key was not resolved — sent {used.get('key')!r} to the provider")
+
+
 def test_shared_adapter_helpers_are_importable_at_module_scope():
     """Regression: the adapter shipped calling a helper nested inside
     _call_llm_online, so it raised NameError on the first self-hosted call."""

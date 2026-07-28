@@ -28,6 +28,11 @@ Two shapes are supported because self-hosted servers come in both:
 
 import requests
 
+# Ollama's hosted API. OpenAI-shaped, so listing and calling both go through
+# the code below rather than through a catalog module of its own — see
+# list_cloud_models().
+OLLAMA_CLOUD_BASE_URL = 'https://ollama.com/v1'
+
 # Short. This is a reachability probe against a server on the operator's own
 # network, and it runs while they wait on the settings page — a long hang here
 # reads as a frozen UI, not as a slow server.
@@ -118,3 +123,16 @@ def list_models(url, kind='ollama', api_key=None, timeout=LIST_TIMEOUT):
             out.append({'id': mid, 'name': mid,
                         'size_bytes': None, 'modified': m.get('created')})
     return out
+
+
+def list_cloud_models(api_key, timeout=LIST_TIMEOUT):
+    """Models available on Ollama's hosted API for this key.
+
+    Served live from here rather than as a CatalogStore module like the other
+    hosted providers, for the same reason as list_models: the answer is
+    key-scoped and small. The disk-cached catalogs exist to avoid re-pulling
+    OpenRouter's ~300-model list on every keystroke; there is nothing to
+    protect here, and a cached copy would just go stale against a plan change.
+    """
+    return list_models(OLLAMA_CLOUD_BASE_URL, kind='openai-compatible',
+                       api_key=api_key, timeout=timeout)
