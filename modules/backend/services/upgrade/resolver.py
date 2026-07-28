@@ -286,7 +286,37 @@ def check_quota_or_raise(needed: int, action_name: str,
           f"have {remaining}/{limit} remaining (resets {reset_hm})", "info")
 
 
-def list_github_refs(user_action: str = 'fetch') -> List[Dict]:
+def _github_latest_tag(user_action: str = 'fetch') -> Optional[str]:
+    """The tag GitHub itself considers the latest release, or None.
+
+    NOT the same as "newest published". GitHub honours the maintainer's
+    "Set as the latest release" choice, so a release cut for testing and
+    deliberately not promoted is newer yet still not latest. Deriving the
+    badge from list position instead advertised exactly such a release to
+    every operator as the one to upgrade to.
+
+    Soft-fails to None (no badge) rather than raising: a missing label is
+    cosmetic, and this must never break the dropdown.
+    """
+    _gh_call_log(f'/repos/{GITHUB_REPO}/releases/latest', user_action)
+    headers = {'Accept': 'application/vnd.github.v3+json'}
+    token = _github_token()
+    if token:
+        headers['Authorization'] = f'token {token}'
+    try:
+        resp = requests.get(f'{GITHUB_API}/releases/latest',
+                            headers=headers, timeout=GH_TIMEOUT)
+    except requests.RequestException:
+        return None
+    if resp.status_code != 200:      # 404 = repo has no non-prerelease release
+        return None
+    try:
+        return (resp.json() or {}).get('tag_name') or None
+    except ValueError:
+        return None
+
+
+def list_github_refs(user_action: str = 'fetch', force: bool = False) -> List[Dict]:
     """Return the dropdown list for the Fetch button.
 
     Format::
@@ -302,9 +332,17 @@ def list_github_refs(user_action: str = 'fetch') -> List[Dict]:
     CACHE_TTL_SECONDS — clicks within that window return cached without
     a GitHub round-trip. The `user_action` is only used in the audit log.
     """
-    cached = _cache_get('refs')
-    if cached is not None:
-        return cached
+    # force=True is the operator explicitly asking GitHub again (the modal's
+    # refresh button, and opening the modal at all). The 30-minute TTL exists
+    # to stop page-load chatter burning rate-limit, but it also meant a release
+    # whose CI package finished AFTER the last fetch stayed invisible until the
+    # TTL expired -- and the refresh button, hitting the same cache, could not
+    # break out of it. Still writes the fresh result back, so nothing else
+    # re-fetches needlessly.
+    if not force:
+        cached = _cache_get('refs')
+        if cached is not None:
+            return cached
 
     _gh_call_log(f'/repos/{GITHUB_REPO}/releases', user_action)
     headers = {'Accept': 'application/vnd.github.v3+json'}
@@ -333,10 +371,13 @@ def list_github_refs(user_action: str = 'fetch') -> List[Dict]:
     # non-prerelease entry as (latest); everything else gets a plain
     # label. Drafts/prereleases never show — operators shouldn't be
     # nudged onto unreleased builds.
+    latest_tag = _github_latest_tag(user_action)
     items: List[Dict] = []
-    latest_marked = False
     for rel in releases:
-        if rel.get('draft') or rel.get('prerelease'):
+        # Drafts stay hidden -- nobody can install one. Prereleases DO show,
+        # labelled: hiding them left no way to publish a test release that is
+        # installable on purpose without also advertising it as current.
+        if rel.get('draft'):
             continue
         tag = rel.get('tag_name') or ''
         if not tag:
@@ -349,12 +390,15 @@ def list_github_refs(user_action: str = 'fetch') -> List[Dict]:
         pkg_bytes = _release_package_bytes(rel, tag)
         if pkg_bytes is None:
             continue
-        if not latest_marked:
+        if rel.get('prerelease'):
+            label = f'release {tag} (pre-release)'
+        elif latest_tag and tag == latest_tag:
             label = f'release {tag} (latest)'
-            latest_marked = True
         else:
             label = f'release {tag}'
         items.append({'kind': 'tag', 'name': tag, 'label': label,
+                      'prerelease': bool(rel.get('prerelease')),
+                      'latest': bool(latest_tag and tag == latest_tag),
                       'package_mb': round(pkg_bytes / 1024 / 1024)})
 
     if OFFER_DEV_BRANCH:
