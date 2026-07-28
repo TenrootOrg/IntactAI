@@ -13,11 +13,18 @@ name: Stamp VERSION on release
 #   prepare-package flow pulls the source tarball at the release
 #   tag the operator types into the modal — that tarball is the
 #   GitHub-served source tree, so whatever VERSION lives in the
-#   tree at that tag is what ships. By committing the update
-#   BEFORE the release is published (workflow runs on
-#   `release: published` and commits to development), the next
-#   release that gets cut from development carries the stamped
-#   VERSION at its own ref.
+#   tree at that tag is what ships. By committing the update after
+#   publish, the NEXT release cut from that same branch carries the
+#   stamped VERSION at its own ref.
+#
+# The branch is RESOLVED from the release, not hardcoded. This job used
+# to always check out `development` and push there, which was correct
+# only while every release came off development. The moment a release is
+# cut from `main` that hardcoding is wrong twice over: development gets
+# credited with a release it did not produce, and main never gets stamped
+# at all — so every main-based release ships reporting the PREVIOUS
+# version. Both failures are silent; the run is green and the artifact
+# looks fine until an operator reads Settings → System.
 #
 # Belt-and-suspenders: `services/upgrade/package.py` ALSO writes
 # VERSION into the package's source tree during prepare, so even
@@ -35,24 +42,61 @@ jobs:
   stamp:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout development
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          # We commit back to development, not to the release branch
-          # itself. Tags are immutable; the next release cut from
-          # development will carry the stamp.
-          ref: development
-          fetch-depth: 0
+          fetch-depth: 0        # need every branch + tag to resolve the target
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Write VERSION file
+      - name: Resolve the branch this release was cut from
+        id: target
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          TARGET: ${{ github.event.release.target_commitish }}
         run: |
-          tag="${{ github.event.release.tag_name }}"
-          echo "Stamping VERSION as: ${tag}"
-          echo "${tag}" > VERSION
+          set -uo pipefail
+          # 1) target_commitish is the branch when the release was created
+          #    against one. It can also be a raw SHA (release cut from a
+          #    detached commit), so it is verified rather than trusted.
+          if [ -n "${TARGET}" ] && git show-ref --verify --quiet "refs/remotes/origin/${TARGET}"; then
+            BRANCH="${TARGET}"
+            HOW="release target_commitish"
+          else
+            # 2) Otherwise use whichever long-lived branch actually contains
+            #    the tag. main wins when both do: a tag reachable from main is
+            #    a stable release, and development having it too only means it
+            #    was merged forward.
+            BRANCH=""
+            HOW=""
+            for candidate in main development; do
+              if git branch -r --contains "refs/tags/${TAG}" 2>/dev/null \
+                   | tr -d ' ' | grep -qx "origin/${candidate}"; then
+                BRANCH="${candidate}"
+                HOW="tag reachable from ${candidate}"
+                break
+              fi
+            done
+          fi
+          if [ -z "${BRANCH}" ]; then
+            echo "::warning::${TAG} is not on main or development — skipping the VERSION stamp."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Stamping ${BRANCH} (resolved via ${HOW})"
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - name: Commit and push if changed
+      - name: Write VERSION and push
+        if: steps.target.outputs.skip == 'false'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          BRANCH: ${{ steps.target.outputs.branch }}
         run: |
+          set -euo pipefail
+          git checkout "${BRANCH}"
+          git pull --ff-only origin "${BRANCH}"
+          echo "Stamping VERSION as: ${TAG} on ${BRANCH}"
+          echo "${TAG}" > VERSION
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if [[ -z "$(git status --porcelain VERSION)" ]]; then
@@ -60,5 +104,5 @@ jobs:
             exit 0
           fi
           git add VERSION
-          git commit -m "chore: stamp VERSION as ${{ github.event.release.tag_name }} [skip ci]"
-          git push origin development
+          git commit -m "chore: stamp VERSION as ${TAG} [skip ci]"
+          git push origin "${BRANCH}"
