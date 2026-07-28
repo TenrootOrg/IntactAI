@@ -309,9 +309,20 @@ function handleTimesketchFileSelect(file) {
 
     tsSelectedFile = file;
 
-    // Update dropzone text
+    // Update dropzone text. Built as DOM nodes with textContent rather than
+    // innerHTML: file.name is attacker-chosen (a ZIP can be named anything,
+    // including markup with an event handler) and interpolating it into
+    // innerHTML executed it in the dashboard origin. Self-XSS — the operator
+    // picks their own file — but there is no reason to render a filename as
+    // HTML, and nothing here needs an escaping helper if nothing is parsed.
     const sizeStr = formatBytes(file.size);
-    dropzoneText.innerHTML = `<span class="text-purple-400 font-medium">${file.name}</span><br><span class="text-xs">${sizeStr}</span>`;
+    const nameEl = document.createElement('span');
+    nameEl.className = 'text-purple-400 font-medium';
+    nameEl.textContent = file.name;
+    const sizeEl = document.createElement('span');
+    sizeEl.className = 'text-xs';
+    sizeEl.textContent = sizeStr;
+    dropzoneText.replaceChildren(nameEl, document.createElement('br'), sizeEl);
 }
 
 // Upload triage file using tus protocol

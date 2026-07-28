@@ -22,28 +22,6 @@ async function runArtifact(artifactId) {
     }
 }
 
-// Show artifact status
-async function showArtifactStatus(artifactId) {
-    const statusEl = document.getElementById(`${artifactId}-status`);
-    statusEl.classList.remove('hidden');
-    statusEl.innerHTML = '<span class="text-blue-400">Checking status...</span>';
-
-    try {
-        const response = await fetch('/api/velociraptor/status');
-        const data = await response.json();
-
-        const relevantJobs = data.active.filter(job => job.artifact_id === artifactId);
-
-        if (relevantJobs.length === 0) {
-            statusEl.innerHTML = '<span class="text-gray-400">No active jobs</span>';
-        } else {
-            const job = relevantJobs[0];
-            statusEl.innerHTML = `<span class="text-blue-400">Hunt ${escapeHtml(job.hunt_id)}: ${escapeHtml(job.status)}</span><br><span class="text-gray-400">Started: ${new Date(job.started_at * 1000).toLocaleString()}</span>`;
-        }
-    } catch (error) {
-        statusEl.innerHTML = `<span class="text-red-400">✗ Error: ${escapeHtml(error.message)}</span>`;
-    }
-}
 
 // BestPractice Hunt Functions
 function toggleAllBestPractice(checked) {

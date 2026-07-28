@@ -543,7 +543,7 @@ function renderHosts(){
   let out='';
   order.forEach(os=>{
     out+=`<div style="font-size:10px;text-transform:uppercase;color:var(--muted);margin:6px 0 2px">${esc(os)} (${groups[os].length})</div>`;
-    out+=groups[os].map(h=>`<label class="hostrow"><input type="checkbox" ${_hostExc.has(h.host)?'':'checked'} style="width:auto" onchange="toggleHost('${esc(h.host).replace(/'/g,"\\'")}',this.checked)"/> <span class="t">${esc(h.host)}</span> <span style="color:var(--muted)">${esc((h.sources||[]).join('/'))}</span></label>`).join('');
+    out+=groups[os].map(h=>`<label class="hostrow"><input type="checkbox" ${_hostExc.has(h.host)?'':'checked'} style="width:auto" onchange="toggleHost('${jsa(h.host)}',this.checked)"/> <span class="t">${esc(h.host)}</span> <span style="color:var(--muted)">${esc((h.sources||[]).join('/'))}</span></label>`).join('');
   });
   $('#cf-hosts').innerHTML=out;
 }
