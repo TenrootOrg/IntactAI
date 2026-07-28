@@ -114,9 +114,9 @@ def _reconcile_velociraptor_hunt(run):
     hunt_id = (run.get("details") or {}).get("hunt_id")
     if not hunt_id:
         return
-    from services.velociraptor_service import is_hunt_collection_complete
+    from services.velociraptor_service import is_hunt_registered
     from services.workflow_service import update_run_status
-    if is_hunt_collection_complete(hunt_id):
+    if is_hunt_registered(hunt_id):
         update_run_status(run.get("run_id", run.get("id")), "completed", progress=100)
         run["status"] = "completed"
         run["progress"] = 100
