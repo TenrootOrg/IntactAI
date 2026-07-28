@@ -17,7 +17,7 @@ REQUIRED_TOP_LEVEL = ('domain', 'modules', 'versions', 'project_name')
 
 # module id -> its primary `versions.<key>` pin. ONLY modules that actually
 # carry a primary pin in the shipped config.yaml are listed; o365rc and
-# cve_scan intentionally have none (their image tag lives in .env / is
+# some modules intentionally have none (their image tag lives in .env / is
 # ':latest'), so requiring one there would be a false positive. Both the
 # legacy 'cloudtrail' key and its post-migration 'aws_sigma' name are
 # accepted during the rename transition release.

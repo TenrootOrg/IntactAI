@@ -46,7 +46,7 @@
     const p = _fetch(input, init);
     if (!isApi) return p;
     // Globally auto-recover from the System-workspace guard for EVERY module
-    // launch — offline-collector import, hunts, timesketch, memory, cve,
+    // launch — offline-collector import, hunts, timesketch, memory,
     // blueprints, cloud scans, … Modules must run in an investigation
     // workspace, so when a launch is rejected because System is active (409 +
     // workspace_system_blocked), silently switch to the Default workspace and

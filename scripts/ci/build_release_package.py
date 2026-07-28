@@ -51,7 +51,6 @@ RELEASE_MODULES = {
     "intact",         # backend + frontend (nginx) platform source + image
     "velociraptor",
     "aws_sigma",      # SigmaHQ AWS CloudTrail rule pack
-    "cve_scan",       # ships the prebuilt CVE SQLite DB if the build host has one
     "timesketch",
     "plaso",
     "elk",
@@ -65,15 +64,9 @@ RELEASE_MODULES = {
 def release_module_set(tag: str) -> dict:
     """{module: version} this release ships — always the full RELEASE_MODULES set.
 
-    Two members are special-cased because their "version" is not a config pin:
+    One member is special-cased because its "version" is not a config pin:
       - `intact` is the platform itself, what Phase 1 swaps. Its version IS the
         release tag, so the bundled image is `intact-backend:<tag>`.
-      - `cve_scan` is versionless: its artifact is a rolling NVD corpus, so the
-        pin never moves even though the DATA does. Shipping it every release is
-        how an air-gapped box gets a fresh CVE corpus at all. (Requires a CVE DB
-        on the BUILD host — the packager warns and bundles nothing if
-        `/app/data/cve_cache/cves.db` is missing.)
-
     A module listed here but absent from `versions:` is skipped rather than
     guessed at, so a config typo drops one module instead of failing the build.
     """
@@ -90,11 +83,6 @@ def release_module_set(tag: str) -> dict:
             continue
         if m == "intact":
             modules["intact"] = tag  # -> builds intact-backend:<tag>
-        elif m == "cve_scan":
-            # rolling data: the packager bakes the current CVE SQLite DB when it
-            # exists on the build host. A truthy version keeps cve_scan past the
-            # version-gated packaging loop.
-            modules["cve_scan"] = versions.get("cve_scan") or "rolling"
         elif m in versions:
             modules[m] = versions[m]
     return modules

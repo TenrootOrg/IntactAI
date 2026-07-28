@@ -17,7 +17,7 @@
     // Tabs that live in partials/. One file per tab panel in <main>.
     const PARTIALS = [
         'cases', 'case-analysis', 'dashboard', 'workflows', 'downloads',
-        'velociraptor', 'timesketch', 'cve', 'memory', 'blueprints',
+        'velociraptor', 'timesketch', 'memory', 'blueprints',
         'scheduler', 'aws', 'azure', 'settings',
     ];
 

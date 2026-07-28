@@ -81,7 +81,7 @@ services:
     restart: unless-stopped
     # Flask + celery workers cache one SQLite connection per worker
     # thread in threading.local() (services/storage/base.py,
-    # services/cve_scan/local_db.py). Over a long-lived backend the
+    # a long-lived backend). Over a long-lived backend the
     # thread pool grows under load and each thread holds a conn open
     # against intact.db, intact.db-wal, cves.db, cves.db-wal — easily
     # 1000+ FDs total. The Docker default of 1024 soft-nofile gets

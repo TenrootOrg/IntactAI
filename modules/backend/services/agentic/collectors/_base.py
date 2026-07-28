@@ -604,7 +604,7 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
     # Defense-in-depth: flow_id/hunt_id/client_ids are interpolated directly
     # into VQL string literals throughout this function with no escaping.
     # This is reachable from an operator-supplied POST body (e.g.
-    # routes/cve_routes.py's /api/cve/scan/from-flow), so reject anything
+    # a flow-id-driven fetch), so reject anything
     # that isn't shaped like a real Velociraptor id before any query runs.
     if hunt_id and not _is_valid_hunt_or_derived_flow_id(hunt_id):
         add_log_to_run(run_id, f"[Velociraptor] Rejecting invalid hunt_id: {hunt_id!r}", "error")

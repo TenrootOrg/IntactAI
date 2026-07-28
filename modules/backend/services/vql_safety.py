@@ -17,8 +17,8 @@ commands. The goal is twofold:
 
 History: 2026-06-09 Mythos security review surfaced confirmed RCE via
 `client_id` (velociraptor_routes.py — shell=True), `target_users` /
-`target_ips` (Azure DFIR-O365RC — PowerShell + shell=True), and CVE
-hunt `name` (cve_routes.py — VQL execve). The three fixes routed
+`target_ips` (Azure DFIR-O365RC — PowerShell + shell=True), and the
+hunt `name` (VQL execve). The three fixes routed
 through here are #2 + #4; #3 (Azure) was later closed too — see
 `validate_target_users` / `validate_target_ips` below, enforced at
 the point of use in `dfir_o365rc.collect_unified_audit_log` so both

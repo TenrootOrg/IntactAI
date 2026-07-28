@@ -212,12 +212,12 @@ document.addEventListener('alpine:init', () => {
 
         getTypeColor(type) {
             // Module-themed palette so each chip reflects which module produced
-            // the run. Velociraptor family (incl. collection + CVE) = green;
+            // the run. Velociraptor family (collection) = green;
             // Timesketch = purple (avoids blue since Azure owns blue);
             // Settings / system actions = red; AWS = orange; Azure = blue.
             // Fallback is slate-700 — never gray-600, which reads black-on-dark.
             const colors = {
-                // Velociraptor (collection + CVE-mgmt scans + offline collectors)
+                // Velociraptor (collection + offline collectors)
                 velociraptor_collection: 'bg-green-600',
                 agentic: 'bg-green-600', // legacy alias for pre-migration rows
                 velociraptor_hunt: 'bg-green-700',
@@ -227,7 +227,6 @@ document.addEventListener('alpine:init', () => {
                 offline_collector: 'bg-green-700',
                 offline_import: 'bg-green-700',
                 hunt: 'bg-green-700',
-                cve_scan: 'bg-green-700',
                 artifact: 'bg-green-600',
                 // Timesketch (and IRIS, when its runs get a workflow row)
                 timesketch: 'bg-purple-600',

@@ -48,8 +48,6 @@ function renderScheduleCard(job) {
     } else if (job.blueprint_type === 'timesketch') {
         typeLabel = 'Timesketch';
         typeBadgeColor = 'bg-cyan-900 text-cyan-300';
-    } else if (job.blueprint_type === 'cve') {
-        typeLabel = 'CVE Management';
         typeBadgeColor = 'bg-amber-900 text-amber-300';
     } else if (job.blueprint_type === 'memory') {
         typeLabel = 'Memory';
@@ -164,27 +162,22 @@ async function onScheduleBlueprintTypeChange() {
     const clientSection = document.getElementById('schedule-client-section');
 
     // Hide every per-type options block; the active one is revealed below.
-    ['timesketch', 'cve', 'memory', 'collector', 'hunt', 'aws'].forEach(k => {
+    ['timesketch', 'memory', 'collector', 'hunt', 'aws'].forEach(k => {
         const el = document.getElementById('schedule-' + k + '-options');
         if (el) el.classList.add('hidden');
     });
 
     // Client picker: shown for client-targeted types (Collector/Timesketch/Memory),
-    // HIDDEN for env-wide types (Velociraptor Hunt, CVE Management, AWS).
-    const envWide = (type === 'velociraptor' || type === 'cve' || type === 'aws');
+    // HIDDEN for env-wide types (Velociraptor Hunt, AWS).
+    const envWide = (type === 'velociraptor' || type === 'aws');
     if (clientSection) clientSection.classList.toggle('hidden', envWide);
 
     // Reveal this type's options block.
     const optKey = { agentic: 'collector', velociraptor: 'hunt', timesketch: 'timesketch',
-                     cve: 'cve', memory: 'memory', aws: 'aws' }[type];
+                     memory: 'memory', aws: 'aws' }[type];
     const optEl = optKey && document.getElementById('schedule-' + optKey + '-options');
     if (optEl) optEl.classList.remove('hidden');
 
-    // CVE uses a fixed artifact set (cve_management) — no per-blueprint pick.
-    if (type === 'cve') {
-        blueprintSelectContainer.classList.add('hidden');
-        return;
-    }
     blueprintSelectContainer.classList.remove('hidden');
 
     // Blueprint list source: AWS has its own endpoint; everything else (agentic
@@ -266,7 +259,6 @@ function showNewScheduleModal() {
     // Reset per-type option fields to their defaults
     document.getElementById('schedule-sketch-name').value = '';
     const setVal = (id, v) => { const el = document.getElementById(id); if (el) { if (el.type === 'checkbox') el.checked = v; else el.value = v; } };
-    setVal('schedule-cve-scan-mode', 'vulnerable_only'); setVal('schedule-cve-max-wait', '120');
     setVal('schedule-memory-yara', true); setVal('schedule-memory-case', '');
     setVal('schedule-memory-acq-timeout', ''); setVal('schedule-memory-plugin-timeout', ''); setVal('schedule-memory-yara-timeout', '');
     setVal('schedule-collector-minutes', '30');
@@ -329,7 +321,6 @@ async function editSchedule(jobId) {
         let opts = {};
         try { opts = JSON.parse(job.options || '{}') || {}; } catch (e) {}
         const setV = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined && v !== null) { if (el.type === 'checkbox') el.checked = !!v; else el.value = v; } };
-        setV('schedule-cve-scan-mode', opts.scan_mode); setV('schedule-cve-max-wait', opts.max_wait_minutes);
         if ('include_yara' in opts) setV('schedule-memory-yara', opts.include_yara);
         setV('schedule-memory-case', opts.case_name);
         setV('schedule-memory-acq-timeout', opts.acquire_flow_timeout_s);
@@ -359,17 +350,12 @@ async function saveScheduleFromModal() {
     const clientIds = getSelectedScheduleClients();
 
     // Env-wide types run across every enrolled client / account (no picker):
-    // Velociraptor Hunt, CVE Management, AWS.
-    const envWide = (blueprintType === 'velociraptor' || blueprintType === 'cve' || blueprintType === 'aws');
+    // Velociraptor Hunt, AWS.
+    const envWide = (blueprintType === 'velociraptor' || blueprintType === 'aws');
 
     // Get blueprint ID based on type
     let blueprintId;
-    if (blueprintType === 'cve') {
-        blueprintId = 'cve_management';  // fixed CVE artifact set — no per-blueprint pick
-    } else {
-        // agentic / velociraptor / timesketch (real blueprint) / memory / aws
-        blueprintId = document.getElementById('schedule-blueprint-select').value;
-    }
+    blueprintId = document.getElementById('schedule-blueprint-select').value;
     if (blueprintType === 'timesketch') {
         // sketch name -> description (as before); the blueprint carries KAPE settings
         const sketchName = document.getElementById('schedule-sketch-name').value.trim();
@@ -380,10 +366,7 @@ async function saveScheduleFromModal() {
     const num = (id) => { const v = parseInt((document.getElementById(id) || {}).value); return isNaN(v) ? null : v; };
     const csv = (id) => ((document.getElementById(id) || {}).value || '').split(',').map(s => s.trim()).filter(Boolean);
     let options = {};
-    if (blueprintType === 'cve') {
-        options = { scan_mode: document.getElementById('schedule-cve-scan-mode').value,
-                    max_wait_minutes: num('schedule-cve-max-wait') || 120 };
-    } else if (blueprintType === 'memory') {
+    if (blueprintType === 'memory') {
         options = { include_yara: document.getElementById('schedule-memory-yara').checked,
                     case_name: (document.getElementById('schedule-memory-case').value || '').trim() || null,
                     acquire_flow_timeout_s: num('schedule-memory-acq-timeout'),

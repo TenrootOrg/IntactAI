@@ -29,7 +29,7 @@ def test_normalize_legacy_velociraptor_alias():
 
 
 def test_normalize_passthrough_known_modules():
-    assert S.normalize_modules(["memory", "cve"]) == ["memory", "cve"]
+    assert S.normalize_modules(["memory", "timesketch"]) == ["memory", "timesketch"]
 
 
 def test_normalize_mixed_legacy_and_new():
@@ -59,7 +59,6 @@ def test_catalog_available_and_default_flags():
     assert cat["aws"]["available"] is True
     # the rest are shown but disabled
     assert cat["timesketch"]["available"] is False
-    assert cat["cve"]["available"] is False
 
 
 def test_catalog_has_labels():
@@ -92,8 +91,8 @@ def test_enabled_types_agentic_excludes_hunts():
 
 
 def test_enabled_types_union_of_modules():
-    got = S._enabled_run_types({"fusion_modules": ["memory", "cve"]})
-    assert got == {"memory", "cve_scan"}
+    got = S._enabled_run_types({"fusion_modules": ["memory", "timesketch"]})
+    assert got == {"memory", "timesketch"}
 
 
 def test_enabled_types_legacy_alias_maps_to_agentic():

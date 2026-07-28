@@ -103,15 +103,6 @@ def test_intact_is_pinned_to_the_release_tag():
     bp = _load_picker()
     assert bp.release_module_set(TAG)["intact"] == TAG
 
-
-def test_cve_scan_ships_with_a_truthy_version():
-    """cve_scan is versionless (rolling NVD corpus). A falsy version would drop
-    it from the version-gated packaging loop, so air-gapped boxes would never
-    get a fresh CVE corpus."""
-    bp = _load_picker()
-    assert bp.release_module_set(TAG).get("cve_scan")
-
-
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

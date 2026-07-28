@@ -21,7 +21,6 @@ from routes.upload_routes import upload_bp
 from routes.azure_routes import azure_bp
 from routes.aws_routes import aws_bp
 from routes.support_bundle_routes import support_bundle_bp
-from routes.cve_routes import cve_bp
 from routes.memory_routes import memory_bp
 from routes.case_routes import case_bp
 
@@ -46,6 +45,5 @@ __all__ = [
     'azure_bp',
     'aws_bp',
     'support_bundle_bp',
-    'cve_bp',
     'memory_bp',
 ]

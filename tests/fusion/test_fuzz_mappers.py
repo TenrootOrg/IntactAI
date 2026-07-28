@@ -9,7 +9,7 @@ if "/app" not in sys.path:
 
 from services.fusion import correlate, keys  # noqa: E402
 from services.fusion.mappers import (  # noqa: E402
-    map_memory, map_agentic, map_timesketch, map_cve, map_cloud)
+    map_memory, map_agentic, map_timesketch, map_cloud)
 
 ASSET = keys.asset_id("C.fuzz")
 
@@ -54,11 +54,6 @@ def test_map_timesketch_survives_junk():
     _safe(map_timesketch, [None, "string", 42], run_id="r", asset=ASSET)
 
 
-def test_map_cve_survives_junk():
-    _safe(map_cve, JUNK_ROWS, run_id="r")
-    _safe(map_cve, {"by_host": {"H": JUNK_ROWS}}, run_id="r")
-    _safe(map_cve, [], run_id="r")
-
 
 def test_map_cloud_survives_junk():
     _safe(map_cloud, JUNK_ROWS, run_id="r", provider="aws", account=None)
@@ -70,9 +65,8 @@ def test_assemble_with_mixed_junk_contributions():
     contribs = [
         map_agentic({"Generic.System.Pstree": JUNK_ROWS}, run_id="a", hostnames={"C.fuzz": "H"}),
         map_memory({"plugins": {"pslist": JUNK_ROWS}}, run_id="m", asset=ASSET),
-        map_cve(JUNK_ROWS, run_id="c"),
     ]
-    g = correlate.assemble("mixed", contribs, ["a", "m", "c"])
+    g = correlate.assemble("mixed", contribs, ["a", "m"])
     assert isinstance(g.findings, list)  # produced a graph, didn't crash
 
 

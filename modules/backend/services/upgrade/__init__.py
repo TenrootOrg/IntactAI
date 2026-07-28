@@ -34,7 +34,6 @@ from .base import (
 
 # Module-specific upgrade functions
 from .elk import upgrade_elk, upgrade_elk_offline
-from .cve import upgrade_cve, upgrade_cve_offline
 from .timesketch import upgrade_timesketch, upgrade_timesketch_offline
 from .iris import upgrade_iris, upgrade_iris_offline
 from .velociraptor import upgrade_velociraptor, upgrade_velociraptor_offline
@@ -68,7 +67,7 @@ from services.storage.base import (
 # drift incident — a module present in one copy but missing from another — is
 # why it now lives in exactly one place, referenced everywhere.
 UPGRADE_ORDER = ['intact', 'elk', 'timesketch', 'plaso', 'iris',
-                 'velociraptor', 'aws_sigma', 'o365rc', 'volweb', 'cve_scan',
+                 'velociraptor', 'aws_sigma', 'o365rc', 'volweb',
                  'portainer']
 
 # Module ids renamed across releases. Old-code Phase-1 resume state, manifests
@@ -1263,7 +1262,6 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
         'o365rc': upgrade_azure,
         'volweb': upgrade_volweb,
         'intact': upgrade_intact,
-        'cve_scan': upgrade_cve,
         'portainer': upgrade_portainer,
     }
 
@@ -1781,7 +1779,6 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'o365rc': lambda v, **kw: upgrade_azure_offline(package_dir, v, **kw),
             'volweb': lambda v, **kw: upgrade_volweb_offline(package_dir, v, **kw),
             'intact': lambda **kw: upgrade_intact_offline(package_dir, **kw),
-            'cve_scan': lambda v, **kw: upgrade_cve_offline(package_dir, v, **kw),
             'portainer': lambda v, **kw: upgrade_portainer_offline(package_dir, v, **kw),
         }
         # Install-vs-upgrade dispatch: when a module's container doesn't exist
@@ -1808,8 +1805,7 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
             'iris': upgrade_iris,
             'velociraptor': upgrade_velociraptor,
             'intact': upgrade_intact,
-            'cve_scan': upgrade_cve,
-        }
+            }
         install_functions = {}  # old online flow had no upgrade-as-install
 
     # Reuse the container-existence detector — same source of truth
@@ -2431,7 +2427,6 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         'o365rc': upgrade_azure_offline,
         'intact': upgrade_intact_offline,
         'volweb': upgrade_volweb_offline,
-        'cve_scan': upgrade_cve_offline,
         'portainer': upgrade_portainer_offline,
     }
 
@@ -2523,15 +2518,6 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         has_frontend = os.path.exists(frontend_source) and os.listdir(frontend_source)
         if has_backend or has_frontend:
             modules_dict['intact'] = 'from_package'
-
-    # CVE Scan is versionless, so it's never in the package's `versions:`
-    # block — but if the package bundled the prebuilt CVE database, surface
-    # it as an applicable module so the dispatch enables cve_scan + installs
-    # cves.db on the target. Keyed 'latest' (no version pin). Skipped here
-    # when the package carries no CVE data (nothing to install).
-    if 'cve_scan' not in modules_dict and os.path.exists(
-            os.path.join(package_dir, 'cve', 'cves.db')):
-        modules_dict['cve_scan'] = 'latest'
 
     # Refuse a package that would move any module BACKWARDS. Checked here —
     # after the module set is known, before the loop touches anything — so a

@@ -1454,13 +1454,6 @@ def get_current_versions() -> Dict:
         'env_file': backend_env,
     }
 
-    # CVE Scan is versionless (rolling NVD feeds — no pin), so report
-    # Installed / Not installed by the enabled flag. Without this it was absent
-    # from the map entirely, so the import/plan UI showed a blank "?".
-    versions['cve_scan'] = {
-        'current': 'Installed' if _ondemand_enabled('cve_scan') else 'Not installed',
-    }
-
     # Intact.AI Platform — read from VERSION file at repo root (stamped by
     # .github/workflows/stamp-version-on-release.yml on every release, AND
     # re-stamped by services/upgrade/package.py at prepare time as a

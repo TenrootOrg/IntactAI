@@ -17,7 +17,6 @@
                                     <option value="aws_scan">AWS Scan</option>
                                     <option value="azure_scan">Microsoft 365 Scan</option>
                                     <option value="agentic">Agentic</option>
-                                    <option value="cve_scan">CVE Scan</option>
                                     <option value="timesketch">TimeSketch</option>
                                     <option value="velociraptor_hunt">Velociraptor Hunt</option>
                                     <option value="velociraptor_offline_collector">Offline Collector</option>
@@ -96,15 +95,6 @@
                                                     <a :href="'/api/aws/data/' + run.id + '/download'" download style="color:#fff;background-color:#64748b;" class="px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="Download Raw Data (ZIP)">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                         Data
-                                                    </a>
-                                                </template>
-                                                <!-- CVE Scan: download combined_cves.csv. Labelled "Download" (not
-                                                     "CVE CSV") so it matches the convention of other download-style
-                                                     actions in this dashboard. -->
-                                                <template x-if="run.type === 'cve_scan' && run.status === 'completed'">
-                                                    <a :href="'/api/cve/run/' + run.id + '/download'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" title="Download combined_cves.csv (one row per host × product × CVE)">
-                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                                                        Download
                                                     </a>
                                                 </template>
                                                 <template x-if="(run.type === 'velociraptor_offline_collector' || run.type === 'offline_collector') && run.status === 'completed' && run.details?.file_id">

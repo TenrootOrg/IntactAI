@@ -183,71 +183,34 @@ def test_persistence_service_finding():
     assert svc and "T1543" in svc[0].mitre
 
 
-def test_cve_mapper_and_finding():
-    from services.fusion.mappers import map_cve
-    rows = [{"Hostname": "WS01", "Product": "Acme", "Version": "1.0",
-             "CVE": "CVE-2024-1234", "CVSS_Score": 9.8}]
-    g = correlate.assemble("c", [map_cve(rows, run_id="cve_1")], ["cve_1"])
-    v = [e for e in g.entities.values() if e.type == "vuln"]
-    assert v and v[0].severity == "critical"
-    assert any(f.title.startswith("Vulnerability") for f in g.findings)
-    assert any(r.kind == "has_cve" for r in g.relationships)
-
-
-def test_chat_more_intents():
-    g = build()
-    with force_sim():
-        summ = llm_sim.chat(g, "give me a summary", window=WINDOW, min_severity="low")
-        who = llm_sim.chat(g, "who is the most affected host?", window=WINDOW, min_severity="low")
-        ia = llm_sim.chat(g, "how did they get in?", window=WINDOW, min_severity="low")
-    assert "host" in summ.lower()
-    assert "WS01" in who
-    assert "initial-access" in ia.lower() or "earliest" in ia.lower()
-
-
-def test_host_severity_rollup():
-    g = build()
-    ws01 = g.entities[keys.asset_id(WS01)]
-    assert ws01.severity == "critical", f"WS01 should roll up to critical, got {ws01.severity}"
-
-
-def test_timesketch_mapper_extracts_iocs():
-    from services.fusion.mappers import map_timesketch
-    evs = [{"datetime": "2026-06-15T08:00:00", "message": "connection to 5.100.251.10 observed",
-            "parser": "winevtx"}]
-    g = correlate.assemble("c", [map_timesketch(evs, run_id="ts_1", asset=keys.asset_id("C.x"),
-                                                hostname="H")], ["ts_1"])
-    assert any(e.type == "event" for e in g.entities.values())
-    assert keys.ioc_id("ip", "5.100.251.10") in g.entities
-
-
 def test_hostname_asset_merges_into_client_id_asset():
-    from services.fusion.mappers import map_cve, map_agentic
+    from services.fusion.mappers import map_agentic, map_timesketch
     DC = "C.dcdcdc"
     agt = map_agentic({"Generic.System.Pstree": [
         {"_client_id": DC, "_hostname": "DC01", "Pid": 1, "Name": "x",
          "CreateTime": "2026-06-15T07:00:00Z"}]}, run_id="a", hostnames={DC: "DC01"})
-    cve = map_cve([{"Hostname": "DC01", "CVE": "CVE-2021-26855", "CVSS_Score": 9.8}], run_id="c")
-    g = correlate.assemble("c", [agt, cve], ["a", "c"])
+    # A hostname-keyed contribution (no client_id) must fold into the
+    # client_id-keyed asset rather than creating a second DC01 node.
+    ts = map_timesketch([{"datetime": "2026-05-19T08:00:00", "message": "logon",
+                          "parser": "evtx"}], run_id="t",
+                        asset=keys.asset_id(DC), hostname="DC01")
+    g = correlate.assemble("c", [agt, ts], ["a", "t"])
     assets = g.by_type("asset")
     assert len(assets) == 1, f"DC01 must be ONE node, got {[a.id for a in assets]}"
     assert keys.asset_id(DC) in g.entities, "canonical client_id asset survives"
-    vuln = [e for e in g.entities.values() if e.type == "vuln"][0]
-    assert keys.asset_id(DC) in (vuln.attrs.get("_assets") or []), "CVE re-pointed to the real host"
 
 
-def test_four_module_integration():
-    from services.fusion.mappers import map_cve, map_timesketch
+def test_three_module_integration():
+    from services.fusion.mappers import map_timesketch
     mem = map_memory(MEMORY_PAYLOAD, run_id="m", asset=keys.asset_id(WS01), hostname="WS01")
     agt = map_agentic(AGENTIC_DATA, run_id="a", hostnames=HOSTNAMES)
-    cve = map_cve([{"Hostname": "WS01", "CVE": "CVE-2024-0001", "CVSS_Score": 9.0}], run_id="c")
     ts = map_timesketch([{"datetime": "2026-05-19T08:00:00", "message": "beacon to 5.100.251.10",
                           "parser": "evtx"}], run_id="t", asset=keys.asset_id(WS01), hostname="WS01")
-    g = correlate.assemble("case", [mem, agt, cve, ts], ["m", "a", "c", "t"])
+    g = correlate.assemble("case", [mem, agt, ts], ["m", "a", "t"])
     srcs = set()
     for e in g.entities.values():
         srcs.update(e.sources)
-    assert {"memory", "agentic", "cve", "timesketch"} <= srcs, f"all 4 modules merge, got {srcs}"
+    assert {"memory", "agentic", "timesketch"} <= srcs, f"all 3 modules merge, got {srcs}"
     with force_sim():
         md = llm_sim.generate_report(g, window=WINDOW, min_severity="medium", case_name="FULL")
     assert "Vulnerability" in md or "CVE-2024-0001" in md

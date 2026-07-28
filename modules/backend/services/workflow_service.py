@@ -21,7 +21,7 @@ from services.file_storage_service import (
 # (upgrade, online_upgrade, prepare_package, maintenance, support_bundle, settings,
 # system_purge) and the internal case/fusion_baseline rows are NOT case work and
 # never appear in a workspace's run list.
-AGENTIC_TYPES = {"velociraptor_collection", "memory", "cve_scan", "timesketch",
+AGENTIC_TYPES = {"velociraptor_collection", "memory", "timesketch",
                  "aws_scan", "azure_scan",
                  "velociraptor_hunt",
                  # An offline-collector ZIP upload IS case work: it imports a
