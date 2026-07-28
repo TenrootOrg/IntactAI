@@ -191,6 +191,134 @@ def test_unknown_providers_are_rejected_loudly():
             raise AssertionError(f"{cfg}: unknown provider was accepted")
 
 
+# --------------------------------------------------------------------------
+# The two branches that do NOT share the OpenAI adapter. Both were implemented
+# but unreachable from the UI until this work, so neither had ever executed —
+# a typo or a wrong kwarg in them was invisible. These run the real branch
+# against a fake SDK: not proof a vendor accepts the call, but proof the code
+# runs and sends the vendor-specific shape it is supposed to.
+# --------------------------------------------------------------------------
+
+
+class _FakeAnthropic:
+    last = {}
+
+    def __init__(self, **kwargs):
+        _FakeAnthropic.last = {"init": kwargs, "call": None}
+
+        class _Messages:
+            def create(self, **kw):
+                _FakeAnthropic.last["call"] = kw
+                block = types.SimpleNamespace(text="claude-reply")
+                return types.SimpleNamespace(
+                    content=[block],
+                    usage=types.SimpleNamespace(input_tokens=31, output_tokens=13))
+
+        self.messages = _Messages()
+
+
+def _with_fake_module(name, module, fn):
+    """Install a stand-in for an SDK the branch imports lazily."""
+    real = sys.modules.get(name)
+    sys.modules[name] = module
+    try:
+        return fn()
+    finally:
+        if real is not None:
+            sys.modules[name] = real
+        else:
+            sys.modules.pop(name, None)
+
+
+def test_claude_puts_the_system_prompt_in_the_system_kwarg():
+    """Anthropic takes the system prompt as its own argument, NOT as a first
+    message like OpenAI. Sending it as a message is accepted by the API and
+    silently changes behaviour — the model stops treating it as instructions."""
+    cfg = {"provider": "claude", "api_key": "k", "model": "claude-x"}
+    out = _with_fake_module(
+        "anthropic", types.SimpleNamespace(Anthropic=_FakeAnthropic),
+        lambda: _llm._call_llm_online("hello", "sys", cfg, max_tokens=5))
+
+    call = _FakeAnthropic.last["call"]
+    assert out == "claude-reply", f"reply not read from content[0].text: {out!r}"
+    assert call["system"] == "sys", f"system prompt not in the system kwarg: {call}"
+    assert call["messages"] == [{"role": "user", "content": "hello"}], call
+    assert call["max_tokens"] == 5
+    assert not any(m.get("role") == "system" for m in call["messages"]), \
+        "system prompt smuggled in as a message as well"
+
+
+def test_gemini_folds_the_system_prompt_into_the_prompt():
+    """Gemini has no system role on this API, so the branch concatenates. If
+    that ever regressed to passing `system=`, GenerativeModel would reject the
+    kwarg — and the instructions would be gone either way."""
+    captured = {}
+
+    class _GenerativeModel:
+        def __init__(self, model):
+            captured["model"] = model
+
+        def generate_content(self, prompt, **kw):
+            captured["prompt"] = prompt
+            captured.update(kw)
+            return types.SimpleNamespace(
+                text="gemini-reply",
+                usage_metadata=types.SimpleNamespace(
+                    prompt_token_count=17, candidates_token_count=5))
+
+    class _GenerationConfig:
+        def __init__(self, **kw):
+            # Distinct key: generate_content's kwargs land in `captured` too,
+            # and its `generation_config` is this OBJECT, which would clobber
+            # the kwargs recorded here.
+            captured["gen_cfg_kwargs"] = kw
+
+    genai = types.SimpleNamespace(
+        configure=lambda **kw: captured.update(configured=kw),
+        GenerativeModel=_GenerativeModel,
+        types=types.SimpleNamespace(GenerationConfig=_GenerationConfig))
+
+    cfg = {"provider": "gemini", "api_key": "k", "model": "gemini-2.5-flash"}
+    out = _with_fake_module(
+        "google.generativeai", genai,
+        lambda: _llm._call_llm_online("hello", "sys", cfg, max_tokens=9))
+
+    assert out == "gemini-reply", f"reply not read from response.text: {out!r}"
+    assert captured["configured"] == {"api_key": "k"}, captured.get("configured")
+    assert captured["model"] == "gemini-2.5-flash"
+    assert captured["prompt"] == "sys\n\nhello", (
+        f"system prompt not folded in: {captured['prompt']!r}")
+    # Gemini spells the output cap differently from every other provider.
+    assert captured["gen_cfg_kwargs"]["max_output_tokens"] == 9, \
+        captured["gen_cfg_kwargs"]
+
+
+def test_each_vendor_usage_is_read_from_its_own_field_names():
+    """Three vendors, three spellings for the same two numbers. Reading the
+    wrong pair records 0/0, which zeroes the cost badge and the usage log
+    without raising anything."""
+    import services.workflow_service as W
+    cases = [
+        ("claude", types.SimpleNamespace(usage=types.SimpleNamespace(
+            input_tokens=31, output_tokens=13)), (31, 13)),
+        ("openrouter", _Resp(), (11, 7)),
+        ("gemini", types.SimpleNamespace(usage_metadata=types.SimpleNamespace(
+            prompt_token_count=17, candidates_token_count=5)), (17, 5)),
+        ("ollama", {"prompt_eval_count": 3, "eval_count": 2}, (3, 2)),
+    ]
+    orig = W.record_llm_metrics
+    try:
+        for provider, response, expected in cases:
+            seen = {}
+            W.record_llm_metrics = lambda *a, **k: seen.update(k)
+            _llm._record_llm_usage("run1", provider, "m", response)
+            assert seen, f"{provider}: nothing recorded at all"
+            got = (seen.get("input_tokens"), seen.get("output_tokens"))
+            assert got == expected, f"{provider}: recorded {got}, expected {expected}"
+    finally:
+        W.record_llm_metrics = orig
+
+
 def test_direct_gemini_model_ids_are_priced():
     """The cost table only had `google/gemini-…` (OpenRouter's id form). Once
     Gemini became directly selectable its ids arrive bare, matched nothing, and
