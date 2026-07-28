@@ -52,6 +52,20 @@ _RETRIES = 4
 # will have more, not fewer -- so this scales on its own.
 _PART_WORKERS = 4
 
+# One status line for the whole download, rewritten on this interval, instead
+# of every part logging its own progress. With parts running concurrently the
+# per-part lines interleave, and at ~5% each a 4-part package emits ~80 of
+# them — the operator ends up scrolling a transcript of progress instead of
+# reading a status. See _PROGRESS_MARKER.
+_PROGRESS_SECONDS = 30
+_PROGRESS_MARKER = "Download: "
+
+# Floor for a single asset's own progress lines, used only when there is no
+# central reporter (the whole-file, non-split package path). Module-level so
+# tests can lower it -- inline, a small fixture could never trigger it and a
+# test asserting the lines are suppressed would pass vacuously.
+_PART_LOG_FLOOR = 50 * 1024 * 1024
+
 
 class PackageDownloadCancelled(Exception):
     """Raised when the operator hits Stop during the download/reassembly."""
@@ -130,7 +144,7 @@ def find_release_package(tag: str, logger: Callable = None) -> Optional[dict]:
 
 def _download_asset(url: str, dest: str, size: int, run_id: Optional[str],
                     log: Callable, on_progress: Optional[Callable] = None,
-                    label: str = "") -> None:
+                    label: str = "", log_progress: bool = True) -> None:
     """Stream one release asset to ``dest`` with auth, resuming a partial file
     via ``Range`` and retrying transient failures. ``size`` (0 = unknown, e.g.
     the tiny .sha256) enables an exact-length check."""
@@ -167,7 +181,7 @@ def _download_asset(url: str, dest: str, size: int, run_id: Optional[str],
             # Log a progress line every ~5% of the part (min 50 MB) so the
             # operator can see it moving — a 1.9 GB part is otherwise silent
             # for minutes and looks stuck.
-            report_every = max((size // 20) if size else 0, 50 * 1024 * 1024)
+            report_every = max((size // 20) if size else 0, _PART_LOG_FLOOR)
             next_report = downloaded + report_every
             with open(dest, mode) as f:
                 for chunk in r.iter_content(_STREAM_CHUNK):
@@ -178,7 +192,7 @@ def _download_asset(url: str, dest: str, size: int, run_id: Optional[str],
                         downloaded += len(chunk)
                         if on_progress is not None:
                             on_progress(downloaded)
-                        if downloaded >= next_report:
+                        if log_progress and downloaded >= next_report:
                             if size:
                                 log(f"      …{label} {downloaded // 1048576}/"
                                     f"{size // 1048576} MB "
@@ -269,53 +283,106 @@ def download_release_package(tag: str, dest_dir: str, run_id: str = None,
             f"target release's own code — no on-box build needed)…", "info")
         part_paths: List[str] = [os.path.join(dest_dir, n) for n, _u, _s in parts]
         workers = max(1, min(_PART_WORKERS, len(parts)))
-        for i, (name, _u, size) in enumerate(parts):
-            log(f"  part {i + 1}/{len(parts)}: {name} "
-                f"({size / 1024 / 1024:.0f} MB)", "info")
-        log(f"  Fetching {len(parts)} parts {workers} at a time "
-            f"(one stream is per-connection limited, not link limited)…", "info")
+        log(f"  Fetching {len(parts)} parts, {workers} at a time "
+            f"(one stream is per-connection limited, not link limited). "
+            f"Progress updates every {_PROGRESS_SECONDS}s on a single line "
+            f"below.", "info")
 
         # Overall fraction (download phase = 0..0.9 of the bar). Each worker
         # reports ITS OWN cumulative byte count, so the bar needs the sum
         # across parts, not the last value seen — hence the shared dict.
         # Ordering between workers is arbitrary, so the lock is what keeps the
         # sum from being computed mid-update and jumping backwards.
-        seen = {}
+        seen = {i: 0 for i in range(len(parts))}
         seen_lock = threading.Lock()
 
         def _mk_cb(idx):
-            if not (progress_cb and total):
-                return None
-
             def _cb(done):
                 with seen_lock:
                     seen[idx] = done
                     agg = sum(seen.values())
-                progress_cb(min(0.9, agg / total))
+                if progress_cb and total:
+                    progress_cb(min(0.9, agg / total))
             return _cb
 
-        with ThreadPoolExecutor(max_workers=workers,
-                                thread_name_prefix="pkg-part") as ex:
-            futures = {
-                ex.submit(_download_asset, url, part_paths[i], size, run_id, log,
-                          _mk_cb(i), f" [part {i + 1}/{len(parts)}]"): i
-                for i, (name, url, size) in enumerate(parts)
-            }
-            # Surface the first failure (Stop, or a hard error after retries).
-            # In-flight parts are left to finish rather than being killed
-            # mid-write: each is resumable by on-disk size, so a completed or
-            # partial file is a head start for the retry, never corruption.
-            # A Stop propagates to the others anyway — they share the run's
-            # cancel event and check it every chunk.
-            first_error = None
-            for fut in as_completed(futures):
+        def _status_line() -> str:
+            """One line covering every part, e.g.
+
+              Download: [part 1/4] 1805/1900 MB (95%), [part 2/4] 1900/1900 MB
+              (Completed), [part 3/4] 1425/1900 MB (75%), [part 4/4] queued
+            """
+            with seen_lock:
+                done_now = dict(seen)
+            bits = []
+            for i, (_n, _u, size) in enumerate(parts):
+                d = done_now.get(i, 0)
+                mb, tot_mb = d // 1048576, size // 1048576
+                if size and d >= size:
+                    bits.append(f"[part {i + 1}/{len(parts)}] {tot_mb}/{tot_mb} MB (Completed)")
+                elif d:
+                    pct = (d * 100 // size) if size else 0
+                    bits.append(f"[part {i + 1}/{len(parts)}] {mb}/{tot_mb} MB ({pct}%)")
+                else:
+                    bits.append(f"[part {i + 1}/{len(parts)}] queued")
+            agg = sum(done_now.values())
+            overall = (agg * 100 // total) if total else 0
+            return (f"{_PROGRESS_MARKER}{overall}% of "
+                    f"{total / 1024 / 1024 / 1024:.1f} GB — " + ", ".join(bits))
+
+        def _emit_status():
+            """Rewrite the single progress line in place; fall back to a plain
+            append when there's no run to attach it to (CLI/tests)."""
+            line = _status_line()
+            if run_id:
                 try:
-                    fut.result()
-                except BaseException as e:      # noqa: BLE001 — re-raised below
-                    if first_error is None:
-                        first_error = e
-            if first_error is not None:
-                raise first_error
+                    from services.workflow_service import upsert_log_line
+                    upsert_log_line(run_id, _PROGRESS_MARKER, line, "info")
+                    return
+                except Exception:
+                    pass
+            log(line, "info")
+
+        stop_reporter = threading.Event()
+
+        def _reporter():
+            _emit_status()                       # place the line immediately
+            while not stop_reporter.wait(_PROGRESS_SECONDS):
+                _emit_status()
+
+        reporter = threading.Thread(target=_reporter, name="pkg-progress",
+                                    daemon=True)
+        reporter.start()
+
+        try:
+            with ThreadPoolExecutor(max_workers=workers,
+                                    thread_name_prefix="pkg-part") as ex:
+                futures = {
+                    ex.submit(_download_asset, url, part_paths[i], size, run_id,
+                              log, _mk_cb(i), f" [part {i + 1}/{len(parts)}]",
+                              False): i
+                    for i, (name, url, size) in enumerate(parts)
+                }
+                # Surface the first failure (Stop, or a hard error after
+                # retries). In-flight parts are left to finish rather than
+                # killed mid-write: each is resumable by on-disk size, so a
+                # completed or partial file is a head start for the retry,
+                # never corruption. A Stop propagates to the others anyway —
+                # they share the run's cancel event and check it every chunk.
+                first_error = None
+                for fut in as_completed(futures):
+                    try:
+                        fut.result()
+                    except BaseException as e:   # noqa: BLE001 — re-raised below
+                        if first_error is None:
+                            first_error = e
+                if first_error is not None:
+                    raise first_error
+        finally:
+            # Stop before the final emit, so the reporter can't race it and
+            # leave a stale mid-download line as the last word.
+            stop_reporter.set()
+            reporter.join(timeout=5)
+        _emit_status()
         # Concatenate, deleting each part as soon as it's appended so peak
         # disk is ~ the assembled file + one part, not 2× the package.
         cancel = _cancel_event(run_id)
