@@ -47,6 +47,46 @@ VOLWEB_BASE_POC = "http://127.0.0.1:8002"
 
 _YARASCAN_PLUGIN_NAME = "volatility3.plugins.yarascan.latest"
 
+# The extraction worker that consumes the selective-extraction task. Named here
+# because a stalled extract is almost always this container being down, and the
+# operator needs the name in the log line to act on it.
+_VOLWEB_WORKER_CONTAINER = "intact_volweb_workers"
+
+# ---------------------------------------------------------------------------
+# Poll / heartbeat cadence for the two wait_* loops.
+#
+# Constants so the tuning policy is greppable in one place; the functions still
+# take them as kwargs so tests can compress timings without patching globals.
+#
+# Deliberately NOT operator-tunable. `plugin_timeout_s` is, because it maps to
+# something an operator knows — image size and how long they will wait. Poll and
+# heartbeat cadence map to nothing they know, and every extra key in the
+# pipeline's `_t()` resolver is another way to misconfigure a run. This repo
+# already paid that tax once: `yarascan_timeout_s` needed a whole
+# `_effective_yarascan_timeout` + `yarascan_timeout_operator_set` apparatus
+# purely to defend against bad overrides.
+# ---------------------------------------------------------------------------
+
+# One "still waiting" line per minute. Shared by BOTH wait loops so the two
+# can't drift — wait_for_yarascan carried its own inline copy of this value.
+_HEARTBEAT_S = 60
+
+_PLUGIN_POLL_S = 15
+_PLUGIN_IDLE_GRACE_S = 300
+
+# How long to wait before saying out loud that VolWeb has written NOTHING.
+# ~1/3 of the 1800s default budget, leaving 20 minutes of runway, and well
+# above worst-case first-row latency — the first plugin also pays the one-time
+# Volatility3 automagic / symbol-resolution cost. Deliberately not 3-5 minutes:
+# a row only exists once a plugin FINISHES (VolWeb's save_to_database runs from
+# render()), so an early "no rows" verdict would abort healthy runs on big
+# images. See the escalation block in wait_for_plugin_results.
+_PLUGIN_NO_ROWS_WARN_S = 600
+
+# Fraction of the wanted set that must have landed before the idle-grace
+# soft-exit will give up on the stragglers.
+_PLUGIN_PARTIAL_FLOOR = 0.66
+
 
 def _config_value(*keys: str, default: str = "") -> str:
     """Pull a string config value from the IntactAI runtime config DB.
@@ -769,6 +809,47 @@ class VolWebClient:
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             return None
 
+    def extraction_worker_alive(self) -> bool | None:
+        """Is the Celery worker that consumes extraction tasks actually up?
+
+        Three-valued ON PURPOSE:
+
+          True   container exists and is running
+          False  container exists and is NOT running — a queued extraction has
+                 no consumer and will never complete
+          None   can't tell (no docker, container unknown, probe failed)
+
+        This exists because a plugin row is only written when a plugin
+        *finishes* (VolWeb's ``save_to_database`` runs from ``render()``), so
+        "no rows yet" is genuinely ambiguous between a dead worker and a first
+        plugin still grinding through a multi-GB image. Elapsed time cannot
+        separate those two; this can.
+
+        Only the ``False`` answer is strong enough to act on, and only ``False``
+        should ever abort a wait. ``None`` is what unit tests and non-docker
+        deployments get, so callers MUST treat it as "keep waiting", never as a
+        failure. Same best-effort contract as ``_resolve_backend_container``:
+        never raises, degrades to ``None``.
+        """
+        name = _config_value("worker_container", default=None) or _VOLWEB_WORKER_CONTAINER
+        try:
+            r = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Running}}", name],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+        if r.returncode != 0:
+            # No such container. On a host where VolWeb runs under different
+            # names this is "unknown", not "dead" — don't abort a run over it.
+            return None
+        out = (r.stdout or "").strip().lower()
+        if out == "true":
+            return True
+        if out == "false":
+            return False
+        return None
+
     def stage_media_dir(self, evidence_id: int) -> None:
         """Best-effort: ensure ``/home/app/web/media/<evidence_id>/``
         exists inside the VolWeb backend container BEFORE triggering
@@ -950,12 +1031,20 @@ class VolWebClient:
         expected_plugins: Iterable[str],
         *,
         timeout_s: int = 1800,
-        poll_s: int = 15,
+        poll_s: int = _PLUGIN_POLL_S,
         cancel_check: Callable[[], bool] | None = None,
         on_progress: Callable[[int, int], None] | None = None,
-        idle_grace_s: int = 300,
-    ) -> dict[str, dict]:
+        idle_grace_s: int = _PLUGIN_IDLE_GRACE_S,
+        no_rows_warn_s: int = _PLUGIN_NO_ROWS_WARN_S,
+        heartbeat_s: int = _HEARTBEAT_S,
+    ) -> tuple[dict[str, dict], bool]:
         """Block until every expected plugin reaches a terminal state.
+
+        Returns ``(plugin_map, completed)``. ``completed`` is False ONLY when
+        the ``timeout_s`` budget ran out — every other exit reached a real
+        terminal signal. The caller needs that distinction to report a timeout
+        as a timeout: it previously got back a bare dict and logged "plugins
+        complete" at success level even for a 30-minute 0/12 timeout.
 
         Terminal state = ``results=True`` (success), an error indicator
         in the row, OR the plugin never inserts a row at all (this
@@ -974,18 +1063,32 @@ class VolWebClient:
             ``min_floor`` plugins done, give up on the missing ones and
             return — the partial results are still useful, and the
             operator gets a clear "X/N plugins succeeded" log line.
-          * Log per-plugin status snapshots every poll so the operator
-            can see WHICH plugin is stuck instead of staring at a
-            silent progress bar.
+          * Emit a heartbeat every ``heartbeat_s`` for as long as we wait.
+            Without it this loop logs ONLY on state transitions, so a run
+            where VolWeb produced nothing emitted zero lines for the full
+            30-minute budget — a customer watched exactly that and concluded
+            the platform had hung. The heartbeat carries the RAW row count,
+            which is the one fact ``on_progress`` cannot express: rows>0 with
+            done=0 means VolWeb is alive but nothing from the curated set has
+            landed; rows=0 means it has written literally nothing.
+          * After ``no_rows_warn_s`` with zero rows, say so, and probe whether
+            the worker is even running — see the escalation block below.
         """
         wanted = set(expected_plugins)
-        deadline = time.time() + timeout_s
+        started_at = time.time()
+        deadline = started_at + timeout_s
         last_row_count = -1
-        last_change_at = time.time()
-        # Track which plugins we've already logged a status change for
-        # so we don't spam the timeline on every poll.
-        announced: set[str] = set()
-        min_floor = max(1, int(len(wanted) * 0.66))   # 2/3 is the partial-success floor
+        last_change_at = started_at
+        last_beat = started_at
+        zero_row_warned = False
+        # Track which (plugin, state) pairs we've already logged so we don't
+        # spam the timeline on every poll. Keyed on the PAIR, not the name
+        # alone: keying on the name let a plugin that transiently surfaced with
+        # an error icon suppress its own later "plugin done" line, so the
+        # operator's last word on a plugin that ultimately SUCCEEDED was
+        # "errored".
+        announced: set[tuple[str, str]] = set()
+        min_floor = max(1, int(len(wanted) * _PLUGIN_PARTIAL_FLOOR))
 
         while True:
             if cancel_check and cancel_check():
@@ -1021,22 +1124,22 @@ class VolWebClient:
                     name = matched
                 # Terminal-success: row carries a results payload.
                 if r.get("results"):
-                    if name not in announced:
+                    if (name, "done") not in announced:
                         self._log(f"plugin done: {name.rsplit('.',1)[-1]}", "info")
-                        announced.add(name)
+                        announced.add((name, "done"))
                     done[name] = r
                     continue
                 # Terminal-failure: VolWeb marks erroring plugins with
                 # a red icon and / or an `error` payload.
                 icon = (r.get("icon") or "").lower()
                 if r.get("error") or "alert" in icon or "error" in icon:
-                    if name not in announced:
+                    if (name, "errored") not in announced:
                         err_msg = r.get("error") or "(plugin row marked errored)"
                         self._log(
                             f"plugin errored: {name.rsplit('.',1)[-1]} — {err_msg!s:.180}",
                             "warning",
                         )
-                        announced.add(name)
+                        announced.add((name, "errored"))
                     errored[name] = r
 
             if on_progress:
@@ -1059,7 +1162,7 @@ class VolWebClient:
                         f"missing (no row or empty results): {', '.join(missing)}",
                         "warning",
                     )
-                return done
+                return done, True
 
             # All wanted plugins reached a terminal state — done.
             if len(done) + len(errored) >= len(wanted):
@@ -1069,11 +1172,20 @@ class VolWebClient:
                         f"{len(errored)} errored — proceeding with partial results",
                         "warning",
                     )
-                return done
+                return done, True
 
             # Idle-grace soft-exit: if the row count hasn't changed for
             # idle_grace_s AND we already have min_floor done, accept that
             # the missing plugins won't show up.
+            #
+            # The min_floor condition looks like it should also cover the
+            # "nothing at all arrived" case. It deliberately does not: "the row
+            # count has been stable" is a meaningless observation when the count
+            # has never been anything but zero, because a row only exists once a
+            # plugin FINISHES. Dropping the floor here would turn a slow first
+            # plugin into an aborted run. The zero-row case is owned by the
+            # escalation block below, which decides on evidence (is the worker
+            # running?) rather than on elapsed time.
             row_count = len(rows)
             if row_count != last_row_count:
                 last_row_count = row_count
@@ -1092,14 +1204,75 @@ class VolWebClient:
                     f"missing plugins: {', '.join(missing)}",
                     "warning",
                 )
-                return done
+                return done, True
+
+            # ----------------------------------------------------------------
+            # Say something. Everything above only speaks on a state CHANGE, so
+            # a run where VolWeb produces nothing used to emit not one line for
+            # the whole budget — indistinguishable from a crashed backend.
+            #
+            # if/elif with the escalation so a single poll never emits both.
+            # ----------------------------------------------------------------
+            now = time.time()
+            elapsed = int(now - started_at)
+            row_count_now = len(rows)
+
+            if not zero_row_warned and row_count_now == 0 and elapsed >= no_rows_warn_s:
+                zero_row_warned = True
+                last_beat = now
+                worker = self.extraction_worker_alive()
+                if worker is False:
+                    # PROOF, not inference: the queue has no consumer, so no
+                    # amount of further waiting can help. This is the only
+                    # condition that may abort — `None` (docker unreachable,
+                    # unit tests, non-docker deployments) must not.
+                    self._log(
+                        f"plugin extract: the VolWeb extraction worker "
+                        f"({_VOLWEB_WORKER_CONTAINER}) is NOT running — the "
+                        f"selective-extraction task was queued but nothing can "
+                        f"consume it. Aborting after {elapsed // 60}m instead of "
+                        f"waiting out the remaining "
+                        f"{max(0, int(deadline - now)) // 60}m. Start it with "
+                        f"`docker start {_VOLWEB_WORKER_CONTAINER}`.",
+                        "error",
+                    )
+                    raise VolWebError(
+                        f"VolWeb extraction worker ({_VOLWEB_WORKER_CONTAINER}) is not "
+                        f"running — extraction was queued but cannot be consumed"
+                    )
+                self._log(
+                    f"plugin extract: {elapsed // 60}m {elapsed % 60}s elapsed and "
+                    f"VolWeb has written ZERO plugin rows for evidence={evidence_id}. "
+                    f"A row is only written when a plugin FINISHES, so on a large "
+                    f"image this is normal while the first one is still running — "
+                    f"but it looks identical to a dead worker. Check "
+                    f"`docker logs --tail 100 {_VOLWEB_WORKER_CONTAINER}`. Still "
+                    f"waiting (budget {timeout_s // 60}m).",
+                    "warning",
+                )
+            elif now - last_beat >= heartbeat_s:
+                last_beat = now
+                pending = sorted(
+                    w.rsplit(".", 1)[-1]
+                    for w in wanted - set(done.keys()) - set(errored.keys())
+                )
+                shown = ", ".join(pending[:6])
+                if len(pending) > 6:
+                    shown += f" (+{len(pending) - 6} more)"
+                self._log(
+                    f"plugin extract: waiting on evidence={evidence_id} — "
+                    f"{elapsed // 60}m {elapsed % 60}s elapsed / {timeout_s // 60}m budget, "
+                    f"{len(done)}/{len(wanted)} plugins done, {row_count_now} result rows"
+                    + (f", pending: {shown}" if pending else ""),
+                    "info",
+                )
 
             if time.time() > deadline:
                 self._log(
                     f"plugin extraction timed out at {len(done)}/{len(wanted)} after {timeout_s}s",
                     "warning",
                 )
-                return done
+                return done, False
 
             # Sleep in 1 s steps so the cancel button cuts through quickly.
             slept = 0
@@ -1193,7 +1366,7 @@ class VolWebClient:
         # Heartbeat cadence so a long scan doesn't leave the workflow log
         # silent — an operator saw a ~4-minute gap on a 5 GB dump and thought
         # the run had stalled. Emit one "still scanning" line per heartbeat_s.
-        heartbeat_s = 60
+        heartbeat_s = _HEARTBEAT_S
         last_beat = first_seen_at
         while True:
             if cancel_check and cancel_check():
