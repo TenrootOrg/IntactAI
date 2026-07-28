@@ -23,7 +23,9 @@ back to building on-box and every existing scenario keeps working.
 """
 import hashlib
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, List, Optional, Tuple
 
 import requests
@@ -35,6 +37,20 @@ _HASH_CHUNK = 4 * 1024 * 1024        # 4 MiB sha256 read chunk
 _CONNECT_TIMEOUT = 30
 _READ_TIMEOUT = 300
 _RETRIES = 4
+
+# Parts download concurrently. A single connection to GitHub's release CDN is
+# per-connection limited, not link limited: measured off one box, one stream
+# got 8-12 MB/s while four in parallel got 20.8 MB/s on the same link. The
+# parts are independent assets, so overlapping them is free speed.
+#
+# Deliberately parallel ACROSS parts rather than splitting each part into byte
+# ranges: _download_asset resumes a partial file by its on-disk size, which
+# only holds while one writer appends sequentially. Range-splitting a single
+# file would leave holes that size alone cannot describe, so a Stop/retry
+# would have to restart the part. Whole packages already exceed the 2 GiB
+# asset cap by several parts -- and now that releases ship every module they
+# will have more, not fewer -- so this scales on its own.
+_PART_WORKERS = 4
 
 
 class PackageDownloadCancelled(Exception):
@@ -113,7 +129,8 @@ def find_release_package(tag: str, logger: Callable = None) -> Optional[dict]:
 
 
 def _download_asset(url: str, dest: str, size: int, run_id: Optional[str],
-                    log: Callable, on_progress: Optional[Callable] = None) -> None:
+                    log: Callable, on_progress: Optional[Callable] = None,
+                    label: str = "") -> None:
     """Stream one release asset to ``dest`` with auth, resuming a partial file
     via ``Range`` and retrying transient failures. ``size`` (0 = unknown, e.g.
     the tiny .sha256) enables an exact-length check."""
@@ -163,10 +180,11 @@ def _download_asset(url: str, dest: str, size: int, run_id: Optional[str],
                             on_progress(downloaded)
                         if downloaded >= next_report:
                             if size:
-                                log(f"      … {downloaded // 1048576}/{size // 1048576} MB "
+                                log(f"      …{label} {downloaded // 1048576}/"
+                                    f"{size // 1048576} MB "
                                     f"({downloaded * 100 // size}%)", "info")
                             else:
-                                log(f"      … {downloaded // 1048576} MB", "info")
+                                log(f"      …{label} {downloaded // 1048576} MB", "info")
                             next_report = downloaded + report_every
             got = os.path.getsize(dest)
             if size and got != size:
@@ -179,7 +197,7 @@ def _download_asset(url: str, dest: str, size: int, run_id: Optional[str],
                 raise
             backoff = min(30, 2 ** attempt)
             resume_at = os.path.getsize(dest) if os.path.exists(dest) else 0
-            log(f"    download hiccup ({type(e).__name__}: {e}) — retry "
+            log(f"    download hiccup{label} ({type(e).__name__}: {e}) — retry "
                 f"{attempt}/{_RETRIES} in {backoff}s (resume @ {resume_at} bytes)",
                 "warning")
             time.sleep(backoff)
@@ -249,21 +267,55 @@ def download_release_package(tag: str, dest_dir: str, run_id: str = None,
         log(f"Downloading pre-built release package for {tag}: {len(parts)} "
             f"parts, {total / 1024 / 1024 / 1024:.1f} GB (built in CI from the "
             f"target release's own code — no on-box build needed)…", "info")
-        part_paths: List[str] = []
-        done_bytes = 0  # bytes fully downloaded in PRIOR parts
-        for i, (name, url, size) in enumerate(parts):
-            pth = os.path.join(dest_dir, name)
+        part_paths: List[str] = [os.path.join(dest_dir, n) for n, _u, _s in parts]
+        workers = max(1, min(_PART_WORKERS, len(parts)))
+        for i, (name, _u, size) in enumerate(parts):
             log(f"  part {i + 1}/{len(parts)}: {name} "
                 f"({size / 1024 / 1024:.0f} MB)", "info")
-            # Feed an overall fraction (download phase = 0..0.9 of the bar) so
-            # the workflow progress bar advances smoothly, not just per-part.
-            cb = None
-            if progress_cb and total:
-                cb = lambda d, _base=done_bytes: progress_cb(
-                    min(0.9, (_base + d) / total))
-            _download_asset(url, pth, size, run_id, log, on_progress=cb)
-            done_bytes += size
-            part_paths.append(pth)
+        log(f"  Fetching {len(parts)} parts {workers} at a time "
+            f"(one stream is per-connection limited, not link limited)…", "info")
+
+        # Overall fraction (download phase = 0..0.9 of the bar). Each worker
+        # reports ITS OWN cumulative byte count, so the bar needs the sum
+        # across parts, not the last value seen — hence the shared dict.
+        # Ordering between workers is arbitrary, so the lock is what keeps the
+        # sum from being computed mid-update and jumping backwards.
+        seen = {}
+        seen_lock = threading.Lock()
+
+        def _mk_cb(idx):
+            if not (progress_cb and total):
+                return None
+
+            def _cb(done):
+                with seen_lock:
+                    seen[idx] = done
+                    agg = sum(seen.values())
+                progress_cb(min(0.9, agg / total))
+            return _cb
+
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="pkg-part") as ex:
+            futures = {
+                ex.submit(_download_asset, url, part_paths[i], size, run_id, log,
+                          _mk_cb(i), f" [part {i + 1}/{len(parts)}]"): i
+                for i, (name, url, size) in enumerate(parts)
+            }
+            # Surface the first failure (Stop, or a hard error after retries).
+            # In-flight parts are left to finish rather than being killed
+            # mid-write: each is resumable by on-disk size, so a completed or
+            # partial file is a head start for the retry, never corruption.
+            # A Stop propagates to the others anyway — they share the run's
+            # cancel event and check it every chunk.
+            first_error = None
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except BaseException as e:      # noqa: BLE001 — re-raised below
+                    if first_error is None:
+                        first_error = e
+            if first_error is not None:
+                raise first_error
         # Concatenate, deleting each part as soon as it's appended so peak
         # disk is ~ the assembled file + one part, not 2× the package.
         cancel = _cancel_event(run_id)
