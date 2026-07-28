@@ -304,4 +304,13 @@ document.addEventListener('alpine:init', () => {
         },
 
     });
+
+    // Returning to the tab restores the defaults captured here. Exempt:
+    // blueprints/blueprintsLoadedAt are an expensive cache, not operator
+    // input; _pollTimer is a live handle that must not be orphaned (nulling
+    // it leaks the interval); dispatching is the double-submit guard and
+    // clearing it mid-dispatch would let a second run through.
+    TabReset.arm(Alpine.store('memory'), 'modules-memory',
+                 { keep: ['blueprints', 'blueprintsLoadedAt', '_pollTimer',
+                          'dispatching'] });
 });

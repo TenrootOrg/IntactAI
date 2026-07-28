@@ -1,4 +1,4 @@
-            <div x-show="$store.app.currentTab === 'cloud-azure'" x-transition class="tab-panel"
+            <div x-show="$store.app.currentTab === 'cloud-azure'" data-automation-tab="cloud-azure" x-transition class="tab-panel"
                  x-data="{
                      azureMode: 'online',
                      azureStatus: null,
@@ -183,7 +183,7 @@
                          } catch(e) { console.error(e); }
                      }
                  }"
-                 x-init="checkAzureStatus(); loadCustomRules()">
+                 x-init="TabReset.arm($data, 'cloud-azure', { keep: ['azureBlueprints', 'azureStatus', 'azureRunning'] }); checkAzureStatus(); loadCustomRules()">
 
                 <h2 class="text-3xl font-bold text-white mb-2">Microsoft 365 Security Automation</h2>
                 <p class="text-gray-400 mb-6">Collect Microsoft 365 logs and run SIGMA detection rules. Findings feed the case for analysis.</p>
