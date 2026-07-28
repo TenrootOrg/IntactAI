@@ -34,6 +34,11 @@ SERVICE_CONTAINERS = {
 # explicit opt-in in config.yaml (modules.<name>.enabled). Used by the
 # sidebar to hide Cloud > AWS / Microsoft 365 / CVE Scan when the
 # customer didn't enable them.
+# Status keys whose config.yaml module id differs. ELK is surfaced through
+# its Kibana container, so the status key is 'kibana' while the operator
+# enables/disables it as `modules.elk`.
+STATUS_KEY_TO_MODULE = {'kibana': 'elk'}
+
 ON_DEMAND_MODULES = ('aws_sigma', 'o365rc')
 
 @system_bp.route('/api/test', methods=['GET', 'POST'])
@@ -148,6 +153,32 @@ def get_container_status():
                 # exited, created, dead, paused, restarting, etc. — the
                 # container exists on the host so the module IS installed
                 results[service_id] = 'stopped'
+
+        # `modules.<name>.enabled: false` hides a module EVEN IF its
+        # containers are still up. Disabling is a statement of intent, not a
+        # description of the host: it does not stop anything, so a module
+        # disabled in config.yaml went on reporting 'online' from `docker ps`
+        # and kept its sidebar entry and Settings tab. The operator had to
+        # tear the stack down as well before the UI agreed with the config —
+        # which makes "disable" look like it does nothing.
+        #
+        # Only ever downgrades to not_installed. is_module_enabled() defaults
+        # to True for a module the config does not mention, so a config that
+        # predates a module can never hide one that is actually installed.
+        try:
+            from config import is_module_enabled
+            for service_id in list(SERVICE_CONTAINERS):
+                # The status key is not always the config module id: ELK is
+                # represented by its Kibana container, so `modules.elk` gates a
+                # status reported under 'kibana'. Looking up the raw key would
+                # ask for a module config.yaml has never heard of, get the
+                # default True, and silently leave ELK visible after the
+                # operator disabled it.
+                module_id = STATUS_KEY_TO_MODULE.get(service_id, service_id)
+                if not is_module_enabled(module_id):
+                    results[service_id] = 'not_installed'
+        except Exception:
+            pass          # config unreadable -> leave the docker-derived state
 
         # On-demand modules don't have persistent containers — they're
         # one-shot `docker run` per scan. Treat config.yaml's enabled
