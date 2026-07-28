@@ -593,7 +593,7 @@ _NON_UPGRADEABLE = set()
 # e.g. a brand-new module added to config.yaml — is appended after these
 # (alphabetically), so new modules appear automatically with no code change.
 _MODULE_DISPLAY_ORDER = ['elk', 'timesketch', 'plaso', 'iris', 'velociraptor',
-                         'aws_sigma', 'o365rc', 'volweb', 'cve_scan', 'portainer']
+                         'aws_sigma', 'o365rc', 'volweb', 'portainer']
 
 
 def _upstream_module_rows(upstream_cfg: dict, target_ref: str,
@@ -628,7 +628,6 @@ def _upstream_module_rows(upstream_cfg: dict, target_ref: str,
     if package_manifest is not None:
         pkg_versions = dict(package_manifest.get('versions') or {})
         pkg_versions.pop('intact', None)
-        pkg_versions.setdefault('cve_scan', 'latest')
         names = [m for m in pkg_versions if m not in _NON_UPGRADEABLE]
         ordered = [m for m in _MODULE_DISPLAY_ORDER if m in names]
         ordered += sorted(m for m in names if m not in _MODULE_DISPLAY_ORDER)
@@ -729,23 +728,6 @@ def compute_plan(target_ref: str,
         upstream_ver = row['target']
         cur_state = current.get(module_id, {}).get('current', 'Not installed')
 
-        # CVE Scan is versionless (corpus is always the latest NVD feeds), so it
-        # can't go through the version-diff below. Surface as a standalone
-        # OPTIONAL row whose "current" is whether the module is enabled; default
-        # unchecked so a routine upgrade never silently re-downloads the feeds.
-        if module_id == 'cve_scan':
-            try:
-                from config import is_module_enabled as _mod_enabled
-                cve_on = bool(_mod_enabled('cve_scan'))
-            except Exception:
-                cve_on = False
-            optional.append({
-                'module': 'cve_scan',
-                'current': 'Installed' if cve_on else 'Not installed',
-                'target': 'latest',
-                'action': 'upgrade' if cve_on else 'install',
-            })
-            continue
 
         if cur_state == 'Not installed':
             # New-to-this-host. Show as optional (default unchecked).

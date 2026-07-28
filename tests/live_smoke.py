@@ -3,7 +3,7 @@
 
 Unlike the rest of tests/ (fast, isolated unit tests swept automatically by
 run_all.py), this hits the REAL running infrastructure: a real enrolled
-Velociraptor client, real hunts, the real CVE scanner, real AWS SIGMA
+Velociraptor client, real hunts, real AWS SIGMA
 detection, and the real scheduler. It takes a few minutes and needs a
 Velociraptor client checked in.
 
@@ -160,23 +160,6 @@ def check_hunt_status_reconciliation(client):
     return True, f"run_id={run_id} transitions={transitions}"
 
 
-def check_cve_scan():
-    r = _post("/api/cve/scan/run-hunt", {"chain_cve_scan": True, "max_wait_minutes": 3})
-    if r.status_code != 200:
-        return False, f"POST /api/cve/scan/run-hunt -> {r.status_code}: {r.text[:300]}"
-    run_id = r.json().get("run_id")
-    if not run_id:
-        return False, f"no run_id in response: {r.text[:300]}"
-
-    final, transitions = poll_run(run_id, timeout_seconds=240, interval=10)
-    if final.get("status") != "completed":
-        return False, f"run {run_id} ended as '{final.get('status')}' (transitions: {transitions})"
-
-    f = _get(f"/api/cve/run/{run_id}/download/findings")
-    if f.status_code != 200:
-        return False, f"findings download -> {f.status_code}"
-    return True, f"run_id={run_id} findings_bytes={len(f.content)}"
-
 
 def check_aws_sigma():
     event = {
@@ -269,7 +252,6 @@ def check_scheduler(client):
 CHECKS = [
     ("velociraptor_collection", lambda client: check_velociraptor_collection(client)),
     ("hunt_status_reconciliation", lambda client: check_hunt_status_reconciliation(client)),
-    ("cve_scan", lambda client: check_cve_scan()),
     ("aws_sigma", lambda client: check_aws_sigma()),
     ("scheduler", lambda client: check_scheduler(client)),
 ]

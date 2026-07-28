@@ -14,7 +14,7 @@ import os
 
 from .schema import FusionGraph
 from . import correlate, llm_sim, keys, render, budget
-from .mappers import map_memory, map_agentic, map_cve, map_timesketch, map_cloud
+from .mappers import map_memory, map_agentic, map_timesketch, map_cloud
 from .mappers.agentic import SUPPORTED_ARTIFACTS, _artifact_base
 
 
@@ -51,7 +51,6 @@ FUSION_MODULE_TYPES = {
                          "velociraptor_hunt"},
     "memory": {"memory"},
     "timesketch": {"timesketch"},
-    "cve": {"cve_scan"},
     "aws": {"aws_scan"},
     "azure": {"azure_scan"},
     # legacy alias for cases saved before the agentic/all split (maps to agentic)
@@ -60,10 +59,10 @@ FUSION_MODULE_TYPES = {
 # Order + membership of the UI picker. 'velociraptor_all' and the legacy
 # 'velociraptor' alias are intentionally NOT shown — only agentic blueprints fuse.
 FUSION_MODULES_UI = ["velociraptor_agentic", "memory",
-                     "timesketch", "cve", "aws", "azure"]
+                     "timesketch", "aws", "azure"]
 # Selectable now: Velociraptor (Agentic) [default-on] + Memory [default-on] +
 # AWS (CloudTrail) [opt-in]. AWS is off by default (not every case is cloud) but
-# selectable so a CloudTrail scan fuses into the case. TimeSketch/CVE/Azure stay
+# selectable so a CloudTrail scan fuses into the case. TimeSketch/Azure stay
 # greyed/disabled.
 FUSION_MODULES_AVAILABLE = ("velociraptor_agentic", "memory", "aws")
 FUSION_MODULES_DEFAULT = ["velociraptor_agentic", "memory"]
@@ -71,7 +70,7 @@ _FUSION_MODULE_LABELS = {
     "velociraptor_agentic": "Velociraptor (Agentic)",
     "velociraptor_all": "Velociraptor (All)",
     "memory": "Memory (VolWeb)",
-    "timesketch": "TimeSketch", "cve": "CVE", "aws": "AWS (CloudTrail)", "azure": "Azure",
+    "timesketch": "TimeSketch", "aws": "AWS (CloudTrail)", "azure": "Azure",
 }
 
 
@@ -143,7 +142,7 @@ def _run_passes_gate(run, d) -> bool:
       - velociraptor_agentic -> Velociraptor runs (collection/upload/hunt) whose
         description/name is tagged Agentic.
       - velociraptor_all     -> every Velociraptor run, agentic or not.
-    Non-Velociraptor modules (memory/cve/aws/azure/timesketch) gate on type as
+    Non-Velociraptor modules (memory/aws/azure/timesketch) gate on type as
     before. Replaces the old pure-type gate (`automation_type in
     _enabled_run_types`) so an agentic HUNT now fuses under 'Velociraptor
     (Agentic)' and a non-agentic collection/import no longer does."""
@@ -833,18 +832,6 @@ def _cloud_contribution(rid, det, provider):
                      account=_cloud_account(det, finds))
 
 
-def _cve_contribution(rid, det):
-    import json
-    import os
-    for base in (f"/app/data/downloads/{rid}", f"/data/downloads/{rid}",
-                 det.get("output_dir") or ""):
-        fp = os.path.join(base, "findings.json") if base else ""
-        if fp and os.path.exists(fp):
-            with open(fp) as f:
-                return map_cve(json.load(f), run_id=rid)
-    return [], []
-
-
 def _agentic_collected_data(rid, det):
     """The real agentic pipeline persists rows to /data/downloads/<rid>/raw_results.json
     (not into details, to avoid bloating the SQLite blob). Prefer details.collected_data
@@ -983,8 +970,6 @@ def _contribution_for_run(run, log=None):
             # importer stores hunt_id on the run); read it the same way as a live
             # hunt. The artifact allowlist in the mapper keeps the graph clean.
             return _velo_hunt_contribution(rid, det, log=log)
-        if atype == "cve_scan":
-            return _cve_contribution(rid, det)
         if atype == "timesketch":
             evs = det.get("events") or det.get("timeline_events")
             fetched = False

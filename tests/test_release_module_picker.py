@@ -39,7 +39,7 @@ def _load_picker():
 
 
 KNOWN = {"elk", "timesketch", "plaso", "iris", "velociraptor", "aws_sigma",
-         "o365rc", "volweb", "cve_scan", "portainer", "intact"}
+         "o365rc", "volweb", "portainer", "intact"}
 
 BASE = {
     "elk": "9.4.2", "iris": "v2.4.26", "plaso": "20260119", "portainer": "2.39.1",
@@ -104,16 +104,15 @@ def test_picker_scenarios():
 
 
 def test_always_ship_is_unconditional():
-    """intact and cve_scan must survive a completely empty diff.
+    """intact must survive a completely empty diff.
 
-    A version comparison structurally cannot see either one change: intact's
-    "version" is the release tag, and cve_scan is versionless (rolling NVD
-    corpus). Drop them and a release silently stops delivering the platform
-    itself or a fresh CVE database.
+    A version comparison structurally cannot see it change: intact's
+    "version" is the release tag, not a config pin. Drop it and a release
+    silently stops delivering the platform itself.
     """
     bp = _load_picker()
-    assert bp.ALWAYS_SHIP == {"intact", "cve_scan"}, bp.ALWAYS_SHIP
-    assert _pick(bp, BASE, dict(BASE)) == {"intact", "cve_scan"}
+    assert bp.ALWAYS_SHIP == {"intact"}, bp.ALWAYS_SHIP
+    assert _pick(bp, BASE, dict(BASE)) == {"intact"}
 
 
 def test_previous_release_resolution():

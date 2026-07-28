@@ -86,7 +86,6 @@ These run inside the Dashboard (no separate URL — all under `https://YOUR_IP`)
 | **Case Analysis (Fusion)** | Correlates every host + module into one incident graph → fused **report**, advisory, **timeline**, **Identities**, and grounded **chat** over the whole investigation. |
 | **Memory** | Remote memory acquisition (AVML / WinPmem) → analysis in the **VolWeb** stack (Volatility 3 + YARA). |
 | **Cloud DFIR** | AWS **CloudTrail** and Microsoft 365 / Azure AD **(DFIR-O365RC)** log collection + SIGMA detections, feeding the fusion engine. Runs in the backend. |
-| **CVE Scan** | NVD-backed vulnerability matcher over collected host inventory. Runs in-process in the backend. |
 | **Scheduler / Blueprints / Agentic** | Scheduled collections, reusable collection blueprints, and the agentic quick-wins pipeline. |
 
 ### Containers
@@ -102,7 +101,7 @@ These run inside the Dashboard (no separate URL — all under `https://YOUR_IP`)
 | **IRIS** | `intact_iris_app`, `_db`, `_worker`, `_rabbitmq`, `_nginx` |
 | **VolWeb (Memory)** | `intact_volweb_frontend`, `_backend`, `_workers`, `_workers_yarascan`, `_postgresdb`, `_redis` |
 | **Portainer** | `intact_portainer`, `intact_portainer_agent` |
-| **On-demand (no long-running container)** | **Plaso** (image pulled per timeline job), **CloudTrail / O365RC DFIR** and **CVE Scan** (run in-process in the backend) |
+| **On-demand (no long-running container)** | **Plaso** (image pulled per timeline job) and **CloudTrail / O365RC DFIR** (run in-process in the backend) |
 
 > The heavy search engines — TimeSketch's OpenSearch, ELK's Elasticsearch/Kibana — are the biggest RAM/CPU consumers. On a small host you can `docker stop` the stacks you're not using to free resources.
 
@@ -141,8 +140,6 @@ modules:
 
   # Feature modules (run in the backend / on-demand — no dedicated container)
   plaso:                # log2timeline timeline engine (on-demand image)
-    enabled: true
-  cve_scan:             # NVD vulnerability matcher
     enabled: true
   cloudtrail:           # AWS CloudTrail DFIR — ships OFF until validated
     enabled: false
@@ -347,61 +344,3 @@ update. Latest results:
 
 Methodology + per-skill detail: [`modules/backend/services/agentic/skills/README.md`](modules/backend/services/agentic/skills/README.md).
 
-## Third-party data
-
-The CVE Scan module (Automation → On-Prem → CVE Scan) uses two
-locally-cached, upstream-refreshable feeds so scans are fast and
-work fully offline once populated:
-
-1. **CPE vendor:product dictionary** — at
-   [`modules/backend/services/cve_scan/data/cpes.csv`](modules/backend/services/cve_scan/data/cpes.csv).
-   Resolves installed-software names to CPE identifiers. Vendored
-   from [**tiiuae/cpedict**](https://github.com/tiiuae/cpedict)
-   (daily-rebuilt from NVD's official
-   [CPE Dictionary](https://nvd.nist.gov/products/cpe)).
-2. **Local CVE mirror** — a SQLite index at
-   `/app/data/cve_cache/cves.db` covering NVD's full CVE corpus
-   (~350,000 entries). Populated from the community-maintained
-   [**fkie-cad/nvd-json-data-feeds**](https://github.com/fkie-cad/nvd-json-data-feeds)
-   project, which reconstructs the per-year compressed JSON files
-   NIST retired in Dec 2023 and refreshes them every 2 hours.
-   Replaces per-product NVD REST calls — a 1,000-product scan that
-   used to take 10-30 minutes now finishes in seconds.
-
-Both refresh paths:
-- **Fresh install**: the backend bootstraps both on first start
-  (`init_db()` is cheap; the ~50 MB CVE-feed download runs in a
-  background thread so the API serves immediately and scans
-  transparently fall back to NVD REST until the bulk load finishes).
-- **Manual refresh**: Settings → Maintenance → Task 3.5 refreshes
-  both in place without a restart.
-
-Live CVE metadata at scan time still comes from the
-[NVD REST API 2.0](https://nvd.nist.gov/developers/vulnerabilities)
-as a fallback when the local DB hasn't seen a product yet, with an
-optional operator-supplied API key (Settings → CVE Scan) for the
-50 req/30 s rate tier.
-
-### Attribution & terms
-
-The downstream data we redistribute (the cached CVE records, CPE
-bindings, CVSS scores) is sourced from MITRE's CVE List and NIST's
-National Vulnerability Database. Both are public-domain U.S.
-Government records governed by their own terms of use:
-
-- **CVE records** — © MITRE Corporation, under the
-  [CVE Terms of Use](https://www.cve.org/Legal/TermsOfUse). Public
-  data; redistribution requires the "as-is, no warranties" notice.
-- **NVD enrichment** (CPE, CVSS, descriptions) — © NIST, under the
-  [NVD Terms of Use](https://nvd.nist.gov/developers/terms-of-use).
-  Public data; users must acknowledge NVD as the source.
-- **fkie-cad/nvd-json-data-feeds** (community redistribution
-  pipeline) — the upstream project does not state a separate
-  license; it explicitly notes "uses and redistributes data from
-  the NVD API but is neither endorsed nor certified by the NVD."
-  We rely on the same disclaimer for our local cache.
-- **tiiuae/cpedict** — same pattern; redistributes NVD CPE entries
-  under NVD's TOU.
-
-Intact does not modify the CVE descriptions, IDs, or CVSS scores
-during scanning; it only matches installed products against them.

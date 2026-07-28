@@ -42,14 +42,6 @@ _VELOCIRAPTOR_WORKFLOWS = {
         'Memory acquisition',
         'Windows.Memory.Acquisition',
     ),
-    'cve_scan': (
-        'CVE inventory scan',
-        # Primary artifact named; CVE Scan also queries DetectRaptor
-        # Applications/LolRMM + Generic.Client.Info but listing four in
-        # the error string is noise — operator only needs to know the
-        # workflow involves a Velociraptor hunt.
-        'Windows.Sys.Programs',
-    ),
 }
 
 

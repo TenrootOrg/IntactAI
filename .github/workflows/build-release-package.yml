@@ -54,7 +54,7 @@ jobs:
           fetch-depth: 0        # need all tags to resolve the diff baseline
 
       # The package ships only what CHANGED since the baseline (plus intact +
-      # cve_scan, which a version diff structurally cannot see). An explicit
+      # which a version diff structurally cannot see). An explicit
       # `since` input wins; otherwise the script falls back to
       # DEFAULT_SINCE_REF — the OLDEST release a customer may still be
       # upgrading FROM, not merely the previous tag.
@@ -64,7 +64,7 @@ jobs:
       # chain. So diffing against the immediately-preceding tag silently drops
       # every module that changed in the gap a customer skipped. Concretely:
       # 0721 -> 0722 has ZERO module pin changes, so that baseline would ship
-      # intact + cve_scan only, and a box on 0615 would upgrade the platform
+      # intact only, and a box on 0615 would upgrade the platform
       # while staying on old timesketch/plaso/iris/portainer/velociraptor with
       # no aws_sigma at all — reporting success the whole way.
       - name: Resolve diff baseline

@@ -258,7 +258,7 @@ def attachable_runs():
         runs = ws.get_all_automation_runs() if hasattr(ws, "get_all_automation_runs") else []
     out = []
     for r in runs:
-        if r.get("automation_type") in ("memory", "velociraptor_collection", "timesketch", "cve_scan",
+        if r.get("automation_type") in ("memory", "velociraptor_collection", "timesketch",
                                         "aws_scan", "azure_scan"):
             d = r.get("details") or {}
             host = d.get("client_name") or d.get("account") or d.get("account_id") \

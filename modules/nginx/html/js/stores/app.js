@@ -56,7 +56,7 @@ document.addEventListener('alpine:init', () => {
         // Wipe the "run started / redirecting…" banners an automation page
         // leaves behind. Starting a run shows one, then navigates to Workflows
         // 600ms later — but nothing ever cleared it, so coming back to
-        // Velociraptor (or TimeSketch, or CVE) showed the PREVIOUS run's
+        // Velociraptor (or TimeSketch) showed the PREVIOUS run's
         // message as if it had just happened. Worst case the operator reads a
         // stale run id and goes looking for the wrong workflow.
         //

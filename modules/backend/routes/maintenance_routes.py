@@ -78,7 +78,7 @@ def run_system_maintenance():
                 # Task 1: Download tools and configure inventory (60%)
                 # =========================================================
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                add_log_to_run(run_id, "TASK 1/4: Download & Configure Tools", "info")
+                add_log_to_run(run_id, "TASK 1/3: Download & Configure Tools", "info")
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
                 update_run_status(run_id, "running", progress=30)
 
@@ -127,7 +127,7 @@ def run_system_maintenance():
                 # or its API key isn't configured, the existing on-disk
                 # file keeps serving the UI and the others still run.
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                add_log_to_run(run_id, "TASK 2/4: Refresh LLM Model Catalogs", "info")
+                add_log_to_run(run_id, "TASK 2/3: Refresh LLM Model Catalogs", "info")
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
 
                 from services.llm_catalogs import openrouter as _or_cat
@@ -186,83 +186,13 @@ def run_system_maintenance():
                 #      — eliminates per-product NVD REST calls at scan
                 #      time. Initial run takes ~10-30 min; subsequent
                 #      runs are incremental (skip unchanged year-files).
-                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                add_log_to_run(run_id, "TASK 3/4: Refresh CVE Scan databases (CPE dict + local CVE mirror)", "info")
-                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-
-                # Gate on modules.cve_scan.enabled — a DISABLED CVE module must not
-                # download/refresh the CVE feed during maintenance (same rule as
-                # every other module: disabled => no data, no pages).
-                from config import is_module_enabled as _is_mod_enabled
-                if not _is_mod_enabled('cve_scan'):
-                    add_log_to_run(
-                        run_id,
-                        "CVE Scan disabled (modules.cve_scan.enabled=false) — "
-                        "skipping CVE database refresh/download.",
-                        "info",
-                    )
-                else:
-                    # --- 3.5a: CPE dictionary ---
-                    try:
-                        from services.cve_scan.cpe_dict import refresh_dictionary_from_upstream
-                        cpe_dict_result = refresh_dictionary_from_upstream(
-                            logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
-                        )
-                        if cpe_dict_result.get("ok"):
-                            add_log_to_run(
-                                run_id,
-                                f"CPE dictionary refresh: {cpe_dict_result.get('message')}",
-                                "success",
-                            )
-                        else:
-                            add_log_to_run(
-                                run_id,
-                                f"CPE dictionary refresh had issues: {cpe_dict_result.get('message')}",
-                                "warning",
-                            )
-                    except Exception as e:
-                        add_log_to_run(run_id, f"CPE dictionary refresh error: {str(e)}", "warning")
-                        import traceback
-                        traceback.print_exc()
-
-                    # --- 3.5b: local CVE mirror ---
-                    try:
-                        from services.cve_scan import local_db as _local_db
-                        add_log_to_run(
-                            run_id,
-                            "[LOCAL_DB] Refreshing local CVE mirror "
-                            "(initial run ~10-30 min, incremental ~minutes)…",
-                            "info",
-                        )
-                        bulk_result = _local_db.bulk_load(
-                            logger=lambda msg, level="info": add_log_to_run(run_id, msg, level)
-                        )
-                        if bulk_result.get("ok"):
-                            add_log_to_run(
-                                run_id,
-                                f"Local CVE mirror: {bulk_result.get('cve_count')} CVEs indexed, "
-                                f"{bulk_result.get('db_size_mb', 0):.0f} MB on disk, "
-                                f"{bulk_result.get('elapsed_seconds', 0):.0f}s elapsed",
-                                "success",
-                            )
-                        else:
-                            add_log_to_run(
-                                run_id,
-                                "Local CVE mirror refresh had issues — scans will fall back to REST",
-                                "warning",
-                            )
-                    except Exception as e:
-                        add_log_to_run(run_id, f"Local CVE mirror refresh error: {str(e)}", "warning")
-                        import traceback
-                        traceback.print_exc()
-
                 update_run_status(run_id, "running", progress=70)
 
                 # =========================================================
-                # Task 4: System health check (20%)
+                # Task 3: System health check (20%)
                 # =========================================================
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                add_log_to_run(run_id, "TASK 4/4: System Health Check", "info")
+                add_log_to_run(run_id, "TASK 3/3: System Health Check", "info")
                 add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
                 update_run_status(run_id, "running", progress=75)
 

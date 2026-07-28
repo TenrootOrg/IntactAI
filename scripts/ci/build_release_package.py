@@ -16,8 +16,7 @@ Meant to run INSIDE a container built from the release's backend image, with:
 Module set = the DIFF against the PREVIOUS packaged release (auto-resolved; see
 _previous_release, override with `--since`): only modules whose pin actually
 moved, plus `intact` (the platform itself, pinned to the release tag so the
-backend image is `intact-backend:<tag>`) and `cve_scan` (versionless rolling NVD
-corpus — a diff can never see it change). Shipping a module whose pin is
+backend image is `intact-backend:<tag>`). Shipping a module whose pin is
 byte-identical costs gigabytes and buys nothing, since the apply side skips
 same-version modules anyway.
 
@@ -50,7 +49,6 @@ RELEASE_MODULES = {
     "intact",         # backend + frontend (nginx) platform source + image
     "velociraptor",
     "aws_sigma",      # SigmaHQ AWS CloudTrail rule pack
-    "cve_scan",       # ships the prebuilt CVE SQLite DB if the build host has one
     "timesketch",
     "plaso",
     "elk",
@@ -62,7 +60,7 @@ RELEASE_MODULES = {
 
 # Shipped in EVERY release, diff or not — a version comparison structurally
 # cannot tell whether these changed. See release_module_set().
-ALWAYS_SHIP = {"intact", "cve_scan"}
+ALWAYS_SHIP = {"intact"}
 
 def _previous_release(tag: str) -> str:
     """The most recent published release BEFORE `tag`.
@@ -202,15 +200,6 @@ def release_module_set(tag: str, since_ref: str = None) -> dict:
     comparison structurally cannot detect whether they changed:
       - `intact` is the platform itself — what Phase 1 swaps — and its
         "version" is the release tag, not a config pin.
-      - `cve_scan` is versionless: its artifact is a rolling NVD corpus, so
-        the pin never moves even though the DATA does. Shipping it every
-        release is how an air-gapped box gets a fresh CVE corpus at all.
-        (Requires a CVE DB on the BUILD host — the packager warns and bundles
-        nothing if `/app/data/cve_cache/cves.db` is missing.)
-
-    `o365rc` is deliberately NOT in that set: it tracks the literal string
-    'latest', so upstream moving does not change the pin. Nothing this release
-    pins has changed, so a diff build excludes it.
     """
     import yaml
     from services.upgrade import UPGRADE_ORDER
@@ -232,11 +221,6 @@ def release_module_set(tag: str, since_ref: str = None) -> dict:
             continue
         if m == "intact":
             modules["intact"] = tag  # -> builds intact-backend:<tag>
-        elif m == "cve_scan":
-            # rolling data: the packager bakes the current CVE SQLite DB when it
-            # exists on the build host. A truthy version keeps cve_scan past the
-            # version-gated packaging loop.
-            modules["cve_scan"] = versions.get("cve_scan") or "rolling"
         elif m in versions:
             modules[m] = versions[m]
     return modules
@@ -346,7 +330,7 @@ def main() -> int:
                     help="print the resolved module set and exit (no build)")
     ap.add_argument("--since", default=None, metavar="REF",
                     help="baseline release tag to diff against. Ship only modules "
-                         "whose pin changed since it, plus intact and cve_scan. "
+                         "whose pin changed since it, plus intact. "
                          "Default: auto-resolve the most recent PREVIOUS release "
                          "that ships a package. Pass --since '' to disable "
                          "diffing and build the full fallback allowlist.")

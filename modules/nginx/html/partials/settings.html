@@ -29,9 +29,6 @@
                         <button @click="settingsTab = 'cloud'" :class="settingsTab === 'cloud' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
                             Cloud
                         </button>
-                        <button @click="settingsTab = 'cve_scan'" :class="settingsTab === 'cve_scan' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
-                            CVE Scan
-                        </button>
                         <button @click="settingsTab = 'actions'; $store.settings.loadActions()" :class="settingsTab === 'actions' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
                             Actions
                         </button>
@@ -132,7 +129,7 @@
                             <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
                                 <div>
                                     <h4 class="text-white font-medium">System Maintenance</h4>
-                                    <p class="text-gray-400 text-sm">Re-import Velociraptor artifacts, refresh tool inventory, refresh CVE databases, and run a health check.</p>
+                                    <p class="text-gray-400 text-sm">Re-import Velociraptor artifacts, refresh tool inventory, and run a health check.</p>
                                 </div>
                                 <button @click="$store.settings.runMaintenance()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1051,28 +1048,6 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                         </div>
                     </div>
 
-                    <!-- CVE Scan Tab -->
-                    <div x-show="settingsTab === 'cve_scan'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
-                        <h3 class="text-lg font-semibold text-white mb-4">CVE Scan Configuration</h3>
-                        <p class="text-gray-400 text-sm mb-4">
-                            Optional NVD API key for the CVE Scan tab. With a key the scanner runs at
-                            50 requests / 30 seconds; without one it falls back to the anonymous rate
-                            (5 requests / 30 seconds, ~10× slower). Request a free key at
-                            <a href="https://nvd.nist.gov/developers/request-an-api-key" target="_blank" rel="noreferrer" class="text-blue-400 hover:text-blue-300 underline">nvd.nist.gov</a>.
-                        </p>
-                        <div class="mb-4">
-                            <label class="block text-sm font-medium text-gray-300 mb-1">NVD API Key</label>
-                            <input type="password" x-model="$store.settings.config.cve_scan.nvd_api_key"
-                                   placeholder="Paste your NVD API key (UUID format)"
-                                   class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
-                        </div>
-                        <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
-                            <button @click="$store.settings.saveCveScan()" :disabled="$store.settings.saving"
-                                    class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
-                                <span x-text="$store.settings.saving ? 'Saving...' : 'Save CVE Scan Settings'"></span>
-                            </button>
-                        </div>
-                    </div>
                 </div>
 
                 <!-- Prepare Package Modal -->

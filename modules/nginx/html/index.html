@@ -130,12 +130,11 @@
                      x-show="$store.services.statuses['velociraptor'] !== 'not_installed' ||
                              $store.services.statuses['timesketch'] !== 'not_installed' ||
                              $store.services.statuses['volweb'] !== 'not_installed' ||
-                             $store.services.statuses['cve_scan'] !== 'not_installed' ||
                              $store.services.statuses['o365rc'] !== 'not_installed' ||
                              $store.services.statuses['aws_sigma'] !== 'not_installed'">
                     <!-- Parent item -->
                     <div class="nav-item flex items-center gap-3"
-                         :class="{ 'justify-center': $store.app.sidebarCollapsed, 'bg-gray-800/50': ($store.app.currentTab === 'modules-forensics' || $store.app.currentTab === 'modules-timesketch' || $store.app.currentTab === 'modules-cve-scan' || $store.app.currentTab === 'cloud-aws' || $store.app.currentTab === 'cloud-azure') && !automationOpen }"
+                         :class="{ 'justify-center': $store.app.sidebarCollapsed, 'bg-gray-800/50': ($store.app.currentTab === 'modules-forensics' || $store.app.currentTab === 'modules-timesketch' || $store.app.currentTab === 'cloud-aws' || $store.app.currentTab === 'cloud-azure') && !automationOpen }"
                          @click="$store.app.sidebarCollapsed ? $store.app.switchTab('modules-forensics') : automationOpen = !automationOpen"
                          :title="$store.app.sidebarCollapsed ? 'Automation' : ''">
                         <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -153,12 +152,11 @@
                     <div x-show="automationOpen && !$store.app.sidebarCollapsed" x-transition class="ml-4 border-l border-gray-700 pl-2 mt-1">
 
                         <!-- On-Prem Section — collapses entirely when none of its
-                             children are installed (velo/timesketch/volweb/cve_scan all
+                             children are installed (velo/timesketch/volweb all
                              missing means there's nothing to put under here). -->
                         <div x-show="$store.services.statuses['velociraptor'] !== 'not_installed' ||
                                      $store.services.statuses['timesketch'] !== 'not_installed' ||
-                                     $store.services.statuses['volweb'] !== 'not_installed' ||
-                                     $store.services.statuses['cve_scan'] !== 'not_installed'">
+                                     $store.services.statuses['volweb'] !== 'not_installed'">
                             <div class="nav-item flex items-center gap-3 py-2 text-sm cursor-pointer"
                                  :class="{ 'text-blue-400': onpremOpen }"
                                  @click.stop="onpremOpen = !onpremOpen">
@@ -172,7 +170,6 @@
                             </div>
                             <!-- Sub-nav items hide when their backing module's container has
                                  never been created on this host (status === 'not_installed').
-                                 CVE Scan keys on Velociraptor because it dispatches a Velo hunt;
                                  Memory keys on VolWeb (the analysis engine). Stopped containers
                                  keep their nav entry so the operator can spot the page and act,
                                  with a banner inside warning that the backing container is down. -->
@@ -196,21 +193,6 @@
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                                     </svg>
                                     <span>TimeSketch</span>
-                                </div>
-                                <!-- CVE Scan — port of the nvd_check side project. Matches
-                                     installed software against NVD CVE database, outputs combined
-                                     CSV. Gated on its own config.yaml entry (modules.cve_scan.enabled)
-                                     instead of velociraptor: the manual CSV-upload path runs without
-                                     Velociraptor, and the "from Velociraptor flow" path renders an
-                                     in-page banner explaining the dependency when Velo is missing. -->
-                                <div x-show="$store.services.statuses['cve_scan'] !== 'not_installed'"
-                                     class="nav-item flex items-center gap-3 py-2 text-sm"
-                                     :class="{ 'active': $store.app.currentTab === 'modules-cve-scan' }"
-                                     @click.stop="$store.app.switchTab('modules-cve-scan')">
-                                    <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path>
-                                    </svg>
-                                    <span>CVE Scan</span>
                                 </div>
                                 <!-- Memory Forensics — Velociraptor memory acquisition → VolWeb (Volatility 3
                                      + yarascan) → extracted findings (fed to the case). Three modes:
@@ -442,10 +424,6 @@
             <!-- TimeSketch Tab -->
             <div data-partial="timesketch"></div>
 
-            <!-- CVE Scan Tab — port of the nvd_check side project. Two modes:
-                 manual CSV upload (drop the 4 Velociraptor exports), or pull
-                 from a Velociraptor flow/hunt that ran the 4 required artifacts. -->
-            <div data-partial="cve"></div>
 
             <!-- Memory Forensics Tab — kept deliberately simple. No blueprints,
                  no advanced section: pick a mode, pick a client, set an
@@ -492,7 +470,6 @@
                                     <option value="agentic">Velociraptor Collector</option>
                                     <option value="velociraptor">Velociraptor Hunt</option>
                                     <option value="timesketch">Timesketch (Triage + Timeline)</option>
-                                    <option value="cve">CVE Management</option>
                                     <option value="memory">Memory</option>
                                     <option value="aws">AWS (CloudTrail)</option>
                                 </select>
@@ -547,7 +524,7 @@
                             </div>
                         </div>
 
-                        <!-- Client Selection (hidden for env-wide types: Velociraptor Hunt, CVE Management) -->
+                        <!-- Client Selection (hidden for env-wide types: Velociraptor Hunt) -->
                         <div id="schedule-client-section">
                             <div class="flex items-center justify-between mb-2">
                                 <label class="block text-sm font-medium text-gray-300">Target Clients</label>
@@ -573,25 +550,6 @@
                                 <input type="text" id="schedule-sketch-name" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2"
                                     x-data x-init="$el.placeholder = 'Investigation-' + new Date().toISOString().split('T')[0]">
                                 <p class="text-xs text-gray-500 mt-1">Leave empty to auto-generate based on date</p>
-                            </div>
-                        </div>
-
-                        <!-- CVE Management options -->
-                        <div id="schedule-cve-options" class="hidden space-y-4 border-t border-gray-700 pt-4">
-                            <div class="text-sm text-gray-400">CVE Management Options</div>
-                            <div class="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block text-sm text-gray-400 mb-1">Report contents</label>
-                                    <select id="schedule-cve-scan-mode" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
-                                        <option value="vulnerable_only">Vulnerable only</option>
-                                        <option value="full">Full inventory (Vulnerable → Unknown → Patched)</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label class="block text-sm text-gray-400 mb-1">Max wait for the hunt (min)</label>
-                                    <input type="number" id="schedule-cve-max-wait" min="1" max="720" value="120" class="w-full bg-gray-800 text-white border border-gray-700 rounded-lg px-4 py-2">
-                                    <p class="text-xs text-gray-500 mt-1">1–720. How long to wait for endpoints before scanning.</p>
-                                </div>
                             </div>
                         </div>
 
@@ -703,7 +661,6 @@
     <script src="js/timesketch.js?v=2"></script>
     <!-- Must load before the stores/partials that call TabReset.arm(). -->
     <script src="js/components/tab-reset.js?v=1"></script>
-    <script src="js/cve-scan.js?v=8"></script>
     <script src="js/memory.js?v=11"></script>
     <script src="js/scheduler.js?v=2"></script>
     <!-- Extracted inline helpers (Phase C): downloads copy/availability,
