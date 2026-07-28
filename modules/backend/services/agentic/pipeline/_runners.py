@@ -130,13 +130,33 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
 
         # 4. Cancel any remaining collections ONLY if we timed out
         if timed_out:
-            add_log_to_run(run_id, "[Velociraptor] Collection timed out - stopping remaining collections...", "warning")
+            add_log_to_run(
+                run_id,
+                f"[Velociraptor] {collection_minutes}m collection window reached "
+                f"— stopping flows that are still running...", "warning")
             cancel_collections(run_id, success_collections)
         else:
             add_log_to_run(run_id, "[Velociraptor] All flows completed naturally", "success")
 
+        # Say which of the two things happened. A timed-out collection is
+        # PARTIAL: the rows are whatever the clients had written when the
+        # window closed, not a finished collection. Calling that "complete"
+        # (in green, right after a timeout warning) is what made the log read
+        # as self-contradictory, and it hid the one fact the operator needs —
+        # that the result is truncated and the window was too short.
         total_rows = sum(len(rows) for rows in all_results.values())
-        add_log_to_run(run_id, f"[Pipeline] Collection complete: {total_rows} total rows across {len(all_results)} artifacts", "success")
+        if timed_out:
+            add_log_to_run(
+                run_id,
+                f"[Pipeline] Collection PARTIAL: {total_rows} row(s) across "
+                f"{len(all_results)} artifact(s) — the {collection_minutes}m window "
+                f"closed before every flow finished. Raise Collection Time for "
+                f"this blueprint to collect it fully.", "warning")
+        else:
+            add_log_to_run(
+                run_id,
+                f"[Pipeline] Collection complete: {total_rows} total rows across "
+                f"{len(all_results)} artifacts", "success")
 
         if total_rows == 0:
             # No data at all from Velociraptor — this IS a fatal outcome, not

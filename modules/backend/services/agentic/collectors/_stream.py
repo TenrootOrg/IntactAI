@@ -298,9 +298,31 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
             if all_results[source_name] and source_name not in analyzed_artifacts:
                 mark_collected(source_name)
 
-        # All sources collected
+        # Report what was RETRIEVED, and say plainly whether the flows had
+        # actually finished. This used to log "Collection complete" in green
+        # unconditionally — including when the loop had just fallen out on the
+        # deadline — so the run log read:
+        #
+        #   Collection complete: 9 sources, 389 rows        (success)
+        #   Collection timed out - stopping remaining...    (warning)
+        #
+        # Both true, but "complete" claimed something never checked, and the
+        # green line landed immediately before the timeout. `elapsed` is right
+        # here, so the outcome is knowable at the point of logging rather than
+        # one caller later.
         total_rows = sum(len(r) for r in all_results.values())
-        add_log_to_run(run_id, f"[Velociraptor] Collection complete: {len(all_results)} sources, {total_rows} rows", "success")
+        if elapsed >= total_seconds:
+            add_log_to_run(
+                run_id,
+                f"[Velociraptor] Collection window closed — retrieved "
+                f"{len(all_results)} source(s), {total_rows} row(s) so far",
+                "warning")
+        else:
+            add_log_to_run(
+                run_id,
+                f"[Velociraptor] All flows finished — retrieved "
+                f"{len(all_results)} source(s), {total_rows} row(s)",
+                "success")
 
     finally:
         if channel:
