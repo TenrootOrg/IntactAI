@@ -155,6 +155,24 @@ document.addEventListener('alpine:init', () => {
             this.saving = false;
         },
 
+        // Keep the cloud provider selector pointed at a module that exists.
+        // A box with only Azure enabled still had 'aws' saved as the provider,
+        // which rendered an AWS credential form for a module that isn't
+        // installed — and saving it would persist credentials nothing reads.
+        // Called from x-effect so it re-runs when service statuses land
+        // (they arrive asynchronously, after this panel first renders).
+        normalizeCloudProvider() {
+            try {
+                const svc = Alpine.store('services');
+                const p = this.config.cloud.provider;
+                if (p === 'aws' && !svc.has('aws_sigma') && svc.has('o365rc')) {
+                    this.config.cloud.provider = 'azure';
+                } else if (p === 'azure' && !svc.has('o365rc') && svc.has('aws_sigma')) {
+                    this.config.cloud.provider = 'aws';
+                }
+            } catch (e) { /* services store not registered yet */ }
+        },
+
         async saveCloud() {
             this.saving = true;
             try {

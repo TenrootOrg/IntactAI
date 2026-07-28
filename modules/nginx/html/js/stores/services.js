@@ -68,6 +68,22 @@ document.addEventListener('alpine:init', () => {
             this.installedCount = vals.filter(s => s !== 'not_installed').length;
         },
 
+        // Is this module present on the host at all?
+        //
+        // 'not_installed' means the container was never created (or, for
+        // on-demand modules like aws_sigma / o365rc, that config.yaml has
+        // them disabled). Everything else — online, stopped, checking —
+        // means it exists and its UI should be reachable.
+        //
+        // Exists so the sidebar and Settings gate on ONE expression. They
+        // used to be written out separately, and Settings simply never got
+        // the gate: a host with timesketch or the cloud modules disabled
+        // still showed their Settings tabs, offering credentials for
+        // something that isn't installed.
+        has(serviceId) {
+            return (this.statuses[serviceId] || 'checking') !== 'not_installed';
+        },
+
         getStatusClass(serviceId) {
             const status = this.statuses[serviceId] || 'checking';
             // 'stopped' and 'not_installed' both render with the

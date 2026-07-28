@@ -29,7 +29,7 @@ SERVICE_CONTAINERS = {
 
 # On-demand modules — no persistent container. Each scan is a one-shot
 # `docker run` (o365rc) or runs in-process inside the backend
-# (aws native CloudTrail collection, cve_scan). `docker ps -a` returns
+# (aws native CloudTrail collection). `docker ps -a` returns
 # nothing for these, so the install state comes from the operator's
 # explicit opt-in in config.yaml (modules.<name>.enabled). Used by the
 # sidebar to hide Cloud > AWS / Microsoft 365 / CVE Scan when the
