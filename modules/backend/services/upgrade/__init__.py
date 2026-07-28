@@ -2478,6 +2478,46 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         return {"success": False, "status": "failed", "error": _fmt,
                 "results": {}, "completed": 0, "total": 0, "versions": {}}
 
+    # Drop the image tars for modules the operator did not choose, BEFORE the
+    # disk check below and before any `docker load`. A package ships every
+    # module; an apply that installs two of them was still carrying the other
+    # eight on disk for the whole run. On a 5.8 GB package that is ~10 GiB of
+    # extracted tars held for nothing, at exactly the moment disk is tightest.
+    #
+    # Safe because the tars are a copy: the package itself is untouched, so a
+    # retry re-extracts whatever was pruned. Runs before the budget so the
+    # requirement reflects what is actually left on disk.
+    if selected_modules:
+        try:
+            from .package import images_by_module
+            _img_dir = os.path.join(package_dir, 'images')
+            if os.path.isdir(_img_dir):
+                _present = os.listdir(_img_dir)
+                _owned = images_by_module(_present)
+                _keep = set(selected_modules)
+                _freed = 0
+                _dropped = 0
+                for _mod, _names in _owned.items():
+                    # Unattributable images are KEPT. An image nobody owns is a
+                    # packaging bug, and deleting one a module silently needs
+                    # turns that bug into a failed upgrade.
+                    if _mod is None or _mod in _keep:
+                        continue
+                    for _n in _names:
+                        _fp = os.path.join(_img_dir, _n)
+                        try:
+                            _freed += os.path.getsize(_fp)
+                            os.remove(_fp)
+                            _dropped += 1
+                        except OSError:
+                            pass
+                if _dropped:
+                    log(f"  Pruned {_dropped} image(s) for unselected modules, "
+                        f"freeing {_freed / (1024 ** 3):.1f} GiB before install", "info")
+        except Exception as _pe_err:
+            log(f"  Unselected-image prune skipped ({type(_pe_err).__name__}: "
+                f"{_pe_err}) — continuing with the full package", "warning")
+
     # Second disk check, now sized from THIS package instead of a fixed floor.
     # The early check ran before extraction, when the real requirement was still
     # unknown; a big package can clear a 10 GiB floor and then die of ENOSPC
@@ -2486,7 +2526,8 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     try:
         from .config_validate import required_free_gb_for_manifest, preflight_environment as _pe
         _pkg_bytes = os.path.getsize(package_path) if (package_path and os.path.exists(package_path)) else 0
-        _need = required_free_gb_for_manifest(manifest, _pkg_bytes)
+        _need = required_free_gb_for_manifest(manifest, _pkg_bytes,
+                                              selected_modules=selected_modules)
         _ok2, _errs2 = _pe(logger=None, min_free_gb=_need)
         if not _ok2:
             log(f"Insufficient disk for this package (~{_need} GiB needed, "

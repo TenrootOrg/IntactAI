@@ -170,7 +170,8 @@ APPLY_MIN_FREE_GB = 10
 
 
 def required_free_gb_for_manifest(manifest: dict, package_bytes: int = 0,
-                                  floor_gb: int = APPLY_MIN_FREE_GB) -> float:
+                                  floor_gb: int = APPLY_MIN_FREE_GB,
+                                  selected_modules=None) -> float:
     """Disk an apply of THIS package actually needs, in GiB.
 
     The fixed floor is a guess that is wrong in both directions: too strict for a
@@ -185,9 +186,36 @@ def required_free_gb_for_manifest(manifest: dict, package_bytes: int = 0,
     counted twice — once extracted under images/, once in the image store. The
     floor still applies as a lower bound so a tiny package cannot claim an
     implausibly small requirement.
+
+    `selected_modules` narrows the image budget to what the operator actually
+    chose. None (the default) budgets the whole package, which is the right
+    answer before the selection is known.
     """
     images = ((manifest or {}).get('contents') or {}).get('image_sizes') or {}
-    img_bytes = sum(int(v or 0) for v in images.values()) if isinstance(images, dict) else 0
+    if not isinstance(images, dict):
+        images = {}
+
+    # Budget only what will actually be loaded. A package ships every module,
+    # but an operator applying two of them pays for two -- charging them for
+    # all ten turned a 22 GiB job into a 37 GiB one and refused the upgrade on
+    # a box that had ample room for the work it was asked to do.
+    #
+    # Unattributable images (no owner in the packaging tables) are always
+    # counted: they are a packaging bug, and under-budgeting is the failure
+    # mode that ends in ENOSPC halfway through `docker load`.
+    if selected_modules is not None:
+        try:
+            from .package import images_by_module
+            owned = images_by_module(list(images))
+            keep = set()
+            for module, names in owned.items():
+                if module is None or module in set(selected_modules):
+                    keep.update(names)
+            images = {k: v for k, v in images.items() if k in keep}
+        except Exception:
+            pass          # attribution failed -> budget the whole package
+
+    img_bytes = sum(int(v or 0) for v in images.values())
     if not img_bytes:
         # Older manifests record only image NAMES, not sizes. Fall back to the
         # package size, which is dominated by those same images.

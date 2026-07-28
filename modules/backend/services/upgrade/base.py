@@ -1693,6 +1693,12 @@ def preflight_offline_images(module: str, version: str, images_dir: str,
     return {"success": True, "missing": []}
 
 
+# Extraction progress is logged every N percent. Low enough that a multi-GB
+# package never looks hung, high enough that a small one does not spam the run
+# log with twenty lines of noise.
+_EXTRACT_LOG_STEP = 5
+
+
 def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
     """Extract and verify an upgrade package.
 
@@ -1797,7 +1803,26 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
                         f"package contains path-traversal member ({name!r}) "
                         f"— refusing to extract"
                     )
-            tar.extractall(extract_dir)
+            # Extract member-by-member so progress is reportable. A 5.8 GB
+            # package takes minutes and extractall() is a single opaque call —
+            # the operator watched a silent log and reasonably concluded it had
+            # hung. Percentage is by BYTES, not member count: the image tars are
+            # a handful of members carrying almost all the weight, so counting
+            # files would sit at "3%" for minutes and then jump to done.
+            members = tar.getmembers()          # already materialised above
+            total_bytes = sum(m.size for m in members) or 1
+            done_bytes = 0
+            next_pct = _EXTRACT_LOG_STEP
+            log(f"  Extracting {len(members)} entries "
+                f"({total_bytes / 1024 / 1024 / 1024:.1f} GB uncompressed)…", "info")
+            for m in members:
+                tar.extract(m, extract_dir)
+                done_bytes += m.size
+                pct = done_bytes * 100 // total_bytes
+                if pct >= next_pct:
+                    log(f"    … extracted {done_bytes // (1024 * 1024)}/"
+                        f"{total_bytes // (1024 * 1024)} MB ({pct}%)", "info")
+                    next_pct = pct + _EXTRACT_LOG_STEP
         log(f"  Extracted to {extract_dir}", "info")
 
         subdirs = [d for d in os.listdir(extract_dir) if os.path.isdir(os.path.join(extract_dir, d))]
