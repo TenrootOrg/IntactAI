@@ -59,7 +59,7 @@ PROVIDERS = {
         # Keep in step with the provider <option> in partials/settings.html —
         # this label is what the CLI panel shows once the provider is selected,
         # so a mismatch reads as two different providers.
-        "label": "OpenAI Codex (Subscription)",
+        "label": "OpenAI (Subscription)",
         "binary": "codex",
         "secret_key": "codex_cli_auth",
         "home_env": "CODEX_HOME",

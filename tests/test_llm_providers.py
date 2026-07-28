@@ -243,33 +243,63 @@ def test_ollama_cloud_lists_against_the_hosted_openai_endpoint():
     assert [m["id"] for m in models] == ["gpt-oss:120b"], models
 
 
-def test_the_subscription_provider_is_named_the_same_in_both_places():
-    """Its name lives twice: the provider <option> the operator picks, and
-    PROVIDERS[...]['label'] the CLI panel shows once picked. Drift between them
-    reads as two different providers on one screen.
+def _provider_options():
+    """The online provider dropdown's labels, keyed by stored value.
 
-    Also asserts every dropdown entry names its VENDOR. This one used to read
-    just 'Codex (Subscription)', which is a tool, not a vendor — and once plain
-    'OpenAI' joined the list, nothing said the two were the same company billed
-    two different ways.
+    Scoped to the known value set rather than scraping every <option> on the
+    page: the same file also holds the offline server-type select and
+    Timesketch's model list, which follow different conventions.
     """
     import os
     import re
-    from services.agentic.subscription_cli import PROVIDERS
 
     html = os.path.join(os.environ.get("INTACT_PATH", "/app/workdir"),
                         "modules/nginx/html/partials/settings.html")
     with open(html, encoding="utf-8") as fh:
         markup = fh.read()
 
+    values = ["openrouter", "openai", "claude", "gemini", "ollama-cloud",
+              "codex-subscription"]
+    out = {}
+    for v in values:
+        m = re.search(r'<option value="%s">([^<]+)</option>' % re.escape(v), markup)
+        assert m, f"provider '{v}' lost its <option> in the dropdown"
+        out[v] = m.group(1)
+    return out
+
+
+def test_every_provider_is_labelled_vendor_then_how_you_pay():
+    """One convention: `<vendor> (API)` or `<vendor> (Subscription)`.
+
+    The suffix is the only thing that varies between entries, so it is the only
+    thing the parentheses should carry. They used to hold the vendor's model
+    brand — 'Anthropic (Claude)', 'Google (Gemini)' — which just repeated the
+    vendor and said nothing about how the entry differed from its neighbours.
+
+    It matters most for OpenAI, which appears TWICE (key-based and
+    subscription). If a suffix goes missing there the list shows one vendor
+    named identically on two rows, with nothing to choose between them.
+    """
+    bad = {v: label for v, label in _provider_options().items()
+           if not (label.endswith(" (API)") or label.endswith(" (Subscription)"))}
+    assert not bad, f"labels not in '<vendor> (API|Subscription)' form: {bad}"
+
+    labels = _provider_options()
+    assert labels["openai"] == "OpenAI (API)", labels["openai"]
+    assert labels["codex-subscription"] == "OpenAI (Subscription)", \
+        labels["codex-subscription"]
+
+
+def test_the_subscription_provider_is_named_the_same_in_both_places():
+    """Its name lives twice: the provider <option> the operator picks, and
+    PROVIDERS[...]['label'] the CLI panel shows once picked. Drift between them
+    reads as two different providers on one screen."""
+    from services.agentic.subscription_cli import PROVIDERS
+
     label = PROVIDERS["codex-subscription"]["label"]
-    m = re.search(r'<option value="codex-subscription">([^<]+)</option>', markup)
-    assert m, "the subscription provider lost its <option> in the dropdown"
-    assert m.group(1) == label, (
-        f"dropdown says {m.group(1)!r} but the CLI panel says {label!r}")
-    assert "OpenAI" in label, (
-        f"{label!r} does not name its vendor, so it cannot be told apart from "
-        f"the plain OpenAI entry")
+    shown = _provider_options()["codex-subscription"]
+    assert shown == label, (
+        f"dropdown says {shown!r} but the CLI panel says {label!r}")
 
 
 def test_one_providers_key_is_never_sent_to_another():

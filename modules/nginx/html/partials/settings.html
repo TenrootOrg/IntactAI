@@ -515,19 +515,20 @@
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">Provider</label>
                                     <select x-model="$store.settings.config.agentic.online_llm.provider" @change="$store.settings.onProviderChange()" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
-                                        <option value="openrouter">OpenRouter</option>
-                                        <option value="openai">OpenAI</option>
-                                        <option value="claude">Anthropic (Claude)</option>
-                                        <option value="gemini">Google (Gemini)</option>
-                                        <option value="ollama-cloud">Ollama Cloud</option>
-                                        <!-- Vendor first, like every option above it, because this
-                                             and the plain `openai` entry are the SAME vendor and
-                                             differ only in how they bill — which "Codex" alone did
-                                             not say. "Codex" is kept because the operator-facing
-                                             machinery all uses that word (codex-cli in the status
-                                             line, `codex login`, openai/codex installer), so the
-                                             label has to map to it while troubleshooting. -->
-                                        <option value="codex-subscription">OpenAI Codex (Subscription)</option>
+                                        <option value="openrouter">OpenRouter (API)</option>
+                                        <option value="openai">OpenAI (API)</option>
+                                        <option value="claude">Anthropic (API)</option>
+                                        <option value="gemini">Google (API)</option>
+                                        <option value="ollama-cloud">Ollama Cloud (API)</option>
+                                        <!-- Every label is <vendor> (<how you pay>). The suffix is
+                                             the only thing that varies between entries, so it is
+                                             the only thing the parentheses carry: a vendor's model
+                                             brand (Claude, Gemini) just repeated the vendor name.
+                                             OpenAI appears twice and the suffix is what tells the
+                                             two apart. "Codex" is dropped from the label; the CLI
+                                             panel below still reports the codex-cli version, so the
+                                             link to the binary survives where it is needed. -->
+                                        <option value="codex-subscription">OpenAI (Subscription)</option>
                                     </select>
                                 </div>
                                 <div>
