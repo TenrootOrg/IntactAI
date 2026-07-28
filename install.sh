@@ -252,12 +252,19 @@ fix_source_permissions() {
     # the IRIS Root CA private key, and the Azure cert bundle. Without
     # these exclusions this blanket sweep silently reverted all of that
     # hardening to world-readable 644 on every install/upgrade.
+    #
+    # The downloads/ exclusion is a different kind: those are the Velociraptor
+    # client BINARIES, and 644 strips their execute bit. The backend runs one
+    # of them to decrypt password-protected offline collections, so this sweep
+    # broke that import on every installed host — and because lib/docker.sh only
+    # chmods +x on a fresh download, re-running the installer never repaired it.
     find "${SCRIPT_DIR}" -type f \
         -not -path "*/modules/*/secrets/*" \
         -not -path "*/modules/*/.env" \
         -not -path "*/modules/nginx/ssl/*.key" \
         -not -path "*/modules/iris/config/certificates/rootCA/irisRootCAKey.pem" \
         -not -path "*/modules/iris/config/certificates/web_certificates/iris_dev_key.pem" \
+        -not -path "*/modules/nginx/html/downloads/*" \
         -not -path "*/data/azure_cert.pfx" \
         -not -path "*/data/azure_cert.pfx.pass" \
         -exec chmod 644 {} \; 2>/dev/null || true
