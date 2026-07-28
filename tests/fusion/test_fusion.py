@@ -434,6 +434,47 @@ def test_mft_detection_typed_by_criticality_but_no_finding():
     assert not [f for f in g.findings if "MFT" in f.title], "MFT detections are context, not auto-findings"
 
 
+def test_windows_pslist_survives_the_ingest_filter():
+    """Windows process evidence must reach the graph, not be dropped at ingest.
+
+    `windows.system.pslist` was missing from SUPPORTED_ARTIFACTS while the
+    mapper branch, the contract docstring and all three offline-collector
+    profiles all assumed it was there. Every Windows offline or ad-hoc
+    collection therefore contributed ZERO processes to a case and a multi-run
+    case fused to an empty graph — silently, because the allowlist runs before
+    the mapper and drops the key without a word.
+
+    This drives the ingest boundary (`store._filter_supported`) on purpose, not
+    `map_agentic` directly: a mapper-only test passes even with the artifact
+    filtered out, which is exactly how the gap survived.
+    """
+    from services.fusion import store as _store
+    cd = {"Windows.System.Pslist": [
+        {"Pid": 1337, "Ppid": 4, "Name": "evil.exe",
+         "CommandLine": "evil.exe -run", "CreateTime": "2026-06-15T08:00:00Z",
+         "Username": "CORP\\jsmith", "Exe": "C:\\Users\\Public\\evil.exe",
+         "Authenticode": {"Trusted": "untrusted"},
+         "Hash": {"SHA256": "a" * 64},
+         "_client_id": "C.z", "_hostname": "H"}]}
+
+    assert _store._filter_supported(cd), \
+        "Windows.System.Pslist was dropped by the ingest allowlist"
+
+    ents, _rels = map_agentic(_store._filter_supported(cd),
+                              run_id="a", hostnames={"C.z": "H"})
+    procs = [e for e in ents if e.type == "process"]
+    assert len(procs) == 1, f"expected one process entity, got {len(procs)}"
+    p = procs[0]
+    assert str(p.attrs.get("pid")) == "1337", p.attrs
+    assert "evil.exe" in p.label
+    assert p.attrs.get("cmdline") == "evil.exe -run", p.attrs
+    assert p.attrs.get("sha256") == "a" * 64, "the image hash must reach the graph"
+    # The unsigned-image signal that untrustedbinaries was retired in favour of
+    # — this is the specific claim the NOTE in SUPPORTED_ARTIFACTS relies on.
+    assert p.attrs.get("signed") is False, \
+        "an untrusted Authenticode image must be marked unsigned"
+
+
 def test_applications_rmm_flagged():
     cd = {"DetectRaptor.Windows.Detection.Applications": [
         {"Category": "RMM - TeamViewer", "DisplayName": "TeamViewer", "_client_id": "C.z", "_hostname": "H"},
