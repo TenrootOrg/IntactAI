@@ -103,6 +103,7 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok) {
                     window.currentConfig = this.config;
                     this.showMessage('Agentic settings saved', 'success');
+                    this._refreshCaseAnalysis();
                     // Fire-and-forget catalog refresh for the just-saved
                     // provider so the model dropdown picks up the full
                     // live list (Anthropic / OpenAI / Gemini /v1/models
@@ -130,6 +131,24 @@ document.addEventListener('alpine:init', () => {
                 this.showMessage('Error: ' + e.message, 'error');
             }
             this.saving = false;
+        },
+
+        // Case Analysis runs in an IFRAME (cases.html?view=analysis), so it is a
+        // separate document holding whatever it fetched when it loaded. Its cost
+        // badge and "model max" default are priced from the CONFIGURED model, so
+        // after the model changes here they describe the old one until something
+        // reloads that frame — and nothing did. The operator saw Haiku pricing
+        // while Sonnet was selected, with no indication it was stale.
+        //
+        // Reloaded only on an actual save, not on every tab switch: a reload
+        // discards the frame's own state (open sub-tab, chat scroll position),
+        // which is a poor trade for a value that only changes when settings do.
+        // Same-origin, so this is a direct call rather than postMessage.
+        _refreshCaseAnalysis() {
+            try {
+                const frame = document.getElementById('analysis-frame');
+                if (frame && frame.contentWindow) frame.contentWindow.location.reload();
+            } catch (e) { /* cross-origin or not loaded — nothing to refresh */ }
         },
 
         async saveTimesketch() {
