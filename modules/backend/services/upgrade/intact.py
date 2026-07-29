@@ -1564,6 +1564,31 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
         except Exception as e:
             log(f"  Could not refresh nginx/config/nginx.conf: {e}", "warning")
 
+        # modules/timesketch/llm_providers/ is the payload the timesketch
+        # compose prologue bind-mounts into the vendor image to register our
+        # contrib LLM providers. Nothing else reaches it: the mirror above
+        # only covers modules/backend and modules/nginx/html, and the sidecar
+        # loop copies exactly ONE file per module (docker-compose.yaml).
+        #
+        # Without these calls an upgraded box gets the new compose file — WITH
+        # the new bind mount — pointing at a directory that does not exist.
+        # Docker then silently creates an empty one and the providers never
+        # install, on every upgraded host, online and offline. The compose
+        # guard makes that a no-op rather than an outage, but the feature
+        # would simply never arrive.
+        #
+        # Same targeted, never-deletes, no-op-if-identical refresh as
+        # nginx.conf above; refresh_module_compose_file() makes the parent
+        # directory itself.
+        for _rel in ('apply.sh', 'openrouter.py', 'litellm_proxy.py', 'README.md'):
+            try:
+                refresh_module_compose_file(
+                    'timesketch', intact_root, logger=log,
+                    relative_path=os.path.join('llm_providers', _rel))
+            except Exception as e:
+                log(f"  Could not refresh timesketch/llm_providers/{_rel}: {e}",
+                    "warning")
+
     # Importability gate — BEFORE stamping VERSION and before the orchestrator
     # can schedule the restart. The orchestrator only saves awaiting_restart +
     # restarts inside its success branch, so returning success:False here
