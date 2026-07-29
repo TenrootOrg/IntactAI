@@ -722,6 +722,63 @@ def _run_db_schema_upgrade(target_version: str, logger: Callable = None,
     return True
 
 
+# Modules whose upgrade means the container patch gets (re-)applied:
+# `intact` lands modules/timesketch/llm_providers/ and the compose file,
+# `timesketch` recreates the containers whose prologue reads them.
+_LLM_PROVIDER_NOTE_MODULES = ('intact', 'timesketch')
+
+
+def log_llm_provider_container_note(results: Dict, logger: Callable = None) -> bool:
+    """Note, at the end of an upgrade run, that we patch the vendor container.
+
+    TimeSketch ships as an image we do not build, so the only way to add an
+    LLM provider is to write into the running container's site-packages. It is
+    automatic and fail-safe, which is precisely why it needs saying out loud —
+    invisible behaviour is what turns a future upstream change into a day of
+    debugging.
+
+    Level is "info" on purpose, and neither of the alternatives is available:
+    "warning" would paint a yellow line in the run log for something that is
+    not wrong and trains operators to ignore warnings, and "error" would
+    increment error_count in add_log_to_run(), which update_run_status() then
+    uses to demote a completed run to failed.
+
+    Fires once per run. Returns True if it logged, so callers and tests can
+    assert on it.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+
+    if not isinstance(results, dict):
+        return False
+    # Underscore keys are run metadata, skipped by every summary consumer —
+    # the established place to stash cross-cutting state like this.
+    if results.get('_llm_providers_note'):
+        return False
+    touched = [m for m in _LLM_PROVIDER_NOTE_MODULES
+               if isinstance(results.get(m), dict) and results[m].get('success')]
+    if not touched:
+        return False
+    results['_llm_providers_note'] = True
+
+    log("", "info")
+    log("NOTE - TimeSketch container modification (expected, by design):", "info")
+    log("  IntactAI adds two LLM providers (openrouter, litellm_proxy) to the "
+        "vendor TimeSketch image. A prologue in the module's compose file "
+        "copies them into the container's Python site-packages on every "
+        "start and appends two guarded import lines to that package's "
+        "__init__.py.", "info")
+    log("  Source of truth is modules/timesketch/llm_providers/, mounted "
+        "read-only. Nothing on the host is modified, and the patch is "
+        "re-applied automatically on every recreate or restart.", "info")
+    log("  If a provider is missing, the prologue logged why: docker exec "
+        "intact_timesketch_web cat "
+        "/var/log/timesketch/intact_llm_providers.log", "info")
+    log("  Recorded so a future TimeSketch upgrade that changes "
+        "timesketch/lib/llms/providers/ is understood rather than debugged "
+        "from scratch. No action is needed.", "info")
+    return True
+
+
 def _clear_timesketch_pip_cache(logger: Callable = None):
     """Clear stale pip packages from Timesketch volume to prevent version conflicts.
 

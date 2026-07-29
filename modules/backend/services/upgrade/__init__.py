@@ -2255,6 +2255,17 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
 
         log(f"{'='*50}", "info")
 
+        # Same note as the offline/online summary. Kept in sync deliberately:
+        # a Phase-2 resume is the whole run for an operator who was watching
+        # after the restart, and the note is guarded against double-logging
+        # via results['_llm_providers_note'].
+        try:
+            from .timesketch import log_llm_provider_container_note
+            log_llm_provider_container_note(results, logger=log)
+        except Exception as _lpe:
+            log(f"  (could not emit the LLM-provider note: "
+                f"{type(_lpe).__name__}: {_lpe})", "info")
+
     # Workflow done. Clean up the config.yaml pre-merge backup (if any
     # — only the online flow creates one). Per-module reverts have
     # already run for each FAILED module via the orchestrator's
@@ -3117,6 +3128,15 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                         status = 'upgraded'
                     log(f"  {mod}: {before_s} -> {after_s}   ({status})", "info")
             log("-" * 64, "info")
+
+            # We patch the vendor Timesketch container. Say so once, here, at
+            # info level — see the helper's docstring for why not "warning".
+            try:
+                from .timesketch import log_llm_provider_container_note
+                log_llm_provider_container_note(results, logger=log)
+            except Exception as _lpe:
+                log(f"  (could not emit the LLM-provider note: "
+                    f"{type(_lpe).__name__}: {_lpe})", "info")
 
     # Workflow done. Clean up the config.yaml pre-merge backup (if any
     # — only the online flow creates one). Per-module reverts have
