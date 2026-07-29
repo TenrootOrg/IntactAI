@@ -877,6 +877,11 @@ _LLM_ERR_MESSAGES = {
     "cli_not_installed": "⚠️ The subscription CLI is not installed. Install it in Settings → Agentic (needs internet).",
     "cli_not_authenticated": "⚠️ The subscription is not connected. Sign in from Settings → Agentic (needs internet).",
     "model_unsupported": "⚠️ The vendor rejected the selected model for this subscription. Clear the Model field in Settings → Agentic to use the model your plan allows.",
+    "model_not_routable": (
+        "⚠️ The provider has no endpoint it is allowed to route this model to — "
+        "usually a data-policy / privacy restriction on the account rather than "
+        "anything wrong with the key. Pick a different model in Settings → Agentic, "
+        "or relax the provider's data policy (OpenRouter: openrouter.ai/settings/privacy)."),
 }
 
 
@@ -914,6 +919,16 @@ def _llm_unavailable_reason():
 def _classify_llm_error(exc) -> str:
     """Map a transport exception to a reason code (auth vs connection vs timeout …)."""
     s = f"{type(exc).__name__} {exc}".lower()
+    # Checked FIRST, before the auth patterns. A routing refusal is a 404 whose
+    # body often mentions "api"/"policy", and the auth branch below is broad
+    # enough to swallow it — which is exactly what happened: OpenRouter refused
+    # to route qwen/qwen3.7-flash under the account's data policy and the
+    # operator was told to "check the API key and internet connection", both of
+    # which were fine. The key authenticated and the same key worked on five
+    # other models.
+    if any(t in s for t in ("no endpoints available", "no allowed providers",
+                            "data policy", "guardrail")):
+        return "model_not_routable"
     if any(t in s for t in ("401", "403", "unauthor", "user not found", "invalid api",
                             "authentication", "invalid_api_key", "no api key", "api key")):
         return "invalid_key"
