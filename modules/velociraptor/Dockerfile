@@ -43,6 +43,38 @@ RUN chmod +x /opt/velociraptor/linux/velociraptor \
              /opt/velociraptor/mac/velociraptor_client \
              /opt/velociraptor/windows/velociraptor_client.exe
 
+# The image tag is a LABEL, not a fact. Everything above COPYs a pre-staged
+# binary and the tag comes from VELOCIRAPTOR_VERSION, so nothing has ever tied
+# the two together: bump the pin in config.yaml without re-staging and you get
+# velociraptor-server:0.77.1 containing a 0.76.1 binary. Observed in the wild —
+# a box ran `velociraptor-server:0.76.1` whose binary reported 0.77.1, so the
+# config, the image tag, the version table and the release manifest all agreed
+# with each other and all disagreed with reality.
+#
+# Fails the build ONLY on a positively-parsed mismatch. If the version cannot
+# be read at all (output format changed, binary not executable on this arch)
+# it warns and continues: a guard against a rare condition must not become a
+# common cause of broken builds.
+RUN set -e; \
+    staged="$(/opt/velociraptor/linux/velociraptor version 2>/dev/null \
+              | sed -n 's/^[Vv]ersion:[[:space:]]*//p' | head -1)"; \
+    if [ -z "$staged" ]; then \
+        echo "WARNING: could not read the staged Velociraptor binary's version;" >&2; \
+        echo "         cannot confirm it matches VELOCIRAPTOR_VERSION=${VELOCIRAPTOR_VERSION}." >&2; \
+    elif [ "$staged" != "${VELOCIRAPTOR_VERSION}" ]; then \
+        echo "ERROR: staged binary is Velociraptor ${staged}, but this image is" >&2; \
+        echo "       being tagged ${VELOCIRAPTOR_VERSION}." >&2; \
+        echo "       The binary is COPYd from the build context, so bumping" >&2; \
+        echo "       versions.velociraptor without re-downloading produces a" >&2; \
+        echo "       mislabelled image. Re-stage the binaries for" >&2; \
+        echo "       ${VELOCIRAPTOR_VERSION} (install.sh re-downloads them; the" >&2; \
+        echo "       offline path copies them out of the upgrade package), or" >&2; \
+        echo "       set versions.velociraptor back to ${staged}." >&2; \
+        exit 1; \
+    else \
+        echo "Velociraptor binary version ${staged} matches the image tag."; \
+    fi
+
 # Curated artifact-definition bundle (ArtifactExchange / DetectRaptor /
 # Sigma / Rapid7 / TenRoot, pre-exported as plain YAMLs). Baked into the
 # image so the server loads them on boot via `--definitions` (see
