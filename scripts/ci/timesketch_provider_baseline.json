@@ -1,0 +1,54 @@
+{
+  "_comment": "Upstream Timesketch files our contrib LLM providers depend on, as last VERIFIED BY A HUMAN. Regenerate only after actually testing the providers on the new version: python3 scripts/ci/check_timesketch_provider_drift.py --version <tag> --stamp",
+  "verified_upstream_version": "20260630",
+  "verified_on": "2026-07-29",
+  "verified_by": "IntactAI (providers verified registering in image 20260630)",
+  "known_upstream_provider_names": [
+    "azureai",
+    "google_genai",
+    "ollama",
+    "secgemini_log_analyzer_agent"
+  ],
+  "files": {
+    "timesketch/api/v1/resources/settings.py": {
+      "tier": "advisory",
+      "why": "decides whether a provider surfaces to the UI as available",
+      "sha256": "4975493f5558dd4ea4870a76186f786f0bdd0bb86341ad1a92ea0c92ca798a9c"
+    },
+    "timesketch/lib/llms/providers/__init__.py": {
+      "tier": "contract",
+      "why": "apply.sh appends our import block to this file",
+      "sha256": "f1d8cf68d67f837b587f8ce52945dee4d2d287cce2153b5849b69dbe952a7acb"
+    },
+    "timesketch/lib/llms/providers/contrib/__init__.py": {
+      "tier": "contract",
+      "why": "empty upstream; content here means upstream took over contrib wiring",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "timesketch/lib/llms/providers/contrib/azureai.py": {
+      "tier": "advisory",
+      "why": "the reference contrib provider ours are modelled on",
+      "sha256": "23c5f146bcd473972a4dc2cb41c3131e44d10641730240ce5af756a3e1b342c5"
+    },
+    "timesketch/lib/llms/providers/contrib/litellm_proxy.py": {
+      "tier": "must_not_exist",
+      "why": "name collision with our litellm_proxy provider",
+      "present_upstream": false
+    },
+    "timesketch/lib/llms/providers/contrib/openrouter.py": {
+      "tier": "must_not_exist",
+      "why": "name collision with our openrouter provider",
+      "present_upstream": false
+    },
+    "timesketch/lib/llms/providers/interface.py": {
+      "tier": "contract",
+      "why": "LLMProvider.__init__, the DEFAULT_* constants and generate()'s signature",
+      "sha256": "b93fb273a7914d8894fc2aa115df3652ed06e66ce58a18dc95675cf8c9b75e32"
+    },
+    "timesketch/lib/llms/providers/manager.py": {
+      "tier": "contract",
+      "why": "register_provider() and its duplicate-name ValueError",
+      "sha256": "776859dcaee523d087891b65e9148379105f9c59f9d3d4e28ce01e4dbcf5b6d6"
+    }
+  }
+}

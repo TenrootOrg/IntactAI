@@ -50,6 +50,29 @@ jobs:
         with:
           ref: ${{ steps.tag.outputs.tag }}
 
+      # We add two LLM providers to Timesketch by writing into the vendor
+      # container's site-packages and appending imports to a file UPSTREAM
+      # owns. This compares the Timesketch version this release pins against
+      # the version a human last verified those providers on -- upstream
+      # against upstream -- and warns if anything they depend on moved.
+      #
+      # Run here rather than at the end so it still produces a verdict when
+      # the 90-minute package build fails. Position in the log does not affect
+      # visibility: ::warning:: annotations and $GITHUB_STEP_SUMMARY are
+      # job-level and render at the top of the run page wherever they are
+      # written. The tail step below is what puts it at the end of the log.
+      #
+      # continue-on-error AND the script's own exit-code contract (0 clean /
+      # 10 drift / 20 could-not-verify, all mapped to success here): a
+      # heads-up must never fail a release build. The package is already
+      # valid; this only says it is worth testing before shipping.
+      - name: Check upstream Timesketch LLM-provider drift
+        id: ts_drift
+        continue-on-error: true
+        run: |
+          python3 scripts/ci/check_timesketch_provider_drift.py --github \
+            | tee "$RUNNER_TEMP/ts-drift.txt" || true
+
       # Every release ships EVERY module -- no baseline, no diff. The online
       # flow downloads ONE package for the target ref and does not walk the
       # upgrade chain, so a diffed package silently omits whatever changed in
@@ -141,3 +164,17 @@ jobs:
           name: release-package-${{ steps.tag.outputs.tag }}
           path: ci-output/*
           retention-days: 7
+
+      # Repeat the drift verdict as the last thing in the log, so whoever
+      # scrolls to the bottom of a release build to check it succeeded also
+      # sees whether the Timesketch LLM providers are worth re-testing before
+      # this package goes to a customer. if: always() so it survives a failed
+      # build -- that is exactly when the earlier verdict is easiest to miss.
+      - name: Timesketch provider drift verdict
+        if: always()
+        run: |
+          echo "=================================================="
+          echo " Upstream Timesketch LLM-provider drift verdict"
+          echo "=================================================="
+          cat "$RUNNER_TEMP/ts-drift.txt" 2>/dev/null \
+            || echo "(the drift check did not produce a verdict)"
