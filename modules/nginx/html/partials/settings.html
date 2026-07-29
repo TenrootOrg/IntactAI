@@ -448,7 +448,10 @@
                         <div class="mb-4">
                             <label class="block text-sm text-gray-400 mb-1">Mode</label>
                             <select x-model="$store.settings.config.agentic.llm_mode" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm">
-                                <option value="offline">Offline (Ollama)</option>
+                                <!-- Just "Offline": the server type below offers Ollama AND any
+                                     OpenAI-compatible server (LiteLLM / vLLM / LM Studio), so
+                                     naming Ollama here read as though it were the only option. -->
+                                <option value="offline">Offline</option>
                                 <option value="online">Online (Cloud API)</option>
                             </select>
                         </div>
@@ -470,32 +473,58 @@
                                     <label class="block text-xs text-gray-400 mb-1">Server URL</label>
                                     <input type="text" x-model="$store.settings.config.agentic.offline_llm.url"
                                            @change="$store.settings.loadOfflineModels()"
-                                           placeholder="http://10.0.0.5:11434"
-                                           title="The LLM server, which is usually ANOTHER host on the network — it must be reachable from the Intact host, not just from your browser. For OpenAI-compatible servers include the /v1 suffix."
+                                           placeholder="http://ollama-host:11434"
+                                           title="The LLM server as the INTACT BACKEND sees it, not as your browser sees it. 'localhost' will not work — inside the backend container that resolves to the backend itself. Use the container name for a server on the same docker network (e.g. http://intact_ollama:11434) or the host's LAN IP. For OpenAI-compatible servers include the /v1 suffix."
                                            class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    <p x-show="/^https?:\/\/(localhost|127\.0\.0\.1)/i.test($store.settings.config.agentic.offline_llm.url || '')"
+                                       x-transition class="text-[11px] text-yellow-600 mt-1">
+                                        Inside the backend container "localhost" is the backend itself. Use the
+                                        container name or the host's LAN IP.
+                                    </p>
                                 </div>
                                 <div>
-                                    <!-- Populated from the server itself (GET /api/tags or /v1/models).
-                                         It used to be four hardcoded names, so picking one the server
-                                         did not have failed at report time, mid-case. -->
+                                    <!-- Free-text input with the server's own models offered as
+                                         suggestions -- NOT a bare <select>.
+                                         It was a select whose only <option> was the saved value
+                                         tagged "(not on this server)" whenever the server could not
+                                         be listed. With an unreachable URL (the common case, since
+                                         `localhost` resolves to the backend itself) that left one
+                                         unpickable option and no way to type a name at all: the
+                                         field was unusable exactly when you most needed to fix it.
+                                         Typing must always work; the list is an aid, not a gate. -->
                                     <label class="block text-xs text-gray-400 mb-1">
                                         Model
                                         <button type="button" @click="$store.settings.loadOfflineModels()"
                                                 class="ml-1 text-blue-400 hover:text-blue-300" title="Re-query the server">&#8635;</button>
                                     </label>
-                                    <select x-model="$store.settings.config.agentic.offline_llm.model"
-                                            class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
-                                        <template x-if="$store.settings.config.agentic.offline_llm.model &amp;&amp; !$store.settings.offlineModels.some(m =&gt; m.id === $store.settings.config.agentic.offline_llm.model)">
-                                            <option :value="$store.settings.config.agentic.offline_llm.model"
-                                                    x-text="$store.settings.config.agentic.offline_llm.model + ' (not on this server)'"></option>
-                                        </template>
-                                        <template x-for="m in $store.settings.offlineModels" :key="m.id">
-                                            <option :value="m.id" x-text="m.id"></option>
-                                        </template>
-                                    </select>
-                                    <p x-show="$store.settings.offlineModelsError" class="text-xs text-red-400 mt-1"
-                                       x-text="$store.settings.offlineModelsError"></p>
+                                    <div x-data="{ open: false }" class="relative">
+                                        <input type="text"
+                                               x-model="$store.settings.config.agentic.offline_llm.model"
+                                               @focus="open = true; if (!$store.settings.offlineModels.length) $store.settings.loadOfflineModels()"
+                                               @click.away="open = false"
+                                               @keydown.escape="open = false"
+                                               placeholder="e.g. qwen2.5:0.5b"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                        <div x-show="open &amp;&amp; $store.settings.offlineModels.length > 0" x-transition
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg max-h-56 overflow-y-auto">
+                                            <template x-for="m in $store.settings.offlineModels" :key="m.id">
+                                                <div @mousedown.prevent="$store.settings.config.agentic.offline_llm.model = m.id; open = false"
+                                                     class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50 text-white"
+                                                     x-text="m.id"></div>
+                                            </template>
+                                        </div>
+                                    </div>
                                     <p x-show="$store.settings.offlineModelsLoading" class="text-xs text-gray-500 mt-1">Asking the server…</p>
+                                    <p x-show="!$store.settings.offlineModelsLoading &amp;&amp; $store.settings.offlineModelsError"
+                                       class="text-xs text-yellow-600 mt-1">
+                                        <span x-text="$store.settings.offlineModelsError"></span>
+                                        <span class="text-gray-500">You can still type the model name.</span>
+                                    </p>
+                                    <p x-show="!$store.settings.offlineModelsLoading &amp;&amp; !$store.settings.offlineModelsError
+                                               &amp;&amp; $store.settings.config.agentic.offline_llm.model
+                                               &amp;&amp; $store.settings.offlineModels.length > 0
+                                               &amp;&amp; !$store.settings.offlineModels.some(m => m.id === $store.settings.config.agentic.offline_llm.model)"
+                                       class="text-xs text-yellow-600 mt-1">Not installed on that server.</p>
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">Context Size</label>
