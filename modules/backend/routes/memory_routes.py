@@ -450,6 +450,16 @@ def create_memory_blueprint():
         import time
         data["id"] = f"custom_{int(time.time() * 1000)}"
     bp = save_blueprint(_BLUEPRINT_TYPE, data)
+    # A failed save must not report 201. save_blueprint swallows storage errors
+    # and returns falsy (it logs "[STORAGE] Error saving ..."), so this returned
+    # {"blueprint": null} with 201 Created — the operator's blueprint silently
+    # did not exist, and the UI had nothing to show but no error to report.
+    # Observed live when the backend's SQLite connection went stale and every
+    # write raised "disk I/O error" while the route kept answering 201.
+    # The sibling /api/blueprints/memory route already 500s on the same
+    # condition; this makes the two agree.
+    if not bp:
+        return jsonify({"error": "Failed to save blueprint"}), 500
     return jsonify({"blueprint": bp}), 201
 
 
